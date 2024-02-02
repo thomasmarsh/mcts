@@ -10,7 +10,7 @@ I started this because I wanted to understand MCTS a bit better. I was originall
 planning to extend minimax-rs, but ended up starting from scratch and then adding
 back some elements of minimax-rs's threading and utility libraries.
 
-Although minimax-rs has good lock-free root parallelism, it uses MCTS-Solver, which
+Although minimax-rs has good lock-free tree parallelism, it uses MCTS-Solver, which
 is more effective at end game than for general use. Additionally, it uses full
 expansion of each node rather than single expansion, which can reduce performance
 in games with large branching factors.
