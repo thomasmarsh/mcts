@@ -92,11 +92,7 @@ impl Game for Nim {
         if !Self::is_terminal(state) {
             panic!();
         }
-        Some(Self::player_just_moved(state))
-    }
-
-    fn player_just_moved(state: &Self::S) -> Self::P {
-        state.turn.next()
+        Some(Self::player_to_move(state).next())
     }
 
     fn player_to_move(state: &Self::S) -> Self::P {

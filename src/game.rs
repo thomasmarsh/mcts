@@ -51,9 +51,6 @@ pub trait Game: Sized {
     /// non-terminal state.
     fn winner(state: &Self::S) -> Option<Self::P>;
 
-    /// The player that just moved.
-    fn player_just_moved(state: &Self::S) -> Self::P;
-
     /// The current player
     fn player_to_move(state: &Self::S) -> Self::P;
 

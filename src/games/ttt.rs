@@ -165,10 +165,6 @@ impl Game for TicTacToe {
         state.position.winner()
     }
 
-    fn player_just_moved(state: &Self::S) -> Self::P {
-        state.position.turn.next()
-    }
-
     fn player_to_move(state: &Self::S) -> Self::P {
         state.position.turn
     }

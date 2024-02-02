@@ -40,8 +40,6 @@ impl Game for NullGame {
         None
     }
 
-    fn player_just_moved(_: &()) {}
-
     fn player_to_move(_: &()) {}
 }
 

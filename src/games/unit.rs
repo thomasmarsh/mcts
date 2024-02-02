@@ -44,8 +44,6 @@ impl Game for UnitGame {
         Some(())
     }
 
-    fn player_just_moved(_: &Self::S) -> Self::P {}
-
     fn player_to_move(_: &Self::S) -> Self::P {}
 }
 
