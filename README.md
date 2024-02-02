@@ -1,4 +1,5 @@
 # MCTS
+[![Rust](https://github.com/thomasmarsh/mcts/actions/workflows/rust.yml/badge.svg)](https://github.com/thomasmarsh/mcts/actions/workflows/rust.yml)
 
 Playing around with some MCTS stuff. Some code and general approaches come from
 [minimax-rs](https://github.com/edre/minimax-rs) which has an MCTS strategy. Not
