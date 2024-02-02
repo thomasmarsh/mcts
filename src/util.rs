@@ -1,5 +1,7 @@
 use rand::Rng;
 
+type XorShiftRng = rand_xorshift::XorShiftRng;
+
 use crate::game::Game;
 use crate::strategies;
 
@@ -8,14 +10,19 @@ const PRIMES: [usize; 16] = [
     81647, 92581, 94693,
 ];
 
-pub(super) fn random_best<T, F: Fn(&T) -> f32>(set: &[T], score_fn: F) -> Option<&T> {
+pub(super) fn random_best<'a, T, F: Fn(&T) -> f32>(
+    set: &'a [T],
+    rng: &'a mut XorShiftRng,
+    score_fn: F,
+) -> Option<&'a T> {
     // To make the choice more uniformly random among the best moves,
     // start at a random offset and stride by a random amount.
     // The stride must be coprime with n, so pick from a set of 5 digit primes.
 
     let n = set.len();
     // Combine both random numbers into a single rng call.
-    let r = rand::thread_rng().gen_range(0..n * PRIMES.len());
+
+    let r = rng.gen_range(0..n * PRIMES.len());
     let mut i = r / PRIMES.len();
     let stride = PRIMES[r % PRIMES.len()];
 

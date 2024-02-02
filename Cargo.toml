@@ -22,6 +22,8 @@ color-backtrace = "0.6.1"
 log = "0.4.20"
 pretty_env_logger = "0.5.0"
 nonempty = "0.9.0"
+rand_xorshift = "0.3.0"
+rand_core = "0.6.4"
 
 [profile.release]
 debug=true
@@ -30,5 +32,5 @@ debug=true
 criterion = { version = "0.5.1", features = ["html_reports"] }
 
 [[bench]]
-name = "my_benchmark"
+name = "ttt"
 harness = false

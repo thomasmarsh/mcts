@@ -5,9 +5,8 @@ use std::time::{Duration, Instant};
 
 use crate::strategies::index::{Index, NodeRef};
 use crate::util::random_best;
-use pretty_env_logger::init;
-use rand::rngs::ThreadRng;
 use rand::seq::SliceRandom;
+use rand_core::SeedableRng;
 
 use crate::game::Game;
 use crate::strategies::Strategy;
@@ -15,7 +14,9 @@ use crate::util::{move_id, pv_string};
 
 use super::sync_util::timeout_signal;
 
-use log::trace;
+// use log::trace;
+
+type Rng = rand_xorshift::XorShiftRng;
 
 #[derive(Clone, Copy)]
 pub enum SelectionStrategy {
@@ -126,7 +127,7 @@ impl Timer {
 
 pub struct TreeSearch<G: Game> {
     index: Index<G::M>,
-    rng: ThreadRng,
+    rng: Rng,
     pv: Vec<NodeRef>,
     timeout: Arc<AtomicBool>,
     pub max_time: Duration,
@@ -154,7 +155,7 @@ impl<G: Game> TreeSearch<G> {
     pub fn new() -> Self {
         Self {
             index: Index::new(),
-            rng: rand::thread_rng(),
+            rng: Rng::from_entropy(),
             pv: Vec::new(),
             max_time: Duration::from_secs(5),
             timeout: Arc::new(AtomicBool::new(false)),
@@ -167,13 +168,13 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn best_child(&self, strategy: SelectionStrategy, node_id: NodeRef) -> Option<NodeRef> {
+    fn best_child(&mut self, strategy: SelectionStrategy, node_id: NodeRef) -> Option<NodeRef> {
         let parent = self.index.get(node_id);
         let children = self.index.children(node_id).collect::<Vec<_>>();
         if children.is_empty() {
             return None;
         }
-        random_best(children.as_slice(), |child_id| {
+        random_best(children.as_slice(), &mut self.rng, |child_id| {
             let child = self.index.get(*child_id);
             strategy.score(parent, child)
         })

@@ -1,5 +1,6 @@
-use rand::rngs::ThreadRng;
 use rand::seq::SliceRandom;
+use rand_core::SeedableRng;
+use rand_xorshift::XorShiftRng;
 
 use crate::game::Game;
 use crate::strategies::Strategy;
@@ -44,7 +45,11 @@ impl<G: Game> Default for FlatMonteCarloStrategy<G> {
     }
 }
 
-fn rollout<G: Game>(max_rollout_depth: u32, init_state: &G::S, rng: &mut ThreadRng) -> i32
+fn rollout<G: Game>(
+    max_rollout_depth: u32,
+    init_state: &G::S,
+    rng: &mut rand_xorshift::XorShiftRng,
+) -> i32
 where
     G::S: Clone,
 {
@@ -72,6 +77,8 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             return None;
         }
 
+        let mut rng = XorShiftRng::from_entropy();
+
         let max_rollout_depth = 100;
 
         let moves = G::gen_moves(state);
@@ -83,7 +90,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
                 tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
-                    let result = rollout::<G>(max_rollout_depth, &tmp, &mut rand::thread_rng());
+                    let result = rollout::<G>(max_rollout_depth, &tmp, &mut rng);
                     if result > 0 {
                         n += 1;
                     }
@@ -106,6 +113,6 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             }
         }
 
-        random_best(wins.as_slice(), |x| x.0 as f32).map(|x| x.1.clone())
+        random_best(wins.as_slice(), &mut rng, |x| x.0 as f32).map(|x| x.1.clone())
     }
 }

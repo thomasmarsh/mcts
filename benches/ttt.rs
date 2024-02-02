@@ -8,7 +8,7 @@ type TicTacToeTS = TreeSearchStrategy<ttt::TicTacToe>;
 
 fn ponder(c: &mut Criterion) {
     let mut group = c.benchmark_group("ttt");
-    for n in [500, 1000, 1500, 2000] {
+    for n in [250, 500, 750, 1000] {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             b.iter(|| {
                 let mut ts = TicTacToeTS::new();
