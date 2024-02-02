@@ -1,15 +1,14 @@
-use crate::game::{Game, Winner};
+use crate::game::Game;
+use std::fmt::Display;
 
-use std::{fmt::Display, ops::Div};
-
-#[derive(Clone, Copy, PartialEq)]
-enum Piece {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Piece {
     X,
     O,
 }
 
 impl Piece {
-    fn next(self) -> Piece {
+    pub fn next(self) -> Piece {
         match self {
             Piece::X => Piece::O,
             Piece::O => Piece::X,
@@ -19,13 +18,19 @@ impl Piece {
 
 const BOARD_LEN: usize = 9;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Move(pub u8);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Position {
     pub turn: Piece,
     pub board: [Option<Piece>; BOARD_LEN],
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Position {
@@ -95,7 +100,7 @@ impl Display for Position {
 
 pub struct TicTacToe;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HashedPosition {
     pub position: Position,
     hash: u64,
@@ -126,49 +131,64 @@ impl HashedPosition {
 impl Game for TicTacToe {
     type S = HashedPosition;
     type M = Move;
+    type P = Piece;
 
-    fn generate_moves(state: &Self::S, moves: &mut Vec<Self::M>) {
-        moves.extend(state.position.gen_moves())
+    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
+        state.position.gen_moves()
     }
 
-    fn apply(state: &mut Self::S, m: Self::M) -> Option<Self::S> {
-        let mut tmp = state.clone();
+    fn apply(state: &Self::S, m: Self::M) -> Self::S {
+        let mut tmp = *state;
         tmp.apply(m);
-        Some(tmp)
+        tmp
     }
 
-    fn notation(_state: &Self::S, m: Self::M) -> Option<String> {
+    fn notation(_state: &Self::S, m: &Self::M) -> String {
         let x = m.0 % 3;
         let y = m.0 / 3;
-        Some(format!("({}, {})", x, y))
+        format!("({}, {})", x, y)
     }
 
-    fn undo(state: &mut Self::S, m: Self::M) {
-        state.position.board[m.0 as usize] = None
+    fn is_terminal(state: &Self::S) -> bool {
+        state.position.winner().is_some() || state.position.board.iter().all(|x| x.is_some())
     }
 
-    fn get_winner(state: &Self::S) -> Option<Winner> {
-        state
-            .position
-            .winner()
-            .map(|x| {
-                if x == state.position.turn {
-                    Winner::PlayerToMove
-                } else {
-                    Winner::PlayerJustMoved
-                }
-            })
-            .or_else(|| {
-                if state.position.gen_moves().is_empty() {
-                    Some(Winner::Draw)
-                } else {
-                    None
-                }
-            })
+    fn empty_move(_state: &Self::S) -> Self::M {
+        Move(0)
     }
 
-    fn zobrist_hash(state: &Self::S) -> u64 {
-        state.hash
+    fn winner(state: &Self::S) -> Option<Self::P> {
+        if !Self::is_terminal(state) {
+            unreachable!();
+        }
+
+        state.position.winner()
+    }
+
+    fn player_just_moved(state: &Self::S) -> Self::P {
+        state.position.turn.next()
+    }
+
+    fn player_to_move(state: &Self::S) -> Self::P {
+        state.position.turn
+    }
+
+    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> i32 {
+        if !Self::is_terminal(term_state) {
+            panic!();
+        }
+
+        let winner = Self::winner(term_state);
+
+        if winner.is_some() {
+            if Some(Self::player_to_move(init_state)) == winner {
+                1
+            } else {
+                -100
+            }
+        } else {
+            0
+        }
     }
 }
 

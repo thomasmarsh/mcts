@@ -30,8 +30,7 @@ where
     G::M: Clone,
 {
     fn choose_move(&mut self, s: &G::S) -> Option<G::M> {
-        let mut moves = Vec::new();
-        G::generate_moves(s, &mut moves);
+        let moves = G::gen_moves(s);
         moves.choose(&mut self.rng).cloned()
     }
 }

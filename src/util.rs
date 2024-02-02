@@ -1,6 +1,7 @@
 use rand::Rng;
 
-use crate::*;
+use crate::game::Game;
+use crate::strategies;
 
 const PRIMES: [usize; 16] = [
     14323, 18713, 19463, 30553, 33469, 45343, 50221, 51991, 53201, 56923, 64891, 72763, 74471,
@@ -38,7 +39,7 @@ pub(super) fn random_best<T, F: Fn(&T) -> f32>(set: &[T], score_fn: F) -> Option
 /// first or second strategy won, respectively.
 pub fn battle_royale<G, S1, S2>(s1: &mut S1, s2: &mut S2) -> Option<usize>
 where
-    G: game::Game,
+    G: Game,
     G::S: Default + Clone,
     S1: strategies::Strategy<G>,
     S2: strategies::Strategy<G>,
@@ -47,22 +48,44 @@ where
     let mut strategies: [&mut dyn strategies::Strategy<G>; 2] = [s1, s2];
     let mut s = 0;
     loop {
-        if let Some(winner) = G::get_winner(&state) {
-            return match winner {
-                game::Winner::Draw => None,
-                game::Winner::PlayerJustMoved => Some(1 - s),
-                game::Winner::PlayerToMove => Some(s),
-            };
+        if G::is_terminal(&state) {
+            let current_player = G::player_to_move(&state);
+            let winner = G::winner(&state);
+            return winner.map(|p| if current_player == p { s } else { 1 - s });
         }
         let strategy = &mut strategies[s];
         match strategy.choose_move(&state) {
             Some(m) => {
-                if let Some(new_state) = G::apply(&mut state, m) {
-                    state = new_state;
-                }
+                state = G::apply(&state, m);
             }
             None => return None,
         }
         s = 1 - s;
     }
+}
+
+// Return a unique id for humans for this move.
+pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::M>) -> String {
+    if let Some(mov) = m {
+        G::notation(s, &mov)
+    } else {
+        "none".to_string()
+    }
+}
+
+pub(super) fn pv_string<G: Game>(path: &[<G as Game>::M], state: &<G as Game>::S) -> String
+where
+    <G as Game>::M: Clone,
+    <G as Game>::S: Clone,
+{
+    let mut state = state.clone();
+    let mut out = String::new();
+    for (i, m) in (0..).zip(path.iter()) {
+        if i > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(move_id::<G>(&state, Some(m.clone())).as_str());
+        state = G::apply(&state, m.clone());
+    }
+    out
 }

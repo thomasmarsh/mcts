@@ -1,7 +1,15 @@
-minimax-rs:
-- implements MCTS-Solver which has limited applicability
-- MCTS-Solver assigns +/-INF scores and so breaks UCT unless multiple values maintained
+What about something like:
 
-Changes from minimax-rs
-- rename DumbRollout to NaiveRollout
-- reduce `Game::M: Copy` constraint to `Clone`
+```
+  enum State<A> {
+    Active(ActiveState<A>),
+    Terminal(TerminalState<A>),
+  }
+
+  fn gen_moves(state: &ActiveState<S>) -> State<S>;
+
+  fn get_reward(state: &TerminalState<S>) -> i32;
+```
+
+It makes move generation more expensive. Would need to benchmark. We do a lot of
+is_terminal checks, many more than gen_moves.

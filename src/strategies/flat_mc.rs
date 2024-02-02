@@ -1,12 +1,13 @@
+use rand::rngs::ThreadRng;
+use rand::seq::SliceRandom;
+
 use crate::game::Game;
-use crate::strategies::rollout::{NaiveRolloutPolicy, RolloutPolicy};
 use crate::strategies::Strategy;
 use crate::util::random_best;
 
-use super::mcts::MCTSOptions;
-
 use std::marker::PhantomData;
 
+// Maybe rename NaiveMonteCarlo
 pub struct FlatMonteCarloStrategy<G: Game> {
     samples_per_move: u32, // TODO: also suppose samples per state
     verbose: bool,
@@ -43,45 +44,53 @@ impl<G: Game> Default for FlatMonteCarloStrategy<G> {
     }
 }
 
+fn rollout<G: Game>(max_rollout_depth: u32, init_state: &G::S, rng: &mut ThreadRng) -> i32
+where
+    G::S: Clone,
+{
+    let mut state = init_state.clone();
+    for _ in 0..max_rollout_depth {
+        if G::is_terminal(&state) {
+            return G::get_reward(init_state, &state);
+        }
+        let moves = G::gen_moves(&state);
+        if let Some(m) = moves.choose(rng) {
+            state = G::apply(&state, m.clone())
+        } else {
+            return 0;
+        }
+    }
+    0
+}
+
 impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
     fn choose_move(&mut self, state: &<G as Game>::S) -> Option<<G as Game>::M>
     where
         <G as Game>::S: Clone,
     {
-        if G::get_winner(state).is_some() {
+        if G::is_terminal(state) {
             return None;
         }
 
-        // TODO: need to narrow rollout policy options
-        let options = MCTSOptions {
-            verbose: false,
-            max_rollout_depth: 100,
-            rollouts_before_expanding: 0,
-        };
+        let max_rollout_depth = 100;
 
-        // TODO: this is so complicated
-        let policy = NaiveRolloutPolicy::<G> {
-            game_type: PhantomData,
-        };
-        let mut moves = Vec::new();
-        G::generate_moves(state, &mut moves);
+        let moves = G::gen_moves(state);
         let wins = moves
             .iter()
             .map(|m| {
                 let mut tmp = state.clone();
-                if let Some(new_state) = G::apply(&mut tmp, m.clone()) {
-                    tmp = new_state;
-                }
+                let new_state = G::apply(&tmp, m.clone());
+                tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
-                    let result = policy.rollout(&options, &tmp);
+                    let result = rollout::<G>(max_rollout_depth, &tmp, &mut rand::thread_rng());
                     if result > 0 {
                         n += 1;
                     }
                 }
                 (n, m.clone())
             })
-            .collect::<Vec<(i32, G::M)>>();
+            .collect::<Vec<_>>();
 
         if self.verbose {
             let mut w = wins.clone();
@@ -89,7 +98,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             eprintln!("Flat MC:");
             for (n, m) in w {
                 let pct = 100. * (n as f32 / self.samples_per_move as f32);
-                let notation = G::notation(state, m).unwrap_or("??".to_string());
+                let notation = G::notation(state, &m);
                 eprintln!(
                     "- {:0.2}% {} ({}/{} wins)",
                     pct, notation, n, self.samples_per_move

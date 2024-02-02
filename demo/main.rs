@@ -1,6 +1,11 @@
+use std::time::Duration;
+
 use mcts::game::Game;
+use mcts::games;
+use mcts::games::nim;
+use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
-use mcts::strategies::mcts::{MCTSOptions, MonteCarloTreeSearch};
+use mcts::strategies::mcts::TreeSearchStrategy;
 use mcts::strategies::random::Random;
 use mcts::strategies::Strategy;
 use mcts::util::battle_royale;
@@ -10,7 +15,9 @@ use mcts::games::ttt::*;
 
 type TttFlatMC = FlatMonteCarloStrategy<TicTacToe>;
 type NimFlatMC = FlatMonteCarloStrategy<Nim>;
-type TttMCTS = MonteCarloTreeSearch<TicTacToe>;
+
+type NimMCTS = TreeSearchStrategy<Nim>;
+type TttMCTS = TreeSearchStrategy<TicTacToe>;
 
 fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     let (win_a, win_b, draw) = results.iter().fold((0, 0, 0), |(a, b, c), x| match x {
@@ -30,23 +37,104 @@ struct BattleConfig {
     samples_per_move: Vec<u32>,
 }
 
-fn battle_ttt(config: &BattleConfig) {
+fn battle_nim_mcts(config: &BattleConfig) {
     for samples in &config.samples_per_move {
         println!("samples per move: {}", samples);
-        let mut flat_mc = TttFlatMC::new().set_samples_per_move(*samples);
-        let mut random = Random::new();
+        let mut mcts = NimMCTS::new();
+        mcts.set_max_rollouts(*samples);
+        let mut flat_mc = NimFlatMC::new().set_samples_per_move(*samples);
 
         let mut fst = Vec::with_capacity(100);
         let mut snd = Vec::with_capacity(100);
         for _ in 0..config.num_samples {
-            let result = battle_royale(&mut flat_mc, &mut random);
+            let result = battle_royale(&mut mcts, &mut flat_mc);
             fst.push(result);
-            let result = battle_royale(&mut random, &mut flat_mc);
+            let result = battle_royale(&mut flat_mc, &mut mcts);
             snd.push(result);
         }
-        summarize("FlatMC", "Random", fst);
-        summarize("Random", "FlatMC", snd);
+        summarize("MCTS", "Flat MC", fst);
+        summarize("Flat MC", "MCTS", snd);
     }
+}
+
+fn battle_ttt(config: &BattleConfig) {
+    for samples in &config.samples_per_move {
+        println!("samples per move: {}", samples);
+        let mut flat_mc = TttFlatMC::new().set_samples_per_move(*samples);
+        let mut mcts = TttMCTS::new();
+        mcts.set_max_rollouts(*samples);
+
+        let mut fst = Vec::with_capacity(100);
+        let mut snd = Vec::with_capacity(100);
+        for _ in 0..config.num_samples {
+            let result = battle_royale(&mut flat_mc, &mut mcts);
+            fst.push(result);
+            let result = battle_royale(&mut mcts, &mut flat_mc);
+            snd.push(result);
+        }
+        summarize("FlatMC", "MCTS", fst);
+        summarize("MCTS", "FlatMC", snd);
+    }
+}
+
+fn demo_mcts() {
+    let mut mcts = TttMCTS::new();
+    mcts.set_verbose();
+    mcts.set_timeout(Duration::from_secs(5));
+    let mut random: Random<TicTacToe> = Random::new();
+    let mut player = ttt::Piece::X;
+
+    let mut state = HashedPosition::new();
+    println!("Initial state:\n{}", state.position);
+    while !TicTacToe::is_terminal(&state) {
+        if player == ttt::Piece::X {
+            if let Some(m) = mcts.choose_move(&state) {
+                println!("MCTS player move...");
+                state = TicTacToe::apply(&state, m);
+            } else {
+                panic!();
+            }
+        } else if let Some(m) = random.choose_move(&state) {
+            println!("Random player move...");
+            state = TicTacToe::apply(&state, m);
+        } else {
+            panic!();
+        }
+        println!("State:\n{}", state.position);
+
+        player = player.next();
+    }
+    println!("DONE");
+}
+
+fn demo_nim() {
+    let mut mcts = NimMCTS::new();
+    mcts.set_verbose();
+    mcts.set_timeout(Duration::from_secs(5));
+    let mut random: Random<Nim> = Random::new();
+    let mut player = nim::Player::Black;
+
+    let mut state = NimState::new();
+    println!("Initial state:\n{:?}", state);
+    while !Nim::is_terminal(&state) {
+        if player == nim::Player::Black {
+            if let Some(m) = mcts.choose_move(&state) {
+                println!("MCTS player move...");
+                state = Nim::apply(&state, m);
+            } else {
+                panic!();
+            }
+        } else if let Some(m) = random.choose_move(&state) {
+            println!("Random player move...");
+            state = Nim::apply(&state, m);
+        } else {
+            panic!();
+        }
+        println!("State:\n{:?}", state);
+
+        player = player.next();
+    }
+    println!("winner: {:?}", Nim::winner(&state));
 }
 
 fn battle_nim(config: &BattleConfig) {
@@ -72,44 +160,33 @@ fn _demo_flat_mc() {
     let mut strategy = TttFlatMC::new().verbose();
 
     let mut state = HashedPosition::new();
-    while TicTacToe::get_winner(&state).is_none() {
+    while !TicTacToe::is_terminal(&state) {
         println!("State:\n{}", state.position);
 
-        if let Some(m) = TttFlatMC::choose_move(&mut strategy, &state) {
-            if let Some(new_state) = TicTacToe::apply(&mut state, m) {
-                state = new_state;
-            }
+        if let Some(m) = strategy.choose_move(&state) {
+            state = TicTacToe::apply(&state, m);
         }
     }
     println!("State:\n{}", state.position);
 }
 
-fn _demo_ttt() {
-    // TODO: these declarations are out of control
-    let mut strategy = TttMCTS::new(MCTSOptions {
-        verbose: true,
-        max_rollout_depth: 100,
-        rollouts_before_expanding: 5,
-    });
-
-    let mut state = HashedPosition::new();
-    while TicTacToe::get_winner(&state).is_none() {
-        if let Some(m) = strategy.choose_move(&state) {
-            if let Some(new_state) = TicTacToe::apply(&mut state, m) {
-                state = new_state;
-            } else {
-                unreachable!();
-            }
-        } else {
-            unreachable!();
-        }
-    }
-}
-
 fn main() {
+    color_backtrace::install();
+    pretty_env_logger::init();
+
+    demo_nim();
+    demo_mcts();
+
     println!("\nTicTacToe");
     println!("--------------------------");
     battle_ttt(&BattleConfig {
+        num_samples: 1000,
+        samples_per_move: vec![10, 100, 1000, 2000],
+    });
+
+    println!("\nNim MCTS");
+    println!("--------------------------");
+    battle_nim_mcts(&BattleConfig {
         num_samples: 1000,
         samples_per_move: vec![10, 100, 1000, 2000],
     });
