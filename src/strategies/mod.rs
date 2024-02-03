@@ -17,7 +17,7 @@ pub trait Strategy<G: Game> {
 
     /// Set the maximum depth to evaluate (instead of the timeout).
     /// This can be changed between calls to choose_move.
-    fn set_max_depth(&mut self, _depth: u8) {}
+    fn set_max_depth(&mut self, _depth: u32) {}
 
     /// Set the maximum depth to evaluate (instead of the timeout).
     /// This can be changed between calls to choose_move.

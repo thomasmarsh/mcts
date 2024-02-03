@@ -166,6 +166,7 @@ pub struct Config {
     pub rollouts_before_expanding: u32,
     pub max_rollouts: u32,
     pub verbose: bool,
+    pub max_simulate_depth: u32,
 }
 
 impl Config {
@@ -179,6 +180,7 @@ impl Config {
             rollouts_before_expanding: 5,
             max_rollouts: u32::MAX,
             verbose: false,
+            max_simulate_depth: 20000,
         }
     }
 }
@@ -367,6 +369,7 @@ impl<G: Game> TreeSearch<G> {
         }
 
         let mut state = state.clone();
+        let mut depth = 0;
         loop {
             if G::is_terminal(&state) {
                 return G::get_reward(init_state, &state);
@@ -378,6 +381,10 @@ impl<G: Game> TreeSearch<G> {
                     .unwrap()
                     .clone(),
             );
+            depth += 1;
+            if depth >= self.config.max_simulate_depth {
+                return 0;
+            }
         }
     }
 
@@ -429,22 +436,23 @@ impl<G: Game> TreeSearch<G> {
         Timer::new()
     }
 
-    fn set_timeout(&mut self, timeout: std::time::Duration) {
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) {
         self.config.max_rollouts = u32::MAX;
         self.config.max_time = timeout;
     }
 
-    fn set_max_rollouts(&mut self, max_rollouts: u32) {
+    pub fn set_max_rollouts(&mut self, max_rollouts: u32) {
         self.config.max_time = Duration::default();
         self.config.max_rollouts = max_rollouts;
     }
 
-    fn set_max_depth(&mut self, depth: u8) {
+    pub fn set_max_depth(&mut self, depth: u32) {
+        self.config.max_simulate_depth = depth;
         // Set some arbitrary function of rollouts.
-        self.config.max_time = Duration::default();
-        self.config.max_rollouts = 5u32
-            .saturating_pow(depth as u32)
-            .saturating_mul(self.config.rollouts_before_expanding + 1);
+        // self.config.max_time = Duration::default();
+        // self.config.max_rollouts = 5u32
+        // .saturating_pow(depth as u32)
+        // .saturating_mul(self.config.rollouts_before_expanding + 1);
     }
 
     fn verbose_summary(&self, root_id: NodeRef, timer: &Timer, state: &G::S) {
@@ -518,7 +526,7 @@ impl<G: Game> Strategy<G> for TreeSearchStrategy<G> {
         self.0.set_timeout(timeout)
     }
 
-    fn set_max_depth(&mut self, depth: u8) {
+    fn set_max_depth(&mut self, depth: u32) {
         self.0.set_max_depth(depth);
     }
 
