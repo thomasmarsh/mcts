@@ -518,7 +518,11 @@ impl<G: Game> Strategy<G> for TreeSearchStrategy<G> {
     }
 
     fn principal_variation(&self) -> Vec<G::M> {
-        unimplemented!();
+        self.0
+            .pv
+            .iter()
+            .map(|node_id| self.0.arena.get(*node_id).action.clone())
+            .collect::<Vec<_>>()
     }
 }
 
