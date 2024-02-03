@@ -14,7 +14,6 @@ name = "mcts"
 path = "demo/main.rs"
 
 [dependencies]
-indextree = "4.6.0"
 nimlib = "0.1.1"
 rand = "0.8.5"
 rayon = "1.8.1"

@@ -174,8 +174,8 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
-    demo_nim();
     demo_mcts();
+    demo_nim();
 
     println!("\nTicTacToe");
     println!("--------------------------");

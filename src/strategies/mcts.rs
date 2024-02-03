@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::strategies::index::{Index, NodeRef};
+use crate::strategies::arena::{Arena, NodeRef};
 use crate::util::random_best;
 use rand::seq::SliceRandom;
 use rand_core::SeedableRng;
@@ -88,11 +88,18 @@ pub(crate) struct Node<M> {
     q: i32,
     n: u32,
     action: M,
-    unexplored: Vec<M>,
     is_terminal: bool, // ignored when ExpansionStrategy is Full
+    unexplored: Vec<M>,
+    children: Vec<NodeRef>,
 }
 // rave_q: HashMap<M, i32>,
 // rave_n: HashMap<M, u32>,
+
+impl<M> std::fmt::Debug for Node<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Node {{ q: {}, n: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.is_terminal, self.children, self.unexplored.len())
+    }
+}
 
 impl<M> Node<M> {
     #[inline]
@@ -103,6 +110,7 @@ impl<M> Node<M> {
             action: m,
             unexplored,
             is_terminal: false,
+            children: Vec::new(),
             // rave_q: HashMap::new(),
             // rave_n: HashMap::new(),
         }
@@ -163,7 +171,7 @@ impl Config {
 }
 
 pub struct TreeSearch<G: Game> {
-    index: Index<G::M>,
+    arena: Arena<G::M>,
     pv: Vec<NodeRef>,
     timeout: Arc<AtomicBool>,
     pub config: Config,
@@ -184,7 +192,7 @@ impl<G: Game> Default for TreeSearch<G> {
 impl<G: Game> TreeSearch<G> {
     pub fn new() -> Self {
         Self {
-            index: Index::new(),
+            arena: Arena::new(),
             pv: Vec::new(),
             timeout: Arc::new(AtomicBool::new(false)),
             config: Config::new(),
@@ -193,16 +201,19 @@ impl<G: Game> TreeSearch<G> {
 
     #[inline]
     fn best_child(&mut self, strategy: SelectionStrategy, node_id: NodeRef) -> Option<NodeRef> {
-        let parent = self.index.get(node_id);
-        let children = self.index.children(node_id).collect::<Vec<_>>();
-        if children.is_empty() {
+        let parent = self.arena.get(node_id);
+        if parent.children.is_empty() {
             return None;
         }
-        random_best(children.as_slice(), &mut self.config.rng, |child_id| {
-            let child = self.index.get(*child_id);
-            strategy.score(parent, child)
-        })
-        .cloned()
+        random_best(
+            parent.children.as_slice(),
+            &mut self.config.rng,
+            |child_id| {
+                let child = self.arena.get(*child_id);
+                strategy.score(parent, child)
+            },
+        )
+        .copied()
     }
 
     fn set_pv(&mut self, mut node_id: NodeRef) {
@@ -227,15 +238,16 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn select(&mut self, mut node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
+    fn select(&mut self, mut node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S, Vec<NodeRef>) {
+        let mut stack = vec![node_id];
         let mut state = init_state.clone();
         loop {
-            let node = self.index.get(node_id);
+            let node = self.arena.get(node_id);
             if self.is_terminal(node, &state) {
-                return (node_id, state.clone());
+                return (node_id, state.clone(), stack);
             }
 
-            let is_leaf = self.index.children(node_id).count() == 0;
+            let is_leaf = node.children.is_empty();
             let needs_rollouts = node.n <= self.config.rollouts_before_expanding;
             let unexplored =
                 self.config.expansion_strategy.is_single() && !node.unexplored.is_empty();
@@ -243,47 +255,67 @@ impl<G: Game> TreeSearch<G> {
             if is_leaf || needs_rollouts || unexplored {
                 if !needs_rollouts {
                     // Perform expansion
-                    return self.expand(node_id, &state);
+                    return self.expand(node_id, &state, stack);
                 } else {
-                    return (node_id, state.clone());
+                    return (node_id, state.clone(), stack);
                 }
             } else {
                 let child_id = self
                     .best_child(self.config.tree_selection_strategy, node_id)
                     .unwrap();
-                let child = self.index.get(child_id);
+                let child = self.arena.get(child_id);
                 state = G::apply(&state, child.action.clone());
+
                 node_id = child_id;
+                stack.push(node_id);
             }
         }
     }
 
     #[inline]
-    fn expand(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
+    fn expand(
+        &mut self,
+        node_id: NodeRef,
+        init_state: &G::S,
+        stack: Vec<NodeRef>,
+    ) -> (NodeRef, G::S, Vec<NodeRef>) {
         debug_assert!(!G::is_terminal(init_state));
         match self.config.expansion_strategy {
-            ExpansionStrategy::Single => self.expand_single(node_id, init_state),
-            ExpansionStrategy::Full => self.expand_full(node_id, init_state),
+            ExpansionStrategy::Single => self.expand_single(node_id, init_state, stack),
+            ExpansionStrategy::Full => self.expand_full(node_id, init_state, stack),
         }
     }
 
-    fn expand_full(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
-        let child_id = G::gen_moves(init_state)
+    fn expand_full(
+        &mut self,
+        node_id: NodeRef,
+        init_state: &G::S,
+        mut stack: Vec<NodeRef>,
+    ) -> (NodeRef, G::S, Vec<NodeRef>) {
+        let moves = G::gen_moves(init_state)
             .iter()
-            .map(|m| {
-                self.index
-                    .add_child(node_id, Node::new(m.clone(), Vec::new()))
-            })
-            .collect::<Vec<_>>()[0];
+            .map(|m| self.arena.add(Node::new(m.clone(), Vec::new())))
+            .collect::<Vec<_>>();
 
-        let child = self.index.get(child_id);
+        let node = self.arena.get_mut(node_id);
+        assert!(node.children.is_empty());
+        node.children.extend(moves);
+
+        let child_id = node.children[0];
+        let child = self.arena.get(child_id);
         let state = G::apply(init_state, child.action.clone());
-        (child_id, state)
+        stack.push(child_id);
+        (child_id, state, stack)
     }
 
-    fn expand_single(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
-        let node = self.index.get_mut(node_id);
-        if let Some(action) = node.unexplored.pop() {
+    fn expand_single(
+        &mut self,
+        node_id: NodeRef,
+        init_state: &G::S,
+        mut stack: Vec<NodeRef>,
+    ) -> (NodeRef, G::S, Vec<NodeRef>) {
+        let node = self.arena.get(node_id);
+        if let Some(action) = node.unexplored.last() {
             let state = G::apply(init_state, action.clone());
             let is_terminal = G::is_terminal(&state);
             let moves = if is_terminal {
@@ -291,32 +323,33 @@ impl<G: Game> TreeSearch<G> {
             } else {
                 G::gen_moves(&state)
             };
-            let child_id = self.index.add_child(
-                node_id,
-                Node {
-                    is_terminal,
-                    ..Node::new(action.clone(), moves)
-                },
-            );
-            (child_id, state)
+            let child_id = self.arena.add(Node {
+                is_terminal,
+                ..Node::new(action.clone(), moves)
+            });
+            stack.push(child_id);
+            let node = self.arena.get_mut(node_id);
+            node.children.push(child_id);
+            node.unexplored.pop();
+            (child_id, state, stack)
         } else {
             error!("No unexplored actions left for this node: {:?}", node_id);
             error!("state: {:?}", init_state);
-            (node_id, init_state.clone())
+            (node_id, init_state.clone(), stack)
         }
     }
 
     fn step(&mut self, root_id: NodeRef, init_state: &G::S) {
-        let (node_id, state) = self.select(root_id, init_state);
+        let (node_id, state, stack) = self.select(root_id, init_state);
         let reward = self.simulate(node_id, init_state, &state);
-        self.backpropagate(node_id, reward);
+        self.backpropagate(stack, reward);
     }
 
     // TODO: move to a separate Rollout<S: Strategy>, noting that RAVE needs the PV
     #[inline]
     fn simulate(&mut self, node_id: NodeRef, init_state: &G::S, state: &G::S) -> i32 {
-        debug_assert!(self.index.children(node_id).count() == 0);
-        if self.index.get(node_id).is_terminal {
+        debug_assert!(self.arena.get(node_id).children.is_empty());
+        if self.arena.get(node_id).is_terminal {
             return G::get_reward(init_state, state);
         }
 
@@ -335,28 +368,30 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn backpropagate(&mut self, node_id: NodeRef, reward: i32 /* actions */) {
-        let mut node_id_opt = Some(node_id);
-        loop {
-            match node_id_opt {
-                None => break,
-                Some(node_id) => {
-                    let node = self.index.get_mut(node_id);
-                    node.update(reward /*, actions */);
-                    node_id_opt = self.index.get_parent(node_id);
-                }
-            }
+    fn backpropagate(
+        &mut self,
+        // node_id: NodeRef,
+        mut stack: Vec<NodeRef>,
+        reward: i32, /* actions */
+    ) {
+        while let Some(node_id) = stack.pop() {
+            let node = self.arena.get_mut(node_id);
+            node.update(reward /*, actions */);
         }
     }
+
     pub fn choose_move(&mut self, state: &G::S) -> Option<G::M> {
+        if G::is_terminal(state) {
+            return None;
+        }
         let timer = self.start_timer();
-        self.index.clear();
+        self.arena.clear();
         let root = match self.config.expansion_strategy {
             ExpansionStrategy::Full => Node::new(G::empty_move(state), Vec::new()),
             ExpansionStrategy::Single => Node::new(G::empty_move(state), G::gen_moves(state)),
         };
 
-        let root_id = self.index.add(root);
+        let root_id = self.arena.add(root);
 
         for _ in 0..self.config.max_rollouts {
             if self.timeout.load(Ordering::Relaxed) {
@@ -368,7 +403,7 @@ impl<G: Game> TreeSearch<G> {
         self.set_pv(root_id);
         self.verbose_summary(root_id, &timer, state);
         self.best_child(self.config.action_selection_strategy, root_id)
-            .map(|child_id| self.index.get(child_id).action.clone())
+            .map(|child_id| self.arena.get(child_id).action.clone())
     }
 
     fn start_timer(&mut self) -> Timer {
@@ -404,7 +439,7 @@ impl<G: Game> TreeSearch<G> {
             return;
         }
         let num_threads = 1;
-        let root = self.index.get(root_id);
+        let root = self.arena.get(root_id);
         let total_visits = root.n;
         let rate = total_visits as f64 / num_threads as f64 / timer.elapsed().as_secs_f64();
         eprintln!(
@@ -413,10 +448,12 @@ impl<G: Game> TreeSearch<G> {
         );
         // Sort moves by visit count, largest first.
         let mut children = self
-            .index
-            .children(root_id)
+            .arena
+            .get(root_id)
+            .children
+            .iter()
             .map(|node_id| {
-                let node = self.index.get(node_id);
+                let node = self.arena.get(*node_id);
                 (node.n, node.q, node.action.clone())
             })
             .collect::<Vec<_>>();
@@ -439,7 +476,7 @@ impl<G: Game> TreeSearch<G> {
         let pv_m = self
             .pv
             .iter()
-            .map(|node_id| self.index.get(*node_id).action.clone())
+            .map(|node_id| self.arena.get(*node_id).action.clone())
             .collect::<Vec<_>>();
         eprintln!("Principal variation: {}", pv_string::<G>(&pv_m[..], state));
     }
@@ -496,13 +533,13 @@ mod tests {
         let mut t: TreeSearch<TicTacToe> = Default::default();
 
         let init_node = Node::new(Move(0), Vec::new());
-        let init_node_id = t.index.add(init_node);
+        let init_node_id = t.arena.add(init_node);
 
         let init_state = HashedPosition::new();
 
         //  Check if the function returns the correct node when the node has not
         // been expanded yet
-        let (node_id, state) = t.select(init_node_id, &init_state);
+        let (node_id, state, _) = t.select(init_node_id, &init_state);
         assert_eq!(node_id, init_node_id);
         assert_eq!(state, init_state);
     }
@@ -512,13 +549,13 @@ mod tests {
         let mut t: TreeSearch<TicTacToe> = Default::default();
 
         let node = Node::new(Move(0), Vec::new());
-        let node_id = t.index.add(node);
+        let node_id = t.arena.add(node);
 
         let state = HashedPosition::new();
 
         //  Check if the function returns the correct node when the node has not
         // been expanded yet
-        let (selected_id, selected_state) = t.select(node_id, &state);
+        let (selected_id, selected_state, _) = t.select(node_id, &state);
         assert_eq!(node_id, selected_id);
         assert_eq!(state, selected_state);
     }

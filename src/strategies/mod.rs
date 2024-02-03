@@ -1,5 +1,5 @@
+mod arena;
 pub mod flat_mc;
-mod index;
 pub mod mcts;
 pub mod random;
 pub mod sync_util;
