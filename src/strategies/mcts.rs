@@ -14,7 +14,7 @@ use crate::util::{move_id, pv_string};
 
 use super::sync_util::timeout_signal;
 
-// use log::trace;
+use log::{error, trace};
 
 type Rng = rand_xorshift::XorShiftRng;
 
@@ -26,23 +26,32 @@ pub enum SelectionStrategy {
     /// Select the most visited root child.
     Robust,
 
-    ///
-    UCT(f32), // theoretically sqrt(2)
+    // theoretically sqrt(2)
+    UCT(f32),
+    // Select the child which has both the highest visit count and the highest
+    // value. If there is no max-robust child at the moment, it is better to
+    // continue the search until a max-robust child is found rather than
+    // returning a child with a low visit count
+    // MaxRobust,
 
-              // Select the child which has both the highest visit count and the highest
-              // value. If there is no max-robust child at the moment, it is better to
-              // continue the search until a max-robust child is found rather than
-              // returning a child with a low visit count
-              // MaxRobust,
-
-              // Select the child which maximizes a lower confidence bound.
-              // SecureChild(f32)
+    // Select the child which maximizes a lower confidence bound.
+    // SecureChild(f32)
 }
 
-#[derive(PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum ExpansionStrategy {
-    Single, // TODO: currently broken
+    Single,
     Full,
+}
+
+impl ExpansionStrategy {
+    fn is_single(self) -> bool {
+        self == Self::Single
+    }
+
+    fn is_full(self) -> bool {
+        self == Self::Full
+    }
 }
 
 #[inline]
@@ -78,26 +87,32 @@ impl SelectionStrategy {
     }
 }
 
+// TODO: I'd like to make this more type safe with an enum
 pub(crate) struct Node<M> {
     q: i32,
     n: u32,
     action: M,
     unexplored: Vec<M>,
-    // rave_q: HashMap<M, i32>,
-    // rave_n: HashMap<M, u32>,
+    is_terminal: bool, // ignored when ExpansionStrategy is Full
 }
+// rave_q: HashMap<M, i32>,
+// rave_n: HashMap<M, u32>,
 
 impl<M> Node<M> {
+    #[inline]
     fn new(m: M, unexplored: Vec<M>) -> Self {
         Node {
             q: 0,
             n: 0,
             action: m,
             unexplored,
+            is_terminal: false,
             // rave_q: HashMap::new(),
             // rave_n: HashMap::new(),
         }
     }
+
+    #[inline]
     fn update(&mut self, reward: i32 /* actions: &[M]*/) {
         self.q += reward;
         self.n += 1;
@@ -161,13 +176,14 @@ impl<G: Game> TreeSearch<G> {
             timeout: Arc::new(AtomicBool::new(false)),
             action_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
             tree_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
-            expansion_strategy: ExpansionStrategy::Single,
+            expansion_strategy: ExpansionStrategy::Full, // Single,
             rollouts_before_expanding: 5,
             max_rollouts: u32::MAX,
             verbose: false,
         }
     }
 
+    #[inline]
     fn best_child(&mut self, strategy: SelectionStrategy, node_id: NodeRef) -> Option<NodeRef> {
         let parent = self.index.get(node_id);
         let children = self.index.children(node_id).collect::<Vec<_>>();
@@ -193,23 +209,30 @@ impl<G: Game> TreeSearch<G> {
             }
         }
     }
-    // trace!("node: {:?}", node_id);
-    // trace!("is_leaf: {}", is_leaf);
-    // trace!("should_expand: {}", should_expand);
-    // trace!("unexplored: {}", unexplored);
+
+    #[inline]
+    fn is_terminal(&self, node: &Node<G::M>, state: &G::S) -> bool {
+        if self.expansion_strategy.is_single() {
+            node.is_terminal
+        } else {
+            G::is_terminal(state)
+        }
+    }
 
     fn select(&mut self, mut node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
         let mut state = init_state.clone();
         loop {
-            let is_leaf = self.index.children(node_id).count() == 0;
-            let is_terminal = G::is_terminal(&state);
             let node = self.index.get(node_id);
-            let needs_rollouts = node.n <= self.rollouts_before_expanding;
-            let unexplored =
-                self.expansion_strategy == ExpansionStrategy::Single && !node.unexplored.is_empty();
+            if self.is_terminal(node, &state) {
+                return (node_id, state.clone());
+            }
 
-            if is_leaf || is_terminal || needs_rollouts || unexplored {
-                if !needs_rollouts && !is_terminal {
+            let is_leaf = self.index.children(node_id).count() == 0;
+            let needs_rollouts = node.n <= self.rollouts_before_expanding;
+            let unexplored = self.expansion_strategy.is_single() && !node.unexplored.is_empty();
+
+            if is_leaf || needs_rollouts || unexplored {
+                if !needs_rollouts {
                     // Perform expansion
                     return self.expand(node_id, &state);
                 } else {
@@ -226,7 +249,9 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
+    #[inline]
     fn expand(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
+        debug_assert!(!G::is_terminal(init_state));
         match self.expansion_strategy {
             ExpansionStrategy::Single => self.expand_single(node_id, init_state),
             ExpansionStrategy::Full => self.expand_full(node_id, init_state),
@@ -243,7 +268,6 @@ impl<G: Game> TreeSearch<G> {
             .collect::<Vec<_>>()[0];
 
         let child = self.index.get(child_id);
-        assert!(!G::is_terminal(init_state));
         let state = G::apply(init_state, child.action.clone());
         (child_id, state)
     }
@@ -251,29 +275,39 @@ impl<G: Game> TreeSearch<G> {
     fn expand_single(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
         let node = self.index.get_mut(node_id);
         if let Some(action) = node.unexplored.pop() {
-            let child_id = self
-                .index
-                .add_child(node_id, Node::new(action.clone(), Vec::new()));
-            assert!(!G::is_terminal(init_state));
-            let state = G::apply(init_state, action);
+            let state = G::apply(init_state, action.clone());
+            let is_terminal = G::is_terminal(&state);
+            let moves = if is_terminal {
+                vec![]
+            } else {
+                G::gen_moves(&state)
+            };
+            let child_id = self.index.add_child(
+                node_id,
+                Node {
+                    is_terminal,
+                    ..Node::new(action.clone(), moves)
+                },
+            );
             (child_id, state)
         } else {
+            error!("No unexplored actions left for this node: {:?}", node_id);
+            error!("state: {:?}", init_state);
             (node_id, init_state.clone())
-            //panic!("No unexplored actions left for this node");
         }
     }
 
     fn step(&mut self, root_id: NodeRef, init_state: &G::S) {
         let (node_id, state) = self.select(root_id, init_state);
-        // trace!("selected: {:?}", node_id);
         let reward = self.simulate(node_id, init_state, &state);
         self.backpropagate(node_id, reward);
     }
 
     // TODO: move to a separate Rollout<S: Strategy>, noting that RAVE needs the PV
+    #[inline]
     fn simulate(&mut self, node_id: NodeRef, init_state: &G::S, state: &G::S) -> i32 {
-        assert!(self.index.children(node_id).count() == 0);
-        if G::is_terminal(state) {
+        debug_assert!(self.index.children(node_id).count() == 0);
+        if self.index.get(node_id).is_terminal {
             return G::get_reward(init_state, state);
         }
 
@@ -311,26 +345,18 @@ impl<G: Game> TreeSearch<G> {
         };
 
         let root_id = self.index.add(root);
-        // trace!("State: {:?}", state);
-        // trace!("moves: {:?}", G::gen_moves(state));
 
-        // trace!("choose_move");
         for _ in 0..self.max_rollouts {
             if self.timeout.load(Ordering::Relaxed) {
-                // trace!("timeout");
                 break;
             }
-            // trace!("step");
             self.step(root_id, state);
         }
 
         self.set_pv(root_id);
         self.verbose_summary(root_id, &timer, state);
-        let best = self
-            .best_child(self.action_selection_strategy, root_id)
-            .map(|child_id| self.index.get(child_id).action.clone());
-        // trace!("best: {:?}", best);
-        best
+        self.best_child(self.action_selection_strategy, root_id)
+            .map(|child_id| self.index.get(child_id).action.clone())
     }
 
     fn start_timer(&mut self) -> Timer {

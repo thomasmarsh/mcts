@@ -10,6 +10,7 @@ const PRIMES: [usize; 16] = [
     81647, 92581, 94693,
 ];
 
+#[inline]
 pub(super) fn random_best<'a, T, F: Fn(&T) -> f32>(
     set: &'a [T],
     rng: &'a mut XorShiftRng,
