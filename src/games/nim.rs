@@ -72,22 +72,6 @@ impl Game for Nim {
         state.game.get_stacks().iter().all(|x| x.0 == 0)
     }
 
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> i32 {
-        let current_player = init_state.turn;
-        if term_state.turn.next() == current_player {
-            1
-        } else {
-            -1
-        }
-    }
-
-    fn empty_move(_state: &Self::S) -> Self::M {
-        NimAction::Place(nimlib::PlaceAction {
-            stack_index: 0,
-            amount: 0,
-        })
-    }
-
     fn winner(state: &Self::S) -> Option<Self::P> {
         if !Self::is_terminal(state) {
             panic!();

@@ -103,6 +103,19 @@ impl<M> std::fmt::Debug for Node<M> {
 
 impl<M> Node<M> {
     #[inline]
+    #[allow(clippy::uninit_assumed_init)]
+    fn new_root(unexplored: Vec<M>) -> Self {
+        Node {
+            q: 0,
+            n: 0,
+            action: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            unexplored,
+            is_terminal: false,
+            children: Vec::new(),
+        }
+    }
+
+    #[inline]
     fn new(m: M, unexplored: Vec<M>) -> Self {
         Node {
             q: 0,
@@ -386,10 +399,10 @@ impl<G: Game> TreeSearch<G> {
         }
         let timer = self.start_timer();
         self.arena.clear();
-        let root = match self.config.expansion_strategy {
-            ExpansionStrategy::Full => Node::new(G::empty_move(state), Vec::new()),
-            ExpansionStrategy::Single => Node::new(G::empty_move(state), G::gen_moves(state)),
-        };
+        let root = Node::new_root(match self.config.expansion_strategy {
+            ExpansionStrategy::Full => Vec::new(),
+            ExpansionStrategy::Single => G::gen_moves(state),
+        });
 
         let root_id = self.arena.add(root);
 

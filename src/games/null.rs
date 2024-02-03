@@ -28,10 +28,6 @@ impl Game for NullGame {
         0
     }
 
-    fn empty_move(_: &()) -> Option<Never> {
-        None
-    }
-
     fn notation(_: &(), _: &Option<Never>) -> String {
         unreachable!();
     }

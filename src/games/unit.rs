@@ -34,8 +34,6 @@ impl Game for UnitGame {
         1
     }
 
-    fn empty_move(_state: &Self::S) -> Self::M {}
-
     fn notation(_: &Self::S, _: &Self::M) -> String {
         "()".to_string()
     }

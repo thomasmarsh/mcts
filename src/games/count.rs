@@ -35,10 +35,6 @@ impl Game for CountingGame {
         state.0 == 100
     }
 
-    fn empty_move(_: &Self::S) -> Self::M {
-        Move::Add
-    }
-
     fn notation(_: &Self::S, m: &Self::M) -> String {
         format!("{:?}", m).to_string()
     }

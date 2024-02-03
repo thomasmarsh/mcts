@@ -153,10 +153,6 @@ impl Game for TicTacToe {
         state.position.winner().is_some() || state.position.board.iter().all(|x| x.is_some())
     }
 
-    fn empty_move(_state: &Self::S) -> Self::M {
-        Move(0)
-    }
-
     fn winner(state: &Self::S) -> Option<Self::P> {
         if !Self::is_terminal(state) {
             unreachable!();

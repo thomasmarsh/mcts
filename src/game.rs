@@ -39,11 +39,6 @@ pub trait Game: Sized {
         }
     }
 
-    /// This is just a placeholder move and not used so that the implementation
-    /// may avoid introducing an Option<M> throught the code base. Where it is
-    /// used is semantically the move last played.
-    fn empty_move(state: &Self::S) -> Self::M;
-
     /// A user visible display representation for the move
     fn notation(state: &Self::S, m: &Self::M) -> String;
 
