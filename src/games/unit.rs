@@ -55,7 +55,7 @@ mod tests {
     #[test]
     pub fn test_unit() {
         let mut search: TreeSearch<UnitGame> = TreeSearch::new();
-        search.max_rollouts = 10;
+        search.config.max_rollouts = 10;
         let state = Unit::default();
         let m1 = search.choose_move(&state);
         assert!(m1 == Some(()));

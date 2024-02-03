@@ -52,7 +52,7 @@ mod tests {
     pub fn test_null() {
         println!("test_null");
         let mut search: TreeSearch<NullGame> = TreeSearch::new();
-        search.max_rollouts = 10;
+        search.config.max_rollouts = 10;
         let m = search.choose_move(&());
         assert!(m.is_none());
     }

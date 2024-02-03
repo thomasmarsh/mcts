@@ -48,10 +48,6 @@ impl ExpansionStrategy {
     fn is_single(self) -> bool {
         self == Self::Single
     }
-
-    fn is_full(self) -> bool {
-        self == Self::Full
-    }
 }
 
 #[inline]
@@ -140,11 +136,8 @@ impl Timer {
     }
 }
 
-pub struct TreeSearch<G: Game> {
-    index: Index<G::M>,
-    rng: Rng,
-    pv: Vec<NodeRef>,
-    timeout: Arc<AtomicBool>,
+pub struct Config {
+    pub rng: Rng,
     pub max_time: Duration,
     pub action_selection_strategy: SelectionStrategy,
     pub tree_selection_strategy: SelectionStrategy,
@@ -152,6 +145,28 @@ pub struct TreeSearch<G: Game> {
     pub rollouts_before_expanding: u32,
     pub max_rollouts: u32,
     pub verbose: bool,
+}
+
+impl Config {
+    fn new() -> Self {
+        Self {
+            rng: Rng::from_entropy(),
+            max_time: Duration::from_secs(5),
+            action_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
+            tree_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
+            expansion_strategy: ExpansionStrategy::Single,
+            rollouts_before_expanding: 5,
+            max_rollouts: u32::MAX,
+            verbose: false,
+        }
+    }
+}
+
+pub struct TreeSearch<G: Game> {
+    index: Index<G::M>,
+    pv: Vec<NodeRef>,
+    timeout: Arc<AtomicBool>,
+    pub config: Config,
 }
 
 impl<G: Game> std::fmt::Debug for TreeSearch<G> {
@@ -170,16 +185,9 @@ impl<G: Game> TreeSearch<G> {
     pub fn new() -> Self {
         Self {
             index: Index::new(),
-            rng: Rng::from_entropy(),
             pv: Vec::new(),
-            max_time: Duration::from_secs(5),
             timeout: Arc::new(AtomicBool::new(false)),
-            action_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
-            tree_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
-            expansion_strategy: ExpansionStrategy::Full, // Single,
-            rollouts_before_expanding: 5,
-            max_rollouts: u32::MAX,
-            verbose: false,
+            config: Config::new(),
         }
     }
 
@@ -190,7 +198,7 @@ impl<G: Game> TreeSearch<G> {
         if children.is_empty() {
             return None;
         }
-        random_best(children.as_slice(), &mut self.rng, |child_id| {
+        random_best(children.as_slice(), &mut self.config.rng, |child_id| {
             let child = self.index.get(*child_id);
             strategy.score(parent, child)
         })
@@ -200,7 +208,7 @@ impl<G: Game> TreeSearch<G> {
     fn set_pv(&mut self, mut node_id: NodeRef) {
         self.pv.clear();
         loop {
-            match self.best_child(self.action_selection_strategy, node_id) {
+            match self.best_child(self.config.action_selection_strategy, node_id) {
                 None => break,
                 Some(child_id) => {
                     self.pv.push(child_id);
@@ -212,7 +220,7 @@ impl<G: Game> TreeSearch<G> {
 
     #[inline]
     fn is_terminal(&self, node: &Node<G::M>, state: &G::S) -> bool {
-        if self.expansion_strategy.is_single() {
+        if self.config.expansion_strategy.is_single() {
             node.is_terminal
         } else {
             G::is_terminal(state)
@@ -228,8 +236,9 @@ impl<G: Game> TreeSearch<G> {
             }
 
             let is_leaf = self.index.children(node_id).count() == 0;
-            let needs_rollouts = node.n <= self.rollouts_before_expanding;
-            let unexplored = self.expansion_strategy.is_single() && !node.unexplored.is_empty();
+            let needs_rollouts = node.n <= self.config.rollouts_before_expanding;
+            let unexplored =
+                self.config.expansion_strategy.is_single() && !node.unexplored.is_empty();
 
             if is_leaf || needs_rollouts || unexplored {
                 if !needs_rollouts {
@@ -240,7 +249,7 @@ impl<G: Game> TreeSearch<G> {
                 }
             } else {
                 let child_id = self
-                    .best_child(self.tree_selection_strategy, node_id)
+                    .best_child(self.config.tree_selection_strategy, node_id)
                     .unwrap();
                 let child = self.index.get(child_id);
                 state = G::apply(&state, child.action.clone());
@@ -252,7 +261,7 @@ impl<G: Game> TreeSearch<G> {
     #[inline]
     fn expand(&mut self, node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S) {
         debug_assert!(!G::is_terminal(init_state));
-        match self.expansion_strategy {
+        match self.config.expansion_strategy {
             ExpansionStrategy::Single => self.expand_single(node_id, init_state),
             ExpansionStrategy::Full => self.expand_full(node_id, init_state),
         }
@@ -318,7 +327,10 @@ impl<G: Game> TreeSearch<G> {
             }
             state = G::apply(
                 &state,
-                G::gen_moves(&state).choose(&mut self.rng).unwrap().clone(),
+                G::gen_moves(&state)
+                    .choose(&mut self.config.rng)
+                    .unwrap()
+                    .clone(),
             );
         }
     }
@@ -339,14 +351,14 @@ impl<G: Game> TreeSearch<G> {
     pub fn choose_move(&mut self, state: &G::S) -> Option<G::M> {
         let timer = self.start_timer();
         self.index.clear();
-        let root = match self.expansion_strategy {
+        let root = match self.config.expansion_strategy {
             ExpansionStrategy::Full => Node::new(G::empty_move(state), Vec::new()),
             ExpansionStrategy::Single => Node::new(G::empty_move(state), G::gen_moves(state)),
         };
 
         let root_id = self.index.add(root);
 
-        for _ in 0..self.max_rollouts {
+        for _ in 0..self.config.max_rollouts {
             if self.timeout.load(Ordering::Relaxed) {
                 break;
             }
@@ -355,40 +367,40 @@ impl<G: Game> TreeSearch<G> {
 
         self.set_pv(root_id);
         self.verbose_summary(root_id, &timer, state);
-        self.best_child(self.action_selection_strategy, root_id)
+        self.best_child(self.config.action_selection_strategy, root_id)
             .map(|child_id| self.index.get(child_id).action.clone())
     }
 
     fn start_timer(&mut self) -> Timer {
-        self.timeout = if self.max_time == Duration::default() {
+        self.timeout = if self.config.max_time == Duration::default() {
             Arc::new(AtomicBool::new(false))
         } else {
-            timeout_signal(self.max_time)
+            timeout_signal(self.config.max_time)
         };
 
         Timer::new()
     }
 
     fn set_timeout(&mut self, timeout: std::time::Duration) {
-        self.max_rollouts = u32::MAX;
-        self.max_time = timeout;
+        self.config.max_rollouts = u32::MAX;
+        self.config.max_time = timeout;
     }
 
     fn set_max_rollouts(&mut self, max_rollouts: u32) {
-        self.max_time = Duration::default();
-        self.max_rollouts = max_rollouts;
+        self.config.max_time = Duration::default();
+        self.config.max_rollouts = max_rollouts;
     }
 
     fn set_max_depth(&mut self, depth: u8) {
         // Set some arbitrary function of rollouts.
-        self.max_time = Duration::default();
-        self.max_rollouts = 5u32
+        self.config.max_time = Duration::default();
+        self.config.max_rollouts = 5u32
             .saturating_pow(depth as u32)
-            .saturating_mul(self.rollouts_before_expanding + 1);
+            .saturating_mul(self.config.rollouts_before_expanding + 1);
     }
 
     fn verbose_summary(&self, root_id: NodeRef, timer: &Timer, state: &G::S) {
-        if !self.verbose {
+        if !self.config.verbose {
             return;
         }
         let num_threads = 1;
@@ -465,7 +477,7 @@ impl<G: Game> Strategy<G> for TreeSearchStrategy<G> {
     }
 
     fn set_verbose(&mut self) {
-        self.0.verbose = true;
+        self.0.config.verbose = true;
     }
 
     fn principal_variation(&self) -> Vec<G::M> {
