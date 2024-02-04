@@ -1,3 +1,6 @@
+# Plan
+
+This is a plan of what to research, not necessarily an implementation plan.
 
 ### Foundational
 - [x] random (baseline)
@@ -54,8 +57,8 @@
 - [ ] N-gram selection technique (NST) -- generalization of MAST
 
 ### AMAF Variants
-- [ ] AMAF
-- [ ] RAVE
+- [x] AMAF
+- [x] RAVE
 - [ ] GRAVE
 - [ ] Permuation AMAF
 - [ ] alpha AMAF
