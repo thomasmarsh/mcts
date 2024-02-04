@@ -57,14 +57,14 @@ fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
     let n = child.n as f64 + epsilon;
     let total = parent.n as f64;
 
-    let uct_value = (w / n + c * (2. * total.ln() / n).sqrt()) as f64;
+    let uct_value = w / n + c * (2. * total.ln() / n).sqrt();
 
     let rave_value = if child.n_rave > 0 {
         child.q_rave as f64 / child.n_rave as f64
     } else {
         0.0
     };
-    let beta = rave_param / (rave_param + n as f64);
+    let beta = rave_param / (rave_param + n);
 
     (1. - beta) * uct_value + beta * rave_value
 }
@@ -106,7 +106,7 @@ pub(crate) struct Node<M> {
 
 impl<M> std::fmt::Debug for Node<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Node {{ q: {}, n: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.is_terminal, self.children, self.unexplored.len())
+        write!(f, "Node {{ q: {}, n: {}, q_rave: {}, n_rave: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.q_rave, self.n_rave, self.is_terminal, self.children, self.unexplored.len())
     }
 }
 
@@ -137,8 +137,6 @@ impl<M> Node<M> {
             unexplored,
             is_terminal: false,
             children: Vec::new(),
-            // rave_q: HashMap::new(),
-            // rave_n: HashMap::new(),
         }
     }
 
@@ -399,6 +397,30 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
+    fn update_rave(&mut self, node_id: NodeRef, reward: i32, history: &Vec<G::M>) {
+        if !self.config.use_rave {
+            return;
+        }
+
+        let child_ms = self
+            .arena
+            .get(node_id)
+            .children
+            .iter()
+            .map(|child_id| (*child_id, self.arena.get(*child_id).action.clone()))
+            .collect::<Vec<_>>();
+
+        for m in history {
+            for (child_id, child_m) in &child_ms {
+                if *m == *child_m {
+                    let child = self.arena.get_mut(*child_id);
+                    child.q_rave += reward;
+                    child.n_rave += 1;
+                }
+            }
+        }
+    }
+
     fn backpropagate(
         &mut self,
         // node_id: NodeRef,
@@ -407,27 +429,9 @@ impl<G: Game> TreeSearch<G> {
         history: Vec<G::M>,
     ) {
         while let Some(node_id) = stack.pop() {
-            {
-                let node = self.arena.get_mut(node_id);
-                node.update(reward);
-            }
-            let child_ms = self
-                .arena
-                .get(node_id)
-                .children
-                .iter()
-                .map(|child_id| (*child_id, self.arena.get(*child_id).action.clone()))
-                .collect::<Vec<_>>();
-
-            for m in &history {
-                for (child_id, child_m) in &child_ms {
-                    if *m == *child_m {
-                        let child = self.arena.get_mut(*child_id);
-                        child.q_rave += reward;
-                        child.n_rave += 1;
-                    }
-                }
-            }
+            let node = self.arena.get_mut(node_id);
+            node.update(reward);
+            self.update_rave(node_id, reward, &history);
         }
     }
 

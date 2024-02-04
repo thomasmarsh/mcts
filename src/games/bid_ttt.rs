@@ -202,10 +202,6 @@ impl BiddingTicTacToe {
             }
         }
 
-        // if self.gen_moves().is_empty() {
-        // return Some(self.player_to_move().next());
-        // }
-
         None
     }
 
@@ -274,7 +270,6 @@ impl Game for BiddingTicTacToe {
 
     fn is_terminal(state: &Self::S) -> bool {
         state.winner().is_some() || state.board.iter().all(|x| x.is_some())
-        //|| state.gen_moves().is_empty()
     }
 
     fn winner(state: &Self::S) -> Option<Self::P> {
@@ -308,8 +303,7 @@ impl Game for BiddingTicTacToe {
     }
 }
 
-#[cfg(test)]
-mod tests {
+pub mod demo {
     use super::*;
     use crate::strategies::flat_mc::FlatMonteCarloStrategy;
     use crate::strategies::mcts::TreeSearch;
@@ -318,15 +312,16 @@ mod tests {
     type AgentMCTS = TreeSearch<BiddingTicTacToe>;
     type AgentFlat = FlatMonteCarloStrategy<BiddingTicTacToe>;
 
-    #[ignore]
-    #[test]
-    fn test_bid_ttt() {
+    pub fn play() {
         // NOTE: Flat MC is terrible at this game.
         let mut flat = AgentFlat::new().verbose();
-        flat.set_samples_per_move(1000);
+        flat.set_samples_per_move(10);
+        flat.set_max_depth(100);
 
         let mut mcts = AgentMCTS::new();
         mcts.config.verbose = true;
+        mcts.set_max_rollouts(100);
+        assert!(mcts.config.max_rollouts == 100);
 
         let mut state = BiddingTicTacToe::new();
         while !BiddingTicTacToe::is_terminal(&state) {

@@ -11,6 +11,8 @@ use std::marker::PhantomData;
 // Maybe rename NaiveMonteCarlo
 pub struct FlatMonteCarloStrategy<G: Game> {
     samples_per_move: u32, // TODO: also suppose samples per state
+    max_rollout_depth: u32,
+    max_rollouts: u32,
     verbose: bool,
     game_type: PhantomData<G>,
 }
@@ -19,6 +21,8 @@ impl<G: Game> FlatMonteCarloStrategy<G> {
     pub fn new() -> Self {
         Self {
             samples_per_move: 100,
+            max_rollout_depth: 100,
+            max_rollouts: u32::MAX,
             verbose: false,
             game_type: PhantomData,
         }
@@ -69,6 +73,14 @@ where
 }
 
 impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
+    fn set_max_depth(&mut self, depth: u32) {
+        self.max_rollout_depth = depth;
+    }
+
+    fn set_max_rollouts(&mut self, max_rollouts: u32) {
+        self.max_rollouts = max_rollouts;
+    }
+
     fn choose_move(&mut self, state: &<G as Game>::S) -> Option<<G as Game>::M>
     where
         <G as Game>::S: Clone,
@@ -79,8 +91,6 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
 
         let mut rng = XorShiftRng::from_entropy();
 
-        let max_rollout_depth = 100;
-
         let moves = G::gen_moves(state);
         let wins = moves
             .iter()
@@ -90,7 +100,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
                 tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
-                    let result = rollout::<G>(max_rollout_depth, &tmp, &mut rng);
+                    let result = rollout::<G>(self.max_rollout_depth, &tmp, &mut rng);
                     if result > 0 {
                         n += 1;
                     }

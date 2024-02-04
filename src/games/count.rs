@@ -46,28 +46,25 @@ impl Game for CountingGame {
     fn player_to_move(_: &Self::S) -> Self::P {}
 }
 
-#[cfg(test)]
-mod tests {
+pub mod demo {
     use super::*;
-    use crate::strategies::{mcts::TreeSearch, mcts::TreeSearchStrategy, Strategy};
+    use crate::strategies::mcts::TreeSearch;
 
     type CountTS = TreeSearch<CountingGame>;
 
-    #[ignore]
-    #[test]
-    fn test_count() {
+    pub fn play() {
         let mut state = Count(0);
         let mut mcts = CountTS::new();
         mcts.config.verbose = true;
-
         mcts.set_max_depth(255);
+        mcts.set_max_rollouts(10000);
 
-        while !CountingGame::is_terminal(&state) {
-            println!("state: {:?}", state);
-            let m = mcts.choose_move(&state).unwrap();
-            println!("move: {:?}", m);
-            state = CountingGame::apply(&state, m);
-        }
+        // while !CountingGame::is_terminal(&state) {
+        println!("state: {:?}", state);
+        let m = mcts.choose_move(&state).unwrap();
+        println!("move: {:?}", m);
+        state = CountingGame::apply(&state, m);
+        // }
         println!("state: {:?}", state);
     }
 }
