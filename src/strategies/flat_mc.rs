@@ -104,7 +104,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             w.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             eprintln!("Flat MC:");
             for (n, m) in w.into_iter().take(10) {
-                let pct = 100. * (n as f32 / self.samples_per_move as f32);
+                let pct = 100. * (n as f64 / self.samples_per_move as f64);
                 let notation = G::notation(state, &m);
                 eprintln!(
                     "- {:0.2}% {} ({}/{} wins)",
@@ -113,6 +113,6 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             }
         }
 
-        random_best(wins.as_slice(), &mut rng, |x| x.0 as f32).map(|x| x.1.clone())
+        random_best(wins.as_slice(), &mut rng, |x| x.0 as f64).map(|x| x.1.clone())
     }
 }

@@ -27,7 +27,7 @@ pub enum SelectionStrategy {
     Robust,
 
     // theoretically sqrt(2)
-    UCT(f32),
+    UCT(f64, f64),
     // Select the child which has both the highest visit count and the highest
     // value. If there is no max-robust child at the moment, it is better to
     // continue the search until a max-robust child is found rather than
@@ -35,7 +35,7 @@ pub enum SelectionStrategy {
     // MaxRobust,
 
     // Select the child which maximizes a lower confidence bound.
-    // SecureChild(f32)
+    // SecureChild(f64)
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -51,13 +51,22 @@ impl ExpansionStrategy {
 }
 
 #[inline]
-fn uct<M>(c: f32, parent: &Node<M>, child: &Node<M>) -> f32 {
+fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
     let epsilon = 1e-6;
-    let w = child.q as f32;
-    let n = child.n as f32 + epsilon;
-    let total = parent.n as f32;
+    let w = child.q as f64;
+    let n = child.n as f64 + epsilon;
+    let total = parent.n as f64;
 
-    w / n + c * (2. * total.ln() / n).sqrt()
+    let uct_value = (w / n + c * (2. * total.ln() / n).sqrt()) as f64;
+
+    let rave_value = if child.n_rave > 0 {
+        child.q_rave as f64 / child.n_rave as f64
+    } else {
+        0.0
+    };
+    let beta = rave_param / (rave_param + n as f64);
+
+    (1. - beta) * uct_value + beta * rave_value
 }
 
 /*
@@ -65,20 +74,20 @@ use statrs::distribution::{Normal, Univariate};
 
 
 #[inline]
-fn secure_child(confidence_level: f32, child: &Node<M>) -> f32 {
-    let mean = child.q as f32 / child.n as f32;
-    let std_dev = (child.q_squared as f32 / child.n as f32 - mean.powi(2)).sqrt();
+fn secure_child(confidence_level: f64, child: &Node<M>) -> f64 {
+    let mean = child.q as f64 / child.n as f64;
+    let std_dev = (child.q_squared as f64 / child.n as f64 - mean.powi(2)).sqrt();
     let normal = Normal::new(mean, std_dev).unwrap();
     normal.inverse_cdf(confidence_level)
 }
 */
 
 impl SelectionStrategy {
-    fn score<M>(&self, parent: &Node<M>, child: &Node<M>) -> f32 {
+    fn score<M>(&self, parent: &Node<M>, child: &Node<M>) -> f64 {
         match self {
-            SelectionStrategy::Max => child.q as f32,
-            SelectionStrategy::Robust => child.n as f32,
-            SelectionStrategy::UCT(c) => uct(*c, parent, child),
+            SelectionStrategy::Max => child.q as f64,
+            SelectionStrategy::Robust => child.n as f64,
+            SelectionStrategy::UCT(c, rave_param) => uct(*c, *rave_param, parent, child),
         }
     }
 }
@@ -87,13 +96,13 @@ impl SelectionStrategy {
 pub(crate) struct Node<M> {
     q: i32,
     n: u32,
+    q_rave: i32,
+    n_rave: u32,
     action: M,
     is_terminal: bool, // ignored when ExpansionStrategy is Full
     unexplored: Vec<M>,
     children: Vec<NodeRef>,
 }
-// rave_q: HashMap<M, i32>,
-// rave_n: HashMap<M, u32>,
 
 impl<M> std::fmt::Debug for Node<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -108,6 +117,8 @@ impl<M> Node<M> {
         Node {
             q: 0,
             n: 0,
+            q_rave: 0,
+            n_rave: 0,
             action: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             unexplored,
             is_terminal: false,
@@ -120,6 +131,8 @@ impl<M> Node<M> {
         Node {
             q: 0,
             n: 0,
+            q_rave: 0,
+            n_rave: 0,
             action: m,
             unexplored,
             is_terminal: false,
@@ -130,14 +143,9 @@ impl<M> Node<M> {
     }
 
     #[inline]
-    fn update(&mut self, reward: i32 /* actions: &[M]*/) {
+    fn update(&mut self, reward: i32) {
         self.q += reward;
         self.n += 1;
-
-        // for action in actions {
-        //     *self.rave_q.entry(action.clone()).or_insert(0) += reward;
-        //     *self.rave_n.entry(action.clone()).or_insert(0) += 1;
-        // }
     }
 }
 
@@ -160,6 +168,7 @@ impl Timer {
 pub struct Config {
     pub rng: Rng,
     pub max_time: Duration,
+    pub use_rave: bool,
     pub action_selection_strategy: SelectionStrategy,
     pub tree_selection_strategy: SelectionStrategy,
     pub expansion_strategy: ExpansionStrategy,
@@ -174,8 +183,9 @@ impl Config {
         Self {
             rng: Rng::from_entropy(),
             max_time: Duration::from_secs(5),
-            action_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
-            tree_selection_strategy: SelectionStrategy::UCT(2.0_f32.sqrt()),
+            use_rave: true,
+            action_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
+            tree_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
             expansion_strategy: ExpansionStrategy::Single,
             rollouts_before_expanding: 5,
             max_rollouts: u32::MAX,
@@ -357,34 +367,34 @@ impl<G: Game> TreeSearch<G> {
 
     fn step(&mut self, root_id: NodeRef, init_state: &G::S) {
         let (node_id, state, stack) = self.select(root_id, init_state);
-        let reward = self.simulate(node_id, init_state, &state);
-        self.backpropagate(stack, reward);
+        let (reward, history) = self.simulate(node_id, init_state, &state);
+        self.backpropagate(stack, reward, history);
     }
 
     // TODO: move to a separate Rollout<S: Strategy>, noting that RAVE needs the PV
     #[inline]
-    fn simulate(&mut self, node_id: NodeRef, init_state: &G::S, state: &G::S) -> i32 {
+    fn simulate(&mut self, node_id: NodeRef, init_state: &G::S, state: &G::S) -> (i32, Vec<G::M>) {
         debug_assert!(self.arena.get(node_id).children.is_empty());
         if self.arena.get(node_id).is_terminal {
-            return G::get_reward(init_state, state);
+            return (G::get_reward(init_state, state), Vec::new());
         }
 
         let mut state = state.clone();
         let mut depth = 0;
+        let mut history = Vec::new();
         loop {
             if G::is_terminal(&state) {
-                return G::get_reward(init_state, &state);
+                return (G::get_reward(init_state, &state), history);
             }
-            state = G::apply(
-                &state,
-                G::gen_moves(&state)
-                    .choose(&mut self.config.rng)
-                    .unwrap()
-                    .clone(),
-            );
+            let m = G::gen_moves(&state)
+                .choose(&mut self.config.rng)
+                .unwrap()
+                .clone();
+            self.config.use_rave.then(|| history.push(m.clone()));
+            state = G::apply(&state, m);
             depth += 1;
             if depth >= self.config.max_simulate_depth {
-                return 0;
+                return (0, history);
             }
         }
     }
@@ -393,11 +403,31 @@ impl<G: Game> TreeSearch<G> {
         &mut self,
         // node_id: NodeRef,
         mut stack: Vec<NodeRef>,
-        reward: i32, /* actions */
+        reward: i32,
+        history: Vec<G::M>,
     ) {
         while let Some(node_id) = stack.pop() {
-            let node = self.arena.get_mut(node_id);
-            node.update(reward /*, actions */);
+            {
+                let node = self.arena.get_mut(node_id);
+                node.update(reward);
+            }
+            let child_ms = self
+                .arena
+                .get(node_id)
+                .children
+                .iter()
+                .map(|child_id| (*child_id, self.arena.get(*child_id).action.clone()))
+                .collect::<Vec<_>>();
+
+            for m in &history {
+                for (child_id, child_m) in &child_ms {
+                    if *m == *child_m {
+                        let child = self.arena.get_mut(*child_id);
+                        child.q_rave += reward;
+                        child.n_rave += 1;
+                    }
+                }
+            }
         }
     }
 

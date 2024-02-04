@@ -2,7 +2,7 @@ use crate::game::Game;
 
 // A trivial game with no moves
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Never {}
 
 struct NullGame;

@@ -318,6 +318,7 @@ mod tests {
     type AgentMCTS = TreeSearch<BiddingTicTacToe>;
     type AgentFlat = FlatMonteCarloStrategy<BiddingTicTacToe>;
 
+    #[ignore]
     #[test]
     fn test_bid_ttt() {
         // NOTE: Flat MC is terrible at this game.

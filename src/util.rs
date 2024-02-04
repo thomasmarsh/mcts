@@ -11,7 +11,7 @@ const PRIMES: [usize; 16] = [
 ];
 
 #[inline]
-pub(super) fn random_best<'a, T, F: Fn(&T) -> f32>(
+pub(super) fn random_best<'a, T, F: Fn(&T) -> f64>(
     set: &'a [T],
     rng: &'a mut XorShiftRng,
     score_fn: F,
@@ -27,7 +27,7 @@ pub(super) fn random_best<'a, T, F: Fn(&T) -> f32>(
     let mut i = r / PRIMES.len();
     let stride = PRIMES[r % PRIMES.len()];
 
-    let mut best_score = f32::NEG_INFINITY;
+    let mut best_score = f64::NEG_INFINITY;
     let mut best = None;
     for _ in 0..n {
         let score = score_fn(&set[i]);

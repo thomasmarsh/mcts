@@ -18,7 +18,7 @@ impl Piece {
 
 const BOARD_LEN: usize = 9;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Move(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -176,7 +176,7 @@ impl Game for TicTacToe {
             if Some(Self::player_to_move(init_state)) == winner {
                 1
             } else {
-                -100
+                -1 // 00
             }
         } else {
             0
