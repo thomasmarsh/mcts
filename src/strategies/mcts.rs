@@ -330,6 +330,7 @@ impl<G: Game> TreeSearch<G> {
         mut stack: Vec<NodeRef>,
     ) -> (NodeRef, G::S, Vec<NodeRef>) {
         let node = self.arena.get(node_id);
+        debug_assert!(!node.unexplored.is_empty());
         if let Some(action) = node.unexplored.last() {
             let state = G::apply(init_state, action.clone());
             let is_terminal = G::is_terminal(&state);
@@ -448,11 +449,6 @@ impl<G: Game> TreeSearch<G> {
 
     pub fn set_max_depth(&mut self, depth: u32) {
         self.config.max_simulate_depth = depth;
-        // Set some arbitrary function of rollouts.
-        // self.config.max_time = Duration::default();
-        // self.config.max_rollouts = 5u32
-        // .saturating_pow(depth as u32)
-        // .saturating_mul(self.config.rollouts_before_expanding + 1);
     }
 
     fn verbose_summary(&self, root_id: NodeRef, timer: &Timer, state: &G::S) {

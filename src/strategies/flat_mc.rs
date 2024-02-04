@@ -103,7 +103,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             let mut w = wins.clone();
             w.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             eprintln!("Flat MC:");
-            for (n, m) in w {
+            for (n, m) in w.into_iter().take(10) {
                 let pct = 100. * (n as f32 / self.samples_per_move as f32);
                 let notation = G::notation(state, &m);
                 eprintln!(
