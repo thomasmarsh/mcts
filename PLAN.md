@@ -1,43 +1,48 @@
-# Plan
+# Research Plan
 
-This is a plan of what to research, not necessarily an implementation plan.
+This is a plan of what to research, not necessarily an implementation plan. Some 
+things implemented (perhaps only partially) are checked off on the list.
 
 ### Foundational
-- [x] random (baseline)
-- [x] flat mc (baseline)
-- [x] vanilla mcts
-- [x] max time
+- [x] Random (baseline)
+- [x] Flat mc (baseline)
+- [x] Vanilla mcts
+- [x] Max time
 
 ### Benchmarking
-- [x] battle royale
-- [ ] round robin
-- [ ] generalize benchmarking (TBD)
+- [x] Battle royale
+- [ ] Round robin
+- [ ] Generalize benchmarking (TBD)
 
 ### Selection
+- [x] Max Child
+- [x] Robust Child
+- [ ] Max-Robust Child
+- [ ] Secure Child
 - [x] UCT
 - [ ] UCB1-tuned
 - [ ] Bayesian UCT
 - [ ] EXP3 (probabilistic, partial observable games, simultaneous moves)
-- [ ] hierarchical optimistic optimization for trees
-- [ ] first play urgency
-- [ ] move groups
-- [ ] decisive moves / anti-decisive moves
-- [ ] progressive bias (add domain specific knowledge as a heuristic - a kind of prior)
-- [ ] MTCS-Solver (used for end game solvers)
+- [ ] Hierarchical optimistic optimization for trees
+- [ ] First play urgency
+- [ ] Move groups
+- [ ] Decisive moves / anti-decisive moves
+- [ ] Progressive bias
+- [ ] MTCS-Solver
 - [ ] PUCT
 - [ ] Monte Carlo paraphrase generation (MCPG)
 
 ### Simulation << MORE ADVANTAGEOUS THAN SELECTION
 - [ ] Rule based simulation policy
-- [ ] contextual monte carlo search
+- [ ] Contextual Monte Carlo search
 - [ ] Fill the board
-- [ ] Move Average Sampling Technique (MAST)
+- [x] Move Average Sampling Technique (MAST)
 - [ ] Predicate-Average Sampling Technique (PAST)
 - [ ] Feature Average Sampling Technique (FAST)
 - [ ] Use History Heuristics
 - [ ] Use of evaluation functions
 - [ ] Simulation balancing 
-- [ ] last good reply (LGR)
+- [ ] Last good reply (LGR)
 - [ ] Patterns
 
 ### Tuning
@@ -45,39 +50,37 @@ This is a plan of what to research, not necessarily an implementation plan.
 - [ ] Online Tuning
 - [ ] Search seeding (seed nodes with artificial runs)
 
-
 ### Move pruning
 - [ ] Progressive unpruning / widing
 - [ ] Absolute and Relative pruning
 - [ ] Pruning with domain knowledge
 
 ### Others
-- [ ] history heuristic
+- [ ] History heuristic
 - [ ] Progressive History
-- [ ] N-gram selection technique (NST) -- generalization of MAST
+- [ ] N-gram selection technique (NST)
 
 ### AMAF Variants
 - [x] AMAF
 - [x] RAVE
 - [ ] GRAVE
+- [ ] HRAVE
 - [ ] Permuation AMAF
-- [ ] alpha AMAF
+- [ ] Alpha AMAF
 - [ ] Same-first AMAF
 - [ ] Cutoff AMAF
-- [ ] Killer rave
-- [ ] Pool rave
+- [ ] Killer RAVE
+- [ ] PoolRAVE 
 
 ### Structural
 - [ ] Iterative widening
 - [ ] Meta-MCTS (rollout should just be a function that takes a strategy as an arg)
 - [ ] Infrastructure to easily expose game to MuZero
-- [ ] n-players (n > 2)
+- [ ] N-players (n > 2)
 
 ### DAG
 - [ ] Support for transposition tables
 - [ ] UCB for DAGs
-- [ ] Alternative approaches (TBD)
-
 
 ### Paralellization
 - [ ] Virtual loss
