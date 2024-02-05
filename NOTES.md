@@ -185,6 +185,14 @@ moves can be more efficient but requires support from the `Game` interface. Such
 a diffing strategy, might discard move ordering, which would eliminate the later
 possibility of NST or similar techniques.
 
+## End Game Performance
+
+Vanilla MCTS is characterized by excessively pondering in the face of obvious wins.
+Decisive move and anti-decisive moves have general application, but would also help here.
+Additionally, MCTS-Solver is a great technique for the end game that can make the
+final moves more efficient. One technique is to apply MCST-Solver when available moves
+drops below a threshold.
+
 ## AMAF / RAVE
 
 As a preliminary implementation of RAVE, I do not isolate points by player.
