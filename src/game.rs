@@ -2,7 +2,7 @@ use log::trace;
 
 pub trait Game: Sized {
     type S: Clone + std::fmt::Debug; // TODO: remove debugs here
-    type M: Clone + PartialEq + std::fmt::Debug;
+    type M: Clone + std::hash::Hash + Eq + std::fmt::Debug;
     type P: PartialEq + std::fmt::Debug;
 
     /// Apply the move/action, producing a new state.

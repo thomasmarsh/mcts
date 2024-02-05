@@ -3,7 +3,7 @@ use crate::game::Game;
 #[derive(Clone, Debug)]
 pub struct Count(pub i32);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Move {
     Add,
     Sub,

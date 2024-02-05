@@ -1,7 +1,7 @@
 use crate::game::Game;
 use std::fmt::Display;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Piece {
     X,
     O,
@@ -18,7 +18,7 @@ impl Piece {
 
 const BOARD_LEN: usize = 9;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Move(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Debug)]

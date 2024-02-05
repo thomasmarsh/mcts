@@ -53,13 +53,13 @@ pub enum Phase {
     PlayO,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TiebreakChoice {
     Use,
     Keep,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Move {
     Bid(u16),
     Place(u8),

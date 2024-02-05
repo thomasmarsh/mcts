@@ -1,3 +1,5 @@
+use rand::seq::SliceRandom;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -5,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use crate::strategies::arena::{Arena, NodeRef};
 use crate::util::random_best;
-use rand::seq::SliceRandom;
 use rand_core::SeedableRng;
 
 use crate::game::Game;
@@ -14,7 +15,7 @@ use crate::util::{move_id, pv_string};
 
 use super::sync_util::timeout_signal;
 
-use log::{error, trace};
+use log::error;
 
 type Rng = rand_xorshift::XorShiftRng;
 
@@ -26,7 +27,7 @@ pub enum SelectionStrategy {
     /// Select the most visited root child.
     Robust,
 
-    // theoretically sqrt(2)
+    // theoretically c = sqrt(2), rave_param = 3000.0
     UCT(f64, f64),
     // Select the child which has both the highest visit count and the highest
     // value. If there is no max-robust child at the moment, it is better to
@@ -59,8 +60,8 @@ fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
 
     let uct_value = w / n + c * (2. * total.ln() / n).sqrt();
 
-    let rave_value = if child.n_rave > 0 {
-        child.q_rave as f64 / child.n_rave as f64
+    let rave_value = if child.n_amaf > 0 {
+        child.q_amaf as f64 / child.n_amaf as f64
     } else {
         0.0
     };
@@ -82,6 +83,44 @@ fn secure_child(confidence_level: f64, child: &Node<M>) -> f64 {
 }
 */
 
+// Move Average Sampling Technique (incorrect placeholder implementation)
+#[derive(Debug)]
+struct Mast<M: std::hash::Hash + Eq + Clone> {
+    action_value: HashMap<M, i32>,
+    action_count: HashMap<M, u32>,
+}
+
+impl<M: std::hash::Hash + Eq + Clone> Mast<M> {
+    fn new() -> Self {
+        Self {
+            action_value: HashMap::default(),
+            action_count: HashMap::default(),
+        }
+    }
+
+    fn update(&mut self, actions: &[M]) {
+        actions.iter().for_each(|action| {
+            let value = self.get_value(&action.clone()).round() as i32;
+            self.action_count
+                .entry(action.clone())
+                .and_modify(|x| *x += 1)
+                .or_insert(1);
+            self.action_value
+                .entry(action.clone())
+                .and_modify(|x| *x += value)
+                .or_insert(0);
+        });
+    }
+
+    fn get_value(&self, action: &M) -> f64 {
+        if !self.action_count.contains_key(action) || self.action_count[action] == 0 {
+            0.
+        } else {
+            self.action_value[action] as f64 / self.action_count[action] as f64
+        }
+    }
+}
+
 impl SelectionStrategy {
     fn score<M>(&self, parent: &Node<M>, child: &Node<M>) -> f64 {
         match self {
@@ -96,8 +135,8 @@ impl SelectionStrategy {
 pub(crate) struct Node<M> {
     q: i32,
     n: u32,
-    q_rave: i32,
-    n_rave: u32,
+    q_amaf: i32,
+    n_amaf: u32,
     action: M,
     is_terminal: bool, // ignored when ExpansionStrategy is Full
     unexplored: Vec<M>,
@@ -106,7 +145,7 @@ pub(crate) struct Node<M> {
 
 impl<M> std::fmt::Debug for Node<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Node {{ q: {}, n: {}, q_rave: {}, n_rave: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.q_rave, self.n_rave, self.is_terminal, self.children, self.unexplored.len())
+        write!(f, "Node {{ q: {}, n: {}, q_amaf: {}, n_amaf: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.q_amaf, self.n_amaf, self.is_terminal, self.children, self.unexplored.len())
     }
 }
 
@@ -117,8 +156,8 @@ impl<M> Node<M> {
         Node {
             q: 0,
             n: 0,
-            q_rave: 0,
-            n_rave: 0,
+            q_amaf: 0,
+            n_amaf: 0,
             action: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             unexplored,
             is_terminal: false,
@@ -131,8 +170,8 @@ impl<M> Node<M> {
         Node {
             q: 0,
             n: 0,
-            q_rave: 0,
-            n_rave: 0,
+            q_amaf: 0,
+            n_amaf: 0,
             action: m,
             unexplored,
             is_terminal: false,
@@ -167,6 +206,7 @@ pub struct Config {
     pub rng: Rng,
     pub max_time: Duration,
     pub use_rave: bool,
+    pub use_mast: bool,
     pub action_selection_strategy: SelectionStrategy,
     pub tree_selection_strategy: SelectionStrategy,
     pub expansion_strategy: ExpansionStrategy,
@@ -182,6 +222,7 @@ impl Config {
             rng: Rng::from_entropy(),
             max_time: Duration::from_secs(5),
             use_rave: true,
+            use_mast: true,
             action_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
             tree_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
             expansion_strategy: ExpansionStrategy::Single,
@@ -197,6 +238,7 @@ pub struct TreeSearch<G: Game> {
     arena: Arena<G::M>,
     pv: Vec<NodeRef>,
     timeout: Arc<AtomicBool>,
+    mast: Mast<G::M>,
     pub config: Config,
 }
 
@@ -218,6 +260,7 @@ impl<G: Game> TreeSearch<G> {
             arena: Arena::new(),
             pv: Vec::new(),
             timeout: Arc::new(AtomicBool::new(false)),
+            mast: Mast::new(),
             config: Config::new(),
         }
     }
@@ -384,10 +427,22 @@ impl<G: Game> TreeSearch<G> {
             if G::is_terminal(&state) {
                 return (G::get_reward(init_state, &state), history);
             }
-            let m = G::gen_moves(&state)
-                .choose(&mut self.config.rng)
+
+            let m = if self.config.use_mast {
+                random_best(
+                    G::gen_moves(&state).as_slice(),
+                    &mut self.config.rng,
+                    |action| self.mast.get_value(action),
+                )
+                .cloned()
                 .unwrap()
-                .clone();
+            } else {
+                G::gen_moves(&state)
+                    .choose(&mut self.config.rng)
+                    .unwrap()
+                    .clone()
+            };
+
             self.config.use_rave.then(|| history.push(m.clone()));
             state = G::apply(&state, m);
             depth += 1;
@@ -402,21 +457,19 @@ impl<G: Game> TreeSearch<G> {
             return;
         }
 
-        let child_ms = self
+        let child_ms: HashMap<_, _> = self
             .arena
             .get(node_id)
             .children
             .iter()
-            .map(|child_id| (*child_id, self.arena.get(*child_id).action.clone()))
-            .collect::<Vec<_>>();
+            .map(|child_id| (self.arena.get(*child_id).action.clone(), *child_id))
+            .collect();
 
         for m in history {
-            for (child_id, child_m) in &child_ms {
-                if *m == *child_m {
-                    let child = self.arena.get_mut(*child_id);
-                    child.q_rave += reward;
-                    child.n_rave += 1;
-                }
+            if let Some(child_id) = child_ms.get(m) {
+                let child = self.arena.get_mut(*child_id);
+                child.q_amaf += reward;
+                child.n_amaf += 1;
             }
         }
     }
@@ -428,9 +481,11 @@ impl<G: Game> TreeSearch<G> {
         reward: i32,
         history: Vec<G::M>,
     ) {
+        self.mast.update(&history);
         while let Some(node_id) = stack.pop() {
             let node = self.arena.get_mut(node_id);
             node.update(reward);
+            self.mast.update(&[node.action.clone()]);
             self.update_rave(node_id, reward, &history);
         }
     }
@@ -497,6 +552,8 @@ impl<G: Game> TreeSearch<G> {
             "Using {} threads, did {} total simulations with {:.1} rollouts/sec/core",
             num_threads, total_visits, rate
         );
+
+        eprintln!("{:?}", self.mast);
         // Sort moves by visit count, largest first.
         let mut children = self
             .arena
