@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use mcts::game::Game;
-use mcts::games;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
-use mcts::strategies::mcts::TreeSearchStrategy;
+use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Strategy;
 use mcts::util::battle_royale;
@@ -16,8 +15,8 @@ use mcts::games::ttt::*;
 type TttFlatMC = FlatMonteCarloStrategy<TicTacToe>;
 type NimFlatMC = FlatMonteCarloStrategy<Nim>;
 
-type NimMCTS = TreeSearchStrategy<Nim>;
-type TttMCTS = TreeSearchStrategy<TicTacToe>;
+type NimMCTS = TreeSearch<Nim>;
+type TttMCTS = TreeSearch<TicTacToe>;
 
 fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     let (win_a, win_b, draw) = results.iter().fold((0, 0, 0), |(a, b, c), x| match x {

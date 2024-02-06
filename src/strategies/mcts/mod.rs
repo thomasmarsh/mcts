@@ -534,46 +534,31 @@ impl<G: Game> TreeSearch<G> {
     }
 }
 
-pub struct TreeSearchStrategy<G: Game>(TreeSearch<G>);
-
-impl<G: Game> Default for TreeSearchStrategy<G> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<G: Game> TreeSearchStrategy<G> {
-    pub fn new() -> Self {
-        Self(TreeSearch::new())
-    }
-}
-
-impl<G: Game> Strategy<G> for TreeSearchStrategy<G> {
+impl<G: Game> Strategy<G> for TreeSearch<G> {
     fn choose_move(&mut self, state: &G::S) -> Option<G::M> {
-        self.0.choose_move(state)
+        self.choose_move(state)
     }
 
     fn set_timeout(&mut self, timeout: std::time::Duration) {
-        self.0.set_timeout(timeout)
+        self.set_timeout(timeout)
     }
 
     fn set_max_depth(&mut self, depth: u32) {
-        self.0.set_max_depth(depth);
+        self.set_max_depth(depth);
     }
 
     fn set_max_rollouts(&mut self, max_rollouts: u32) {
-        self.0.set_max_rollouts(max_rollouts);
+        self.set_max_rollouts(max_rollouts);
     }
 
     fn set_verbose(&mut self) {
-        self.0.config.verbose = true;
+        self.config.verbose = true;
     }
 
     fn principal_variation(&self) -> Vec<G::M> {
-        self.0
-            .pv
+        self.pv
             .iter()
-            .map(|node_id| self.0.arena.get(*node_id).action.clone())
+            .map(|node_id| self.arena.get(*node_id).action.clone())
             .collect::<Vec<_>>()
     }
 }
