@@ -6,8 +6,12 @@
 //
 //  - bidding for the right to move can be applied to any N player game, so
 //    could be even used as a Game decorator.
+//
+//  - Because we don't want the hidden bids to affect the rollouts we have
+//    to determinize the results.
 
 use crate::game::Game;
+use rand::Rng;
 use std::{cmp::Ordering, fmt::Display};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -255,6 +259,20 @@ impl Game for BiddingTicTacToe {
         tmp
     }
 
+    fn determinize(state: &Self::S, rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
+        let mut state = *state;
+        // Not sure this is enough to hide all the bid information. I think
+        // we introduce bias by not modeling simultaneous moves directly. But
+        // this is a start.
+        if state.phase == Phase::BidO {
+            let chips = state.x.chips + state.x.bid;
+            let n = rng.gen_range(0..=chips);
+            state.x.chips = n;
+            state.x.bid = chips - n;
+        }
+        state
+    }
+
     fn notation(_state: &Self::S, m: &Self::M) -> String {
         match m {
             Move::Bid(n) => format!("Bid({})", n),
@@ -315,13 +333,12 @@ pub mod demo {
     pub fn play() {
         // NOTE: Flat MC is terrible at this game.
         let mut flat = AgentFlat::new().verbose();
-        flat.set_samples_per_move(10);
-        flat.set_max_depth(100);
+        flat.set_samples_per_move(10000);
+        flat.set_max_depth(1000);
 
         let mut mcts = AgentMCTS::new();
         mcts.config.verbose = true;
-        mcts.set_max_rollouts(100);
-        assert!(mcts.config.max_rollouts == 100);
+        mcts.set_max_rollouts(10000);
 
         let mut state = BiddingTicTacToe::new();
         while !BiddingTicTacToe::is_terminal(&state) {
