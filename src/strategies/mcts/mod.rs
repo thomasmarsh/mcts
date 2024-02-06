@@ -1,3 +1,6 @@
+mod arena;
+pub mod config;
+
 use log::error;
 use rand::seq::SliceRandom;
 use rustc_hash::FxHashMap as HashMap;
@@ -6,13 +9,14 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::arena::{Arena, Ref};
-use super::config::*;
 use super::sync_util::{timeout_signal, Timer};
 use super::Strategy;
 use crate::game::{Game, ZobristHash};
 use crate::util::random_best;
 use crate::util::{move_id, pv_string};
+
+use arena::{Arena, Ref};
+use config::*;
 
 #[inline]
 fn uct<G: Game>(c: f64, rave_param: f64, parent: &Node<G>, child: &Node<G>) -> f64 {
