@@ -2,6 +2,7 @@
 name = "mcts"
 version = "0.1.0"
 edition = "2021"
+default-run = "mcts"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,6 +13,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "mcts"
 path = "demo/main.rs"
+
+[[bin]]
+name = "druid"
+path = "demo/druid.rs"
 
 [dependencies]
 nimlib = "0.1.1"

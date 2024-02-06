@@ -88,7 +88,7 @@ use rustc_hash::FxHashSet as HashSet;
 // TODO: trait Game should be implemented with a self parameter or some
 // other way to maintain static context so we don't have to store this here.
 // NOTE: the standard game is 10x10 (and 9x9 for Trilith)
-const SIZE: Size = Size { w: 5, h: 5 };
+const SIZE: Size = Size { w: 8, h: 8 };
 
 #[derive(Clone, Copy, Debug)]
 pub struct Size {
@@ -347,8 +347,7 @@ impl State {
 
         let mut frontier = VecDeque::from(vec![start.index(SIZE.w)]);
 
-        while !frontier.is_empty() {
-            let idx = frontier.pop_front().unwrap();
+        while let Some(idx) = frontier.pop_front() {
             if goal.contains(&idx) {
                 return true;
             }
@@ -369,13 +368,13 @@ impl State {
 
     pub fn connection(&self) -> Option<Player> {
         let (top, bottom): (Vec<Pos>, Vec<Pos>) =
-            (0..SIZE.w).map(|x| (Pos(x, 0), Pos(x, 9))).unzip();
+            (0..SIZE.w).map(|x| (Pos(x, 0), Pos(x, SIZE.h - 1))).unzip();
         if self.check_connection(top, bottom, Player::Black) {
             return Some(Player::Black);
         }
 
         let (left, right): (Vec<Pos>, Vec<Pos>) =
-            (0..SIZE.h).map(|y| (Pos(0, y), Pos(9, y))).unzip();
+            (0..SIZE.h).map(|y| (Pos(0, y), Pos(SIZE.w - 1, y))).unzip();
         if self.check_connection(left, right, Player::White) {
             return Some(Player::White);
         }
@@ -456,43 +455,5 @@ impl Game for Druid {
 
     fn player_to_move(state: &Self::S) -> Self::P {
         state.player
-    }
-}
-
-pub mod demo {
-    use super::*;
-    use crate::strategies::flat_mc::FlatMonteCarloStrategy;
-    use crate::strategies::mcts::TreeSearch;
-    use crate::strategies::Strategy;
-
-    type AgentMCTS = TreeSearch<Druid>;
-    type AgentFlat = FlatMonteCarloStrategy<Druid>;
-
-    pub fn play() {
-        let mut flat = AgentFlat::new().verbose().set_samples_per_move(30000);
-
-        let mut mcts = AgentMCTS::new();
-        mcts.config.verbose = true;
-        mcts.set_max_rollouts(30000);
-        mcts.config.use_mast = false;
-
-        let mut state = State::new();
-        while !Druid::is_terminal(&state) {
-            println!("{}", state);
-            let m = match state.player {
-                Player::Black => mcts.choose_move(&state),
-                Player::White => flat.choose_move(&state),
-            }
-            .unwrap();
-            println!(
-                "move: {:?} {}",
-                Druid::player_to_move(&state),
-                Druid::notation(&state, &m)
-            );
-            state.apply(m);
-        }
-
-        println!("{}", state);
-        println!("winner: {:?}", state.connection());
     }
 }
