@@ -233,3 +233,21 @@ A downside of paralellization is that we lose the ability to target certain
 runtimes such as wasm. A decision would need to be made whether to 1) not
 support those platforms, 2) maintain two versions of the code, 3) support a
 single implementation, perhaps with the help of macros.
+
+
+## Secure Child
+
+Max, Robust, and other child selection techniques. Another one listed was "Secure
+Child". This is what I came up with, but didn't explore fully. Dropping it here so
+it is not lost:
+
+```rust
+use statrs::distribution::{Normal, Univariate};
+
+fn secure_child(confidence_level: f64, child: &Node<M>) -> f64 {
+    let mean = child.q as f64 / child.n as f64;
+    let std_dev = (child.q_squared as f64 / child.n as f64 - mean.powi(2)).sqrt();
+    let normal = Normal::new(mean, std_dev).unwrap();
+    normal.inverse_cdf(confidence_level)
+}
+```

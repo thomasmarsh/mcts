@@ -1,10 +1,8 @@
-use super::mcts::Node;
-
 #[derive(Debug)]
-pub struct Arena<M>(pub Vec<Node<M>>);
+pub struct Arena<T>(pub Vec<T>);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Debug, Hash)]
-pub struct NodeRef(usize);
+pub struct Ref(usize);
 
 // indextree probably gets better cache locality by maintaining a next_sibling:
 // Option<indextree:Node<T>>. Although this introduces branching, it may
@@ -12,7 +10,7 @@ pub struct NodeRef(usize);
 // benchmarking, and is probably a negligible difference. For now, we push the
 // requirement to track the children to the user of the arena.
 
-impl<M: std::fmt::Debug> Arena<M> {
+impl<T: std::fmt::Debug> Arena<T> {
     pub fn new() -> Self {
         Self(Vec::new())
     }
@@ -28,19 +26,19 @@ impl<M: std::fmt::Debug> Arena<M> {
     }
 
     #[inline]
-    pub fn add(&mut self, node: Node<M>) -> NodeRef {
-        let node_id = NodeRef(self.0.len());
-        self.0.push(node);
+    pub fn add(&mut self, value: T) -> Ref {
+        let node_id = Ref(self.0.len());
+        self.0.push(value);
         node_id
     }
 
     #[inline]
-    pub fn get(&self, node_id: NodeRef) -> &Node<M> {
+    pub fn get(&self, node_id: Ref) -> &T {
         self.0.get(node_id.0).unwrap()
     }
 
     #[inline]
-    pub fn get_mut(&mut self, node_id: NodeRef) -> &mut Node<M> {
+    pub fn get_mut(&mut self, node_id: Ref) -> &mut T {
         self.0.get_mut(node_id.0).unwrap()
     }
 }

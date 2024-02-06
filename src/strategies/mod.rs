@@ -1,4 +1,5 @@
 mod arena;
+pub mod config;
 pub mod flat_mc;
 pub mod mcts;
 pub mod random;

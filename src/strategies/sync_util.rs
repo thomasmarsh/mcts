@@ -2,7 +2,29 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{sleep, spawn};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+pub struct Timer {
+    start_time: Instant,
+}
+
+impl Timer {
+    pub fn new() -> Self {
+        Self {
+            start_time: Instant::now(),
+        }
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Instant::now().duration_since(self.start_time)
+    }
+}
+
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub(super) fn timeout_signal(dur: Duration) -> Arc<AtomicBool> {
     // Theoretically we could include an async runtime to do this and use

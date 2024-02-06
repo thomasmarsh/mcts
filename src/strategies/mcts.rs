@@ -1,58 +1,21 @@
+use log::error;
 use rand::seq::SliceRandom;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::FxHashMap as HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::strategies::arena::{Arena, NodeRef};
+use super::arena::{Arena, Ref};
+use super::config::*;
+use super::sync_util::{timeout_signal, Timer};
+use super::Strategy;
+use crate::game::{Game, ZobristHash};
 use crate::util::random_best;
-use rand_core::SeedableRng;
-
-use crate::game::Game;
-use crate::strategies::Strategy;
 use crate::util::{move_id, pv_string};
 
-use super::sync_util::timeout_signal;
-
-use log::error;
-
-type Rng = rand_xorshift::XorShiftRng;
-
-#[derive(Clone, Copy)]
-pub enum SelectionStrategy {
-    /// Select the root child with the highest reward.
-    Max,
-
-    /// Select the most visited root child.
-    Robust,
-
-    // theoretically c = sqrt(2), rave_param = 3000.0
-    UCT(f64, f64),
-    // Select the child which has both the highest visit count and the highest
-    // value. If there is no max-robust child at the moment, it is better to
-    // continue the search until a max-robust child is found rather than
-    // returning a child with a low visit count
-    // MaxRobust,
-
-    // Select the child which maximizes a lower confidence bound.
-    // SecureChild(f64)
-}
-
-#[derive(Copy, Clone, PartialEq)]
-pub enum ExpansionStrategy {
-    Single,
-    Full,
-}
-
-impl ExpansionStrategy {
-    fn is_single(self) -> bool {
-        self == Self::Single
-    }
-}
-
 #[inline]
-fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
+fn uct<G: Game>(c: f64, rave_param: f64, parent: &Node<G>, child: &Node<G>) -> f64 {
     let epsilon = 1e-6;
     let w = child.q as f64;
     let n = child.n as f64 + epsilon;
@@ -60,8 +23,9 @@ fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
 
     let uct_value = w / n + c * (2. * total.ln() / n).sqrt();
 
-    let rave_value = if child.n_amaf > 0 {
-        child.q_amaf as f64 / child.n_amaf as f64
+    // TODO: also use player q/n_player_amaf values
+    let rave_value = if child.n_all_amaf > 0 {
+        child.q_all_amaf as f64 / child.n_all_amaf as f64
     } else {
         0.0
     };
@@ -70,18 +34,25 @@ fn uct<M>(c: f64, rave_param: f64, parent: &Node<M>, child: &Node<M>) -> f64 {
     (1. - beta) * uct_value + beta * rave_value
 }
 
-/*
-use statrs::distribution::{Normal, Univariate};
-
-
-#[inline]
-fn secure_child(confidence_level: f64, child: &Node<M>) -> f64 {
-    let mean = child.q as f64 / child.n as f64;
-    let std_dev = (child.q_squared as f64 / child.n as f64 - mean.powi(2)).sqrt();
-    let normal = Normal::new(mean, std_dev).unwrap();
-    normal.inverse_cdf(confidence_level)
+#[allow(dead_code)]
+#[derive(Debug)]
+struct TranspositionEntry {
+    is_terminal: bool,
+    node_id: Ref, // The first node which encountered this state
+    access_count: u32,
 }
-*/
+
+// TODO: placeholder code
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+struct TranspositionTable(HashMap<ZobristHash, TranspositionEntry>);
+
+#[allow(dead_code)]
+impl TranspositionTable {
+    fn get(&self, hash: ZobristHash) -> Option<&TranspositionEntry> {
+        self.0.get(&hash)
+    }
+}
 
 // Move Average Sampling Technique (incorrect placeholder implementation)
 #[derive(Debug)]
@@ -122,7 +93,7 @@ impl<M: std::hash::Hash + Eq + Clone> Mast<M> {
 }
 
 impl SelectionStrategy {
-    fn score<M>(&self, parent: &Node<M>, child: &Node<M>) -> f64 {
+    fn score<G: Game>(&self, parent: &Node<G>, child: &Node<G>) -> f64 {
         match self {
             SelectionStrategy::Max => child.q as f64,
             SelectionStrategy::Robust => child.n as f64,
@@ -132,32 +103,38 @@ impl SelectionStrategy {
 }
 
 // TODO: I'd like to make this more type safe with an enum
-pub(crate) struct Node<M> {
+pub(crate) struct Node<G: Game> {
     q: i32,
     n: u32,
-    q_amaf: i32,
-    n_amaf: u32,
-    action: M,
+    #[allow(dead_code)]
+    q_player_amaf: HashMap<G::P, i32>,
+    #[allow(dead_code)]
+    n_player_amaf: HashMap<G::P, i32>,
+    q_all_amaf: i32,
+    n_all_amaf: u32,
+    action: G::M,
     is_terminal: bool, // ignored when ExpansionStrategy is Full
-    unexplored: Vec<M>,
-    children: Vec<NodeRef>,
+    unexplored: Vec<G::M>,
+    children: Vec<Ref>,
 }
 
-impl<M> std::fmt::Debug for Node<M> {
+impl<G: Game> std::fmt::Debug for Node<G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Node {{ q: {}, n: {}, q_amaf: {}, n_amaf: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.q_amaf, self.n_amaf, self.is_terminal, self.children, self.unexplored.len())
+        write!(f, "Node {{ q: {}, n: {}, q_amaf: {}, n_amaf: {}, is_terminal: {}, children: {:?}, unexplored: [...] (len={}) action: {{...}} }}", self.q, self.n, self.q_all_amaf, self.n_all_amaf, self.is_terminal, self.children, self.unexplored.len())
     }
 }
 
-impl<M> Node<M> {
+impl<G: Game> Node<G> {
     #[inline]
     #[allow(clippy::uninit_assumed_init)]
-    fn new_root(unexplored: Vec<M>) -> Self {
+    fn new_root(unexplored: Vec<G::M>) -> Self {
         Node {
             q: 0,
             n: 0,
-            q_amaf: 0,
-            n_amaf: 0,
+            q_player_amaf: Default::default(),
+            n_player_amaf: Default::default(),
+            q_all_amaf: 0,
+            n_all_amaf: 0,
             action: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             unexplored,
             is_terminal: false,
@@ -166,12 +143,14 @@ impl<M> Node<M> {
     }
 
     #[inline]
-    fn new(m: M, unexplored: Vec<M>) -> Self {
+    fn new(m: G::M, unexplored: Vec<G::M>) -> Self {
         Node {
             q: 0,
             n: 0,
-            q_amaf: 0,
-            n_amaf: 0,
+            q_player_amaf: Default::default(),
+            n_player_amaf: Default::default(),
+            q_all_amaf: 0,
+            n_all_amaf: 0,
             action: m,
             unexplored,
             is_terminal: false,
@@ -186,59 +165,13 @@ impl<M> Node<M> {
     }
 }
 
-struct Timer {
-    start_time: Instant,
-}
-
-impl Timer {
-    fn new() -> Self {
-        Self {
-            start_time: Instant::now(),
-        }
-    }
-
-    fn elapsed(&self) -> Duration {
-        Instant::now().duration_since(self.start_time)
-    }
-}
-
-pub struct Config {
-    pub rng: Rng,
-    pub max_time: Duration,
-    pub use_rave: bool,
-    pub use_mast: bool,
-    pub action_selection_strategy: SelectionStrategy,
-    pub tree_selection_strategy: SelectionStrategy,
-    pub expansion_strategy: ExpansionStrategy,
-    pub rollouts_before_expanding: u32,
-    pub max_rollouts: u32,
-    pub verbose: bool,
-    pub max_simulate_depth: u32,
-}
-
-impl Config {
-    fn new() -> Self {
-        Self {
-            rng: Rng::from_entropy(),
-            max_time: Duration::from_secs(5),
-            use_rave: true,
-            use_mast: true,
-            action_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
-            tree_selection_strategy: SelectionStrategy::UCT(2.0_f64.sqrt(), 3000.0),
-            expansion_strategy: ExpansionStrategy::Single,
-            rollouts_before_expanding: 5,
-            max_rollouts: u32::MAX,
-            verbose: false,
-            max_simulate_depth: 20000,
-        }
-    }
-}
-
 pub struct TreeSearch<G: Game> {
-    arena: Arena<G::M>,
-    pv: Vec<NodeRef>,
+    arena: Arena<Node<G>>,
+    pv: Vec<Ref>,
     timeout: Arc<AtomicBool>,
     mast: Mast<G::M>,
+    #[allow(dead_code)]
+    transpositions: TranspositionTable,
     pub config: Config,
 }
 
@@ -261,12 +194,13 @@ impl<G: Game> TreeSearch<G> {
             pv: Vec::new(),
             timeout: Arc::new(AtomicBool::new(false)),
             mast: Mast::new(),
+            transpositions: Default::default(),
             config: Config::new(),
         }
     }
 
     #[inline]
-    fn best_child(&mut self, strategy: SelectionStrategy, node_id: NodeRef) -> Option<NodeRef> {
+    fn best_child(&mut self, strategy: SelectionStrategy, node_id: Ref) -> Option<Ref> {
         let parent = self.arena.get(node_id);
         if parent.children.is_empty() {
             return None;
@@ -282,7 +216,7 @@ impl<G: Game> TreeSearch<G> {
         .copied()
     }
 
-    fn set_pv(&mut self, mut node_id: NodeRef) {
+    fn set_pv(&mut self, mut node_id: Ref) {
         self.pv.clear();
         loop {
             match self.best_child(self.config.action_selection_strategy, node_id) {
@@ -296,7 +230,7 @@ impl<G: Game> TreeSearch<G> {
     }
 
     #[inline]
-    fn is_terminal(&self, node: &Node<G::M>, state: &G::S) -> bool {
+    fn is_terminal(&self, node: &Node<G>, state: &G::S) -> bool {
         if self.config.expansion_strategy.is_single() {
             node.is_terminal
         } else {
@@ -304,7 +238,7 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn select(&mut self, mut node_id: NodeRef, init_state: &G::S) -> (NodeRef, G::S, Vec<NodeRef>) {
+    fn select(&mut self, mut node_id: Ref, init_state: &G::S) -> (Ref, G::S, Vec<Ref>) {
         let mut stack = vec![node_id];
         let mut state = init_state.clone();
         loop {
@@ -341,10 +275,10 @@ impl<G: Game> TreeSearch<G> {
     #[inline]
     fn expand(
         &mut self,
-        node_id: NodeRef,
+        node_id: Ref,
         init_state: &G::S,
-        stack: Vec<NodeRef>,
-    ) -> (NodeRef, G::S, Vec<NodeRef>) {
+        stack: Vec<Ref>,
+    ) -> (Ref, G::S, Vec<Ref>) {
         debug_assert!(!G::is_terminal(init_state));
         match self.config.expansion_strategy {
             ExpansionStrategy::Single => self.expand_single(node_id, init_state, stack),
@@ -354,10 +288,10 @@ impl<G: Game> TreeSearch<G> {
 
     fn expand_full(
         &mut self,
-        node_id: NodeRef,
+        node_id: Ref,
         init_state: &G::S,
-        mut stack: Vec<NodeRef>,
-    ) -> (NodeRef, G::S, Vec<NodeRef>) {
+        mut stack: Vec<Ref>,
+    ) -> (Ref, G::S, Vec<Ref>) {
         let moves = G::gen_moves(init_state)
             .iter()
             .map(|m| self.arena.add(Node::new(m.clone(), Vec::new())))
@@ -376,10 +310,10 @@ impl<G: Game> TreeSearch<G> {
 
     fn expand_single(
         &mut self,
-        node_id: NodeRef,
+        node_id: Ref,
         init_state: &G::S,
-        mut stack: Vec<NodeRef>,
-    ) -> (NodeRef, G::S, Vec<NodeRef>) {
+        mut stack: Vec<Ref>,
+    ) -> (Ref, G::S, Vec<Ref>) {
         let node = self.arena.get(node_id);
         debug_assert!(!node.unexplored.is_empty());
         if let Some(action) = node.unexplored.last() {
@@ -406,7 +340,7 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn step(&mut self, root_id: NodeRef, init_state: &G::S) {
+    fn step(&mut self, root_id: Ref, init_state: &G::S) {
         let (node_id, state, stack) = self.select(root_id, init_state);
         let (reward, history) = self.simulate(node_id, init_state, &state);
         self.backpropagate(stack, reward, history);
@@ -414,7 +348,7 @@ impl<G: Game> TreeSearch<G> {
 
     // TODO: move to a separate Rollout<S: Strategy>, noting that RAVE needs the PV
     #[inline]
-    fn simulate(&mut self, node_id: NodeRef, init_state: &G::S, state: &G::S) -> (i32, Vec<G::M>) {
+    fn simulate(&mut self, node_id: Ref, init_state: &G::S, state: &G::S) -> (i32, Vec<G::M>) {
         debug_assert!(self.arena.get(node_id).children.is_empty());
         if self.arena.get(node_id).is_terminal {
             return (G::get_reward(init_state, state), Vec::new());
@@ -452,7 +386,7 @@ impl<G: Game> TreeSearch<G> {
         }
     }
 
-    fn update_rave(&mut self, node_id: NodeRef, reward: i32, history: &Vec<G::M>) {
+    fn update_rave(&mut self, node_id: Ref, reward: i32, history: &Vec<G::M>) {
         if !self.config.use_rave {
             return;
         }
@@ -468,24 +402,30 @@ impl<G: Game> TreeSearch<G> {
         for m in history {
             if let Some(child_id) = child_ms.get(m) {
                 let child = self.arena.get_mut(*child_id);
-                child.q_amaf += reward;
-                child.n_amaf += 1;
+                // TODO: add player to history
+                child.q_all_amaf += reward;
+                child.n_all_amaf += 1;
             }
         }
     }
 
     fn backpropagate(
         &mut self,
-        // node_id: NodeRef,
-        mut stack: Vec<NodeRef>,
+        // node_id: Ref,
+        mut stack: Vec<Ref>,
         reward: i32,
         history: Vec<G::M>,
     ) {
-        self.mast.update(&history);
+        if self.config.use_mast {
+            self.mast.update(&history);
+        }
+
         while let Some(node_id) = stack.pop() {
             let node = self.arena.get_mut(node_id);
             node.update(reward);
-            self.mast.update(&[node.action.clone()]);
+            if self.config.use_mast {
+                self.mast.update(&[node.action.clone()]);
+            }
             self.update_rave(node_id, reward, &history);
         }
     }
@@ -540,7 +480,7 @@ impl<G: Game> TreeSearch<G> {
         self.config.max_simulate_depth = depth;
     }
 
-    fn verbose_summary(&self, root_id: NodeRef, timer: &Timer, state: &G::S) {
+    fn verbose_summary(&self, root_id: Ref, timer: &Timer, state: &G::S) {
         if !self.config.verbose {
             return;
         }
