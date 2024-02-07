@@ -5,7 +5,6 @@
 // Implementation issues:
 //
 // - No tuning has been done yet.
-// - Flat MC can often do better!
 // - MCTS-Solver might help in the more tactical situations
 // - Board size is stored as a global const, but should be some game context
 // - G::gen_moves can fail by producing an empty set when it has hit the ceiling
@@ -191,7 +190,27 @@ pub struct Hand {
 
 impl Hand {
     fn new() -> Hand {
-        let n = (SIZE.w * SIZE.h) >> 1;
+        let n = SIZE.w * SIZE.h;
+        // Trilith provides 48 sarsens and 20 lintels for a 9x9 board, which
+        // is probably too few.
+        //
+        // Cameron Browne says:
+        // > For a 10x10 board you'll need at least 100 cubes in
+        // > total (enough to cover the board). A good distribution is 20x1 unit
+        // > and 10x3 unit blocks per player.
+        // >
+        // > This will be sufficient for games that don't go on too long. If the
+        // > games  get really involved, however, you'll run out of pieces in
+        // > which case you  might:
+        // > 1) Pick up a piece already on the board (provided that it's
+        // >    reachable) and place it elsewhere, or
+        // > 2) Use twice as many pieces :)
+        // >
+        // > If you're playing the "Druid's Walk" option each player will also
+        // > require one pawn.
+        //
+        // For this game, for an NxM board we use N*M sarsens and half as
+        // many lintels.
         Hand {
             sarsens: n * 2,
             lintels: n,
@@ -433,7 +452,8 @@ impl Game for Druid {
     }
 
     fn is_terminal(state: &Self::S) -> bool {
-        // This is not quite right - should be "no moves"
+        // This is not quite right - should be "no moves", but that's too expensive
+        // to calculate.
         state.current_hand().sarsens == 0
             || state.current_hand().lintels == 0
             || state.connection().is_some()
