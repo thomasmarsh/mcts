@@ -61,7 +61,7 @@ impl TranspositionTable {
 // Move Average Sampling Technique (incorrect placeholder implementation)
 #[derive(Debug)]
 struct Mast<M: std::hash::Hash + Eq + Clone> {
-    action_value: HashMap<M, i32>,
+    action_value: HashMap<M, f64>,
     action_count: HashMap<M, u32>,
 }
 
@@ -75,7 +75,7 @@ impl<M: std::hash::Hash + Eq + Clone> Mast<M> {
 
     fn update(&mut self, actions: &[M]) {
         actions.iter().for_each(|action| {
-            let value = self.get_value(&action.clone()).round() as i32;
+            let value = self.get_value(&action.clone());
             self.action_count
                 .entry(action.clone())
                 .and_modify(|x| *x += 1)
@@ -83,7 +83,7 @@ impl<M: std::hash::Hash + Eq + Clone> Mast<M> {
             self.action_value
                 .entry(action.clone())
                 .and_modify(|x| *x += value)
-                .or_insert(0);
+                .or_insert(0.);
         });
     }
 
@@ -108,13 +108,13 @@ impl SelectionStrategy {
 
 // TODO: I'd like to make this more type safe with an enum
 pub(crate) struct Node<G: Game> {
-    q: i32,
+    q: f64,
     n: u32,
     #[allow(dead_code)]
-    q_player_amaf: HashMap<G::P, i32>,
+    q_player_amaf: HashMap<G::P, f64>,
     #[allow(dead_code)]
-    n_player_amaf: HashMap<G::P, i32>,
-    q_all_amaf: i32,
+    n_player_amaf: HashMap<G::P, u32>,
+    q_all_amaf: f64,
     n_all_amaf: u32,
     action: G::M,
     is_terminal: bool, // ignored when ExpansionStrategy is Full
@@ -133,11 +133,11 @@ impl<G: Game> Node<G> {
     #[allow(clippy::uninit_assumed_init)]
     fn new_root(unexplored: Vec<G::M>) -> Self {
         Node {
-            q: 0,
+            q: 0.,
             n: 0,
             q_player_amaf: Default::default(),
             n_player_amaf: Default::default(),
-            q_all_amaf: 0,
+            q_all_amaf: 0.,
             n_all_amaf: 0,
             action: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             unexplored,
@@ -149,11 +149,11 @@ impl<G: Game> Node<G> {
     #[inline]
     fn new(m: G::M, unexplored: Vec<G::M>) -> Self {
         Node {
-            q: 0,
+            q: 0.,
             n: 0,
             q_player_amaf: Default::default(),
             n_player_amaf: Default::default(),
-            q_all_amaf: 0,
+            q_all_amaf: 0.,
             n_all_amaf: 0,
             action: m,
             unexplored,
@@ -163,7 +163,7 @@ impl<G: Game> Node<G> {
     }
 
     #[inline]
-    fn update(&mut self, reward: i32) {
+    fn update(&mut self, reward: f64) {
         self.q += reward;
         self.n += 1;
     }
@@ -352,7 +352,7 @@ impl<G: Game> TreeSearch<G> {
 
     // TODO: move to a separate Rollout<S: Strategy>, noting that RAVE needs the PV
     #[inline]
-    fn simulate(&mut self, node_id: Ref, init_state: &G::S, state: &G::S) -> (i32, Vec<G::M>) {
+    fn simulate(&mut self, node_id: Ref, init_state: &G::S, state: &G::S) -> (f64, Vec<G::M>) {
         debug_assert!(self.arena.get(node_id).children.is_empty());
         if self.arena.get(node_id).is_terminal {
             return (G::get_reward(init_state, state), Vec::new());
@@ -385,12 +385,12 @@ impl<G: Game> TreeSearch<G> {
             state = G::determinize(G::apply(&state, m), &mut self.config.rng);
             depth += 1;
             if depth >= self.config.max_simulate_depth {
-                return (0, history);
+                return (0., history);
             }
         }
     }
 
-    fn update_rave(&mut self, node_id: Ref, reward: i32, history: &Vec<G::M>) {
+    fn update_rave(&mut self, node_id: Ref, reward: f64, history: &Vec<G::M>) {
         if !self.config.use_rave {
             return;
         }
@@ -417,7 +417,7 @@ impl<G: Game> TreeSearch<G> {
         &mut self,
         // node_id: Ref,
         mut stack: Vec<Ref>,
-        reward: i32,
+        reward: f64,
         history: Vec<G::M>,
     ) {
         if self.config.use_mast {

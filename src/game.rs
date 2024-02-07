@@ -24,7 +24,7 @@ pub trait Game: Sized {
     fn is_terminal(state: &Self::S) -> bool;
 
     /// For MCTS with UCT, use +1 for a win, -1 for a loss, and 0 for a draw.
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> i32 {
+    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
         if !Self::is_terminal(term_state) {
             // Maybe return 0?
             panic!();
@@ -34,12 +34,12 @@ pub trait Game: Sized {
 
         if winner.is_some() {
             if Some(Self::player_to_move(init_state)) == winner {
-                1
+                1.
             } else {
-                -1
+                -1.
             }
         } else {
-            0
+            0.
         }
     }
 
@@ -132,7 +132,7 @@ pub mod safe {
             panic!("Game::is_terminal() reported the state is not terminal, but there are no moves provided by Game::gen_moves()"))
         }
 
-        pub fn get_reward(init_state: &ActiveState<G::S>, term_state: &TerminalState<G::S>) -> i32 {
+        pub fn get_reward(init_state: &ActiveState<G::S>, term_state: &TerminalState<G::S>) -> f64 {
             G::get_reward(&init_state.0, &term_state.0)
         }
     }

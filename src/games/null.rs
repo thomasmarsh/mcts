@@ -24,8 +24,8 @@ impl Game for NullGame {
         true
     }
 
-    fn get_reward(_: &(), _: &()) -> i32 {
-        0
+    fn get_reward(_: &(), _: &()) -> f64 {
+        0.
     }
 
     fn notation(_: &(), _: &Option<Never>) -> String {

@@ -29,9 +29,9 @@ impl Game for UnitGame {
         state.0
     }
 
-    fn get_reward(_: &Self::S, state: &Self::S) -> i32 {
+    fn get_reward(_: &Self::S, state: &Self::S) -> f64 {
         assert!(state.0);
-        1
+        1.
     }
 
     fn notation(_: &Self::S, _: &Self::M) -> String {

@@ -302,7 +302,7 @@ impl Game for BiddingTicTacToe {
         state.player_to_move()
     }
 
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> i32 {
+    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
         if !Self::is_terminal(term_state) {
             panic!();
         }
@@ -311,12 +311,12 @@ impl Game for BiddingTicTacToe {
 
         if winner.is_some() {
             if Some(Self::player_to_move(init_state)) == winner {
-                1
+                1.
             } else {
-                -100
+                -100.
             }
         } else {
-            0
+            0.
         }
     }
 }

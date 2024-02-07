@@ -53,7 +53,7 @@ fn rollout<G: Game>(
     max_rollout_depth: u32,
     init_state: &G::S,
     rng: &mut rand_xorshift::XorShiftRng,
-) -> i32
+) -> f64
 where
     G::S: Clone,
 {
@@ -66,10 +66,10 @@ where
         if let Some(m) = moves.choose(rng) {
             state = G::apply(&state, m.clone())
         } else {
-            return 0;
+            return 0.;
         }
     }
-    0
+    0.
 }
 
 impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
@@ -101,7 +101,7 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
                     let result = rollout::<G>(self.max_rollout_depth, &tmp, &mut rng);
-                    if result > 0 {
+                    if result > 0. {
                         n += 1;
                     }
                 }

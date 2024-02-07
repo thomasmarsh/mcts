@@ -165,7 +165,7 @@ impl Game for TicTacToe {
         state.position.turn
     }
 
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> i32 {
+    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
         if !Self::is_terminal(term_state) {
             panic!();
         }
@@ -174,12 +174,12 @@ impl Game for TicTacToe {
 
         if winner.is_some() {
             if Some(Self::player_to_move(init_state)) == winner {
-                1
+                1.
             } else {
-                -1 // 00
+                -1.
             }
         } else {
-            0
+            0.
         }
     }
 }
