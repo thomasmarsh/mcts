@@ -65,6 +65,49 @@ impl Config {
             max_simulate_depth: 20000,
         }
     }
+
+    pub fn verbose(self) -> Self {
+        Self {
+            verbose: true,
+            ..self
+        }
+    }
+
+    pub fn rng_seed(self, seed: [u8; 16]) -> Self {
+        Self {
+            rng: Rng::from_seed(seed),
+            ..self
+        }
+    }
+
+    pub fn use_rave(self, use_rave: bool) -> Self {
+        Self { use_rave, ..self }
+    }
+
+    pub fn use_mast(self, use_mast: bool) -> Self {
+        Self { use_mast, ..self }
+    }
+
+    pub fn tree_selection_strategy(self, tree_selection_strategy: SelectionStrategy) -> Self {
+        Self {
+            tree_selection_strategy,
+            ..self
+        }
+    }
+
+    pub fn action_selection_strategy(self, action_selection_strategy: SelectionStrategy) -> Self {
+        Self {
+            action_selection_strategy,
+            ..self
+        }
+    }
+
+    pub fn expansion_strategy(self, expansion_strategy: ExpansionStrategy) -> Self {
+        Self {
+            expansion_strategy,
+            ..self
+        }
+    }
 }
 
 impl Default for Config {
