@@ -358,7 +358,7 @@ impl<G: Game> TreeSearch<G> {
             return (G::get_reward(init_state, state), Vec::new());
         }
 
-        let mut state = G::determinize(state, &mut self.config.rng);
+        let mut state = G::determinize(state.clone(), &mut self.config.rng);
         let mut depth = 0;
         let mut history = Vec::new();
         loop {
@@ -382,7 +382,7 @@ impl<G: Game> TreeSearch<G> {
             };
 
             self.config.use_rave.then(|| history.push(m.clone()));
-            state = G::determinize(&G::apply(&state, m), &mut self.config.rng);
+            state = G::determinize(G::apply(&state, m), &mut self.config.rng);
             depth += 1;
             if depth >= self.config.max_simulate_depth {
                 return (0, history);

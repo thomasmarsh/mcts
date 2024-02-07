@@ -44,8 +44,8 @@ pub trait Game: Sized {
     }
 
     /// Used in hidden information games
-    fn determinize(state: &Self::S, _rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
-        state.clone()
+    fn determinize(state: Self::S, _rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
+        state
     }
 
     /// A user visible display representation for the move

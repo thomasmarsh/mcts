@@ -259,8 +259,8 @@ impl Game for BiddingTicTacToe {
         tmp
     }
 
-    fn determinize(state: &Self::S, rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
-        let mut state = *state;
+    fn determinize(state: Self::S, rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
+        let mut state = state.clone();
         // Not sure this is enough to hide all the bid information. I think
         // we introduce bias by not modeling simultaneous moves directly. But
         // this is a start.
