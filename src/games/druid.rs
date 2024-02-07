@@ -86,8 +86,9 @@ use rustc_hash::FxHashSet as HashSet;
 
 // TODO: trait Game should be implemented with a self parameter or some
 // other way to maintain static context so we don't have to store this here.
-// NOTE: the standard game is 10x10 (and 9x9 for Trilith)
-const SIZE: Size = Size { w: 8, h: 8 };
+// NOTE: the standard game is 10x10 (and 9x9 for Trilith). This can be set up to
+// 11x11 before you trigger integer overflows (unless expanding some of the types).
+const SIZE: Size = Size { w: 7, h: 7 };
 
 #[derive(Clone, Copy, Debug)]
 pub struct Size {
@@ -300,7 +301,9 @@ impl State {
                                 (p0 == self.player).then(|| count += 1);
                                 (p2 == self.player).then(|| count += 1);
                                 if let Some(p1) = self.at(c[1].index(SIZE.w)) {
-                                    (p1 == self.player).then(|| count += 1);
+                                    if p1 == self.player && h[1] == h[0] {
+                                        count += 1;
+                                    }
                                 }
                                 if count == 2 {
                                     moves.push(Move(Piece::Lintel(orientation), i as u8));
@@ -404,34 +407,63 @@ impl State {
 
 impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // color map
-        for i in 0..SIZE.area() as usize {
-            let c = match self.board[i].piece {
-                None => " .",
-                Some(Player::Black) => " X",
-                Some(Player::White) => " O",
-            };
-            write!(f, "{}", c)?;
-            if (i + 1) as u8 % SIZE.w == 0 {
-                writeln!(f)?;
-            }
-        }
-        writeln!(f)?;
+        let color_map = generate_map(|i| match self.board[i].piece {
+            None => " .".into(),
+            Some(Player::Black) => " X".into(),
+            Some(Player::White) => " O".into(),
+        });
+        let height_map = generate_map(|i| match self.board[i].height {
+            0 => " .".into(),
+            n => format!(" {:x}", n),
+        });
 
-        // height map
-        for i in 0..SIZE.area() {
-            let c = match self.board[i as usize].height {
-                0 => " .".into(),
-                n => format!(" {:x}", n),
-            };
-            write!(f, "{}", c)?;
-            if (i + 1) as u8 % SIZE.w == 0 {
-                writeln!(f)?;
-            }
+        // Combine color_map and height_map side by side
+        writeln!(f)?;
+        let color_lines: Vec<&str> = color_map.split('\n').collect();
+        let height_lines: Vec<&str> = height_map.split('\n').collect();
+        for (color_line, height_line) in color_lines.iter().zip(height_lines.iter()) {
+            writeln!(f, "{}   {}", color_line, height_line,)?;
         }
 
         Ok(())
     }
+}
+
+fn generate_map<F>(mut func: F) -> String
+where
+    F: FnMut(usize) -> String,
+{
+    let mut map = Vec::new();
+
+    let column_labels = |map: &mut Vec<String>| {
+        for c in ('A'..).take(SIZE.w as usize) {
+            map.push(format!(" {}", c));
+        }
+    };
+
+    // Generate map
+    map.push("   ".to_string());
+    column_labels(&mut map);
+    let mut row = SIZE.h as usize;
+    map.push(format!("   \n{:>3}", row));
+    for i in 0..SIZE.area() as usize {
+        let c = func(i);
+        map.push(c);
+        if (i + 1) as u8 % SIZE.w == 0 {
+            map.push(format!(" {}", row));
+            if row < 10 {
+                map.push(" ".into());
+            }
+            row -= 1;
+            if row != 0 {
+                map.push(format!("\n{:>3}", row));
+            }
+        }
+    }
+    map.push("\n   ".into());
+    column_labels(&mut map);
+    map.push("   ".into());
+    map.join("")
 }
 
 pub struct Druid;

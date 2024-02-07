@@ -5,31 +5,31 @@ use mcts::strategies::mcts::config::SelectionStrategy;
 use mcts::strategies::mcts::TreeSearch;
 
 type AgentMCTS = TreeSearch<Druid>;
-type AgentFlat = FlatMonteCarloStrategy<Druid>;
+// type AgentFlat = FlatMonteCarloStrategy<Druid>;
 
 pub fn play() -> Option<Player> {
-    let mut high_rave = {
+    let high_rave = {
         let mut x = AgentMCTS::new();
-        x.config.verbose = false;
+        x.config.verbose = true;
         x.set_max_rollouts(80000);
-        x.config.tree_selection_strategy = SelectionStrategy::UCT(0.1, 8000.);
+        x.config.tree_selection_strategy = SelectionStrategy::UCT(0.1, 7000.);
         x.config.use_mast = false;
         x
     };
 
-    let mut low_c = {
+    let low_rave = {
         let mut x = AgentMCTS::new();
-        x.config.verbose = false;
-        x.set_max_rollouts(20000);
-        x.config.tree_selection_strategy = SelectionStrategy::UCT(0.1, 6000.);
+        x.config.verbose = true;
+        x.set_max_rollouts(80000);
+        x.config.tree_selection_strategy = SelectionStrategy::UCT(0.1, 100.);
         x.config.use_mast = false;
         x
     };
 
-    let mut flat = AgentFlat::new().set_samples_per_move(1000);
+    // let mut flat = AgentFlat::new().set_samples_per_move(1000);
 
     let mut w = high_rave;
-    let mut b = low_c;
+    let mut b = low_rave;
 
     println!("=========================");
     let mut state = State::new();
