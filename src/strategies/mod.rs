@@ -5,26 +5,98 @@ pub mod sync_util;
 
 use crate::game::Game;
 
-pub trait Strategy<G: Game> {
-    fn choose_move(&mut self, state: &G::S) -> Option<G::M>;
+pub trait Search {
+    type G: Game;
 
-    fn set_verbose(&mut self) {}
+    fn friendly_name(&self) -> String;
 
-    /// For strategies that can ponder indefinitely, set the timeout.
-    /// This can be changed between calls to choose_move.
-    fn set_timeout(&mut self, _timeout: std::time::Duration) {}
+    fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A;
 
-    /// Set the maximum depth to evaluate (instead of the timeout).
-    /// This can be changed between calls to choose_move.
-    fn set_max_depth(&mut self, _depth: u32) {}
+    fn principle_variation(&self) -> Vec<&<Self::G as Game>::A> {
+        vec![]
+    }
+}
 
-    /// Set the maximum depth to evaluate (instead of the timeout).
-    /// This can be changed between calls to choose_move.
-    fn set_max_rollouts(&mut self, _max_rollouts: u32) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::PlayerIndex;
+    use crate::strategies::mcts::backprop::compute_utilities;
 
-    /// From the last choose_move call, return the principal variation,
-    /// i.e. the best sequence of moves for both players.
-    fn principal_variation(&self) -> Vec<G::M> {
-        Vec::new()
+    #[test]
+    fn test_parity() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+
+        // Initial State
+        // X O X
+        // . O O
+        // . X X
+        // Turn: O
+        //
+        // for Move(3), score += 1
+        // for Move(6), score += 0
+        let init_state = HashedPosition {
+            position: Position {
+                turn: Piece::O,
+                board: [
+                    Some(Piece::X),
+                    Some(Piece::O),
+                    Some(Piece::X),
+                    None,
+                    Some(Piece::O),
+                    Some(Piece::O),
+                    None,
+                    None,
+                    // Some(Piece::X),
+                    Some(Piece::X),
+                ],
+            },
+            hash: 0,
+        };
+        let init_state = HashedPosition::new();
+
+        // Configure new MCTS
+        type New = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
+        let mut new: New = Default::default();
+        new.strategy.playouts_before_expanding = 1;
+        new.strategy.max_playout_depth = 100;
+
+        // Construct new root
+        let root_id_new = new.new_root();
+
+        // Helper step function
+        let step = |new: &mut New| {
+            let mut ctx = mcts::SearchContext::new(root_id_new, init_state.clone());
+            new.select(&mut ctx);
+            let trial = new.simulate(&ctx.state);
+            println!("trial actions: {:?}", trial.actions);
+            println!("trial status: {:?}", trial.status);
+            println!("utilites: {:?}", compute_utilities::<G>(&trial.state));
+            println!(
+                "relevant utility: {:?}",
+                compute_utilities::<G>(&trial.state)[G::player_to_move(&init_state).to_index()]
+            );
+            new.backprop(&mut ctx, trial);
+
+            ctx.current_id
+        };
+
+        // First pass: simulate over root node
+        let child_id = step(&mut new);
+
+        assert_eq!(child_id, root_id_new);
+        assert_eq!(new.index.get(root_id_new).stats.num_visits, 1);
+
+        // Second pass: expand child node
+        let child_id = step(&mut new);
+
+        assert_ne!(child_id, root_id_new);
+        assert_eq!(new.index.get(root_id_new).stats.num_visits, 2);
+
+        // Third pass: expand child node
+        let child_id = step(&mut new);
+
+        println!("{:#?}", new.index);
     }
 }

@@ -81,14 +81,37 @@
 
 use std::collections::VecDeque;
 
-use crate::game::Game;
 use rustc_hash::FxHashSet as HashSet;
+use serde::Serialize;
+
+use crate::game::{Game, PlayerIndex};
 
 // TODO: trait Game should be implemented with a self parameter or some
 // other way to maintain static context so we don't have to store this here.
 // NOTE: the standard game is 10x10 (and 9x9 for Trilith). This can be set up to
 // 11x11 before you trigger integer overflows (unless expanding some of the types).
-const SIZE: Size = Size { w: 7, h: 7 };
+pub const SIZE: Size = Size { w: 5, h: 5 };
+
+#[derive(PartialEq, Clone, Copy, Debug, Serialize)]
+pub enum Player {
+    Black,
+    White,
+}
+
+impl PlayerIndex for Player {
+    fn to_index(&self) -> usize {
+        *self as usize
+    }
+}
+
+impl Player {
+    fn next(&mut self) {
+        *self = match self {
+            Player::Black => Player::White,
+            Player::White => Player::Black,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Size {
@@ -103,14 +126,14 @@ impl Size {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Pos(u8, u8);
+pub struct Pos(pub u8, pub u8);
 
 impl Pos {
-    fn from(i: usize, size: Size) -> Pos {
+    pub fn from(i: usize, size: Size) -> Pos {
         Pos(i as u8 % size.w, i as u8 / size.h)
     }
 
-    fn index(self, width: u8) -> usize {
+    pub fn index(self, width: u8) -> usize {
         (self.1 * width + self.0) as usize
     }
 
@@ -132,22 +155,7 @@ impl Pos {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Player {
-    Black,
-    White,
-}
-
-impl Player {
-    pub fn next(&mut self) {
-        *self = match self {
-            Player::Black => Player::White,
-            Player::White => Player::Black,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Orientation {
     Horizontal,
     Vertical,
@@ -162,7 +170,7 @@ impl Orientation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Piece {
     Sarsen,
     Lintel(Orientation),
@@ -180,13 +188,13 @@ impl Square {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Move(Piece, u8);
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct Move(pub Piece, pub u8);
 
 #[derive(Clone, Debug)]
 pub struct Hand {
-    sarsens: u8,
-    lintels: u8,
+    pub sarsens: u8,
+    pub lintels: u8,
 }
 
 impl Hand {
@@ -227,6 +235,20 @@ pub struct State {
     pub hand_white: Hand,
 }
 
+// TODO:
+//
+// A move can be implemented as a u16 to support up to 128x128 board sizes:
+//
+// Move: u16
+// - orientation: 1  bit
+// - piece_type:  1  bit
+// - location:    14 bits (up to 128 * 128 = 16384)
+//
+// State has some optimal packings depending on the board size. Note that
+// above 9x9 the board state no longer fits in a 64 byte cache line. For
+// purposes of board state packing, we have to assume a max height. We will
+// take log2(N*M). For example, a 10x10 board would have a max height of 7.
+
 impl State {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -248,7 +270,7 @@ impl State {
         self.board[i].piece
     }
 
-    fn current_hand(&self) -> &Hand {
+    pub fn current_hand(&self) -> &Hand {
         match self.player {
             Player::Black => &self.hand_black,
             Player::White => &self.hand_white,
@@ -268,8 +290,7 @@ impl State {
         }
     }
 
-    pub fn moves(&self) -> Vec<Move> {
-        let mut moves = Vec::new();
+    pub fn moves(&self, moves: &mut Vec<Move>) {
         for i in 0..SIZE.area() as usize {
             let Pos(x, y) = Pos::from(i, SIZE);
 
@@ -314,7 +335,6 @@ impl State {
                 }
             }
         }
-        moves
     }
 
     pub fn apply(&mut self, m: Move) {
@@ -470,17 +490,16 @@ pub struct Druid;
 
 impl Game for Druid {
     type S = State;
-    type M = Move;
+    type A = Move;
     type P = Player;
 
-    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
-        state.moves()
+    fn generate_actions(state: &State, actions: &mut Vec<Move>) {
+        state.moves(actions);
     }
 
-    fn apply(state: &Self::S, m: Self::M) -> Self::S {
-        let mut tmp = state.clone();
-        tmp.apply(m);
-        tmp
+    fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
+        state.apply(*m);
+        state
     }
 
     fn is_terminal(state: &Self::S) -> bool {
@@ -492,7 +511,7 @@ impl Game for Druid {
         // || Druid::gen_moves(state).is_empty()
     }
 
-    fn notation(_: &Self::S, m: &Self::M) -> String {
+    fn notation(_: &Self::S, m: &Self::A) -> String {
         let Pos(x, y) = Pos::from(m.1 as usize, SIZE);
         match m.0 {
             Piece::Sarsen => format!("S({},{})", x + 1, y + 1),
@@ -501,11 +520,11 @@ impl Game for Druid {
         }
     }
 
-    fn winner(state: &Self::S) -> Option<Self::P> {
+    fn winner(state: &Self::S) -> Option<Player> {
         state.connection()
     }
 
-    fn player_to_move(state: &Self::S) -> Self::P {
+    fn player_to_move(state: &Self::S) -> Player {
         state.player
     }
 }

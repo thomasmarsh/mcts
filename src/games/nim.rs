@@ -1,11 +1,17 @@
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
 
 use nimlib::{moves, NimAction, NimGame, NimRule, Split, Stack, TakeSize};
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum Player {
     Black,
     White,
+}
+
+impl PlayerIndex for Player {
+    fn to_index(&self) -> usize {
+        *self as usize
+    }
 }
 
 impl Player {
@@ -50,21 +56,24 @@ pub struct Nim;
 
 impl Game for Nim {
     type S = NimState;
-    type M = NimAction;
+    type A = NimAction;
     type P = Player;
 
-    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
-        moves::calculate_legal_moves(state.game.get_stacks(), &state.rules, (0, 0))
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        actions.extend(moves::calculate_legal_moves(
+            state.game.get_stacks(),
+            &state.rules,
+            (0, 0),
+        ))
     }
 
-    fn apply(state: &Self::S, m: Self::M) -> Self::S {
-        let mut tmp = state.clone();
-        moves::apply_move(&mut tmp.game, &m).expect("error in nimlib");
-        tmp.turn = tmp.turn.next();
-        tmp
+    fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
+        moves::apply_move(&mut state.game, &m).expect("error in nimlib");
+        state.turn = state.turn.next();
+        state
     }
 
-    fn notation(_state: &Self::S, m: &Self::M) -> String {
+    fn notation(_state: &Self::S, m: &Self::A) -> String {
         format!("{:?}", m)
     }
 
@@ -72,14 +81,14 @@ impl Game for Nim {
         state.game.get_stacks().iter().all(|x| x.0 == 0)
     }
 
-    fn winner(state: &Self::S) -> Option<Self::P> {
+    fn winner(state: &Self::S) -> Option<Player> {
         if !Self::is_terminal(state) {
             panic!();
         }
         Some(Self::player_to_move(state).next())
     }
 
-    fn player_to_move(state: &Self::S) -> Self::P {
+    fn player_to_move(state: &Self::S) -> Player {
         state.turn
     }
 }

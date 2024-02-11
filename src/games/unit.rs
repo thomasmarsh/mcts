@@ -1,27 +1,33 @@
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
 
 // A trivial game with one move
 #[derive(Default, Clone, Debug)]
-struct Unit(pub bool);
+pub struct Unit(pub bool);
 
-struct UnitGame;
+pub struct UnitGame;
+
+pub struct Player;
+
+impl PlayerIndex for Player {
+    fn to_index(&self) -> usize {
+        0
+    }
+}
 
 impl Game for UnitGame {
     type S = Unit;
-    type M = ();
-    type P = ();
+    type A = ();
+    type P = Player;
 
-    fn apply(state: &Self::S, _m: Self::M) -> Self::S {
+    fn apply(state: Self::S, _m: &Self::A) -> Self::S {
         assert!(!state.0);
         // assert!(m == ()); // always true
         Unit(true)
     }
 
-    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
-        if state.0 {
-            vec![]
-        } else {
-            vec![()]
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        if !state.0 {
+            actions.push(());
         }
     }
 
@@ -29,38 +35,38 @@ impl Game for UnitGame {
         state.0
     }
 
-    fn get_reward(_: &Self::S, state: &Self::S) -> f64 {
-        assert!(state.0);
-        1.
-    }
-
-    fn notation(_: &Self::S, _: &Self::M) -> String {
+    fn notation(_: &Self::S, _: &Self::A) -> String {
         "()".to_string()
     }
 
-    fn winner(_: &Self::S) -> Option<Self::P> {
-        Some(())
+    fn winner(_: &Self::S) -> Option<Player> {
+        Some(Player)
     }
 
-    fn player_to_move(_: &Self::S) -> Self::P {}
+    fn player_to_move(_: &Self::S) -> Player {
+        Player
+    }
+
+    fn num_players() -> usize {
+        1
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategies::mcts::TreeSearch;
+    use crate::strategies::mcts::{util, TreeSearch};
+    use crate::strategies::Search;
 
     #[test]
     pub fn test_unit() {
-        let mut search: TreeSearch<UnitGame> = TreeSearch::new();
-        search.config.max_rollouts = 10;
+        let mut search: TreeSearch<UnitGame, util::Ucb1> = TreeSearch::default();
+        search.strategy.max_iterations = 10;
         let state = Unit::default();
-        let m1 = search.choose_move(&state);
-        assert!(m1 == Some(()));
+        search.choose_action(&state);
         #[allow(clippy::unit_arg)]
-        let new_state = UnitGame::apply(&state, m1.unwrap());
+        let new_state = UnitGame::apply(state, &());
         assert!(new_state.0);
-        let m2 = search.choose_move(&new_state);
-        assert!(m2.is_none());
+        assert!(UnitGame::is_terminal(&new_state));
     }
 }

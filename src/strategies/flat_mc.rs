@@ -1,9 +1,9 @@
-use rand::seq::SliceRandom;
+use rand::rngs::SmallRng;
+use rand::Rng;
 use rand_core::SeedableRng;
-use rand_xorshift::XorShiftRng;
 
 use crate::game::Game;
-use crate::strategies::Strategy;
+use crate::strategies::Search;
 use crate::util::random_best;
 
 use std::marker::PhantomData;
@@ -49,11 +49,7 @@ impl<G: Game> Default for FlatMonteCarloStrategy<G> {
     }
 }
 
-fn rollout<G: Game>(
-    max_rollout_depth: u32,
-    init_state: &G::S,
-    rng: &mut rand_xorshift::XorShiftRng,
-) -> f64
+fn rollout<G: Game>(max_rollout_depth: u32, init_state: &G::S, rng: &mut SmallRng) -> f64
 where
     G::S: Clone,
 {
@@ -63,40 +59,43 @@ where
             return G::get_reward(init_state, &state);
         }
         let moves = G::gen_moves(&state);
-        if let Some(m) = moves.choose(rng) {
-            state = G::apply(&state, m.clone())
-        } else {
+        if moves.is_empty() {
             return 0.;
         }
+        let m = moves[rng.gen_range(0..moves.len())].clone();
+
+        state = G::apply(state, &m);
     }
     0.
 }
 
-impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
-    fn set_max_depth(&mut self, depth: u32) {
-        self.max_rollout_depth = depth;
+impl<G: Game> Search for FlatMonteCarloStrategy<G> {
+    type G = G;
+    // fn set_max_depth(&mut self, depth: u32) {
+    //     self.max_rollout_depth = depth;
+    // }
+
+    // fn set_max_rollouts(&mut self, max_rollouts: u32) {
+    //     self.max_rollouts = max_rollouts;
+    // }
+
+    fn friendly_name(&self) -> String {
+        "flat_mc".into()
     }
 
-    fn set_max_rollouts(&mut self, max_rollouts: u32) {
-        self.max_rollouts = max_rollouts;
-    }
-
-    fn choose_move(&mut self, state: &<G as Game>::S) -> Option<<G as Game>::M>
-    where
-        <G as Game>::S: Clone,
-    {
+    fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
         if G::is_terminal(state) {
-            return None;
+            panic!();
         }
 
-        let mut rng = XorShiftRng::from_entropy();
+        let mut rng = SmallRng::from_entropy();
 
         let moves = G::gen_moves(state);
         let wins = moves
             .iter()
             .map(|m| {
                 let mut tmp = state.clone();
-                let new_state = G::apply(&tmp, m.clone());
+                let new_state = G::apply(tmp, &m);
                 tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
@@ -123,6 +122,8 @@ impl<G: Game> Strategy<G> for FlatMonteCarloStrategy<G> {
             }
         }
 
-        random_best(wins.as_slice(), &mut rng, |x| x.0 as f64).map(|x| x.1.clone())
+        random_best(wins.as_slice(), &mut rng, |x| x.0 as f64)
+            .map(|x| x.1.clone())
+            .unwrap()
     }
 }

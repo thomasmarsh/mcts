@@ -1,10 +1,17 @@
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
+use serde::Serialize;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Piece {
     X,
     O,
+}
+
+impl PlayerIndex for Piece {
+    fn to_index(&self) -> usize {
+        *self as usize
+    }
 }
 
 impl Piece {
@@ -18,7 +25,7 @@ impl Piece {
 
 const BOARD_LEN: usize = 9;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub u8);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -66,13 +73,12 @@ impl Position {
         None
     }
 
-    pub fn gen_moves(&self) -> Vec<Move> {
+    pub fn gen_moves(&self, actions: &mut Vec<Move>) {
         self.board
             .into_iter()
             .enumerate()
             .filter(|(_, piece)| piece.is_none())
-            .map(|(i, _)| Move(i as u8))
-            .collect::<Vec<Move>>()
+            .for_each(|(i, _)| actions.push(Move(i as u8)));
     }
 
     pub fn apply(&mut self, m: Move) {
@@ -98,12 +104,13 @@ impl Display for Position {
     }
 }
 
+#[derive(Debug)]
 pub struct TicTacToe;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HashedPosition {
     pub position: Position,
-    hash: u64,
+    pub(crate) hash: u64,
 }
 
 impl HashedPosition {
@@ -130,20 +137,19 @@ impl HashedPosition {
 
 impl Game for TicTacToe {
     type S = HashedPosition;
-    type M = Move;
+    type A = Move;
     type P = Piece;
 
-    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
-        state.position.gen_moves()
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        state.position.gen_moves(actions);
     }
 
-    fn apply(state: &Self::S, m: Self::M) -> Self::S {
-        let mut tmp = *state;
-        tmp.apply(m);
-        tmp
+    fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
+        state.apply(*m);
+        state
     }
 
-    fn notation(_state: &Self::S, m: &Self::M) -> String {
+    fn notation(_state: &Self::S, m: &Self::A) -> String {
         let x = m.0 % 3;
         let y = m.0 / 3;
         format!("({}, {})", x, y)
@@ -153,7 +159,7 @@ impl Game for TicTacToe {
         state.position.winner().is_some() || state.position.board.iter().all(|x| x.is_some())
     }
 
-    fn winner(state: &Self::S) -> Option<Self::P> {
+    fn winner(state: &Self::S) -> Option<Piece> {
         if !Self::is_terminal(state) {
             unreachable!();
         }
@@ -161,26 +167,8 @@ impl Game for TicTacToe {
         state.position.winner()
     }
 
-    fn player_to_move(state: &Self::S) -> Self::P {
+    fn player_to_move(state: &Self::S) -> Piece {
         state.position.turn
-    }
-
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
-        if !Self::is_terminal(term_state) {
-            panic!();
-        }
-
-        let winner = Self::winner(term_state);
-
-        if winner.is_some() {
-            if Some(Self::player_to_move(init_state)) == winner {
-                1.
-            } else {
-                -1.
-            }
-        } else {
-            0.
-        }
     }
 }
 
