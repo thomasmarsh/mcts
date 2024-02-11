@@ -1,55 +1,45 @@
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
+use serde::Serialize;
 
 // A trivial game with no moves
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 enum Never {}
 
 struct NullGame;
 
+struct Unit;
+
+impl PlayerIndex for Unit {
+    fn to_index(&self) -> usize {
+        0
+    }
+}
+
 impl Game for NullGame {
     type S = ();
-    type M = Option<Never>;
-    type P = ();
+    type A = Option<Never>;
+    type P = Unit;
 
-    fn apply(_: &(), _: Option<Never>) {
+    fn apply(_: (), _: &Option<Never>) {
         unreachable!();
     }
 
-    fn gen_moves(_: &()) -> Vec<Option<Never>> {
-        vec![]
-    }
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {}
 
     fn is_terminal(_: &()) -> bool {
         true
-    }
-
-    fn get_reward(_: &(), _: &()) -> f64 {
-        0.
     }
 
     fn notation(_: &(), _: &Option<Never>) -> String {
         unreachable!();
     }
 
-    fn winner(_: &()) -> Option<()> {
+    fn winner(_: &()) -> Option<Unit> {
         None
     }
 
-    fn player_to_move(_: &()) {}
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::strategies::mcts::TreeSearch;
-
-    #[test]
-    pub fn test_null() {
-        println!("test_null");
-        let mut search: TreeSearch<NullGame> = TreeSearch::new();
-        search.config.max_rollouts = 10;
-        let m = search.choose_move(&());
-        assert!(m.is_none());
+    fn player_to_move(_: &()) -> Unit {
+        Unit
     }
 }

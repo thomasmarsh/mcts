@@ -1,139 +1,107 @@
-// NOTE: Zobrist hashing is not a necessary approach to hashing in MCTS
-// like it is in minimax since we don't rely on undo operaitons. We could
-// just stipulate that `S` conform to `Hash + Eq`.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct ZobristHash(pub u64);
+use rand::rngs::SmallRng;
+use serde::Serialize;
+
+// Refers to a player index. Expectation is that these values
+// are small and monotonically increasing. Stored as a usize for ease
+// of use as an array index.
+pub trait PlayerIndex {
+    fn to_index(&self) -> usize;
+}
+
+// A proxy trait to simplify some implementation
+pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize {}
+
+// Blanket implementation
+impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> Action for T {}
 
 pub trait Game: Sized {
-    type S: Clone + std::fmt::Debug; // TODO: remove debugs here
-    type M: Clone + std::hash::Hash + Eq + std::fmt::Debug;
-    type P: PartialEq + std::fmt::Debug;
+    /// The type representing the state of your game. Ideally, this
+    /// should be as small as possible and have a cheap Clone or Copy
+    /// implementation.
+    type S: Clone + std::fmt::Debug;
 
-    /// Apply the move/action, producing a new state.
-    /// TODO: minimax-rs supports an optional mutative interface to consider.
-    fn apply(state: &Self::S, m: Self::M) -> Self::S;
+    /// The type representing actions, or moves, in your game. These
+    /// also should be very cheap to clone.
+    type A: Action;
 
-    /// The available moves/actions from this state. It is an error to call
-    /// this on a terminal node.
-    /// TODO: should this be a NonEmpty<Self::M> result?
-    /// TODO: should take a mutable Vec?
-    fn gen_moves(state: &Self::S) -> Vec<Self::M>;
+    /// The player type. This value only needs to conform to PlayerIndex.
+    type P: PlayerIndex;
 
-    /// If this state is not terminal, we expect that gen_moves will return
-    /// at least one move.
-    fn is_terminal(state: &Self::S) -> bool;
+    /// Given a state, apply an action to it producing a new state.
+    fn apply(state: Self::S, action: &Self::A) -> Self::S;
 
-    /// For MCTS with UCT, use +1 for a win, -1 for a loss, and 0 for a draw.
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
-        if !Self::is_terminal(term_state) {
-            // Maybe return 0?
-            panic!();
-        }
+    /// All possible actions from a given state. This is expected to
+    /// be deterministic. (Subsequent invocations on the same state
+    /// should produce the same set of actions.) This will not be
+    /// invoked if `is_terminal` returns `true`.
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>);
 
-        let winner = Self::winner(term_state);
-
-        if winner.is_some() {
-            if Some(Self::player_to_move(init_state)) == winner {
-                1.
-            } else {
-                -1.
-            }
-        } else {
-            0.
-        }
+    /// Returns `true` if the game has ended and there are no more
+    /// possible actions. The default implementation calls
+    /// `generate_actions` which may be expensive. Ideally this can
+    /// be computed more cheaply.
+    fn is_terminal(state: &Self::S) -> bool {
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        actions.is_empty()
     }
 
-    /// Used in hidden information games
-    fn determinize(state: Self::S, _rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
+    /// For games with hidden information, state may be determinized
+    /// for the sake of sampling via a playout. Essentially, this
+    /// amounts to shuffling the hidden state around. Please note,
+    /// however, that determinization can be difficult to perform
+    /// uniformly and may introduce bias in the the playouts.
+    #[allow(unused_variables)]
+    fn determinize(state: Self::S, rng: &mut SmallRng) -> Self::S {
         state
     }
 
-    /// A user visible display representation for the move
-    fn notation(state: &Self::S, m: &Self::M) -> String;
-
-    /// Which player is the winner. It is an error to call this on a
-    /// non-terminal state.
+    /// Assuming a zero-sum game, the player who has won.
     fn winner(state: &Self::S) -> Option<Self::P>;
 
-    /// The current player
+    /// Returns the rank of the player in a given game state. The
+    /// current implementation assumes a two-player game. Rank is
+    /// a value between 1.0 and num_players, with 1.0 being best
+    /// and higher numbers being worse.
+    //
+    // NOTE: this is too expensive. Maybe `rank(S) -> Vec<f64>`
+    fn rank(state: &Self::S, player_index: usize) -> f64 {
+        match Self::winner(state) {
+            Some(w) if w.to_index() == player_index => 1.,
+            Some(_) => 2.,
+            None => 1.5,
+        }
+    }
+
+    /// Returns the play whose turn it is to move for the given
+    /// state.
     fn player_to_move(state: &Self::S) -> Self::P;
 
-    /// The current player
-    fn hash(state: &Self::S) -> ZobristHash {
-        unimplemented!()
-    }
-}
-
-// TODO: this is just a sketch
-pub mod safe {
-    use nonempty::NonEmpty;
-
-    use super::Game;
-
-    pub struct ActiveState<S>(S);
-    pub struct TerminalState<S>(S);
-
-    pub enum State<G: Game> {
-        Unknown(G::S),
-        Active(ActiveState<G::S>),
-        Terminal(TerminalState<G::S>),
+    /// A constant value that indicates the number of players
+    /// in the game.
+    fn num_players() -> usize {
+        2
     }
 
-    impl<G: Game> State<G> {
-        pub fn resolve(self) -> Self {
-            match self {
-                State::Unknown(state) => {
-                    if G::is_terminal(&state) {
-                        State::Terminal(TerminalState(state))
-                    } else {
-                        State::Active(ActiveState(state))
-                    }
-                }
-                _ => self,
-            }
-        }
-
-        pub fn get(&self) -> &G::S {
-            match self {
-                State::Unknown(state) => state,
-                State::Active(state) => &state.0,
-                State::Terminal(state) => &state.0,
-            }
-        }
-
-        pub fn get_mut(&mut self) -> &mut G::S {
-            match self {
-                State::Unknown(state) => state,
-                State::Active(state) => &mut state.0,
-                State::Terminal(state) => &mut state.0,
-            }
-        }
+    /// Move notation for a given move relative to a given state.
+    #[allow(unused)]
+    fn notation(state: &Self::S, action: &Self::A) -> String {
+        "??".into()
     }
 
-    pub struct ParsedState<G: Game> {
-        state: State<G>,
+    #[deprecated]
+    fn gen_moves(state: &Self::S) -> Vec<Self::A> {
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        actions
     }
 
-    impl<G: Game> ParsedState<G> {
-        pub fn get_raw(&self) -> &G::S {
-            self.state.get()
-        }
-
-        pub fn get_raw_mut(&mut self) -> &mut G::S {
-            self.state.get_mut()
-        }
-
-        pub fn apply(state: &ActiveState<G::S>, m: G::M) -> State<G> {
-            State::Unknown(G::apply(&state.0, m)).resolve()
-        }
-
-        pub fn gen_moves(state: &ActiveState<G::S>) -> NonEmpty<G::M> {
-            NonEmpty::from_vec(G::gen_moves(&state.0)).unwrap_or_else(||
-            panic!("Game::is_terminal() reported the state is not terminal, but there are no moves provided by Game::gen_moves()"))
-        }
-
-        pub fn get_reward(init_state: &ActiveState<G::S>, term_state: &TerminalState<G::S>) -> f64 {
-            G::get_reward(&init_state.0, &term_state.0)
+    #[deprecated]
+    fn get_reward(init: &Self::S, term: &Self::S) -> f64 {
+        match Self::winner(term) {
+            None => 0.,
+            Some(w) if w.to_index() == Self::player_to_move(init).to_index() => 1.,
+            _ => -1.,
         }
     }
 }

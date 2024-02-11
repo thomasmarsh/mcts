@@ -1,8 +1,8 @@
 use rand::Rng;
 
-type XorShiftRng = rand_xorshift::XorShiftRng;
+use rand::rngs::SmallRng;
 
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
 use crate::strategies;
 
 const PRIMES: [usize; 16] = [
@@ -13,7 +13,7 @@ const PRIMES: [usize; 16] = [
 #[inline]
 pub(super) fn random_best<'a, T, F: Fn(&T) -> f64>(
     set: &'a [T],
-    rng: &'a mut XorShiftRng,
+    rng: &'a mut SmallRng,
     score_fn: F,
 ) -> Option<&'a T> {
     // To make the choice more uniformly random among the best moves,
@@ -49,31 +49,33 @@ pub fn battle_royale<G, S1, S2>(s1: &mut S1, s2: &mut S2) -> Option<usize>
 where
     G: Game,
     G::S: Default + Clone,
-    S1: strategies::Strategy<G>,
-    S2: strategies::Strategy<G>,
+    S1: strategies::Search<G = G>,
+    S2: strategies::Search<G = G>,
 {
     let mut state = G::S::default();
-    let mut strategies: [&mut dyn strategies::Strategy<G>; 2] = [s1, s2];
+    let mut strategies: [&mut dyn strategies::Search<G = G>; 2] = [s1, s2];
     let mut s = 0;
     loop {
         if G::is_terminal(&state) {
             let current_player = G::player_to_move(&state);
             let winner = G::winner(&state);
-            return winner.map(|p| if current_player == p { s } else { 1 - s });
+            return winner.map(|p| {
+                if current_player.to_index() == p.to_index() {
+                    s
+                } else {
+                    1 - s
+                }
+            });
         }
         let strategy = &mut strategies[s];
-        match strategy.choose_move(&state) {
-            Some(m) => {
-                state = G::apply(&state, m);
-            }
-            None => return None,
-        }
+        let m = strategy.choose_action(&state);
+        state = G::apply(state, &m);
         s = 1 - s;
     }
 }
 
 // Return a unique id for humans for this move.
-pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::M>) -> String {
+pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::A>) -> String {
     if let Some(mov) = m {
         G::notation(s, &mov)
     } else {
@@ -81,11 +83,7 @@ pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::M>) ->
     }
 }
 
-pub(super) fn pv_string<G: Game>(path: &[<G as Game>::M], state: &<G as Game>::S) -> String
-where
-    <G as Game>::M: Clone,
-    <G as Game>::S: Clone,
-{
+pub(super) fn pv_string<G: Game>(path: &[<G as Game>::A], state: &<G as Game>::S) -> String {
     let mut state = state.clone();
     let mut out = String::new();
     for (i, m) in (0..).zip(path.iter()) {
@@ -93,7 +91,7 @@ where
             out.push_str("; ");
         }
         out.push_str(move_id::<G>(&state, Some(m.clone())).as_str());
-        state = G::apply(&state, m.clone());
+        state = G::apply(state, &m);
     }
     out
 }

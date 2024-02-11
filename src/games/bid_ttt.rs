@@ -10,9 +10,17 @@
 //  - Because we don't want the hidden bids to affect the rollouts we have
 //    to determinize the results.
 
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
+use rand::rngs::SmallRng;
 use rand::Rng;
+use serde::Serialize;
 use std::{cmp::Ordering, fmt::Display};
+
+impl PlayerIndex for Piece {
+    fn to_index(&self) -> usize {
+        *self as usize
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Piece {
@@ -57,13 +65,13 @@ pub enum Phase {
     PlayO,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize)]
 pub enum TiebreakChoice {
     Use,
     Keep,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize)]
 pub enum Move {
     Bid(u16),
     Place(u8),
@@ -246,21 +254,20 @@ pub struct TicTacToe;
 
 impl Game for BiddingTicTacToe {
     type S = BiddingTicTacToe;
-    type M = Move;
+    type A = Move;
     type P = Piece;
 
-    fn gen_moves(state: &Self::S) -> Vec<Self::M> {
-        state.gen_moves()
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        actions.extend(state.gen_moves());
     }
 
-    fn apply(state: &Self::S, m: Self::M) -> Self::S {
-        let mut tmp = *state;
-        tmp.apply(m);
-        tmp
+    fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
+        state.apply(*m);
+        state
     }
 
-    fn determinize(state: Self::S, rng: &mut rand_xorshift::XorShiftRng) -> Self::S {
-        let mut state = state.clone();
+    fn determinize(state: Self::S, rng: &mut SmallRng) -> Self::S {
+        let mut state = state;
         // Not sure this is enough to hide all the bid information. I think
         // we introduce bias by not modeling simultaneous moves directly. But
         // this is a start.
@@ -273,7 +280,7 @@ impl Game for BiddingTicTacToe {
         state
     }
 
-    fn notation(_state: &Self::S, m: &Self::M) -> String {
+    fn notation(_state: &Self::S, m: &Self::A) -> String {
         match m {
             Move::Bid(n) => format!("Bid({})", n),
             Move::Place(pos) => {
@@ -290,7 +297,7 @@ impl Game for BiddingTicTacToe {
         state.winner().is_some() || state.board.iter().all(|x| x.is_some())
     }
 
-    fn winner(state: &Self::S) -> Option<Self::P> {
+    fn winner(state: &Self::S) -> Option<Piece> {
         if !Self::is_terminal(state) {
             unreachable!();
         }
@@ -298,66 +305,7 @@ impl Game for BiddingTicTacToe {
         state.winner()
     }
 
-    fn player_to_move(state: &Self::S) -> Self::P {
+    fn player_to_move(state: &Self::S) -> Piece {
         state.player_to_move()
-    }
-
-    fn get_reward(init_state: &Self::S, term_state: &Self::S) -> f64 {
-        if !Self::is_terminal(term_state) {
-            panic!();
-        }
-
-        let winner = Self::winner(term_state);
-
-        if winner.is_some() {
-            if Some(Self::player_to_move(init_state)) == winner {
-                1.
-            } else {
-                -100.
-            }
-        } else {
-            0.
-        }
-    }
-}
-
-pub mod demo {
-    use super::*;
-    use crate::strategies::flat_mc::FlatMonteCarloStrategy;
-    use crate::strategies::mcts::TreeSearch;
-    use crate::strategies::Strategy;
-
-    type AgentMCTS = TreeSearch<BiddingTicTacToe>;
-    type AgentFlat = FlatMonteCarloStrategy<BiddingTicTacToe>;
-
-    pub fn play() {
-        // NOTE: Flat MC is terrible at this game.
-        let mut flat = AgentFlat::new().verbose();
-        flat.set_samples_per_move(10000);
-        flat.set_max_depth(1000);
-
-        let mut mcts = AgentMCTS::new();
-        mcts.config.verbose = true;
-        mcts.set_max_rollouts(10000);
-
-        let mut state = BiddingTicTacToe::new();
-        while !BiddingTicTacToe::is_terminal(&state) {
-            println!("{}", state);
-            let player = BiddingTicTacToe::player_to_move(&state);
-            let m = match player {
-                Piece::X => mcts.choose_move(&state),
-                Piece::O => flat.choose_move(&state),
-            }
-            .unwrap();
-            println!(
-                "move: {:?} {}",
-                BiddingTicTacToe::player_to_move(&state),
-                BiddingTicTacToe::notation(&state, &m)
-            );
-            state.apply(m);
-        }
-
-        println!("{}", state);
-        println!("winner: {:?}", state.winner());
     }
 }
