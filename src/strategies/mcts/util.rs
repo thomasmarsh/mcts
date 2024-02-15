@@ -65,7 +65,7 @@ pub struct ScalarAmafMast;
 
 impl<G: Game> Strategy<G> for ScalarAmafMast {
     type Select = select::ScalarAmaf;
-    type Simulate = simulate::EpsilonGreedy<G, simulate::Mast<G::A>>;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Mast>;
     type Backprop = backprop::Classic;
     type FinalAction = select::RobustChild;
 

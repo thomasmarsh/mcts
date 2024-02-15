@@ -6,7 +6,7 @@ pub mod simulate;
 pub mod timer;
 pub mod util;
 
-use crate::game::{Action, Game, PlayerIndex};
+use crate::game::{Game, PlayerIndex};
 use backprop::BackpropStrategy;
 use index::Id;
 use node::Node;

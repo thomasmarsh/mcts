@@ -138,19 +138,10 @@ where
     }
 }
 
-pub struct Mast<A: Action> {
-    pub global_actions: HashMap<A, node::ActionStats>,
-}
+#[derive(Default)]
+pub struct Mast;
 
-impl<A: Action> Default for Mast<A> {
-    fn default() -> Self {
-        Self {
-            global_actions: Default::default(),
-        }
-    }
-}
-
-impl<G> SimulateStrategy<G> for Mast<G::A>
+impl<G> SimulateStrategy<G> for Mast
 where
     G: Game,
 {
