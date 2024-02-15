@@ -24,19 +24,19 @@ type FastRng = rand::rngs::SmallRng;
 
 use rustc_hash::FxHashMap as HashMap;
 
-pub trait Strategy<A: Action> {
-    type Select: select::SelectStrategy<A>;
-    type Simulate: simulate::SimulateStrategy;
+pub trait Strategy<G: Game> {
+    type Select: select::SelectStrategy<G::A>;
+    type Simulate: simulate::SimulateStrategy<G>;
     type Backprop: backprop::BackpropStrategy;
-    type FinalAction: select::SelectStrategy<A>;
+    type FinalAction: select::SelectStrategy<G::A>;
 
     fn friendly_name() -> String;
 }
 
-pub struct MctsStrategy<S, A>
+pub struct MctsStrategy<G, S>
 where
-    S: Strategy<A>,
-    A: Action,
+    G: Game,
+    S: Strategy<G>,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
@@ -93,11 +93,11 @@ pub type TreeIndex<A> = index::Arena<Node<A>>;
 pub struct TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G::A>,
+    S: Strategy<G>,
 {
     pub index: TreeIndex<G::A>,
     pub rng: FastRng,
-    pub strategy: MctsStrategy<S, G::A>,
+    pub strategy: MctsStrategy<G, S>,
     pub timer: timer::Timer,
     pub stats: TreeStats<G>,
     pub verbose: bool,
@@ -106,8 +106,8 @@ where
 impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G::A>,
-    MctsStrategy<S, G::A>: Default,
+    S: Strategy<G>,
+    MctsStrategy<G, S>: Default,
 {
     fn default() -> Self {
         Self::new(Default::default(), FastRng::from_entropy())
@@ -117,9 +117,9 @@ where
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G::A>,
+    S: Strategy<G>,
 {
-    pub fn new(strategy: MctsStrategy<S, G::A>, rng: FastRng) -> Self {
+    pub fn new(strategy: MctsStrategy<G, S>, rng: FastRng) -> Self {
         Self {
             index: index::Arena::new(),
             strategy,
@@ -233,9 +233,10 @@ where
 
     #[inline]
     pub(crate) fn simulate(&mut self, state: &G::S) -> Trial<G> {
-        self.strategy.simulate.playout::<G>(
+        self.strategy.simulate.playout(
             G::determinize(state.clone(), &mut self.rng),
             self.strategy.max_playout_depth,
+            &self.stats,
             &mut self.rng,
         )
     }
@@ -319,7 +320,7 @@ where
 impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G::A>,
+    S: Strategy<G>,
 {
     type G = G;
 

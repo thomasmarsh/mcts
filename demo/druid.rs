@@ -1,6 +1,8 @@
 #![allow(unused)]
 use std::time::Duration;
 
+use ::mcts::strategies::mcts::simulate::EpsilonGreedy;
+use ::mcts::strategies::mcts::TreeSearch;
 use mcts::game::Game;
 use mcts::games::druid::{Druid, Player, State};
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
@@ -21,6 +23,31 @@ pub fn play() -> Option<Player> {
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
         let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmaf> = Default::default();
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.select.bias = BIAS;
+        x.strategy.select.exploration_constant = C_LOW;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.max_time = Duration::from_secs(3);
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let rave_mast = {
+        use mcts::strategies::mcts;
+
+        // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
+        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = TreeSearch {
+            strategy: mcts::MctsStrategy {
+                simulate: EpsilonGreedy {
+                    epsilon: 0.1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
         x.strategy.max_iterations = MAX_ITER;
         x.strategy.select.bias = BIAS;
         x.strategy.select.exploration_constant = C_LOW;
@@ -64,20 +91,23 @@ pub fn play() -> Option<Player> {
     // let mut b = rave_new;
 
     let mut w = rave_new;
-    let mut b = tuned;
+    let mut b = rave_mast;
 
     let mut state = State::new();
     while !Druid::is_terminal(&state) {
         if VERBOSE {
             println!("{}", state);
         }
-        let m = match state.player {
-            Player::Black => b.choose_action(&state),
-            Player::White => w.choose_action(&state),
+        let mut agent: &mut dyn Search<G = Druid> = match state.player {
+            Player::Black => &mut b,
+            Player::White => &mut w,
         };
+
+        let m = agent.choose_action(&state);
         if VERBOSE {
             println!(
-                "move: {:?} {}",
+                "move: {} {:?} {}",
+                agent.friendly_name(),
                 Druid::player_to_move(&state),
                 Druid::notation(&state, &m)
             );
