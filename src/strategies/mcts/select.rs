@@ -102,7 +102,7 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
     type Score = (i64, f64);
     type Aux = ();
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
 
     fn score_child(
         &self,
@@ -132,7 +132,7 @@ impl<A: Action> SelectStrategy<A> for MaxAvgScore {
     type Score = f64;
     type Aux = ();
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
 
     fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
         ctx.index.get(child_id).stats.expected_score(ctx.player)
@@ -171,7 +171,6 @@ impl<A: Action> SelectStrategy<A> for Ucb1 {
     }
 
     fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -297,7 +296,7 @@ impl<A: Action> SelectStrategy<A> for McGrave {
         }
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, aux: Self::Aux) -> f64 {
+    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
 
@@ -325,7 +324,7 @@ impl<A: Action> SelectStrategy<A> for McGrave {
         grave_value(beta, mean_score, mean_amaf)
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, aux: Self::Aux) -> f64 {
+    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -349,7 +348,7 @@ impl<A: Action> SelectStrategy<A> for McBrave {
     type Score = f64;
     type Aux = ();
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
 
     fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
