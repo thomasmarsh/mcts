@@ -170,14 +170,13 @@ where
             }
 
             let best_idx = {
-                let mut select_ctx = SelectContext {
+                let select_ctx = SelectContext {
                     q_init: self.strategy.q_init,
                     current_id: ctx.current_id,
                     player: player.to_index(),
                     index: &self.index,
-                    rng: &mut self.rng,
                 };
-                self.strategy.select.best_child(&mut select_ctx)
+                self.strategy.select.best_child(&select_ctx, &mut self.rng)
             };
 
             let NodeState::Expanded {
@@ -216,13 +215,15 @@ where
 
     #[inline]
     fn select_final_action(&mut self, root_id: Id, state: &G::S) -> G::A {
-        let idx = self.strategy.final_action.best_child(&mut SelectContext {
-            q_init: self.strategy.q_init,
-            current_id: root_id,
-            player: G::player_to_move(state).to_index(),
-            index: &self.index,
-            rng: &mut self.rng,
-        });
+        let idx = self.strategy.final_action.best_child(
+            &SelectContext {
+                q_init: self.strategy.q_init,
+                current_id: root_id,
+                player: G::player_to_move(state).to_index(),
+                index: &self.index,
+            },
+            &mut self.rng,
+        );
 
         match &(self.index.get(root_id).state) {
             NodeState::Expanded { actions, .. } => actions[idx].clone(),

@@ -1,5 +1,7 @@
 use std::sync::atomic::Ordering::Relaxed;
 
+use rand::rngs::SmallRng;
+
 use super::*;
 use crate::game::Action;
 
@@ -8,7 +10,6 @@ pub struct SelectContext<'a, A: Action> {
     pub current_id: index::Id,
     pub player: usize,
     pub index: &'a TreeIndex<A>,
-    pub rng: &'a mut FastRng,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -23,7 +24,8 @@ const PRIMES: [usize; 16] = [
 fn random_best_index<S, A>(
     set: &[Option<Id>],
     strategy: &mut S,
-    ctx: &mut SelectContext<'_, A>,
+    ctx: &SelectContext<'_, A>,
+    rng: &mut SmallRng,
 ) -> usize
 where
     S: SelectStrategy<A>,
@@ -33,28 +35,31 @@ where
     // at a random offset and stride by a random amount. The stride must be
     // coprime with n, so pick from a set of 5 digit primes.
 
-    let n = set.len();
-    let aux = strategy.setup(ctx);
-    let unvisited_value = strategy.unvisited_value(ctx, aux);
-
     // Combine both random numbers into a single rng call.
-    let r = ctx.rng.gen_range(0..n * PRIMES.len());
+    let n = set.len();
+    let r = rng.gen_range(0..n * PRIMES.len());
     let mut i = r / PRIMES.len();
     let stride = PRIMES[r % PRIMES.len()];
 
-    let mut best_score = if let Some(child_id) = &set[i] {
-        strategy.score_child(ctx, *child_id, aux)
-    } else {
-        unvisited_value
-    };
-    let mut best_index = i;
-    for _ in 1..n {
-        i = (i + stride) % n;
-        let score = if let Some(child_id) = &set[i] {
+    let aux = strategy.setup(ctx);
+    let unvisited_value = strategy.unvisited_value(ctx, aux);
+
+    let child_value = |i: usize| {
+        if let Some(child_id) = &set[i] {
             strategy.score_child(ctx, *child_id, aux)
         } else {
             unvisited_value
-        };
+        }
+    };
+
+    let mut best_score = child_value(i);
+
+    let mut best_index = i;
+    for _ in 1..n {
+        i = (i + stride) % n;
+
+        let score = child_value(i);
+
         if score > best_score {
             best_score = score;
             best_index = i;
@@ -72,24 +77,19 @@ pub trait SelectStrategy<A: Action>: Sized {
 
     /// If the strategy wants to lift any calculations out of the inner select
     /// loop, then they can provide this here.
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> Self::Aux;
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux;
 
     /// Default implementation should be sufficient for all cases.
-    fn best_child(&mut self, ctx: &mut SelectContext<'_, A>) -> usize {
+    fn best_child(&mut self, ctx: &SelectContext<'_, A>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.current_id);
-        random_best_index(current.children(), self, ctx)
+        random_best_index(current.children(), self, ctx, rng)
     }
 
     /// Given a child index, calculate a score.
-    fn score_child(
-        &self,
-        ctx: &mut SelectContext<'_, A>,
-        child_id: Id,
-        aux: Self::Aux,
-    ) -> Self::Score;
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, aux: Self::Aux) -> Self::Score;
 
     /// Provide a score for any value that is not yet visited.
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, aux: Self::Aux) -> Self::Score;
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, aux: Self::Aux) -> Self::Score;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -102,14 +102,11 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
     type Score = (i64, f64);
     type Aux = ();
 
-    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
 
-    fn score_child(
-        &self,
-        ctx: &mut SelectContext<'_, A>,
-        child_id: Id,
-        _: Self::Aux,
-    ) -> (i64, f64) {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> (i64, f64) {
         let child = ctx.index.get(child_id);
         (
             child.stats.num_visits as i64,
@@ -117,7 +114,8 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
         )
     }
 
-    fn unvisited_value(&self, _ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> (i64, f64) {
+    #[inline(always)]
+    fn unvisited_value(&self, _ctx: &SelectContext<'_, A>, _: Self::Aux) -> (i64, f64) {
         (0, 0.)
     }
 }
@@ -132,13 +130,16 @@ impl<A: Action> SelectStrategy<A> for MaxAvgScore {
     type Score = f64;
     type Aux = ();
 
-    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
         ctx.index.get(child_id).stats.expected_score(ctx.player)
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> f64 {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -165,12 +166,14 @@ impl<A: Action> SelectStrategy<A> for Ucb1 {
     type Score = f64;
     type Aux = f64;
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> f64 {
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -178,7 +181,8 @@ impl<A: Action> SelectStrategy<A> for Ucb1 {
         exploit + self.exploration_constant * explore
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, parent_log: f64) -> f64 {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -204,7 +208,7 @@ impl Default for Ucb1Tuned {
 
 const VARIANCE_UPPER_BOUND: f64 = 1.;
 
-#[inline]
+#[inline(always)]
 fn ucb1_tuned(
     exploration_constant: f64,
     exploit: f64,
@@ -220,12 +224,14 @@ impl<A: Action> SelectStrategy<A> for Ucb1Tuned {
     type Score = f64;
     type Aux = f64;
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> f64 {
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -242,7 +248,8 @@ impl<A: Action> SelectStrategy<A> for Ucb1Tuned {
         )
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, parent_log: f64) -> Self::Score {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -285,7 +292,8 @@ impl<A: Action> SelectStrategy<A> for McGrave {
     type Score = f64;
     type Aux = ();
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> Self::Aux {
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux {
         let current = ctx.index.get(ctx.current_id);
 
         if self.current_ref_id.is_none()
@@ -296,7 +304,8 @@ impl<A: Action> SelectStrategy<A> for McGrave {
         }
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
 
@@ -324,7 +333,8 @@ impl<A: Action> SelectStrategy<A> for McGrave {
         grave_value(beta, mean_score, mean_amaf)
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> f64 {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -348,9 +358,11 @@ impl<A: Action> SelectStrategy<A> for McBrave {
     type Score = f64;
     type Aux = ();
 
-    fn setup(&mut self, _: &mut SelectContext<'_, A>) -> Self::Aux {}
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: Self::Aux) -> Self::Score {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -358,12 +370,8 @@ impl<A: Action> SelectStrategy<A> for McBrave {
         grave_value(0., unvisited_value, 0.)
     }
 
-    fn score_child(
-        &self,
-        ctx: &mut SelectContext<'_, A>,
-        child_id: Id,
-        _: Self::Aux,
-    ) -> Self::Score {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> Self::Score {
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
 
@@ -426,12 +434,14 @@ impl<A: Action> SelectStrategy<A> for ScalarAmaf {
     type Score = f64;
     type Aux = f64;
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> f64 {
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -449,7 +459,8 @@ impl<A: Action> SelectStrategy<A> for ScalarAmaf {
         (1. - beta) * uct_value + beta * amaf_value
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, _: f64) -> f64 {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: f64) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         current
             .stats
@@ -487,15 +498,15 @@ fn ucb1_grave_value(
     exploration_constant: f64,
     explore: f64,
 ) -> f64 {
-    let grave_value = (1. - beta) * mean_score + beta * mean_amaf;
-    grave_value + exploration_constant * explore
+    grave_value(beta, mean_score, mean_amaf) + exploration_constant * explore
 }
 
 impl<A: Action> SelectStrategy<A> for Ucb1Grave {
     type Score = f64;
     type Aux = f64;
 
-    fn setup(&mut self, ctx: &mut SelectContext<'_, A>) -> f64 {
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         if self.current_ref_id.is_none()
             || current.stats.num_visits > self.threshold
@@ -507,7 +518,8 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
-    fn score_child(&self, ctx: &mut SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
         let current_ref = ctx.index.get(self.current_ref_id.unwrap());
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
@@ -542,7 +554,8 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
         )
     }
 
-    fn unvisited_value(&self, ctx: &mut SelectContext<'_, A>, parent_log: f64) -> Self::Score {
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
