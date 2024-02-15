@@ -8,7 +8,6 @@ use crate::util::random_best;
 
 use std::marker::PhantomData;
 
-// Maybe rename NaiveMonteCarlo
 pub struct FlatMonteCarloStrategy<G: Game> {
     samples_per_move: u32, // TODO: also suppose samples per state
     max_rollout_depth: u32,
@@ -54,15 +53,17 @@ where
     G::S: Clone,
 {
     let mut state = init_state.clone();
+    let mut actions = Vec::new();
     for _ in 0..max_rollout_depth {
         if G::is_terminal(&state) {
             return G::get_reward(init_state, &state);
         }
-        let moves = G::gen_moves(&state);
-        if moves.is_empty() {
+        actions.clear();
+        G::generate_actions(&state, &mut actions);
+        if actions.is_empty() {
             return 0.;
         }
-        let m = moves[rng.gen_range(0..moves.len())].clone();
+        let m = actions[rng.gen_range(0..actions.len())].clone();
 
         state = G::apply(state, &m);
     }
@@ -71,13 +72,6 @@ where
 
 impl<G: Game> Search for FlatMonteCarloStrategy<G> {
     type G = G;
-    // fn set_max_depth(&mut self, depth: u32) {
-    //     self.max_rollout_depth = depth;
-    // }
-
-    // fn set_max_rollouts(&mut self, max_rollouts: u32) {
-    //     self.max_rollouts = max_rollouts;
-    // }
 
     fn friendly_name(&self) -> String {
         "flat_mc".into()

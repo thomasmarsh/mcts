@@ -126,7 +126,7 @@ pub enum NodeState<A: Action> {
     Terminal,
     Leaf,
     Expanded {
-        children: Vec<Option<index::Id>>,
+        children: Vec<Option<index::Id>>, // TODO: consider storing this in arena
         actions: Vec<A>,
     },
 }
@@ -136,10 +136,7 @@ pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
     pub stats: NodeStats<A>,
-    // pub is_terminal: bool,                // TODO: helpful?
     pub state: NodeState<A>,
-    // pub actions: Vec<A>,
-    // pub children: Vec<Option<index::Id>>, // TODO: consider storing this in arena
 }
 
 impl<A: Action> Node<A>
@@ -190,20 +187,6 @@ where
 
     pub fn new_root(num_players: usize) -> Self {
         Self::new(index::Id::invalid_id(), usize::MAX, num_players)
-        // Self {
-        //     // TODO: alternately, have different node types (as will be needed
-        //     // for bounded score search anyway). Or we can introduce a Node
-        //     // trait and specify different storage strategies. `parent()` would`
-        //     // then be a method.
-        //     S
-        //     parent_id: index::Id::invalid_id(),
-        //     action_idx: usize::MAX,
-
-        //     actions: vec![],
-        //     is_terminal: false,
-        //     children: vec![],
-        //     stats: NodeStats::new(num_players),
-        // }
     }
 
     pub fn update(&mut self, utilities: &[f64]) {
@@ -215,7 +198,6 @@ where
             NodeState::Expanded { actions, .. } => actions[self.action_idx].clone(),
             _ => unreachable!(),
         }
-        // index.get(self.parent_id).actions[self.action_idx].clone()
     }
 
     pub fn is_root(&self) -> bool {

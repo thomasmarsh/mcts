@@ -2,13 +2,11 @@ use super::*;
 
 use crate::game::{Game, PlayerIndex};
 
-const UPDATE_GRAVE: bool = false;
-
 pub trait BackpropStrategy {
     fn update<G>(
         &self,
         ctx: &mut SearchContext<G>,
-        _global: &mut TreeStats<G>,
+        global: &mut TreeStats<G>,
         index: &mut TreeIndex<G::A>,
         trial: simulate::Trial<G>,
     ) where
@@ -17,11 +15,7 @@ pub trait BackpropStrategy {
         let current_player = G::player_to_move(&ctx.state).to_index();
         let utilities = compute_utilities::<G>(&trial.state);
 
-        let mut amaf_actions = if UPDATE_GRAVE {
-            trial.actions.clone()
-        } else {
-            vec![]
-        };
+        let mut amaf_actions = trial.actions.clone();
 
         while let Some(node_id) = ctx.stack.pop() {
             let node = index.get(node_id);
@@ -54,26 +48,23 @@ pub trait BackpropStrategy {
             // Standard update
             node.update(&utilities);
 
-            // GRAVE
-            if UPDATE_GRAVE {
-                for action in &amaf_actions {
-                    let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
-                    grave_stats.num_visits += 1;
-                    grave_stats.score += utilities[current_player];
-                }
+            for action in &amaf_actions {
+                let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
+                grave_stats.num_visits += 1;
+                grave_stats.score += utilities[current_player];
+            }
 
-                if let Some(action) = next_action {
-                    amaf_actions.push(action);
-                }
+            if let Some(action) = next_action {
+                amaf_actions.push(action);
             }
         }
 
         // GlobalActionStats
-        // for action in &amaf_actions {
-        //     let action_stats = global.actions.entry(action.clone()).or_default();
-        //     action_stats.num_visits += 1;
-        //     action_stats.score += utilities[G::player_to_move(&ctx.state).to_index()];
-        // }
+        for action in &amaf_actions {
+            let action_stats = global.actions.entry(action.clone()).or_default();
+            action_stats.num_visits += 1;
+            action_stats.score += utilities[G::player_to_move(&ctx.state).to_index()];
+        }
     }
 }
 
@@ -106,6 +97,9 @@ where
             _ => -1.,
         })
         .collect()
+
+    // TODO: think about the best way to handle ranking
+    //
     // (0..G::num_players())
     //     .map(|i| {
     //         let n = G::num_players();

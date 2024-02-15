@@ -6,7 +6,7 @@ pub mod simulate;
 pub mod timer;
 pub mod util;
 
-use crate::game::{Game, PlayerIndex};
+use crate::game::{Action, Game, PlayerIndex};
 use backprop::BackpropStrategy;
 use index::Id;
 use node::Node;
@@ -24,16 +24,20 @@ type FastRng = rand::rngs::SmallRng;
 
 use rustc_hash::FxHashMap as HashMap;
 
-pub trait Strategy {
-    type Select: select::SelectStrategy;
+pub trait Strategy<A: Action> {
+    type Select: select::SelectStrategy<A>;
     type Simulate: simulate::SimulateStrategy;
     type Backprop: backprop::BackpropStrategy;
-    type FinalAction: select::SelectStrategy;
+    type FinalAction: select::SelectStrategy<A>;
 
     fn friendly_name() -> String;
 }
 
-pub struct MctsStrategy<S: Strategy> {
+pub struct MctsStrategy<S, A>
+where
+    S: Strategy<A>,
+    A: Action,
+{
     pub select: S::Select,
     pub simulate: S::Simulate,
     pub backprop: S::Backprop,
@@ -89,11 +93,11 @@ pub type TreeIndex<A> = index::Arena<Node<A>>;
 pub struct TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy,
+    S: Strategy<G::A>,
 {
     pub index: TreeIndex<G::A>,
     pub rng: FastRng,
-    pub strategy: MctsStrategy<S>,
+    pub strategy: MctsStrategy<S, G::A>,
     pub timer: timer::Timer,
     pub stats: TreeStats<G>,
     pub verbose: bool,
@@ -102,8 +106,8 @@ where
 impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy,
-    MctsStrategy<S>: Default,
+    S: Strategy<G::A>,
+    MctsStrategy<S, G::A>: Default,
 {
     fn default() -> Self {
         Self::new(Default::default(), FastRng::from_entropy())
@@ -113,9 +117,9 @@ where
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy,
+    S: Strategy<G::A>,
 {
-    pub fn new(strategy: MctsStrategy<S>, rng: FastRng) -> Self {
+    pub fn new(strategy: MctsStrategy<S, G::A>, rng: FastRng) -> Self {
         Self {
             index: index::Arena::new(),
             strategy,
@@ -282,8 +286,9 @@ where
         let mut children = match &(self.index.get(root_id).state) {
             NodeState::Expanded { children, .. } => children
                 .iter()
+                .flatten()
                 .map(|node_id| {
-                    let node = self.index.get(node_id.unwrap());
+                    let node = self.index.get(*node_id);
                     (
                         node.stats.num_visits,
                         node.stats.scores[player.to_index()],
@@ -313,7 +318,7 @@ where
 impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy,
+    S: Strategy<G::A>,
 {
     type G = G;
 

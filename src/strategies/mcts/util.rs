@@ -5,7 +5,7 @@ use super::*;
 // Vanilla UCT
 pub struct Ucb1;
 
-impl Strategy for Ucb1 {
+impl<A: Action> Strategy<A> for Ucb1 {
     type Select = select::Ucb1;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -16,7 +16,7 @@ impl Strategy for Ucb1 {
     }
 }
 
-impl Default for MctsStrategy<Ucb1> {
+impl<A: Action> Default for MctsStrategy<Ucb1, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -34,7 +34,7 @@ impl Default for MctsStrategy<Ucb1> {
 
 pub struct ScalarAmaf;
 
-impl Strategy for ScalarAmaf {
+impl<A: Action> Strategy<A> for ScalarAmaf {
     type Select = select::ScalarAmaf;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -45,7 +45,7 @@ impl Strategy for ScalarAmaf {
     }
 }
 
-impl Default for MctsStrategy<ScalarAmaf> {
+impl<A: Action> Default for MctsStrategy<ScalarAmaf, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -63,7 +63,7 @@ impl Default for MctsStrategy<ScalarAmaf> {
 
 pub struct Ucb1Tuned;
 
-impl Strategy for Ucb1Tuned {
+impl<A: Action> Strategy<A> for Ucb1Tuned {
     type Select = select::Ucb1Tuned;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -74,7 +74,7 @@ impl Strategy for Ucb1Tuned {
     }
 }
 
-impl Default for MctsStrategy<Ucb1Tuned> {
+impl<A: Action> Default for MctsStrategy<Ucb1Tuned, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -92,7 +92,7 @@ impl Default for MctsStrategy<Ucb1Tuned> {
 
 pub struct McGrave;
 
-impl Strategy for McGrave {
+impl<A: Action> Strategy<A> for McGrave {
     type Select = select::McGrave;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -103,7 +103,7 @@ impl Strategy for McGrave {
     }
 }
 
-impl Default for MctsStrategy<McGrave> {
+impl<A: Action> Default for MctsStrategy<McGrave, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -121,7 +121,7 @@ impl Default for MctsStrategy<McGrave> {
 
 pub struct McBrave;
 
-impl Strategy for McBrave {
+impl<A: Action> Strategy<A> for McBrave {
     type Select = select::McBrave;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -132,7 +132,7 @@ impl Strategy for McBrave {
     }
 }
 
-impl Default for MctsStrategy<McBrave> {
+impl<A: Action> Default for MctsStrategy<McBrave, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -150,7 +150,7 @@ impl Default for MctsStrategy<McBrave> {
 
 pub struct Ucb1Grave;
 
-impl Strategy for Ucb1Grave {
+impl<A: Action> Strategy<A> for Ucb1Grave {
     type Select = select::Ucb1Grave;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
@@ -161,7 +161,7 @@ impl Strategy for Ucb1Grave {
     }
 }
 
-impl Default for MctsStrategy<Ucb1Grave> {
+impl<A: Action> Default for MctsStrategy<Ucb1Grave, A> {
     fn default() -> Self {
         Self {
             select: Default::default(),
