@@ -487,6 +487,7 @@ where
     map.join("")
 }
 
+#[derive(Clone)]
 pub struct Druid;
 
 impl Game for Druid {

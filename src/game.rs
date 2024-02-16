@@ -9,16 +9,16 @@ pub trait PlayerIndex {
 }
 
 // A proxy trait to simplify some implementation
-pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize {}
+pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send {}
 
 // Blanket implementation
-impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize> Action for T {}
+impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send> Action for T {}
 
 pub trait Game: Sized {
     /// The type representing the state of your game. Ideally, this
     /// should be as small as possible and have a cheap Clone or Copy
     /// implementation.
-    type S: Clone + std::fmt::Debug;
+    type S: Clone + std::fmt::Debug + Sized + Sync;
 
     /// The type representing actions, or moves, in your game. These
     /// also should be very cheap to clone.

@@ -5,7 +5,7 @@ pub mod sync_util;
 
 use crate::game::Game;
 
-pub trait Search {
+pub trait Search: Sync + Send {
     type G: Game;
 
     fn friendly_name(&self) -> String;

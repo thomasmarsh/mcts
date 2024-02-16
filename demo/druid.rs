@@ -23,61 +23,105 @@ pub fn play() {
 
     assert_eq!(Duration::default(), Duration::from_secs(0));
 
-    let mut rave_new = {
+    let mut grave = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::McGrave> = Default::default();
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.bias = BIAS;
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut brave = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::McBrave> = Default::default();
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.bias = BIAS;
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut ucb1_grave = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Grave> = Default::default();
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.bias = BIAS;
+        x.strategy.select.exploration_constant = C_LOW;
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut ucb1_grave_mast_low = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1GraveMast> = Default::default();
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.bias = BIAS;
+        x.strategy.select.exploration_constant = C_LOW;
+        x.strategy.simulate.epsilon = 0.1;
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut amaf = {
         use mcts::strategies::mcts;
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
         let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmaf> = Default::default();
         x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.select.bias = BIAS;
         x.strategy.select.exploration_constant = C_LOW;
-        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.verbose = VERBOSE;
         x
     };
 
-    let mut rave_mast = {
+    let mut amaf_mast = {
         use mcts::strategies::mcts;
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
-        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = TreeSearch {
-            strategy: mcts::MctsStrategy {
-                simulate: EpsilonGreedy::with_epsilon(0.),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
+        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = Default::default();
         x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.select.bias = BIAS;
         x.strategy.select.exploration_constant = C_LOW;
-        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.simulate.epsilon = 0.1;
         x.verbose = VERBOSE;
         x
     };
 
-    let mut rave_mast_high = {
+    let mut amaf_mast_high = {
         use mcts::strategies::mcts;
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
-        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = TreeSearch {
-            strategy: mcts::MctsStrategy {
-                simulate: EpsilonGreedy::with_epsilon(0.9),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = Default::default();
 
         x.strategy.max_iterations = MAX_ITER;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.select.bias = BIAS;
         x.strategy.select.exploration_constant = C_LOW;
-        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.simulate.epsilon = 0.9;
         x.verbose = VERBOSE;
         x
     };
@@ -88,10 +132,10 @@ pub fn play() {
         let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1> = Default::default();
 
         x.strategy.max_iterations = MAX_ITER;
-        x.strategy.select.exploration_constant = C_STD;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.exploration_constant = C_STD;
         x.verbose = VERBOSE;
         x
     };
@@ -99,19 +143,14 @@ pub fn play() {
     let mut uct_mast_low = {
         use mcts::strategies::mcts;
 
-        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = TreeSearch {
-            strategy: mcts::MctsStrategy {
-                simulate: EpsilonGreedy::with_epsilon(0.1),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = Default::default();
 
         x.strategy.max_iterations = MAX_ITER;
-        x.strategy.select.exploration_constant = C_STD;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.simulate.epsilon = 0.1;
         x.verbose = VERBOSE;
         x
     };
@@ -119,19 +158,14 @@ pub fn play() {
     let mut uct_mast_high = {
         use mcts::strategies::mcts;
 
-        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = TreeSearch {
-            strategy: mcts::MctsStrategy {
-                simulate: EpsilonGreedy::with_epsilon(0.9),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = Default::default();
 
         x.strategy.max_iterations = MAX_ITER;
-        x.strategy.select.exploration_constant = C_STD;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.simulate.epsilon = 0.9;
         x.verbose = VERBOSE;
         x
     };
@@ -141,10 +175,10 @@ pub fn play() {
         let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Tuned> = Default::default();
 
         x.strategy.max_iterations = MAX_ITER;
-        x.strategy.select.exploration_constant = C_LOW;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.select.exploration_constant = C_LOW;
         x.verbose = VERBOSE;
         x
     };
@@ -152,20 +186,17 @@ pub fn play() {
     // let mut flat = AgentFlat::new().set_samples_per_move(1000);
 
     // let mut w = tuned; // uct_new;
-    // let mut b = rave_new;
-
-    // mcts[ucb1_tuned]:       wins=3,  losses=25, draws=0
-    // mcts[scalar_amaf]:      wins=0,  losses=28, draws=0
-    // mcts[scalar_amaf+mast]: wins=19, losses=9,  draws=0
-    // mcts[ucb1_mast      ]:  wins=6,  losses=22, draws=0
-    // mcts[ucb1]:             wins=5,  losses=23, draws=0
+    // let mut b = amaf;
 
     let mut strategies: Vec<AnySearch<'_, Druid>> = vec![
-        AnySearch(Box::new(rave_new)),
-        AnySearch(Box::new(rave_mast)),
-        AnySearch(Box::new(tuned)),
-        AnySearch(Box::new(uct_new)),
-        AnySearch(Box::new(uct_mast_high)),
+        AnySearch::new(amaf),
+        AnySearch::new(amaf_mast),
+        AnySearch::new(tuned),
+        AnySearch::new(uct_new),
+        AnySearch::new(uct_mast_high),
+        AnySearch::new(grave),
+        AnySearch::new(brave),
+        AnySearch::new(ucb1_grave),
     ];
 
     // Convert the vector of trait objects into a vector of mutable references

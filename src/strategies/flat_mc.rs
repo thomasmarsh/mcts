@@ -70,7 +70,7 @@ where
     0.
 }
 
-impl<G: Game> Search for FlatMonteCarloStrategy<G> {
+impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
     type G = G;
 
     fn friendly_name(&self) -> String {

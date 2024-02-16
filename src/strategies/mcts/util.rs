@@ -235,3 +235,32 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1Grave> {
         }
     }
 }
+
+pub struct Ucb1GraveMast;
+
+impl<G: Game> Strategy<G> for Ucb1GraveMast {
+    type Select = select::Ucb1Grave;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Mast>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1-grave+mast".into()
+    }
+}
+
+impl<G: Game> Default for MctsStrategy<G, Ucb1GraveMast> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: Default::default(),
+            backprop: backprop::Classic,
+            final_action: select::RobustChild,
+            q_init: node::UnvisitedValueEstimate::Parent,
+            playouts_before_expanding: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+        }
+    }
+}

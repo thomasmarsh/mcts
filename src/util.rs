@@ -6,19 +6,32 @@ use crate::game::{Game, PlayerIndex};
 use crate::strategies;
 
 use crate::strategies::Search;
+use rayon::prelude::*;
 use std::ops::AddAssign;
+use std::sync::Arc;
+use std::sync::Mutex;
 
-pub struct AnySearch<'a, G: Game>(pub Box<dyn strategies::Search<G = G> + 'a>);
+#[derive(Clone)]
+pub struct AnySearch<'a, G: Game + Clone>(pub Arc<Mutex<Box<dyn strategies::Search<G = G> + 'a>>>);
 
-impl<'a, G: Game> strategies::Search for AnySearch<'a, G> {
+impl<'a, G> AnySearch<'a, G>
+where
+    G: Game + Clone,
+{
+    pub fn new<S: strategies::Search<G = G> + 'a>(search: S) -> Self {
+        Self(Arc::new(Mutex::new(Box::new(search))))
+    }
+}
+
+impl<'a, G: Game + Clone> strategies::Search for AnySearch<'a, G> {
     type G = G;
 
     fn friendly_name(&self) -> String {
-        self.0.friendly_name()
+        self.0.lock().unwrap().friendly_name()
     }
 
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
-        self.0.choose_action(state)
+        self.0.lock().unwrap().choose_action(state)
     }
 }
 
@@ -98,6 +111,19 @@ pub struct Result {
     draws: usize,
 }
 
+use std::ops::Add;
+
+impl Add for Result {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Result {
+            wins: self.wins + rhs.wins,
+            losses: self.losses + rhs.losses,
+            draws: self.draws + rhs.draws,
+        }
+    }
+}
+
 impl AddAssign for Result {
     fn add_assign(&mut self, rhs: Self) {
         self.wins += rhs.wins;
@@ -106,52 +132,31 @@ impl AddAssign for Result {
     }
 }
 
-/// Play a round-robin tournament multiple times with the provided strategies.
-pub fn round_robin_multiple<G, S>(
-    strategies: &mut Vec<AnySearch<'_, G>>,
-    rounds: usize,
-    init: &G::S,
-) -> Vec<Result>
-where
-    G: Game,
-    S: strategies::Search<G = G>,
-{
-    let mut results = vec![Result::default(); strategies.len()];
-
-    for _ in 0..rounds {
-        for (index, result) in round_robin::<G>(strategies, init).iter().enumerate() {
-            results[index] += *result;
-
-            println!(
-                "{}: wins={}, losses={}, draws={}",
-                strategies[index].friendly_name(),
-                results[index].wins,
-                results[index].losses,
-                results[index].draws,
-            );
-        }
-    }
-
-    results
-}
-
 /// Play a round-robin tournament with the provided strategies.
 fn round_robin<G>(strategies: &mut Vec<AnySearch<'_, G>>, init: &G::S) -> Vec<Result>
 where
-    G: Game,
+    G: Game + Clone,
+    G::S: Sync,
 {
-    let mut results = vec![Result::default(); strategies.len()];
-
+    let mut pairs = Vec::new();
     for i in 0..strategies.len() {
         for j in 0..strategies.len() {
-            if i == j {
-                continue;
+            if i != j {
+                pairs.push((i, j));
             }
-            println!(
-                "{} vs. {}",
-                strategies[i].friendly_name(),
-                strategies[j].friendly_name()
-            );
+        }
+    }
+    let len = pairs.len();
+
+    use indicatif::ParallelProgressIterator;
+
+    pairs
+        .into_par_iter()
+        .map(|(i, j)| {
+            let mut results = vec![Result::default(); strategies.len()];
+            let mut si = strategies[i].clone();
+            let mut sj = strategies[j].clone();
+            println!("{} vs. {}", si.friendly_name(), sj.friendly_name(),);
             let mut state = init.clone();
             let mut current_strategy = 0;
 
@@ -175,10 +180,53 @@ where
                     break;
                 }
 
-                let action = strategies[players[current_strategy]].choose_action(&state);
+                let index = players[current_strategy];
+                let action = if index == i {
+                    si.choose_action(&state)
+                } else {
+                    sj.choose_action(&state)
+                };
+
                 state = G::apply(state, &action);
                 current_strategy = 1 - current_strategy;
             }
+            println!("finish: {} vs. {}", si.friendly_name(), sj.friendly_name());
+            results
+        })
+        .progress_count(len as u64)
+        .reduce_with(|acc, x| {
+            acc.into_iter()
+                .zip(x.iter())
+                .map(|(r1, r2)| r1 + *r2)
+                .collect()
+        })
+        .unwrap_or_else(|| panic!())
+}
+
+/// Play a round-robin tournament multiple times with the provided strategies.
+pub fn round_robin_multiple<G, S>(
+    strategies: &mut Vec<AnySearch<'_, G>>,
+    rounds: usize,
+    init: &G::S,
+) -> Vec<Result>
+where
+    G: Game + Clone,
+    S: strategies::Search<G = G>,
+{
+    let mut results = vec![Result::default(); strategies.len()];
+
+    for _ in 0..rounds {
+        for (index, result) in round_robin::<G>(strategies, init).iter().enumerate() {
+            results[index] += *result;
+
+            println!("=======================================");
+            println!(
+                "{}: wins={}, losses={}, draws={}",
+                strategies[index].friendly_name(),
+                results[index].wins,
+                results[index].losses,
+                results[index].draws,
+            );
         }
     }
 

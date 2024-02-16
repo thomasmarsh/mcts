@@ -26,7 +26,7 @@ impl<G: Game> Default for Random<G> {
     }
 }
 
-impl<G: Game> Search for Random<G> {
+impl<G: Game + Sync + Send> Search for Random<G> {
     type G = G;
 
     fn friendly_name(&self) -> String {

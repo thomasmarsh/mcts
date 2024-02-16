@@ -325,6 +325,10 @@ impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    <S as Strategy<G>>::Select: Sync + Send,
+    <S as Strategy<G>>::FinalAction: Sync + Send,
+    <S as Strategy<G>>::Backprop: Sync + Send,
+    <S as Strategy<G>>::Simulate: Sync + Send,
 {
     type G = G;
 
