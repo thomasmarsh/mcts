@@ -35,6 +35,7 @@ where
         &self,
         available: &'a [G::A],
         stats: &TreeStats<G>,
+        player: usize,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         &available[rng.gen_range(0..available.len())]
@@ -45,6 +46,7 @@ where
         mut state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
+        player: usize,
         rng: &mut FastRng,
     ) -> Trial<G> {
         let mut actions = Vec::new();
@@ -66,7 +68,7 @@ where
                 end_type = Some(EndType::NaturalEnd);
                 break;
             }
-            let action: &G::A = self.select_move(&available, stats, rng);
+            let action: &G::A = self.select_move(&available, stats, player, rng);
             actions.push(action.clone());
             state = G::apply(state, action);
             depth += 1;
@@ -94,6 +96,18 @@ where
     pub inner: S,
     pub marker: PhantomData<G>,
 }
+impl<G, S> EpsilonGreedy<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    pub fn with_epsilon(epsilon: f64) -> Self {
+        Self {
+            epsilon,
+            ..Default::default()
+        }
+    }
+}
 
 impl<G, S> Default for EpsilonGreedy<G, S>
 where
@@ -118,12 +132,13 @@ where
         &self,
         available: &'a [G::A],
         stats: &TreeStats<G>,
+        player: usize,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if rng.gen::<f64>() < self.epsilon {
-            <Uniform as SimulateStrategy<G>>::select_move(&Uniform, available, stats, rng)
+            <Uniform as SimulateStrategy<G>>::select_move(&Uniform, available, stats, player, rng)
         } else {
-            self.inner.select_move(available, stats, rng)
+            self.inner.select_move(available, stats, player, rng)
         }
     }
 
@@ -132,9 +147,11 @@ where
         state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
+        player: usize,
         rng: &mut SmallRng,
     ) -> Trial<G> {
-        self.inner.playout(state, max_playout_depth, stats, rng)
+        self.inner
+            .playout(state, max_playout_depth, stats, player, rng)
     }
 }
 
@@ -149,22 +166,26 @@ where
         &self,
         available: &'a [G::A],
         stats: &TreeStats<G>,
+        player: usize,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         let action_scores = available
             .iter()
             .map(|action| {
-                let score = stats.actions.get(action).map_or(1., |stats| {
-                    if stats.num_visits > 0 {
-                        stats.score / stats.num_visits as f64
-                    } else {
-                        1.
-                    }
-                });
+                let score = stats.player_actions[player]
+                    .get(action)
+                    .map_or(1., |stats| {
+                        if stats.num_visits > 0 {
+                            stats.score / stats.num_visits as f64
+                        } else {
+                            1.
+                        }
+                    });
 
                 (score, action)
             })
             .collect::<Vec<_>>();
+        // println!("scores:\n{:#?}", action_scores);
 
         random_best(&action_scores, rng, |(score, _)| *score)
             .unwrap()

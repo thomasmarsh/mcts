@@ -7,18 +7,23 @@ use mcts::game::Game;
 use mcts::games::druid::{Druid, Player, State};
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
 use mcts::strategies::mcts::util;
-use mcts::strategies::Search;
+use mcts::strategies::{self, Search};
+use mcts::util::{round_robin_multiple, AnySearch};
 
-pub fn play() -> Option<Player> {
+pub fn play() {
+    // }-> Option<Player> {
     const PLAYOUT_DEPTH: usize = 200;
     const C_LOW: f64 = 0.1;
     const C_STD: f64 = 1.414;
-    const MAX_ITER: usize = usize::MAX; // 10000;
+    const MAX_ITER: usize = 10000; //usize::MAX; // 10000;
     const BIAS: f64 = 700.0;
     const EXPAND_THRESHOLD: u32 = 5;
-    const VERBOSE: bool = true;
+    const VERBOSE: bool = false;
+    const MAX_TIME_SECS: u64 = 0; // 0 = infinite
 
-    let rave_new = {
+    assert_eq!(Duration::default(), Duration::from_secs(0));
+
+    let mut rave_new = {
         use mcts::strategies::mcts;
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
@@ -28,21 +33,18 @@ pub fn play() -> Option<Player> {
         x.strategy.select.exploration_constant = C_LOW;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(3);
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.verbose = VERBOSE;
         x
     };
 
-    let rave_mast = {
+    let mut rave_mast = {
         use mcts::strategies::mcts;
 
         // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
         let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = TreeSearch {
             strategy: mcts::MctsStrategy {
-                simulate: EpsilonGreedy {
-                    epsilon: 0.1,
-                    ..Default::default()
-                },
+                simulate: EpsilonGreedy::with_epsilon(0.),
                 ..Default::default()
             },
             ..Default::default()
@@ -53,12 +55,34 @@ pub fn play() -> Option<Player> {
         x.strategy.select.exploration_constant = C_LOW;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(3);
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.verbose = VERBOSE;
         x
     };
 
-    let uct_new = {
+    let mut rave_mast_high = {
+        use mcts::strategies::mcts;
+
+        // let mut x: mcts2::mcts::TreeSearch<Druid, mcts2::util::Ucb1Grave> = Default::default();
+        let mut x: mcts::TreeSearch<Druid, mcts::util::ScalarAmafMast> = TreeSearch {
+            strategy: mcts::MctsStrategy {
+                simulate: EpsilonGreedy::with_epsilon(0.9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.select.bias = BIAS;
+        x.strategy.select.exploration_constant = C_LOW;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut uct_new = {
         use mcts::strategies::mcts;
 
         let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1> = Default::default();
@@ -67,11 +91,51 @@ pub fn play() -> Option<Player> {
         x.strategy.select.exploration_constant = C_STD;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.verbose = VERBOSE;
         x
     };
 
-    let tuned = {
+    let mut uct_mast_low = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = TreeSearch {
+            strategy: mcts::MctsStrategy {
+                simulate: EpsilonGreedy::with_epsilon(0.1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.verbose = VERBOSE;
+        x
+    };
+
+    let mut uct_mast_high = {
+        use mcts::strategies::mcts;
+
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Mast> = TreeSearch {
+            strategy: mcts::MctsStrategy {
+                simulate: EpsilonGreedy::with_epsilon(0.9),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        x.strategy.max_iterations = MAX_ITER;
+        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
+        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
+        x.verbose = VERBOSE;
+        x
+    };
+    let mut tuned = {
         use mcts::strategies::mcts;
 
         let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1Tuned> = Default::default();
@@ -80,7 +144,7 @@ pub fn play() -> Option<Player> {
         x.strategy.select.exploration_constant = C_LOW;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.max_time = Duration::from_secs(3);
+        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.verbose = VERBOSE;
         x
     };
@@ -90,8 +154,28 @@ pub fn play() -> Option<Player> {
     // let mut w = tuned; // uct_new;
     // let mut b = rave_new;
 
-    let mut w = rave_new;
-    let mut b = rave_mast;
+    // mcts[ucb1_tuned]:       wins=3,  losses=25, draws=0
+    // mcts[scalar_amaf]:      wins=0,  losses=28, draws=0
+    // mcts[scalar_amaf+mast]: wins=19, losses=9,  draws=0
+    // mcts[ucb1_mast      ]:  wins=6,  losses=22, draws=0
+    // mcts[ucb1]:             wins=5,  losses=23, draws=0
+
+    let mut strategies: Vec<AnySearch<'_, Druid>> = vec![
+        AnySearch(Box::new(rave_new)),
+        AnySearch(Box::new(rave_mast)),
+        AnySearch(Box::new(tuned)),
+        AnySearch(Box::new(uct_new)),
+        AnySearch(Box::new(uct_mast_high)),
+    ];
+
+    // Convert the vector of trait objects into a vector of mutable references
+
+    round_robin_multiple::<Druid, AnySearch<'_, Druid>>(&mut strategies, 10, &State::new());
+}
+
+/*
+    let mut b = tuned;
+    let mut w = uct_mast_high;
 
     let mut state = State::new();
     while !Druid::is_terminal(&state) {
@@ -123,6 +207,7 @@ pub fn play() -> Option<Player> {
 }
 
 fn main() {
+
     color_backtrace::install();
 
     let mut w = 0;
@@ -145,4 +230,9 @@ fn main() {
             b, pct_b, w, pct_w, x
         );
     }
+}
+    */
+
+fn main() {
+    play();
 }

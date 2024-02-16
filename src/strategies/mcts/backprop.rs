@@ -48,6 +48,7 @@ pub trait BackpropStrategy {
             // Standard update
             node.update(&utilities);
 
+            // GRAVE update
             for action in &amaf_actions {
                 let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
                 grave_stats.num_visits += 1;
@@ -61,9 +62,18 @@ pub trait BackpropStrategy {
 
         // GlobalActionStats
         for action in &amaf_actions {
+            let player = G::player_to_move(&ctx.state).to_index();
             let action_stats = global.actions.entry(action.clone()).or_default();
             action_stats.num_visits += 1;
-            action_stats.score += utilities[G::player_to_move(&ctx.state).to_index()];
+            action_stats.score += utilities[player];
+
+            let player_action_stats = global.player_actions[player]
+                .entry(action.clone())
+                .or_default();
+            player_action_stats.num_visits += 1;
+            for i in 0..G::num_players() {
+                player_action_stats.score += utilities[i];
+            }
         }
     }
 }

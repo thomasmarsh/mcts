@@ -76,14 +76,17 @@ impl<G: Game> SearchContext<G> {
     }
 }
 
+#[derive(Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: HashMap<G::A, node::ActionStats>,
+    pub player_actions: Vec<HashMap<G::A, node::ActionStats>>,
 }
 
 impl<G: Game> Default for TreeStats<G> {
     fn default() -> Self {
         Self {
             actions: Default::default(),
+            player_actions: vec![Default::default(); G::num_players()],
         }
     }
 }
@@ -232,11 +235,12 @@ where
     }
 
     #[inline]
-    pub(crate) fn simulate(&mut self, state: &G::S) -> Trial<G> {
+    pub(crate) fn simulate(&mut self, state: &G::S, player: usize) -> Trial<G> {
         self.strategy.simulate.playout(
             G::determinize(state.clone(), &mut self.rng),
             self.strategy.max_playout_depth,
             &self.stats,
+            player,
             &mut self.rng,
         )
     }
@@ -340,7 +344,7 @@ where
             }
             let mut ctx = SearchContext::new(root_id, state.clone());
             self.select(&mut ctx);
-            let trial = self.simulate(&ctx.state);
+            let trial = self.simulate(&ctx.state, G::player_to_move(state).to_index());
             self.backprop(&mut ctx, trial);
         }
 
