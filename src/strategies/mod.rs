@@ -69,7 +69,7 @@ mod tests {
         let step = |new: &mut New| {
             let mut ctx = mcts::SearchContext::new(root_id_new, init_state.clone());
             new.select(&mut ctx);
-            let trial = new.simulate(&ctx.state);
+            let trial = new.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
             println!("trial actions: {:?}", trial.actions);
             println!("trial status: {:?}", trial.status);
             println!("utilites: {:?}", compute_utilities::<G>(&trial.state));
