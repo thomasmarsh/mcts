@@ -6,7 +6,7 @@ use crate::game::{Game, PlayerIndex};
 use crate::strategies;
 
 use crate::strategies::Search;
-use std::collections::HashMap;
+use std::ops::AddAssign;
 
 pub struct AnySearch<'a, G: Game>(pub Box<dyn strategies::Search<G = G> + 'a>);
 
@@ -91,65 +91,56 @@ where
     }
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Result {
+    wins: usize,
+    losses: usize,
+    draws: usize,
+}
+
+impl AddAssign for Result {
+    fn add_assign(&mut self, rhs: Self) {
+        self.wins += rhs.wins;
+        self.losses += rhs.losses;
+        self.draws += rhs.draws;
+    }
+}
+
 /// Play a round-robin tournament multiple times with the provided strategies.
-///
-/// Returns a map where the keys are the indices of the strategies and the values are tuples
-/// containing the number of wins, losses, and draws for each strategy.
 pub fn round_robin_multiple<G, S>(
     strategies: &mut Vec<AnySearch<'_, G>>,
-    // mut strategies: Vec<&mut dyn strategies::Search<G = G>>,
     rounds: usize,
     init: &G::S,
-) -> HashMap<usize, (usize, usize, usize)>
+) -> Vec<Result>
 where
     G: Game,
     S: strategies::Search<G = G>,
 {
-    let mut cumulative_results = HashMap::new();
-
-    for (i, _) in strategies.iter().enumerate() {
-        cumulative_results.insert(i, (0, 0, 0));
-    }
+    let mut results = vec![Result::default(); strategies.len()];
 
     for _ in 0..rounds {
-        let results = round_robin::<G>(strategies, init);
-        for (index, (wins, losses, draws)) in results {
-            let (cumulative_wins, cumulative_losses, cumulative_draws) =
-                cumulative_results.entry(index).or_insert((0, 0, 0));
-
-            *cumulative_wins += wins;
-            *cumulative_losses += losses;
-            *cumulative_draws += draws;
+        for (index, result) in round_robin::<G>(strategies, init).iter().enumerate() {
+            results[index] += *result;
 
             println!(
                 "{}: wins={}, losses={}, draws={}",
                 strategies[index].friendly_name(),
-                *cumulative_wins,
-                *cumulative_losses,
-                *cumulative_draws
+                results[index].wins,
+                results[index].losses,
+                results[index].draws,
             );
         }
     }
 
-    cumulative_results
+    results
 }
 
 /// Play a round-robin tournament with the provided strategies.
-///
-/// Returns a map where the keys are the indices of the strategies and the values are tuples
-/// containing the number of wins, losses, and draws for each strategy.
-fn round_robin<G>(
-    strategies: &mut Vec<AnySearch<'_, G>>,
-    init: &G::S,
-) -> HashMap<usize, (usize, usize, usize)>
+fn round_robin<G>(strategies: &mut Vec<AnySearch<'_, G>>, init: &G::S) -> Vec<Result>
 where
     G: Game,
 {
-    let mut results = HashMap::new();
-
-    for (i, _) in strategies.iter().enumerate() {
-        results.insert(i, (0, 0, 0));
-    }
+    let mut results = vec![Result::default(); strategies.len()];
 
     for i in 0..strategies.len() {
         for j in 0..strategies.len() {
@@ -164,47 +155,27 @@ where
             let mut state = init.clone();
             let mut current_strategy = 0;
 
+            let players = [i, j];
+
             loop {
                 if G::is_terminal(&state) {
-                    let current_player = G::player_to_move(&state);
-                    let winner = G::winner(&state);
-                    if let Some(p) = winner {
-                        let (wins, losses, draws) = results
-                            .get_mut(&if current_player.to_index() == p.to_index() {
-                                i
-                            } else {
-                                j
-                            })
-                            .unwrap();
-                        match current_player.to_index() {
-                            0 => {
-                                if i == j {
-                                    *draws += 1;
-                                } else if i == current_player.to_index() {
-                                    *wins += 1;
-                                } else {
-                                    *losses += 1;
-                                }
-                            }
-                            1 => {
-                                if i == j {
-                                    *draws += 1;
-                                } else if j == current_player.to_index() {
-                                    *wins += 1;
-                                } else {
-                                    *losses += 1;
-                                }
-                            }
-                            _ => panic!(),
+                    match G::winner(&state) {
+                        None => {
+                            results[i].draws += 1;
+                            results[j].draws += 1;
+                        }
+                        Some(p) => {
+                            let winner = players[p.to_index()];
+                            let loser = players[1 - p.to_index()];
+
+                            results[winner].wins += 1;
+                            results[loser].losses += 1;
                         }
                     }
                     break;
                 }
-                let action = if current_strategy == i {
-                    strategies[i].choose_action(&state)
-                } else {
-                    strategies[j].choose_action(&state)
-                };
+
+                let action = strategies[players[current_strategy]].choose_action(&state);
                 state = G::apply(state, &action);
                 current_strategy = 1 - current_strategy;
             }
