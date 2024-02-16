@@ -23,6 +23,7 @@ pub struct Trial<G: Game> {
     pub actions: Vec<G::A>,
     pub state: G::S,
     pub status: Status,
+    pub depth: usize,
 }
 
 pub trait SimulateStrategy<G>
@@ -78,6 +79,7 @@ where
             actions,
             state,
             status: Status { end_type },
+            depth,
         }
     }
 }

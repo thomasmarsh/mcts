@@ -15,6 +15,10 @@ pub trait Search: Sync + Send {
     fn principle_variation(&self) -> Vec<&<Self::G as Game>::A> {
         vec![]
     }
+
+    fn estimated_depth(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

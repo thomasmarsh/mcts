@@ -1,3 +1,4 @@
+use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rand::Rng;
 
 use rand::rngs::SmallRng;
@@ -32,6 +33,10 @@ impl<'a, G: Game + Clone> strategies::Search for AnySearch<'a, G> {
 
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
         self.0.lock().unwrap().choose_action(state)
+    }
+
+    fn estimated_depth(&self) -> usize {
+        self.0.lock().unwrap().estimated_depth()
     }
 }
 
@@ -112,6 +117,7 @@ pub struct Result {
 }
 
 use std::ops::Add;
+use std::sync::atomic::AtomicU32;
 
 impl Add for Result {
     type Output = Self;
@@ -148,49 +154,60 @@ where
     }
     let len = pairs.len();
 
-    use indicatif::ParallelProgressIterator;
+    let mp = MultiProgress::new();
+    let sty = ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {spinner:.green} {msg}",
+    )
+    .unwrap();
+    // .progress_chars("##-");
 
-    pairs
+    let counter: AtomicU32 = AtomicU32::new(0);
+
+    let results = pairs
         .into_par_iter()
         .map(|(i, j)| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut depth = 0;
+            let pb = mp.add(ProgressBar::new(0));
+            pb.set_style(sty.clone());
+
             let mut results = vec![Result::default(); strategies.len()];
-            let mut si = strategies[i].clone();
-            let mut sj = strategies[j].clone();
-            println!("{} vs. {}", si.friendly_name(), sj.friendly_name(),);
-            let mut state = init.clone();
-            let mut current_strategy = 0;
+            let si = strategies[i].clone();
+            let sj = strategies[j].clone();
+            pb.set_message(format!("{} / {}", si.friendly_name(), sj.friendly_name()));
 
+            let mut strat = [si, sj];
             let players = [i, j];
-
+            let mut current;
+            let mut state = init.clone();
             loop {
+                current = G::player_to_move(&state).to_index();
                 if G::is_terminal(&state) {
-                    match G::winner(&state) {
-                        None => {
-                            results[i].draws += 1;
-                            results[j].draws += 1;
-                        }
-                        Some(p) => {
-                            let winner = players[p.to_index()];
-                            let loser = players[1 - p.to_index()];
-
-                            results[winner].wins += 1;
-                            results[loser].losses += 1;
-                        }
-                    }
                     break;
                 }
 
-                let index = players[current_strategy];
-                let action = if index == i {
-                    si.choose_action(&state)
-                } else {
-                    sj.choose_action(&state)
-                };
-
+                let action = strat[current].choose_action(&state);
+                pb.set_length(depth + strat[current].estimated_depth() as u64);
                 state = G::apply(state, &action);
-                current_strategy = 1 - current_strategy;
+                pb.inc(1);
+                depth += 1;
             }
-            println!("finish: {} vs. {}", si.friendly_name(), sj.friendly_name());
+
+            match G::winner(&state) {
+                None => {
+                    results[i].draws += 1;
+                    results[j].draws += 1;
+                }
+                Some(p) => {
+                    let winner = players[p.to_index()];
+                    let loser = players[1 - p.to_index()];
+
+                    results[winner].wins += 1;
+                    results[loser].losses += 1;
+                }
+            }
+            pb.finish();
+            counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             results
         })
         .progress_count(len as u64)
@@ -200,7 +217,10 @@ where
                 .map(|(r1, r2)| r1 + *r2)
                 .collect()
         })
-        .unwrap_or_else(|| panic!())
+        .unwrap_or_else(|| panic!());
+
+    assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 0);
+    results
 }
 
 /// Play a round-robin tournament multiple times with the provided strategies.
@@ -216,18 +236,25 @@ where
     let mut results = vec![Result::default(); strategies.len()];
 
     for _ in 0..rounds {
-        for (index, result) in round_robin::<G>(strategies, init).iter().enumerate() {
+        let new_results = round_robin::<G>(strategies, init);
+        println!("{:=<47}", "");
+        println!(
+            "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
+            "match", "won", "lost", "draw"
+        );
+        println!("{:-<47}", "");
+        for (index, result) in new_results.iter().enumerate() {
             results[index] += *result;
 
-            println!("=======================================");
             println!(
-                "{}: wins={}, losses={}, draws={}",
+                "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
                 strategies[index].friendly_name(),
                 results[index].wins,
                 results[index].losses,
                 results[index].draws,
             );
         }
+        println!("{:=<47}", "");
     }
 
     results

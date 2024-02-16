@@ -80,6 +80,8 @@ impl<G: Game> SearchContext<G> {
 pub struct TreeStats<G: Game> {
     pub actions: HashMap<G::A, node::ActionStats>,
     pub player_actions: Vec<HashMap<G::A, node::ActionStats>>,
+    pub accum_depth: usize,
+    pub iter_count: usize,
 }
 
 impl<G: Game> Default for TreeStats<G> {
@@ -87,6 +89,8 @@ impl<G: Game> Default for TreeStats<G> {
         Self {
             actions: Default::default(),
             player_actions: vec![Default::default(); G::num_players()],
+            accum_depth: 0,
+            iter_count: 0,
         }
     }
 }
@@ -247,6 +251,8 @@ where
 
     #[inline]
     pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, trial: Trial<G>) {
+        self.stats.iter_count += 1;
+        self.stats.accum_depth += trial.depth + ctx.stack.len() - 1;
         self.strategy
             .backprop
             // TODO: may as well pass &mut self? Seems like the separation
@@ -319,6 +325,12 @@ where
             );
         }
     }
+
+    fn reset(&mut self) {
+        self.index.clear();
+        self.stats.accum_depth = 0;
+        self.stats.iter_count = 0;
+    }
 }
 
 impl<G, S> super::Search for TreeSearch<G, S>
@@ -337,7 +349,7 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
-        self.index.clear();
+        self.reset();
         self.timer.start(self.strategy.max_time);
 
         let root_id = self.new_root();
@@ -354,6 +366,10 @@ where
 
         self.verbose_summary(root_id, state);
         self.select_final_action(root_id, state)
+    }
+
+    fn estimated_depth(&self) -> usize {
+        (self.stats.accum_depth as f64 / self.stats.iter_count as f64).round() as usize
     }
 
     fn principle_variation(&self) -> Vec<&G::A>

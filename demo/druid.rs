@@ -15,7 +15,7 @@ pub fn play() {
     const PLAYOUT_DEPTH: usize = 200;
     const C_LOW: f64 = 0.1;
     const C_STD: f64 = 1.414;
-    const MAX_ITER: usize = 10000; //usize::MAX; // 10000;
+    const MAX_ITER: usize = 100; //usize::MAX; // 10000;
     const BIAS: f64 = 700.0;
     const EXPAND_THRESHOLD: u32 = 5;
     const VERBOSE: bool = false;
