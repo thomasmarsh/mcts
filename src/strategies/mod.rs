@@ -19,6 +19,8 @@ pub trait Search: Sync + Send {
     fn estimated_depth(&self) -> usize {
         0
     }
+
+    fn set_friendly_name(&mut self, name: &str);
 }
 
 #[cfg(test)]

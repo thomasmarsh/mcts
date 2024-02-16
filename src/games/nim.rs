@@ -52,6 +52,7 @@ impl Default for NimState {
     }
 }
 
+#[derive(Clone)]
 pub struct Nim;
 
 impl Game for Nim {
@@ -68,7 +69,7 @@ impl Game for Nim {
     }
 
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
-        moves::apply_move(&mut state.game, &m).expect("error in nimlib");
+        moves::apply_move(&mut state.game, m).expect("error in nimlib");
         state.turn = state.turn.next();
         state
     }

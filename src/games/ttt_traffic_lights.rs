@@ -123,6 +123,7 @@ impl Display for Position {
     }
 }
 
+#[derive(Clone)]
 pub struct TttTrafficLights;
 
 impl Game for TttTrafficLights {

@@ -18,6 +18,7 @@ impl PlayerIndex for Unit {
     }
 }
 
+#[derive(Clone)]
 pub struct CountingGame;
 
 impl Game for CountingGame {

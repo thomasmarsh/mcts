@@ -1,4 +1,4 @@
-use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rand::Rng;
 
 use rand::rngs::SmallRng;
@@ -37,6 +37,10 @@ impl<'a, G: Game + Clone> strategies::Search for AnySearch<'a, G> {
 
     fn estimated_depth(&self) -> usize {
         self.0.lock().unwrap().estimated_depth()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.0.lock().unwrap().set_friendly_name(name);
     }
 }
 
@@ -152,14 +156,21 @@ where
             }
         }
     }
-    let len = pairs.len();
 
     let mp = MultiProgress::new();
     let sty = ProgressStyle::with_template(
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {spinner:.green} {msg}",
+        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
     )
     .unwrap();
-    // .progress_chars("##-");
+
+    let pb_overall = mp.add(ProgressBar::new(pairs.len() as u64));
+    pb_overall.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.white/blue} {pos:>7}/{len:7} {msg:.bold}",
+        )
+        .unwrap(),
+    );
+    pb_overall.set_message("Tournament:");
 
     let counter: AtomicU32 = AtomicU32::new(0);
 
@@ -167,18 +178,20 @@ where
         .into_par_iter()
         .map(|(i, j)| {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut depth = 0;
-            let pb = mp.add(ProgressBar::new(0));
-            pb.set_style(sty.clone());
 
             let mut results = vec![Result::default(); strategies.len()];
             let si = strategies[i].clone();
             let sj = strategies[j].clone();
-            pb.set_message(format!("{} / {}", si.friendly_name(), sj.friendly_name()));
+
+            let pb = mp.add(ProgressBar::new(0));
+            pb.set_style(sty.clone());
+            let vs_str = format!("{:>25} | {:<25}", si.friendly_name(), sj.friendly_name());
+            pb.set_message(format!("{:^53}", vs_str));
 
             let mut strat = [si, sj];
             let players = [i, j];
             let mut current;
+            let mut depth = 0;
             let mut state = init.clone();
             loop {
                 current = G::player_to_move(&state).to_index();
@@ -207,10 +220,11 @@ where
                 }
             }
             pb.finish();
+            mp.remove(&pb);
+            pb_overall.inc(1);
             counter.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             results
         })
-        .progress_count(len as u64)
         .reduce_with(|acc, x| {
             acc.into_iter()
                 .zip(x.iter())
@@ -237,15 +251,21 @@ where
 
     for _ in 0..rounds {
         let new_results = round_robin::<G>(strategies, init);
+        for (index, result) in new_results.iter().enumerate() {
+            results[index] += *result;
+        }
+
         println!("{:=<47}", "");
         println!(
             "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
             "match", "won", "lost", "draw"
         );
         println!("{:-<47}", "");
-        for (index, result) in new_results.iter().enumerate() {
-            results[index] += *result;
 
+        let mut copy = results.iter().enumerate().collect::<Vec<_>>();
+        copy.sort_unstable_by_key(|x| (-(x.1.wins as i64), x.1.losses, x.1.draws));
+
+        for (index, _) in copy {
             println!(
                 "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
                 strategies[index].friendly_name(),
@@ -254,7 +274,6 @@ where
                 results[index].draws,
             );
         }
-        println!("{:=<47}", "");
     }
 
     results
@@ -337,7 +356,7 @@ pub(super) fn pv_string<G: Game>(path: &[<G as Game>::A], state: &<G as Game>::S
             out.push_str("; ");
         }
         out.push_str(move_id::<G>(&state, Some(m.clone())).as_str());
-        state = G::apply(state, &m);
+        state = G::apply(state, m);
     }
     out
 }

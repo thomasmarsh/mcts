@@ -14,6 +14,7 @@ pub struct FlatMonteCarloStrategy<G: Game> {
     max_rollouts: u32,
     verbose: bool,
     game_type: PhantomData<G>,
+    name: String,
 }
 
 impl<G: Game> FlatMonteCarloStrategy<G> {
@@ -24,21 +25,18 @@ impl<G: Game> FlatMonteCarloStrategy<G> {
             max_rollouts: u32::MAX,
             verbose: false,
             game_type: PhantomData,
+            name: "flat_mc".into(),
         }
     }
 
-    pub fn set_samples_per_move(&self, samples_per_move: u32) -> Self {
-        Self {
-            samples_per_move,
-            ..*self
-        }
+    pub fn set_samples_per_move(mut self, samples_per_move: u32) -> Self {
+        self.samples_per_move = samples_per_move;
+        self
     }
 
-    pub fn verbose(&self) -> Self {
-        Self {
-            verbose: true,
-            ..*self
-        }
+    pub fn verbose(mut self) -> Self {
+        self.verbose = true;
+        self
     }
 }
 
@@ -74,7 +72,11 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
     type G = G;
 
     fn friendly_name(&self) -> String {
-        "flat_mc".into()
+        self.name.clone()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.into();
     }
 
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
@@ -89,7 +91,7 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
             .iter()
             .map(|m| {
                 let mut tmp = state.clone();
-                let new_state = G::apply(tmp, &m);
+                let new_state = G::apply(tmp, m);
                 tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {

@@ -3,6 +3,7 @@ use super::MctsStrategy;
 use super::*;
 
 // Vanilla UCT
+#[derive(Clone)]
 pub struct Ucb1;
 
 impl<G: Game> Strategy<G> for Ucb1 {
@@ -33,6 +34,7 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1> {
 }
 
 // Vanilla UCT
+#[derive(Clone)]
 pub struct Ucb1Mast;
 
 impl<G: Game> Strategy<G> for Ucb1Mast {
@@ -62,6 +64,7 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1Mast> {
     }
 }
 
+#[derive(Clone)]
 pub struct ScalarAmaf;
 
 impl<G: Game> Strategy<G> for ScalarAmaf {
@@ -91,6 +94,7 @@ impl<G: Game> Default for MctsStrategy<G, ScalarAmaf> {
     }
 }
 
+#[derive(Clone)]
 pub struct ScalarAmafMast;
 
 impl<G: Game> Strategy<G> for ScalarAmafMast {
@@ -120,6 +124,7 @@ impl<G: Game> Default for MctsStrategy<G, ScalarAmafMast> {
     }
 }
 
+#[derive(Clone)]
 pub struct Ucb1Tuned;
 
 impl<G: Game> Strategy<G> for Ucb1Tuned {
@@ -149,6 +154,7 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1Tuned> {
     }
 }
 
+#[derive(Clone)]
 pub struct McGrave;
 
 impl<G: Game> Strategy<G> for McGrave {
@@ -178,6 +184,7 @@ impl<G: Game> Default for MctsStrategy<G, McGrave> {
     }
 }
 
+#[derive(Clone)]
 pub struct McBrave;
 
 impl<G: Game> Strategy<G> for McBrave {
@@ -207,6 +214,7 @@ impl<G: Game> Default for MctsStrategy<G, McBrave> {
     }
 }
 
+#[derive(Clone)]
 pub struct Ucb1Grave;
 
 impl<G: Game> Strategy<G> for Ucb1Grave {
@@ -236,6 +244,7 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1Grave> {
     }
 }
 
+#[derive(Clone)]
 pub struct Ucb1GraveMast;
 
 impl<G: Game> Strategy<G> for Ucb1GraveMast {

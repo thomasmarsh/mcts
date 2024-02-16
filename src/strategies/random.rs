@@ -33,6 +33,8 @@ impl<G: Game + Sync + Send> Search for Random<G> {
         "random".into()
     }
 
+    fn set_friendly_name(&mut self, _name: &str) {}
+
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
         let mut actions = Vec::new();
         G::generate_actions(state, &mut actions);

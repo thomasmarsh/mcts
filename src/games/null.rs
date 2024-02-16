@@ -6,6 +6,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 enum Never {}
 
+#[derive(Clone)]
 struct NullGame;
 
 struct Unit;

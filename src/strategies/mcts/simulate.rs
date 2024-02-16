@@ -26,7 +26,7 @@ pub struct Trial<G: Game> {
     pub depth: usize,
 }
 
-pub trait SimulateStrategy<G>
+pub trait SimulateStrategy<G>: Clone
 where
     G: Game,
 {
@@ -82,13 +82,22 @@ where
             depth,
         }
     }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(0)
+    }
 }
 
-#[derive(Default)]
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Default, Clone)]
 pub struct Uniform;
 
 impl<G: Game> SimulateStrategy<G> for Uniform {}
 
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone)]
 pub struct EpsilonGreedy<G, S>
 where
     G: Game,
@@ -157,13 +166,19 @@ where
     }
 }
 
-#[derive(Default)]
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Default, Clone)]
 pub struct Mast;
 
 impl<G> SimulateStrategy<G> for Mast
 where
     G: Game,
 {
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(GLOBAL)
+    }
+
     fn select_move<'a>(
         &self,
         available: &'a [G::A],

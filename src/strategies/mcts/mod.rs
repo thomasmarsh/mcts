@@ -24,7 +24,38 @@ type FastRng = rand::rngs::SmallRng;
 
 use rustc_hash::FxHashMap as HashMap;
 
-pub trait Strategy<G: Game> {
+////////////////////////////////////////////////////////////////////////////////
+
+const GRAVE: usize = 0b001;
+const GLOBAL: usize = 0b010;
+const AMAF: usize = 0b100;
+
+pub struct BackpropFlags(pub usize);
+
+impl BackpropFlags {
+    pub fn grave(&self) -> bool {
+        self.0 & GRAVE == GRAVE
+    }
+
+    pub fn global(&self) -> bool {
+        self.0 & GLOBAL == GLOBAL
+    }
+
+    pub fn amaf(&self) -> bool {
+        self.0 & AMAF == AMAF
+    }
+}
+
+impl std::ops::BitOr for BackpropFlags {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+pub trait Strategy<G: Game>: Clone {
     type Select: select::SelectStrategy<G::A>;
     type Simulate: simulate::SimulateStrategy<G>;
     type Backprop: backprop::BackpropStrategy;
@@ -33,6 +64,7 @@ pub trait Strategy<G: Game> {
     fn friendly_name() -> String;
 }
 
+#[derive(Clone)]
 pub struct MctsStrategy<G, S>
 where
     G: Game,
@@ -47,6 +79,62 @@ where
     pub max_playout_depth: usize,
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
+}
+
+impl<G, S> MctsStrategy<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+{
+    pub fn select(mut self, select: S::Select) -> Self {
+        self.select = select;
+        self
+    }
+
+    pub fn simulate(mut self, simulate: S::Simulate) -> Self {
+        self.simulate = simulate;
+        self
+    }
+
+    pub fn backprop(mut self, backprop: S::Backprop) -> Self {
+        self.backprop = backprop;
+        self
+    }
+
+    pub fn final_action(mut self, final_action: S::FinalAction) -> Self {
+        self.final_action = final_action;
+        self
+    }
+
+    pub fn q_init(mut self, q_init: UnvisitedValueEstimate) -> Self {
+        self.q_init = q_init;
+        self
+    }
+
+    pub fn playouts_before_expanding(mut self, playouts_before_expanding: u32) -> Self {
+        self.playouts_before_expanding = playouts_before_expanding;
+        self
+    }
+
+    pub fn max_playout_depth(mut self, max_playout_depth: usize) -> Self {
+        self.max_playout_depth = max_playout_depth;
+        self
+    }
+
+    pub fn max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    // NOTE: special logic here
+    pub fn max_time(mut self, max_time: std::time::Duration) -> Self {
+        self.max_time = max_time;
+        if self.max_time != std::time::Duration::default() {
+            self.max_iterations(usize::MAX)
+        } else {
+            self
+        }
+    }
 }
 
 pub struct SearchContext<G: Game> {
@@ -108,6 +196,7 @@ where
     pub timer: timer::Timer,
     pub stats: TreeStats<G>,
     pub verbose: bool,
+    pub name: String,
 }
 
 impl<G, S> Default for TreeSearch<G, S>
@@ -134,6 +223,7 @@ where
             timer: timer::Timer::new(),
             stats: Default::default(),
             verbose: false,
+            name: format!("mcts[{}]", S::friendly_name()),
         }
     }
 
@@ -250,14 +340,15 @@ where
     }
 
     #[inline]
-    pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, trial: Trial<G>) {
+    pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, trial: Trial<G>, player: usize) {
         self.stats.iter_count += 1;
         self.stats.accum_depth += trial.depth + ctx.stack.len() - 1;
+        let flags = self.strategy.select.backprop_flags() | self.strategy.simulate.backprop_flags();
         self.strategy
             .backprop
             // TODO: may as well pass &mut self? Seems like the separation
             // of concerns is not ideal.
-            .update(ctx, &mut self.stats, &mut self.index, trial);
+            .update(ctx, &mut self.stats, &mut self.index, trial, player, flags);
     }
 
     #[allow(dead_code)]
@@ -345,7 +436,7 @@ where
     type G = G;
 
     fn friendly_name(&self) -> String {
-        format!("mcts[{}]", S::friendly_name())
+        self.name.clone()
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
@@ -361,7 +452,7 @@ where
             let mut ctx = SearchContext::new(root_id, state.clone());
             self.select(&mut ctx);
             let trial = self.simulate(&ctx.state, G::player_to_move(state).to_index());
-            self.backprop(&mut ctx, trial);
+            self.backprop(&mut ctx, trial, G::player_to_move(state).to_index());
         }
 
         self.verbose_summary(root_id, state);
@@ -377,5 +468,9 @@ where
         G: Game,
     {
         unimplemented!()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.to_string();
     }
 }

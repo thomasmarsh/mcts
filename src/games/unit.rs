@@ -4,6 +4,7 @@ use crate::game::{Game, PlayerIndex};
 #[derive(Default, Clone, Debug)]
 pub struct Unit(pub bool);
 
+#[derive(Clone)]
 pub struct UnitGame;
 
 pub struct Player;

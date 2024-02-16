@@ -14,6 +14,33 @@ pub struct SelectContext<'a, A: Action> {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+pub trait SelectStrategy<A: Action>: Sized + Clone {
+    type Score: PartialOrd + Copy;
+    type Aux: Copy;
+
+    /// If the strategy wants to lift any calculations out of the inner select
+    /// loop, then they can provide this here.
+    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux;
+
+    /// Default implementation should be sufficient for all cases.
+    fn best_child(&mut self, ctx: &SelectContext<'_, A>, rng: &mut SmallRng) -> usize {
+        let current = ctx.index.get(ctx.current_id);
+        random_best_index(current.children(), self, ctx, rng)
+    }
+
+    /// Given a child index, calculate a score.
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, aux: Self::Aux) -> Self::Score;
+
+    /// Provide a score for any value that is not yet visited.
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, aux: Self::Aux) -> Self::Score;
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(0)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 const PRIMES: [usize; 16] = [
     14323, 18713, 19463, 30553, 33469, 45343, 50221, 51991, 53201, 56923, 64891, 72763, 74471,
     81647, 92581, 94693,
@@ -71,31 +98,8 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait SelectStrategy<A: Action>: Sized {
-    type Score: PartialOrd + Copy;
-    type Aux: Copy;
-
-    /// If the strategy wants to lift any calculations out of the inner select
-    /// loop, then they can provide this here.
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux;
-
-    /// Default implementation should be sufficient for all cases.
-    fn best_child(&mut self, ctx: &SelectContext<'_, A>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id);
-        random_best_index(current.children(), self, ctx, rng)
-    }
-
-    /// Given a child index, calculate a score.
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, aux: Self::Aux) -> Self::Score;
-
-    /// Provide a score for any value that is not yet visited.
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, aux: Self::Aux) -> Self::Score;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 /// Select the most visited root child.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RobustChild;
 
 impl<A: Action> SelectStrategy<A> for RobustChild {
@@ -123,7 +127,7 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Select the root child with the highest reward.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MaxAvgScore;
 
 impl<A: Action> SelectStrategy<A> for MaxAvgScore {
@@ -150,6 +154,7 @@ impl<A: Action> SelectStrategy<A> for MaxAvgScore {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// Upper Confidence Bounds (UCB1)
+#[derive(Clone)]
 pub struct Ucb1 {
     pub exploration_constant: f64,
 }
@@ -194,6 +199,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1 {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub struct Ucb1Tuned {
     pub exploration_constant: f64,
 }
@@ -265,6 +271,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1Tuned {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub struct McGrave {
     // Called ref in the RAVE paper.
     pub threshold: u32,
@@ -276,8 +283,8 @@ pub struct McGrave {
 impl Default for McGrave {
     fn default() -> Self {
         Self {
-            threshold: 100,
-            bias: 10.0e-6,
+            threshold: 80,
+            bias: 10.0e-7,
             current_ref_id: None,
         }
     }
@@ -306,31 +313,22 @@ impl<A: Action> SelectStrategy<A> for McGrave {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
-        let child = ctx.index.get(child_id);
-        let mean_score = child.stats.exploitation_score(ctx.player);
-
-        let current_ref = ctx.index.get(self.current_ref_id.unwrap());
-        let current = ctx.index.get(ctx.current_id);
-        let (mean_amaf, beta) = match current_ref
-            .stats
-            .grave_stats
-            .get(&(current.actions()[child.action_idx]))
-        {
+        let t = ctx.index.get(child_id);
+        let tref = ctx.index.get(self.current_ref_id.unwrap());
+        let p = (t.stats.num_visits + t.stats.num_visits_virtual.load(Relaxed)) as f64;
+        let mean = t.stats.exploitation_score(ctx.player);
+        let (amaf, beta) = match tref.stats.grave_stats.get(&t.action(ctx.index)) {
             None => (0., 0.),
-            Some(grave_stats) => {
-                let grave_score = grave_stats.score;
-                let grave_visits = grave_stats.num_visits as f64;
-                let child_visits =
-                    (child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed)) as f64;
-                let mean_amaf = grave_score / grave_visits;
-                let beta = grave_visits
-                    / (grave_visits + child_visits + self.bias * grave_visits * child_visits);
-
-                (mean_amaf, beta)
+            Some(stats) => {
+                let wa = stats.num_visits as f64;
+                let pa = stats.score;
+                let beta = pa / (pa + p + self.bias * pa * p);
+                let amaf = wa / pa;
+                (amaf, beta)
             }
         };
 
-        grave_value(beta, mean_score, mean_amaf)
+        grave_value(beta, mean, amaf)
     }
 
     #[inline(always)]
@@ -340,10 +338,15 @@ impl<A: Action> SelectStrategy<A> for McGrave {
             .stats
             .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(GRAVE)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub struct McBrave {
     pub bias: f64,
 }
@@ -410,12 +413,17 @@ impl<A: Action> SelectStrategy<A> for McBrave {
         }
         grave_value(beta, mean_score, mean_amaf)
     }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(GRAVE)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 // This one was found in some implementations of RAVE. It seems strong, but I
 // can't find references to it in the literature.
+#[derive(Clone)]
 pub struct ScalarAmaf {
     pub exploration_constant: f64,
     pub bias: f64,
@@ -466,10 +474,15 @@ impl<A: Action> SelectStrategy<A> for ScalarAmaf {
             .stats
             .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(AMAF)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub struct Ucb1Grave {
     // Called ref in the RAVE paper.
     pub threshold: u32,
@@ -568,5 +581,9 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
             self.exploration_constant,
             parent_log.sqrt(),
         )
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(GRAVE)
     }
 }

@@ -104,9 +104,6 @@ impl Display for Position {
     }
 }
 
-#[derive(Debug)]
-pub struct TicTacToe;
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HashedPosition {
     pub position: Position,
@@ -134,6 +131,9 @@ impl HashedPosition {
         self.position.apply(m);
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct TicTacToe;
 
 impl Game for TicTacToe {
     type S = HashedPosition;
