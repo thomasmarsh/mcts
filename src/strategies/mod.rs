@@ -83,7 +83,7 @@ mod tests {
                 "relevant utility: {:?}",
                 compute_utilities::<G>(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
-            new.backprop(&mut ctx, trial);
+            new.backprop(&mut ctx, trial, G::player_to_move(&init_state).to_index());
 
             ctx.current_id
         };
