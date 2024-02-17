@@ -106,17 +106,25 @@ pub fn play() {
         x
     };
 
-    let mut ucb1_grave_mast_low = {
+    let mut ucb1_grave_mast = {
         use mcts::strategies::mcts;
+
+        // Configuration(values={
+        //   'bias': 266.8785210698843,
+        //   'c': 1.86169408634305,
+        //   'epsilon': 0.10750788170844316,
+        //   'threshold': 211,
+        // })
 
         let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1GraveMast> = Default::default();
         x.strategy.max_iterations = MAX_ITER;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.select.bias = BIAS;
-        x.strategy.select.exploration_constant = C_LOW;
-        x.strategy.simulate.epsilon = 0.1;
+        x.strategy.select.bias = 266.8785210698843;
+        x.strategy.select.exploration_constant = 1.86169408634305;
+        x.strategy.simulate.epsilon = 0.10750788170844316;
+        x.strategy.select.threshold = 211;
         x.verbose = VERBOSE;
         x
     };
@@ -271,8 +279,7 @@ pub fn play() {
         AnySearch::new(uct),
         AnySearch::new(uct_mast_high),
         AnySearch::new(grave),
-        AnySearch::new(brave),
-        AnySearch::new(ucb1_grave),
+        AnySearch::new(ucb1_grave_mast),
     ];
 
     // Convert the vector of trait objects into a vector of mutable references

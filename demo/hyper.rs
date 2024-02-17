@@ -13,6 +13,8 @@ use mcts::strategies::mcts::TreeSearch;
 use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
+use rand::rngs::SmallRng;
+use rand_core::SeedableRng;
 
 const ROUNDS: usize = 20;
 const PLAYOUT_DEPTH: usize = 200;
@@ -29,7 +31,7 @@ type Strat<S> = MctsStrategy<Druid, S>;
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(long)]
-    seed: usize,
+    seed: u64,
 
     #[arg(long)]
     threshold: u32,
@@ -45,7 +47,8 @@ struct Args {
 }
 
 fn main() {
-    let opponent = make_opponent();
+    let args = Args::parse();
+    let opponent = make_opponent(args.seed);
     let candidate = make_candidate(Args::parse());
 
     let mut strategies = vec![AnySearch::new(opponent), AnySearch::new(candidate)];
@@ -64,7 +67,7 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
     1.0 - w / (ROUNDS * 2) as f64
 }
 
-fn make_opponent() -> TS<util::Ucb1> {
+fn make_opponent(seed: u64) -> TS<util::Ucb1> {
     let mut strategy: Strat<util::Ucb1> = Strat::default()
         .max_iterations(MAX_ITER)
         .max_playout_depth(PLAYOUT_DEPTH)
@@ -76,6 +79,7 @@ fn make_opponent() -> TS<util::Ucb1> {
     TS {
         strategy,
         verbose: VERBOSE,
+        rng: SmallRng::seed_from_u64(seed),
         ..TS::default()
     }
 }
@@ -95,6 +99,7 @@ fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
     TS {
         strategy,
         verbose: VERBOSE,
+        rng: SmallRng::seed_from_u64(args.seed),
         ..TS::default()
     }
 }
