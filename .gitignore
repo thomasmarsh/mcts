@@ -1,5 +1,6 @@
 /target
 Cargo.lock
+__pycache__
 
 
 # Added by cargo
