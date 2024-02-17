@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use ::mcts::strategies::mcts::simulate::EpsilonGreedy;
 use ::mcts::strategies::mcts::TreeSearch;
+use ::mcts::util::Verbosity;
 use mcts::game::Game;
 use mcts::games::druid::{Druid, Player, State};
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
@@ -15,25 +16,67 @@ pub fn play() {
     const PLAYOUT_DEPTH: usize = 200;
     const C_LOW: f64 = 0.1;
     const C_STD: f64 = 1.414;
-    const MAX_ITER: usize = 100; //usize::MAX; // 10000;
+    const MAX_ITER: usize = 10000; //usize::MAX; // 10000;
     const BIAS: f64 = 700.0;
     const EXPAND_THRESHOLD: u32 = 5;
     const VERBOSE: bool = false;
+    const RAVE_THRESHOLD: u32 = 400;
     const MAX_TIME_SECS: u64 = 0; // 0 = infinite
 
     assert_eq!(Duration::default(), Duration::from_secs(0));
 
-    let mut grave = {
+    let grave = {
         use mcts::strategies::mcts;
 
-        let mut x: mcts::TreeSearch<Druid, mcts::util::McGrave> = Default::default();
-        x.strategy.max_iterations = MAX_ITER;
-        x.strategy.max_playout_depth = PLAYOUT_DEPTH;
-        x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
-        x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.select.bias = BIAS;
-        x.verbose = VERBOSE;
-        x
+        type HP = mcts::util::McGrave;
+        type TS = mcts::TreeSearch<Druid, HP>;
+        /*
+        let mut params = Vec::new();
+        for t in [20, 30, 40] {
+            for bias in [5., 10., 20.] {
+                let config = {
+                    let mut x: mcts::MctsStrategy<Druid, HP> = mcts::MctsStrategy::default()
+                        .max_iterations(MAX_ITER)
+                        .max_playout_depth(PLAYOUT_DEPTH)
+                        .max_time(Duration::from_secs(MAX_TIME_SECS))
+                        .playouts_before_expanding(EXPAND_THRESHOLD);
+                    x.select.threshold = t;
+                    x.select.bias = bias;
+                    x
+                };
+                params.push(config);
+            }
+        }
+
+        let mut proto: TS = Default::default();
+        let mut strategies: Vec<AnySearch<'_, Druid>> = Vec::new();
+        for param in params {
+            let mut ts = TS::default();
+            let name = format!("grave({},{})", param.select.threshold, param.select.bias);
+            ts.strategy = param;
+            ts.set_friendly_name(name.as_str());
+            strategies.push(AnySearch::new(ts));
+        }
+
+        round_robin_multiple::<Druid, TS>(&mut strategies, 10, &State::new());
+        */
+
+        let strategy = {
+            let mut x: mcts::MctsStrategy<Druid, HP> = mcts::MctsStrategy::default()
+                .max_iterations(MAX_ITER)
+                .max_playout_depth(PLAYOUT_DEPTH)
+                .max_time(Duration::from_secs(MAX_TIME_SECS))
+                .playouts_before_expanding(EXPAND_THRESHOLD);
+            x.select.threshold = 40;
+            x.select.bias = 5.;
+            x
+        };
+
+        TS {
+            strategy,
+            verbose: VERBOSE,
+            ..Default::default()
+        }
     };
 
     let mut brave = {
@@ -126,16 +169,49 @@ pub fn play() {
         x
     };
 
-    let mut uct_new = {
+    let mut uct = {
         use mcts::strategies::mcts;
 
-        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1> = Default::default();
+        if false {
+            type HP = mcts::util::Ucb1;
+            type TS = mcts::TreeSearch<Druid, HP>;
+            let mut params = Vec::new();
+            for c in [1.5, 1.625, 1.75, 1.885, 2., 2.125, 2.25] {
+                let config = {
+                    let mut x: mcts::MctsStrategy<Druid, HP> = mcts::MctsStrategy::default()
+                        .max_iterations(MAX_ITER)
+                        .max_playout_depth(PLAYOUT_DEPTH)
+                        .max_time(Duration::from_secs(MAX_TIME_SECS))
+                        .playouts_before_expanding(EXPAND_THRESHOLD);
+                    x.select.exploration_constant = c;
+                    x
+                };
+                params.push(config);
+            }
 
+            let mut proto: TS = Default::default();
+            let mut strategies: Vec<AnySearch<'_, Druid>> = Vec::new();
+            for param in params {
+                let mut ts = TS::default();
+                let name = format!("ucb[{}]", param.select.exploration_constant);
+                ts.strategy = param;
+                ts.set_friendly_name(name.as_str());
+                strategies.push(AnySearch::new(ts));
+            }
+
+            round_robin_multiple::<Druid, TS>(
+                &mut strategies,
+                10,
+                &State::new(),
+                Verbosity::Verbose,
+            );
+        }
+        let mut x: mcts::TreeSearch<Druid, mcts::util::Ucb1> = Default::default();
         x.strategy.max_iterations = MAX_ITER;
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.select.exploration_constant = 1.625;
         x.verbose = VERBOSE;
         x
     };
@@ -149,7 +225,7 @@ pub fn play() {
         x.strategy.max_playout_depth = PLAYOUT_DEPTH;
         x.strategy.max_time = Duration::from_secs(MAX_TIME_SECS);
         x.strategy.playouts_before_expanding = EXPAND_THRESHOLD;
-        x.strategy.select.exploration_constant = C_STD;
+        x.strategy.select.exploration_constant = 1.625;
         x.strategy.simulate.epsilon = 0.1;
         x.verbose = VERBOSE;
         x
@@ -192,7 +268,7 @@ pub fn play() {
         AnySearch::new(amaf),
         AnySearch::new(amaf_mast),
         AnySearch::new(tuned),
-        AnySearch::new(uct_new),
+        AnySearch::new(uct),
         AnySearch::new(uct_mast_high),
         AnySearch::new(grave),
         AnySearch::new(brave),
@@ -201,7 +277,12 @@ pub fn play() {
 
     // Convert the vector of trait objects into a vector of mutable references
 
-    round_robin_multiple::<Druid, AnySearch<'_, Druid>>(&mut strategies, 10, &State::new());
+    round_robin_multiple::<Druid, AnySearch<'_, Druid>>(
+        &mut strategies,
+        10,
+        &State::new(),
+        Verbosity::Verbose,
+    );
 }
 
 /*

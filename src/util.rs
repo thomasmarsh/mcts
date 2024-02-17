@@ -1,4 +1,6 @@
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{
+    MultiProgress, MultiProgressAlignment, ProgressBar, ProgressDrawTarget, ProgressStyle,
+};
 use rand::Rng;
 
 use rand::rngs::SmallRng;
@@ -8,7 +10,9 @@ use crate::strategies;
 
 use crate::strategies::Search;
 use rayon::prelude::*;
+use std::ops::Add;
 use std::ops::AddAssign;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -115,13 +119,10 @@ where
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Result {
-    wins: usize,
-    losses: usize,
-    draws: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub draws: usize,
 }
-
-use std::ops::Add;
-use std::sync::atomic::AtomicU32;
 
 impl Add for Result {
     type Output = Self;
@@ -142,8 +143,24 @@ impl AddAssign for Result {
     }
 }
 
+#[derive(Copy, Clone)]
+pub enum Verbosity {
+    Silent,
+    Verbose,
+}
+
+impl Verbosity {
+    pub fn verbose(&self) -> bool {
+        matches!(self, Verbosity::Verbose)
+    }
+}
+
 /// Play a round-robin tournament with the provided strategies.
-fn round_robin<G>(strategies: &mut Vec<AnySearch<'_, G>>, init: &G::S) -> Vec<Result>
+fn round_robin<G>(
+    strategies: &mut Vec<AnySearch<'_, G>>,
+    init: &G::S,
+    verbose: Verbosity,
+) -> Vec<Result>
 where
     G: Game + Clone,
     G::S: Sync,
@@ -157,7 +174,11 @@ where
         }
     }
 
-    let mp = MultiProgress::new();
+    let mp = if verbose.verbose() {
+        MultiProgress::new()
+    } else {
+        MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
+    };
     let sty = ProgressStyle::with_template(
         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
     )
@@ -183,7 +204,7 @@ where
             let si = strategies[i].clone();
             let sj = strategies[j].clone();
 
-            let pb = mp.add(ProgressBar::new(0));
+            let pb = mp.add(ProgressBar::new(1));
             pb.set_style(sty.clone());
             let vs_str = format!("{:>25} | {:<25}", si.friendly_name(), sj.friendly_name());
             pb.set_message(format!("{:^53}", vs_str));
@@ -242,6 +263,7 @@ pub fn round_robin_multiple<G, S>(
     strategies: &mut Vec<AnySearch<'_, G>>,
     rounds: usize,
     init: &G::S,
+    verbose: Verbosity,
 ) -> Vec<Result>
 where
     G: Game + Clone,
@@ -250,30 +272,32 @@ where
     let mut results = vec![Result::default(); strategies.len()];
 
     for _ in 0..rounds {
-        let new_results = round_robin::<G>(strategies, init);
+        let new_results = round_robin::<G>(strategies, init, verbose);
         for (index, result) in new_results.iter().enumerate() {
             results[index] += *result;
         }
 
-        println!("{:=<47}", "");
-        println!(
-            "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
-            "match", "won", "lost", "draw"
-        );
-        println!("{:-<47}", "");
-
-        let mut copy = results.iter().enumerate().collect::<Vec<_>>();
-        copy.sort_unstable_by_key(|x| (-(x.1.wins as i64), x.1.losses, x.1.draws));
-
-        for (index, _) in copy {
+        verbose.verbose().then(|| {
+            println!("{:=<47}", "");
             println!(
                 "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
-                strategies[index].friendly_name(),
-                results[index].wins,
-                results[index].losses,
-                results[index].draws,
+                "match", "won", "lost", "draw"
             );
-        }
+            println!("{:-<47}", "");
+
+            let mut copy = results.iter().enumerate().collect::<Vec<_>>();
+            copy.sort_unstable_by_key(|x| (-(x.1.wins as i64), x.1.losses, x.1.draws));
+
+            for (index, _) in copy {
+                println!(
+                    "{0:<25} | {1:<4} | {2:<4} | {3:<4}",
+                    strategies[index].friendly_name(),
+                    results[index].wins,
+                    results[index].losses,
+                    results[index].draws,
+                );
+            }
+        });
     }
 
     results

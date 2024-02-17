@@ -202,7 +202,6 @@ where
                 (score, action)
             })
             .collect::<Vec<_>>();
-        // println!("scores:\n{:#?}", action_scores);
 
         random_best(&action_scores, rng, |(score, _)| *score)
             .unwrap()
