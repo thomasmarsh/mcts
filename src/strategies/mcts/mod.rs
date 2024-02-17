@@ -190,8 +190,8 @@ where
     G: Game,
     S: Strategy<G>,
 {
-    index: TreeIndex<G::A>,
-    timer: timer::Timer,
+    pub(crate) index: TreeIndex<G::A>,
+    pub(crate) timer: timer::Timer,
 
     pub stats: TreeStats<G>,
     pub rng: SmallRng,

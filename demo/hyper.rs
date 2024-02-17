@@ -7,6 +7,8 @@ use clap::Parser;
 
 use mcts::games::druid::Druid;
 use mcts::games::druid::State;
+use mcts::strategies::mcts::select;
+use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
 use mcts::strategies::mcts::MctsStrategy;
 use mcts::strategies::mcts::TreeSearch;
@@ -25,7 +27,6 @@ const VERBOSE: bool = false;
 const MAX_TIME_SECS: u64 = 0;
 
 type TS<S> = TreeSearch<Druid, S>;
-type Strat<S> = MctsStrategy<Druid, S>;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -68,38 +69,37 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
 }
 
 fn make_opponent(seed: u64) -> TS<util::Ucb1> {
-    let mut strategy: Strat<util::Ucb1> = Strat::default()
-        .max_iterations(MAX_ITER)
-        .max_playout_depth(PLAYOUT_DEPTH)
-        .max_time(Duration::from_secs(MAX_TIME_SECS))
-        .playouts_before_expanding(EXPAND_THRESHOLD);
-
-    strategy.select.exploration_constant = C_TUNED;
-
-    TS {
-        strategy,
-        verbose: VERBOSE,
-        rng: SmallRng::seed_from_u64(seed),
-        ..TS::default()
-    }
+    TS::default()
+        .strategy(
+            MctsStrategy::default()
+                .max_iterations(MAX_ITER)
+                .max_playout_depth(PLAYOUT_DEPTH)
+                .max_time(Duration::from_secs(MAX_TIME_SECS))
+                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .select(select::Ucb1 {
+                    exploration_constant: C_TUNED,
+                }),
+        )
+        .verbose(VERBOSE)
+        .rng(SmallRng::seed_from_u64(seed))
 }
 
 fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
-    let mut strategy: Strat<util::Ucb1GraveMast> = Strat::default()
-        .max_iterations(MAX_ITER)
-        .max_playout_depth(PLAYOUT_DEPTH)
-        .max_time(Duration::from_secs(MAX_TIME_SECS))
-        .playouts_before_expanding(EXPAND_THRESHOLD);
-
-    strategy.select.threshold = args.threshold;
-    strategy.select.bias = args.bias;
-    strategy.select.exploration_constant = args.c;
-    strategy.simulate.epsilon = args.epsilon;
-
-    TS {
-        strategy,
-        verbose: VERBOSE,
-        rng: SmallRng::seed_from_u64(args.seed),
-        ..TS::default()
-    }
+    TS::default()
+        .strategy(
+            MctsStrategy::default()
+                .max_iterations(MAX_ITER)
+                .max_playout_depth(PLAYOUT_DEPTH)
+                .max_time(Duration::from_secs(MAX_TIME_SECS))
+                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .select(select::Ucb1Grave {
+                    exploration_constant: args.c,
+                    threshold: args.threshold,
+                    bias: args.bias,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(args.epsilon)),
+        )
+        .verbose(VERBOSE)
+        .rng(SmallRng::seed_from_u64(args.seed))
 }

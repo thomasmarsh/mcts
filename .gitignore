@@ -1,6 +1,8 @@
 /target
 Cargo.lock
 __pycache__
+smac3_output
+
 
 
 # Added by cargo
