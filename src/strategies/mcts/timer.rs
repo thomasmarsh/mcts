@@ -5,6 +5,7 @@ use std::thread::spawn;
 use std::time::Duration;
 use std::time::Instant;
 
+#[derive(Clone)]
 pub struct Timer {
     start_time: Instant,
     timeout: Arc<AtomicBool>,

@@ -14,7 +14,7 @@ pub struct SelectContext<'a, A: Action> {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait SelectStrategy<A: Action>: Sized + Clone {
+pub trait SelectStrategy<A: Action>: Sized + Clone + Sync + Send {
     type Score: PartialOrd + Copy;
     type Aux: Copy;
 

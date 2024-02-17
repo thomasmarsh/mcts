@@ -4,7 +4,9 @@ use rand::rngs::SmallRng;
 
 use super::*;
 
-use crate::{game::Game, util::random_best};
+use crate::game::Game;
+use crate::strategies::Search;
+use crate::util::random_best;
 
 #[derive(Debug)]
 pub enum EndType {
@@ -26,14 +28,15 @@ pub struct Trial<G: Game> {
     pub depth: usize,
 }
 
-pub trait SimulateStrategy<G>: Clone
+pub trait SimulateStrategy<G>: Clone + Sync + Send
 where
     G: Game,
 {
     // The default implementation is a uniform selection
     #[allow(unused_variables)]
     fn select_move<'a>(
-        &self,
+        &mut self,
+        state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
@@ -43,7 +46,7 @@ where
     }
 
     fn playout(
-        &self,
+        &mut self,
         mut state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
@@ -69,7 +72,7 @@ where
                 end_type = Some(EndType::NaturalEnd);
                 break;
             }
-            let action: &G::A = self.select_move(&available, stats, player, rng);
+            let action: &G::A = self.select_move(&state, &available, stats, player, rng);
             actions.push(action.clone());
             state = G::apply(state, action);
             depth += 1;
@@ -140,21 +143,29 @@ where
     S: SimulateStrategy<G>,
 {
     fn select_move<'a>(
-        &self,
+        &mut self,
+        state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if rng.gen::<f64>() < self.epsilon {
-            <Uniform as SimulateStrategy<G>>::select_move(&Uniform, available, stats, player, rng)
+            <Uniform as SimulateStrategy<G>>::select_move(
+                &mut Uniform,
+                state,
+                available,
+                stats,
+                player,
+                rng,
+            )
         } else {
-            self.inner.select_move(available, stats, player, rng)
+            self.inner.select_move(state, available, stats, player, rng)
         }
     }
 
     fn playout(
-        &self,
+        &mut self,
         state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
@@ -180,7 +191,8 @@ where
     }
 
     fn select_move<'a>(
-        &self,
+        &mut self,
+        _state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
@@ -206,5 +218,32 @@ where
         random_best(&action_scores, rng, |(score, _)| *score)
             .unwrap()
             .1
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone)]
+struct MetaMcts<G: Game, S: Strategy<G>> {
+    inner: TreeSearch<G, S>,
+}
+
+impl<G, S> SimulateStrategy<G> for MetaMcts<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    MctsStrategy<G, S>: Default,
+{
+    fn select_move<'a>(
+        &mut self,
+        state: &G::S,
+        available: &'a [<G as Game>::A],
+        _stats: &TreeStats<G>,
+        _player: usize,
+        _rng: &mut SmallRng,
+    ) -> &'a <G as Game>::A {
+        let action = self.inner.choose_action(state);
+        let index = available.iter().position(|p| *p == action).unwrap();
+        &available[index]
     }
 }

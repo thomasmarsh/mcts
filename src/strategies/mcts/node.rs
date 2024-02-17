@@ -33,6 +33,19 @@ pub struct NodeStats<A: Action> {
     pub grave_stats: HashMap<A, ActionStats>,
 }
 
+impl<A: Action> Clone for NodeStats<A> {
+    fn clone(&self) -> Self {
+        Self {
+            num_visits: self.num_visits,
+            num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
+            scores: self.scores.clone(),
+            sum_squared_scores: self.sum_squared_scores.clone(),
+            scalar_amaf: self.scalar_amaf.clone(),
+            grave_stats: self.grave_stats.clone(),
+        }
+    }
+}
+
 impl<A: Action> NodeStats<A> {
     pub fn new(num_players: usize) -> Self {
         Self {
@@ -121,7 +134,7 @@ impl Default for UnvisitedValueEstimate {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum NodeState<A: Action> {
     Terminal,
     Leaf,
@@ -131,7 +144,7 @@ pub enum NodeState<A: Action> {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,

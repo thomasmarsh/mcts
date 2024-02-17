@@ -2,7 +2,7 @@ use super::*;
 
 use crate::game::{Game, PlayerIndex};
 
-pub trait BackpropStrategy: Clone {
+pub trait BackpropStrategy: Clone + Sync + Send {
     fn update<G>(
         &self,
         ctx: &mut SearchContext<G>,

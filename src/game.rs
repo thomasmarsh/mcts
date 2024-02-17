@@ -14,7 +14,7 @@ pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + S
 // Blanket implementation
 impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send> Action for T {}
 
-pub trait Game: Sized + Clone {
+pub trait Game: Sized + Clone + Sync + Send {
     /// The type representing the state of your game. Ideally, this
     /// should be as small as possible and have a cheap Clone or Copy
     /// implementation.

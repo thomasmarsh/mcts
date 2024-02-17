@@ -64,11 +64,12 @@ pub trait Strategy<G: Game>: Clone {
     fn friendly_name() -> String;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct MctsStrategy<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Sync + Send,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
@@ -85,6 +86,7 @@ impl<G, S> MctsStrategy<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Sync + Send,
 {
     pub fn select(mut self, select: S::Select) -> Self {
         self.select = select;
@@ -164,7 +166,7 @@ impl<G: Game> SearchContext<G> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: HashMap<G::A, node::ActionStats>,
     pub player_actions: Vec<HashMap<G::A, node::ActionStats>>,
@@ -185,10 +187,12 @@ impl<G: Game> Default for TreeStats<G> {
 
 pub type TreeIndex<A> = index::Arena<Node<A>>;
 
+#[derive(Clone)]
 pub struct TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Sync + Send,
 {
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
@@ -204,6 +208,7 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Sync + Send,
 {
     pub fn rng(mut self, rng: SmallRng) -> Self {
         self.rng = rng;
@@ -230,7 +235,7 @@ impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default,
+    MctsStrategy<G, S>: Default + Sync + Send,
 {
     fn default() -> Self {
         Self::new(MctsStrategy::default(), SmallRng::from_entropy())
@@ -241,7 +246,7 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default,
+    MctsStrategy<G, S>: Default + Sync + Send,
 {
     pub fn new(strategy: MctsStrategy<G, S>, rng: SmallRng) -> Self {
         Self {
@@ -456,7 +461,7 @@ impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default,
+    MctsStrategy<G, S>: Default + Sync + Send,
     <S as Strategy<G>>::Select: Sync + Send,
     <S as Strategy<G>>::FinalAction: Sync + Send,
     <S as Strategy<G>>::Backprop: Sync + Send,

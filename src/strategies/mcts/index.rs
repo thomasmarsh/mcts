@@ -10,12 +10,12 @@ impl Id {
 }
 
 // TODO: benchmark keeping child/sibling relationships here vs. on Node (space vs. time)
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Entry<T: Serialize> {
     value: T,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Clone, Default, Debug, Serialize)]
 pub struct Arena<T: Serialize>(Vec<Entry<T>>);
 
 impl<T: Serialize> Arena<T> {
