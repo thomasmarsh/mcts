@@ -303,66 +303,6 @@ where
     results
 }
 
-/*
-
-use itertools::Itertools;
-
-/// Perform a parameter grid search for a given strategy.
-/// Returns the best parameters and their corresponding performance.
-pub fn parameter_grid_search<G, S>(
-    base_strategy: &mut S,
-    parameter_values: Vec<Vec<S::Param>>,
-) -> (Vec<S::Param>, usize)
-where
-    G: Game,
-    G::S: Default + Clone,
-    S: strategies::Search<G = G>,
-{
-    let mut best_params = Vec::new();
-    let mut best_score = 0;
-
-    for params in parameter_values.into_iter().multi_cartesian_product() {
-        let mut strategy = base_strategy.clone_with_params(params.clone());
-
-        let score = evaluate_strategy::<G, S>(&mut strategy);
-
-        if score > best_score {
-            best_score = score;
-            best_params = params;
-        }
-    }
-
-    (best_params, best_score)
-}
-
-/// Evaluate a strategy's performance using a round-robin tournament.
-fn evaluate_strategy<G, S>(strategy: &mut S) -> usize
-where
-    G: Game,
-    G::S: Default + Clone,
-    S: strategies::Search<G = G>,
-{
-    let mut wins = 0;
-    let mut num_games = 0;
-
-    for _ in 0..NUM_ROUNDS {
-        let mut opponent_strategy = S::default();
-        let winner = battle_royale::<G, _, _>(strategy, &mut opponent_strategy);
-
-        if let Some(w) = winner {
-            if w == 0 {
-                wins += 1;
-            }
-            num_games += 1;
-        }
-    }
-
-    wins * 100 / num_games // Assuming 100 is the maximum possible score
-}
-
-const NUM_ROUNDS: usize = 100; // Number of rounds for evaluation
-*/
-
 // Return a unique id for humans for this move.
 pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::A>) -> String {
     if let Some(mov) = m {
