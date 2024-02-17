@@ -224,8 +224,8 @@ where
 ////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone)]
-struct MetaMcts<G: Game, S: Strategy<G>> {
-    inner: TreeSearch<G, S>,
+pub struct MetaMcts<G: Game, S: Strategy<G>> {
+    pub inner: TreeSearch<G, S>,
 }
 
 impl<G, S> SimulateStrategy<G> for MetaMcts<G, S>

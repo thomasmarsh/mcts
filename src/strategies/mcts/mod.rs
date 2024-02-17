@@ -64,7 +64,7 @@ pub trait Strategy<G: Game>: Clone {
     fn friendly_name() -> String;
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MctsStrategy<G, S>
 where
     G: Game,

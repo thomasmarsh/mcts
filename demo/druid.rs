@@ -1,12 +1,14 @@
 #![allow(unused)]
 use std::time::Duration;
 
+use mcts::game::Game;
 use mcts::games::druid::{Druid, State};
-use mcts::strategies::mcts::select;
+use mcts::strategies::mcts::select::SelectStrategy;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
 use mcts::strategies::mcts::MctsStrategy;
 use mcts::strategies::mcts::TreeSearch;
+use mcts::strategies::mcts::{backprop, select, Strategy};
 use mcts::util::Verbosity;
 use mcts::util::{round_robin_multiple, AnySearch};
 
@@ -172,6 +174,31 @@ fn main() {
         )
         .verbose(VERBOSE);
 
+    let meta: TreeSearch<Druid, util::MetaMcts> = TreeSearch::default()
+        .strategy(
+            MctsStrategy::default()
+                .max_iterations(MAX_ITER)
+                .max_playout_depth(PLAYOUT_DEPTH)
+                .max_time(Duration::from_secs(MAX_TIME_SECS))
+                .playouts_before_expanding(1)
+                .select(select::Ucb1 {
+                    exploration_constant: C_TUNED,
+                })
+                .simulate(simulate::MetaMcts {
+                    inner: TreeSearch::default().strategy(
+                        MctsStrategy::default()
+                            .max_iterations(3)
+                            .max_playout_depth(PLAYOUT_DEPTH)
+                            .max_time(Duration::default())
+                            .playouts_before_expanding(1)
+                            .select(select::Ucb1 {
+                                exploration_constant: C_TUNED,
+                            }),
+                    ),
+                }),
+        )
+        .verbose(VERBOSE);
+
     let mut strategies: Vec<AnySearch<'_, Druid>> = vec![
         AnySearch::new(amaf),
         AnySearch::new(amaf_mast),
@@ -180,6 +207,7 @@ fn main() {
         AnySearch::new(uct_mast_high),
         AnySearch::new(grave),
         AnySearch::new(ucb1_grave_mast),
+        // AnySearch::new(meta),
     ];
 
     // Convert the vector of trait objects into a vector of mutable references

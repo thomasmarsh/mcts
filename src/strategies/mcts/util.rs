@@ -273,3 +273,35 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1GraveMast> {
         }
     }
 }
+
+#[derive(Clone)]
+pub struct MetaMcts;
+
+impl<G: Game> Default for MctsStrategy<G, MetaMcts> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: simulate::MetaMcts {
+                inner: TreeSearch::default(),
+            },
+            backprop: Default::default(),
+            final_action: Default::default(),
+            q_init: node::UnvisitedValueEstimate::Parent,
+            playouts_before_expanding: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+        }
+    }
+}
+
+impl<G: Game> Strategy<G> for MetaMcts {
+    type Select = select::Ucb1;
+    type Simulate = simulate::MetaMcts<G, util::Ucb1>;
+    type FinalAction = select::MaxAvgScore;
+    type Backprop = backprop::Classic;
+
+    fn friendly_name() -> String {
+        "meta-mcts".into()
+    }
+}
