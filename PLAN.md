@@ -9,9 +9,11 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Vanilla mcts
 - [x] Max time
 
-### Benchmarking
+### Benchmarking / Tuning
 - [x] Battle royale
-- [ ] Round robin
+- [x] Round robin
+- [x] SMAC3 ad hoc integration
+- [ ] Automatic SMAC3 tuning
 - [ ] Generalize benchmarking (TBD)
 
 ### Selection
@@ -20,7 +22,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Max-Robust Child
 - [ ] Secure Child
 - [x] UCT
-- [ ] UCB1-tuned
+- [x] UCB1-tuned
 - [ ] Bayesian UCT
 - [ ] EXP3 (probabilistic, partial observable games, simultaneous moves)
 - [ ] Hierarchical optimistic optimization for trees
@@ -37,6 +39,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Contextual Monte Carlo search
 - [ ] Fill the board
 - [x] Move Average Sampling Technique (MAST)
+- [ ] N-gram selection technique (NST)
 - [ ] Predicate-Average Sampling Technique (PAST)
 - [ ] Feature Average Sampling Technique (FAST)
 - [ ] Use History Heuristics
@@ -58,12 +61,11 @@ things implemented (perhaps only partially) are checked off on the list.
 ### Others
 - [ ] History heuristic
 - [ ] Progressive History
-- [ ] N-gram selection technique (NST)
 
 ### AMAF Variants
 - [x] AMAF
 - [x] RAVE
-- [ ] GRAVE
+- [x] GRAVE
 - [ ] HRAVE
 - [ ] Permuation AMAF
 - [ ] Alpha AMAF
