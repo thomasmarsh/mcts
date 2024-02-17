@@ -48,7 +48,7 @@ where
         max_playout_depth: usize,
         stats: &TreeStats<G>,
         player: usize,
-        rng: &mut FastRng,
+        rng: &mut SmallRng,
     ) -> Trial<G> {
         let mut actions = Vec::new();
         let mut available = Vec::new();

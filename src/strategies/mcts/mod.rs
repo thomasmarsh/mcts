@@ -12,15 +12,15 @@ use index::Id;
 use node::Node;
 use node::NodeState;
 use node::UnvisitedValueEstimate;
+
+use rand::{Rng, SeedableRng};
 use select::SelectContext;
 use select::SelectStrategy;
 use simulate::SimulateStrategy;
 use simulate::Trial;
 
-use rand::{Rng, SeedableRng};
-
 // Uses Xoshiro256PlusPlus and seeds with a u64 using SplitMix64
-type FastRng = rand::rngs::SmallRng;
+use rand::rngs::SmallRng;
 
 use rustc_hash::FxHashMap as HashMap;
 
@@ -190,13 +190,40 @@ where
     G: Game,
     S: Strategy<G>,
 {
-    pub index: TreeIndex<G::A>,
-    pub rng: FastRng,
-    pub strategy: MctsStrategy<G, S>,
-    pub timer: timer::Timer,
+    index: TreeIndex<G::A>,
+    timer: timer::Timer,
+
     pub stats: TreeStats<G>,
+    pub rng: SmallRng,
+    pub strategy: MctsStrategy<G, S>,
     pub verbose: bool,
     pub name: String,
+}
+
+impl<G, S> TreeSearch<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+{
+    pub fn rng(mut self, rng: SmallRng) -> Self {
+        self.rng = rng;
+        self
+    }
+
+    pub fn strategy(mut self, strategy: MctsStrategy<G, S>) -> Self {
+        self.strategy = strategy;
+        self
+    }
+
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = name.into();
+        self
+    }
 }
 
 impl<G, S> Default for TreeSearch<G, S>
@@ -206,7 +233,7 @@ where
     MctsStrategy<G, S>: Default,
 {
     fn default() -> Self {
-        Self::new(Default::default(), FastRng::from_entropy())
+        Self::new(MctsStrategy::default(), SmallRng::from_entropy())
     }
 }
 
@@ -214,8 +241,9 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Default,
 {
-    pub fn new(strategy: MctsStrategy<G, S>, rng: FastRng) -> Self {
+    pub fn new(strategy: MctsStrategy<G, S>, rng: SmallRng) -> Self {
         Self {
             index: index::Arena::new(),
             strategy,
@@ -428,6 +456,7 @@ impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    MctsStrategy<G, S>: Default,
     <S as Strategy<G>>::Select: Sync + Send,
     <S as Strategy<G>>::FinalAction: Sync + Send,
     <S as Strategy<G>>::Backprop: Sync + Send,
