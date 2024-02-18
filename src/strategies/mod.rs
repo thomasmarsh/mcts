@@ -60,20 +60,22 @@ mod tests {
             },
             hash: 0,
         };
-        let init_state = HashedPosition::new();
+        //let init_state = HashedPosition::new();
 
         // Configure new MCTS
         type New = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
-        let mut new: New = Default::default();
-        new.strategy.playouts_before_expanding = 1;
-        new.strategy.max_playout_depth = 100;
+        let mut new: New = New::default().strategy(
+            mcts::MctsStrategy::default()
+                .playouts_before_expanding(1)
+                .max_playout_depth(100),
+        );
 
         // Construct new root
         let root_id_new = new.new_root();
 
         // Helper step function
         let step = |new: &mut New| {
-            let mut ctx = mcts::SearchContext::new(root_id_new, init_state.clone());
+            let mut ctx = mcts::SearchContext::new(root_id_new, init_state);
             new.select(&mut ctx);
             let trial = new.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
             println!("trial actions: {:?}", trial.actions);
