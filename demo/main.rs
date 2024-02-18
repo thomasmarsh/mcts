@@ -9,9 +9,11 @@ use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
 use mcts::util::battle_royale;
+use mcts::util::AnySearch;
 
 use mcts::games::nim::*;
 use mcts::games::ttt::*;
+use mcts::util::round_robin_multiple;
 
 type TttFlatMC = FlatMonteCarloStrategy<TicTacToe>;
 type NimFlatMC = FlatMonteCarloStrategy<Nim>;
@@ -30,6 +32,26 @@ fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     let pct_a = win_a as f32 / total * 100.;
     let pct_b = win_b as f32 / total * 100.;
     println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
+}
+
+fn ucb_test() {
+    let mut flat = NimFlatMC::default();
+    let mut ucb1 = NimFlatMC::default();
+    flat.samples_per_move = 5000;
+    ucb1.samples_per_move = 5000;
+    ucb1.ucb1 = Some(100f64.sqrt());
+
+    flat.set_friendly_name("classic");
+    ucb1.set_friendly_name("ucb1");
+
+    let mut strats = vec![AnySearch::new(flat), AnySearch::new(ucb1)];
+
+    _ = round_robin_multiple::<Nim, AnySearch<_>>(
+        &mut strats,
+        5,
+        &NimState::new(),
+        mcts::util::Verbosity::Verbose,
+    );
 }
 
 struct BattleConfig {
@@ -190,6 +212,7 @@ fn _demo_flat_mc() {
 fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
+    ucb_test();
 
     demo_mcts();
     demo_nim();

@@ -7,6 +7,7 @@ pub mod timer;
 pub mod util;
 
 use crate::game::{Game, PlayerIndex};
+use crate::util::pv_string;
 use backprop::BackpropStrategy;
 use index::Id;
 use node::Node;
@@ -196,6 +197,9 @@ where
 {
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
+    pub(crate) root_id: Option<Id>,
+    pub(crate) init_state: Option<G::S>,
+    pub(crate) pv: Vec<G::A>,
 
     pub stats: TreeStats<G>,
     pub rng: SmallRng,
@@ -250,6 +254,9 @@ where
 {
     pub fn new(strategy: MctsStrategy<G, S>, rng: SmallRng) -> Self {
         Self {
+            root_id: None,
+            init_state: None,
+            pv: vec![],
             index: index::Arena::new(),
             strategy,
             rng,
@@ -263,7 +270,9 @@ where
     #[inline]
     pub(crate) fn new_root(&mut self) -> Id {
         let root = Node::new_root(G::num_players());
-        self.index.insert(root)
+        let root_id = self.index.insert(root);
+        self.root_id = Some(root_id);
+        root_id
     }
 
     #[inline]
@@ -344,18 +353,18 @@ where
     }
 
     #[inline]
-    fn select_final_action(&mut self, root_id: Id, state: &G::S) -> G::A {
+    fn select_final_action(&mut self, state: &G::S) -> G::A {
         let idx = self.strategy.final_action.best_child(
             &SelectContext {
                 q_init: self.strategy.q_init,
-                current_id: root_id,
+                current_id: self.root_id.unwrap(),
                 player: G::player_to_move(state).to_index(),
                 index: &self.index,
             },
             &mut self.rng,
         );
 
-        match &(self.index.get(root_id).state) {
+        match &(self.index.get(self.root_id.unwrap()).state) {
             NodeState::Expanded { actions, .. } => actions[idx].clone(),
             _ => unreachable!(),
         }
@@ -402,13 +411,13 @@ where
         file.write_all(json.as_bytes()).expect("can't write");
     }
 
-    pub fn verbose_summary(&self, root_id: Id, state: &G::S) {
+    pub fn verbose_summary(&self, state: &G::S) {
         if !self.verbose {
             return;
         }
 
         let num_threads = 1;
-        let root = self.index.get(root_id);
+        let root = self.index.get(self.root_id.unwrap());
         let total_visits = root.stats.num_visits;
         let rate = total_visits as f64 / num_threads as f64 / self.timer.elapsed().as_secs_f64();
         eprintln!(
@@ -419,7 +428,7 @@ where
         let player = G::player_to_move(state);
 
         // Sort moves by visit count, largest first.
-        let mut children = match &(self.index.get(root_id).state) {
+        let mut children = match &(root.state) {
             NodeState::Expanded { children, .. } => children
                 .iter()
                 .flatten()
@@ -448,12 +457,46 @@ where
                 G::notation(state, &m),
             );
         }
+
+        eprintln!(
+            "PV: {}",
+            pv_string::<G>(self.pv.as_slice(), self.init_state.as_ref().unwrap())
+        )
     }
 
     fn reset(&mut self) {
         self.index.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
+    }
+
+    fn compute_pv(&mut self) {
+        self.pv.clear();
+        let mut node_id = self.root_id.unwrap();
+        let mut node = self.index.get(node_id);
+        let mut state = self.init_state.clone().unwrap().clone();
+        while node.is_expanded() {
+            let player = G::player_to_move(&state);
+            let select_ctx = SelectContext {
+                q_init: self.strategy.q_init,
+                current_id: node_id,
+                player: player.to_index(),
+                index: &self.index,
+            };
+            let best_idx = self
+                .strategy
+                .final_action
+                .best_child(&select_ctx, &mut self.rng);
+            if let Some(child_id) = node.children()[best_idx] {
+                node_id = child_id;
+                node = self.index.get(node_id);
+                let action = node.action(&self.index);
+                state = G::apply(state, &action);
+                self.pv.push(action);
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -477,6 +520,7 @@ where
         self.reset();
         self.timer.start(self.strategy.max_time);
 
+        self.init_state = Some(state.clone());
         let root_id = self.new_root();
 
         for _ in 0..self.strategy.max_iterations {
@@ -489,19 +533,17 @@ where
             self.backprop(&mut ctx, trial, G::player_to_move(state).to_index());
         }
 
-        self.verbose_summary(root_id, state);
-        self.select_final_action(root_id, state)
+        self.compute_pv();
+        self.verbose_summary(state);
+        self.select_final_action(state)
     }
 
     fn estimated_depth(&self) -> usize {
         (self.stats.accum_depth as f64 / self.stats.iter_count as f64).round() as usize
     }
 
-    fn principle_variation(&self) -> Vec<&G::A>
-    where
-        G: Game,
-    {
-        unimplemented!()
+    fn principle_variation(&self) -> Vec<G::A> {
+        self.pv.clone()
     }
 
     fn set_friendly_name(&mut self, name: &str) {

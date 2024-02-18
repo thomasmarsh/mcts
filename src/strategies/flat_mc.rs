@@ -9,12 +9,13 @@ use crate::util::random_best;
 use std::marker::PhantomData;
 
 pub struct FlatMonteCarloStrategy<G: Game> {
-    samples_per_move: u32, // TODO: also suppose samples per state
-    max_rollout_depth: u32,
-    max_rollouts: u32,
-    verbose: bool,
-    game_type: PhantomData<G>,
-    name: String,
+    pub samples_per_move: u32, // TODO: also suppose samples per state
+    pub max_rollout_depth: u32,
+    pub max_rollouts: u32,
+    pub verbose: bool,
+    pub game_type: PhantomData<G>,
+    pub ucb1: Option<f64>,
+    pub name: String,
 }
 
 impl<G: Game> FlatMonteCarloStrategy<G> {
@@ -25,6 +26,7 @@ impl<G: Game> FlatMonteCarloStrategy<G> {
             max_rollouts: u32::MAX,
             verbose: false,
             game_type: PhantomData,
+            ucb1: None,
             name: "flat_mc".into(),
         }
     }
@@ -86,8 +88,9 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
 
         let mut rng = SmallRng::from_entropy();
 
-        let moves = G::gen_moves(state);
-        let wins = moves
+        let mut actions = Vec::new();
+        G::generate_actions(state, &mut actions);
+        let wins = actions
             .iter()
             .map(|m| {
                 let mut tmp = state.clone();
@@ -118,8 +121,18 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
             }
         }
 
-        random_best(wins.as_slice(), &mut rng, |x| x.0 as f64)
+        let ucb1 = |w: f64, n: f64, c: f64| w / n + c * (n.ln() / n);
+
+        if let Some(c) = self.ucb1 {
+            random_best(wins.as_slice(), &mut rng, |x| {
+                ucb1(x.0 as f64, self.samples_per_move as f64, c)
+            })
             .map(|x| x.1.clone())
             .unwrap()
+        } else {
+            random_best(wins.as_slice(), &mut rng, |x| x.0 as f64)
+                .map(|x| x.1.clone())
+                .unwrap()
+        }
     }
 }

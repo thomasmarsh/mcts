@@ -11,7 +11,7 @@ pub trait Search: Sync + Send {
 
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A;
 
-    fn principle_variation(&self) -> Vec<&<Self::G as Game>::A> {
+    fn principle_variation(&self) -> Vec<<Self::G as Game>::A> {
         vec![]
     }
 
@@ -26,7 +26,6 @@ pub trait Search: Sync + Send {
 mod tests {
     use super::*;
     use crate::game::PlayerIndex;
-    use crate::strategies::mcts::backprop::compute_utilities;
 
     #[test]
     fn test_parity() {
@@ -79,10 +78,10 @@ mod tests {
             let trial = new.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
             println!("trial actions: {:?}", trial.actions);
             println!("trial status: {:?}", trial.status);
-            println!("utilites: {:?}", compute_utilities::<G>(&trial.state));
+            println!("utilites: {:?}", G::compute_utilities(&trial.state));
             println!(
                 "relevant utility: {:?}",
-                compute_utilities::<G>(&trial.state)[G::player_to_move(&init_state).to_index()]
+                G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
             new.backprop(&mut ctx, trial, G::player_to_move(&init_state).to_index());
 
@@ -102,7 +101,7 @@ mod tests {
         assert_eq!(new.index.get(root_id_new).stats.num_visits, 2);
 
         // Third pass: expand child node
-        let child_id = step(&mut new);
+        let _child_id = step(&mut new);
 
         println!("{:#?}", new.index);
     }

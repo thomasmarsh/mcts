@@ -14,7 +14,7 @@ pub trait BackpropStrategy: Clone + Sync + Send {
     ) where
         G: Game,
     {
-        let utilities = compute_utilities::<G>(&trial.state);
+        let utilities = G::compute_utilities(&trial.state);
 
         let mut amaf_actions = if flags.grave() || flags.global() {
             trial.actions.clone()
@@ -98,39 +98,3 @@ pub trait BackpropStrategy: Clone + Sync + Send {
 pub struct Classic;
 
 impl BackpropStrategy for Classic {}
-
-#[inline]
-fn rank_to_util(rank: f64, num_players: usize) -> f64 {
-    let n = num_players as f64;
-
-    if n == 1. {
-        2. * rank - 1.
-    } else {
-        1. - ((rank - 1.) * (2. / (n - 1.)))
-    }
-}
-
-#[inline]
-pub fn compute_utilities<G>(state: &G::S) -> Vec<f64>
-where
-    G: Game,
-{
-    let winner = G::winner(state).map(|p| p.to_index());
-    (0..G::num_players())
-        .map(|i| match winner {
-            None => 0.,
-            Some(w) if w == i => 1.,
-            _ => -1.,
-        })
-        .collect()
-
-    // TODO: think about the best way to handle ranking
-    //
-    // (0..G::num_players())
-    //     .map(|i| {
-    //         let n = G::num_players();
-    //         let rank = G::rank(state, i);
-    //         rank_to_util(rank, n)
-    //     })
-    //     .collect()
-}

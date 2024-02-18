@@ -1,6 +1,4 @@
-use indicatif::{
-    MultiProgress, MultiProgressAlignment, ProgressBar, ProgressDrawTarget, ProgressStyle,
-};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rand::Rng;
 
 use rand::rngs::SmallRng;
@@ -303,23 +301,14 @@ where
     results
 }
 
-// Return a unique id for humans for this move.
-pub(super) fn move_id<G: Game>(s: &<G as Game>::S, m: Option<<G as Game>::A>) -> String {
-    if let Some(mov) = m {
-        G::notation(s, &mov)
-    } else {
-        "none".to_string()
-    }
-}
-
-pub(super) fn pv_string<G: Game>(path: &[<G as Game>::A], state: &<G as Game>::S) -> String {
+pub(super) fn pv_string<G: Game>(path: &[G::A], state: &G::S) -> String {
     let mut state = state.clone();
     let mut out = String::new();
     for (i, m) in (0..).zip(path.iter()) {
         if i > 0 {
             out.push_str("; ");
         }
-        out.push_str(move_id::<G>(&state, Some(m.clone())).as_str());
+        out.push_str(G::notation(&state, m).as_str());
         state = G::apply(state, m);
     }
     out

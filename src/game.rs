@@ -18,7 +18,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// The type representing the state of your game. Ideally, this
     /// should be as small as possible and have a cheap Clone or Copy
     /// implementation.
-    type S: Clone + std::fmt::Debug + Sized + Sync;
+    type S: Clone + std::fmt::Debug + Sized + Sync + Send;
 
     /// The type representing actions, or moves, in your game. These
     /// also should be very cheap to clone.
@@ -89,19 +89,41 @@ pub trait Game: Sized + Clone + Sync + Send {
         "??".into()
     }
 
-    #[deprecated]
-    fn gen_moves(state: &Self::S) -> Vec<Self::A> {
-        let mut actions = Vec::new();
-        Self::generate_actions(state, &mut actions);
-        actions
+    #[inline]
+    fn get_reward(init: &Self::S, term: &Self::S) -> f64 {
+        Self::compute_utilities(term)[Self::player_to_move(init).to_index()]
     }
 
-    #[deprecated]
-    fn get_reward(init: &Self::S, term: &Self::S) -> f64 {
-        match Self::winner(term) {
-            None => 0.,
-            Some(w) if w.to_index() == Self::player_to_move(init).to_index() => 1.,
-            _ => -1.,
-        }
+    // #[inline]
+    // fn rank_to_util(rank: f64, num_players: usize) -> f64 {
+    //     let n = num_players as f64;
+
+    //     if n == 1. {
+    //         2. * rank - 1.
+    //     } else {
+    //         1. - ((rank - 1.) * (2. / (n - 1.)))
+    //     }
+    // }
+
+    #[inline]
+    fn compute_utilities(state: &Self::S) -> Vec<f64> {
+        let winner = Self::winner(state).map(|p| p.to_index());
+        (0..Self::num_players())
+            .map(|i| match winner {
+                None => 0.,
+                Some(w) if w == i => 1.,
+                _ => -1.,
+            })
+            .collect()
+
+        // TODO: think about the best way to handle ranking
+        //
+        // (0..Self::num_players())
+        //     .map(|i| {
+        //         let n = Self::num_players();
+        //         let rank = Self::rank(state, i);
+        //         rank_to_util(rank, n)
+        //     })
+        //     .collect()
     }
 }

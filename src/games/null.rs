@@ -26,7 +26,7 @@ impl Game for NullGame {
         unreachable!();
     }
 
-    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {}
+    fn generate_actions(_: &Self::S, _: &mut Vec<Self::A>) {}
 
     fn is_terminal(_: &()) -> bool {
         true
