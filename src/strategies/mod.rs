@@ -1,7 +1,6 @@
 pub mod flat_mc;
 pub mod mcts;
 pub mod random;
-pub mod sync_util;
 
 use crate::game::Game;
 
