@@ -26,6 +26,10 @@ path = "demo/druid.rs"
 name = "hyper"
 path = "demo/hyper.rs"
 
+[[bin]]
+name = "book"
+path = "demo/book.rs"
+
 [dependencies]
 nimlib = "0.1.1"
 rand = { version = "0.8.5", features = ["small_rng"] }

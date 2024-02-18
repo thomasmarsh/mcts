@@ -1,5 +1,6 @@
 pub mod backprop;
 pub mod index;
+pub mod meta;
 pub mod node;
 pub mod select;
 pub mod simulate;
@@ -197,7 +198,7 @@ where
 {
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
-    pub(crate) root_id: Option<Id>,
+    pub(crate) root_id: Id,
     pub(crate) init_state: Option<G::S>,
     pub(crate) pv: Vec<G::A>,
 
@@ -253,11 +254,13 @@ where
     MctsStrategy<G, S>: Default + Sync + Send,
 {
     pub fn new(strategy: MctsStrategy<G, S>, rng: SmallRng) -> Self {
+        let mut index = index::Arena::new();
+        let root_id = index.insert(Node::new_root(G::num_players()));
         Self {
-            root_id: None,
+            root_id,
             init_state: None,
             pv: vec![],
-            index: index::Arena::new(),
+            index,
             strategy,
             rng,
             timer: timer::Timer::new(),
@@ -271,8 +274,25 @@ where
     pub(crate) fn new_root(&mut self) -> Id {
         let root = Node::new_root(G::num_players());
         let root_id = self.index.insert(root);
-        self.root_id = Some(root_id);
+        self.root_id = root_id;
         root_id
+    }
+
+    #[inline]
+    pub fn expand(&mut self, node_id: Id, state: &G::S) -> NodeState<G::A> {
+        let node = self.index.get_mut(node_id);
+        if G::is_terminal(state) {
+            node.state = NodeState::Terminal;
+        } else {
+            let mut actions = Vec::new();
+            G::generate_actions(state, &mut actions);
+            assert!(!actions.is_empty());
+            node.state = NodeState::Expanded {
+                children: vec![None; actions.len()],
+                actions,
+            };
+        }
+        node.state.clone()
     }
 
     #[inline]
@@ -294,18 +314,10 @@ where
 
             // Get child actions
             if is_leaf {
-                let node = self.index.get_mut(ctx.current_id);
-                if G::is_terminal(&ctx.state) {
-                    node.state = NodeState::Terminal;
+                let node_state = self.expand(ctx.current_id, &ctx.state);
+                if matches!(node_state, NodeState::Terminal) {
                     return;
                 }
-                let mut actions = Vec::new();
-                G::generate_actions(&ctx.state, &mut actions);
-                assert!(!actions.is_empty());
-                node.state = NodeState::Expanded {
-                    children: vec![None; actions.len()],
-                    actions,
-                };
             }
 
             let best_idx = {
@@ -357,14 +369,14 @@ where
         let idx = self.strategy.final_action.best_child(
             &SelectContext {
                 q_init: self.strategy.q_init,
-                current_id: self.root_id.unwrap(),
+                current_id: self.root_id,
                 player: G::player_to_move(state).to_index(),
                 index: &self.index,
             },
             &mut self.rng,
         );
 
-        match &(self.index.get(self.root_id.unwrap()).state) {
+        match &(self.index.get(self.root_id).state) {
             NodeState::Expanded { actions, .. } => actions[idx].clone(),
             _ => unreachable!(),
         }
@@ -417,7 +429,7 @@ where
         }
 
         let num_threads = 1;
-        let root = self.index.get(self.root_id.unwrap());
+        let root = self.index.get(self.root_id);
         let total_visits = root.stats.num_visits;
         let rate = total_visits as f64 / num_threads as f64 / self.timer.elapsed().as_secs_f64();
         eprintln!(
@@ -464,15 +476,16 @@ where
         )
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self) -> Id {
         self.index.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
+        self.new_root()
     }
 
     fn compute_pv(&mut self) {
         self.pv.clear();
-        let mut node_id = self.root_id.unwrap();
+        let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
         let mut state = self.init_state.clone().unwrap().clone();
         while node.is_expanded() {
@@ -517,11 +530,10 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
-        self.reset();
+        let root_id = self.reset();
         self.timer.start(self.strategy.max_time);
 
         self.init_state = Some(state.clone());
-        let root_id = self.new_root();
 
         for _ in 0..self.strategy.max_iterations {
             if self.timer.done() {
