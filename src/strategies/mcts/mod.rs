@@ -363,7 +363,6 @@ where
 
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
-        println!("{:?}", self.index.get(self.root_id));
         let idx = self.strategy.final_action.best_child(
             &SelectContext {
                 q_init: self.strategy.q_init,
