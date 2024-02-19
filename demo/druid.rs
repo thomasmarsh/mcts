@@ -6,7 +6,7 @@ use mcts::games::druid::{Druid, State};
 use mcts::strategies::mcts::select::SelectStrategy;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
-use mcts::strategies::mcts::MctsStrategy;
+use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::mcts::{backprop, select, Strategy};
 use mcts::util::Verbosity;
@@ -26,8 +26,8 @@ fn main() {
     assert_eq!(Duration::default(), Duration::from_secs(0));
 
     let grave: TreeSearch<Druid, util::McGrave> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -41,8 +41,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut brave: TreeSearch<Druid, util::McBrave> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -52,8 +52,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut ucb1_grave: TreeSearch<Druid, util::Ucb1Grave> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -75,8 +75,8 @@ fn main() {
     //   'threshold': 211,
     // })
     let mut ucb1_grave_mast: TreeSearch<Druid, util::Ucb1GraveMast> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -92,8 +92,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut amaf: TreeSearch<Druid, util::ScalarAmaf> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -106,8 +106,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut amaf_mast: TreeSearch<Druid, util::ScalarAmafMast> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -121,8 +121,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut uct: TreeSearch<Druid, util::Ucb1> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -134,8 +134,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut uct_mast_low: TreeSearch<Druid, util::Ucb1Mast> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -148,8 +148,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut uct_mast_high: TreeSearch<Druid, util::Ucb1Mast> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -162,8 +162,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let mut tuned: TreeSearch<Druid, util::Ucb1Tuned> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -175,8 +175,8 @@ fn main() {
         .verbose(VERBOSE);
 
     let meta: TreeSearch<Druid, util::MetaMcts> = TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -185,8 +185,8 @@ fn main() {
                     exploration_constant: C_TUNED,
                 })
                 .simulate(simulate::MetaMcts {
-                    inner: TreeSearch::default().strategy(
-                        MctsStrategy::default()
+                    inner: TreeSearch::default().config(
+                        SearchConfig::default()
                             .max_iterations(3)
                             .max_playout_depth(PLAYOUT_DEPTH)
                             .max_time(Duration::default())

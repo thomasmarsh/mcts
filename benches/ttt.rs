@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use mcts::games::ttt;
 use mcts::strategies::mcts::util;
-use mcts::strategies::mcts::MctsStrategy;
+use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::Search;
 
@@ -14,7 +14,7 @@ fn ponder(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             b.iter(|| {
                 let mut ts =
-                    TicTacToeTS::default().strategy(MctsStrategy::default().max_iterations(n));
+                    TicTacToeTS::default().strategy(SearchConfig::default().max_iterations(n));
 
                 ts.choose_action(&ttt::HashedPosition::new());
             });

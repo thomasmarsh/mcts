@@ -5,7 +5,7 @@ use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
 use mcts::strategies::mcts::util;
-use mcts::strategies::mcts::MctsStrategy;
+use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
@@ -40,16 +40,16 @@ fn expansion_test() {
     type TS = TreeSearch<ttt::BiddingTicTacToe, util::Ucb1>;
 
     let expand5 = TS::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(10000)
                 .expand_threshold(5),
         )
         .name("expand5");
 
     let expand0 = TS::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(10000)
                 .expand_threshold(0),
         )
@@ -93,8 +93,7 @@ struct BattleConfig {
 fn battle_nim_mcts(config: &BattleConfig) {
     for samples in &config.samples_per_move {
         println!("samples per move: {}", samples);
-        let mut mcts = NimMCTS::default();
-        mcts.strategy.max_iterations = *samples;
+        let mut mcts = NimMCTS::default().config(SearchConfig::default().max_iterations(*samples));
         let mut flat_mc = NimFlatMC::new().set_samples_per_move(*samples as u32);
 
         let mut fst = Vec::with_capacity(100);
@@ -123,7 +122,7 @@ fn battle_ttt(config: &BattleConfig) {
         println!("samples per move: {}", samples);
         let mut flat_mc = TttFlatMC::new().set_samples_per_move(*samples as u32);
         let mut mcts = TttMCTS::default();
-        mcts.strategy.max_iterations = *samples;
+        mcts.config.max_iterations = *samples;
 
         let mut fst = Vec::with_capacity(100);
         let mut snd = Vec::with_capacity(100);
@@ -149,8 +148,8 @@ fn battle_ttt(config: &BattleConfig) {
 fn demo_mcts() {
     let mut mcts = TttMCTS::default();
     mcts.verbose = true;
-    mcts.strategy.max_time = Duration::from_secs(5);
-    mcts.strategy.max_iterations = usize::MAX;
+    mcts.config.max_time = Duration::from_secs(5);
+    mcts.config.max_iterations = usize::MAX;
     let mut random: Random<TicTacToe> = Random::new();
     let mut player = ttt::Piece::X;
 
@@ -176,8 +175,8 @@ fn demo_mcts() {
 fn demo_nim() {
     let mut mcts = NimMCTS::default();
     mcts.verbose = true;
-    mcts.strategy.max_time = Duration::from_secs(5);
-    mcts.strategy.max_iterations = usize::MAX;
+    mcts.config.max_time = Duration::from_secs(5);
+    mcts.config.max_iterations = usize::MAX;
     let mut random: Random<Nim> = Random::new();
     let mut player = nim::Player::Black;
 

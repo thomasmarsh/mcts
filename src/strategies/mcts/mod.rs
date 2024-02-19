@@ -67,11 +67,11 @@ pub trait Strategy<G: Game>: Clone {
 }
 
 #[derive(Clone)]
-pub struct MctsStrategy<G, S>
+pub struct SearchConfig<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Sync + Send,
+    SearchConfig<G, S>: Sync + Send,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
@@ -84,11 +84,11 @@ where
     pub max_time: std::time::Duration,
 }
 
-impl<G, S> MctsStrategy<G, S>
+impl<G, S> SearchConfig<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Sync + Send,
+    SearchConfig<G, S>: Sync + Send,
 {
     pub fn select(mut self, select: S::Select) -> Self {
         self.select = select;
@@ -194,7 +194,7 @@ pub struct TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Sync + Send,
+    SearchConfig<G, S>: Sync + Send,
 {
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
@@ -202,9 +202,9 @@ where
     pub(crate) init_state: Option<G::S>,
     pub(crate) pv: Vec<G::A>,
 
+    pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
     pub rng: SmallRng,
-    pub strategy: MctsStrategy<G, S>,
     pub verbose: bool,
     pub name: String,
 }
@@ -213,15 +213,15 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Sync + Send,
+    SearchConfig<G, S>: Sync + Send,
 {
     pub fn rng(mut self, rng: SmallRng) -> Self {
         self.rng = rng;
         self
     }
 
-    pub fn strategy(mut self, strategy: MctsStrategy<G, S>) -> Self {
-        self.strategy = strategy;
+    pub fn config(mut self, config: SearchConfig<G, S>) -> Self {
+        self.config = config;
         self
     }
 
@@ -240,10 +240,10 @@ impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default + Sync + Send,
+    SearchConfig<G, S>: Default + Sync + Send,
 {
     fn default() -> Self {
-        Self::new(MctsStrategy::default(), SmallRng::from_entropy())
+        Self::new(SearchConfig::default(), SmallRng::from_entropy())
     }
 }
 
@@ -251,9 +251,9 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default + Sync + Send,
+    SearchConfig<G, S>: Default + Sync + Send,
 {
-    pub fn new(strategy: MctsStrategy<G, S>, rng: SmallRng) -> Self {
+    pub fn new(config: SearchConfig<G, S>, rng: SmallRng) -> Self {
         let mut index = index::Arena::new();
         let root_id = index.insert(Node::new_root(G::num_players()));
         Self {
@@ -261,7 +261,7 @@ where
             init_state: None,
             pv: vec![],
             index,
-            strategy,
+            config,
             rng,
             timer: timer::Timer::new(),
             stats: Default::default(),
@@ -302,7 +302,7 @@ where
             ctx.stack.push(ctx.current_id);
 
             let node = self.index.get(ctx.current_id);
-            if node.is_terminal() || node.stats.num_visits < self.strategy.expand_threshold {
+            if node.is_terminal() || node.stats.num_visits < self.config.expand_threshold {
                 return;
             }
 
@@ -316,12 +316,12 @@ where
 
             let best_idx = {
                 let select_ctx = SelectContext {
-                    q_init: self.strategy.q_init,
+                    q_init: self.config.q_init,
                     current_id: ctx.current_id,
                     player: player.to_index(),
                     index: &self.index,
                 };
-                self.strategy.select.best_child(&select_ctx, &mut self.rng)
+                self.config.select.best_child(&select_ctx, &mut self.rng)
             };
 
             let NodeState::Expanded {
@@ -354,7 +354,7 @@ where
                 ctx.state = state;
                 ctx.stack.push(ctx.current_id);
 
-                if self.strategy.expand_threshold > 0 {
+                if self.config.expand_threshold > 0 {
                     return;
                 }
             }
@@ -363,9 +363,9 @@ where
 
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
-        let idx = self.strategy.final_action.best_child(
+        let idx = self.config.final_action.best_child(
             &SelectContext {
-                q_init: self.strategy.q_init,
+                q_init: self.config.q_init,
                 current_id: self.root_id,
                 player: G::player_to_move(state).to_index(),
                 index: &self.index,
@@ -381,9 +381,9 @@ where
 
     #[inline]
     pub(crate) fn simulate(&mut self, state: &G::S, player: usize) -> Trial<G> {
-        self.strategy.simulate.playout(
+        self.config.simulate.playout(
             G::determinize(state.clone(), &mut self.rng),
-            self.strategy.max_playout_depth,
+            self.config.max_playout_depth,
             &self.stats,
             player,
             &mut self.rng,
@@ -394,8 +394,8 @@ where
     pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, trial: Trial<G>, player: usize) {
         self.stats.iter_count += 1;
         self.stats.accum_depth += trial.depth + ctx.stack.len() - 1;
-        let flags = self.strategy.select.backprop_flags() | self.strategy.simulate.backprop_flags();
-        self.strategy
+        let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
+        self.config
             .backprop
             // TODO: may as well pass &mut self? Seems like the separation
             // of concerns is not ideal.
@@ -488,13 +488,13 @@ where
         while node.is_expanded() {
             let player = G::player_to_move(&state);
             let select_ctx = SelectContext {
-                q_init: self.strategy.q_init,
+                q_init: self.config.q_init,
                 current_id: node_id,
                 player: player.to_index(),
                 index: &self.index,
             };
             let best_idx = self
-                .strategy
+                .config
                 .final_action
                 .best_child(&select_ctx, &mut self.rng);
             if let Some(child_id) = node.children()[best_idx] {
@@ -514,7 +514,7 @@ impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default + Sync + Send,
+    SearchConfig<G, S>: Default + Sync + Send,
     <S as Strategy<G>>::Select: Sync + Send,
     <S as Strategy<G>>::FinalAction: Sync + Send,
     <S as Strategy<G>>::Backprop: Sync + Send,
@@ -528,11 +528,11 @@ where
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
         let root_id = self.reset();
-        self.timer.start(self.strategy.max_time);
+        self.timer.start(self.config.max_time);
 
         self.init_state = Some(state.clone());
 
-        for _ in 0..self.strategy.max_iterations {
+        for _ in 0..self.config.max_iterations {
             if self.timer.done() {
                 break;
             }
@@ -547,7 +547,7 @@ where
 
         // NOTE: this can fail when root is a leaf. This happens if:
         //
-        //     self.strategy.max_iter < self.strategy.expand_threshold
+        //     max_iterations < expand_threshold
         //
         // TODO: We might check for this and unconditionally expand root.
         self.select_final_action(state)

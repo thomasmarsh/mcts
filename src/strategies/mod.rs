@@ -35,8 +35,8 @@ mod tests {
 
         for n in 0..3 {
             type TS = mcts::TreeSearch<G, mcts::util::Ucb1>;
-            let mut ts = TS::default().strategy(
-                mcts::MctsStrategy::default()
+            let mut ts = TS::default().config(
+                mcts::SearchConfig::default()
                     .expand_threshold(n)
                     // NOTE: best_child will fail on final_action
                     // selection when we haven't expanded root.
@@ -91,8 +91,8 @@ mod tests {
 
         // Configure new MCTS
         type TS = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
-        let mut ts = TS::default().strategy(
-            mcts::MctsStrategy::default()
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
                 .expand_threshold(1)
                 .max_playout_depth(100),
         );

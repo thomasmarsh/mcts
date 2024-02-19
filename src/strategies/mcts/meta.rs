@@ -1,5 +1,5 @@
 use super::index;
-use super::MctsStrategy;
+use super::SearchConfig;
 use super::Strategy;
 use super::TreeSearch;
 use crate::game::Action;
@@ -183,7 +183,7 @@ impl<G, S> QuasiBestFirst<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default,
+    SearchConfig<G, S>: Default,
 {
     pub fn new(book: OpeningBook<G::A>, search: TreeSearch<G, S>, rng: SmallRng) -> Self {
         // The default value here is 0.5, but the Chaslot paper noted the difficulty

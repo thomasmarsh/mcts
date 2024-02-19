@@ -10,7 +10,7 @@ use mcts::games::druid::State;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
-use mcts::strategies::mcts::MctsStrategy;
+use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
@@ -70,8 +70,8 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
 
 fn make_opponent(seed: u64) -> TS<util::Ucb1> {
     TS::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
@@ -86,8 +86,8 @@ fn make_opponent(seed: u64) -> TS<util::Ucb1> {
 
 fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
     TS::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))

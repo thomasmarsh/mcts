@@ -1,4 +1,4 @@
-use super::MctsStrategy;
+use super::SearchConfig;
 
 use super::*;
 
@@ -17,7 +17,7 @@ impl<G: Game> Strategy<G> for Ucb1 {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, Ucb1> {
+impl<G: Game> Default for SearchConfig<G, Ucb1> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -48,7 +48,7 @@ impl<G: Game> Strategy<G> for Ucb1Mast {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, Ucb1Mast> {
+impl<G: Game> Default for SearchConfig<G, Ucb1Mast> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -78,7 +78,7 @@ impl<G: Game> Strategy<G> for ScalarAmaf {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, ScalarAmaf> {
+impl<G: Game> Default for SearchConfig<G, ScalarAmaf> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -108,7 +108,7 @@ impl<G: Game> Strategy<G> for ScalarAmafMast {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, ScalarAmafMast> {
+impl<G: Game> Default for SearchConfig<G, ScalarAmafMast> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -138,7 +138,7 @@ impl<G: Game> Strategy<G> for Ucb1Tuned {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, Ucb1Tuned> {
+impl<G: Game> Default for SearchConfig<G, Ucb1Tuned> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -168,7 +168,7 @@ impl<G: Game> Strategy<G> for McGrave {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, McGrave> {
+impl<G: Game> Default for SearchConfig<G, McGrave> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -198,7 +198,7 @@ impl<G: Game> Strategy<G> for McBrave {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, McBrave> {
+impl<G: Game> Default for SearchConfig<G, McBrave> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -228,7 +228,7 @@ impl<G: Game> Strategy<G> for Ucb1Grave {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, Ucb1Grave> {
+impl<G: Game> Default for SearchConfig<G, Ucb1Grave> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -258,7 +258,7 @@ impl<G: Game> Strategy<G> for Ucb1GraveMast {
     }
 }
 
-impl<G: Game> Default for MctsStrategy<G, Ucb1GraveMast> {
+impl<G: Game> Default for SearchConfig<G, Ucb1GraveMast> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -277,7 +277,7 @@ impl<G: Game> Default for MctsStrategy<G, Ucb1GraveMast> {
 #[derive(Clone)]
 pub struct MetaMcts;
 
-impl<G: Game> Default for MctsStrategy<G, MetaMcts> {
+impl<G: Game> Default for SearchConfig<G, MetaMcts> {
     fn default() -> Self {
         Self {
             select: Default::default(),

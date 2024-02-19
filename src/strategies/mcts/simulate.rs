@@ -232,7 +232,7 @@ impl<G, S> SimulateStrategy<G> for MetaMcts<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    MctsStrategy<G, S>: Default,
+    SearchConfig<G, S>: Default,
 {
     fn select_move<'a>(
         &mut self,

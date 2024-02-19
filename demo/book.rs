@@ -8,7 +8,7 @@ use mcts::strategies::mcts::meta::QuasiBestFirst;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
-use mcts::strategies::mcts::MctsStrategy;
+use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 
 use mcts::games::druid::Druid;
@@ -49,8 +49,8 @@ pub fn debug(book: &OpeningBook<Move>) {
 
 fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
     TreeSearch::default()
-        .strategy(
-            MctsStrategy::default()
+        .config(
+            SearchConfig::default()
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
