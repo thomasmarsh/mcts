@@ -119,8 +119,14 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, _ctx: &SelectContext<'_, A>, _: Self::Aux) -> (i64, f64) {
-        (0, 0.)
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> (i64, f64) {
+        let q = ctx
+            .index
+            .get(ctx.current_id)
+            .stats
+            .value_estimate_unvisited(ctx.player, ctx.q_init);
+
+        (0, q)
     }
 }
 
@@ -140,6 +146,46 @@ impl<A: Action> SelectStrategy<A> for MaxAvgScore {
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
         ctx.index.get(child_id).stats.expected_score(ctx.player)
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
+        ctx.index
+            .get(ctx.current_id)
+            .stats
+            .value_estimate_unvisited(ctx.player, ctx.q_init)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// The secure child is the child that maximizes a lower confidence bound.
+#[derive(Clone)]
+pub struct SecureChild {
+    pub a: f64,
+}
+
+impl Default for SecureChild {
+    fn default() -> Self {
+        // This quantity comes from the Chaslot, Winands progressive strategies paper
+        Self { a: 4. }
+    }
+}
+
+impl<A: Action> SelectStrategy<A> for SecureChild {
+    type Score = f64;
+    type Aux = ();
+
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
+
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+        let child = ctx.index.get(child_id);
+        let q = child.stats.expected_score(ctx.player);
+        let n = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
+
+        q + self.a / (n as f64).sqrt()
     }
 
     #[inline(always)]
