@@ -1,13 +1,21 @@
-use super::index::Arena;
-use super::*;
+use super::index;
+use super::MctsStrategy;
+use super::Strategy;
+use super::TreeSearch;
 use crate::game::Action;
+use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::Search;
 use crate::util::random_best;
+
+use rand::rngs::SmallRng;
+use rand::Rng;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 
-// Use epsilon-greed to alleviate starvation. Not mentioned in Chaslot paper. Also, doesn't really help.
-const EPSILON: f64 = 0.1;
+// This is not mentioned in the Chaslot paper, but QBF seems too greedy
+// without epsilon-greedy.
+const EPSILON: f64 = 0.3;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry<A: Action> {
@@ -29,12 +37,14 @@ impl<A: Action> Entry<A> {
         self.num_visits += 1;
     }
 
-    fn score(&self, player: usize, parent_n: u64) -> Option<f64> {
+    fn score(&self, player: usize) -> Option<f64> {
         if self.num_visits == 0 {
             None
         } else {
-            let ratio = self.num_visits as f64 / parent_n as f64;
-            Some(ratio * (self.utilities[player] / self.num_visits as f64 + 1.) / 2.)
+            let q = self.utilities[player];
+            let n = self.num_visits as f64;
+            let avg_q = q / n; // -1..1
+            Some((avg_q + 1.) / 2.)
         }
     }
 
@@ -47,18 +57,16 @@ impl<A: Action> Entry<A> {
     }
 }
 
-impl<A: Action> Entry<A> {}
-
 #[derive(Clone, Debug)]
 pub struct OpeningBook<A: Action> {
-    pub index: Arena<Entry<A>>,
-    pub root_id: Id,
+    pub index: index::Arena<Entry<A>>,
+    pub root_id: index::Id,
     pub num_players: usize,
 }
 
 impl<A: Action> OpeningBook<A> {
-    fn new(num_players: usize) -> Self {
-        let mut index = Arena::new();
+    pub fn new(num_players: usize) -> Self {
+        let mut index = index::Arena::new();
         let root_id = index.insert(Entry::new(num_players));
         Self {
             index,
@@ -67,26 +75,26 @@ impl<A: Action> OpeningBook<A> {
         }
     }
 
-    fn get_mut(&mut self, id: Id) -> &mut Entry<A> {
+    fn get_mut(&mut self, id: index::Id) -> &mut Entry<A> {
         self.index.get_mut(id)
     }
 
-    fn get(&self, id: Id) -> &Entry<A> {
+    fn get(&self, id: index::Id) -> &Entry<A> {
         self.index.get(id)
     }
 
-    fn insert(&mut self, value: Entry<A>) -> Id {
+    fn insert(&mut self, value: Entry<A>) -> index::Id {
         self.index.insert(value)
     }
 }
 
 impl<A: Action> OpeningBook<A> {
-    fn contains_action(&self, id: Id, action: &A) -> bool {
+    fn contains_action(&self, id: index::Id, action: &A) -> bool {
         self.index.get(id).children.contains_key(action)
     }
 
     // Get or insert a child for this id
-    fn get_child(&mut self, id: Id, action: &A) -> Id {
+    fn get_child(&mut self, id: index::Id, action: &A) -> index::Id {
         if !self.contains_action(id, action) {
             // Insert into index
             let child_id = self.insert(Entry::new(self.num_players));
@@ -114,16 +122,14 @@ impl<A: Action> OpeningBook<A> {
 
     pub fn score(&self, sequence: &[A], player: usize) -> Option<f64> {
         let mut current_id = self.root_id;
-        let mut parent_n = self.get(current_id).num_visits;
         for action in sequence {
             if let Some(child_id) = self.get(current_id).children.get(action) {
-                parent_n = self.get(current_id).num_visits;
                 current_id = *child_id;
             } else {
                 return None;
             }
         }
-        self.get(current_id).score(player, parent_n)
+        self.get(current_id).score(player)
     }
 }
 
@@ -135,8 +141,14 @@ pub struct QuasiBestFirst<G: Game, S: Strategy<G>> {
     pub rng: SmallRng,
 }
 
-/// I don't quite get this algorithm. I posted a question:
-/// https://stackoverflow.com/questions/78017232/quasi-best-first-qbf-for-opening-book-generation-with-monte-carlo-tree-search
+/// NOTE: this algorithm seems like it could be implemented with the following
+/// settings on TreeSearch:
+///
+/// - max_iter: 1
+/// - expand_threshold: 0
+/// - select: qbf
+/// - backprop: n/a
+/// - simulate: n/a
 ///
 /// Algorithm 1 The “Quasi Best-First” (QBF) algorithm. λ is the number of machines
 /// available. K is a constant. g is a game, defined as a sequence of game states.
@@ -173,25 +185,25 @@ where
     S: Strategy<G>,
     MctsStrategy<G, S>: Default,
 {
-    pub fn new(search: TreeSearch<G, S>, rng: SmallRng) -> Self {
+    pub fn new(book: OpeningBook<G::A>, search: TreeSearch<G, S>, rng: SmallRng) -> Self {
         // The default value here is 0.5, but the Chaslot paper noted the difficulty
         // of elevating the black player in go when cold starting, prompting a lower
         // threshold for the initial player.
         // TODO: what about N-player games where N > 2
-        let mut k = vec![0.005; G::num_players()];
+        let mut k = vec![0.5; G::num_players()];
         if k.len() == 2 {
-            k[0] = 0.005;
+            k[0] = 0.1;
         }
         Self {
             k,
-            book: OpeningBook::new(G::num_players()),
+            book,
             search,
             rng,
         }
     }
 
     /// Search is expected to be called multiple times to fill out the book.
-    pub fn search(&mut self, init: &G::S) {
+    pub fn search(&mut self, init: &G::S) -> (Vec<G::A>, Vec<f64>) {
         let mut stack = Vec::new();
         let mut state = init.clone();
         while !G::is_terminal(&state) {
@@ -204,11 +216,11 @@ where
         }
 
         let utilities = G::compute_utilities(&state);
-        self.book.add(stack.as_slice(), utilities.as_slice());
-        self.debug(init);
+
+        (stack, utilities)
     }
 
-    fn debug(&self, init: &G::S) {
+    pub fn debug(&self, init: &G::S) {
         println!("book.len() = {}", self.book.index.len());
         let mut actions = Vec::new();
         G::generate_actions(init, &mut actions);
