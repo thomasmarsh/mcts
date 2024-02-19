@@ -1,3 +1,4 @@
+pub mod atarigo;
 pub mod bid_ttt;
 pub mod count;
 pub mod druid;
