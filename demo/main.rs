@@ -5,6 +5,7 @@ use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
 use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::MctsStrategy;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
@@ -32,6 +33,36 @@ fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     let pct_a = win_a as f32 / total * 100.;
     let pct_b = win_b as f32 / total * 100.;
     println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
+}
+
+fn expansion_test() {
+    use mcts::games::bid_ttt as ttt;
+    type TS = TreeSearch<ttt::BiddingTicTacToe, util::Ucb1>;
+
+    let expand5 = TS::default()
+        .strategy(
+            MctsStrategy::default()
+                .max_iterations(10000)
+                .expand_threshold(5),
+        )
+        .name("expand5");
+
+    let expand0 = TS::default()
+        .strategy(
+            MctsStrategy::default()
+                .max_iterations(10000)
+                .expand_threshold(0),
+        )
+        .name("expand0");
+
+    let mut strats = vec![AnySearch::new(expand5), AnySearch::new(expand0)];
+
+    _ = round_robin_multiple::<ttt::BiddingTicTacToe, AnySearch<_>>(
+        &mut strats,
+        1000,
+        &ttt::BiddingTicTacToe::new(),
+        mcts::util::Verbosity::Verbose,
+    );
 }
 
 fn ucb_test() {
@@ -212,6 +243,8 @@ fn _demo_flat_mc() {
 fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
+
+    expansion_test();
     ucb_test();
 
     demo_mcts();

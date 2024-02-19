@@ -78,7 +78,7 @@ where
     pub backprop: S::Backprop,
     pub final_action: S::FinalAction,
     pub q_init: UnvisitedValueEstimate,
-    pub playouts_before_expanding: u32,
+    pub expand_threshold: u32,
     pub max_playout_depth: usize,
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
@@ -115,8 +115,8 @@ where
         self
     }
 
-    pub fn playouts_before_expanding(mut self, playouts_before_expanding: u32) -> Self {
-        self.playouts_before_expanding = playouts_before_expanding;
+    pub fn expand_threshold(mut self, expand_threshold: u32) -> Self {
+        self.expand_threshold = expand_threshold;
         self
     }
 
@@ -301,19 +301,13 @@ where
         loop {
             ctx.stack.push(ctx.current_id);
 
-            let is_leaf = {
-                let node = self.index.get(ctx.current_id);
-                // TODO: when playouts_before_expanding == 0, then we should expand whole tree. This is done for realtime applications.
-                if node.is_terminal()
-                    || node.stats.num_visits < self.strategy.playouts_before_expanding
-                {
-                    return;
-                }
-                node.is_leaf()
-            };
+            let node = self.index.get(ctx.current_id);
+            if node.is_terminal() || node.stats.num_visits < self.strategy.expand_threshold {
+                return;
+            }
 
             // Get child actions
-            if is_leaf {
+            if node.is_leaf() {
                 let node_state = self.expand(ctx.current_id, &ctx.state);
                 if matches!(node_state, NodeState::Terminal) {
                     return;
@@ -359,13 +353,17 @@ where
                 ctx.traverse(child_id);
                 ctx.state = state;
                 ctx.stack.push(ctx.current_id);
-                return;
+
+                if self.strategy.expand_threshold > 0 {
+                    return;
+                }
             }
         }
     }
 
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
+        println!("{:?}", self.index.get(self.root_id));
         let idx = self.strategy.final_action.best_child(
             &SelectContext {
                 q_init: self.strategy.q_init,
@@ -547,6 +545,12 @@ where
 
         self.compute_pv();
         self.verbose_summary(state);
+
+        // NOTE: this can fail when root is a leaf. This happens if:
+        //
+        //     self.strategy.max_iter < self.strategy.expand_threshold
+        //
+        // TODO: We might check for this and unconditionally expand root.
         self.select_final_action(state)
     }
 

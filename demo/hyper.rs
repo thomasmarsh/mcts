@@ -75,7 +75,7 @@ fn make_opponent(seed: u64) -> TS<util::Ucb1> {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 }),
@@ -91,7 +91,7 @@ fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1Grave {
                     exploration_constant: args.c,
                     threshold: args.threshold,

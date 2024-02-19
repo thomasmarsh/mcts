@@ -28,7 +28,37 @@ mod tests {
     use crate::game::PlayerIndex;
 
     #[test]
-    fn test_parity() {
+    fn test_expand0() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        for n in 0..3 {
+            type TS = mcts::TreeSearch<G, mcts::util::Ucb1>;
+            let mut ts = TS::default().strategy(
+                mcts::MctsStrategy::default()
+                    .expand_threshold(n)
+                    // NOTE: best_child will fail on final_action
+                    // selection when we haven't expanded root.
+                    .max_iterations(1 + n as usize),
+            );
+
+            ts.choose_action(&init_state);
+            println!(
+                "{n} [{}]: {:?}",
+                ts.principle_variation().len(),
+                ts.principle_variation()
+            );
+            if n == 0 {
+                assert!(ts.principle_variation().len() > 1);
+            } else {
+                assert!(ts.principle_variation().len() == 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_basics() {
         use crate::games::ttt::*;
         type G = TicTacToe;
 
@@ -58,24 +88,23 @@ mod tests {
             },
             hash: 0,
         };
-        //let init_state = HashedPosition::new();
 
         // Configure new MCTS
-        type New = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
-        let mut new: New = New::default().strategy(
+        type TS = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
+        let mut ts = TS::default().strategy(
             mcts::MctsStrategy::default()
-                .playouts_before_expanding(1)
+                .expand_threshold(1)
                 .max_playout_depth(100),
         );
 
         // Construct new root
-        let root_id_new = new.new_root();
+        let root_id = ts.new_root();
 
         // Helper step function
-        let step = |new: &mut New| {
-            let mut ctx = mcts::SearchContext::new(root_id_new, init_state);
-            new.select(&mut ctx);
-            let trial = new.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
+        let step = |ts: &mut TS| {
+            let mut ctx = mcts::SearchContext::new(root_id, init_state);
+            ts.select(&mut ctx);
+            let trial = ts.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
             println!("trial actions: {:?}", trial.actions);
             println!("trial status: {:?}", trial.status);
             println!("utilites: {:?}", G::compute_utilities(&trial.state));
@@ -83,26 +112,26 @@ mod tests {
                 "relevant utility: {:?}",
                 G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
-            new.backprop(&mut ctx, trial, G::player_to_move(&init_state).to_index());
+            ts.backprop(&mut ctx, trial, G::player_to_move(&init_state).to_index());
 
             ctx.current_id
         };
 
         // First pass: simulate over root node
-        let child_id = step(&mut new);
+        let child_id = step(&mut ts);
 
-        assert_eq!(child_id, root_id_new);
-        assert_eq!(new.index.get(root_id_new).stats.num_visits, 1);
+        assert_eq!(child_id, root_id);
+        assert_eq!(ts.index.get(root_id).stats.num_visits, 1);
 
         // Second pass: expand child node
-        let child_id = step(&mut new);
+        let child_id = step(&mut ts);
 
-        assert_ne!(child_id, root_id_new);
-        assert_eq!(new.index.get(root_id_new).stats.num_visits, 2);
+        assert_ne!(child_id, root_id);
+        assert_eq!(ts.index.get(root_id).stats.num_visits, 2);
 
         // Third pass: expand child node
-        let _child_id = step(&mut new);
+        let _child_id = step(&mut ts);
 
-        println!("{:#?}", new.index);
+        println!("{:#?}", ts.index);
     }
 }

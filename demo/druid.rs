@@ -31,7 +31,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::McGrave {
                     threshold: 40,
                     bias: 5.,
@@ -46,7 +46,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::McBrave { bias: BIAS }),
         )
         .verbose(VERBOSE);
@@ -57,7 +57,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1Grave {
                     bias: BIAS,
                     exploration_constant: C_LOW,
@@ -80,7 +80,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1Grave {
                     bias: 266.8785210698843,
                     exploration_constant: 1.86169408634305,
@@ -97,7 +97,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::ScalarAmaf {
                     bias: BIAS,
                     exploration_constant: C_LOW,
@@ -111,7 +111,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::ScalarAmaf {
                     bias: BIAS,
                     exploration_constant: C_LOW,
@@ -126,7 +126,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 }),
@@ -139,7 +139,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 })
@@ -153,7 +153,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 })
@@ -167,7 +167,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1Tuned {
                     exploration_constant: C_TUNED,
                 }),
@@ -180,7 +180,7 @@ fn main() {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(1)
+                .expand_threshold(1)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 })
@@ -190,7 +190,7 @@ fn main() {
                             .max_iterations(3)
                             .max_playout_depth(PLAYOUT_DEPTH)
                             .max_time(Duration::default())
-                            .playouts_before_expanding(1)
+                            .expand_threshold(1)
                             .select(select::Ucb1 {
                                 exploration_constant: C_TUNED,
                             }),

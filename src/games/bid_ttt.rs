@@ -250,8 +250,6 @@ impl Display for BiddingTicTacToe {
     }
 }
 
-pub struct TicTacToe;
-
 impl Game for BiddingTicTacToe {
     type S = BiddingTicTacToe;
     type A = Move;

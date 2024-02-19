@@ -54,7 +54,7 @@ fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
                 .max_iterations(MAX_ITER)
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .playouts_before_expanding(EXPAND_THRESHOLD)
+                .expand_threshold(EXPAND_THRESHOLD)
                 .select(select::Ucb1 {
                     exploration_constant: C_TUNED,
                 })
