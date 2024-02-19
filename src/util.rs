@@ -155,7 +155,7 @@ impl Verbosity {
 
 /// Play a round-robin tournament with the provided strategies.
 fn round_robin<G>(
-    strategies: &mut Vec<AnySearch<'_, G>>,
+    strategies: &mut [AnySearch<'_, G>],
     init: &G::S,
     verbose: Verbosity,
 ) -> Vec<Result>
@@ -258,7 +258,7 @@ where
 
 /// Play a round-robin tournament multiple times with the provided strategies.
 pub fn round_robin_multiple<G, S>(
-    strategies: &mut Vec<AnySearch<'_, G>>,
+    strategies: &mut [AnySearch<'_, G>],
     rounds: usize,
     init: &G::S,
     verbose: Verbosity,

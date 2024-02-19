@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 // TODO: this is just a placeholder
 use crate::game::Game;
 use crate::game::PlayerIndex;
