@@ -17,43 +17,49 @@ pub trait BackpropStrategy: Clone + Sync + Send {
     ) where
         G: Game,
     {
-        let utilities = G::compute_utilities(&trial.state);
+        // TODO: this could be split up a bit. I've marked which logic is
+        // relevant to which strategy and reorganized to show the shap more
+        // clearly.
 
+        // init_amaf: GRAVE | GLOBAL
         let mut amaf_actions = if flags.grave() || flags.global() {
             trial.actions.clone()
         } else {
             vec![]
         };
 
+        let utilities = G::compute_utilities(&trial.state);
         while let Some(node_id) = stack.pop() {
-            let node = index.get(node_id);
+            // Standard update
+            index.get_mut(node_id).update(&utilities);
 
-            // Needed for scalar amaf
-            if flags.amaf() && node.is_expanded() {
-                let child_actions: HashMap<_, _> = node
-                    .actions()
-                    .iter()
-                    .cloned()
-                    .zip(node.children().iter().cloned().flatten())
-                    .collect();
+            // update: AMAF
+            if flags.amaf() {
+                let node = index.get(node_id);
 
-                for action in &trial.actions {
-                    if let Some(child_id) = child_actions.get(action) {
-                        let child = index.get_mut(*child_id);
-                        child.stats.scalar_amaf.num_visits += 1;
+                if node.is_expanded() {
+                    let child_actions: HashMap<_, _> = node
+                        .actions()
+                        .iter()
+                        .cloned()
+                        .zip(node.children().iter().cloned().flatten())
+                        .collect();
 
-                        // TODO: I'm not convinced which is the right update strategy for this one
-                        // child.stats.scalar_amaf.score += utilities[player];
-                        child.stats.scalar_amaf.score +=
-                            utilities[G::player_to_move(&ctx.state).to_index()];
+                    for action in &trial.actions {
+                        if let Some(child_id) = child_actions.get(action) {
+                            let child = index.get_mut(*child_id);
+                            child.stats.scalar_amaf.num_visits += 1;
+
+                            // TODO: I'm not convinced which is the right update strategy for this one
+                            // child.stats.scalar_amaf.score += utilities[player];
+                            child.stats.scalar_amaf.score +=
+                                utilities[G::player_to_move(&ctx.state).to_index()];
+                        }
                     }
                 }
             }
 
-            // Standard update
-            index.get_mut(node_id).update(&utilities);
-
-            // GRAVE update
+            // update: GRAVE
             if flags.grave() {
                 let node = index.get_mut(node_id);
                 for action in &amaf_actions {
@@ -64,6 +70,7 @@ pub trait BackpropStrategy: Clone + Sync + Send {
                 }
             }
 
+            // push_action: GRAVE | GLOBAL
             if flags.grave() || flags.global() {
                 let node = index.get(node_id);
                 if !node.is_root() {
@@ -72,7 +79,7 @@ pub trait BackpropStrategy: Clone + Sync + Send {
             }
         }
 
-        // GlobalActionStats
+        // update: GLOBAL
         if flags.global() {
             for action in &amaf_actions {
                 // let player = G::player_to_move(&ctx.state).to_index();
