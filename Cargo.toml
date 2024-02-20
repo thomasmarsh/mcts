@@ -56,3 +56,7 @@ criterion = { version = "0.5.1", features = ["html_reports"] }
 [[bench]]
 name = "ttt"
 harness = false
+
+[profile.samply]
+inherits = "release"
+debug = true

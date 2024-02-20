@@ -2,6 +2,7 @@
 Cargo.lock
 __pycache__
 smac3_output
+/profile.json
 
 
 
