@@ -106,10 +106,10 @@ mod tests {
         );
 
         // Construct new root
-        let root_id = ts.new_root();
-
+        let root_id = ts.reset();
         // Helper step function
         let step = |ts: &mut TS| {
+            ts.reset_iter();
             let mut ctx = mcts::SearchContext::new(root_id, init_state);
             ts.select(&mut ctx);
             let trial = ts.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
@@ -120,7 +120,8 @@ mod tests {
                 "relevant utility: {:?}",
                 G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
-            ts.backprop(&mut ctx, trial, G::player_to_move(&init_state).to_index());
+            ts.trial = Some(trial);
+            ts.backprop(&mut ctx, G::player_to_move(&init_state).to_index());
 
             ctx.current_id
         };

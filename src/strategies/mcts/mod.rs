@@ -282,7 +282,7 @@ where
         } else {
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
-            assert!(!actions.is_empty());
+            debug_assert!(!actions.is_empty());
             node.state = NodeState::Expanded {
                 children: vec![None; actions.len()],
                 actions,
@@ -294,6 +294,7 @@ where
     #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
         let player = G::player_to_move(&ctx.state);
+        debug_assert!(self.stack.is_empty());
         loop {
             self.stack.push(ctx.current_id);
 
@@ -351,9 +352,9 @@ where
 
                 ctx.traverse(child_id);
                 ctx.state = state;
-                self.stack.push(ctx.current_id);
 
                 if self.config.expand_threshold > 0 {
+                    self.stack.push(ctx.current_id);
                     return;
                 }
             }
@@ -483,9 +484,13 @@ where
         )
     }
 
-    fn reset(&mut self) -> Id {
-        self.index.clear();
+    pub(crate) fn reset_iter(&mut self) {
         self.stack.clear();
+        self.trial = None;
+    }
+
+    pub(crate) fn reset(&mut self) -> Id {
+        self.index.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
         self.new_root()
@@ -546,7 +551,9 @@ where
             if self.timer.done() {
                 break;
             }
+            self.reset_iter();
             let mut ctx = SearchContext::new(root_id, state.clone());
+
             self.select(&mut ctx);
             self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state).to_index()));
             self.backprop(&mut ctx, G::player_to_move(state).to_index());

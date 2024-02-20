@@ -5,6 +5,7 @@ use rand::rngs::SmallRng;
 use super::*;
 use crate::game::Game;
 use crate::strategies::Search;
+use crate::util::random_best;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::UnvisitedValueEstimate,
@@ -89,6 +90,7 @@ where
     }
 
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, aux: Self::Aux) -> Self::Score {
+        println!("greedy: score_child");
         self.inner.score_child(ctx, child_id, aux)
     }
 
@@ -787,51 +789,53 @@ where
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.current_id);
-        let best = random_best_index(current.children(), self, ctx, rng);
-        let children = current.children();
-        let score = children[best].map(|child_id| self.score_child(ctx, child_id, ()));
+        let available = current.actions();
 
-        if score.is_none() {
-            let action = self.search.choose_action(ctx.state);
-            current.actions().iter().position(|a| *a == action).unwrap()
-        } else {
-            best
-        }
-    }
-
-    #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
-        self.key_init = ctx
+        let key_init = ctx
             .stack
             .iter()
             .skip(1)
             .map(|id| ctx.index.get(*id).action(ctx.index))
-            .collect();
-    }
-
-    #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        let child = ctx.index.get(child_id);
-        let action = child.action(ctx.index);
-        let mut key = self.key_init.clone();
-        key.push(action.clone());
+            .collect::<Vec<_>>();
 
         let k_score = self.k[ctx.player_to_move];
-        let score = self
-            .book
-            .score(key.as_slice(), ctx.player_to_move)
-            .unwrap_or(f64::NEG_INFINITY);
-        if score > k_score {
-            score
+
+        let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();
+        let best = random_best(enumerated.as_slice(), rng, |(_, action): &(usize, G::A)| {
+            let mut key = key_init.clone();
+            key.push(action.clone());
+
+            let score = self
+                .book
+                .score(key.as_slice(), ctx.player_to_move)
+                .unwrap_or(f64::NEG_INFINITY);
+            if score > k_score {
+                score
+            } else {
+                // NOTE: we depend on random_best using this value internally
+                // as an equivalence for None types
+                f64::NEG_INFINITY
+            }
+        });
+
+        if let Some((best_index, _)) = best {
+            *best_index
         } else {
-            // NOTE: we depend on random_best using this value internally
-            // as an equivalence for None types
-            f64::NEG_INFINITY
+            let action = self.search.choose_action(ctx.state);
+            available.iter().position(|p| *p == action.clone()).unwrap()
         }
     }
 
     #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
+
+    #[inline(always)]
+    fn score_child(&self, _: &SelectContext<'_, G>, _: Id, _: Self::Aux) -> f64 {
+        0.
+    }
+
+    #[inline(always)]
     fn unvisited_value(&self, _: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
-        f64::NEG_INFINITY
+        0.
     }
 }

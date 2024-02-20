@@ -18,6 +18,7 @@ use mcts::games::druid::State;
 // QBF Config
 const NUM_THREADS: usize = 8;
 const NUM_GAMES: usize = 18000;
+const EPSILON: f64 = 0.5;
 
 // MCTS Config
 const PLAYOUT_DEPTH: usize = 200;
@@ -63,6 +64,7 @@ fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
 fn make_qbf(book: OpeningBook<Move>) -> TreeSearch<Druid, util::QuasiBestFirst> {
     // This is a little crazy.
     TreeSearch::default().config(SearchConfig::default().select(select::EpsilonGreedy {
+        epsilon: EPSILON,
         inner: select::QuasiBestFirst {
             book,
             search: make_mcts(),
