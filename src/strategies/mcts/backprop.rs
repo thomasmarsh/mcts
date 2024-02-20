@@ -27,11 +27,6 @@ pub trait BackpropStrategy: Clone + Sync + Send {
 
         while let Some(node_id) = stack.pop() {
             let node = index.get(node_id);
-            let next_action = if !node.is_root() {
-                Some(node.action(index))
-            } else {
-                None
-            };
 
             // Needed for scalar amaf
             if flags.amaf() && node.is_expanded() {
@@ -55,13 +50,12 @@ pub trait BackpropStrategy: Clone + Sync + Send {
                 }
             }
 
-            let node = index.get_mut(node_id);
-
             // Standard update
-            node.update(&utilities);
+            index.get_mut(node_id).update(&utilities);
 
             // GRAVE update
             if flags.grave() {
+                let node = index.get_mut(node_id);
                 for action in &amaf_actions {
                     let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
                     grave_stats.num_visits += 1;
@@ -71,9 +65,10 @@ pub trait BackpropStrategy: Clone + Sync + Send {
             }
 
             if flags.grave() || flags.global() {
-                if let Some(action) = next_action {
-                    amaf_actions.push(action);
-                }
+                let node = index.get(node_id);
+                if !node.is_root() {
+                    amaf_actions.push(node.action(index));
+                };
             }
         }
 
