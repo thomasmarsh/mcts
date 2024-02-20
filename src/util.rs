@@ -278,20 +278,20 @@ where
         verbose.verbose().then(|| {
             println!("{:=<63}", "");
             println!(
-                "{0:^25} | {1:^12} | {2:^12} | {3:^4}",
+                "{0:^25} | {1:^10} | {2:^10} | {3:^4}",
                 "match", "won", "lost", "draw"
             );
-            println!("{:-<63}", "");
+            println!("{:-<59}", "");
 
             let mut copy = results.iter().enumerate().collect::<Vec<_>>();
             copy.sort_unstable_by_key(|x| (-(x.1.wins as i64), x.1.losses, x.1.draws));
 
             for (index, _) in copy {
                 let total = results[index].wins + results[index].losses + results[index].draws;
-                let win_pct = results[index].wins as f64 / total as f64;
-                let loss_pct = results[index].losses as f64 / total as f64;
+                let win_pct = 100. * results[index].wins as f64 / total as f64;
+                let loss_pct = 100. * results[index].losses as f64 / total as f64;
                 println!(
-                    "{0:<25} | {1:>4} ({win_pct:2.2}%) | {2:>4} ({loss_pct:2.2}%) | {3:<4}",
+                    "{0:<25} | {1:>4} ({win_pct:2.0}%) | {2:>4} ({loss_pct:2.0}%) | {3:<4}",
                     strategies[index].friendly_name(),
                     results[index].wins,
                     results[index].losses,

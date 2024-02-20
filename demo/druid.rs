@@ -17,7 +17,7 @@ fn main() {
     const C_LOW: f64 = 0.1;
     const C_TUNED: f64 = 1.625;
     const C_STD: f64 = 1.414;
-    const MAX_ITER: usize = 10000; //usize::MAX; // 10000;
+    const MAX_ITER: usize = 10000; //usize::MAX;
     const BIAS: f64 = 700.0;
     const EXPAND_THRESHOLD: u32 = 1;
     const VERBOSE: bool = false;
