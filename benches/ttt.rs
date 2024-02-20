@@ -14,7 +14,7 @@ fn ponder(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             b.iter(|| {
                 let mut ts =
-                    TicTacToeTS::default().strategy(SearchConfig::default().max_iterations(n));
+                    TicTacToeTS::default().config(SearchConfig::default().max_iterations(n));
 
                 ts.choose_action(&ttt::HashedPosition::new());
             });
