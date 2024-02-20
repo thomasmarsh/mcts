@@ -8,19 +8,19 @@ use crate::game::Game;
 use crate::strategies::Search;
 use crate::util::random_best;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EndType {
     NaturalEnd,
     // MoveLimit,
     TurnLimit,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Status {
     pub end_type: Option<EndType>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Trial<G: Game> {
     pub actions: Vec<G::A>,
     pub state: G::S,

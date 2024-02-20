@@ -1,6 +1,6 @@
 pub mod backprop;
+pub mod book;
 pub mod index;
-pub mod meta;
 pub mod node;
 pub mod select;
 pub mod simulate;
@@ -57,11 +57,11 @@ impl std::ops::BitOr for BackpropFlags {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait Strategy<G: Game>: Clone {
-    type Select: select::SelectStrategy<G::A>;
+pub trait Strategy<G: Game>: Clone + Sync + Send {
+    type Select: select::SelectStrategy<G>;
     type Simulate: simulate::SimulateStrategy<G>;
     type Backprop: backprop::BackpropStrategy;
-    type FinalAction: select::SelectStrategy<G::A>;
+    type FinalAction: select::SelectStrategy<G>;
 
     fn friendly_name() -> String;
 }
@@ -71,7 +71,6 @@ pub struct SearchConfig<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Sync + Send,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
@@ -88,7 +87,6 @@ impl<G, S> SearchConfig<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Sync + Send,
 {
     pub fn select(mut self, select: S::Select) -> Self {
         self.select = select;
@@ -144,16 +142,11 @@ where
 pub struct SearchContext<G: Game> {
     pub current_id: Id,
     pub state: G::S,
-    pub stack: Vec<Id>,
 }
 
 impl<G: Game> SearchContext<G> {
     pub fn new(current_id: Id, state: G::S) -> Self {
-        Self {
-            current_id,
-            state,
-            stack: vec![],
-        }
+        Self { current_id, state }
     }
 
     #[inline]
@@ -204,6 +197,8 @@ where
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
+    pub stack: Vec<Id>,
+    pub trial: Option<Trial<G>>,
     pub rng: SmallRng,
     pub verbose: bool,
     pub name: String,
@@ -213,7 +208,6 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Sync + Send,
 {
     pub fn rng(mut self, rng: SmallRng) -> Self {
         self.rng = rng;
@@ -240,7 +234,7 @@ impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Default + Sync + Send,
+    SearchConfig<G, S>: Default,
 {
     fn default() -> Self {
         Self::new(SearchConfig::default(), SmallRng::from_entropy())
@@ -251,7 +245,7 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Default + Sync + Send,
+    SearchConfig<G, S>: Default,
 {
     pub fn new(config: SearchConfig<G, S>, rng: SmallRng) -> Self {
         let mut index = index::Arena::new();
@@ -260,6 +254,8 @@ where
             root_id,
             init_state: None,
             pv: vec![],
+            stack: vec![],
+            trial: None,
             index,
             config,
             rng,
@@ -299,7 +295,7 @@ where
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
         let player = G::player_to_move(&ctx.state);
         loop {
-            ctx.stack.push(ctx.current_id);
+            self.stack.push(ctx.current_id);
 
             let node = self.index.get(ctx.current_id);
             if node.is_terminal() || node.stats.num_visits < self.config.expand_threshold {
@@ -318,7 +314,10 @@ where
                 let select_ctx = SelectContext {
                     q_init: self.config.q_init,
                     current_id: ctx.current_id,
+                    stack: self.stack.clone(),
                     player: player.to_index(),
+                    player_to_move: G::player_to_move(&ctx.state).to_index(),
+                    state: &ctx.state,
                     index: &self.index,
                 };
                 self.config.select.best_child(&select_ctx, &mut self.rng)
@@ -352,7 +351,7 @@ where
 
                 ctx.traverse(child_id);
                 ctx.state = state;
-                ctx.stack.push(ctx.current_id);
+                self.stack.push(ctx.current_id);
 
                 if self.config.expand_threshold > 0 {
                     return;
@@ -367,7 +366,10 @@ where
             &SelectContext {
                 q_init: self.config.q_init,
                 current_id: self.root_id,
+                stack: self.stack.clone(),
                 player: G::player_to_move(state).to_index(),
+                player_to_move: G::player_to_move(state).to_index(),
+                state,
                 index: &self.index,
             },
             &mut self.rng,
@@ -391,15 +393,23 @@ where
     }
 
     #[inline]
-    pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, trial: Trial<G>, player: usize) {
+    pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, player: usize) {
         self.stats.iter_count += 1;
-        self.stats.accum_depth += trial.depth + ctx.stack.len() - 1;
+        self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
         self.config
             .backprop
             // TODO: may as well pass &mut self? Seems like the separation
             // of concerns is not ideal.
-            .update(ctx, &mut self.stats, &mut self.index, trial, player, flags);
+            .update(
+                ctx,
+                self.stack.clone(),
+                &mut self.stats,
+                &mut self.index,
+                self.trial.as_ref().unwrap().clone(),
+                player,
+                flags,
+            );
     }
 
     #[allow(dead_code)]
@@ -475,6 +485,7 @@ where
 
     fn reset(&mut self) -> Id {
         self.index.clear();
+        self.stack.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
         self.new_root()
@@ -491,6 +502,9 @@ where
                 q_init: self.config.q_init,
                 current_id: node_id,
                 player: player.to_index(),
+                stack: self.stack.clone(),
+                state: &state,
+                player_to_move: player.to_index(),
                 index: &self.index,
             };
             let best_idx = self
@@ -514,11 +528,7 @@ impl<G, S> super::Search for TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Default + Sync + Send,
-    <S as Strategy<G>>::Select: Sync + Send,
-    <S as Strategy<G>>::FinalAction: Sync + Send,
-    <S as Strategy<G>>::Backprop: Sync + Send,
-    <S as Strategy<G>>::Simulate: Sync + Send,
+    SearchConfig<G, S>: Default,
 {
     type G = G;
 
@@ -538,8 +548,8 @@ where
             }
             let mut ctx = SearchContext::new(root_id, state.clone());
             self.select(&mut ctx);
-            let trial = self.simulate(&ctx.state, G::player_to_move(state).to_index());
-            self.backprop(&mut ctx, trial, G::player_to_move(state).to_index());
+            self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state).to_index()));
+            self.backprop(&mut ctx, G::player_to_move(state).to_index());
         }
 
         self.compute_pv();
@@ -549,8 +559,34 @@ where
         //
         //     max_iterations < expand_threshold
         //
-        // TODO: We might check for this and unconditionally expand root.
+        // TODO: We might check for this and unconditionally expand root. I think
+        // a lot of implementations fully expand root on the first iteration.
         self.select_final_action(state)
+    }
+
+    fn make_book_entry(
+        &mut self,
+        state: &<Self::G as Game>::S,
+    ) -> (Vec<<Self::G as Game>::A>, Vec<f64>) {
+        assert_eq!(self.config.expand_threshold, 0);
+        assert_eq!(self.config.max_iterations, 1);
+
+        // Run the search, with expand_threshold == 0, so we fully expand to the
+        // terminal node.
+        _ = self.choose_action(state);
+
+        // The stack now contains the action path to the terminal state.
+        let actions = self
+            .stack
+            .iter()
+            .skip(1)
+            .cloned()
+            .map(|id| self.index.get(id).action(&self.index))
+            .collect();
+
+        let utilities = G::compute_utilities(&self.trial.as_ref().unwrap().state);
+
+        (actions, utilities)
     }
 
     fn estimated_depth(&self) -> usize {

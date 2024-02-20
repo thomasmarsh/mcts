@@ -20,6 +20,14 @@ pub trait Search: Sync + Send {
     }
 
     fn set_friendly_name(&mut self, name: &str);
+
+    #[allow(unused_variables)]
+    fn make_book_entry(
+        &mut self,
+        state: &<Self::G as Game>::S,
+    ) -> (Vec<<Self::G as Game>::A>, Vec<f64>) {
+        unimplemented!();
+    }
 }
 
 #[cfg(test)]

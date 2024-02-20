@@ -3,39 +3,101 @@ use std::sync::atomic::Ordering::Relaxed;
 use rand::rngs::SmallRng;
 
 use super::*;
-use crate::game::Action;
+use crate::game::Game;
+use crate::strategies::Search;
 
-pub struct SelectContext<'a, A: Action> {
+pub struct SelectContext<'a, G: Game> {
     pub q_init: node::UnvisitedValueEstimate,
     pub current_id: index::Id,
+    pub stack: Vec<index::Id>,
+    pub state: &'a G::S,
     pub player: usize,
-    pub index: &'a TreeIndex<A>,
+    pub player_to_move: usize,
+    pub index: &'a TreeIndex<G::A>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait SelectStrategy<A: Action>: Sized + Clone + Sync + Send {
+pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send {
     type Score: PartialOrd + Copy;
     type Aux: Copy;
 
     /// If the strategy wants to lift any calculations out of the inner select
     /// loop, then they can provide this here.
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux;
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux;
 
     /// Default implementation should be sufficient for all cases.
-    fn best_child(&mut self, ctx: &SelectContext<'_, A>, rng: &mut SmallRng) -> usize {
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.current_id);
         random_best_index(current.children(), self, ctx, rng)
     }
 
     /// Given a child index, calculate a score.
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, aux: Self::Aux) -> Self::Score;
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, aux: Self::Aux) -> Self::Score;
 
     /// Provide a score for any value that is not yet visited.
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, aux: Self::Aux) -> Self::Score;
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, aux: Self::Aux) -> Self::Score;
 
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(0)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone)]
+pub struct EpsilonGreedy<G: Game, S: SelectStrategy<G>> {
+    pub epsilon: f64,
+    pub inner: S,
+    pub marker: std::marker::PhantomData<G>,
+}
+
+impl<G, S> Default for EpsilonGreedy<G, S>
+where
+    G: Game,
+    S: SelectStrategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            epsilon: 0.1,
+            inner: S::default(),
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<G, S> SelectStrategy<G> for EpsilonGreedy<G, S>
+where
+    G: Game,
+    S: SelectStrategy<G>,
+{
+    type Score = S::Score;
+    type Aux = S::Aux;
+
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        if rng.gen::<f64>() < self.epsilon {
+            let current = ctx.index.get(ctx.current_id);
+            let n = current.children().len();
+            rng.gen_range(0..n)
+        } else {
+            self.inner.best_child(ctx, rng)
+        }
+    }
+
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
+        self.inner.setup(ctx)
+    }
+
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, aux: Self::Aux) -> Self::Score {
+        self.inner.score_child(ctx, child_id, aux)
+    }
+
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, aux: Self::Aux) -> Self::Score {
+        self.inner.unvisited_value(ctx, aux)
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        self.inner.backprop_flags()
     }
 }
 
@@ -48,15 +110,15 @@ const PRIMES: [usize; 16] = [
 
 // This function is adapted from from minimax-rs.
 #[inline]
-fn random_best_index<S, A>(
+fn random_best_index<S, G>(
     set: &[Option<Id>],
     strategy: &mut S,
-    ctx: &SelectContext<'_, A>,
+    ctx: &SelectContext<'_, G>,
     rng: &mut SmallRng,
 ) -> usize
 where
-    S: SelectStrategy<A>,
-    A: Action,
+    S: SelectStrategy<G>,
+    G: Game,
 {
     // To make the choice more uniformly random among the best moves, start
     // at a random offset and stride by a random amount. The stride must be
@@ -102,15 +164,15 @@ where
 #[derive(Default, Clone)]
 pub struct RobustChild;
 
-impl<A: Action> SelectStrategy<A> for RobustChild {
+impl<G: Game> SelectStrategy<G> for RobustChild {
     type Score = (i64, f64);
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> (i64, f64) {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> (i64, f64) {
         let child = ctx.index.get(child_id);
         (
             child.stats.num_visits as i64,
@@ -119,7 +181,7 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> (i64, f64) {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> (i64, f64) {
         let q = ctx
             .index
             .get(ctx.current_id)
@@ -136,20 +198,20 @@ impl<A: Action> SelectStrategy<A> for RobustChild {
 #[derive(Default, Clone)]
 pub struct MaxAvgScore;
 
-impl<A: Action> SelectStrategy<A> for MaxAvgScore {
+impl<G: Game> SelectStrategy<G> for MaxAvgScore {
     type Score = f64;
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
         ctx.index.get(child_id).stats.expected_score(ctx.player)
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -172,15 +234,15 @@ impl Default for SecureChild {
     }
 }
 
-impl<A: Action> SelectStrategy<A> for SecureChild {
+impl<G: Game> SelectStrategy<G> for SecureChild {
     type Score = f64;
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
         let child = ctx.index.get(child_id);
         let q = child.stats.expected_score(ctx.player);
         let n = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -189,7 +251,7 @@ impl<A: Action> SelectStrategy<A> for SecureChild {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -213,18 +275,18 @@ impl Default for Ucb1 {
     }
 }
 
-impl<A: Action> SelectStrategy<A> for Ucb1 {
+impl<G: Game> SelectStrategy<G> for Ucb1 {
     type Score = f64;
     type Aux = f64;
 
     #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -233,7 +295,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1 {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> f64 {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -272,18 +334,18 @@ fn ucb1_tuned(
             + exploration_constant * visits_fraction.sqrt())
 }
 
-impl<A: Action> SelectStrategy<A> for Ucb1Tuned {
+impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
     type Score = f64;
     type Aux = f64;
 
     #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -301,7 +363,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1Tuned {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> Self::Score {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -341,12 +403,12 @@ fn grave_value(beta: f64, mean_score: f64, mean_amaf: f64) -> f64 {
     (1. - beta) * mean_score + beta * mean_amaf
 }
 
-impl<A: Action> SelectStrategy<A> for McGrave {
+impl<G: Game> SelectStrategy<G> for McGrave {
     type Score = f64;
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> Self::Aux {
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
         let current = ctx.index.get(ctx.current_id);
 
         if self.current_ref_id.is_none()
@@ -358,7 +420,7 @@ impl<A: Action> SelectStrategy<A> for McGrave {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
         let t = ctx.index.get(child_id);
         let tref = ctx.index.get(self.current_ref_id.unwrap());
         let p = (t.stats.num_visits + t.stats.num_visits_virtual.load(Relaxed)) as f64;
@@ -378,7 +440,7 @@ impl<A: Action> SelectStrategy<A> for McGrave {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> f64 {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
         ctx.index
             .get(ctx.current_id)
             .stats
@@ -403,15 +465,15 @@ impl Default for McBrave {
     }
 }
 
-impl<A: Action> SelectStrategy<A> for McBrave {
+impl<G: Game> SelectStrategy<G> for McBrave {
     type Score = f64;
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, _: &SelectContext<'_, A>) -> Self::Aux {}
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: Self::Aux) -> Self::Score {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -420,7 +482,7 @@ impl<A: Action> SelectStrategy<A> for McBrave {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, _: Self::Aux) -> Self::Score {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> Self::Score {
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
 
@@ -484,18 +546,18 @@ impl Default for ScalarAmaf {
     }
 }
 
-impl<A: Action> SelectStrategy<A> for ScalarAmaf {
+impl<G: Game> SelectStrategy<G> for ScalarAmaf {
     type Score = f64;
     type Aux = f64;
 
     #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         ((current.stats.num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let child = ctx.index.get(child_id);
         let exploit = child.stats.exploitation_score(ctx.player);
         let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
@@ -514,7 +576,7 @@ impl<A: Action> SelectStrategy<A> for ScalarAmaf {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, _: f64) -> f64 {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: f64) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         current
             .stats
@@ -560,12 +622,12 @@ fn ucb1_grave_value(
     grave_value(beta, mean_score, mean_amaf) + exploration_constant * explore
 }
 
-impl<A: Action> SelectStrategy<A> for Ucb1Grave {
+impl<G: Game> SelectStrategy<G> for Ucb1Grave {
     type Score = f64;
     type Aux = f64;
 
     #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, A>) -> f64 {
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let current = ctx.index.get(ctx.current_id);
         if self.current_ref_id.is_none()
             || current.stats.num_visits > self.threshold
@@ -578,7 +640,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, A>, child_id: Id, parent_log: f64) -> f64 {
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let current_ref = ctx.index.get(self.current_ref_id.unwrap());
         let child = ctx.index.get(child_id);
         let mean_score = child.stats.exploitation_score(ctx.player);
@@ -614,7 +676,7 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
     }
 
     #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, A>, parent_log: f64) -> Self::Score {
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> Self::Score {
         let current = ctx.index.get(ctx.current_id);
         let unvisited_value = current
             .stats
@@ -631,5 +693,145 @@ impl<A: Action> SelectStrategy<A> for Ucb1Grave {
 
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(GRAVE)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// Quasi Best-First comes from the Chaslot paper on Meta MCTS for opening book
+/// generation. This is intended to be used differently than other strategies.
+/// For opening book generation, we use the following settings for the higher
+/// level MCTS config:
+///
+/// - expand_threshold: 0 (expand to terminal state during select)
+/// - max_iterations: 1 (we only need one PV)
+/// - simulate: n/a (ignored, due to max_iteration count)
+/// - backprop: n/a (ignored, due to max_iteration count)
+///
+/// We add an epsilon-greedy parameter since this seems otherwise too greedy
+/// a selection strategy and we don't see enough exploration.
+///
+///
+/// > Algorithm 1 The “Quasi Best-First” (QBF) algorithm. λ is the number of machines
+/// > available. K is a constant. g is a game, defined as a sequence of game states.
+/// > The function “MoGoChoice” asks MOGO to choose a move.
+///
+/// ```ignore
+/// QBF(K, λ)
+/// while True do
+///   for l = 1..λ, do
+///     s =initial state; g = {s}.
+///     while s is not a final state do
+///       bestScore = K
+///       bestMove = Null
+///       for m in the set of possible moves in s do
+///         score = percentage of won games by playing the move m in s
+///         if score > bestScore then
+///           bestScore = score
+///           bestMove = m
+///         end if
+///       end for
+///       if bestMove = Null then
+///         bestMove = MoGoChoice(s) // lower level MCTS
+///       end if
+///       s = playMove(s, bestMove)
+///       g = concat(g, s)
+///     end while
+///     Add g and the result of the game in the book.
+///   end for
+/// end while
+/// ```
+#[derive(Clone)]
+pub struct QuasiBestFirst<G: Game, S: Strategy<G>> {
+    pub book: book::OpeningBook<G::A>,
+    pub search: TreeSearch<G, S>,
+    pub epsilon: f64,
+    pub k: Vec<f64>,
+    pub key_init: Vec<G::A>,
+}
+
+impl<G, S> Default for QuasiBestFirst<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    TreeSearch<G, S>: Default,
+{
+    fn default() -> Self {
+        // The default value here is 0.5, but the Chaslot paper noted the difficulty
+        // of elevating the black player in go when cold starting, prompting a lower
+        // threshold for the initial player.
+        // TODO: what about N-player games where N > 2
+        let mut k = vec![0.5; G::num_players()];
+        if k.len() == 2 {
+            k[0] = 0.1;
+        }
+
+        Self {
+            book: book::OpeningBook::new(G::num_players()),
+            search: TreeSearch::default(),
+            epsilon: 0.3,
+            k,
+            key_init: vec![],
+        }
+    }
+}
+
+impl<G, S> SelectStrategy<G> for QuasiBestFirst<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    SearchConfig<G, S>: Default,
+{
+    type Score = f64;
+    type Aux = ();
+
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        let current = ctx.index.get(ctx.current_id);
+        let best = random_best_index(current.children(), self, ctx, rng);
+        let children = current.children();
+        let score = children[best].map(|child_id| self.score_child(ctx, child_id, ()));
+
+        if score.is_none() {
+            let action = self.search.choose_action(ctx.state);
+            current.actions().iter().position(|a| *a == action).unwrap()
+        } else {
+            best
+        }
+    }
+
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
+        self.key_init = ctx
+            .stack
+            .iter()
+            .skip(1)
+            .map(|id| ctx.index.get(*id).action(ctx.index))
+            .collect();
+    }
+
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
+        let child = ctx.index.get(child_id);
+        let action = child.action(ctx.index);
+        let mut key = self.key_init.clone();
+        key.push(action.clone());
+
+        let k_score = self.k[ctx.player_to_move];
+        let score = self
+            .book
+            .score(key.as_slice(), ctx.player_to_move)
+            .unwrap_or(f64::NEG_INFINITY);
+        if score > k_score {
+            score
+        } else {
+            // NOTE: we depend on random_best using this value internally
+            // as an equivalence for None types
+            f64::NEG_INFINITY
+        }
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, _: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
+        f64::NEG_INFINITY
     }
 }

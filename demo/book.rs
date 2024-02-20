@@ -3,20 +3,17 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use mcts::game::Game;
-use mcts::strategies::mcts::meta::OpeningBook;
-use mcts::strategies::mcts::meta::QuasiBestFirst;
+use mcts::strategies::mcts::book::OpeningBook;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
+use mcts::strategies::Search;
 
 use mcts::games::druid::Druid;
 use mcts::games::druid::Move;
 use mcts::games::druid::State;
-
-use rand::rngs::SmallRng;
-use rand_core::SeedableRng;
 
 // QBF Config
 const NUM_THREADS: usize = 8;
@@ -25,10 +22,10 @@ const NUM_GAMES: usize = 18000;
 // MCTS Config
 const PLAYOUT_DEPTH: usize = 200;
 const C_TUNED: f64 = 1.625;
-const MAX_ITER: usize = usize::MAX;
+const MAX_ITER: usize = 1000; // usize::MAX;
 const EXPAND_THRESHOLD: u32 = 1;
 const VERBOSE: bool = false;
-const MAX_TIME_SECS: u64 = 5; // 0 = infinite
+const MAX_TIME_SECS: u64 = 0; // infinite
 
 pub fn debug(book: &OpeningBook<Move>) {
     println!("book.len() = {}", book.index.len());
@@ -63,6 +60,18 @@ fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
         .verbose(VERBOSE)
 }
 
+fn make_qbf(book: OpeningBook<Move>) -> TreeSearch<Druid, util::QuasiBestFirst> {
+    // This is a little crazy.
+    TreeSearch::default().config(SearchConfig::default().select(select::EpsilonGreedy {
+        inner: select::QuasiBestFirst {
+            book,
+            search: make_mcts(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }))
+}
+
 fn main() {
     color_backtrace::install();
 
@@ -73,18 +82,12 @@ fn main() {
         for _ in 0..NUM_THREADS {
             scope.spawn(|| {
                 let book = Arc::clone(&book);
+
                 for _ in 0..(NUM_GAMES / NUM_THREADS) {
-                    let search = make_mcts();
-                    let mut qbf: QuasiBestFirst<Druid, util::Ucb1Mast> = QuasiBestFirst::new(
-                        book.lock().unwrap().clone(),
-                        search,
-                        SmallRng::from_entropy(),
-                    );
-
-                    let (stack, utilities) = qbf.search(&State::new());
-
+                    let mut ts = make_qbf(book.lock().unwrap().clone());
+                    let (key, utilities) = ts.make_book_entry(&State::new());
                     let mut book_mut = book.lock().unwrap();
-                    book_mut.add(stack.as_slice(), utilities.as_slice());
+                    book_mut.add(key.as_slice(), utilities.as_slice());
                     debug(&book_mut);
                 }
             });
