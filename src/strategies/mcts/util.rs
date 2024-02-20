@@ -298,10 +298,43 @@ impl<G: Game> Default for SearchConfig<G, MetaMcts> {
 impl<G: Game> Strategy<G> for MetaMcts {
     type Select = select::Ucb1;
     type Simulate = simulate::MetaMcts<G, util::Ucb1>;
-    type FinalAction = select::MaxAvgScore;
     type Backprop = backprop::Classic;
+    type FinalAction = select::MaxAvgScore;
 
     fn friendly_name() -> String {
         "meta-mcts".into()
+    }
+}
+
+#[derive(Clone)]
+pub struct QuasiBestFirst;
+
+impl<G: Game> Strategy<G> for QuasiBestFirst {
+    type Select = select::EpsilonGreedy<G, select::QuasiBestFirst<G, Ucb1Mast>>;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::MaxAvgScore;
+
+    fn friendly_name() -> String {
+        "qbf/ucb1+mast".into()
+    }
+}
+
+impl<G: Game> Default for SearchConfig<G, QuasiBestFirst> {
+    fn default() -> Self {
+        Self {
+            select: select::EpsilonGreedy {
+                epsilon: 0.3,
+                ..Default::default()
+            },
+            simulate: Default::default(),
+            backprop: Default::default(),
+            final_action: Default::default(),
+            q_init: node::UnvisitedValueEstimate::Parent,
+            expand_threshold: 0,
+            max_playout_depth: 200,
+            max_iterations: 1,
+            max_time: Default::default(),
+        }
     }
 }

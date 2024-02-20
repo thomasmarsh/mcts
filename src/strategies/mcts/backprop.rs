@@ -3,9 +3,12 @@ use super::*;
 use crate::game::{Game, PlayerIndex};
 
 pub trait BackpropStrategy: Clone + Sync + Send {
+    // TODO: cleanup the arguments to this, or just move it to TreeSearch
+    #[allow(clippy::too_many_arguments)]
     fn update<G>(
         &self,
         ctx: &mut SearchContext<G>,
+        mut stack: Vec<Id>,
         global: &mut TreeStats<G>,
         index: &mut TreeIndex<G::A>,
         trial: simulate::Trial<G>,
@@ -22,7 +25,7 @@ pub trait BackpropStrategy: Clone + Sync + Send {
             vec![]
         };
 
-        while let Some(node_id) = ctx.stack.pop() {
+        while let Some(node_id) = stack.pop() {
             let node = index.get(node_id);
             let next_action = if !node.is_root() {
                 Some(node.action(index))
