@@ -13,6 +13,7 @@ use mcts::util::Verbosity;
 use mcts::util::{round_robin_multiple, AnySearch};
 
 fn main() {
+    const NUM_ROUNDS: usize = 10;
     const PLAYOUT_DEPTH: usize = 200;
     const C_LOW: f64 = 0.1;
     const C_TUNED: f64 = 1.625;
@@ -214,7 +215,7 @@ fn main() {
 
     round_robin_multiple::<Druid, AnySearch<'_, Druid>>(
         &mut strategies,
-        10,
+        NUM_ROUNDS,
         &State::new(),
         Verbosity::Verbose,
     );

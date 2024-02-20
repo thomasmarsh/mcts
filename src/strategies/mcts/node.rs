@@ -1,10 +1,10 @@
+use super::*;
+use crate::game::Action;
+
+use rustc_hash::FxHashMap as HashMap;
 use serde::Serialize;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
-
-use crate::game::Action;
-
-use super::*;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ActionStats {

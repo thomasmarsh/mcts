@@ -1,12 +1,11 @@
-use std::marker::PhantomData;
-
-use rand::rngs::SmallRng;
-
 use super::*;
-
 use crate::game::Game;
 use crate::strategies::Search;
 use crate::util::random_best;
+
+use rand::rngs::SmallRng;
+use rand::Rng;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
 pub enum EndType {

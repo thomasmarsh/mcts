@@ -1,6 +1,8 @@
+use super::index::Id;
 use super::*;
-
 use crate::game::{Game, PlayerIndex};
+
+use rustc_hash::FxHashMap as HashMap;
 
 pub trait BackpropStrategy: Clone + Sync + Send {
     // TODO: cleanup the arguments to this, or just move it to TreeSearch
@@ -18,7 +20,7 @@ pub trait BackpropStrategy: Clone + Sync + Send {
         G: Game,
     {
         // TODO: this could be split up a bit. I've marked which logic is
-        // relevant to which strategy and reorganized to show the shap more
+        // relevant to which strategy and reorganized to show the shape more
         // clearly.
 
         // init_amaf: GRAVE | GLOBAL

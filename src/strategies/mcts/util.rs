@@ -1,6 +1,7 @@
 use super::SearchConfig;
 
 use super::*;
+use crate::game::Game;
 
 // Vanilla UCT
 #[derive(Clone)]

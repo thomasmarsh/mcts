@@ -1,16 +1,18 @@
-use std::sync::atomic::Ordering::Relaxed;
-
-use rand::rngs::SmallRng;
-
+use super::index::Id;
+use super::node;
 use super::*;
 use crate::game::Game;
 use crate::strategies::Search;
 use crate::util::random_best;
 
+use rand::rngs::SmallRng;
+use rand::Rng;
+use std::sync::atomic::Ordering::Relaxed;
+
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::UnvisitedValueEstimate,
-    pub current_id: index::Id,
-    pub stack: Vec<index::Id>,
+    pub current_id: Id,
+    pub stack: Vec<Id>,
     pub state: &'a G::S,
     pub player: usize,
     pub player_to_move: usize,
