@@ -1,11 +1,9 @@
 #![allow(unused)]
 
 // TODO: this is just a placeholder
+use super::bitboard::BitBoard;
 use crate::game::Game;
 use crate::game::PlayerIndex;
-
-#[derive(Clone, Copy, Serialize, Debug)]
-struct BitBoard(u64);
 
 use serde::Serialize;
 
@@ -25,39 +23,46 @@ impl PlayerIndex for Player {
 pub struct Move(u8);
 
 #[derive(Clone, Copy, Serialize, Debug)]
-pub struct State(BitBoard);
+pub struct State<const N: usize> {
+    black: BitBoard<N, N>,
+    white: BitBoard<N, N>,
+}
 
-impl State {}
+impl<const N: usize> State<N> {
+    fn occupied(&self) -> BitBoard<N, N> {
+        self.black | self.white
+    }
+}
 
 #[derive(Clone)]
-struct AtariGo;
+struct AtariGo<const N: usize>;
 
-impl Game for AtariGo {
-    type S = State;
+impl<const N: usize> Game for AtariGo<N> {
+    type S = State<N>;
     type A = Move;
     type P = Player;
 
-    fn apply(state: State, action: &Move) -> State {
+    fn apply(state: State<N>, action: &Move) -> State<N> {
         // 1. Place piece
         // 2. Scan for groups with no liberties and remove
         todo!();
     }
 
-    fn generate_actions(state: &State, actions: &mut Vec<Move>) {
+    fn generate_actions(state: &State<N>, actions: &mut Vec<Move>) {
         // 1. Most open points are playable
         // 2. ...unless they would result in self capture
         todo!();
     }
 
-    fn is_terminal(state: &State) -> bool {
+    fn is_terminal(state: &State<N>) -> bool {
         todo!();
     }
 
-    fn player_to_move(state: &State) -> Player {
+    fn player_to_move(state: &State<N>) -> Player {
         todo!();
     }
 
-    fn winner(state: &State) -> Option<Player> {
+    fn winner(state: &State<N>) -> Option<Player> {
         todo!();
     }
 

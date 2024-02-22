@@ -1,5 +1,6 @@
 pub mod atarigo;
 pub mod bid_ttt;
+pub mod bitboard;
 pub mod count;
 pub mod druid;
 pub mod nim;

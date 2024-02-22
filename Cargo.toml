@@ -46,6 +46,7 @@ serde_json = "1.0.113"
 backtrace = "0.3.69"
 indicatif = { version = "0.17.8", features = ["rayon"] }
 clap = { version = "4.5.1", features = ["derive"] }
+proptest = "1.4.0"
 
 [profile.release]
 debug=true
