@@ -1,3 +1,4 @@
+use log::debug;
 use serde::Serialize;
 use std::fmt;
 use std::ops::{
@@ -25,7 +26,7 @@ pub enum Direction {
 /// smmaller bitboard, you will likely need to mask off the areas outside the
 /// play area. For such concerns, the `ones`, `unused`, and `sanitize` functions
 /// can be used.
-#[derive(Clone, Copy, Serialize, Debug, PartialEq, Hash)]
+#[derive(Clone, Copy, Serialize, PartialEq, Hash)]
 pub struct BitBoard<const N: usize = 8, const M: usize = 8>(u64);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -209,7 +210,7 @@ impl<const N: usize, const M: usize> Not for BitBoard<N, M> {
 
     #[inline(always)]
     fn not(self) -> Self::Output {
-        Self(!self.0)
+        Self(!self.0 & Self::ones().0)
     }
 }
 
@@ -391,18 +392,18 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     /// in this function, so that decision is up to the client.
     pub fn flood4(self, start: usize) -> Self {
         debug_assert!(start < N * M);
+        debug_assert!(self == self.sanitize());
         let mut flood = Self::from_index(start) & self;
 
         if flood.is_empty() {
             return flood;
         }
 
-        let valid = Self::ones();
         while !flood.is_empty() {
             let temp = flood;
             flood |=
                 flood.shift_north() | flood.shift_east() | flood.shift_south() | flood.shift_west();
-            flood &= self & valid;
+            flood &= self;
             if flood == temp {
                 break;
             }
@@ -414,18 +415,19 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     /// natural to fill unset bits, but that requires one additional operation
     /// in this function, so that decision is up to the client.
     pub fn flood8(self, start: usize) -> Self {
+        debug_assert!(start < N * M);
+        debug_assert!(self == self.sanitize());
         let mut flood = Self::from_index(start) & self;
 
         if flood.is_empty() {
             return flood;
         }
 
-        let valid = Self::ones();
         while !flood.is_empty() {
             let temp = flood;
             flood |= flood.shift_north() | flood.shift_south();
             flood |= flood.shift_east() | flood.shift_west();
-            flood &= self & valid;
+            flood &= self;
             if flood == temp {
                 break;
             }
@@ -469,6 +471,32 @@ impl<const N: usize, const M: usize> fmt::Display for BitBoard<N, M> {
             }
             writeln!(f)?;
         }
+        Ok(())
+    }
+}
+
+impl<const N: usize, const M: usize> fmt::Debug for BitBoard<N, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for row in (0..8).rev() {
+            for col in 0..8 {
+                let index = row * 8 + col;
+                let bit = self.0 & (1 << index) != 0;
+                let c = if index < N * M {
+                    if bit {
+                        'X'
+                    } else {
+                        '.'
+                    }
+                } else if bit {
+                    '%'
+                } else {
+                    '#'
+                };
+                write!(f, " {}", c)?;
+            }
+            writeln!(f)?;
+        }
+
         Ok(())
     }
 }
@@ -557,7 +585,7 @@ mod tests {
         fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
             ((1usize..8), (1usize..8))
                 .prop_flat_map(|(n, m)| {
-                    (0..n, 0..m, 0u64..=(1 << (n * m)) - 1).prop_map(move |(row, col, value)| {
+                    (0..n, 0..m, 0u64..(1 << (n * m))).prop_map(move |(row, col, value)| {
                         RuntimeBitBoard {
                             n,
                             m,
