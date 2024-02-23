@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-// TODO: this is just a placeholder
 use super::bitboard::BitBoard;
 use crate::game::Game;
 use crate::game::PlayerIndex;
@@ -62,13 +61,13 @@ impl<const N: usize> State<N> {
             Player::Black
         } else {
             debug_assert!(self.white.get(index));
-
             Player::White
         }
     }
 
+    #[inline]
     fn valid(&self, index: usize) -> (bool, BitBoard<N, N>) {
-        assert!(!self.occupied().get(index));
+        debug_assert!(!self.occupied().get(index));
         let player = self.player(self.turn) | BitBoard::from_index(index);
         let opponent = self.player(self.turn.next());
         let occupied = player | opponent;
@@ -84,8 +83,8 @@ impl<const N: usize> State<N> {
         let mut will_capture = BitBoard::empty();
         for point in occupied_adjacent {
             // By definition, adjacent non-empty points must be the opponent
-            assert!(occupied.get(point));
-            assert!(opponent.get(point));
+            debug_assert!(occupied.get(point));
+            debug_assert!(opponent.get(point));
             if !seen.get(point) {
                 let group = opponent.flood4(point);
                 let adjacent = group.adjacency_mask();
@@ -108,11 +107,11 @@ impl<const N: usize> State<N> {
         match self.turn {
             Player::Black => {
                 self.black = player;
-                self.white = opponent & (!BitBoard::new(action.1));
+                self.white = opponent & !BitBoard::new(action.1);
             }
             Player::White => {
                 self.white = player;
-                self.black = opponent & (!BitBoard::new(action.1));
+                self.black = opponent & !BitBoard::new(action.1);
             }
         }
         if action.1 > 0 {
@@ -164,7 +163,7 @@ impl<const N: usize> Game for AtariGo<N> {
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
         const COL_NAMES: &[u8] = b"ABCDEFGH";
-        let (col, row) = BitBoard::<N, N>::to_coord(action.0 as usize);
+        let (row, col) = BitBoard::<N, N>::to_coord(action.0 as usize);
         format!("{}{}", COL_NAMES[col] as char, row + 1)
     }
 
@@ -175,11 +174,11 @@ impl<const N: usize> Game for AtariGo<N> {
 
 impl<const N: usize> fmt::Display for State<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for row in 0..N {
+        for row in (0..N).rev() {
             for col in 0..N {
-                if self.black.get_at(N - row - 1, col) {
+                if self.black.get_at(row, col) {
                     write!(f, "X")?;
-                } else if self.white.get_at(N - row - 1, col) {
+                } else if self.white.get_at(row, col) {
                     write!(f, "O")?;
                 } else {
                     write!(f, ".")?;
