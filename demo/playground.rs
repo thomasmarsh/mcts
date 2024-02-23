@@ -58,7 +58,7 @@ fn atarigo() {
         state = AtariGo::apply(state, &action);
         println!("state:\n{state}");
     }
-    println!("winner: {:?}", state.winner);
+    println!("winner: {:?}", AtariGo::winner(&state));
 }
 
 fn expansion_test() {

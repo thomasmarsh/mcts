@@ -38,7 +38,7 @@ pub struct State<const N: usize> {
     black: BitBoard<N, N>,
     white: BitBoard<N, N>,
     turn: Player,
-    pub winner: bool,
+    winner: bool,
 }
 
 impl<const N: usize> State<N> {
