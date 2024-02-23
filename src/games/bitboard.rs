@@ -129,6 +129,8 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     /// Check if the bit at the specified 2D coordinate is set.
     #[inline(always)]
     pub const fn get_at(&self, row: usize, col: usize) -> bool {
+        debug_assert!(row < N);
+        debug_assert!(col < M);
         self.get(row * M + col)
     }
 
@@ -530,7 +532,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coord_index() {}
+    fn coord_index() {
+        type B = BitBoard<9, 7>;
+        for row in 0..9 {
+            for col in 0..7 {
+                let index = B::to_index(row, col);
+                let (r, c) = B::to_coord(index);
+                assert_eq!(r, row);
+                assert_eq!(c, col);
+            }
+        }
+    }
 
     #[test]
     fn test_shift_properties_1x1() {
