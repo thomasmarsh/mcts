@@ -8,3 +8,6 @@ pub mod null;
 pub mod ttt;
 pub mod ttt_traffic_lights;
 pub mod unit;
+
+#[cfg(test)]
+pub mod bitboard_match;

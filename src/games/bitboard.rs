@@ -1,4 +1,3 @@
-use log::debug;
 use serde::Serialize;
 use std::fmt;
 use std::ops::{
@@ -6,28 +5,32 @@ use std::ops::{
     Shr, ShrAssign,
 };
 
-#[derive(Clone, Copy, Serialize, Debug, PartialEq)]
-pub enum Direction {
-    North,
-    East,
-    South,
-    West,
-}
-
 /// Defines an N x M bitboard with u64 as underlying storage. |N x M| must be
 /// 64 bits or less. By convention, N refers to the number of rows, and M the
 /// number of columns. The origin of the bitboard is at the bottom left and
-/// indexing moves left to right, bottom to top. For accessing a coordinate,
-/// coordinates are indexed by (col, row).
+/// indexing moves left to right, bottom to top. Accessing a coordinate,
+/// is accomplished via indexing by (col, row).
 ///
 /// Note that more care must be taken with sizes that utilize fewer than 64
 /// bits as some operations may leave garbage outside the bounds. For example,
 /// with an 8x8 bitboards it is often useful to take !0 to be all bits. With a
-/// smmaller bitboard, you will likely need to mask off the areas outside the
+/// smaller bitboard, you will likely need to mask off the areas outside the
 /// play area. For such concerns, the `ones`, `unused`, and `sanitize` functions
 /// can be used.
 #[derive(Clone, Copy, Serialize, PartialEq, Hash)]
-pub struct BitBoard<const N: usize = 8, const M: usize = 8>(u64);
+pub struct BitBoard<const N: usize, const M: usize>(u64);
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Overflow protected const functions for common operations.
+
+const fn ones<const N: usize, const M: usize>() -> u64 {
+    if N * M == 64 {
+        u64::MAX
+    } else {
+        (1 << (N * M)) - 1
+    }
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -38,7 +41,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     pub const fn new(value: u64) -> Self {
         debug_assert!((N * M) > 0);
         debug_assert!((N * M) <= 64);
-        debug_assert!(value < (1 << (N * M)));
+        debug_assert!(value <= ones::<8, 8>());
         Self(value)
     }
 
@@ -69,7 +72,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
     #[inline(always)]
     pub const fn ones() -> Self {
-        Self((1 << (N * M)) - 1)
+        Self(ones::<N, M>())
     }
 
     #[inline(always)]
@@ -118,15 +121,21 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 impl<const N: usize, const M: usize> BitBoard<N, M> {
     /// Check if the bit at the specified linear index is set.
     #[inline(always)]
-    pub fn get(self, index: usize) -> bool {
+    pub const fn get(self, index: usize) -> bool {
         debug_assert!(index < N * M);
-        self & Self::from_index(index) != Self::empty()
+        self.0 & Self::from_index(index).0 != Self::empty().0
     }
 
     /// Check if the bit at the specified 2D coordinate is set.
     #[inline(always)]
-    fn get_at(&self, row: usize, col: usize) -> bool {
+    pub const fn get_at(&self, row: usize, col: usize) -> bool {
         self.get(row * M + col)
+    }
+
+    /// Return the raw underlying storage
+    #[inline(always)]
+    pub const fn get_raw(&self) -> u64 {
+        self.0
     }
 }
 
@@ -148,6 +157,7 @@ impl<const N: usize, const M: usize> Index<usize> for BitBoard<N, M> {
 
 // Setters
 
+// TODO: take &mut self or return new instance?
 impl<const N: usize, const M: usize> BitBoard<N, M> {
     /// Check if the bit at the specified linear index is set.
     #[inline(always)]
@@ -250,7 +260,7 @@ impl<const N: usize, const M: usize> Shl<usize> for BitBoard<N, M> {
 
     #[inline(always)]
     fn shl(self, rhs: usize) -> Self::Output {
-        Self(self.0 << rhs)
+        Self(self.0.wrapping_shl(rhs as u32))
     }
 }
 
@@ -259,7 +269,7 @@ impl<const N: usize, const M: usize> Shr<usize> for BitBoard<N, M> {
 
     #[inline(always)]
     fn shr(self, rhs: usize) -> Self::Output {
-        Self(self.0 >> rhs)
+        Self(self.0.wrapping_shr(rhs as u32))
     }
 }
 
@@ -300,6 +310,16 @@ impl<const N: usize, const M: usize> ShrAssign<usize> for BitBoard<N, M> {
     fn shr_assign(&mut self, rhs: usize) {
         self.0 >>= rhs;
     }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Serialize, Debug, PartialEq)]
+pub enum Direction {
+    North,
+    East,
+    South,
+    West,
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -352,7 +372,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
     #[inline(always)]
     pub fn shift_south(self) -> Self {
-        (self & !Self::wall(Direction::South)) >> M
+        self >> M
     }
 
     #[inline(always)]
@@ -378,7 +398,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 impl<const N: usize, const M: usize> BitBoard<N, M> {
     #[inline]
     pub fn adjacency_mask(self) -> Self {
-        (self.shift_north() | self.shift_east() | self.shift_south() | self.shift_west()) ^ self
+        (self.shift_north() | self.shift_east() | self.shift_south() | self.shift_west()) & !self
     }
 }
 
@@ -440,7 +460,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
 /// For the `BitBoard`, iterate over every positition set.
 
-impl Iterator for BitBoard {
+impl<const N: usize, const M: usize> Iterator for BitBoard<N, M> {
     type Item = usize;
 
     #[inline]
@@ -475,6 +495,8 @@ impl<const N: usize, const M: usize> fmt::Display for BitBoard<N, M> {
     }
 }
 
+/// Displays an 8x8 bitboard with special formatting to show which areas are
+/// valid and which are outside of the range of the play area.
 impl<const N: usize, const M: usize> fmt::Debug for BitBoard<N, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for row in (0..8).rev() {
@@ -508,6 +530,9 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coord_index() {}
+
+    #[test]
     fn test_shift_properties_1x1() {
         type B = BitBoard<1, 1>;
         let init = B::new(1);
@@ -516,6 +541,11 @@ mod tests {
         assert_eq!(init.shift_east(), B::empty());
         assert_eq!(init.shift_south(), B::empty());
         assert_eq!(init.shift_west(), B::empty());
+
+        assert_eq!(init.shift_north().sanitize(), init.shift_north());
+        assert_eq!(init.shift_east().sanitize(), init.shift_east());
+        assert_eq!(init.shift_south().sanitize(), init.shift_south());
+        assert_eq!(init.shift_west().sanitize(), init.shift_west());
     }
 
     #[test]
@@ -566,116 +596,8 @@ mod tests {
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 
+    use super::super::bitboard_match::*;
     use proptest::prelude::*;
-
-    #[derive(Debug)]
-    struct RuntimeBitBoard {
-        n: usize,
-        m: usize,
-        row: usize,
-        col: usize,
-        value: u64,
-    }
-
-    /////////////////////////////////////////////////////////////////////////////////////////////
-
-    impl Arbitrary for RuntimeBitBoard {
-        type Parameters = ();
-
-        fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
-            ((1usize..8), (1usize..8))
-                .prop_flat_map(|(n, m)| {
-                    (0..n, 0..m, 0u64..(1 << (n * m))).prop_map(move |(row, col, value)| {
-                        RuntimeBitBoard {
-                            n,
-                            m,
-                            row,
-                            col,
-                            value,
-                        }
-                    })
-                })
-                .boxed()
-        }
-
-        type Strategy = BoxedStrategy<Self>;
-    }
-
-    /////////////////////////////////////////////////////////////////////////////////////////////
-
-    // There is probably a better way to do this.
-    macro_rules! match_bitboard {
-        ($b:expr, $func:expr) => {
-            type _B<const N: usize, const M: usize> = BitBoard<N, M>;
-            match ($b.n, $b.m) {
-                (1, 1) => $func(_B::<1, 1>::new($b.value), $b.row, $b.col),
-                (1, 2) => $func(_B::<1, 2>::new($b.value), $b.row, $b.col),
-                (1, 3) => $func(_B::<1, 3>::new($b.value), $b.row, $b.col),
-                (1, 4) => $func(_B::<1, 4>::new($b.value), $b.row, $b.col),
-                (1, 5) => $func(_B::<1, 5>::new($b.value), $b.row, $b.col),
-                (1, 6) => $func(_B::<1, 6>::new($b.value), $b.row, $b.col),
-                (1, 7) => $func(_B::<1, 7>::new($b.value), $b.row, $b.col),
-                (1, 8) => $func(_B::<1, 8>::new($b.value), $b.row, $b.col),
-                (2, 1) => $func(_B::<2, 1>::new($b.value), $b.row, $b.col),
-                (2, 2) => $func(_B::<2, 2>::new($b.value), $b.row, $b.col),
-                (2, 3) => $func(_B::<2, 3>::new($b.value), $b.row, $b.col),
-                (2, 4) => $func(_B::<2, 4>::new($b.value), $b.row, $b.col),
-                (2, 5) => $func(_B::<2, 5>::new($b.value), $b.row, $b.col),
-                (2, 6) => $func(_B::<2, 6>::new($b.value), $b.row, $b.col),
-                (2, 7) => $func(_B::<2, 7>::new($b.value), $b.row, $b.col),
-                (2, 8) => $func(_B::<2, 8>::new($b.value), $b.row, $b.col),
-                (3, 1) => $func(_B::<3, 1>::new($b.value), $b.row, $b.col),
-                (3, 2) => $func(_B::<3, 2>::new($b.value), $b.row, $b.col),
-                (3, 3) => $func(_B::<3, 3>::new($b.value), $b.row, $b.col),
-                (3, 4) => $func(_B::<3, 4>::new($b.value), $b.row, $b.col),
-                (3, 5) => $func(_B::<3, 5>::new($b.value), $b.row, $b.col),
-                (3, 6) => $func(_B::<3, 6>::new($b.value), $b.row, $b.col),
-                (3, 7) => $func(_B::<3, 7>::new($b.value), $b.row, $b.col),
-                (3, 8) => $func(_B::<3, 8>::new($b.value), $b.row, $b.col),
-                (4, 1) => $func(_B::<4, 1>::new($b.value), $b.row, $b.col),
-                (4, 2) => $func(_B::<4, 2>::new($b.value), $b.row, $b.col),
-                (4, 3) => $func(_B::<4, 3>::new($b.value), $b.row, $b.col),
-                (4, 4) => $func(_B::<4, 4>::new($b.value), $b.row, $b.col),
-                (4, 5) => $func(_B::<4, 5>::new($b.value), $b.row, $b.col),
-                (4, 6) => $func(_B::<4, 6>::new($b.value), $b.row, $b.col),
-                (4, 7) => $func(_B::<4, 7>::new($b.value), $b.row, $b.col),
-                (4, 8) => $func(_B::<4, 8>::new($b.value), $b.row, $b.col),
-                (5, 1) => $func(_B::<5, 1>::new($b.value), $b.row, $b.col),
-                (5, 2) => $func(_B::<5, 2>::new($b.value), $b.row, $b.col),
-                (5, 3) => $func(_B::<5, 3>::new($b.value), $b.row, $b.col),
-                (5, 4) => $func(_B::<5, 4>::new($b.value), $b.row, $b.col),
-                (5, 5) => $func(_B::<5, 5>::new($b.value), $b.row, $b.col),
-                (5, 6) => $func(_B::<5, 6>::new($b.value), $b.row, $b.col),
-                (5, 7) => $func(_B::<5, 7>::new($b.value), $b.row, $b.col),
-                (5, 8) => $func(_B::<5, 8>::new($b.value), $b.row, $b.col),
-                (6, 1) => $func(_B::<6, 1>::new($b.value), $b.row, $b.col),
-                (6, 2) => $func(_B::<6, 2>::new($b.value), $b.row, $b.col),
-                (6, 3) => $func(_B::<6, 3>::new($b.value), $b.row, $b.col),
-                (6, 4) => $func(_B::<6, 4>::new($b.value), $b.row, $b.col),
-                (6, 5) => $func(_B::<6, 5>::new($b.value), $b.row, $b.col),
-                (6, 6) => $func(_B::<6, 6>::new($b.value), $b.row, $b.col),
-                (6, 7) => $func(_B::<6, 7>::new($b.value), $b.row, $b.col),
-                (6, 8) => $func(_B::<6, 8>::new($b.value), $b.row, $b.col),
-                (7, 1) => $func(_B::<7, 1>::new($b.value), $b.row, $b.col),
-                (7, 2) => $func(_B::<7, 2>::new($b.value), $b.row, $b.col),
-                (7, 3) => $func(_B::<7, 3>::new($b.value), $b.row, $b.col),
-                (7, 4) => $func(_B::<7, 4>::new($b.value), $b.row, $b.col),
-                (7, 5) => $func(_B::<7, 5>::new($b.value), $b.row, $b.col),
-                (7, 6) => $func(_B::<7, 6>::new($b.value), $b.row, $b.col),
-                (7, 7) => $func(_B::<7, 7>::new($b.value), $b.row, $b.col),
-                (7, 8) => $func(_B::<7, 8>::new($b.value), $b.row, $b.col),
-                (8, 1) => $func(_B::<8, 1>::new($b.value), $b.row, $b.col),
-                (8, 2) => $func(_B::<8, 2>::new($b.value), $b.row, $b.col),
-                (8, 3) => $func(_B::<8, 3>::new($b.value), $b.row, $b.col),
-                (8, 4) => $func(_B::<8, 4>::new($b.value), $b.row, $b.col),
-                (8, 5) => $func(_B::<8, 5>::new($b.value), $b.row, $b.col),
-                (8, 6) => $func(_B::<8, 6>::new($b.value), $b.row, $b.col),
-                (8, 7) => $func(_B::<8, 7>::new($b.value), $b.row, $b.col),
-                (8, 8) => $func(_B::<8, 8>::new($b.value), $b.row, $b.col),
-                _ => panic!("Unsupported dimensions: ({}, {})", $b.n, $b.m),
-            }
-        };
-    }
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 

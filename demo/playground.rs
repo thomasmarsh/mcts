@@ -35,6 +35,32 @@ fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
 }
 
+fn atarigo() {
+    use mcts::games::atarigo;
+    use mcts::games::atarigo::AtariGo;
+    use mcts::strategies::mcts::select;
+
+    type TS = TreeSearch<AtariGo<4>, util::Ucb1Tuned>;
+    let mut search = TS::default()
+        .config(
+            SearchConfig::default()
+                .select(select::Ucb1Tuned {
+                    exploration_constant: 1.625,
+                })
+                .max_time(Duration::from_secs(5))
+                .expand_threshold(1),
+        )
+        .verbose(true);
+    let mut state = atarigo::State::default();
+    println!("state:\n{state}");
+    while !AtariGo::is_terminal(&state) {
+        let action = search.choose_action(&state);
+        state = AtariGo::apply(state, &action);
+        println!("state:\n{state}");
+    }
+    println!("winner: {:?}", state.winner);
+}
+
 fn expansion_test() {
     use mcts::games::bid_ttt as ttt;
     type TS = TreeSearch<ttt::BiddingTicTacToe, util::Ucb1>;
@@ -243,6 +269,7 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
+    atarigo();
     expansion_test();
     ucb_test();
 
