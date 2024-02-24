@@ -166,20 +166,12 @@ impl<const N: usize> fmt::Display for State<N> {
 
 #[cfg(test)]
 mod tests {
+    use crate::util::random_play;
+
     use super::*;
 
     #[test]
     fn test_atarigo() {
-        let mut state = State::<7>::default();
-        while !AtariGo::is_terminal(&state) {
-            println!("state:\n{state}");
-            let mut actions = Vec::new();
-            AtariGo::generate_actions(&state, &mut actions);
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            assert!(!actions.is_empty());
-            let idx = rng.gen_range(0..actions.len());
-            state = AtariGo::apply(state, &actions[idx]);
-        }
+        random_play::<AtariGo<7>>();
     }
 }

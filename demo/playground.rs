@@ -36,12 +36,35 @@ fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
 }
 
+fn knightthrough() {
+    use mcts::games::knightthrough::Knightthrough;
+    use mcts::strategies::mcts::select;
+    use mcts::strategies::mcts::simulate;
+
+    type TS = TreeSearch<Knightthrough<8, 8>, util::Ucb1GraveMast>;
+    let ts = TS::default()
+        .config(
+            SearchConfig::default()
+                .max_time(Duration::from_secs(10))
+                .select(select::Ucb1Grave {
+                    exploration_constant: 1.32562,
+                    threshold: 720,
+                    bias: 430.36,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
+        )
+        .verbose(true);
+
+    self_play(ts);
+}
+
 fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
     use mcts::strategies::mcts::select;
     use mcts::strategies::mcts::simulate;
 
-    type TS = TreeSearch<Breakthrough<8, 8>, util::Ucb1GraveMast>;
+    type TS = TreeSearch<Breakthrough<6, 4>, util::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -313,6 +336,7 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
+    knightthrough();
     breakthrough();
     gonnect();
     atarigo();

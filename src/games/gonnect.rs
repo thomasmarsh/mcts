@@ -235,21 +235,12 @@ impl<const N: usize> fmt::Display for MovesDisplay<N> {
 
 #[cfg(test)]
 mod tests {
+    use crate::util::random_play;
+
     use super::*;
 
     #[test]
     fn test_gonnect() {
-        let mut state = State::<3>::default();
-        while !Gonnect::is_terminal(&state) {
-            println!("state: ({:?} to play)\n{state}", state.turn);
-            println!("moves:\n{}", MovesDisplay(state));
-            let mut actions = Vec::new();
-            Gonnect::generate_actions(&state, &mut actions);
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            assert!(!actions.is_empty());
-            let idx = rng.gen_range(0..actions.len());
-            state = Gonnect::apply(state, &actions[idx]);
-        }
+        random_play::<Gonnect<3>>();
     }
 }

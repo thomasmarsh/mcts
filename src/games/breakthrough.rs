@@ -80,10 +80,10 @@ impl<const N: usize, const M: usize> State<N, M> {
     }
 
     #[inline(always)]
-    fn player(&self, player: Player) -> (BitBoard<N, M>, BitBoard<N, M>) {
+    fn player(&self, player: Player) -> BitBoard<N, M> {
         match player {
-            Player::Black => (self.black, BitBoard::wall(bitboard::Direction::South)),
-            Player::White => (self.white, BitBoard::wall(bitboard::Direction::North)),
+            Player::Black => self.black,
+            Player::White => self.white,
         }
     }
 
@@ -103,20 +103,19 @@ impl<const N: usize, const M: usize> State<N, M> {
             return;
         }
 
-        let (player, _) = self.player(self.turn);
-        let (opponent, _) = self.player(self.turn.next());
+        let (player) = self.player(self.turn);
+        let (opponent) = self.player(self.turn.next());
         let occupied = player | opponent;
 
         for src in player {
-            // TODO: use mask
             let from = BitBoard::from_index(src);
             let forward = match self.turn {
                 Player::Black => from.shift_south(),
                 Player::White => from.shift_north(),
             };
 
-            let w = forward.shift_west();
-            let e = forward.shift_east();
+            let w = (forward & !BitBoard::wall(bitboard::Direction::West)).shift_west();
+            let e = (forward & !BitBoard::wall(bitboard::Direction::East)).shift_east();
 
             let available = (w & !player) | (e & !player) | (forward & !occupied);
 
@@ -131,21 +130,23 @@ impl<const N: usize, const M: usize> State<N, M> {
         debug_assert!(self.occupied().get(action.0 as usize));
         let src = BitBoard::from_index(action.0 as usize);
         let dst = BitBoard::from_index(action.1 as usize);
-        let (mut player, goal) = self.player(self.turn);
+        let mut player = self.player(self.turn);
         player |= dst;
         player &= !src;
-        let opponent = self.player(self.turn.next()).0 & !dst;
+        let opponent = self.player(self.turn.next()) & !dst;
 
-        match self.turn {
+        let goal = match self.turn {
             Player::Black => {
                 self.black = player;
                 self.white = opponent;
+                BitBoard::wall(bitboard::Direction::South)
             }
             Player::White => {
                 self.white = player;
                 self.black = opponent;
+                BitBoard::wall(bitboard::Direction::North)
             }
-        }
+        };
 
         if player.intersects(goal) {
             self.winner = true;
@@ -203,7 +204,7 @@ impl<const N: usize, const M: usize> Game for Breakthrough<N, M> {
 impl<const N: usize, const M: usize> fmt::Display for State<N, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for row in (0..N).rev() {
-            for col in 0..N {
+            for col in 0..M {
                 if self.black.get_at(row, col) {
                     write!(f, " X")?;
                 } else if self.white.get_at(row, col) {
@@ -220,22 +221,12 @@ impl<const N: usize, const M: usize> fmt::Display for State<N, M> {
 
 #[cfg(test)]
 mod tests {
+    use crate::util::random_play;
+
     use super::*;
 
     #[test]
     fn test_breakthrough() {
-        let mut state = State::<8, 8>::default();
-        println!("state:\n{state}");
-        while !Breakthrough::is_terminal(&state) {
-            let mut actions = Vec::new();
-            Breakthrough::generate_actions(&state, &mut actions);
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            assert!(!actions.is_empty());
-            let idx = rng.gen_range(0..actions.len());
-            state = Breakthrough::apply(state, &actions[idx]);
-            println!("state:\n{state}");
-        }
-        println!("winner: {:?}", Breakthrough::winner(&state));
+        random_play::<Breakthrough<8, 8>>();
     }
 }
