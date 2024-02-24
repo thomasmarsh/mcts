@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use mcts::games::druid::Druid;
-use mcts::games::druid::State;
+use mcts::games::atarigo::AtariGo;
+use mcts::games::atarigo::State;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
@@ -26,7 +26,9 @@ const EXPAND_THRESHOLD: u32 = 5;
 const VERBOSE: bool = false;
 const MAX_TIME_SECS: u64 = 0;
 
-type TS<S> = TreeSearch<Druid, S>;
+type G = AtariGo<8>;
+
+type TS<S> = TreeSearch<G, S>;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -53,10 +55,10 @@ fn main() {
     let candidate = make_candidate(Args::parse());
 
     let mut strategies = vec![AnySearch::new(opponent), AnySearch::new(candidate)];
-    let results = round_robin_multiple::<Druid, AnySearch<'_, Druid>>(
+    let results = round_robin_multiple::<G, AnySearch<'_, G>>(
         &mut strategies,
         ROUNDS,
-        &State::new(),
+        &State::default(),
         Verbosity::Silent,
     );
     let cost = calc_cost(results);

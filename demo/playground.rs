@@ -39,26 +39,63 @@ fn atarigo() {
     use mcts::games::atarigo;
     use mcts::games::atarigo::AtariGo;
     use mcts::strategies::mcts::select;
+    use mcts::strategies::mcts::simulate;
 
-    type TS = TreeSearch<AtariGo<4>, util::Ucb1Tuned>;
-    let mut search = TS::default()
+    type TS = TreeSearch<AtariGo<5>, util::Ucb1GraveMast>;
+    let mut ts = TS::default()
+        .config(
+            SearchConfig::default()
+                .max_time(Duration::from_secs(10))
+                .select(select::Ucb1Grave {
+                    exploration_constant: 1.32562,
+                    threshold: 720,
+                    bias: 430.36,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
+        )
+        .verbose(true);
+
+    let mut state = atarigo::State::default();
+    println!("state:\n{state}");
+    while !AtariGo::is_terminal(&state) {
+        let action = match AtariGo::player_to_move(&state) {
+            atarigo::Player::Black => ts.choose_action(&state),
+            atarigo::Player::White => ts.choose_action(&state),
+        };
+        state = AtariGo::apply(state, &action);
+        println!("state:\n{state}");
+    }
+    println!("winner: {:?}", AtariGo::winner(&state));
+}
+
+fn gonnect() {
+    use mcts::games::gonnect;
+    use mcts::games::gonnect::Gonnect;
+    use mcts::strategies::mcts::select;
+
+    type TS = TreeSearch<Gonnect<8>, util::Ucb1Tuned>;
+    let mut ts = TS::default()
         .config(
             SearchConfig::default()
                 .select(select::Ucb1Tuned {
                     exploration_constant: 1.625,
                 })
-                .max_time(Duration::from_secs(5))
+                .max_time(Duration::from_secs(10))
                 .expand_threshold(1),
         )
         .verbose(true);
-    let mut state = atarigo::State::default();
+    let mut state = gonnect::State::default();
     println!("state:\n{state}");
-    while !AtariGo::is_terminal(&state) {
-        let action = search.choose_action(&state);
-        state = AtariGo::apply(state, &action);
+    while !Gonnect::is_terminal(&state) {
+        let action = match Gonnect::player_to_move(&state) {
+            gonnect::Player::Black => ts.choose_action(&state),
+            gonnect::Player::White => ts.choose_action(&state),
+        };
+        state = Gonnect::apply(state, &action);
         println!("state:\n{state}");
     }
-    println!("winner: {:?}", AtariGo::winner(&state));
+    println!("winner: {:?}", Gonnect::winner(&state));
 }
 
 fn expansion_test() {
@@ -270,6 +307,7 @@ fn main() {
     pretty_env_logger::init();
 
     atarigo();
+    gonnect();
     expansion_test();
     ucb_test();
 
