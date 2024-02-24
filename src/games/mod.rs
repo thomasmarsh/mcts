@@ -1,6 +1,7 @@
 pub mod atarigo;
 pub mod bid_ttt;
 pub mod bitboard;
+pub mod breakthrough;
 pub mod count;
 pub mod druid;
 pub mod gonnect;

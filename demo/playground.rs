@@ -10,6 +10,7 @@ use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
 use mcts::util::battle_royale;
+use mcts::util::self_play;
 use mcts::util::AnySearch;
 
 use mcts::games::nim::*;
@@ -35,14 +36,13 @@ fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
     println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
 }
 
-fn atarigo() {
-    use mcts::games::atarigo;
-    use mcts::games::atarigo::AtariGo;
+fn breakthrough() {
+    use mcts::games::breakthrough::Breakthrough;
     use mcts::strategies::mcts::select;
     use mcts::strategies::mcts::simulate;
 
-    type TS = TreeSearch<AtariGo<5>, util::Ucb1GraveMast>;
-    let mut ts = TS::default()
+    type TS = TreeSearch<Breakthrough<8, 8>, util::Ucb1GraveMast>;
+    let ts = TS::default()
         .config(
             SearchConfig::default()
                 .max_time(Duration::from_secs(10))
@@ -56,46 +56,53 @@ fn atarigo() {
         )
         .verbose(true);
 
-    let mut state = atarigo::State::default();
-    println!("state:\n{state}");
-    while !AtariGo::is_terminal(&state) {
-        let action = match AtariGo::player_to_move(&state) {
-            atarigo::Player::Black => ts.choose_action(&state),
-            atarigo::Player::White => ts.choose_action(&state),
-        };
-        state = AtariGo::apply(state, &action);
-        println!("state:\n{state}");
-    }
-    println!("winner: {:?}", AtariGo::winner(&state));
+    self_play(ts);
+}
+
+fn atarigo() {
+    use mcts::games::atarigo::AtariGo;
+    use mcts::strategies::mcts::select;
+    use mcts::strategies::mcts::simulate;
+
+    type TS = TreeSearch<AtariGo<5>, util::Ucb1GraveMast>;
+    let ts = TS::default()
+        .config(
+            SearchConfig::default()
+                .max_time(Duration::from_secs(10))
+                .select(select::Ucb1Grave {
+                    exploration_constant: 1.32562,
+                    threshold: 720,
+                    bias: 430.36,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
+        )
+        .verbose(true);
+
+    self_play(ts);
 }
 
 fn gonnect() {
-    use mcts::games::gonnect;
     use mcts::games::gonnect::Gonnect;
     use mcts::strategies::mcts::select;
 
-    type TS = TreeSearch<Gonnect<8>, util::Ucb1Tuned>;
-    let mut ts = TS::default()
+    type TS = TreeSearch<Gonnect<7>, util::Ucb1Grave>;
+    let ts = TS::default()
         .config(
             SearchConfig::default()
-                .select(select::Ucb1Tuned {
-                    exploration_constant: 1.625,
+                .select(select::Ucb1Grave {
+                    exploration_constant: 1.32,
+                    threshold: 700,
+                    bias: 430.,
+                    current_ref_id: None,
                 })
-                .max_time(Duration::from_secs(10))
+                .max_iterations(300000)
+                // .max_time(Duration::from_secs(10))
                 .expand_threshold(1),
         )
         .verbose(true);
-    let mut state = gonnect::State::default();
-    println!("state:\n{state}");
-    while !Gonnect::is_terminal(&state) {
-        let action = match Gonnect::player_to_move(&state) {
-            gonnect::Player::Black => ts.choose_action(&state),
-            gonnect::Player::White => ts.choose_action(&state),
-        };
-        state = Gonnect::apply(state, &action);
-        println!("state:\n{state}");
-    }
-    println!("winner: {:?}", Gonnect::winner(&state));
+
+    self_play(ts);
 }
 
 fn expansion_test() {
@@ -306,8 +313,9 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
-    atarigo();
+    breakthrough();
     gonnect();
+    atarigo();
     expansion_test();
     ucb_test();
 
