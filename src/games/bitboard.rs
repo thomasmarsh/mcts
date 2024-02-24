@@ -93,6 +93,73 @@ impl<const N: usize, const M: usize> Default for BitBoard<N, M> {
     }
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// For the `BitBoard`, iterate over every positition set.
+
+impl<const N: usize, const M: usize> Iterator for BitBoard<N, M> {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            None
+        } else {
+            let result = self.trailing_zeros() as usize;
+            *self ^= Self::from_index(result);
+            Some(result)
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Display
+
+impl<const N: usize, const M: usize> fmt::Display for BitBoard<N, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for row in 0..N {
+            for col in 0..M {
+                if self.get_at(N - row - 1, col) {
+                    write!(f, "X")?;
+                } else {
+                    write!(f, ".")?;
+                }
+            }
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+/// Displays an 8x8 bitboard with special formatting to show which areas are
+/// valid and which are outside of the range of the play area.
+impl<const N: usize, const M: usize> fmt::Debug for BitBoard<N, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for row in (0..8).rev() {
+            for col in 0..8 {
+                let index = row * 8 + col;
+                let bit = self.0 & (1 << index) != 0;
+                let c = if index < N * M {
+                    if bit {
+                        'X'
+                    } else {
+                        '.'
+                    }
+                } else if bit {
+                    '%'
+                } else {
+                    '#'
+                };
+                write!(f, " {}", c)?;
+            }
+            writeln!(f)?;
+        }
+
+        Ok(())
+    }
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 // Indexing and coordinates
@@ -314,6 +381,27 @@ impl<const N: usize, const M: usize> ShrAssign<usize> for BitBoard<N, M> {
     }
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Membership tests
+
+impl<const N: usize, const M: usize> BitBoard<N, M> {
+    #[inline(always)]
+    pub fn intersects(self, rhs: Self) -> bool {
+        self & rhs != Self::empty()
+    }
+
+    #[inline(always)]
+    pub fn is_subset(self, rhs: Self) -> bool {
+        self & rhs == self
+    }
+
+    #[inline(always)]
+    pub fn is_disjoint(self, rhs: Self) -> bool {
+        self & rhs == Self::empty()
+    }
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, Serialize, Debug, PartialEq)]
@@ -460,69 +548,163 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// For the `BitBoard`, iterate over every positition set.
+// Connectivity tests
 
-impl<const N: usize, const M: usize> Iterator for BitBoard<N, M> {
-    type Item = usize;
+impl<const N: usize, const M: usize> BitBoard<N, M> {
+    #[inline]
+    pub fn has_opposite_connection4(self, start: usize) -> bool {
+        let n = Self::wall(Direction::North);
+        let e = Self::wall(Direction::East);
+        let s = Self::wall(Direction::South);
+        let w = Self::wall(Direction::West);
+
+        let mut flood = BitBoard::from_index(start) & self;
+
+        if flood.is_empty() {
+            return false;
+        }
+
+        while !flood.is_empty() {
+            let temp = flood;
+            flood |=
+                flood.shift_north() | flood.shift_east() | flood.shift_south() | flood.shift_west();
+            flood &= self;
+            if (flood.intersects(n) && flood.intersects(s))
+                || (flood.intersects(e) && flood.intersects(w))
+            {
+                break;
+            } else if flood == temp {
+                return false;
+            }
+        }
+        true
+    }
 
     #[inline]
-    fn next(&mut self) -> Option<usize> {
-        if self.0 == 0 {
-            None
-        } else {
-            let result = self.trailing_zeros() as usize;
-            *self ^= Self::from_index(result);
-            Some(result)
+    pub fn has_opposite_connection8(self, start: usize) -> bool {
+        let n = Self::wall(Direction::North);
+        let e = Self::wall(Direction::East);
+        let s = Self::wall(Direction::South);
+        let w = Self::wall(Direction::West);
+
+        let mut flood = BitBoard::from_index(start) & self;
+
+        if flood.is_empty() {
+            return false;
         }
+
+        while !flood.is_empty() {
+            let temp = flood;
+            flood |= flood.shift_north() | flood.shift_south();
+            flood |= flood.shift_east() | flood.shift_west();
+            flood &= self;
+            if (flood.intersects(n) && flood.intersects(s))
+                || (flood.intersects(e) && flood.intersects(w))
+            {
+                break;
+            } else if flood == temp {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline]
+    pub fn has_connections4(self, start: usize, a: Self, b: Self) -> bool {
+        let mut flood = BitBoard::from_index(start) & self;
+
+        if flood.is_empty() {
+            return false;
+        }
+
+        while !flood.is_empty() {
+            let temp = flood;
+            flood |= flood.shift_north() | flood.shift_south();
+            flood |= flood.shift_east() | flood.shift_west();
+            flood &= self;
+            if flood.intersects(a) && flood.intersects(b) {
+                break;
+            } else if flood == temp {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline]
+    pub fn has_connections8(self, start: usize, a: Self, b: Self) -> bool {
+        let mut flood = BitBoard::from_index(start) & self;
+
+        if flood.is_empty() {
+            return false;
+        }
+
+        while !flood.is_empty() {
+            let temp = flood;
+            flood |=
+                flood.shift_north() | flood.shift_east() | flood.shift_south() | flood.shift_west();
+            flood &= self;
+            if flood.intersects(a) && flood.intersects(b) {
+                break;
+            } else if flood == temp {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline]
+    pub fn connects_walls4(self, start: usize, a: Direction, b: Direction) -> bool {
+        self.has_connections4(start, Self::wall(a), Self::wall(b))
+    }
+
+    #[inline]
+    pub fn connects_walls8(self, start: usize, a: Direction, b: Direction) -> bool {
+        self.has_connections8(start, Self::wall(a), Self::wall(b))
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Display
+// Go capture logic
 
-impl<const N: usize, const M: usize> fmt::Display for BitBoard<N, M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for row in 0..N {
-            for col in 0..M {
-                if self.get_at(N - row - 1, col) {
-                    write!(f, "X")?;
-                } else {
-                    write!(f, ".")?;
-                }
+/// Checks whether a move is valid for a game with go capture rules.
+pub fn check_go_move<const N: usize, const M: usize>(
+    player: BitBoard<N, N>,
+    opponent: BitBoard<N, N>,
+    index: usize,
+) -> (bool, BitBoard<N, N>) {
+    debug_assert!(!player.intersects(opponent));
+    let occupied = player | opponent;
+    debug_assert!(!occupied.get(index));
+    let player = player | BitBoard::from_index(index);
+    let occupied = player | opponent;
+    let group = player.flood4(index);
+    let adjacent = group.adjacency_mask();
+    let occupied_adjacent = occupied & adjacent;
+    let empty_adjacent = !occupied & adjacent;
+
+    // If we have adjacent empty positions we still have liberties.
+    let safe = !(empty_adjacent.is_empty());
+
+    let mut seen = BitBoard::empty();
+    let mut will_capture = BitBoard::empty();
+    for point in occupied_adjacent {
+        // By definition, adjacent non-empty points must be the opponent
+        debug_assert!(occupied.get(point));
+        debug_assert!(opponent.get(point));
+        if !seen.get(point) {
+            let group = opponent.flood4(point);
+            let adjacent = group.adjacency_mask();
+            let empty_adjacent = !occupied & adjacent;
+            if empty_adjacent.is_empty() {
+                will_capture |= group;
             }
-            writeln!(f)?;
+            seen |= group;
         }
-        Ok(())
     }
-}
 
-/// Displays an 8x8 bitboard with special formatting to show which areas are
-/// valid and which are outside of the range of the play area.
-impl<const N: usize, const M: usize> fmt::Debug for BitBoard<N, M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for row in (0..8).rev() {
-            for col in 0..8 {
-                let index = row * 8 + col;
-                let bit = self.0 & (1 << index) != 0;
-                let c = if index < N * M {
-                    if bit {
-                        'X'
-                    } else {
-                        '.'
-                    }
-                } else if bit {
-                    '%'
-                } else {
-                    '#'
-                };
-                write!(f, " {}", c)?;
-            }
-            writeln!(f)?;
-        }
-
-        Ok(())
-    }
+    (safe || !(will_capture.is_empty()), will_capture)
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -766,5 +948,17 @@ mod tests {
         }
 
         visited == filled
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    #[test]
+    fn test_capture() {
+        type B = BitBoard<2, 2>;
+        let white = B::new(0b1001);
+        let black = B::empty();
+        let (safe, will_capture) = check_go_move::<2, 2>(black, white, 2);
+        assert!(!safe);
+        assert_eq!(will_capture, B::empty());
     }
 }
