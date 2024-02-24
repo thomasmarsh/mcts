@@ -153,6 +153,21 @@ impl Verbosity {
     }
 }
 
+pub fn self_play<G: Game, S: Search<G = G>>(mut search: S)
+where
+    G::S: std::fmt::Display,
+    G::P: std::fmt::Debug,
+{
+    let mut state = G::S::default();
+    println!("state:\n{state}");
+    while !G::is_terminal(&state) {
+        let action = search.choose_action(&state);
+        state = G::apply(state, &action);
+        println!("state:\n{state}");
+    }
+    println!("winner: {:?}", G::winner(&state));
+}
+
 /// Play a round-robin tournament with the provided strategies.
 fn round_robin<G>(
     strategies: &mut [AnySearch<'_, G>],

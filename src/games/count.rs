@@ -1,7 +1,7 @@
 use crate::game::*;
 use serde::Serialize;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Count(pub i32);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]

@@ -249,8 +249,13 @@ pub struct State {
 // purposes of board state packing, we have to assume a max height. We will
 // take log2(N*M). For example, a 10x10 board would have a max height of 7.
 
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl State {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         State {
             player: Player::Black,
