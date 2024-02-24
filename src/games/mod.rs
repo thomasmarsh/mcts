@@ -5,6 +5,7 @@ pub mod breakthrough;
 pub mod count;
 pub mod druid;
 pub mod gonnect;
+pub mod knightthrough;
 pub mod nim;
 pub mod null;
 pub mod ttt;

@@ -6,6 +6,7 @@ use rand::rngs::SmallRng;
 use crate::game::{Game, PlayerIndex};
 use crate::strategies;
 
+use crate::strategies::random::Random;
 use crate::strategies::Search;
 use rayon::prelude::*;
 use std::ops::Add;
@@ -158,14 +159,24 @@ where
     G::S: std::fmt::Display,
     G::P: std::fmt::Debug,
 {
+    let mut i = 0;
     let mut state = G::S::default();
-    println!("state:\n{state}");
+    println!("[{i}] state:\n{state}");
     while !G::is_terminal(&state) {
         let action = search.choose_action(&state);
         state = G::apply(state, &action);
-        println!("state:\n{state}");
+        i += 1;
+        println!("[{i}] state:\n{state}");
     }
     println!("winner: {:?}", G::winner(&state));
+}
+
+pub fn random_play<G: Game>()
+where
+    G::S: std::fmt::Display,
+    G::P: std::fmt::Debug,
+{
+    self_play(Random::<G>::new())
 }
 
 /// Play a round-robin tournament with the provided strategies.
