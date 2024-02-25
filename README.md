@@ -1,23 +1,26 @@
-# MCTS
+# Monte Carlo Tree Search
 [![Rust](https://github.com/thomasmarsh/mcts/actions/workflows/rust.yml/badge.svg)](https://github.com/thomasmarsh/mcts/actions/workflows/rust.yml)
 
-Learning project for MCTS. This code is not entirely focused on efficiency, but is
-strong enough to play well or better against other libraries. I use it in my [Nego](https://github.com/thomasmarsh/nego) project.
+Learning project for MCTS. This code aims for some efficiency and is strong
+enough to play well or better against other libraries. I use it in my
+[Nego](https://github.com/thomasmarsh/nego) project.
 
 Current features:
 
-* UCT
-* RAVE
-* Single/full node expansion strategies
+* UCT / UCB1Tuned
+* RAVE/GRAVE
+* MAST
+* Hyperparameter tuning with [SMAC3](https://automl.github.io/SMAC3/main/)
 * Arena allocation (just a `Vec`, inspired by [indextree](https://github.com/saschagrunert/indextree))
+* Preliminary benchmarking tools
+* A growing number of [game implementations](src/games)
 
-This current implementation is not efficient, but here are some things I would like to
-explore:
+Some things I would like to explore:
 
-- better testability, ergonomics, safety
-- more simulation strategies, selection improvements, etc.
+- Better testability, ergonomics, safety
+- More simulation strategies, selection improvements, etc.
 - DAGs / transposition tables
-- online tuning
+- Online tuning
 
 Other alternatives in Rust:
 - [minimax-rs](https://github.com/edre/minimax-rs): lock-free tree parallel implementation. Better for low branching factor tactical games due to use of full node expansion strategy and reliance on MCTS-Solver.
@@ -36,8 +39,6 @@ Other alternatives in Rust:
 - [OxyMcts](https://github.com/Sagebati/OxyMcts): seems to be a vanilla UCT client
 
 Some code and general approaches come from
-[minimax-rs](https://github.com/edre/minimax-rs) which has an MCTS strategy. Not
-sure if this will become a published library, just a plaything, or maybe rolled
-back into minimax-rs. I started from scratch and then added some utilies from
-minimax-rs back in.
+[minimax-rs](https://github.com/edre/minimax-rs) which has an MCTS strategy.
 
+Not sure if this will become a published library, but it is improving and PRs are welcome.
