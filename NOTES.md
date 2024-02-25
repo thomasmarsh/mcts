@@ -11,54 +11,6 @@ potentially benefit or point out errors in understanding.
 
 * _Single Implementation_: Rather than many different tree search implementations, prefer a single one which is parameterized, at the potential cost of memory or efficiency.
 
-
-## Type Safety
-
-In general, there are some opportunies for [parsing vs. validation](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/).
-
-For example, consider something like:
-
-```rust
-  struct ActiveState<S>(S);
-  struct TerminalState<S>(S);
-  enum State<S> {
-    Active(ActiveState<S>),
-    Teriminal(Teriminal<S>),
-  }
-
-  trait Game {
-    type S;
-    type M;
-
-    fn apply(state: &ActiveState<S>) -> State<S>;
-    fn gen_moves(state: &ActiveState<S>) -> NonEmpty<M>
-    fn get_reward(state: &TerminalState<S>) -> i32;
-
-    ...
-  }
-```
-
-We do a lot of `is_terminal` checks, many more than `gen_moves`. However,
-it violates the  principle that the `Game` interface should not place undue
-burden on the implementor. The interface for the implementor of the trait could
-maintain simpler types, but a wrapper could be used internally by the libary
-which mediates the "parsing". Note that some things like terminality might be
-better determined lazily.
-
-Similarly, more in keeping with the current approach, is to to check (to parse) if
-the state is terminal at the time we receive it. Additionally, a similar strategy can
-be applied for the `Node<M>` type, which becomes an enum:
-
-```rust
-enum Node<M> {
-  Root(...),
-  Unexpanded(...),
-  Expanded(...),
-  Terminal(...),
-}
-  
-```
-
 ## Instrumentation
 
 A general idea that I come back to is that it would be nice to instrument the tree
@@ -105,11 +57,6 @@ AI depends on good benchmarks. Random and flat Monte Carlo strategies are also p
 It would be nice to have automated round-robin testing, benchmarking, and parameter
 tuning.
 
-## Terminology
-
-I'm using "move" and "action" synonymously. I prefer "action", and may unify the
-terminology around the more generic term. 
-
 ## Players
 
 Monte Carlo Tree search in its basic form does not distinguish between players and
@@ -141,49 +88,6 @@ strive to simply rely on knowing the current player for a given state.
 The first move of a game employing the "pie rule" or Swap2 in Gomoku also allow
 the players to swap colors. Here the order of the order of players is not necessarily
 changed, but the color they are playing is.
-
-### Game Interface
-
-Tentatively, we could consider the following interface:
-
-```rust
-trait Game {
-  type S : ...;              // The game state
-  type P : Copy + Hash + Eq; // The player type
-  
-  // Get the current active player
-  fn player_to_move(state: &Self::S) -> P;
-
-  fn all_players() -> Vec<P>;
-
-  ...
-  }
-```
-
-The new method `all_players()` would give us the ability to iterate over the set of P.
-
-By making `P` conform to `Hash`, we can use `P` values as hash indices for lookups. It
-is also worth considering whether to require the game provide conversions to `usize`
-so that we may more efficiently use the player as an array index. A less type safe
-convention used in other engines is simply to establish that `P` is an integral type.
-
-## Traces
-
-Many algorithms depend on traces. For example, AMAF/RAVE depends on the history of
-simulated moves during rollout. MAST requires the same history as well as the history
-of nodes from the selection process. (Is that correct?)
-
-Currently a `stack: Vec<M>` is maintained for the selection and backprop, and I have
-code which maintains a `history: Vec<M>` for preliminary MAST support during. It would
-be nice to simply write `self.trace(m, phase)` where `phase` is
-`enum Phase { Select, Simulate }`, or similar.
-
-Rather than tracing as needed, we could also consider supporting a diff
-operation, where the state at the root is compared to the state select, which
-can be compared to the state at the end of simulation. Generating a diff of
-moves can be more efficient but requires support from the `Game` interface. Such
-a diffing strategy, might discard move ordering, which would eliminate the later
-possibility of NST or similar techniques.
 
 ## End Game Performance
 
@@ -233,21 +137,3 @@ A downside of paralellization is that we lose the ability to target certain
 runtimes such as wasm. A decision would need to be made whether to 1) not
 support those platforms, 2) maintain two versions of the code, 3) support a
 single implementation, perhaps with the help of macros.
-
-
-## Secure Child
-
-Max, Robust, and other child selection techniques. Another one listed was "Secure
-Child". This is what I came up with, but didn't explore fully. Dropping it here so
-it is not lost:
-
-```rust
-use statrs::distribution::{Normal, Univariate};
-
-fn secure_child(confidence_level: f64, child: &Node<M>) -> f64 {
-    let mean = child.q as f64 / child.n as f64;
-    let std_dev = (child.q_squared as f64 / child.n as f64 - mean.powi(2)).sqrt();
-    let normal = Normal::new(mean, std_dev).unwrap();
-    normal.inverse_cdf(confidence_level)
-}
-```
