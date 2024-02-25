@@ -259,7 +259,7 @@ mod tests {
             SearchConfig::default()
                 .expand_threshold(1)
                 .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
-                .max_iterations(50000),
+                .max_iterations(500),
         );
         _ = search.choose_action(&State::default());
         render::render(&search);

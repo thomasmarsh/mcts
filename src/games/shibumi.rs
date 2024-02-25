@@ -88,7 +88,7 @@ impl Shibumi {
     }
 
     pub fn print_top_down_view(&self) {
-        todo!()
+        // todo!()
     }
 }
 
