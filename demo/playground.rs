@@ -4,6 +4,8 @@ use mcts::game::Game;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
+use mcts::strategies::mcts::select;
+use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
@@ -23,36 +25,44 @@ type NimFlatMC = FlatMonteCarloStrategy<Nim>;
 type NimMCTS = TreeSearch<Nim, util::Ucb1>;
 type TttMCTS = TreeSearch<TicTacToe, util::Ucb1>;
 
-fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
-    let (win_a, win_b, draw) = results.iter().fold((0, 0, 0), |(a, b, c), x| match x {
-        Some(0) => (a + 1, b, c),
-        Some(1) => (a, b + 1, c),
-        None => (a, b, c + 1),
-        _ => (a, b, c),
-    });
-    let total = (win_a + win_b + draw) as f32;
-    let pct_a = win_a as f32 / total * 100.;
-    let pct_b = win_b as f32 / total * 100.;
-    println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
+fn traffic_lights() {
+    use mcts::games::ttt_traffic_lights::TttTrafficLights;
+
+    type TS = TreeSearch<TttTrafficLights, util::Ucb1GraveMast>;
+    let ts = TS::default()
+        .config(
+            SearchConfig::default()
+                .max_iterations(10_000_000)
+                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                .expand_threshold(0)
+                .select(select::Ucb1Grave {
+                    exploration_constant: 2.0f64.sqrt(),
+                    threshold: 1000,
+                    bias: 764.,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1865)),
+        )
+        .verbose(true);
+
+    self_play(ts);
 }
 
 fn knightthrough() {
     use mcts::games::knightthrough::Knightthrough;
-    use mcts::strategies::mcts::select;
-    use mcts::strategies::mcts::simulate;
 
     type TS = TreeSearch<Knightthrough<8, 8>, util::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
-                .max_time(Duration::from_secs(10))
+                .max_iterations(20000)
                 .select(select::Ucb1Grave {
-                    exploration_constant: 1.32562,
-                    threshold: 720,
-                    bias: 430.36,
+                    exploration_constant: 2.12652,
+                    threshold: 131,
+                    bias: 68.65,
                     current_ref_id: None,
                 })
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.12)),
         )
         .verbose(true);
 
@@ -61,8 +71,6 @@ fn knightthrough() {
 
 fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
-    use mcts::strategies::mcts::select;
-    use mcts::strategies::mcts::simulate;
 
     type TS = TreeSearch<Breakthrough<6, 4>, util::Ucb1GraveMast>;
     let ts = TS::default()
@@ -84,8 +92,6 @@ fn breakthrough() {
 
 fn atarigo() {
     use mcts::games::atarigo::AtariGo;
-    use mcts::strategies::mcts::select;
-    use mcts::strategies::mcts::simulate;
 
     type TS = TreeSearch<AtariGo<5>, util::Ucb1GraveMast>;
     let ts = TS::default()
@@ -107,7 +113,6 @@ fn atarigo() {
 
 fn gonnect() {
     use mcts::games::gonnect::Gonnect;
-    use mcts::strategies::mcts::select;
 
     type TS = TreeSearch<Gonnect<7>, util::Ucb1Grave>;
     let ts = TS::default()
@@ -130,6 +135,7 @@ fn gonnect() {
 
 fn expansion_test() {
     use mcts::games::bid_ttt as ttt;
+
     type TS = TreeSearch<ttt::BiddingTicTacToe, util::Ucb1>;
 
     let expand5 = TS::default()
@@ -176,6 +182,19 @@ fn ucb_test() {
         &NimState::new(),
         mcts::util::Verbosity::Verbose,
     );
+}
+
+fn summarize(label_a: &str, label_b: &str, results: Vec<Option<usize>>) {
+    let (win_a, win_b, draw) = results.iter().fold((0, 0, 0), |(a, b, c), x| match x {
+        Some(0) => (a + 1, b, c),
+        Some(1) => (a, b + 1, c),
+        None => (a, b, c + 1),
+        _ => (a, b, c),
+    });
+    let total = (win_a + win_b + draw) as f32;
+    let pct_a = win_a as f32 / total * 100.;
+    let pct_b = win_b as f32 / total * 100.;
+    println!("{label_a} / {label_b}: {win_a} ({pct_a:.2}%) / {win_b} ({pct_b:.2}%) [{draw} draws]");
 }
 
 struct BattleConfig {
@@ -336,6 +355,7 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
+    traffic_lights();
     knightthrough();
     breakthrough();
     gonnect();

@@ -38,7 +38,7 @@ pub struct Move(pub u8);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Position {
     pub turn: Player,
-    pub winner: Option<Player>,
+    pub winner: bool,
     pub board: [Option<Piece>; BOARD_LEN],
 }
 
@@ -61,12 +61,12 @@ impl Position {
     pub fn new() -> Self {
         Self {
             turn: Player::First,
-            winner: None,
+            winner: false,
             board: [None; BOARD_LEN],
         }
     }
 
-    pub fn check_winner(&mut self) {
+    pub fn has_winner(&mut self) -> bool {
         let check = [
             (0, 1, 2),
             (3, 4, 5),
@@ -84,25 +84,27 @@ impl Position {
             let cx = self.board[c];
 
             if ax.is_some() && ax == bx && bx == cx {
-                self.winner = Some(self.turn);
+                return true;
             }
         }
+        false
     }
 
-    pub fn gen_moves(&self) -> Vec<Move> {
-        self.board
-            .into_iter()
-            .enumerate()
-            .filter(|(_, piece)| piece.is_none())
-            .map(|(i, _)| Move(i as u8))
-            .collect::<Vec<Move>>()
+    pub fn gen_moves(&self, actions: &mut Vec<Move>) {
+        for (i, piece) in self.board.into_iter().enumerate() {
+            if piece != Some(Piece::G) {
+                actions.push(Move(i as u8))
+            }
+        }
     }
 
     pub fn apply(&mut self, m: Move) {
         assert!(self.board[m.0 as usize] != Some(Piece::G));
         self.board[m.0 as usize] = next(self.board[m.0 as usize]);
-        self.check_winner();
-        self.turn = self.turn.next();
+        self.winner = self.has_winner();
+        if !self.winner {
+            self.turn = self.turn.next();
+        }
     }
 }
 
@@ -132,7 +134,7 @@ impl Game for TttTrafficLights {
     type P = Player;
 
     fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
-        actions.extend(state.gen_moves());
+        state.gen_moves(actions);
     }
 
     fn apply(state: Self::S, m: &Self::A) -> Self::S {
@@ -148,7 +150,7 @@ impl Game for TttTrafficLights {
     }
 
     fn is_terminal(state: &Self::S) -> bool {
-        state.winner.is_some() || state.board.iter().all(|x| x.is_some())
+        state.winner
     }
 
     fn winner(state: &Self::S) -> Option<Player> {
@@ -156,10 +158,86 @@ impl Game for TttTrafficLights {
             unreachable!();
         }
 
-        state.winner
+        Some(state.turn)
     }
 
     fn player_to_move(state: &Self::S) -> Player {
         state.turn
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::strategies::mcts::render;
+    use crate::util::random_play;
+
+    #[test]
+    fn test_ttt_traffic_lights() {
+        random_play::<TttTrafficLights>();
+    }
+
+    fn color_for(piece: Option<Piece>) -> String {
+        match piece {
+            None => "white",
+            Some(Piece::R) => "red",
+            Some(Piece::Y) => "yellow",
+            Some(Piece::G) => "green",
+        }
+        .into()
+    }
+
+    impl render::NodeRender for Position {
+        fn preamble() -> String {
+            "  node [shape=plaintext];".into()
+        }
+
+        fn render(&self) -> String {
+            format!(
+                " [label=<
+        <TABLE BORDER=\"1\" CELLBORDER=\"0\" CELLSPACING=\"0\">
+            <TR>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+            </TR>
+            <TR>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+            </TR>
+            <TR>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+                <TD BGCOLOR=\"{}\" WIDTH=\"{width}\" HEIGHT=\"{width}\"></TD>
+            </TR>
+        </TABLE>
+           >]",
+                color_for(self.board[6]),
+                color_for(self.board[7]),
+                color_for(self.board[8]),
+                color_for(self.board[3]),
+                color_for(self.board[4]),
+                color_for(self.board[5]),
+                color_for(self.board[0]),
+                color_for(self.board[1]),
+                color_for(self.board[2]),
+                width = 2
+            )
+        }
+    }
+
+    #[test]
+    fn test_render() {
+        use crate::strategies::mcts::{render, util, SearchConfig, TreeSearch};
+        use crate::strategies::Search;
+        let mut search = TreeSearch::<TttTrafficLights, util::Ucb1>::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
+                .max_iterations(1_000_000),
+        );
+        _ = search.choose_action(&Position::default());
+        render::render(&search);
     }
 }

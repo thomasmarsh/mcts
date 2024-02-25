@@ -8,6 +8,7 @@ pub mod gonnect;
 pub mod knightthrough;
 pub mod nim;
 pub mod null;
+pub mod shibumi;
 pub mod ttt;
 pub mod ttt_traffic_lights;
 pub mod unit;

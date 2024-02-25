@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use mcts::games::atarigo::AtariGo;
-use mcts::games::atarigo::State;
+use mcts::game::Game;
+use mcts::strategies::mcts::node::UnvisitedValueEstimate;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
@@ -21,12 +21,14 @@ use rand_core::SeedableRng;
 const ROUNDS: usize = 20;
 const PLAYOUT_DEPTH: usize = 200;
 const C_TUNED: f64 = 1.625;
-const MAX_ITER: usize = 10000;
-const EXPAND_THRESHOLD: u32 = 5;
+const MAX_ITER: usize = 10_000_000;
+const EXPAND_THRESHOLD: u32 = 1;
 const VERBOSE: bool = false;
 const MAX_TIME_SECS: u64 = 0;
 
-type G = AtariGo<8>;
+use mcts::games::ttt_traffic_lights;
+
+type G = ttt_traffic_lights::TttTrafficLights;
 
 type TS<S> = TreeSearch<G, S>;
 
@@ -47,6 +49,9 @@ struct Args {
 
     #[arg(long)]
     epsilon: f64,
+
+    #[arg(long)]
+    q_init: String,
 }
 
 fn main() {
@@ -58,7 +63,7 @@ fn main() {
     let results = round_robin_multiple::<G, AnySearch<'_, G>>(
         &mut strategies,
         ROUNDS,
-        &State::default(),
+        &<G as Game>::S::default(),
         Verbosity::Silent,
     );
     let cost = calc_cost(results);
@@ -70,7 +75,28 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
     1.0 - w / (ROUNDS * 2) as f64
 }
 
-fn make_opponent(seed: u64) -> TS<util::Ucb1> {
+fn make_opponent(seed: u64) -> TS<util::Ucb1GraveMast> {
+    TS::default()
+        .config(
+            SearchConfig::default()
+                .max_iterations(MAX_ITER)
+                .max_playout_depth(PLAYOUT_DEPTH)
+                .max_time(Duration::from_secs(MAX_TIME_SECS))
+                .expand_threshold(EXPAND_THRESHOLD)
+                .q_init(UnvisitedValueEstimate::Parent)
+                .select(select::Ucb1Grave {
+                    exploration_constant: 0.69535,
+                    threshold: 285,
+                    bias: 628.,
+                    current_ref_id: None,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.0015)),
+        )
+        .verbose(VERBOSE)
+        .rng(SmallRng::seed_from_u64(seed))
+}
+
+fn make_opponent_(seed: u64) -> TS<util::Ucb1> {
     TS::default()
         .config(
             SearchConfig::default()
@@ -86,6 +112,17 @@ fn make_opponent(seed: u64) -> TS<util::Ucb1> {
         .rng(SmallRng::seed_from_u64(seed))
 }
 
+fn parse_q_init(s: &str) -> Option<UnvisitedValueEstimate> {
+    match s {
+        "Draw" => Some(UnvisitedValueEstimate::Draw),
+        "Infinity" => Some(UnvisitedValueEstimate::Infinity),
+        "Loss" => Some(UnvisitedValueEstimate::Loss),
+        "Parent" => Some(UnvisitedValueEstimate::Parent),
+        "Win" => Some(UnvisitedValueEstimate::Win),
+        _ => None,
+    }
+}
+
 fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
     TS::default()
         .config(
@@ -94,6 +131,7 @@ fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
                 .expand_threshold(EXPAND_THRESHOLD)
+                .q_init(parse_q_init(args.q_init.as_str()).unwrap())
                 .select(select::Ucb1Grave {
                     exploration_constant: args.c,
                     threshold: args.threshold,

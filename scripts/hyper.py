@@ -1,7 +1,7 @@
 from ConfigSpace import ConfigurationSpace
 from smac import BlackBoxFacade, Scenario
 from pathlib import Path
-from ConfigSpace import Float, Integer
+from ConfigSpace import Categorical, Float, Integer
 
 import math
 import os
@@ -21,7 +21,8 @@ class GameSearch:
         bias = Float('bias', (0, 1000), default=10e-6)
         threshold = Integer('threshold', (0, 1000), default=100)
         epsilon = Float('epsilon', (0, 1), default=0.1)
-        cs.add_hyperparameters([c, bias, threshold, epsilon])
+        q_init = Categorical("q-init", ["Draw", "Infinity", "Loss", "Parent", "Win"])
+        cs.add_hyperparameters([c, bias, threshold, epsilon, q_init])
         return cs
 
     def train(self) -> str:
@@ -35,7 +36,7 @@ if __name__ == "__main__":
     scenario = Scenario(
         model.configspace,
         deterministic=True,
-        n_trials=30,
+        n_trials=100,
         n_workers=(os.cpu_count() // 2))
     
     # Now we use SMAC to find the best hyperparameters

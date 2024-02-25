@@ -7,6 +7,10 @@ impl Id {
     pub fn invalid_id() -> Id {
         Id(usize::MAX)
     }
+
+    pub fn get_raw(&self) -> usize {
+        self.0
+    }
 }
 
 // TODO: benchmark keeping child/sibling relationships here vs. on Node (space vs. time)

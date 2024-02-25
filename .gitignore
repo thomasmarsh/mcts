@@ -3,11 +3,4 @@ Cargo.lock
 __pycache__
 smac3_output
 /profile.json
-
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
+.DS_Store

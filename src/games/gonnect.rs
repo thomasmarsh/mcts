@@ -234,13 +234,34 @@ impl<const N: usize> fmt::Display for MovesDisplay<N> {
 }
 
 #[cfg(test)]
+impl<const N: usize> crate::strategies::mcts::render::NodeRender for State<N> {}
+
+#[cfg(test)]
 mod tests {
-    use crate::util::random_play;
+    use crate::{
+        strategies::{
+            mcts::{render, util, SearchConfig, TreeSearch},
+            Search,
+        },
+        util::random_play,
+    };
 
     use super::*;
 
     #[test]
     fn test_gonnect() {
         random_play::<Gonnect<3>>();
+    }
+
+    #[test]
+    fn test_render() {
+        let mut search = TreeSearch::<Gonnect<8>, util::Ucb1>::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
+                .max_iterations(50000),
+        );
+        _ = search.choose_action(&State::default());
+        render::render(&search);
     }
 }
