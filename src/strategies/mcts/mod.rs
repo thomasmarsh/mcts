@@ -7,6 +7,7 @@ pub mod render;
 pub mod search;
 pub mod select;
 pub mod simulate;
+pub mod table;
 pub mod timer;
 pub mod util;
 

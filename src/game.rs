@@ -8,7 +8,11 @@ pub trait PlayerIndex {
     fn to_index(&self) -> usize;
 }
 
-// A proxy trait to simplify some implementation
+// A proxy trait to simplify some implementation.
+//
+// NOTE: the `Hash` requirement is less strong than the Zobrist requirement for
+// transposition tables. However, it would be nice to use the zobrist hash if it
+// is available since it may be cheaper.
 pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send {}
 
 // Blanket implementation
@@ -130,5 +134,19 @@ pub trait Game: Sized + Clone + Sync + Send {
         //         rank_to_util(rank, n)
         //     })
         //     .collect()
+    }
+
+    /// A canonical representation of the state. Many board games exhibit some
+    /// form of symmetry. Canonicalizing the state will enable the engine to
+    /// leverage those symmetries.
+    fn canonical_representation(state: Self::S) -> Self::S {
+        state
+    }
+
+    /// A zobrist hash is expected to be cheap and precomputed upon move
+    /// application.
+    #[allow(unused_variables)]
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        0
     }
 }

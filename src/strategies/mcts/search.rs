@@ -10,6 +10,7 @@ use super::select::SelectContext;
 use super::select::SelectStrategy;
 use super::simulate::SimulateStrategy;
 use super::simulate::Trial;
+use super::table::TranspositionTable;
 use super::timer;
 use crate::game::Game;
 use crate::game::PlayerIndex;
@@ -75,6 +76,7 @@ where
     pub(crate) root_id: Id,
     pub(crate) init_state: Option<G::S>,
     pub(crate) pv: Vec<G::A>,
+    pub(crate) table: TranspositionTable,
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
@@ -136,6 +138,7 @@ where
             init_state: None,
             pv: vec![],
             stack: vec![],
+            table: TranspositionTable::default(),
             trial: None,
             index,
             config,
@@ -374,6 +377,7 @@ where
     #[inline]
     pub(crate) fn reset(&mut self) -> Id {
         self.index.clear();
+        self.table.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
         self.new_root()
