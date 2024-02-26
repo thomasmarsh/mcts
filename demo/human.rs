@@ -8,7 +8,7 @@ use mcts::util::battle_royale;
 fn main() {
     use mcts::games::gonnect::Gonnect;
 
-    type TS = TreeSearch<Gonnect<7>, util::Ucb1Grave>;
+    type TS = TreeSearch<Gonnect<8>, util::Ucb1Grave>;
     let mut ts = TS::default()
         .config(
             SearchConfig::default()
@@ -26,5 +26,5 @@ fn main() {
 
     let mut human = HumanAgent::new();
 
-    _ = battle_royale(&mut human, &mut ts);
+    _ = battle_royale(&mut ts, &mut human);
 }
