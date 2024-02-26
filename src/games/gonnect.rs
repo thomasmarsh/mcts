@@ -38,6 +38,7 @@ pub struct Move(u8, u64);
 
 impl Move {
     const SWAP: Move = Move(0xff, 0);
+    const NO_MOVE: Move = Move(0xfe, 0);
 }
 
 #[derive(Clone, Copy, Serialize, Debug)]
@@ -121,7 +122,9 @@ impl<const N: usize> State<N> {
 
     #[inline]
     fn apply(&mut self, action: &Move) -> Self {
-        if *action == Move::SWAP {
+        if *action == Move::NO_MOVE {
+            self.winner = true;
+        } else if *action == Move::SWAP {
             swap(&mut self.black, &mut self.white);
             self.can_swap = false;
         } else {
@@ -177,6 +180,9 @@ impl<const N: usize> Game for Gonnect<N> {
             if valid && !state.is_ko(index, will_capture) {
                 actions.push(Move(index as u8, will_capture.get_raw()))
             }
+        }
+        if actions.is_empty() {
+            actions.push(Move::NO_MOVE);
         }
     }
 
