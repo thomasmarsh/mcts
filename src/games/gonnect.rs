@@ -48,8 +48,8 @@ impl<const N: usize> Default for State<N> {
         Self {
             black: BitBoard::default(),
             white: BitBoard::default(),
-            ko_black: BitBoard::ones(),
-            ko_white: BitBoard::ones(),
+            ko_black: BitBoard::ONES,
+            ko_white: BitBoard::ONES,
             turn: Player::default(),
             winner: false,
         }

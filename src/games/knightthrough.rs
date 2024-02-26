@@ -108,7 +108,7 @@ impl<const N: usize, const M: usize> State<N, M> {
         let occupied = player | opponent;
 
         for src in player {
-            let mut knight_moves = BitBoard::empty();
+            let mut knight_moves = BitBoard::EMPTY;
             let (row, col) = BitBoard::<N, M>::to_coord(src);
             for (dx, dy) in [
                 (2, 1),

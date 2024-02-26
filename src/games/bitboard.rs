@@ -15,8 +15,8 @@ use std::ops::{
 /// bits as some operations may leave garbage outside the bounds. For example,
 /// with an 8x8 bitboards it is often useful to take !0 to be all bits. With a
 /// smaller bitboard, you will likely need to mask off the areas outside the
-/// play area. For such concerns, the `ones`, `unused`, and `sanitize` functions
-/// can be used.
+/// play area. For such concerns, the `ONES`, `UNUSED`, and `sanitize` constants
+/// and functions can be used.
 #[derive(Clone, Copy, Serialize, PartialEq, Hash)]
 pub struct BitBoard<const N: usize, const M: usize>(u64);
 
@@ -37,6 +37,10 @@ const fn ones<const N: usize, const M: usize>() -> u64 {
 // Constructors
 
 impl<const N: usize, const M: usize> BitBoard<N, M> {
+    pub const EMPTY: Self = Self(0);
+    pub const ONES: Self = Self(ones::<N, M>());
+    pub const UNUSED: Self = Self(!Self::ONES.0);
+
     #[inline(always)]
     pub const fn new(value: u64) -> Self {
         debug_assert!((N * M) > 0);
@@ -61,35 +65,20 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     }
 
     #[inline(always)]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[inline(always)]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
     #[inline(always)]
-    pub const fn ones() -> Self {
-        Self(ones::<N, M>())
-    }
-
-    #[inline(always)]
-    pub const fn unused() -> Self {
-        Self(!Self::ones().0)
-    }
-
-    #[inline(always)]
     pub const fn sanitize(self) -> Self {
-        Self(self.0 & Self::ones().0)
+        Self(self.0 & Self::ONES.0)
     }
 }
 
 impl<const N: usize, const M: usize> Default for BitBoard<N, M> {
     #[inline(always)]
     fn default() -> Self {
-        Self::empty()
+        Self::EMPTY
     }
 }
 
@@ -190,7 +179,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     #[inline(always)]
     pub const fn get(self, index: usize) -> bool {
         debug_assert!(index < N * M);
-        self.0 & Self::from_index(index).0 != Self::empty().0
+        self.0 & Self::from_index(index).0 != Self::EMPTY.0
     }
 
     /// Check if the bit at the specified 2D coordinate is set.
@@ -289,7 +278,7 @@ impl<const N: usize, const M: usize> Not for BitBoard<N, M> {
 
     #[inline(always)]
     fn not(self) -> Self::Output {
-        Self(!self.0 & Self::ones().0)
+        Self(!self.0 & Self::ONES.0)
     }
 }
 
@@ -388,7 +377,7 @@ impl<const N: usize, const M: usize> ShrAssign<usize> for BitBoard<N, M> {
 impl<const N: usize, const M: usize> BitBoard<N, M> {
     #[inline(always)]
     pub fn intersects(self, rhs: Self) -> bool {
-        self & rhs != Self::empty()
+        self & rhs != Self::EMPTY
     }
 
     #[inline(always)]
@@ -398,7 +387,7 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
     #[inline(always)]
     pub fn is_disjoint(self, rhs: Self) -> bool {
-        self & rhs == Self::empty()
+        self & rhs == Self::EMPTY
     }
 }
 
@@ -687,8 +676,8 @@ pub fn check_go_move<const N: usize, const M: usize>(
     // If we have adjacent empty positions we still have liberties.
     let safe = !(empty_adjacent.is_empty());
 
-    let mut seen = BitBoard::empty();
-    let mut will_capture = BitBoard::empty();
+    let mut seen = BitBoard::EMPTY;
+    let mut will_capture = BitBoard::EMPTY;
     for point in occupied_adjacent {
         // By definition, adjacent non-empty points must be the opponent
         debug_assert!(occupied.get(point));
@@ -731,10 +720,10 @@ mod tests {
         type B = BitBoard<1, 1>;
         let init = B::new(1);
 
-        assert_eq!(init.shift_north(), B::empty());
-        assert_eq!(init.shift_east(), B::empty());
-        assert_eq!(init.shift_south(), B::empty());
-        assert_eq!(init.shift_west(), B::empty());
+        assert_eq!(init.shift_north(), B::EMPTY);
+        assert_eq!(init.shift_east(), B::EMPTY);
+        assert_eq!(init.shift_south(), B::EMPTY);
+        assert_eq!(init.shift_west(), B::EMPTY);
 
         assert_eq!(init.shift_north().sanitize(), init.shift_north());
         assert_eq!(init.shift_east().sanitize(), init.shift_east());
@@ -763,7 +752,7 @@ mod tests {
         for direction in [North, East, South, West] {
             let mut b = BitBoard::<4, 4>::wall(direction);
             b = b.shift(direction);
-            assert_eq!(b, BitBoard::empty());
+            assert_eq!(b, BitBoard::EMPTY);
         }
     }
 
@@ -784,7 +773,7 @@ mod tests {
         type B = BitBoard<3, 3>;
         let init = B::new(0b000_010_001);
         let flood = (!init).flood4(B::to_index(2, 1));
-        let expected = B::ones() ^ init;
+        let expected = B::ONES ^ init;
         assert_eq!(flood, expected);
     }
 
@@ -858,7 +847,7 @@ mod tests {
         let start = BitBoard::<N, M>::to_index(row, col);
 
         let result = input.flood4(start);
-        assert!(result & !input == BitBoard::empty() || result & input == result);
+        assert!(result & !input == BitBoard::EMPTY || result & input == result);
     }
 
     fn monotonicity8_impl<const N: usize, const M: usize>(
@@ -869,7 +858,7 @@ mod tests {
         let start = BitBoard::<N, M>::to_index(row, col);
 
         let result = input.flood8(start);
-        assert!(result & !input == BitBoard::empty() || result & input == result);
+        assert!(result & !input == BitBoard::EMPTY || result & input == result);
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////////
@@ -931,7 +920,7 @@ mod tests {
         start: usize,
         ns: &[(i64, i64)],
     ) -> bool {
-        let mut visited = BitBoard::empty();
+        let mut visited = BitBoard::EMPTY;
         let mut stack = vec![BitBoard::<N, M>::to_coord(start)];
 
         while let Some((row, col)) = stack.pop() {
@@ -956,9 +945,9 @@ mod tests {
     fn test_capture() {
         type B = BitBoard<2, 2>;
         let white = B::new(0b1001);
-        let black = B::empty();
+        let black = B::EMPTY;
         let (safe, will_capture) = check_go_move::<2, 2>(black, white, 2);
         assert!(!safe);
-        assert_eq!(will_capture, B::empty());
+        assert_eq!(will_capture, B::EMPTY);
     }
 }
