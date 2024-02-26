@@ -2,6 +2,8 @@
 
 use super::bitboard;
 use super::bitboard::BitBoard;
+use crate::display::RectangularBoard;
+use crate::display::RectangularBoardDisplay;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 
@@ -100,6 +102,9 @@ impl<const N: usize> State<N> {
 
     #[inline]
     fn valid(&self, index: usize) -> (bool, BitBoard<N, N>) {
+        if (self.black | self.white).get(index) {
+            return (false, BitBoard::EMPTY);
+        }
         bitboard::check_go_move::<N, N>(
             self.player(self.turn),
             self.player(self.turn.next()),
@@ -177,14 +182,14 @@ impl<const N: usize> Game for Gonnect<N> {
 
         if let Some(file) = chars.next() {
             let col = file.to_ascii_uppercase() as usize - 'A' as usize;
-            if col >= 0 && col < N {
+            if col < N {
                 if let Ok(row) = chars
                     .collect::<String>()
                     .trim()
                     .parse::<usize>()
                     .map(|x| x - 1)
                 {
-                    if row >= 0 && row < N {
+                    if row < N {
                         let index = BitBoard::<N, N>::to_index(row, col);
                         let (valid, will_capture) = state.valid(index);
                         let is_ko = state.is_ko(index, will_capture);
@@ -215,66 +220,53 @@ impl<const N: usize> Game for Gonnect<N> {
     }
 }
 
+impl<const N: usize> RectangularBoard for State<N> {
+    const NUM_DISPLAY_ROWS: usize = N;
+    const NUM_DISPLAY_COLS: usize = N;
+
+    fn display_char_at(&self, row: usize, col: usize) -> char {
+        if self.black.get_at(row, col) {
+            'X'
+        } else if self.white.get_at(row, col) {
+            'O'
+        } else {
+            '.'
+        }
+    }
+}
+
 impl<const N: usize> fmt::Display for State<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const FILES: &[u8] = b"ABCDEFGH";
-        write!(f, " ")?;
-        for c in FILES.iter().take(N) {
-            write!(f, " {}", *c as char)?;
-        }
-        writeln!(f)?;
-        for row in (0..N).rev() {
-            write!(f, "{}", row + 1)?;
-            for col in 0..N {
-                if self.black.get_at(row, col) {
-                    write!(f, " X")?;
-                } else if self.white.get_at(row, col) {
-                    write!(f, " O")?;
-                } else {
-                    write!(f, " .")?;
-                }
-            }
-            write!(f, " {}", row + 1)?;
-            writeln!(f)?;
-        }
-        write!(f, " ")?;
-        for c in FILES.iter().take(N) {
-            write!(f, " {}", *c as char)?;
-        }
-        writeln!(f)?;
-        Ok(())
+        RectangularBoardDisplay(self).fmt(f)
     }
 }
 
 struct MovesDisplay<const N: usize>(State<N>);
 
-impl<const N: usize> fmt::Display for MovesDisplay<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<const N: usize> RectangularBoard for MovesDisplay<N> {
+    const NUM_DISPLAY_ROWS: usize = N;
+    const NUM_DISPLAY_COLS: usize = N;
+
+    fn display_char_at(&self, row: usize, col: usize) -> char {
         let mut actions = Vec::new();
         Gonnect::generate_actions(&self.0, &mut actions);
-        for row in (0..N).rev() {
-            for col in 0..N {
-                let mut found = false;
-                for action in &actions {
-                    let (r, c) = BitBoard::<N, N>::to_coord(action.0 as usize);
-                    if r == row && c == col {
-                        found = true;
-                    }
-                }
-
-                if self.0.black.get_at(row, col) {
-                    write!(f, " X")?;
-                } else if self.0.white.get_at(row, col) {
-                    write!(f, " O")?;
-                } else if found {
-                    write!(f, " +")?;
-                } else {
-                    write!(f, " .")?;
-                }
+        let mut found = false;
+        for action in &actions {
+            let (r, c) = BitBoard::<N, N>::to_coord(action.0 as usize);
+            if r == row && c == col {
+                found = true;
             }
-            writeln!(f)?;
         }
-        Ok(())
+
+        if self.0.black.get_at(row, col) {
+            'X'
+        } else if self.0.white.get_at(row, col) {
+            'O'
+        } else if found {
+            '+'
+        } else {
+            '.'
+        }
     }
 }
 
