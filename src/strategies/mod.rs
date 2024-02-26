@@ -102,7 +102,7 @@ mod tests {
                     board | (value << (i << 1))
                 }),
             },
-            hash: 0,
+            hashes: [0; 8],
         };
 
         // Configure new MCTS

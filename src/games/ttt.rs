@@ -25,8 +25,6 @@ impl Piece {
     }
 }
 
-const BOARD_LEN: usize = 9;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub u8);
 
@@ -51,12 +49,7 @@ impl Position {
     }
 
     pub fn set(&mut self, index: usize, piece: Piece) {
-        let value = match piece {
-            Piece::X => 0b01,
-            Piece::O => 0b10,
-        };
-
-        self.board |= value << (index << 1);
+        self.board |= ((piece as u32) + 1) << (index << 1);
     }
 
     pub fn get(&self, index: usize) -> Option<Piece> {
@@ -108,17 +101,74 @@ impl Position {
     }
 }
 
+const NUM_SYMMETRIES: usize = 8;
+mod sym {
+    use super::*;
+
+    #[inline(always)]
+    fn h(i: u32) -> u32 {
+        (2 - i / 3) * 3 + (i % 3)
+    }
+
+    #[inline(always)]
+    fn v(i: u32) -> u32 {
+        (i / 3) * 3 + (2 - i % 3)
+    }
+
+    #[inline(always)]
+    fn d(i: u32) -> u32 {
+        (2 - i % 3) * 3 + (2 - i / 3)
+    }
+
+    #[inline]
+    pub fn index_symmetries(index: usize, symmetries: &mut [usize; NUM_SYMMETRIES]) {
+        let i = index as u32;
+        symmetries[0] = index;
+        symmetries[1] = h(i) as usize;
+        symmetries[2] = v(i) as usize;
+        symmetries[3] = d(i) as usize;
+        symmetries[4] = v(h(i)) as usize;
+        symmetries[5] = d(h(i)) as usize;
+        symmetries[6] = d(v(i)) as usize;
+        symmetries[7] = d(v(h(i))) as usize;
+    }
+
+    #[inline]
+    pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
+        debug_assert!(symmetries.iter().all(|x| *x == 0));
+
+        symmetries[0] = board;
+        (0..9).for_each(|i| {
+            let p = (board >> (i << 1)) & 0b11;
+            symmetries[1] |= p << (h(i) * 2);
+            symmetries[2] |= p << (v(i) * 2);
+            symmetries[3] |= p << (d(i) * 2);
+            symmetries[4] |= p << (v(h(i)) * 2);
+            symmetries[5] |= p << (d(h(i)) * 2);
+            symmetries[6] |= p << (d(v(i)) * 2);
+            symmetries[7] |= p << (d(v(h(i))) * 2);
+        });
+    }
+
+    #[inline]
+    pub fn canonical_symmetry(board: u32) -> usize {
+        let mut sym = [0; 8];
+        board_symmetries(board, &mut sym);
+        sym.iter().enumerate().min_by_key(|(_, &v)| v).unwrap().0
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HashedPosition {
     pub position: Position,
-    pub(crate) hash: u64,
+    pub(crate) hashes: [u64; 8],
 }
 
 impl HashedPosition {
     pub fn new() -> Self {
         Self {
             position: Position::new(),
-            hash: 0,
+            hashes: [0; 8],
         }
     }
 }
@@ -131,8 +181,16 @@ impl Default for HashedPosition {
 
 impl HashedPosition {
     fn apply(&mut self, m: Move) {
-        self.hash ^= HASHES.action_hash((m.0 << 1) as usize | self.position.turn as usize);
+        let mut symmetries = [0; NUM_SYMMETRIES];
+        sym::index_symmetries(m.0 as usize, &mut symmetries);
+        for (i, index) in symmetries.iter().enumerate() {
+            self.hashes[i] ^= HASHES.action_hash((index << 1) | self.position.turn as usize);
+        }
         self.position.apply(m);
+    }
+
+    fn hash(&self) -> u64 {
+        self.hashes[sym::canonical_symmetry(self.position.board)]
     }
 }
 
@@ -174,6 +232,10 @@ impl Game for TicTacToe {
     fn player_to_move(state: &Self::S) -> Piece {
         state.position.turn
     }
+
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        state.hash()
+    }
 }
 
 impl RectangularBoard for HashedPosition {
@@ -192,11 +254,30 @@ impl RectangularBoard for HashedPosition {
 impl fmt::Display for HashedPosition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         RectangularBoardDisplay(self).fmt(f)?;
-        writeln!(f, "is_filled: {}", self.position.is_filled())
+
+        writeln!(f, "+++ SYMMETRIES +++")?;
+        let mut syms = [0; 8];
+        sym::board_symmetries(self.position.board, &mut syms);
+        for board in syms {
+            RectangularBoardDisplay(&HashedPosition {
+                position: Position {
+                    turn: self.position.turn,
+                    board,
+                },
+                hashes: self.hashes,
+            })
+            .fmt(f)?;
+        }
+        writeln!(
+            f,
+            "canonical: {}",
+            sym::canonical_symmetry(self.position.board)
+        )?;
+        writeln!(f, "+++ +++ +++ +++ +++")
     }
 }
 
-const NUM_MOVES: usize = BOARD_LEN * 2;
+const NUM_MOVES: usize = 18;
 const MAX_DEPTH: usize = 9;
 
 static HASHES: LazyZobristTable<NUM_MOVES, MAX_DEPTH> = LazyZobristTable::new(0xFEAAE62226597B38);
