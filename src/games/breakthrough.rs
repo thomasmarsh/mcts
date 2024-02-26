@@ -2,6 +2,8 @@
 
 use super::bitboard;
 use super::bitboard::BitBoard;
+use crate::display::RectangularBoard;
+use crate::display::RectangularBoardDisplay;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 
@@ -201,21 +203,24 @@ impl<const N: usize, const M: usize> Game for Breakthrough<N, M> {
     }
 }
 
+impl<const N: usize, const M: usize> RectangularBoard for State<N, M> {
+    const NUM_DISPLAY_ROWS: usize = N;
+    const NUM_DISPLAY_COLS: usize = M;
+
+    fn display_char_at(&self, row: usize, col: usize) -> char {
+        if self.black.get_at(row, col) {
+            'X'
+        } else if self.white.get_at(row, col) {
+            'O'
+        } else {
+            '.'
+        }
+    }
+}
+
 impl<const N: usize, const M: usize> fmt::Display for State<N, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for row in (0..N).rev() {
-            for col in 0..M {
-                if self.black.get_at(row, col) {
-                    write!(f, " X")?;
-                } else if self.white.get_at(row, col) {
-                    write!(f, " O")?;
-                } else {
-                    write!(f, " .")?;
-                }
-            }
-            writeln!(f)?;
-        }
-        Ok(())
+        RectangularBoardDisplay(self).fmt(f)
     }
 }
 
