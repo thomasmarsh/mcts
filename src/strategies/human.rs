@@ -39,7 +39,7 @@ where
             io::stdout().flush().expect("Failed to flush stdout");
             match io::stdin().read_line(&mut input) {
                 Ok(_) => match G::parse_action(state, input.as_str()) {
-                    None => eprintln!("Error parsing input: >{}<", input),
+                    None => eprintln!("Error parsing input: >{}<", input.trim()),
                     Some(action) => return action,
                 },
                 Err(error) => {
