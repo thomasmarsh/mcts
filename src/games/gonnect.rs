@@ -9,6 +9,7 @@ use crate::game::PlayerIndex;
 
 use serde::Serialize;
 use std::fmt;
+use std::mem::swap;
 
 #[derive(Copy, Clone, Serialize, Debug, Default)]
 pub enum Player {
@@ -35,6 +36,10 @@ impl PlayerIndex for Player {
 #[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
 pub struct Move(u8, u64);
 
+impl Move {
+    const SWAP: Move = Move(0xff, 0);
+}
+
 #[derive(Clone, Copy, Serialize, Debug)]
 pub struct State<const N: usize> {
     black: BitBoard<N, N>,
@@ -42,6 +47,7 @@ pub struct State<const N: usize> {
     ko_black: BitBoard<N, N>,
     ko_white: BitBoard<N, N>,
     turn: Player,
+    can_swap: bool,
     winner: bool,
 }
 
@@ -53,6 +59,7 @@ impl<const N: usize> Default for State<N> {
             ko_black: BitBoard::ONES,
             ko_white: BitBoard::ONES,
             turn: Player::default(),
+            can_swap: true,
             winner: false,
         }
     }
@@ -114,25 +121,34 @@ impl<const N: usize> State<N> {
 
     #[inline]
     fn apply(&mut self, action: &Move) -> Self {
-        debug_assert!(!self.occupied().get(action.0 as usize));
-        let index = action.0 as usize;
-        let player = self.player(self.turn) | BitBoard::from_index(index);
-        let opponent = self.player(self.turn.next());
-        self.ko_black = self.black;
-        self.ko_white = self.white;
-        match self.turn {
-            Player::Black => {
-                self.black = player;
-                self.white = opponent & !BitBoard::new(action.1);
+        if *action == Move::SWAP {
+            swap(&mut self.black, &mut self.white);
+            self.can_swap = false;
+        } else {
+            debug_assert!(!self.occupied().get(action.0 as usize));
+            let index = action.0 as usize;
+            let player = self.player(self.turn) | BitBoard::from_index(index);
+            let opponent = self.player(self.turn.next());
+            self.ko_black = self.black;
+            self.ko_white = self.white;
+            match self.turn {
+                Player::Black => {
+                    self.black = player;
+                    self.white = opponent & !BitBoard::new(action.1);
+                }
+                Player::White => {
+                    self.white = player;
+                    self.black = opponent & !BitBoard::new(action.1);
+                }
             }
-            Player::White => {
-                self.white = player;
-                self.black = opponent & !BitBoard::new(action.1);
+            if player.has_opposite_connection4(index) {
+                self.winner = true;
             }
         }
-        if player.has_opposite_connection4(index) {
-            self.winner = true;
-        } else {
+        if self.can_swap && self.occupied().count_ones() == 1 {
+            self.can_swap = false;
+        }
+        if !self.winner {
             self.turn = self.turn.next();
         }
 
@@ -153,6 +169,9 @@ impl<const N: usize> Game for Gonnect<N> {
     }
 
     fn generate_actions(state: &State<N>, actions: &mut Vec<Move>) {
+        if state.can_swap && state.occupied().count_ones() == 1 {
+            actions.push(Move::SWAP);
+        }
         for index in !state.occupied() {
             let (valid, will_capture) = state.valid(index);
             if valid && !state.is_ko(index, will_capture) {
@@ -178,6 +197,14 @@ impl<const N: usize> Game for Gonnect<N> {
     }
 
     fn parse_action(state: &State<N>, input: &str) -> Option<Self::A> {
+        if input.trim() == "swap" {
+            if state.can_swap && state.occupied().count_ones() == 1 {
+                return Some(Move::SWAP);
+            } else {
+                eprintln!("invalid move");
+                return None;
+            }
+        }
         let mut chars = input.chars();
 
         if let Some(file) = chars.next() {
@@ -210,9 +237,13 @@ impl<const N: usize> Game for Gonnect<N> {
     }
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
-        const COL_NAMES: &[u8] = b"ABCDEFGH";
-        let (row, col) = BitBoard::<N, N>::to_coord(action.0 as usize);
-        format!("{}{}", COL_NAMES[col] as char, row + 1)
+        if *action == Move::SWAP {
+            "swap".into()
+        } else {
+            const COL_NAMES: &[u8] = b"ABCDEFGH";
+            let (row, col) = BitBoard::<N, N>::to_coord(action.0 as usize);
+            format!("{}{}", COL_NAMES[col] as char, row + 1)
+        }
     }
 
     fn num_players() -> usize {
