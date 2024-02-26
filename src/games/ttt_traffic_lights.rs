@@ -222,7 +222,7 @@ mod tests {
                 color_for(self.board[0]),
                 color_for(self.board[1]),
                 color_for(self.board[2]),
-                width = 2
+                width = 3
             )
         }
     }
