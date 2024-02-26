@@ -48,7 +48,6 @@ where
 mod example {
     use super::*;
 
-    // Define an example struct implementing RectangularBoard
     pub struct ExampleBoard {
         pub data: [[char; 7]; 7],
     }
@@ -58,7 +57,7 @@ mod example {
         const NUM_DISPLAY_COLS: usize = 7;
 
         fn display_char_at(&self, row: usize, col: usize) -> char {
-            self.data[row - 1][col - 1] // Adjusting for 1-based indexing
+            self.data[row][col]
         }
     }
 
