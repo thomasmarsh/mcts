@@ -23,6 +23,10 @@ name = "druid"
 path = "demo/druid.rs"
 
 [[bin]]
+name = "human"
+path = "demo/human.rs"
+
+[[bin]]
 name = "hyper"
 path = "demo/hyper.rs"
 

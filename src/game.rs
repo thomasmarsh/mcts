@@ -94,6 +94,11 @@ pub trait Game: Sized + Clone + Sync + Send {
         Self::compute_utilities(term)[Self::player_to_move(init).to_index()]
     }
 
+    #[allow(unused_variables)]
+    fn parse_action(state: &Self::S, input: &str) -> Option<Self::A> {
+        unimplemented!();
+    }
+
     // #[inline]
     // fn rank_to_util(rank: f64, num_players: usize) -> f64 {
     //     let n = num_players as f64;

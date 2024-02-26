@@ -172,6 +172,38 @@ impl<const N: usize> Game for Gonnect<N> {
         }
     }
 
+    fn parse_action(state: &State<N>, input: &str) -> Option<Self::A> {
+        let mut chars = input.chars();
+
+        if let Some(file) = chars.next() {
+            let col = file.to_ascii_uppercase() as usize - 'A' as usize;
+            if col >= 0 && col < N {
+                if let Ok(row) = chars
+                    .collect::<String>()
+                    .trim()
+                    .parse::<usize>()
+                    .map(|x| x - 1)
+                {
+                    if row >= 0 && row < N {
+                        let index = BitBoard::<N, N>::to_index(row, col);
+                        let (valid, will_capture) = state.valid(index);
+                        let is_ko = state.is_ko(index, will_capture);
+                        if valid && !is_ko {
+                            return Some(Move(index as u8, will_capture.get_raw()));
+                        } else {
+                            eprintln!("invalid placement: (valid={valid}, is_ko={is_ko})");
+                        }
+                    } else {
+                        eprintln!("row out of range: {row} must be >= 1 and <= {N}");
+                    }
+                }
+            } else {
+                eprintln!("col out of range: {col} must be >= 1 and <= {N}");
+            }
+        }
+        None
+    }
+
     fn notation(state: &Self::S, action: &Self::A) -> String {
         const COL_NAMES: &[u8] = b"ABCDEFGH";
         let (row, col) = BitBoard::<N, N>::to_coord(action.0 as usize);
@@ -185,7 +217,14 @@ impl<const N: usize> Game for Gonnect<N> {
 
 impl<const N: usize> fmt::Display for State<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const FILES: &[u8] = b"ABCDEFGH";
+        write!(f, " ")?;
+        for c in FILES.iter().take(N) {
+            write!(f, " {}", *c as char)?;
+        }
+        writeln!(f)?;
         for row in (0..N).rev() {
+            write!(f, "{}", row + 1)?;
             for col in 0..N {
                 if self.black.get_at(row, col) {
                     write!(f, " X")?;
@@ -195,8 +234,14 @@ impl<const N: usize> fmt::Display for State<N> {
                     write!(f, " .")?;
                 }
             }
+            write!(f, " {}", row + 1)?;
             writeln!(f)?;
         }
+        write!(f, " ")?;
+        for c in FILES.iter().take(N) {
+            write!(f, " {}", *c as char)?;
+        }
+        writeln!(f)?;
         Ok(())
     }
 }
@@ -250,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_gonnect() {
-        random_play::<Gonnect<3>>();
+        random_play::<Gonnect<6>>();
     }
 
     #[test]
@@ -259,7 +304,7 @@ mod tests {
             SearchConfig::default()
                 .expand_threshold(1)
                 .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
-                .max_iterations(500),
+                .max_iterations(20),
         );
         _ = search.choose_action(&State::default());
         render::render(&search);

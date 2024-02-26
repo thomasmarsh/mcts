@@ -1,4 +1,5 @@
 pub mod flat_mc;
+pub mod human;
 pub mod mcts;
 pub mod random;
 
