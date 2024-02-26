@@ -173,7 +173,7 @@ mod tests {
     use crate::util::random_play;
 
     #[test]
-    fn test_ttt_traffic_lights() {
+    fn test_traffic_lights() {
         random_play::<TttTrafficLights>();
     }
 

@@ -1,6 +1,8 @@
+use crate::display::{RectangularBoard, RectangularBoardDisplay};
 use crate::game::{Game, PlayerIndex};
+use crate::zobrist::LazyZobristTable;
 use serde::Serialize;
-use std::fmt::Display;
+use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Piece {
@@ -31,7 +33,7 @@ pub struct Move(pub u8);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Position {
     pub turn: Piece,
-    pub board: [Option<Piece>; BOARD_LEN],
+    pub board: u32,
 }
 
 impl Default for Position {
@@ -44,63 +46,65 @@ impl Position {
     pub fn new() -> Self {
         Self {
             turn: Piece::X,
-            board: [None; BOARD_LEN],
+            board: 0,
+        }
+    }
+
+    pub fn set(&mut self, index: usize, piece: Piece) {
+        let value = match piece {
+            Piece::X => 0b01,
+            Piece::O => 0b10,
+        };
+
+        self.board |= value << (index << 1);
+    }
+
+    pub fn get(&self, index: usize) -> Option<Piece> {
+        match (self.board >> (index << 1)) & 0b11 {
+            0b00 => None,
+            0b01 => Some(Piece::X),
+            0b10 => Some(Piece::O),
+            _ => unreachable!(),
         }
     }
 
     pub fn winner(&self) -> Option<Piece> {
-        let check = [
-            (0, 1, 2),
-            (3, 4, 5),
-            (6, 7, 8),
-            (0, 3, 6),
-            (1, 4, 7),
-            (2, 5, 8),
-            (0, 4, 8),
-            (2, 4, 6),
-        ];
-
-        for (a, b, c) in check {
-            let ax = self.board[a];
-            let bx = self.board[b];
-            let cx = self.board[c];
-
-            if ax.is_some() && ax == bx && bx == cx {
-                return ax;
+        for win in [
+            0b000000_000000_010101,
+            0b000000_010101_000000,
+            0b010101_000000_000000,
+            0b000001_000001_000000,
+            0b000100_000100_000100,
+            0b010000_010000_010000,
+            0b010000_000100_000001,
+            0b000001_000100_010000,
+        ] {
+            if win & self.board == win {
+                return Some(Piece::X);
+            } else if win & (self.board >> 1) == win {
+                return Some(Piece::O);
             }
         }
-
         None
     }
 
+    fn is_filled(&self) -> bool {
+        let pairs = 0b010101_010101_010101;
+        (self.board | (self.board >> 1)) & pairs == pairs
+    }
+
     pub fn gen_moves(&self, actions: &mut Vec<Move>) {
-        self.board
-            .into_iter()
-            .enumerate()
-            .filter(|(_, piece)| piece.is_none())
-            .for_each(|(i, _)| actions.push(Move(i as u8)));
+        for i in 0..9 {
+            if self.get(i).is_none() {
+                actions.push(Move(i as u8));
+            }
+        }
     }
 
     pub fn apply(&mut self, m: Move) {
-        assert!(self.board[m.0 as usize].is_none());
-        self.board[m.0 as usize] = Some(self.turn);
+        assert!(self.get(m.0 as usize).is_none());
+        self.set(m.0 as usize, self.turn);
         self.turn = self.turn.next();
-    }
-}
-
-impl Display for Position {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for i in 0..9 {
-            match self.board[i] {
-                Some(Piece::X) => write!(f, " X")?,
-                Some(Piece::O) => write!(f, " O")?,
-                None => write!(f, " .")?,
-            }
-            if (i + 1) % 3 == 0 {
-                writeln!(f)?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -127,7 +131,7 @@ impl Default for HashedPosition {
 
 impl HashedPosition {
     fn apply(&mut self, m: Move) {
-        self.hash ^= HASHES[(m.0 << 1) as usize | self.position.turn as usize];
+        self.hash ^= HASHES.action_hash((m.0 << 1) as usize | self.position.turn as usize);
         self.position.apply(m);
     }
 }
@@ -156,7 +160,7 @@ impl Game for TicTacToe {
     }
 
     fn is_terminal(state: &Self::S) -> bool {
-        state.position.winner().is_some() || state.position.board.iter().all(|x| x.is_some())
+        state.position.winner().is_some() || state.position.is_filled()
     }
 
     fn winner(state: &Self::S) -> Option<Piece> {
@@ -172,23 +176,38 @@ impl Game for TicTacToe {
     }
 }
 
-const HASHES: [u64; BOARD_LEN * 2] = [
-    0xFEAAE62226597B38,
-    0x36CE71B949976A40,
-    0x5CC3B44974898A3F,
-    0xC9CDBA14D63CD1A5,
-    0xB0D6E4CAC682A58B,
-    0x0F71B6F72EECF09E,
-    0xDE16109EC19E1A28,
-    0x0575879F44F30B68,
-    0x2A4E85C28F6D50D2,
-    0x0EBF01E9C0DAAD57,
-    0x0C5BD5F40C96FC69,
-    0x4C67B789C5C5442B,
-    0x0F8928C057283D2E,
-    0x20AA167E48D874E0,
-    0x49765C9A3FD19766,
-    0x0C649A5927A4705F,
-    0x762A61CA14D1297A,
-    0x97FE5DDB4E75CC70,
-];
+impl RectangularBoard for HashedPosition {
+    const NUM_DISPLAY_ROWS: usize = 3;
+    const NUM_DISPLAY_COLS: usize = 3;
+
+    fn display_char_at(&self, row: usize, col: usize) -> char {
+        match self.position.get(row * 3 + col) {
+            None => '.',
+            Some(Piece::X) => 'X',
+            Some(Piece::O) => 'O',
+        }
+    }
+}
+
+impl fmt::Display for HashedPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        RectangularBoardDisplay(self).fmt(f)?;
+        writeln!(f, "is_filled: {}", self.position.is_filled())
+    }
+}
+
+const NUM_MOVES: usize = BOARD_LEN * 2;
+const MAX_DEPTH: usize = 9;
+
+static HASHES: LazyZobristTable<NUM_MOVES, MAX_DEPTH> = LazyZobristTable::new(0xFEAAE62226597B38);
+
+#[cfg(test)]
+mod tests {
+    use super::TicTacToe;
+    use crate::util::random_play;
+
+    #[test]
+    fn test_ttt() {
+        random_play::<TicTacToe>();
+    }
+}

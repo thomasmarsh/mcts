@@ -266,7 +266,7 @@ fn demo_mcts() {
     let mut player = ttt::Piece::X;
 
     let mut state = HashedPosition::new();
-    println!("Initial state:\n{}", state.position);
+    println!("Initial state:\n{}", state);
     while !TicTacToe::is_terminal(&state) {
         if player == ttt::Piece::X {
             let m = mcts.choose_action(&state);
@@ -277,7 +277,7 @@ fn demo_mcts() {
             println!("Random player move...");
             state = TicTacToe::apply(state, &m);
         }
-        println!("State:\n{}", state.position);
+        println!("State:\n{}", state);
 
         player = player.next();
     }
@@ -343,12 +343,12 @@ fn _demo_flat_mc() {
 
     let mut state = HashedPosition::new();
     while !TicTacToe::is_terminal(&state) {
-        println!("State:\n{}", state.position);
+        println!("State:\n{}", state);
 
         let m = strategy.choose_action(&state);
         state = TicTacToe::apply(state, &m);
     }
-    println!("State:\n{}", state.position);
+    println!("State:\n{}", state);
 }
 
 fn main() {

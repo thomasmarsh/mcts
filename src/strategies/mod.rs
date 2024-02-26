@@ -83,17 +83,24 @@ mod tests {
             position: Position {
                 turn: Piece::O,
                 board: [
-                    Some(Piece::X),
-                    Some(Piece::O),
-                    Some(Piece::X),
-                    None,
-                    Some(Piece::O),
-                    Some(Piece::O),
-                    None,
-                    None,
-                    // Some(Piece::X),
-                    Some(Piece::X),
-                ],
+                    // ..X
+                    // .OO
+                    // XOX
+                    (0, Piece::X),
+                    (1, Piece::O),
+                    (2, Piece::X),
+                    (4, Piece::O),
+                    (5, Piece::O),
+                    (8, Piece::X),
+                ]
+                .iter()
+                .fold(0, |board, (i, piece)| {
+                    let value = match piece {
+                        Piece::X => 0b01,
+                        Piece::O => 0b10,
+                    };
+                    board | (value << (i << 1))
+                }),
             },
             hash: 0,
         };
