@@ -66,6 +66,7 @@ impl<T> ZobristHashMap<T> {
 
 pub struct ZobristTable<const N: usize> {
     hashes: [u64; N],
+    initial: u64,
     // We have a unique path via node_id in mcts, but other approaches might
     // benefit from having a path hash.  See: Kishimoto, A., Müller, M., A
     // General Solution to the Graph History Interaction Problem.
@@ -82,7 +83,10 @@ impl<const N: usize> ZobristTable<N> {
             *h = rng.gen::<u64>();
         }
 
-        ZobristTable { hashes }
+        ZobristTable {
+            hashes,
+            initial: rng.gen::<u64>(),
+        }
     }
 
     fn hash(&self, index: usize) -> u64 {
@@ -113,5 +117,10 @@ impl<const N: usize> LazyZobristTable<N> {
     #[inline(always)]
     pub fn hash(&self, index: usize) -> u64 {
         self.get_or_init().hash(index)
+    }
+
+    #[inline(always)]
+    pub fn initial(&self) -> u64 {
+        self.get_or_init().initial
     }
 }

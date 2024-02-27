@@ -167,7 +167,7 @@ impl HashedPosition {
     pub fn new() -> Self {
         Self {
             position: Position::new(),
-            hashes: [0; 8],
+            hashes: [HASHES.initial(); 8],
         }
     }
 }
