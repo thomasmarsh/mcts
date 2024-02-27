@@ -63,15 +63,16 @@ impl Position {
 
     pub fn winner(&self) -> Option<Piece> {
         for win in [
-            0b000000_000000_010101,
+            0b000000_000000_010101u32,
             0b000000_010101_000000,
             0b010101_000000_000000,
-            0b000001_000001_000000,
+            0b000001_000001_000001,
             0b000100_000100_000100,
             0b010000_010000_010000,
             0b010000_000100_000001,
             0b000001_000100_010000,
         ] {
+            debug_assert_eq!(win.count_ones(), 3);
             if win & self.board == win {
                 return Some(Piece::X);
             } else if win & (self.board >> 1) == win {
@@ -288,7 +289,14 @@ mod tests {
     use rustc_hash::FxHashSet;
 
     use super::{HashedPosition, TicTacToe};
-    use crate::{game::Game, util::random_play};
+    use crate::{
+        game::Game,
+        strategies::{
+            mcts::{util, SearchConfig, TreeSearch},
+            Search,
+        },
+        util::random_play,
+    };
 
     #[test]
     fn test_ttt() {
@@ -321,13 +329,19 @@ mod tests {
         println!("distinct: {}", unhashed.len());
         println!("distinct w/symmetry: {}", hashed.len());
 
-        // TODO: we count 5137 distinct states when ignoring symmetries. This is an undercount
-        // that needs to be investigated. It should be 5478. See:
-        // https://stackoverflow.com/questions/61508393/generate-all-possible-board-positions-of-tic-tac-toe
-
-        // assert_eq!(unhashed.len() == 5478);
+        // There are 765 distinct Tic-tac-toe positions, ignoring symmetries.
+        assert_eq!(unhashed.len() == 5478);
 
         // There are 765 unique Tic-tac-toe positions if observing symmetries.
         assert_eq!(hashed.len(), 765);
+    }
+
+    #[test]
+    fn test_ttt_sym_search() {
+        type TS = TreeSearch<TicTacToe, util::Ucb1>;
+        let mut ts = TS::default().config(SearchConfig::default().max_iterations(1000));
+        let state = HashedPosition::default();
+        _ = ts.choose_action(&state);
+        println!("hits: {}", ts.table.hits);
     }
 }
