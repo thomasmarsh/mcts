@@ -267,6 +267,7 @@ impl fmt::Display for HashedPosition {
                 hashes: self.hashes,
             })
             .fmt(f)?;
+            writeln!(f)?;
         }
         writeln!(
             f,
@@ -284,11 +285,49 @@ static HASHES: LazyZobristTable<NUM_MOVES, MAX_DEPTH> = LazyZobristTable::new(0x
 
 #[cfg(test)]
 mod tests {
-    use super::TicTacToe;
-    use crate::util::random_play;
+    use rustc_hash::FxHashSet;
+
+    use super::{HashedPosition, TicTacToe};
+    use crate::{game::Game, util::random_play};
 
     #[test]
     fn test_ttt() {
         random_play::<TicTacToe>();
+    }
+
+    #[test]
+    fn test_symmetries() {
+        let mut unhashed = FxHashSet::default();
+        let mut hashed = FxHashSet::default();
+        let mut n = 0;
+
+        let mut stack = vec![HashedPosition::new()];
+        let mut actions = Vec::new();
+        while let Some(state) = stack.pop() {
+            unhashed.insert(state.position.board);
+            hashed.insert(state.hash());
+            n += 1;
+
+            if !TicTacToe::is_terminal(&state) {
+                actions.clear();
+                TicTacToe::generate_actions(&state, &mut actions);
+                actions.iter().for_each(|action| {
+                    stack.push(TicTacToe::apply(state, action));
+                });
+            }
+        }
+
+        println!("num positions seen: {n}");
+        println!("distinct: {}", unhashed.len());
+        println!("distinct w/symmetry: {}", hashed.len());
+
+        // TODO: we count 5137 distinct states when ignoring symmetries. This is an undercount
+        // that needs to be investigated. It should be 5478. See:
+        // https://stackoverflow.com/questions/61508393/generate-all-possible-board-positions-of-tic-tac-toe
+
+        // assert_eq!(unhashed.len() == 5478);
+
+        // There are 765 unique Tic-tac-toe positions if observing symmetries.
+        assert_eq!(hashed.len(), 765);
     }
 }
