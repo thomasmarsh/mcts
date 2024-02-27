@@ -26,9 +26,9 @@ type NimMCTS = TreeSearch<Nim, util::Ucb1>;
 type TttMCTS = TreeSearch<TicTacToe, util::Ucb1>;
 
 fn traffic_lights() {
-    use mcts::games::ttt_traffic_lights::TttTrafficLights;
+    use mcts::games::traffic_lights::TrafficLights;
 
-    type TS = TreeSearch<TttTrafficLights, util::Ucb1GraveMast>;
+    type TS = TreeSearch<TrafficLights, util::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()

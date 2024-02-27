@@ -51,7 +51,8 @@ fn print_trans<G>(
     G::S: NodeRender,
 {
     println!("graph {{");
-    println!("  graph [layout=twopi, ranksep=3, ratio=auto, concentrate=true];");
+    println!("  graph [layout=twopi, ranksep=3, ratio=auto, concentrate=true, bgcolor=black];");
+    println!("  edge [color=white];");
     println!("{}", G::S::preamble());
     let mut stack = vec![(root_id, root_id, root_id, init_state)];
     while let Some((parent_id, parent_print_id, node_id, state)) = stack.pop() {
@@ -91,7 +92,8 @@ where
     G::S: NodeRender,
 {
     println!("graph {{");
-    println!("  graph [layout=twopi, ranksep=3, ratio=auto];");
+    println!("  graph [layout=twopi, ranksep=3, ratio=auto, bgcolor=black];");
+    println!("  edge [color=white];");
     println!("{}", G::S::preamble());
     let mut stack = vec![(root_id, root_id, G::S::default())];
     while let Some((parent_id, node_id, state)) = stack.pop() {

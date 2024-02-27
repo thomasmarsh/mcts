@@ -26,9 +26,9 @@ const EXPAND_THRESHOLD: u32 = 1;
 const VERBOSE: bool = false;
 const MAX_TIME_SECS: u64 = 0;
 
-use mcts::games::ttt_traffic_lights;
+use mcts::games::traffic_lights;
 
-type G = ttt_traffic_lights::TttTrafficLights;
+type G = traffic_lights::TrafficLights;
 
 type TS<S> = TreeSearch<G, S>;
 

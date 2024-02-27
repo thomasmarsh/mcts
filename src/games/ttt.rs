@@ -104,9 +104,9 @@ impl Position {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-const NUM_SYMMETRIES: usize = 8;
+pub const NUM_SYMMETRIES: usize = 8;
 
-mod sym {
+pub mod sym {
     use super::NUM_SYMMETRIES;
 
     const H: [usize; 9] = [6, 7, 8, 3, 4, 5, 0, 1, 2];
