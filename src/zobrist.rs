@@ -1,68 +1,103 @@
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand_core::SeedableRng;
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ZobristHash(pub u64);
 
-impl Hash for ZobristHash {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+////////////////////////////////////////////////////////////////////////////////////////
+
+// TODO: this is meant to avoid any further work on an already precomputed
+// Zobrist hash, but it hasn't been benchmarked to see if it's worth it.
+impl Hasher for ZobristHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {}
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
     }
 }
 
-pub struct ZobristTable<const N: usize, const D: usize> {
-    action: [u64; N],
-    path: [[u64; D]; N],
+////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Default)]
+pub struct ZobristHashBuilder {
+    hash: u64,
 }
 
-// TODO: Consider splitting moves for the path only:
-//
-// > We note that the size of the random table is small enough for current
-// > hardware. For example, in our experiments on 19 × 19 Go, setting MaxMove =
-// > 362 and MaxDepth = 50 the size is about 140KB. In games with a large number
-// > of different possible moves, such as Shogi or Amazons, a move can be split
-// > into two or three partial moves, for example by separating the from-square
-// > information from the to-square information. This way MaxMove can be greatly
-// > reduced, while MaxDepth increases by a factor of 2 or 3.
-//
-// See: Kishimoto, A., Müller, M., A General Solution to the Graph History
-// Interaction Problem.
-//
-// Splitting, in general, is usually beneficial, but has pathological cases
-// where it is not desirable for MCTS. See: Kowalski, et al, Split Moves for
-// Monte-Carlo Tree Search
-impl<const N: usize, const D: usize> ZobristTable<N, D> {
+impl BuildHasher for ZobristHashBuilder {
+    type Hasher = ZobristHash;
+
+    fn build_hasher(&self) -> ZobristHash {
+        ZobristHash(self.hash)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Default)]
+pub struct ZobristHashMap<T>(pub HashMap<ZobristHash, T, ZobristHashBuilder>);
+
+impl<T> ZobristHashMap<T> {
+    #[inline]
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[inline]
+    pub fn get(&mut self, k: u64) -> Option<&T> {
+        self.0.get(&ZobristHash(k))
+    }
+
+    #[inline]
+    pub fn entry(&mut self, k: u64) -> Entry<'_, ZobristHash, T> {
+        self.0.entry(ZobristHash(k))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+pub struct ZobristTable<const N: usize> {
+    hashes: [u64; N],
+    // We have a unique path via node_id in mcts, but other approaches might
+    // benefit from having a path hash.  See: Kishimoto, A., Müller, M., A
+    // General Solution to the Graph History Interaction Problem.
+    //
+    // path: [[u64; D]; N],
+}
+
+impl<const N: usize> ZobristTable<N> {
     fn new(seed: u64) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
 
-        let mut action = [0; N];
-        let mut path = [[0; D]; N];
-
-        for i in 0..N {
-            action[i] = rng.gen::<u64>();
-            for j in 0..D {
-                path[i][j] = rng.gen::<u64>();
-            }
+        let mut hashes = [0; N];
+        for h in &mut hashes {
+            *h = rng.gen::<u64>();
         }
 
-        ZobristTable { action, path }
+        ZobristTable { hashes }
     }
 
-    fn action_hash(&self, index: usize) -> u64 {
-        self.action[index]
+    fn hash(&self, index: usize) -> u64 {
+        self.hashes[index]
     }
 }
 
-pub struct LazyZobristTable<const N: usize, const D: usize> {
-    once: OnceLock<ZobristTable<N, D>>,
+////////////////////////////////////////////////////////////////////////////////////////
+
+pub struct LazyZobristTable<const N: usize> {
+    once: OnceLock<ZobristTable<N>>,
     seed: u64,
 }
 
-impl<const N: usize, const D: usize> LazyZobristTable<N, D> {
+impl<const N: usize> LazyZobristTable<N> {
     pub const fn new(seed: u64) -> Self {
         LazyZobristTable {
             once: OnceLock::new(),
@@ -70,11 +105,13 @@ impl<const N: usize, const D: usize> LazyZobristTable<N, D> {
         }
     }
 
-    fn get_or_init(&self) -> &ZobristTable<N, D> {
+    #[inline(always)]
+    fn get_or_init(&self) -> &ZobristTable<N> {
         self.once.get_or_init(|| ZobristTable::new(self.seed))
     }
 
-    pub fn action_hash(&self, index: usize) -> u64 {
-        self.get_or_init().action_hash(index)
+    #[inline(always)]
+    pub fn hash(&self, index: usize) -> u64 {
+        self.get_or_init().hash(index)
     }
 }

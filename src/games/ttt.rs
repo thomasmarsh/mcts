@@ -102,36 +102,27 @@ impl Position {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////
+
 const NUM_SYMMETRIES: usize = 8;
+
 mod sym {
-    use super::*;
+    use super::NUM_SYMMETRIES;
 
-    #[inline(always)]
-    fn h(i: u32) -> u32 {
-        (2 - i / 3) * 3 + (i % 3)
-    }
-
-    #[inline(always)]
-    fn v(i: u32) -> u32 {
-        (i / 3) * 3 + (2 - i % 3)
-    }
-
-    #[inline(always)]
-    fn d(i: u32) -> u32 {
-        (2 - i % 3) * 3 + (2 - i / 3)
-    }
+    const H: [usize; 9] = [6, 7, 8, 3, 4, 5, 0, 1, 2];
+    const V: [usize; 9] = [2, 1, 0, 5, 4, 3, 8, 7, 6];
+    const D: [usize; 9] = [8, 5, 2, 7, 4, 1, 6, 3, 0];
 
     #[inline]
-    pub fn index_symmetries(index: usize, symmetries: &mut [usize; NUM_SYMMETRIES]) {
-        let i = index as u32;
-        symmetries[0] = index;
-        symmetries[1] = h(i) as usize;
-        symmetries[2] = v(i) as usize;
-        symmetries[3] = d(i) as usize;
-        symmetries[4] = v(h(i)) as usize;
-        symmetries[5] = d(h(i)) as usize;
-        symmetries[6] = d(v(i)) as usize;
-        symmetries[7] = d(v(h(i))) as usize;
+    pub fn index_symmetries(i: usize, symmetries: &mut [usize; NUM_SYMMETRIES]) {
+        symmetries[0] = i;
+        symmetries[1] = H[i];
+        symmetries[2] = V[i];
+        symmetries[3] = D[i];
+        symmetries[4] = V[H[i]];
+        symmetries[5] = D[H[i]];
+        symmetries[6] = D[V[i]];
+        symmetries[7] = D[V[H[i]]];
     }
 
     #[inline]
@@ -141,13 +132,13 @@ mod sym {
         symmetries[0] = board;
         (0..9).for_each(|i| {
             let p = (board >> (i << 1)) & 0b11;
-            symmetries[1] |= p << (h(i) * 2);
-            symmetries[2] |= p << (v(i) * 2);
-            symmetries[3] |= p << (d(i) * 2);
-            symmetries[4] |= p << (v(h(i)) * 2);
-            symmetries[5] |= p << (d(h(i)) * 2);
-            symmetries[6] |= p << (d(v(i)) * 2);
-            symmetries[7] |= p << (d(v(h(i))) * 2);
+            symmetries[1] |= p << (H[i] * 2);
+            symmetries[2] |= p << (V[i] * 2);
+            symmetries[3] |= p << (D[i] * 2);
+            symmetries[4] |= p << (V[H[i]] * 2);
+            symmetries[5] |= p << (D[H[i]] * 2);
+            symmetries[6] |= p << (D[V[i]] * 2);
+            symmetries[7] |= p << (D[V[H[i]]] * 2);
         });
     }
 
@@ -158,6 +149,13 @@ mod sym {
         sym.iter().enumerate().min_by_key(|(_, &v)| v).unwrap().0
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 9 playable positions * 2 players
+const NUM_MOVES: usize = 18;
+
+static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0xFEAAE62226597B38);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HashedPosition {
@@ -181,19 +179,23 @@ impl Default for HashedPosition {
 }
 
 impl HashedPosition {
+    #[inline]
     fn apply(&mut self, m: Move) {
         let mut symmetries = [0; NUM_SYMMETRIES];
         sym::index_symmetries(m.0 as usize, &mut symmetries);
         for (i, index) in symmetries.iter().enumerate() {
-            self.hashes[i] ^= HASHES.action_hash((index << 1) | self.position.turn as usize);
+            self.hashes[i] ^= HASHES.hash((index << 1) | self.position.turn as usize);
         }
         self.position.apply(m);
     }
 
+    #[inline(always)]
     fn hash(&self) -> u64 {
         self.hashes[sym::canonical_symmetry(self.position.board)]
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone)]
 pub struct TicTacToe;
@@ -254,35 +256,9 @@ impl RectangularBoard for HashedPosition {
 
 impl fmt::Display for HashedPosition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        RectangularBoardDisplay(self).fmt(f)?;
-
-        writeln!(f, "+++ SYMMETRIES +++")?;
-        let mut syms = [0; 8];
-        sym::board_symmetries(self.position.board, &mut syms);
-        for board in syms {
-            RectangularBoardDisplay(&HashedPosition {
-                position: Position {
-                    turn: self.position.turn,
-                    board,
-                },
-                hashes: self.hashes,
-            })
-            .fmt(f)?;
-            writeln!(f)?;
-        }
-        writeln!(
-            f,
-            "canonical: {}",
-            sym::canonical_symmetry(self.position.board)
-        )?;
-        writeln!(f, "+++ +++ +++ +++ +++")
+        RectangularBoardDisplay(self).fmt(f)
     }
 }
-
-const NUM_MOVES: usize = 18;
-const MAX_DEPTH: usize = 9;
-
-static HASHES: LazyZobristTable<NUM_MOVES, MAX_DEPTH> = LazyZobristTable::new(0xFEAAE62226597B38);
 
 #[cfg(test)]
 mod tests {
@@ -292,7 +268,7 @@ mod tests {
     use crate::{
         game::Game,
         strategies::{
-            mcts::{util, SearchConfig, TreeSearch},
+            mcts::{render, util, SearchConfig, TreeSearch},
             Search,
         },
         util::random_play,
@@ -329,19 +305,28 @@ mod tests {
         println!("distinct: {}", unhashed.len());
         println!("distinct w/symmetry: {}", hashed.len());
 
-        // There are 765 distinct Tic-tac-toe positions, ignoring symmetries.
-        assert_eq!(unhashed.len() == 5478);
+        // There are 5478 distinct Tic-tac-toe positions, ignoring symmetries.
+        assert_eq!(unhashed.len(), 5478);
 
-        // There are 765 unique Tic-tac-toe positions if observing symmetries.
+        // There are 765 unique Tic-tac-toe positions, observing symmetries.
         assert_eq!(hashed.len(), 765);
     }
+
+    impl render::NodeRender for HashedPosition {}
 
     #[test]
     fn test_ttt_sym_search() {
         type TS = TreeSearch<TicTacToe, util::Ucb1>;
-        let mut ts = TS::default().config(SearchConfig::default().max_iterations(1000));
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(20)
+                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Loss),
+        );
         let state = HashedPosition::default();
         _ = ts.choose_action(&state);
         println!("hits: {}", ts.table.hits);
+
+        render::render_trans(&ts);
     }
 }

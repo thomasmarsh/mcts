@@ -227,6 +227,8 @@ where
                     self.index
                         .insert(Node::new(ctx.current_id, best_idx, G::num_players()));
 
+                self.table.insert(G::zobrist_hash(&ctx.state), child_id);
+
                 match &mut (self.index.get_mut(ctx.current_id).state) {
                     NodeState::Expanded { children, .. } => {
                         children[best_idx] = Some(child_id);
@@ -430,8 +432,9 @@ where
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
         let root_id = self.reset();
-        self.timer.start(self.config.max_time);
+        self.table.insert(G::zobrist_hash(state), root_id);
 
+        self.timer.start(self.config.max_time);
         self.init_state = Some(state.clone());
 
         for _ in 0..self.config.max_iterations {
