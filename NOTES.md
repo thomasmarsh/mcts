@@ -33,6 +33,14 @@ struct Stats {
 Also consider whether these stats can parameterically define whether certain values
 should be loaded lazily, such as whether or not a node is terminal.
 
+## Performance Profiles
+
+MCTS can be used in many potential applications. In real time video processing
+it is common to expand all nodes during simulation. In book generation, we
+only generate a tree from a single, very long running iteration. Test cases or
+benchmarks should be introduced to establish that these or other use cases are
+not negatively impacted by future design decisions.
+
 ## Transpositions
 
 Transpositions increase memory demand but have two advantages in that they
@@ -40,6 +48,27 @@ can: 1) cache potentially  expensive operations like teminality checks and move
 generation, and 2) transform the game into a DAG with potentially more efficient
 evaluation strategies.
 
+A basic version that uses average statistics for all transpositions during
+selection. This provides a modest bump in performance. However, a generalized
+approach would be better so we can parameterize the evaluation and backprop.
+This bumps into the problem of symmetries. (See below.)
+
+More sophisticated use of the transpositions can, for some games, require solving
+the graph history interaction.
+
+## Symmetries
+
+Many games exhibit various symmetries. For example, tic-tac-toe exhibits 8-way
+symmetry. Leveraging this reduces the state complexity from hundreds of thousands
+of states to a more manageable 765.
+
+These symmetries can be exploited when identifying transpositions to establish an
+average value for a node. This depends on canonicalization of the state to a single
+symmetry which is used as the key for the evaluation. (In tic-tac-toe, the board is
+represented as a u32; the canonical value is the symmetry with the lowest value.)
+
+This approach fails for RAVE and other techniques which memorize actions, rather than
+states. This can be resolved by canonicalizing the actions as well.
 
 ## Implementation Guide
 
@@ -72,6 +101,9 @@ Some examples of games with specific numbers of players:
 - _N players_: most modern Euro board games like Carcassone
 - _N players, 1 perspective_: cooperative board games like Pandemic
 
+Where possible, player specific values are maintained in an array, with a value per
+player. For the moment, it makes sense to use a paranoid strategy by default.
+
 ### Move Order
 
 The move order may not be necessarily alternating. A simple example of such a
@@ -87,7 +119,7 @@ strive to simply rely on knowing the current player for a given state.
 
 The first move of a game employing the "pie rule" or Swap2 in Gomoku also allow
 the players to swap colors. Here the order of the order of players is not necessarily
-changed, but the color they are playing is.
+changed, but the color they are playing is. The swap rule is implemented in gonnect.
 
 ## End Game Performance
 
