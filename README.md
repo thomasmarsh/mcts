@@ -10,6 +10,8 @@ Current features:
 * UCT / UCB1Tuned
 * RAVE/GRAVE
 * MAST
+* Decisive Moves
+* Transposition tables
 * Hyperparameter tuning with [SMAC3](https://automl.github.io/SMAC3/main/)
 * Arena allocation (just a `Vec`, inspired by [indextree](https://github.com/saschagrunert/indextree))
 * Preliminary benchmarking tools
@@ -19,7 +21,6 @@ Some things I would like to explore:
 
 - Better testability, ergonomics, safety
 - More simulation strategies, selection improvements, etc.
-- DAGs / transposition tables
 - Online tuning
 
 Other alternatives in Rust:
