@@ -116,25 +116,6 @@ impl<A: Action> NodeStats<A> {
     }
 }
 
-#[inline]
-fn merge_grave_maps<A: Action>(
-    a: &HashMap<A, ActionStats>,
-    b: &HashMap<A, ActionStats>,
-) -> HashMap<A, ActionStats> {
-    let mut a = a.clone();
-    for (key, value) in b {
-        match a.get_mut(key) {
-            Some(existing_value) => {
-                *existing_value = existing_value.clone() + value.clone();
-            }
-            None => {
-                a.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    a
-}
-
 impl<A: Action> Add for NodeStats<A> {
     type Output = Self;
 
@@ -157,38 +138,36 @@ impl<A: Action> Add for NodeStats<A> {
                 .map(|(x, y)| x + y)
                 .collect(),
             scalar_amaf: self.scalar_amaf + rhs.scalar_amaf,
-            grave_stats: merge_grave_maps(&self.grave_stats, &rhs.grave_stats),
+            // NOTE: GRAVE is not currently supported with transpositions
+            grave_stats: HashMap::default(),
         }
     }
 }
 
-// QInit:
-// - MC-GRAVE: Infinity
-// - MC-BRAVE: Infinity
-// - UCB1Tuned: Parent
-// - ScoreBounded: Parent
-// - ProgressiveHistory: Parent
-// - ProgressiveBias: Infinity
-// - MAST: Parent
-// - NST: Parent
-// - UCB1GRAVE: default
-// ===
-// - default: Parent
-// - createBiased: Win
+/// The UnvisitedValueEstimate is the Q value assigned to a node that has not
+/// been expanded or explored. The choice of a default unvisited child value
+/// will bias the search. Choosing win, loss, or draw can prompt an optimistic
+/// (greedy) or pessimistic move selection. Using the parent's value is a
+/// common approach and the default used here. Using infinity will encourage
+/// exploration of unvisited child nodes.
+///
+/// TODO: there are other strategies we could employ:
+///
+///   - Average: the average value from historical outcomes in simulation in this
+///     subtree. This increases the memory requirement but is a middle ground
+///     compared to setting the expansion threshold to 0.
+///
+///   - Custom: the client could provide an implementation rather than coupling
+///     this to the implementation of `SelectStratey`.
 #[allow(unused)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub enum UnvisitedValueEstimate {
-    Draw,
-    Infinity,
-    Loss,
+    #[default]
     Parent,
     Win,
-}
-
-impl Default for UnvisitedValueEstimate {
-    fn default() -> Self {
-        Self::Parent
-    }
+    Loss,
+    Draw,
+    Infinity,
 }
 
 #[derive(Clone, Debug, Serialize)]

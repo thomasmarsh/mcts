@@ -119,6 +119,10 @@ impl<const N: usize> LazyZobristTable<N> {
         self.get_or_init().hash(index)
     }
 
+    /// The initial value should be used as the "empty" or initial state
+    /// of the game. I've seen implementations that initialize the initial
+    /// board to zero. TODO: I'm not sure that it matters or not. Maybe zero
+    /// initialization is fine.
     #[inline(always)]
     pub fn initial(&self) -> u64 {
         self.get_or_init().initial
