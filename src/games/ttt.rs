@@ -321,12 +321,14 @@ mod tests {
             SearchConfig::default()
                 .expand_threshold(0)
                 .max_iterations(20)
-                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Loss),
+                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Loss)
+                .use_transpositions(true),
         );
         let state = HashedPosition::default();
         _ = ts.choose_action(&state);
         println!("hits: {}", ts.table.hits);
 
+        assert!(ts.table.hits > 0);
         render::render_trans(&ts);
     }
 }

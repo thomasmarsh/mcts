@@ -359,9 +359,12 @@ mod tests {
             SearchConfig::default()
                 .expand_threshold(0)
                 // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
-                .max_iterations(100000),
+                .max_iterations(100)
+                .use_transpositions(true),
         );
         _ = search.choose_action(&HashedPosition::default());
-        render::render(&search);
+        assert!(search.table.hits > 0);
+
+        render::render_trans(&search);
     }
 }

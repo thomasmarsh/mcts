@@ -2,12 +2,13 @@ use super::index::Id;
 use super::node::{self, NodeStats};
 use super::table::TranspositionTable;
 use super::*;
-use crate::game::Game;
+use crate::game::{Action, Game};
 use crate::strategies::Search;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
+use std::ops::Deref;
 use std::sync::atomic::Ordering::Relaxed;
 
 pub struct SelectContext<'a, G: Game> {
@@ -29,6 +30,22 @@ pub struct SelectContext<'a, G: Game> {
 // This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
 // Confidence bound for rooted Directed acyclic graphs.
 
+enum StatsRef<'a, A: Action> {
+    Owned(NodeStats<A>),
+    Unowned(&'a NodeStats<A>),
+}
+
+impl<'a, A: Action> Deref for StatsRef<'a, A> {
+    type Target = NodeStats<A>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            StatsRef::Owned(stats) => stats,
+            StatsRef::Unowned(stats) => stats,
+        }
+    }
+}
+
 impl<'a, G: Game> SelectContext<'a, G> {
     #[inline]
     fn child_state(&self, child_id: Id) -> G::S {
@@ -38,31 +55,31 @@ impl<'a, G: Game> SelectContext<'a, G> {
     }
 
     #[inline]
-    fn get_stats(&self, state: &G::S, node_id: Id) -> NodeStats<G::A> {
+    fn get_stats(&self, state: &G::S, node_id: Id) -> StatsRef<G::A> {
         if !self.use_transpositions {
-            return self.index.get(node_id).stats.clone();
+            return StatsRef::Unowned(&self.index.get(node_id).stats);
         }
         let k = G::zobrist_hash(state);
         match self.table.get_const(k) {
-            Some(entries) => {
-                let stats = entries
+            Some(entries) => StatsRef::Owned(
+                entries
                     .iter()
                     .fold(NodeStats::new(G::num_players()), |stats, x| {
                         stats + self.index.get(*x).stats.clone()
-                    });
-                stats
-            }
-            None => self.index.get(node_id).stats.clone(),
+                    }),
+            ),
+
+            None => StatsRef::Unowned(&self.index.get(node_id).stats),
         }
     }
 
     #[inline]
-    fn current_stats(&self) -> NodeStats<G::A> {
+    fn current_stats(&self) -> StatsRef<'_, G::A> {
         self.get_stats(self.state, self.current_id)
     }
 
     #[inline]
-    fn child_stats(&self, child_id: Id) -> NodeStats<G::A> {
+    fn child_stats(&self, child_id: Id) -> StatsRef<'_, G::A> {
         self.get_stats(&self.child_state(child_id), child_id)
     }
 }
