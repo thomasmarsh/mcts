@@ -1,5 +1,6 @@
 use super::*;
 use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -109,6 +110,7 @@ where
     pub inner: S,
     pub marker: PhantomData<G>,
 }
+
 impl<G, S> EpsilonGreedy<G, S>
 where
     G: Game,
@@ -166,6 +168,126 @@ where
     fn playout(
         &mut self,
         state: G::S,
+        max_playout_depth: usize,
+        stats: &TreeStats<G>,
+        player: usize,
+        rng: &mut SmallRng,
+    ) -> Trial<G> {
+        self.inner
+            .playout(state, max_playout_depth, stats, player, rng)
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Default)]
+pub enum DecisiveMoveMode {
+    #[default]
+    Win, // Decisive move
+    WinLoss,     // Decisive move + anti-decisive move
+    WinLossDraw, // Any terminal state
+}
+
+impl DecisiveMoveMode {
+    #[inline]
+    fn choose<'a, G: Game>(
+        self,
+        state: &<G as Game>::S,
+        available: &'a [<G as Game>::A],
+        player: usize,
+    ) -> Option<&'a <G as Game>::A> {
+        let mut draw = None;
+        let mut loser = None;
+        match self {
+            Self::WinLossDraw => {
+                for action in available {
+                    let child_state = G::apply(state.clone(), action);
+                    if G::is_terminal(&child_state) {
+                        return Some(action);
+                    }
+                }
+                None
+            }
+
+            Self::WinLoss => {
+                for action in available {
+                    let child_state = G::apply(state.clone(), action);
+                    if G::is_terminal(&child_state) {
+                        if G::winner(&child_state).is_some() {
+                            return Some(action);
+                        }
+                        draw = Some(action);
+                    }
+                }
+                draw
+            }
+
+            Self::Win => {
+                for action in available {
+                    let child_state = G::apply(state.clone(), action);
+                    if G::is_terminal(&child_state) {
+                        if let Some(winner) = G::winner(&child_state) {
+                            if winner.to_index() == player {
+                                return Some(action);
+                            }
+                            loser = Some(action);
+                        } else {
+                            draw = Some(action);
+                        }
+                    }
+                }
+                loser.or(draw)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DecisiveMove<G, S = Uniform>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    mode: DecisiveMoveMode,
+    pub inner: S,
+    pub marker: PhantomData<G>,
+}
+
+impl<G, S> Default for DecisiveMove<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            mode: DecisiveMoveMode::default(),
+            inner: S::default(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<G, S> SimulateStrategy<G> for DecisiveMove<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn select_move<'a>(
+        &mut self,
+        state: &<G as Game>::S,
+        available: &'a [<G as Game>::A],
+        stats: &TreeStats<G>,
+        player: usize,
+        rng: &mut SmallRng,
+    ) -> &'a <G as Game>::A {
+        self.mode
+            .choose::<G>(state, available, player)
+            .unwrap_or_else(|| self.inner.select_move(state, available, stats, player, rng))
+    }
+
+    fn playout(
+        &mut self,
+        state: <G as Game>::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
         player: usize,

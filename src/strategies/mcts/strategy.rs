@@ -35,6 +35,38 @@ impl<G: Game> Default for SearchConfig<G, Ucb1> {
     }
 }
 
+// Vanilla UCT + decisive move
+#[derive(Clone)]
+pub struct Ucb1DM;
+
+impl<G: Game> Strategy<G> for Ucb1DM {
+    type Select = select::Ucb1;
+    type Simulate = simulate::DecisiveMove<G>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1".into()
+    }
+}
+
+impl<G: Game> Default for SearchConfig<G, Ucb1DM> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: simulate::DecisiveMove::default(),
+            backprop: Default::default(),
+            final_action: Default::default(),
+            q_init: node::UnvisitedValueEstimate::Parent,
+            expand_threshold: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+            use_transpositions: false,
+        }
+    }
+}
+
 // Vanilla UCT + Mast
 #[derive(Clone)]
 pub struct Ucb1Mast;

@@ -36,8 +36,9 @@ fn ucd() {
                 .max_iterations(10_000)
                 .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
                 .expand_threshold(1)
+                .q_init(UnvisitedValueEstimate::Infinity)
                 .select(select::Ucb1 {
-                    exploration_constant: 2.0f64.sqrt(),
+                    exploration_constant: 0.01f64.sqrt(),
                 }),
         )
         .verbose(false);
@@ -47,7 +48,7 @@ fn ucd() {
         .config(
             SearchConfig::default()
                 .max_iterations(10_000)
-                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                // .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
                 .expand_threshold(1)
                 .use_transpositions(true)
                 .q_init(UnvisitedValueEstimate::Infinity)
@@ -57,6 +58,22 @@ fn ucd() {
         )
         .verbose(false);
     ucd.set_friendly_name("mcts[ucb1]+ucd");
+
+    type UcdDm = TreeSearch<TrafficLights, strategy::Ucb1DM>;
+    let mut ucd_dm = UcdDm::default()
+        .config(
+            SearchConfig::default()
+                .max_iterations(10_000)
+                // .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                .expand_threshold(1)
+                .use_transpositions(true)
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Ucb1 {
+                    exploration_constant: 0.01f64.sqrt(),
+                }),
+        )
+        .verbose(false);
+    ucd_dm.set_friendly_name("mcts[ucb1]+ucd+dm");
 
     let mast: TreeSearch<TrafficLights, strategy::Ucb1Mast> = TreeSearch::default()
         .config(
@@ -109,10 +126,11 @@ fn ucd() {
     let mut strats = vec![
         AnySearch::new(uct),
         AnySearch::new(ucd),
-        AnySearch::new(mast),
-        AnySearch::new(mast_ucd),
-        AnySearch::new(tuned),
-        AnySearch::new(tuned_ucd),
+        AnySearch::new(ucd_dm),
+        // AnySearch::new(mast),
+        // AnySearch::new(mast_ucd),
+        // AnySearch::new(tuned),
+        // AnySearch::new(tuned_ucd),
     ];
 
     _ = round_robin_multiple::<TrafficLights, AnySearch<_>>(
