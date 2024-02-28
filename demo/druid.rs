@@ -5,7 +5,7 @@ use mcts::game::Game;
 use mcts::games::druid::{Druid, State};
 use mcts::strategies::mcts::select::SelectStrategy;
 use mcts::strategies::mcts::simulate;
-use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::mcts::{backprop, select, Strategy};
@@ -37,7 +37,7 @@ where
 fn main() {
     assert_eq!(Duration::default(), Duration::from_secs(0));
 
-    let grave: TreeSearch<Druid, util::McGrave> = TreeSearch::default()
+    let grave: TreeSearch<Druid, strategy::McGrave> = TreeSearch::default()
         .config(base_config().select(select::McGrave {
             threshold: 40,
             bias: 5.,
@@ -45,11 +45,11 @@ fn main() {
         }))
         .verbose(VERBOSE);
 
-    let mut brave: TreeSearch<Druid, util::McBrave> = TreeSearch::default()
+    let mut brave: TreeSearch<Druid, strategy::McBrave> = TreeSearch::default()
         .config(base_config().select(select::McBrave { bias: BIAS }))
         .verbose(VERBOSE);
 
-    let mut ucb1_grave: TreeSearch<Druid, util::Ucb1Grave> = TreeSearch::default()
+    let mut ucb1_grave: TreeSearch<Druid, strategy::Ucb1Grave> = TreeSearch::default()
         .config(base_config().select(select::Ucb1Grave {
             bias: BIAS,
             exploration_constant: C_LOW,
@@ -65,7 +65,7 @@ fn main() {
     //   'epsilon': 0.10750788170844316,
     //   'threshold': 211,
     // })
-    let mut ucb1_grave_mast: TreeSearch<Druid, util::Ucb1GraveMast> = TreeSearch::default()
+    let mut ucb1_grave_mast: TreeSearch<Druid, strategy::Ucb1GraveMast> = TreeSearch::default()
         .config(
             base_config()
                 .select(select::Ucb1Grave {
@@ -78,14 +78,14 @@ fn main() {
         )
         .verbose(VERBOSE);
 
-    let mut amaf: TreeSearch<Druid, util::ScalarAmaf> = TreeSearch::default()
+    let mut amaf: TreeSearch<Druid, strategy::ScalarAmaf> = TreeSearch::default()
         .config(base_config().select(select::ScalarAmaf {
             bias: BIAS,
             exploration_constant: C_LOW,
         }))
         .verbose(VERBOSE);
 
-    let mut amaf_mast: TreeSearch<Druid, util::ScalarAmafMast> = TreeSearch::default()
+    let mut amaf_mast: TreeSearch<Druid, strategy::ScalarAmafMast> = TreeSearch::default()
         .config(
             base_config()
                 .select(select::ScalarAmaf {
@@ -96,13 +96,13 @@ fn main() {
         )
         .verbose(VERBOSE);
 
-    let mut uct: TreeSearch<Druid, util::Ucb1> = TreeSearch::default()
+    let mut uct: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::default()
         .config(base_config().select(select::Ucb1 {
             exploration_constant: C_TUNED,
         }))
         .verbose(VERBOSE);
 
-    let mut uct_mast_low: TreeSearch<Druid, util::Ucb1Mast> = TreeSearch::default()
+    let mut uct_mast_low: TreeSearch<Druid, strategy::Ucb1Mast> = TreeSearch::default()
         .config(
             base_config()
                 .select(select::Ucb1 {
@@ -112,7 +112,7 @@ fn main() {
         )
         .verbose(VERBOSE);
 
-    let mut uct_mast_high: TreeSearch<Druid, util::Ucb1Mast> = TreeSearch::default()
+    let mut uct_mast_high: TreeSearch<Druid, strategy::Ucb1Mast> = TreeSearch::default()
         .config(
             base_config()
                 .select(select::Ucb1 {
@@ -122,13 +122,13 @@ fn main() {
         )
         .verbose(VERBOSE);
 
-    let mut tuned: TreeSearch<Druid, util::Ucb1Tuned> = TreeSearch::default()
+    let mut tuned: TreeSearch<Druid, strategy::Ucb1Tuned> = TreeSearch::default()
         .config(base_config().select(select::Ucb1Tuned {
             exploration_constant: C_TUNED,
         }))
         .verbose(VERBOSE);
 
-    let meta: TreeSearch<Druid, util::MetaMcts> = TreeSearch::default()
+    let meta: TreeSearch<Druid, strategy::MetaMcts> = TreeSearch::default()
         .config(
             base_config()
                 .select(select::Ucb1 {

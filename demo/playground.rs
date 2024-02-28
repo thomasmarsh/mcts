@@ -7,7 +7,7 @@ use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
 use mcts::strategies::mcts::node::UnvisitedValueEstimate;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
-use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
@@ -23,13 +23,13 @@ use mcts::util::round_robin_multiple;
 type TttFlatMC = FlatMonteCarloStrategy<TicTacToe>;
 type NimFlatMC = FlatMonteCarloStrategy<Nim>;
 
-type NimMCTS = TreeSearch<Nim, util::Ucb1>;
-type TttMCTS = TreeSearch<TicTacToe, util::Ucb1>;
+type NimMCTS = TreeSearch<Nim, strategy::Ucb1>;
+type TttMCTS = TreeSearch<TicTacToe, strategy::Ucb1>;
 
 fn ucd() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    type Uct = TreeSearch<TrafficLights, util::Ucb1>;
+    type Uct = TreeSearch<TrafficLights, strategy::Ucb1>;
     let uct = Uct::default()
         .config(
             SearchConfig::default()
@@ -42,7 +42,7 @@ fn ucd() {
         )
         .verbose(false);
 
-    type Ucd = TreeSearch<TrafficLights, util::Ucb1>;
+    type Ucd = TreeSearch<TrafficLights, strategy::Ucb1>;
     let mut ucd = Ucd::default()
         .config(
             SearchConfig::default()
@@ -58,7 +58,7 @@ fn ucd() {
         .verbose(false);
     ucd.set_friendly_name("mcts[ucb1]+ucd");
 
-    let mast: TreeSearch<TrafficLights, util::Ucb1Mast> = TreeSearch::default()
+    let mast: TreeSearch<TrafficLights, strategy::Ucb1Mast> = TreeSearch::default()
         .config(
             SearchConfig::default()
                 .expand_threshold(1)
@@ -70,7 +70,7 @@ fn ucd() {
         )
         .verbose(false);
 
-    let mut mast_ucd: TreeSearch<TrafficLights, util::Ucb1Mast> = TreeSearch::default()
+    let mut mast_ucd: TreeSearch<TrafficLights, strategy::Ucb1Mast> = TreeSearch::default()
         .config(
             SearchConfig::default()
                 .expand_threshold(1)
@@ -85,7 +85,7 @@ fn ucd() {
         .verbose(false);
     mast_ucd.set_friendly_name("mcts[ucb1_mast]+ucd");
 
-    let tuned: TreeSearch<TrafficLights, util::Ucb1Tuned> = TreeSearch::default().config(
+    let tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::default().config(
         SearchConfig::default()
             .expand_threshold(1)
             .max_iterations(10_000)
@@ -94,15 +94,16 @@ fn ucd() {
             }),
     );
 
-    let mut tuned_ucd: TreeSearch<TrafficLights, util::Ucb1Tuned> = TreeSearch::default().config(
-        SearchConfig::default()
-            .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
-            .select(select::Ucb1Tuned {
-                exploration_constant: 1.8617,
-            }),
-    );
+    let mut tuned_ucd: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::default()
+        .config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_iterations(10_000)
+                .use_transpositions(true)
+                .select(select::Ucb1Tuned {
+                    exploration_constant: 1.8617,
+                }),
+        );
     tuned_ucd.set_friendly_name("mcts[ucb1_tuned]+ucd");
 
     let mut strats = vec![
@@ -125,7 +126,7 @@ fn ucd() {
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    type TS = TreeSearch<TrafficLights, util::Ucb1>;
+    type TS = TreeSearch<TrafficLights, strategy::Ucb1>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -146,7 +147,7 @@ fn traffic_lights() {
 fn knightthrough() {
     use mcts::games::knightthrough::Knightthrough;
 
-    type TS = TreeSearch<Knightthrough<8, 8>, util::Ucb1GraveMast>;
+    type TS = TreeSearch<Knightthrough<8, 8>, strategy::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -167,7 +168,7 @@ fn knightthrough() {
 fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
 
-    type TS = TreeSearch<Breakthrough<6, 4>, util::Ucb1GraveMast>;
+    type TS = TreeSearch<Breakthrough<6, 4>, strategy::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -188,7 +189,7 @@ fn breakthrough() {
 fn atarigo() {
     use mcts::games::atarigo::AtariGo;
 
-    type TS = TreeSearch<AtariGo<5>, util::Ucb1GraveMast>;
+    type TS = TreeSearch<AtariGo<5>, strategy::Ucb1GraveMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -209,7 +210,7 @@ fn atarigo() {
 fn gonnect() {
     use mcts::games::gonnect::Gonnect;
 
-    type TS = TreeSearch<Gonnect<7>, util::Ucb1Grave>;
+    type TS = TreeSearch<Gonnect<7>, strategy::Ucb1Grave>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
@@ -231,7 +232,7 @@ fn gonnect() {
 fn expansion_test() {
     use mcts::games::bid_ttt as ttt;
 
-    type TS = TreeSearch<ttt::BiddingTicTacToe, util::Ucb1>;
+    type TS = TreeSearch<ttt::BiddingTicTacToe, strategy::Ucb1>;
 
     let expand5 = TS::default()
         .config(

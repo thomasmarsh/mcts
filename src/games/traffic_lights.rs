@@ -353,9 +353,9 @@ mod tests {
 
     #[test]
     fn test_tl_render() {
-        use crate::strategies::mcts::{render, util, SearchConfig, TreeSearch};
+        use crate::strategies::mcts::{render, strategy, SearchConfig, TreeSearch};
         use crate::strategies::Search;
-        let mut search = TreeSearch::<TrafficLights, util::Ucb1>::default().config(
+        let mut search = TreeSearch::<TrafficLights, strategy::Ucb1>::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
                 // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)

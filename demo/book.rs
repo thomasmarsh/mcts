@@ -6,7 +6,7 @@ use mcts::game::Game;
 use mcts::strategies::mcts::book::OpeningBook;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
-use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::Search;
@@ -45,7 +45,7 @@ pub fn debug(book: &OpeningBook<Move>) {
     });
 }
 
-fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
+fn make_mcts() -> TreeSearch<Druid, strategy::Ucb1Mast> {
     TreeSearch::default()
         .config(
             SearchConfig::default()
@@ -61,8 +61,7 @@ fn make_mcts() -> TreeSearch<Druid, util::Ucb1Mast> {
         .verbose(VERBOSE)
 }
 
-fn make_qbf(book: OpeningBook<Move>) -> TreeSearch<Druid, util::QuasiBestFirst> {
-    // This is a little crazy.
+fn make_qbf(book: OpeningBook<Move>) -> TreeSearch<Druid, strategy::QuasiBestFirst> {
     TreeSearch::default().config(SearchConfig::default().select(select::EpsilonGreedy {
         epsilon: EPSILON,
         inner: select::QuasiBestFirst {

@@ -9,7 +9,7 @@ use mcts::game::Game;
 use mcts::strategies::mcts::node::UnvisitedValueEstimate;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
-use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::util::round_robin_multiple;
@@ -73,7 +73,7 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
     1.0 - w / (ROUNDS * 2) as f64
 }
 
-fn make_opponent(seed: u64) -> TS<util::Ucb1GraveMast> {
+fn make_opponent(seed: u64) -> TS<strategy::Ucb1GraveMast> {
     TS::default()
         .config(
             SearchConfig::default()
@@ -94,7 +94,7 @@ fn make_opponent(seed: u64) -> TS<util::Ucb1GraveMast> {
         .rng(SmallRng::seed_from_u64(seed))
 }
 
-fn make_opponent_(seed: u64) -> TS<util::Ucb1> {
+fn make_opponent_(seed: u64) -> TS<strategy::Ucb1> {
     TS::default()
         .config(
             SearchConfig::default()
@@ -121,7 +121,7 @@ fn parse_q_init(s: &str) -> Option<UnvisitedValueEstimate> {
     }
 }
 
-fn make_candidate(args: Args) -> TS<util::Ucb1> {
+fn make_candidate(args: Args) -> TS<strategy::Ucb1> {
     TS::default()
         .config(
             SearchConfig::default()

@@ -308,7 +308,7 @@ impl<G: Game> Default for SearchConfig<G, MetaMcts> {
 
 impl<G: Game> Strategy<G> for MetaMcts {
     type Select = select::Ucb1;
-    type Simulate = simulate::MetaMcts<G, util::Ucb1>;
+    type Simulate = simulate::MetaMcts<G, strategy::Ucb1>;
     type Backprop = backprop::Classic;
     type FinalAction = select::MaxAvgScore;
 

@@ -11,10 +11,10 @@ use super::select::SelectStrategy;
 use super::simulate::SimulateStrategy;
 use super::simulate::Trial;
 use super::table::TranspositionTable;
-use super::timer;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::strategies::Search;
+use crate::timer;
 use crate::util::pv_string;
 
 use rand::rngs::SmallRng;

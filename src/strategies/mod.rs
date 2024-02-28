@@ -43,7 +43,7 @@ mod tests {
         let init_state = HashedPosition::new();
 
         for n in 0..3 {
-            type TS = mcts::TreeSearch<G, mcts::util::Ucb1>;
+            type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
             let mut ts = TS::default().config(
                 mcts::SearchConfig::default()
                     .expand_threshold(n)
@@ -106,7 +106,7 @@ mod tests {
         };
 
         // Configure new MCTS
-        type TS = mcts::TreeSearch<G, mcts::util::ScalarAmaf>;
+        type TS = mcts::TreeSearch<G, mcts::strategy::ScalarAmaf>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .expand_threshold(1)

@@ -1,12 +1,12 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use mcts::games::ttt;
-use mcts::strategies::mcts::util;
+use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::Search;
 
-type TicTacToeTS = TreeSearch<ttt::TicTacToe, util::Ucb1>;
+type TicTacToeTS = TreeSearch<ttt::TicTacToe, strategy::Ucb1>;
 
 fn ponder(c: &mut Criterion) {
     let mut group = c.benchmark_group("ttt");

@@ -7,9 +7,8 @@ pub mod render;
 pub mod search;
 pub mod select;
 pub mod simulate;
+pub mod strategy;
 pub mod table;
-pub mod timer;
-pub mod util;
 
 pub use config::*;
 pub use search::*;

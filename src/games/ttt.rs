@@ -268,7 +268,7 @@ mod tests {
     use crate::{
         game::Game,
         strategies::{
-            mcts::{render, util, SearchConfig, TreeSearch},
+            mcts::{render, strategy, SearchConfig, TreeSearch},
             Search,
         },
         util::random_play,
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_ttt_sym_search() {
-        type TS = TreeSearch<TicTacToe, util::Ucb1>;
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)

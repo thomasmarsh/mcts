@@ -56,12 +56,12 @@ impl Game for UnitGame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::strategies::mcts::{util, TreeSearch};
+    use crate::strategies::mcts::{strategy, TreeSearch};
     use crate::strategies::Search;
 
     #[test]
     pub fn test_unit() {
-        let mut search: TreeSearch<UnitGame, util::Ucb1> = TreeSearch::default();
+        let mut search: TreeSearch<UnitGame, strategy::Ucb1> = TreeSearch::default();
         search.config.max_iterations = 10;
         let state = Unit::default();
         search.choose_action(&state);
