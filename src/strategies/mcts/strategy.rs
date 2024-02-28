@@ -3,6 +3,11 @@ use super::SearchConfig;
 use super::*;
 use crate::game::Game;
 
+// TODO: this whole module should be removed. It is not possible to use custom
+// strategies outside the crate since you cannot define a Default implementation
+// for SearchConfig<T> in another crate. Also, there is clearly a combinatorial
+// explosion happening here.
+
 // Vanilla UCT
 #[derive(Clone)]
 pub struct Ucb1;
@@ -192,6 +197,98 @@ impl<G: Game> Default for SearchConfig<G, Ucb1Tuned> {
     }
 }
 
+#[derive(Clone)]
+pub struct Ucb1TunedMast;
+
+impl<G: Game> Strategy<G> for Ucb1TunedMast {
+    type Select = select::Ucb1Tuned;
+    type Simulate = simulate::Mast;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_tuned".into()
+    }
+}
+
+impl<G: Game> Default for SearchConfig<G, Ucb1TunedMast> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: simulate::Mast,
+            backprop: backprop::Classic,
+            final_action: select::RobustChild,
+            q_init: node::UnvisitedValueEstimate::Infinity,
+            expand_threshold: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+            use_transpositions: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Ucb1TunedDM;
+
+impl<G: Game> Strategy<G> for Ucb1TunedDM {
+    type Select = select::Ucb1Tuned;
+    type Simulate = simulate::DecisiveMove<G>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_tuned".into()
+    }
+}
+
+impl<G: Game> Default for SearchConfig<G, Ucb1TunedDM> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: simulate::DecisiveMove::default(),
+            backprop: backprop::Classic,
+            final_action: select::RobustChild,
+            q_init: node::UnvisitedValueEstimate::Infinity,
+            expand_threshold: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+            use_transpositions: false,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Ucb1TunedDMMast;
+
+impl<G: Game> Strategy<G> for Ucb1TunedDMMast {
+    type Select = select::Ucb1Tuned;
+    type Simulate = simulate::DecisiveMove<G, simulate::Mast>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_tuned".into()
+    }
+}
+
+impl<G: Game> Default for SearchConfig<G, Ucb1TunedDMMast> {
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: simulate::DecisiveMove::default(),
+            backprop: backprop::Classic,
+            final_action: select::RobustChild,
+            q_init: node::UnvisitedValueEstimate::Infinity,
+            expand_threshold: 5,
+            max_playout_depth: 200,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+            use_transpositions: false,
+        }
+    }
+}
 #[derive(Clone)]
 pub struct McGrave;
 
