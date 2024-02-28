@@ -204,6 +204,8 @@ where
                     player_to_move: G::player_to_move(&ctx.state).to_index(),
                     state: &ctx.state,
                     index: &self.index,
+                    table: &self.table,
+                    use_transpositions: self.config.use_transpositions,
                 };
                 self.config.select.best_child(&select_ctx, &mut self.rng)
             };
@@ -258,6 +260,8 @@ where
                 player_to_move: G::player_to_move(state).to_index(),
                 state,
                 index: &self.index,
+                table: &self.table,
+                use_transpositions: self.config.use_transpositions,
             },
             &mut self.rng,
         );
@@ -400,6 +404,8 @@ where
                 state: &state,
                 player_to_move: player.to_index(),
                 index: &self.index,
+                table: &self.table,
+                use_transpositions: self.config.use_transpositions,
             };
             let best_idx = self
                 .config

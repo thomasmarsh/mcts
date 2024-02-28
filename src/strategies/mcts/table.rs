@@ -31,6 +31,11 @@ impl TranspositionTable {
         result
     }
 
+    #[inline]
+    pub fn get_const(&self, k: u64) -> Option<&IdSet> {
+        self.table.0.get(&crate::zobrist::ZobristHash(k))
+    }
+
     #[inline(always)]
     pub fn insert(&mut self, k: u64, node_id: index::Id) {
         self.writes += 1;

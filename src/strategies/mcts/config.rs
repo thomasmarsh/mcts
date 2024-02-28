@@ -58,6 +58,7 @@ where
     pub max_playout_depth: usize,
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
+    pub use_transpositions: bool,
 }
 
 impl<G, S> SearchConfig<G, S>
@@ -113,5 +114,10 @@ where
         } else {
             self
         }
+    }
+
+    pub fn use_transpositions(mut self, use_transpositions: bool) -> Self {
+        self.use_transpositions = use_transpositions;
+        self
     }
 }

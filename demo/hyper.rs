@@ -21,7 +21,7 @@ use rand_core::SeedableRng;
 const ROUNDS: usize = 20;
 const PLAYOUT_DEPTH: usize = 200;
 const C_TUNED: f64 = 1.625;
-const MAX_ITER: usize = 10_000_000;
+const MAX_ITER: usize = 10_000;
 const EXPAND_THRESHOLD: u32 = 1;
 const VERBOSE: bool = false;
 const MAX_TIME_SECS: u64 = 0;
@@ -38,18 +38,16 @@ struct Args {
     #[arg(long)]
     seed: u64,
 
-    #[arg(long)]
-    threshold: u32,
+    // #[arg(long)]
+    // threshold: u32,
 
-    #[arg(long)]
-    bias: f64,
-
+    // #[arg(long)]
+    // bias: f64,
     #[arg(long)]
     c: f64,
 
-    #[arg(long)]
-    epsilon: f64,
-
+    // #[arg(long)]
+    // epsilon: f64,
     #[arg(long)]
     q_init: String,
 }
@@ -123,7 +121,7 @@ fn parse_q_init(s: &str) -> Option<UnvisitedValueEstimate> {
     }
 }
 
-fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
+fn make_candidate(args: Args) -> TS<util::Ucb1> {
     TS::default()
         .config(
             SearchConfig::default()
@@ -132,13 +130,10 @@ fn make_candidate(args: Args) -> TS<util::Ucb1GraveMast> {
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
                 .expand_threshold(EXPAND_THRESHOLD)
                 .q_init(parse_q_init(args.q_init.as_str()).unwrap())
-                .select(select::Ucb1Grave {
+                .use_transpositions(true)
+                .select(select::Ucb1 {
                     exploration_constant: args.c,
-                    threshold: args.threshold,
-                    bias: args.bias,
-                    current_ref_id: None,
-                })
-                .simulate(simulate::EpsilonGreedy::with_epsilon(args.epsilon)),
+                }),
         )
         .verbose(VERBOSE)
         .rng(SmallRng::seed_from_u64(args.seed))

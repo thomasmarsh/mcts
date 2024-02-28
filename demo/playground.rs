@@ -4,6 +4,7 @@ use mcts::game::Game;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
+use mcts::strategies::mcts::node::UnvisitedValueEstimate;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::util;
@@ -25,23 +26,117 @@ type NimFlatMC = FlatMonteCarloStrategy<Nim>;
 type NimMCTS = TreeSearch<Nim, util::Ucb1>;
 type TttMCTS = TreeSearch<TicTacToe, util::Ucb1>;
 
+fn ucd() {
+    use mcts::games::traffic_lights::TrafficLights;
+
+    type Uct = TreeSearch<TrafficLights, util::Ucb1>;
+    let uct = Uct::default()
+        .config(
+            SearchConfig::default()
+                .max_iterations(10_000)
+                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                .expand_threshold(1)
+                .select(select::Ucb1 {
+                    exploration_constant: 2.0f64.sqrt(),
+                }),
+        )
+        .verbose(false);
+
+    type Ucd = TreeSearch<TrafficLights, util::Ucb1>;
+    let mut ucd = Ucd::default()
+        .config(
+            SearchConfig::default()
+                .max_iterations(10_000)
+                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                .expand_threshold(1)
+                .use_transpositions(true)
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Ucb1 {
+                    exploration_constant: 0.01f64.sqrt(),
+                }),
+        )
+        .verbose(false);
+    ucd.set_friendly_name("mcts[ucb1]+ucd");
+
+    let mast: TreeSearch<TrafficLights, util::Ucb1Mast> = TreeSearch::default()
+        .config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_iterations(10_000)
+                .select(select::Ucb1 {
+                    exploration_constant: 1.86169408634305,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.10750788170844316)),
+        )
+        .verbose(false);
+
+    let mut mast_ucd: TreeSearch<TrafficLights, util::Ucb1Mast> = TreeSearch::default()
+        .config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_iterations(10_000)
+                .use_transpositions(true)
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Ucb1 {
+                    exploration_constant: 0.01,
+                })
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.10750788170844316)),
+        )
+        .verbose(false);
+    mast_ucd.set_friendly_name("mcts[ucb1_mast]+ucd");
+
+    let tuned: TreeSearch<TrafficLights, util::Ucb1Tuned> = TreeSearch::default().config(
+        SearchConfig::default()
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .select(select::Ucb1Tuned {
+                exploration_constant: 1.8617,
+            }),
+    );
+
+    let mut tuned_ucd: TreeSearch<TrafficLights, util::Ucb1Tuned> = TreeSearch::default().config(
+        SearchConfig::default()
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .use_transpositions(true)
+            .select(select::Ucb1Tuned {
+                exploration_constant: 1.8617,
+            }),
+    );
+    tuned_ucd.set_friendly_name("mcts[ucb1_tuned]+ucd");
+
+    let mut strats = vec![
+        AnySearch::new(uct),
+        AnySearch::new(ucd),
+        AnySearch::new(mast),
+        AnySearch::new(mast_ucd),
+        AnySearch::new(tuned),
+        AnySearch::new(tuned_ucd),
+    ];
+
+    _ = round_robin_multiple::<TrafficLights, AnySearch<_>>(
+        &mut strats,
+        1000,
+        &Default::default(),
+        mcts::util::Verbosity::Verbose,
+    );
+}
+
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    type TS = TreeSearch<TrafficLights, util::Ucb1GraveMast>;
+    type TS = TreeSearch<TrafficLights, util::Ucb1>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
-                .max_iterations(10_000_000)
+                .max_iterations(10_000)
                 .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
                 .expand_threshold(0)
-                .select(select::Ucb1Grave {
-                    exploration_constant: 2.0f64.sqrt(),
-                    threshold: 1000,
-                    bias: 764.,
-                    current_ref_id: None,
-                })
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1865)),
+                .use_transpositions(true)
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Ucb1 {
+                    exploration_constant: 0.001,
+                }),
         )
         .verbose(true);
 
@@ -356,6 +451,7 @@ fn main() {
     pretty_env_logger::init();
 
     traffic_lights();
+    ucd();
     knightthrough();
     breakthrough();
     gonnect();

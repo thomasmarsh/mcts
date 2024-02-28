@@ -192,27 +192,7 @@ impl RectangularBoard for HashedPosition {
 
 impl Display for HashedPosition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        RectangularBoardDisplay(self).fmt(f)?;
-
-        use super::ttt::sym;
-
-        write!(f, "-----------------------------------")?;
-        let mut bs = [0; 8];
-        sym::board_symmetries(self.position.board, &mut bs);
-        for b in bs {
-            RectangularBoardDisplay(&HashedPosition {
-                position: Position {
-                    board: b,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .fmt(f)?;
-
-            writeln!(f)?;
-        }
-        write!(f, "-----------------------------------")?;
-        Ok(())
+        RectangularBoardDisplay(self).fmt(f)
     }
 }
 
@@ -234,6 +214,14 @@ impl Game for TrafficLights {
         let mut tmp = state;
         tmp.apply(*m);
         tmp
+    }
+
+    fn get_reward(init: &Self::S, term: &Self::S) -> f64 {
+        let utility = Self::compute_utilities(term)[Self::player_to_move(init).to_index()];
+        if utility < 0. {
+            return utility * 100.;
+        }
+        utility
     }
 
     fn notation(_state: &Self::S, m: &Self::A) -> String {

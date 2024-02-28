@@ -3,6 +3,7 @@ use crate::game::Action;
 
 use rustc_hash::FxHashMap as HashMap;
 use serde::Serialize;
+use std::ops::Add;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
 
@@ -10,6 +11,16 @@ use std::sync::atomic::Ordering::*;
 pub struct ActionStats {
     pub num_visits: u32,
     pub score: f64,
+}
+
+impl Add for ActionStats {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        ActionStats {
+            num_visits: self.num_visits + rhs.num_visits,
+            score: self.score + rhs.score,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +112,52 @@ impl<A: Action> NodeStats<A> {
                 }
             }
             Win => 1.,
+        }
+    }
+}
+
+#[inline]
+fn merge_grave_maps<A: Action>(
+    a: &HashMap<A, ActionStats>,
+    b: &HashMap<A, ActionStats>,
+) -> HashMap<A, ActionStats> {
+    let mut a = a.clone();
+    for (key, value) in b {
+        match a.get_mut(key) {
+            Some(existing_value) => {
+                *existing_value = existing_value.clone() + value.clone();
+            }
+            None => {
+                a.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    a
+}
+
+impl<A: Action> Add for NodeStats<A> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        NodeStats {
+            num_visits: self.num_visits + rhs.num_visits,
+            num_visits_virtual: AtomicU32::new(
+                self.num_visits_virtual.load(Relaxed) + rhs.num_visits_virtual.load(Relaxed),
+            ),
+            scores: self
+                .scores
+                .into_iter()
+                .zip(rhs.scores)
+                .map(|(x, y)| x + y)
+                .collect(),
+            sum_squared_scores: self
+                .sum_squared_scores
+                .into_iter()
+                .zip(rhs.sum_squared_scores)
+                .map(|(x, y)| x + y)
+                .collect(),
+            scalar_amaf: self.scalar_amaf + rhs.scalar_amaf,
+            grave_stats: merge_grave_maps(&self.grave_stats, &rhs.grave_stats),
         }
     }
 }

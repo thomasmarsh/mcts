@@ -1,5 +1,6 @@
 use super::index::Id;
-use super::node;
+use super::node::{self, NodeStats};
+use super::table::TranspositionTable;
 use super::*;
 use crate::game::Game;
 use crate::strategies::Search;
@@ -17,6 +18,53 @@ pub struct SelectContext<'a, G: Game> {
     pub player: usize,
     pub player_to_move: usize,
     pub index: &'a TreeIndex<G::A>,
+    pub table: &'a TranspositionTable,
+    pub use_transpositions: bool,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Simple Upper Confidence bound for DAGS
+//
+// This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
+// Confidence bound for rooted Directed acyclic graphs.
+
+impl<'a, G: Game> SelectContext<'a, G> {
+    #[inline]
+    fn child_state(&self, child_id: Id) -> G::S {
+        let child = self.index.get(child_id);
+        let action = child.action(self.index);
+        G::apply(self.state.clone(), &action)
+    }
+
+    #[inline]
+    fn get_stats(&self, state: &G::S, node_id: Id) -> NodeStats<G::A> {
+        if !self.use_transpositions {
+            return self.index.get(node_id).stats.clone();
+        }
+        let k = G::zobrist_hash(state);
+        match self.table.get_const(k) {
+            Some(entries) => {
+                let stats = entries
+                    .iter()
+                    .fold(NodeStats::new(G::num_players()), |stats, x| {
+                        stats + self.index.get(*x).stats.clone()
+                    });
+                stats
+            }
+            None => self.index.get(node_id).stats.clone(),
+        }
+    }
+
+    #[inline]
+    fn current_stats(&self) -> NodeStats<G::A> {
+        self.get_stats(self.state, self.current_id)
+    }
+
+    #[inline]
+    fn child_stats(&self, child_id: Id) -> NodeStats<G::A> {
+        self.get_stats(&self.child_state(child_id), child_id)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -177,19 +225,14 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> (i64, f64) {
-        let child = ctx.index.get(child_id);
-        (
-            child.stats.num_visits as i64,
-            child.stats.expected_score(ctx.player),
-        )
+        let stats = ctx.child_stats(child_id);
+        (stats.num_visits as i64, stats.expected_score(ctx.player))
     }
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> (i64, f64) {
         let q = ctx
-            .index
-            .get(ctx.current_id)
-            .stats
+            .current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init);
 
         (0, q)
@@ -211,14 +254,12 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        ctx.index.get(child_id).stats.expected_score(ctx.player)
+        ctx.child_stats(child_id).expected_score(ctx.player)
     }
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
-        ctx.index
-            .get(ctx.current_id)
-            .stats
+        ctx.current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
 }
@@ -247,18 +288,16 @@ impl<G: Game> SelectStrategy<G> for SecureChild {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        let child = ctx.index.get(child_id);
-        let q = child.stats.expected_score(ctx.player);
-        let n = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
+        let stats = ctx.child_stats(child_id);
+        let q = stats.expected_score(ctx.player);
+        let n = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
 
         q + self.a / (n as f64).sqrt()
     }
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
-        ctx.index
-            .get(ctx.current_id)
-            .stats
+        ctx.current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
 }
@@ -285,24 +324,23 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
-        ((current.stats.num_visits as f64).max(1.)).ln()
+        let stats = ctx.current_stats();
+        ((stats.num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let child = ctx.index.get(child_id);
-        let exploit = child.stats.exploitation_score(ctx.player);
-        let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
+        let stats = ctx.child_stats(child_id);
+        let exploit = stats.exploitation_score(ctx.player);
+        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
         let explore = (parent_log / num_visits as f64).sqrt();
         exploit + self.exploration_constant * explore
     }
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
-        let unvisited_value = current
-            .stats
+        let unvisited_value = ctx
+            .current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init);
 
         unvisited_value + self.exploration_constant * parent_log.sqrt()
@@ -350,12 +388,11 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let child = ctx.index.get(child_id);
-        let exploit = child.stats.exploitation_score(ctx.player);
-        let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
-        let sample_variance = 0f64.max(
-            child.stats.sum_squared_scores[ctx.player] / num_visits as f64 - exploit * exploit,
-        );
+        let stats = ctx.child_stats(child_id);
+        let exploit = stats.exploitation_score(ctx.player);
+        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
+        let sample_variance =
+            0f64.max(stats.sum_squared_scores[ctx.player] / num_visits as f64 - exploit * exploit);
         let visits_fraction = parent_log / num_visits as f64;
 
         ucb1_tuned(
@@ -368,9 +405,8 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> Self::Score {
-        let current = ctx.index.get(ctx.current_id);
-        let unvisited_value = current
-            .stats
+        let unvisited_value = ctx
+            .current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init);
         ucb1_tuned(
             self.exploration_constant,
@@ -413,6 +449,10 @@ impl<G: Game> SelectStrategy<G> for McGrave {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
+        assert!(
+            !ctx.use_transpositions,
+            "GRAVE is incompatible with transposition table usage"
+        );
         let current = ctx.index.get(ctx.current_id);
 
         if self.current_ref_id.is_none()
@@ -474,7 +514,12 @@ impl<G: Game> SelectStrategy<G> for McBrave {
     type Aux = ();
 
     #[inline(always)]
-    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
+        assert!(
+            !ctx.use_transpositions,
+            "BRAVE is incompatible with transposition table usage"
+        );
+    }
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> Self::Score {
@@ -556,20 +601,19 @@ impl<G: Game> SelectStrategy<G> for ScalarAmaf {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
-        ((current.stats.num_visits as f64).max(1.)).ln()
+        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let child = ctx.index.get(child_id);
-        let exploit = child.stats.exploitation_score(ctx.player);
-        let num_visits = child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed);
+        let stats = ctx.child_stats(child_id);
+        let exploit = stats.exploitation_score(ctx.player);
+        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
         let explore = (parent_log / num_visits as f64).sqrt();
         let uct_value = exploit + self.exploration_constant * explore;
 
         let amaf_value = if num_visits > 0 {
-            child.stats.scalar_amaf.score / child.stats.num_visits as f64
+            stats.scalar_amaf.score / stats.num_visits as f64
         } else {
             0.
         };
@@ -581,9 +625,7 @@ impl<G: Game> SelectStrategy<G> for ScalarAmaf {
 
     #[inline(always)]
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: f64) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
-        current
-            .stats
+        ctx.current_stats()
             .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
 
@@ -632,6 +674,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1Grave {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
+        assert!(!ctx.use_transpositions);
         let current = ctx.index.get(ctx.current_id);
         if self.current_ref_id.is_none()
             || current.stats.num_visits > self.threshold

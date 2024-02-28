@@ -30,11 +30,12 @@ impl<G: Game> Default for SearchConfig<G, Ucb1> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
 
-// Vanilla UCT
+// Vanilla UCT + Mast
 #[derive(Clone)]
 pub struct Ucb1Mast;
 
@@ -61,6 +62,7 @@ impl<G: Game> Default for SearchConfig<G, Ucb1Mast> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -91,6 +93,7 @@ impl<G: Game> Default for SearchConfig<G, ScalarAmaf> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -121,6 +124,7 @@ impl<G: Game> Default for SearchConfig<G, ScalarAmafMast> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -151,6 +155,7 @@ impl<G: Game> Default for SearchConfig<G, Ucb1Tuned> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -181,6 +186,7 @@ impl<G: Game> Default for SearchConfig<G, McGrave> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -211,6 +217,7 @@ impl<G: Game> Default for SearchConfig<G, McBrave> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -241,6 +248,7 @@ impl<G: Game> Default for SearchConfig<G, Ucb1Grave> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -271,6 +279,7 @@ impl<G: Game> Default for SearchConfig<G, Ucb1GraveMast> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -292,6 +301,7 @@ impl<G: Game> Default for SearchConfig<G, MetaMcts> {
             max_playout_depth: 200,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }
@@ -336,6 +346,7 @@ impl<G: Game> Default for SearchConfig<G, QuasiBestFirst> {
             max_playout_depth: 200,
             max_iterations: 1,
             max_time: Default::default(),
+            use_transpositions: false,
         }
     }
 }

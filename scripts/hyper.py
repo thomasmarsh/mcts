@@ -18,11 +18,12 @@ class GameSearch:
     def configspace(self) -> ConfigurationSpace:
         cs = ConfigurationSpace(seed=0)
         c = Float('c', (0, 3), default=math.sqrt(2))
-        bias = Float('bias', (0, 1000), default=10e-6)
-        threshold = Integer('threshold', (0, 1000), default=100)
-        epsilon = Float('epsilon', (0, 1), default=0.1)
+        #bias = Float('bias', (0, 1000), default=10e-6)
+        #threshold = Integer('threshold', (0, 1000), default=100)
+        #epsilon = Float('epsilon', (0, 1), default=0.1)
         q_init = Categorical("q-init", ["Draw", "Infinity", "Loss", "Parent", "Win"])
-        cs.add_hyperparameters([c, bias, threshold, epsilon, q_init])
+        #cs.add_hyperparameters([c, bias, threshold, epsilon, q_init])
+        cs.add_hyperparameters([c, q_init])
         return cs
 
     def train(self) -> str:
