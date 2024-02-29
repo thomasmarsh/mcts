@@ -598,21 +598,19 @@ impl<G: Game> SelectStrategy<G> for McBrave {
 // This one was found in some implementations of RAVE. It seems strong, but I
 // can't find references to it in the literature.
 #[derive(Clone)]
-pub struct ScalarAmaf {
+pub struct Amaf {
     pub exploration_constant: f64,
-    pub bias: f64,
 }
 
-impl Default for ScalarAmaf {
+impl Default for Amaf {
     fn default() -> Self {
         Self {
             exploration_constant: 2f64.sqrt(),
-            bias: 700.0,
         }
     }
 }
 
-impl<G: Game> SelectStrategy<G> for ScalarAmaf {
+impl<G: Game> SelectStrategy<G> for Amaf {
     type Score = f64;
     type Aux = f64;
 
@@ -624,20 +622,18 @@ impl<G: Game> SelectStrategy<G> for ScalarAmaf {
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let stats = ctx.child_stats(child_id);
+        let amaf_n = stats.amaf[ctx.player].num_visits;
+        let amaf_q = stats.amaf[ctx.player].score;
+
+        let avg_amaf_score = amaf_q / amaf_n as f64;
         let exploit = stats.exploitation_score(ctx.player);
+
         let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
         let explore = (parent_log / num_visits as f64).sqrt();
-        let uct_value = exploit + self.exploration_constant * explore;
 
-        let amaf_value = if num_visits > 0 {
-            stats.scalar_amaf.score / stats.num_visits as f64
-        } else {
-            0.
-        };
-
-        let beta = self.bias / (self.bias + num_visits as f64);
-
-        (1. - beta) * uct_value + beta * amaf_value
+        exploit
+            + self.exploration_constant * explore
+            + avg_amaf_score * (explore / 1.max(amaf_n) as f64)
     }
 
     #[inline(always)]

@@ -105,20 +105,20 @@ impl<G: Game> Default for SearchConfig<G, Ucb1Mast> {
 }
 
 #[derive(Clone)]
-pub struct ScalarAmaf;
+pub struct Amaf;
 
-impl<G: Game> Strategy<G> for ScalarAmaf {
-    type Select = select::ScalarAmaf;
+impl<G: Game> Strategy<G> for Amaf {
+    type Select = select::Amaf;
     type Simulate = simulate::Uniform;
     type Backprop = backprop::Classic;
     type FinalAction = select::RobustChild;
 
     fn friendly_name() -> String {
-        "scalar_amaf".into()
+        "amaf".into()
     }
 }
 
-impl<G: Game> Default for SearchConfig<G, ScalarAmaf> {
+impl<G: Game> Default for SearchConfig<G, Amaf> {
     fn default() -> Self {
         Self {
             select: Default::default(),
@@ -136,20 +136,20 @@ impl<G: Game> Default for SearchConfig<G, ScalarAmaf> {
 }
 
 #[derive(Clone)]
-pub struct ScalarAmafMast;
+pub struct AmafMast;
 
-impl<G: Game> Strategy<G> for ScalarAmafMast {
-    type Select = select::ScalarAmaf;
+impl<G: Game> Strategy<G> for AmafMast {
+    type Select = select::Amaf;
     type Simulate = simulate::EpsilonGreedy<G, simulate::Mast>;
     type Backprop = backprop::Classic;
     type FinalAction = select::RobustChild;
 
     fn friendly_name() -> String {
-        "scalar_amaf+mast".into()
+        "amaf+mast".into()
     }
 }
 
-impl<G: Game> Default for SearchConfig<G, ScalarAmafMast> {
+impl<G: Game> Default for SearchConfig<G, AmafMast> {
     fn default() -> Self {
         Self {
             select: Default::default(),

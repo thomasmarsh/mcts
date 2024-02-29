@@ -2,7 +2,7 @@ use super::index::Id;
 use super::*;
 use crate::game::{Game, PlayerIndex};
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashMap;
 
 pub trait BackpropStrategy: Clone + Sync + Send {
     // TODO: cleanup the arguments to this, or just move it to TreeSearch
@@ -38,24 +38,25 @@ pub trait BackpropStrategy: Clone + Sync + Send {
             // update: AMAF
             if flags.amaf() {
                 let node = index.get(node_id);
-
-                if node.is_expanded() {
-                    let child_actions: HashMap<_, _> = node
+                if !node.is_root() {
+                    let parent_id = node.parent_id;
+                    assert!(!stack.is_empty());
+                    assert_eq!(parent_id, *stack.last().unwrap());
+                    let parent = index.get(parent_id);
+                    let sibling_actions: FxHashMap<_, _> = parent
                         .actions()
                         .iter()
                         .cloned()
-                        .zip(node.children().iter().cloned().flatten())
+                        .zip(parent.children().iter().cloned().flatten())
                         .collect();
 
                     for action in &trial.actions {
-                        if let Some(child_id) = child_actions.get(action) {
+                        if let Some(child_id) = sibling_actions.get(action) {
                             let child = index.get_mut(*child_id);
-                            child.stats.scalar_amaf.num_visits += 1;
-
-                            // TODO: I'm not convinced which is the right update strategy for this one
-                            // child.stats.scalar_amaf.score += utilities[player];
-                            child.stats.scalar_amaf.score +=
-                                utilities[G::player_to_move(&ctx.state).to_index()];
+                            (0..G::num_players()).for_each(|i| {
+                                child.stats.amaf[i].num_visits += 1;
+                                child.stats.amaf[i].score += utilities[i];
+                            })
                         }
                     }
                 }

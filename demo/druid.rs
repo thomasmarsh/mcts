@@ -78,19 +78,17 @@ fn main() {
         )
         .verbose(VERBOSE);
 
-    let mut amaf: TreeSearch<Druid, strategy::ScalarAmaf> = TreeSearch::default()
-        .config(base_config().select(select::ScalarAmaf {
-            bias: BIAS,
-            exploration_constant: C_LOW,
+    let mut amaf: TreeSearch<Druid, strategy::Amaf> = TreeSearch::default()
+        .config(base_config().select(select::Amaf {
+            exploration_constant: C_TUNED,
         }))
         .verbose(VERBOSE);
 
-    let mut amaf_mast: TreeSearch<Druid, strategy::ScalarAmafMast> = TreeSearch::default()
+    let mut amaf_mast: TreeSearch<Druid, strategy::AmafMast> = TreeSearch::default()
         .config(
             base_config()
-                .select(select::ScalarAmaf {
-                    bias: BIAS,
-                    exploration_constant: C_LOW,
+                .select(select::Amaf {
+                    exploration_constant: C_TUNED,
                 })
                 .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
         )

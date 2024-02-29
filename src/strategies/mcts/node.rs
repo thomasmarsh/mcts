@@ -35,9 +35,7 @@ pub struct NodeStats<A: Action> {
     // Only used for UCB1Tuned; how to parameterize
     pub sum_squared_scores: Vec<f64>,
 
-    // TODO: what is this actually? I can't find this in the literature, but it's
-    // like a coarser version of RAVE/AMAF.
-    pub scalar_amaf: ActionStats,
+    pub amaf: Vec<ActionStats>,
 
     // TODO: Only used for GRAVE; how to parameterize
     #[serde(skip_serializing)]
@@ -51,7 +49,7 @@ impl<A: Action> Clone for NodeStats<A> {
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
             scores: self.scores.clone(),
             sum_squared_scores: self.sum_squared_scores.clone(),
-            scalar_amaf: self.scalar_amaf.clone(),
+            amaf: self.amaf.clone(),
             grave_stats: self.grave_stats.clone(),
         }
     }
@@ -64,7 +62,7 @@ impl<A: Action> NodeStats<A> {
             num_visits_virtual: AtomicU32::new(0),
             scores: vec![0.; num_players],
             sum_squared_scores: vec![0.; num_players],
-            scalar_amaf: Default::default(),
+            amaf: vec![ActionStats::default(); num_players],
             grave_stats: Default::default(),
         }
     }
@@ -125,6 +123,7 @@ impl<A: Action> Add for NodeStats<A> {
             num_visits_virtual: AtomicU32::new(
                 self.num_visits_virtual.load(Relaxed) + rhs.num_visits_virtual.load(Relaxed),
             ),
+            // TODO: group per-player stats to avoid N*M loops
             scores: self
                 .scores
                 .into_iter()
@@ -137,7 +136,12 @@ impl<A: Action> Add for NodeStats<A> {
                 .zip(rhs.sum_squared_scores)
                 .map(|(x, y)| x + y)
                 .collect(),
-            scalar_amaf: self.scalar_amaf + rhs.scalar_amaf,
+            amaf: self
+                .amaf
+                .into_iter()
+                .zip(rhs.amaf)
+                .map(|(x, y)| x + y)
+                .collect(),
             // NOTE: GRAVE is not currently supported with transpositions
             grave_stats: HashMap::default(),
         }
