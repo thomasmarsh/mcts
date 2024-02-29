@@ -7,7 +7,7 @@ use std::ops::Add;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct ActionStats {
     pub num_visits: u32,
     pub score: f64,
@@ -23,6 +23,24 @@ impl Add for ActionStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct PlayerStats {
+    pub score: f64,
+    pub sum_squared_score: f64,
+    pub amaf: ActionStats,
+}
+
+impl Add for PlayerStats {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            score: self.score + rhs.score,
+            sum_squared_score: self.sum_squared_score + rhs.sum_squared_score,
+            amaf: self.amaf + rhs.amaf,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct NodeStats<A: Action> {
     pub num_visits: u32,
@@ -30,12 +48,7 @@ pub struct NodeStats<A: Action> {
     // For virtual loss
     pub num_visits_virtual: AtomicU32,
 
-    pub scores: Vec<f64>,
-
-    // Only used for UCB1Tuned; how to parameterize
-    pub sum_squared_scores: Vec<f64>,
-
-    pub amaf: Vec<ActionStats>,
+    pub player: Vec<PlayerStats>,
 
     // TODO: Only used for GRAVE; how to parameterize
     #[serde(skip_serializing)]
@@ -47,9 +60,7 @@ impl<A: Action> Clone for NodeStats<A> {
         Self {
             num_visits: self.num_visits,
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
-            scores: self.scores.clone(),
-            sum_squared_scores: self.sum_squared_scores.clone(),
-            amaf: self.amaf.clone(),
+            player: self.player.clone(),
             grave_stats: self.grave_stats.clone(),
         }
     }
@@ -60,9 +71,7 @@ impl<A: Action> NodeStats<A> {
         Self {
             num_visits: 0,
             num_visits_virtual: AtomicU32::new(0),
-            scores: vec![0.; num_players],
-            sum_squared_scores: vec![0.; num_players],
-            amaf: vec![ActionStats::default(); num_players],
+            player: vec![PlayerStats::default(); num_players],
             grave_stats: Default::default(),
         }
     }
@@ -70,8 +79,8 @@ impl<A: Action> NodeStats<A> {
     pub fn update(&mut self, utilities: &[f64]) {
         self.num_visits += 1;
         utilities.iter().enumerate().for_each(|(p, reward)| {
-            self.scores[p] += reward;
-            self.sum_squared_scores[p] += utilities[p] * utilities[p];
+            self.player[p].score += reward;
+            self.player[p].sum_squared_score += utilities[p] * utilities[p];
         });
     }
 
@@ -82,7 +91,7 @@ impl<A: Action> NodeStats<A> {
         } else {
             let loss_visits = self.num_visits_virtual.load(Relaxed) as f64;
 
-            (self.scores[player_index] - loss_visits) / (self.num_visits as f64 + loss_visits)
+            (self.player[player_index].score - loss_visits) / (self.num_visits as f64 + loss_visits)
         }
     }
 
@@ -124,22 +133,10 @@ impl<A: Action> Add for NodeStats<A> {
                 self.num_visits_virtual.load(Relaxed) + rhs.num_visits_virtual.load(Relaxed),
             ),
             // TODO: group per-player stats to avoid N*M loops
-            scores: self
-                .scores
+            player: self
+                .player
                 .into_iter()
-                .zip(rhs.scores)
-                .map(|(x, y)| x + y)
-                .collect(),
-            sum_squared_scores: self
-                .sum_squared_scores
-                .into_iter()
-                .zip(rhs.sum_squared_scores)
-                .map(|(x, y)| x + y)
-                .collect(),
-            amaf: self
-                .amaf
-                .into_iter()
-                .zip(rhs.amaf)
+                .zip(rhs.player)
                 .map(|(x, y)| x + y)
                 .collect(),
             // NOTE: GRAVE is not currently supported with transpositions

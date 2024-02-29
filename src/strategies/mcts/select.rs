@@ -408,8 +408,9 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
         let stats = ctx.child_stats(child_id);
         let exploit = stats.exploitation_score(ctx.player);
         let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
-        let sample_variance =
-            0f64.max(stats.sum_squared_scores[ctx.player] / num_visits as f64 - exploit * exploit);
+        let sample_variance = 0f64.max(
+            stats.player[ctx.player].sum_squared_score / num_visits as f64 - exploit * exploit,
+        );
         let visits_fraction = parent_log / num_visits as f64;
 
         ucb1_tuned(
@@ -622,8 +623,8 @@ impl<G: Game> SelectStrategy<G> for Amaf {
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
         let stats = ctx.child_stats(child_id);
-        let amaf_n = stats.amaf[ctx.player].num_visits;
-        let amaf_q = stats.amaf[ctx.player].score;
+        let amaf_n = stats.player[ctx.player].amaf.num_visits;
+        let amaf_q = stats.player[ctx.player].amaf.score;
 
         let avg_amaf_score = amaf_q / amaf_n as f64;
         let exploit = stats.exploitation_score(ctx.player);

@@ -1,6 +1,6 @@
 use super::index::Id;
 use super::*;
-use crate::game::{Game, PlayerIndex};
+use crate::game::Game;
 
 use rustc_hash::FxHashMap;
 
@@ -54,8 +54,8 @@ pub trait BackpropStrategy: Clone + Sync + Send {
                         if let Some(child_id) = sibling_actions.get(action) {
                             let child = index.get_mut(*child_id);
                             (0..G::num_players()).for_each(|i| {
-                                child.stats.amaf[i].num_visits += 1;
-                                child.stats.amaf[i].score += utilities[i];
+                                child.stats.player[i].amaf.num_visits += 1;
+                                child.stats.player[i].amaf.score += utilities[i];
                             })
                         }
                     }

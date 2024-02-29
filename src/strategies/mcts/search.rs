@@ -348,7 +348,7 @@ where
                     let node = self.index.get(*node_id);
                     (
                         node.stats.num_visits,
-                        node.stats.scores[player.to_index()],
+                        node.stats.player[player.to_index()].score,
                         node.action(&self.index).clone(),
                     )
                 })
