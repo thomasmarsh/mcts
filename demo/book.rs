@@ -46,17 +46,16 @@ pub fn debug(book: &OpeningBook<Move>) {
 }
 
 fn make_mcts() -> TreeSearch<Druid, strategy::Ucb1Mast> {
-    TreeSearch::new()
-        .config(
-            SearchConfig::new()
-                .max_iterations(MAX_ITER)
-                .max_playout_depth(PLAYOUT_DEPTH)
-                .max_time(Duration::from_secs(MAX_TIME_SECS))
-                .expand_threshold(EXPAND_THRESHOLD)
-                .select(select::Ucb1::with_c(C_TUNED))
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
-        )
-        .verbose(VERBOSE)
+    TreeSearch::new().config(
+        SearchConfig::new()
+            .max_iterations(MAX_ITER)
+            .max_playout_depth(PLAYOUT_DEPTH)
+            .max_time(Duration::from_secs(MAX_TIME_SECS))
+            .expand_threshold(EXPAND_THRESHOLD)
+            .select(select::Ucb1::with_c(C_TUNED))
+            .simulate(simulate::EpsilonGreedy::with_epsilon(0.1))
+            .verbose(VERBOSE),
+    )
 }
 
 fn make_qbf(book: OpeningBook<Move>) -> TreeSearch<Druid, strategy::QuasiBestFirst> {

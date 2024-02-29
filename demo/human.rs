@@ -10,20 +10,19 @@ fn play<G: Game>()
 where
     G::S: std::fmt::Display,
 {
-    let mut ts: TreeSearch<G, strategy::Ucb1Grave> = TreeSearch::new()
-        .config(
-            SearchConfig::new()
-                .select(
-                    select::Ucb1Grave::new()
-                        .exploration_constant(1.32)
-                        .threshold(700)
-                        .bias(430.),
-                )
-                .max_iterations(300000)
-                // .max_time(Duration::from_secs(10))
-                .expand_threshold(1),
-        )
-        .verbose(true);
+    let mut ts: TreeSearch<G, strategy::Ucb1Grave> = TreeSearch::new().config(
+        SearchConfig::new()
+            .select(
+                select::Ucb1Grave::new()
+                    .exploration_constant(1.32)
+                    .threshold(700)
+                    .bias(430.),
+            )
+            .max_iterations(300000)
+            // .max_time(Duration::from_secs(10))
+            .expand_threshold(1)
+            .verbose(true),
+    );
 
     let mut human = HumanAgent::new();
 

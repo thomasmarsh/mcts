@@ -9,6 +9,7 @@ default-run = "playground"
 [profile.profiling]
 inherits = "release"
 debug = true
+lto=true
 
 [lib]
 name = "mcts"
@@ -54,6 +55,7 @@ proptest = "1.4.0"
 
 [profile.release]
 debug=true
+lto=true
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }

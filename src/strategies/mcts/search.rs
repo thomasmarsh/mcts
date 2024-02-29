@@ -17,8 +17,6 @@ use crate::strategies::Search;
 use crate::timer;
 use crate::util::pv_string;
 
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
 use rustc_hash::FxHashMap as HashMap;
 
 pub struct SearchContext<G: Game> {
@@ -82,9 +80,6 @@ where
     pub stats: TreeStats<G>,
     pub stack: Vec<Id>,
     pub trial: Option<Trial<G>>,
-    pub rng: SmallRng,
-    pub verbose: bool,
-    pub name: String,
 }
 
 impl<G, S> TreeSearch<G, S>
@@ -92,23 +87,8 @@ where
     G: Game,
     S: Strategy<G>,
 {
-    pub fn rng(mut self, rng: SmallRng) -> Self {
-        self.rng = rng;
-        self
-    }
-
     pub fn config(mut self, config: SearchConfig<G, S>) -> Self {
         self.config = config;
-        self
-    }
-
-    pub fn verbose(mut self, verbose: bool) -> Self {
-        self.verbose = verbose;
-        self
-    }
-
-    pub fn name(mut self, name: &str) -> Self {
-        self.name = name.into();
         self
     }
 }
@@ -142,11 +122,8 @@ where
             trial: None,
             index,
             config: S::config(),
-            rng: SmallRng::from_entropy(),
             timer: timer::Timer::new(),
             stats: Default::default(),
-            verbose: false,
-            name: format!("mcts[{}]", S::friendly_name()),
         }
     }
 
@@ -207,7 +184,9 @@ where
                     table: &self.table,
                     use_transpositions: self.config.use_transpositions,
                 };
-                self.config.select.best_child(&select_ctx, &mut self.rng)
+                self.config
+                    .select
+                    .best_child(&select_ctx, &mut self.config.rng)
             };
 
             let NodeState::Expanded {
@@ -265,7 +244,7 @@ where
                 table: &self.table,
                 use_transpositions: self.config.use_transpositions,
             },
-            &mut self.rng,
+            &mut self.config.rng,
         );
 
         match &(self.index.get(self.root_id).state) {
@@ -277,11 +256,11 @@ where
     #[inline]
     pub(crate) fn simulate(&mut self, state: &G::S, player: usize) -> Trial<G> {
         self.config.simulate.playout(
-            G::determinize(state.clone(), &mut self.rng),
+            G::determinize(state.clone(), &mut self.config.rng),
             self.config.max_playout_depth,
             &self.stats,
             player,
-            &mut self.rng,
+            &mut self.config.rng,
         )
     }
 
@@ -323,7 +302,7 @@ where
     }
 
     pub fn verbose_summary(&self, state: &G::S) {
-        if !self.verbose {
+        if !self.config.verbose {
             return;
         }
 
@@ -411,7 +390,7 @@ where
             let best_idx = self
                 .config
                 .final_action
-                .best_child(&select_ctx, &mut self.rng);
+                .best_child(&select_ctx, &mut self.config.rng);
             if let Some(child_id) = node.children()[best_idx] {
                 node_id = child_id;
                 node = self.index.get(node_id);
@@ -434,7 +413,8 @@ where
     type G = G;
 
     fn friendly_name(&self) -> String {
-        self.name.clone()
+        "".into()
+        // self.config.name.clone()
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
@@ -504,6 +484,6 @@ where
     }
 
     fn set_friendly_name(&mut self, name: &str) {
-        self.name = name.to_string();
+        self.config.name = name.to_string();
     }
 }

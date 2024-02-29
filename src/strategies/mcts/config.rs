@@ -2,6 +2,8 @@ use super::*;
 
 use crate::game::Game;
 use node::QInit;
+use rand::rngs::SmallRng;
+use rand_core::SeedableRng;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -64,6 +66,9 @@ where
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
     pub use_transpositions: bool,
+    pub rng: SmallRng,
+    pub verbose: bool,
+    pub name: String,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -83,6 +88,9 @@ where
             max_iterations: usize::MAX,
             max_time: Default::default(),
             use_transpositions: false,
+            rng: SmallRng::from_entropy(),
+            verbose: false,
+            name: format!("mcts[{}]", S::friendly_name()),
         }
     }
 }
@@ -148,6 +156,21 @@ where
 
     pub fn use_transpositions(mut self, use_transpositions: bool) -> Self {
         self.use_transpositions = use_transpositions;
+        self
+    }
+
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    pub fn rng(mut self, rng: SmallRng) -> Self {
+        self.rng = rng;
+        self
+    }
+
+    pub fn verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
         self
     }
 }

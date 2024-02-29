@@ -1,7 +1,9 @@
 from ConfigSpace import ConfigurationSpace
-from smac import BlackBoxFacade, Scenario
+import smac
+from smac import BlackBoxFacade, Callback, Scenario
 from pathlib import Path
 from ConfigSpace import Categorical, Float, Integer
+from smac.runhistory import TrialInfo, TrialValue
 
 import math
 import os
@@ -13,6 +15,18 @@ __license__ = "3-clause BSD"
 def find_root():
     return Path(__file__).parent.parent
 
+class CustomCallback(Callback):
+    def __init__(self) -> None:
+        return None
+
+    def on_tell_end(self, smbo: smac.main.smbo.SMBO, info: TrialInfo, value: TrialValue) -> bool | None:
+        incumbent = smbo.intensifier.get_incumbent()
+        assert incumbent is not None
+        print(f"Current incumbent: {incumbent.get_dictionary()}")
+        print(f"Current incumbent value: {smbo.runhistory.get_cost(incumbent)}")
+        print("")
+        return None
+
 class GameSearch:
     @property
     def configspace(self) -> ConfigurationSpace:
@@ -20,10 +34,10 @@ class GameSearch:
         c = Float('c', (0, 3), default=math.sqrt(2))
         #bias = Float('bias', (0, 1000), default=10e-6)
         #threshold = Integer('threshold', (0, 1000), default=100)
-        #epsilon = Float('epsilon', (0, 1), default=0.1)
+        epsilon = Float('epsilon', (0, 1), default=0.1)
         q_init = Categorical("q-init", ["Draw", "Infinity", "Loss", "Parent", "Win"])
         #cs.add_hyperparameters([c, bias, threshold, epsilon, q_init])
-        cs.add_hyperparameters([c, q_init])
+        cs.add_hyperparameters([c, q_init, epsilon])
         return cs
 
     def train(self) -> str:
@@ -37,7 +51,7 @@ if __name__ == "__main__":
     scenario = Scenario(
         model.configspace,
         deterministic=True,
-        n_trials=100,
+        n_trials=50,
         n_workers=(os.cpu_count() // 2))
     
     # Now we use SMAC to find the best hyperparameters
@@ -45,6 +59,7 @@ if __name__ == "__main__":
         scenario,
         model.train(),
         logging_level=20,
+        callbacks=[CustomCallback()],
         overwrite=True,  # Overrides any previous results that are found that are inconsistent with the meta-data
     )
     incumbent = smac.optimize()
@@ -52,8 +67,3 @@ if __name__ == "__main__":
     # Get cost of default configuration
     default_cost = smac.validate(model.configspace.get_default_configuration())
     print(f"Default cost: {default_cost}")
-
-    # Let's calculate the cost of the incumbent
-    incumbent_cost = smac.validate(incumbent)
-    print(f"Incumbent cost: {incumbent_cost}")
-    print(incumbent)

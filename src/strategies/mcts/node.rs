@@ -4,6 +4,7 @@ use crate::game::Action;
 use rustc_hash::FxHashMap as HashMap;
 use serde::Serialize;
 use std::ops::Add;
+use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
 
@@ -115,6 +116,23 @@ impl<A: Action> NodeStats<A> {
                 }
             }
             Win => 1.,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseQInitError;
+
+impl FromStr for QInit {
+    type Err = ParseQInitError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Draw" => Ok(QInit::Draw),
+            "Infinity" => Ok(QInit::Infinity),
+            "Loss" => Ok(QInit::Loss),
+            "Parent" => Ok(QInit::Parent),
+            "Win" => Ok(QInit::Win),
+            _ => Err(ParseQInitError),
         }
     }
 }
