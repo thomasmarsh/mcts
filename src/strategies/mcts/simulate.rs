@@ -174,18 +174,6 @@ where
             self.inner.select_move(state, available, stats, player, rng)
         }
     }
-
-    fn playout(
-        &mut self,
-        state: G::S,
-        max_playout_depth: usize,
-        stats: &TreeStats<G>,
-        player: usize,
-        rng: &mut SmallRng,
-    ) -> Trial<G> {
-        self.inner
-            .playout(state, max_playout_depth, stats, player, rng)
-    }
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -311,18 +299,6 @@ where
     ) -> &'a <G as Game>::A {
         self.choose(state, available, player)
             .unwrap_or_else(|| self.inner.select_move(state, available, stats, player, rng))
-    }
-
-    fn playout(
-        &mut self,
-        state: <G as Game>::S,
-        max_playout_depth: usize,
-        stats: &TreeStats<G>,
-        player: usize,
-        rng: &mut SmallRng,
-    ) -> Trial<G> {
-        self.inner
-            .playout(state, max_playout_depth, stats, player, rng)
     }
 }
 
