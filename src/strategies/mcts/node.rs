@@ -101,12 +101,8 @@ impl<A: Action> NodeStats<A> {
     }
 
     // These numbers come from Ludii
-    pub fn value_estimate_unvisited(
-        &self,
-        player_index: usize,
-        q_init: UnvisitedValueEstimate,
-    ) -> f64 {
-        use UnvisitedValueEstimate::*;
+    pub fn value_estimate_unvisited(&self, player_index: usize, q_init: QInit) -> f64 {
+        use QInit::*;
         match q_init {
             Draw => 0.,
             Infinity => 10000.0,
@@ -145,12 +141,12 @@ impl<A: Action> Add for NodeStats<A> {
     }
 }
 
-/// The UnvisitedValueEstimate is the Q value assigned to a node that has not
-/// been expanded or explored. The choice of a default unvisited child value
-/// will bias the search. Choosing win, loss, or draw can prompt an optimistic
-/// (greedy) or pessimistic move selection. Using the parent's value is a
-/// common approach and the default used here. Using infinity will encourage
-/// exploration of unvisited child nodes.
+/// QInit is an unvisited value estimate, the Q value assigned to a node
+/// that has not been expanded or explored. The choice of a default unvisited
+/// child value will bias the search. Choosing win, loss, or draw can prompt
+/// an optimistic (greedy) or pessimistic move selection. Using the parent's
+/// value is a common approach and the default used here. Using infinity will
+/// encourage exploration of unvisited child nodes.
 ///
 /// TODO: there are other strategies we could employ:
 ///
@@ -162,7 +158,7 @@ impl<A: Action> Add for NodeStats<A> {
 ///     this to the implementation of `SelectStratey`.
 #[allow(unused)]
 #[derive(Clone, Copy, Default)]
-pub enum UnvisitedValueEstimate {
+pub enum QInit {
     #[default]
     Parent,
     Win,

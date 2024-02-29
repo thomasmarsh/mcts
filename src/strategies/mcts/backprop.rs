@@ -4,7 +4,7 @@ use crate::game::Game;
 
 use rustc_hash::FxHashMap;
 
-pub trait BackpropStrategy: Clone + Sync + Send {
+pub trait BackpropStrategy: Clone + Sync + Send + Default {
     // TODO: cleanup the arguments to this, or just move it to TreeSearch
     #[allow(clippy::too_many_arguments)]
     fn update<G>(

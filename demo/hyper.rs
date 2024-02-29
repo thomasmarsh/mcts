@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 
 use mcts::game::Game;
-use mcts::strategies::mcts::node::UnvisitedValueEstimate;
+use mcts::strategies::mcts::node::QInit;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::strategy;
@@ -81,7 +81,7 @@ fn make_opponent(seed: u64) -> TS<strategy::Ucb1GraveMast> {
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
                 .expand_threshold(EXPAND_THRESHOLD)
-                .q_init(UnvisitedValueEstimate::Parent)
+                .q_init(QInit::Parent)
                 .select(select::Ucb1Grave {
                     exploration_constant: 0.69535,
                     threshold: 285,
@@ -94,7 +94,7 @@ fn make_opponent(seed: u64) -> TS<strategy::Ucb1GraveMast> {
         .rng(SmallRng::seed_from_u64(seed))
 }
 
-fn make_opponent_(seed: u64) -> TS<strategy::Ucb1> {
+fn _make_opponent(seed: u64) -> TS<strategy::Ucb1> {
     TS::default()
         .config(
             SearchConfig::default()
@@ -110,13 +110,13 @@ fn make_opponent_(seed: u64) -> TS<strategy::Ucb1> {
         .rng(SmallRng::seed_from_u64(seed))
 }
 
-fn parse_q_init(s: &str) -> Option<UnvisitedValueEstimate> {
+fn parse_q_init(s: &str) -> Option<QInit> {
     match s {
-        "Draw" => Some(UnvisitedValueEstimate::Draw),
-        "Infinity" => Some(UnvisitedValueEstimate::Infinity),
-        "Loss" => Some(UnvisitedValueEstimate::Loss),
-        "Parent" => Some(UnvisitedValueEstimate::Parent),
-        "Win" => Some(UnvisitedValueEstimate::Win),
+        "Draw" => Some(QInit::Draw),
+        "Infinity" => Some(QInit::Infinity),
+        "Loss" => Some(QInit::Loss),
+        "Parent" => Some(QInit::Parent),
+        "Win" => Some(QInit::Win),
         _ => None,
     }
 }

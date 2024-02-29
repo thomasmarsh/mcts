@@ -120,7 +120,7 @@ where
     SearchConfig<G, S>: Default,
 {
     fn default() -> Self {
-        Self::new(SearchConfig::default(), SmallRng::from_entropy())
+        Self::new()
     }
 }
 
@@ -130,7 +130,7 @@ where
     S: Strategy<G>,
     SearchConfig<G, S>: Default,
 {
-    pub fn new(config: SearchConfig<G, S>, rng: SmallRng) -> Self {
+    pub fn new() -> Self {
         let mut index = index::Arena::new();
         let root_id = index.insert(Node::new_root(G::num_players()));
         Self {
@@ -141,8 +141,8 @@ where
             table: TranspositionTable::default(),
             trial: None,
             index,
-            config,
-            rng,
+            config: SearchConfig::default(),
+            rng: SmallRng::from_entropy(),
             timer: timer::Timer::new(),
             stats: Default::default(),
             verbose: false,

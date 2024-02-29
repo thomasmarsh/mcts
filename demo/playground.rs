@@ -4,7 +4,7 @@ use mcts::game::Game;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
-use mcts::strategies::mcts::node::UnvisitedValueEstimate;
+use mcts::strategies::mcts::node::QInit;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::strategy;
@@ -30,13 +30,13 @@ fn ucd() {
     use mcts::games::traffic_lights::TrafficLights;
 
     type Uct = TreeSearch<TrafficLights, strategy::Ucb1>;
-    let uct = Uct::default()
+    let uct = Uct::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(10_000)
-                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                .q_init(QInit::Parent)
                 .expand_threshold(1)
-                .q_init(UnvisitedValueEstimate::Infinity)
+                .q_init(QInit::Infinity)
                 .select(select::Ucb1 {
                     exploration_constant: 0.01f64.sqrt(),
                 }),
@@ -44,14 +44,12 @@ fn ucd() {
         .verbose(false);
 
     type Ucd = TreeSearch<TrafficLights, strategy::Ucb1>;
-    let mut ucd = Ucd::default()
+    let mut ucd = Ucd::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(10_000)
-                // .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
-                .expand_threshold(1)
                 .use_transpositions(true)
-                .q_init(UnvisitedValueEstimate::Infinity)
+                .q_init(QInit::Infinity)
                 .select(select::Ucb1 {
                     exploration_constant: 0.01f64.sqrt(),
                 }),
@@ -60,14 +58,14 @@ fn ucd() {
     ucd.set_friendly_name("mcts[ucb1]+ucd");
 
     type UcdDm = TreeSearch<TrafficLights, strategy::Ucb1DM>;
-    let mut ucd_dm = UcdDm::default()
+    let mut ucd_dm = UcdDm::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(10_000)
-                // .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
+                // .q_init(mcts::strategies::mcts::node::QInit::Parent)
                 .expand_threshold(1)
                 .use_transpositions(true)
-                .q_init(UnvisitedValueEstimate::Infinity)
+                .q_init(QInit::Infinity)
                 .select(select::Ucb1 {
                     exploration_constant: 0.01f64.sqrt(),
                 }),
@@ -75,52 +73,43 @@ fn ucd() {
         .verbose(false);
     ucd_dm.set_friendly_name("mcts[ucb1]+ucd+dm");
 
-    let amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::default()
+    let amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .expand_threshold(1)
                 .max_iterations(10_000)
-                .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Amaf {
-                    exploration_constant: 0.01f64,
-                }),
+                .q_init(QInit::Infinity)
+                .select(select::Amaf::with_c(0.01f64)),
         )
         .verbose(false);
 
-    let mut amaf_ucd: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::default()
+    let mut amaf_ucd: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .expand_threshold(1)
                 .max_iterations(10_000)
                 .use_transpositions(true)
-                .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Amaf {
-                    exploration_constant: 0.01f64,
-                }),
+                .q_init(QInit::Infinity)
+                .select(select::Amaf::with_c(0.01f64)),
         )
         .verbose(false);
     amaf_ucd.set_friendly_name("mcts[amaf]+ucd");
 
-    let mut amaf_mast_ucd: TreeSearch<TrafficLights, strategy::AmafMast> = TreeSearch::default()
+    let mut amaf_mast_ucd: TreeSearch<TrafficLights, strategy::AmafMast> = TreeSearch::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .expand_threshold(1)
                 .max_iterations(10_000)
                 .use_transpositions(true)
-                .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Amaf {
-                    exploration_constant: 0.01f64,
-                })
-                .simulate(simulate::EpsilonGreedy {
-                    epsilon: 0.10,
-                    ..Default::default()
-                }),
+                .q_init(QInit::Infinity)
+                .select(select::Amaf::with_c(0.01f64))
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.10)),
         )
         .verbose(false);
     amaf_mast_ucd.set_friendly_name("mcts[amaf]+mast+ucd");
 
-    let tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::default().config(
-        SearchConfig::default()
+    let _tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
+        SearchConfig::new()
             .expand_threshold(1)
             .max_iterations(10_000)
             .select(select::Ucb1Tuned {
@@ -128,16 +117,13 @@ fn ucd() {
             }),
     );
 
-    let mut tuned_ucd: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::default()
-        .config(
-            SearchConfig::default()
-                .expand_threshold(1)
-                .max_iterations(10_000)
-                .use_transpositions(true)
-                .select(select::Ucb1Tuned {
-                    exploration_constant: 1.8617,
-                }),
-        );
+    let mut tuned_ucd: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
+        SearchConfig::new()
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .use_transpositions(true)
+            .select(select::Ucb1Tuned::with_c(1.8617)),
+    );
     tuned_ucd.set_friendly_name("mcts[ucb1_tuned]+ucd");
 
     let mut strats = vec![
@@ -165,20 +151,15 @@ fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
     type TS = TreeSearch<TrafficLights, strategy::AmafMast>;
-    let ts = TS::default()
+    let ts = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .expand_threshold(1)
                 .max_iterations(10_000)
                 .use_transpositions(true)
-                .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Amaf {
-                    exploration_constant: 0.01f64,
-                })
-                .simulate(simulate::EpsilonGreedy {
-                    epsilon: 0.10,
-                    ..Default::default()
-                }),
+                .q_init(QInit::Infinity)
+                .select(select::Amaf::with_c(0.01f64))
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
         )
         .verbose(true);
 
@@ -189,16 +170,16 @@ fn knightthrough() {
     use mcts::games::knightthrough::Knightthrough;
 
     type TS = TreeSearch<Knightthrough<8, 8>, strategy::Ucb1GraveMast>;
-    let ts = TS::default()
+    let ts = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(20000)
-                .select(select::Ucb1Grave {
-                    exploration_constant: 2.12652,
-                    threshold: 131,
-                    bias: 68.65,
-                    current_ref_id: None,
-                })
+                .select(
+                    select::Ucb1Grave::new()
+                        .exploration_constant(2.12652)
+                        .threshold(131)
+                        .bias(68.65),
+                )
                 .simulate(simulate::EpsilonGreedy::with_epsilon(0.12)),
         )
         .verbose(true);
@@ -210,16 +191,16 @@ fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
 
     type TS = TreeSearch<Breakthrough<6, 4>, strategy::Ucb1GraveMast>;
-    let ts = TS::default()
+    let ts = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_time(Duration::from_secs(10))
-                .select(select::Ucb1Grave {
-                    exploration_constant: 1.32562,
-                    threshold: 720,
-                    bias: 430.36,
-                    current_ref_id: None,
-                })
+                .select(
+                    select::Ucb1Grave::new()
+                        .exploration_constant(1.32562)
+                        .threshold(720)
+                        .bias(430.36),
+                )
                 .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
         )
         .verbose(true);
@@ -231,16 +212,16 @@ fn atarigo() {
     use mcts::games::atarigo::AtariGo;
 
     type TS = TreeSearch<AtariGo<5>, strategy::Ucb1GraveMast>;
-    let ts = TS::default()
+    let ts = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_time(Duration::from_secs(10))
-                .select(select::Ucb1Grave {
-                    exploration_constant: 1.32562,
-                    threshold: 720,
-                    bias: 430.36,
-                    current_ref_id: None,
-                })
+                .select(
+                    select::Ucb1Grave::new()
+                        .exploration_constant(1.32562)
+                        .threshold(720)
+                        .bias(430.36),
+                )
                 .simulate(simulate::EpsilonGreedy::with_epsilon(0.98)),
         )
         .verbose(true);
@@ -252,15 +233,15 @@ fn gonnect() {
     use mcts::games::gonnect::Gonnect;
 
     type TS = TreeSearch<Gonnect<7>, strategy::Ucb1Grave>;
-    let ts = TS::default()
+    let ts = TS::new()
         .config(
-            SearchConfig::default()
-                .select(select::Ucb1Grave {
-                    exploration_constant: 1.32,
-                    threshold: 700,
-                    bias: 430.,
-                    current_ref_id: None,
-                })
+            SearchConfig::new()
+                .select(
+                    select::Ucb1Grave::new()
+                        .exploration_constant(1.32)
+                        .threshold(700)
+                        .bias(430.),
+                )
                 .max_iterations(300000)
                 // .max_time(Duration::from_secs(10))
                 .expand_threshold(1),
@@ -275,17 +256,17 @@ fn expansion_test() {
 
     type TS = TreeSearch<ttt::BiddingTicTacToe, strategy::Ucb1>;
 
-    let expand5 = TS::default()
+    let expand5 = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(10000)
                 .expand_threshold(5),
         )
         .name("expand5");
 
-    let expand0 = TS::default()
+    let expand0 = TS::new()
         .config(
-            SearchConfig::default()
+            SearchConfig::new()
                 .max_iterations(10000)
                 .expand_threshold(0),
         )
@@ -302,8 +283,8 @@ fn expansion_test() {
 }
 
 fn ucb_test() {
-    let mut flat = NimFlatMC::default();
-    let mut ucb1 = NimFlatMC::default();
+    let mut flat = NimFlatMC::new();
+    let mut ucb1 = NimFlatMC::new();
     flat.samples_per_move = 5000;
     ucb1.samples_per_move = 5000;
     ucb1.ucb1 = Some(100f64.sqrt());
@@ -342,7 +323,7 @@ struct BattleConfig {
 fn battle_nim_mcts(config: &BattleConfig) {
     for samples in &config.samples_per_move {
         println!("samples per move: {}", samples);
-        let mut mcts = NimMCTS::default().config(SearchConfig::default().max_iterations(*samples));
+        let mut mcts = NimMCTS::new().config(SearchConfig::new().max_iterations(*samples));
         let mut flat_mc = NimFlatMC::new().set_samples_per_move(*samples as u32);
 
         let mut fst = Vec::with_capacity(100);
@@ -370,7 +351,7 @@ fn battle_ttt(config: &BattleConfig) {
     for samples in &config.samples_per_move {
         println!("samples per move: {}", samples);
         let mut flat_mc = TttFlatMC::new().set_samples_per_move(*samples as u32);
-        let mut mcts = TttMCTS::default();
+        let mut mcts = TttMCTS::new();
         mcts.config.max_iterations = *samples;
 
         let mut fst = Vec::with_capacity(100);
@@ -395,7 +376,7 @@ fn battle_ttt(config: &BattleConfig) {
 }
 
 fn demo_mcts() {
-    let mut mcts = TttMCTS::default();
+    let mut mcts = TttMCTS::new();
     mcts.verbose = true;
     mcts.config.max_time = Duration::from_secs(5);
     mcts.config.max_iterations = usize::MAX;
@@ -422,7 +403,7 @@ fn demo_mcts() {
 }
 
 fn demo_nim() {
-    let mut mcts = NimMCTS::default();
+    let mut mcts = NimMCTS::new();
     mcts.verbose = true;
     mcts.config.max_time = Duration::from_secs(5);
     mcts.config.max_iterations = usize::MAX;

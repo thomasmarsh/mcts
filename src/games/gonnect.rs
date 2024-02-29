@@ -314,7 +314,7 @@ impl<const N: usize> crate::strategies::mcts::render::NodeRender for State<N> {}
 mod tests {
     use crate::{
         strategies::{
-            mcts::{render, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
             Search,
         },
         util::random_play,
@@ -329,10 +329,10 @@ mod tests {
 
     #[test]
     fn test_render() {
-        let mut search = TreeSearch::<Gonnect<8>, strategy::Ucb1>::default().config(
-            SearchConfig::default()
+        let mut search = TreeSearch::<Gonnect<8>, strategy::Ucb1>::new().config(
+            SearchConfig::new()
                 .expand_threshold(1)
-                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
+                .q_init(QInit::Draw)
                 .max_iterations(20),
         );
         _ = search.choose_action(&State::default());

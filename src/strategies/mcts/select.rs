@@ -12,7 +12,7 @@ use std::ops::Deref;
 use std::sync::atomic::Ordering::Relaxed;
 
 pub struct SelectContext<'a, G: Game> {
-    pub q_init: node::UnvisitedValueEstimate,
+    pub q_init: node::QInit,
     pub current_id: Id,
     pub stack: Vec<Id>,
     pub state: &'a G::S,
@@ -86,7 +86,7 @@ impl<'a, G: Game> SelectContext<'a, G> {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send {
+pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     type Score: PartialOrd + Copy;
     type Aux: Copy;
 
@@ -118,6 +118,26 @@ pub struct EpsilonGreedy<G: Game, S: SelectStrategy<G>> {
     pub epsilon: f64,
     pub inner: S,
     pub marker: std::marker::PhantomData<G>,
+}
+
+impl<G, S> EpsilonGreedy<G, S>
+where
+    G: Game,
+    S: SelectStrategy<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn epsilon(mut self, epsilon: f64) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
+    }
 }
 
 impl<G, S> Default for EpsilonGreedy<G, S>
@@ -327,6 +347,14 @@ pub struct Ucb1 {
     pub exploration_constant: f64,
 }
 
+impl Ucb1 {
+    pub fn with_c(exploration_constant: f64) -> Self {
+        Self {
+            exploration_constant,
+        }
+    }
+}
+
 impl Default for Ucb1 {
     fn default() -> Self {
         Self {
@@ -375,6 +403,14 @@ impl Default for Ucb1Tuned {
     fn default() -> Self {
         Self {
             exploration_constant: 2f64.sqrt(),
+        }
+    }
+}
+
+impl Ucb1Tuned {
+    pub fn with_c(exploration_constant: f64) -> Self {
+        Self {
+            exploration_constant,
         }
     }
 }
@@ -444,6 +480,22 @@ pub struct McGrave {
     pub bias: f64,
     // TODO: thread local
     pub current_ref_id: Option<index::Id>,
+}
+
+impl McGrave {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn threshold(mut self, threshold: u32) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    pub fn bias(mut self, bias: f64) -> Self {
+        self.bias = bias;
+        self
+    }
 }
 
 impl Default for McGrave {
@@ -519,6 +571,12 @@ impl<G: Game> SelectStrategy<G> for McGrave {
 #[derive(Clone)]
 pub struct McBrave {
     pub bias: f64,
+}
+
+impl McBrave {
+    pub fn with_bias(bias: f64) -> Self {
+        Self { bias }
+    }
 }
 
 impl Default for McBrave {
@@ -603,6 +661,23 @@ pub struct Amaf {
     pub exploration_constant: f64,
 }
 
+impl Amaf {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_c(exploration_constant: f64) -> Self {
+        Self {
+            exploration_constant,
+        }
+    }
+
+    pub fn exploration_constant(mut self, exploration_constant: f64) -> Self {
+        self.exploration_constant = exploration_constant;
+        self
+    }
+}
+
 impl Default for Amaf {
     fn default() -> Self {
         Self {
@@ -658,6 +733,27 @@ pub struct Ucb1Grave {
     pub exploration_constant: f64,
     // TODO: thread local
     pub current_ref_id: Option<index::Id>,
+}
+
+impl Ucb1Grave {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn threshold(mut self, threshold: u32) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    pub fn bias(mut self, bias: f64) -> Self {
+        self.bias = bias;
+        self
+    }
+
+    pub fn exploration_constant(mut self, exploration_constant: f64) -> Self {
+        self.exploration_constant = exploration_constant;
+        self
+    }
 }
 
 impl Default for Ucb1Grave {
@@ -809,6 +905,42 @@ pub struct QuasiBestFirst<G: Game, S: Strategy<G>> {
     pub epsilon: f64,
     pub k: Vec<f64>,
     pub key_init: Vec<G::A>,
+}
+
+impl<G, S> QuasiBestFirst<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    TreeSearch<G, S>: Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn book(mut self, book: book::OpeningBook<G::A>) -> Self {
+        self.book = book;
+        self
+    }
+
+    pub fn search(mut self, search: TreeSearch<G, S>) -> Self {
+        self.search = search;
+        self
+    }
+
+    pub fn epsilon(mut self, epsilon: f64) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+
+    pub fn k(mut self, k: Vec<f64>) -> Self {
+        self.k = k;
+        self
+    }
+
+    pub fn key_init(mut self, key_init: Vec<G::A>) -> Self {
+        self.key_init = key_init;
+        self
+    }
 }
 
 impl<G, S> Default for QuasiBestFirst<G, S>

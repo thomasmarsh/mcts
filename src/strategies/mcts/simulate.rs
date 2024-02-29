@@ -28,7 +28,7 @@ pub struct Trial<G: Game> {
     pub depth: usize,
 }
 
-pub trait SimulateStrategy<G>: Clone + Sync + Send
+pub trait SimulateStrategy<G>: Clone + Sync + Send + Default
 where
     G: Game,
 {
@@ -107,8 +107,8 @@ where
     S: SimulateStrategy<G>,
 {
     pub epsilon: f64,
-    pub inner: S,
-    pub marker: PhantomData<G>,
+    inner: S,
+    marker: PhantomData<G>,
 }
 
 impl<G, S> EpsilonGreedy<G, S>
@@ -121,6 +121,16 @@ where
             epsilon,
             ..Default::default()
         }
+    }
+
+    pub fn epsilon(mut self, epsilon: f64) -> Self {
+        self.epsilon = epsilon;
+        self
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
     }
 }
 
@@ -188,18 +198,48 @@ pub enum DecisiveMoveMode {
     WinLossDraw, // Any terminal state
 }
 
-impl DecisiveMoveMode {
-    #[inline]
-    fn choose<'a, G: Game>(
-        self,
+#[derive(Clone)]
+pub struct DecisiveMove<G, S = Uniform>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    mode: DecisiveMoveMode,
+    inner: S,
+    marker: PhantomData<G>,
+}
+
+impl<G, S> DecisiveMove<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn mode(mut self, mode: DecisiveMoveMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
+    }
+
+    fn choose<'a>(
+        &self,
         state: &<G as Game>::S,
         available: &'a [<G as Game>::A],
         player: usize,
     ) -> Option<&'a <G as Game>::A> {
+        use DecisiveMoveMode::*;
+
         let mut draw = None;
         let mut loser = None;
-        match self {
-            Self::WinLossDraw => {
+        match self.mode {
+            WinLossDraw => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
                     if G::is_terminal(&child_state) {
@@ -209,7 +249,7 @@ impl DecisiveMoveMode {
                 None
             }
 
-            Self::WinLoss => {
+            WinLoss => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
                     if G::is_terminal(&child_state) {
@@ -222,7 +262,7 @@ impl DecisiveMoveMode {
                 draw
             }
 
-            Self::Win => {
+            Win => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
                     if G::is_terminal(&child_state) {
@@ -240,17 +280,6 @@ impl DecisiveMoveMode {
             }
         }
     }
-}
-
-#[derive(Clone)]
-pub struct DecisiveMove<G, S = Uniform>
-where
-    G: Game,
-    S: SimulateStrategy<G> + Default,
-{
-    mode: DecisiveMoveMode,
-    pub inner: S,
-    pub marker: PhantomData<G>,
 }
 
 impl<G, S> Default for DecisiveMove<G, S>
@@ -280,8 +309,7 @@ where
         player: usize,
         rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
-        self.mode
-            .choose::<G>(state, available, player)
+        self.choose(state, available, player)
             .unwrap_or_else(|| self.inner.select_move(state, available, stats, player, rng))
     }
 
@@ -349,11 +377,22 @@ pub struct MetaMcts<G: Game, S: Strategy<G>> {
     pub inner: TreeSearch<G, S>,
 }
 
+impl<G, S> Default for MetaMcts<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+{
+    fn default() -> Self {
+        Self {
+            inner: TreeSearch::default(),
+        }
+    }
+}
+
 impl<G, S> SimulateStrategy<G> for MetaMcts<G, S>
 where
     G: Game,
     S: Strategy<G>,
-    SearchConfig<G, S>: Default,
 {
     fn select_move<'a>(
         &mut self,

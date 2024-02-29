@@ -268,7 +268,7 @@ mod tests {
     use crate::{
         game::Game,
         strategies::{
-            mcts::{render, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
             Search,
         },
         util::random_play,
@@ -321,7 +321,7 @@ mod tests {
             SearchConfig::default()
                 .expand_threshold(0)
                 .max_iterations(20)
-                .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Loss)
+                .q_init(QInit::Loss)
                 .use_transpositions(true),
         );
         let state = HashedPosition::default();

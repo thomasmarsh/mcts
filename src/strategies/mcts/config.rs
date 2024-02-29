@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::game::Game;
-use node::UnvisitedValueEstimate;
+use node::QInit;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -34,26 +34,31 @@ impl std::ops::BitOr for BackpropFlags {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait Strategy<G: Game>: Clone + Sync + Send {
+pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
     type Select: select::SelectStrategy<G>;
     type Simulate: simulate::SimulateStrategy<G>;
     type Backprop: backprop::BackpropStrategy;
     type FinalAction: select::SelectStrategy<G>;
 
     fn friendly_name() -> String;
+
+    // Override new to provide strategy specific defaults
+    fn config() -> SearchConfig<G, Self> {
+        SearchConfig::default()
+    }
 }
 
 #[derive(Clone)]
 pub struct SearchConfig<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: Strategy<G> + Default,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
     pub backprop: S::Backprop,
     pub final_action: S::FinalAction,
-    pub q_init: UnvisitedValueEstimate,
+    pub q_init: QInit,
     pub expand_threshold: u32,
     pub max_playout_depth: usize,
     pub max_iterations: usize,
@@ -61,11 +66,36 @@ where
     pub use_transpositions: bool,
 }
 
+impl<G, S> Default for SearchConfig<G, S>
+where
+    G: Game,
+    S: Strategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            select: Default::default(),
+            simulate: Default::default(),
+            backprop: Default::default(),
+            final_action: Default::default(),
+            q_init: QInit::default(),
+            expand_threshold: 1,
+            max_playout_depth: usize::MAX,
+            max_iterations: usize::MAX,
+            max_time: Default::default(),
+            use_transpositions: false,
+        }
+    }
+}
+
 impl<G, S> SearchConfig<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: Strategy<G> + Default,
 {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn select(mut self, select: S::Select) -> Self {
         self.select = select;
         self
@@ -86,7 +116,7 @@ where
         self
     }
 
-    pub fn q_init(mut self, q_init: UnvisitedValueEstimate) -> Self {
+    pub fn q_init(mut self, q_init: QInit) -> Self {
         self.q_init = q_init;
         self
     }
