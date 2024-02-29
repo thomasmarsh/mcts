@@ -39,6 +39,25 @@ pub enum Piece {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub u8);
 
+impl Move {
+    fn new(piece: Piece, index: usize) -> Self {
+        Move(((index as u8) << 2) | piece as u8)
+    }
+
+    fn _piece(self) -> Piece {
+        match self.0 & 0b11 {
+            0b01 => Piece::R,
+            0b10 => Piece::Y,
+            0b11 => Piece::G,
+            _ => unreachable!(),
+        }
+    }
+
+    fn index(self) -> usize {
+        (self.0 >> 2) as usize
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -106,16 +125,17 @@ impl Position {
     }
 
     pub fn gen_moves(&self, actions: &mut Vec<Move>) {
-        (0..9).for_each(|i| {
-            if self.get(i) != Some(Piece::G) {
-                actions.push(Move(i as u8))
-            }
+        (0..9).for_each(|i| match self.get(i) {
+            Some(Piece::Y) => actions.push(Move::new(Piece::G, i)),
+            Some(Piece::R) => actions.push(Move::new(Piece::Y, i)),
+            None => actions.push(Move::new(Piece::R, i)),
+            _ => (),
         });
     }
 
     pub fn apply(&mut self, m: Move) {
-        assert!(self.get(m.0 as usize) != Some(Piece::G));
-        self.incr(m.0 as usize);
+        assert!(self.get(m.index()) != Some(Piece::G));
+        self.incr(m.index());
         self.winner = self.has_winner();
         if !self.winner {
             self.turn = self.turn.next();
@@ -157,7 +177,7 @@ impl HashedPosition {
         use super::ttt::sym;
         use super::ttt::NUM_SYMMETRIES;
         let mut symmetries = [0; NUM_SYMMETRIES];
-        sym::index_symmetries(m.0 as usize, &mut symmetries);
+        sym::index_symmetries(m.index(), &mut symmetries);
         for (i, index) in symmetries.iter().enumerate() {
             let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
             let q = (index << 3) | (value << 1) | self.position.turn as usize;
@@ -225,8 +245,9 @@ impl Game for TrafficLights {
     }
 
     fn notation(_state: &Self::S, m: &Self::A) -> String {
-        let x = m.0 % 3;
-        let y = m.0 / 3;
+        let i = m.index();
+        let x = i % 3;
+        let y = i / 3;
         format!("({}, {})", x, y)
     }
 

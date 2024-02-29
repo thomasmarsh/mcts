@@ -164,17 +164,20 @@ fn ucd() {
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    type TS = TreeSearch<TrafficLights, strategy::Ucb1>;
+    type TS = TreeSearch<TrafficLights, strategy::AmafMast>;
     let ts = TS::default()
         .config(
             SearchConfig::default()
+                .expand_threshold(1)
                 .max_iterations(10_000)
-                .q_init(mcts::strategies::mcts::node::UnvisitedValueEstimate::Parent)
-                .expand_threshold(0)
                 .use_transpositions(true)
                 .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Ucb1 {
-                    exploration_constant: 0.001,
+                .select(select::Amaf {
+                    exploration_constant: 0.01f64,
+                })
+                .simulate(simulate::EpsilonGreedy {
+                    epsilon: 0.10,
+                    ..Default::default()
                 }),
         )
         .verbose(true);
