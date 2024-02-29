@@ -75,32 +75,49 @@ fn ucd() {
         .verbose(false);
     ucd_dm.set_friendly_name("mcts[ucb1]+ucd+dm");
 
-    let mast: TreeSearch<TrafficLights, strategy::Ucb1Mast> = TreeSearch::default()
+    let amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::default()
         .config(
             SearchConfig::default()
                 .expand_threshold(1)
                 .max_iterations(10_000)
-                .select(select::Ucb1 {
-                    exploration_constant: 1.86169408634305,
-                })
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.10750788170844316)),
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Amaf {
+                    exploration_constant: 0.01f64,
+                }),
         )
         .verbose(false);
 
-    let mut mast_ucd: TreeSearch<TrafficLights, strategy::Ucb1Mast> = TreeSearch::default()
+    let mut amaf_ucd: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::default()
         .config(
             SearchConfig::default()
                 .expand_threshold(1)
                 .max_iterations(10_000)
                 .use_transpositions(true)
                 .q_init(UnvisitedValueEstimate::Infinity)
-                .select(select::Ucb1 {
-                    exploration_constant: 0.01,
-                })
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.10750788170844316)),
+                .select(select::Amaf {
+                    exploration_constant: 0.01f64,
+                }),
         )
         .verbose(false);
-    mast_ucd.set_friendly_name("mcts[ucb1_mast]+ucd");
+    amaf_ucd.set_friendly_name("mcts[amaf]+ucd");
+
+    let mut amaf_mast_ucd: TreeSearch<TrafficLights, strategy::AmafMast> = TreeSearch::default()
+        .config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_iterations(10_000)
+                .use_transpositions(true)
+                .q_init(UnvisitedValueEstimate::Infinity)
+                .select(select::Amaf {
+                    exploration_constant: 0.01f64,
+                })
+                .simulate(simulate::EpsilonGreedy {
+                    epsilon: 0.10,
+                    ..Default::default()
+                }),
+        )
+        .verbose(false);
+    amaf_mast_ucd.set_friendly_name("mcts[amaf]+mast+ucd");
 
     let tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::default().config(
         SearchConfig::default()
@@ -127,6 +144,9 @@ fn ucd() {
         AnySearch::new(uct),
         AnySearch::new(ucd),
         AnySearch::new(ucd_dm),
+        AnySearch::new(amaf),
+        AnySearch::new(amaf_ucd),
+        AnySearch::new(amaf_mast_ucd),
         // AnySearch::new(mast),
         // AnySearch::new(mast_ucd),
         // AnySearch::new(tuned),

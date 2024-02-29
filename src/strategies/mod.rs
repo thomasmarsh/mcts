@@ -106,7 +106,7 @@ mod tests {
         };
 
         // Configure new MCTS
-        type TS = mcts::TreeSearch<G, mcts::strategy::ScalarAmaf>;
+        type TS = mcts::TreeSearch<G, mcts::strategy::Amaf>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .expand_threshold(1)
