@@ -20,7 +20,6 @@ use rand_core::SeedableRng;
 
 const ROUNDS: usize = 20;
 const PLAYOUT_DEPTH: usize = 200;
-const C_TUNED: f64 = 1.625;
 const MAX_ITER: usize = 10_000;
 const EXPAND_THRESHOLD: u32 = 1;
 const VERBOSE: bool = false;
@@ -102,9 +101,7 @@ fn _make_opponent(seed: u64) -> TS<strategy::Ucb1> {
                 .max_playout_depth(PLAYOUT_DEPTH)
                 .max_time(Duration::from_secs(MAX_TIME_SECS))
                 .expand_threshold(EXPAND_THRESHOLD)
-                .select(select::Ucb1 {
-                    exploration_constant: C_TUNED,
-                }),
+                .select(select::Ucb1::with_c(1.625)),
         )
         .verbose(VERBOSE)
         .rng(SmallRng::seed_from_u64(seed))

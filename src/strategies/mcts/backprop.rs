@@ -9,7 +9,6 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
         &self,
-        ctx: &mut SearchContext<G>,
         mut stack: Vec<Id>,
         global: &mut TreeStats<G>,
         index: &mut TreeIndex<G::A>,

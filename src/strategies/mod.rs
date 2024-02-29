@@ -129,7 +129,7 @@ mod tests {
                 G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
             ts.trial = Some(trial);
-            ts.backprop(&mut ctx, G::player_to_move(&init_state).to_index());
+            ts.backprop(G::player_to_move(&init_state).to_index());
 
             ctx.current_id
         };

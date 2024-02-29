@@ -654,8 +654,6 @@ impl<G: Game> SelectStrategy<G> for McBrave {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// This one was found in some implementations of RAVE. It seems strong, but I
-// can't find references to it in the literature.
 #[derive(Clone)]
 pub struct Amaf {
     pub exploration_constant: f64,

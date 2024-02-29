@@ -286,7 +286,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn backprop(&mut self, ctx: &mut SearchContext<G>, player: usize) {
+    pub(crate) fn backprop(&mut self, player: usize) {
         self.stats.iter_count += 1;
         self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
@@ -295,7 +295,6 @@ where
             // TODO: may as well pass &mut self? Seems like the separation
             // of concerns is not ideal.
             .update(
-                ctx,
                 self.stack.clone(),
                 &mut self.stats,
                 &mut self.index,
@@ -456,7 +455,7 @@ where
 
             self.select(&mut ctx);
             self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state).to_index()));
-            self.backprop(&mut ctx, G::player_to_move(state).to_index());
+            self.backprop(G::player_to_move(state).to_index());
         }
 
         self.compute_pv();
