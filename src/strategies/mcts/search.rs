@@ -141,7 +141,7 @@ where
             table: TranspositionTable::default(),
             trial: None,
             index,
-            config: SearchConfig::default(),
+            config: S::config(),
             rng: SmallRng::from_entropy(),
             timer: timer::Timer::new(),
             stats: Default::default(),
