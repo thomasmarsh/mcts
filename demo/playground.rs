@@ -4,11 +4,13 @@ use mcts::game::Game;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
+use mcts::strategies::mcts::backprop;
 use mcts::strategies::mcts::node::QInit;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
+use mcts::strategies::mcts::Strategy;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
@@ -54,7 +56,6 @@ fn ucd() {
         SearchConfig::new()
             .name("mcts[ucb1]+ucd+dm")
             .max_iterations(10_000)
-            // .q_init(mcts::strategies::mcts::node::QInit::Parent)
             .expand_threshold(1)
             .use_transpositions(true)
             .q_init(QInit::Infinity)
@@ -79,15 +80,31 @@ fn ucd() {
             .select(select::Amaf::with_c(0.01f64)),
     );
 
-    let amaf_mast_ucd: TreeSearch<TrafficLights, strategy::AmafMast> = TreeSearch::new().config(
+    #[derive(Clone, Copy, Default)]
+    struct AmafMastDm;
+
+    impl Strategy<TrafficLights> for AmafMastDm {
+        type Select = select::Amaf;
+        type Simulate = simulate::DecisiveMove<
+            TrafficLights,
+            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
+        >;
+        type Backprop = backprop::Classic;
+        type FinalAction = select::RobustChild;
+    }
+
+    // hash=4b2e92 cost=0.2833333333333333 dict={'c': 0.1662923670765587, 'epsilon': 0.5482781277779128, 'final-action': 'robust_child', 'q-init': 'Win'}
+    let amaf_mast_ucd: TreeSearch<TrafficLights, AmafMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[amaf]+mast+ucd")
             .expand_threshold(1)
             .max_iterations(10_000)
             .use_transpositions(true)
             .q_init(QInit::Draw)
-            .select(select::Amaf::with_c(0.6543347))
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.432)),
+            .select(select::Amaf::with_c(0.25).alpha(0.29292))
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.74)),
+            ),
     );
 
     let _tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
@@ -130,15 +147,31 @@ fn ucd() {
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    type TS = TreeSearch<TrafficLights, strategy::AmafMast>;
+    // alpha': 0.2929180087521672, 'c': 0.2548927841708064, 'epsilon': 0.7460807226598263, 'final-action': 'robust_child', 'q-init': 'Draw'
+    #[derive(Clone, Copy, Default)]
+    struct AmafMastDm;
+
+    impl Strategy<TrafficLights> for AmafMastDm {
+        type Select = select::Amaf;
+        type Simulate = simulate::DecisiveMove<
+            TrafficLights,
+            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
+        >;
+        type Backprop = backprop::Classic;
+        type FinalAction = select::RobustChild;
+    }
+
+    type TS = TreeSearch<TrafficLights, AmafMastDm>;
     let ts = TS::new().config(
         SearchConfig::new()
             .expand_threshold(1)
             .max_iterations(10_000)
             .use_transpositions(true)
-            .q_init(QInit::Infinity)
-            .select(select::Amaf::with_c(0.01f64))
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.1))
+            .q_init(QInit::Draw)
+            .select(select::Amaf::with_c(0.25).alpha(0.29292))
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.74)),
+            )
             .verbose(true),
     );
 

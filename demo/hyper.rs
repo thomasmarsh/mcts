@@ -2,6 +2,8 @@
 /// [SMAC3](https://github.com/automl/SMAC3) for hyperparameter optimization. We
 /// Could do a grid search, but we'll try to do something smarter to save time.
 use clap::Parser;
+use mcts::strategies::mcts::select::SelectStrategy;
+use std::marker::PhantomData;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -58,19 +60,28 @@ struct Args {
 
     #[arg(long)]
     q_init: String,
+
+    #[arg(long)]
+    final_action: String,
+
+    #[arg(long)]
+    alpha: f64,
+
+    #[arg(long)]
+    a: Option<f64>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Copy, Clone, Default)]
-struct CandidateStrategy;
+struct CandidateStrategy<FinalAction: SelectStrategy<G>>(PhantomData<FinalAction>);
 
-impl CandidateStrategy {
-    fn config_with_args(args: &Args) -> SearchConfig<G, CandidateStrategy> {
+impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
+    fn config_with_args(args: &Args) -> SearchConfig<G, Self> {
         Self::config()
             .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
             .use_transpositions(true)
-            .select(select::Amaf::with_c(args.c))
+            .select(select::Amaf::with_c(args.c).alpha(args.alpha))
             .simulate(
                 simulate::DecisiveMove::new()
                     .mode(simulate::DecisiveMoveMode::WinLoss)
@@ -80,11 +91,11 @@ impl CandidateStrategy {
     }
 }
 
-impl Strategy<G> for CandidateStrategy {
+impl<FinalAction: SelectStrategy<G>> Strategy<G> for CandidateStrategy<FinalAction> {
     type Select = select::Amaf;
     type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
     type Backprop = backprop::Classic;
-    type FinalAction = select::MaxAvgScore;
+    type FinalAction = FinalAction;
 
     fn friendly_name() -> String {
         "candidate".into()
@@ -95,8 +106,10 @@ impl Strategy<G> for CandidateStrategy {
     }
 }
 
-fn make_candidate(args: Args) -> TreeSearch<G, CandidateStrategy> {
-    TS::default().config(CandidateStrategy::config_with_args(&args))
+fn make_candidate<FinalAction: SelectStrategy<G>>(
+    args: &Args,
+) -> TreeSearch<G, CandidateStrategy<FinalAction>> {
+    TS::default().config(CandidateStrategy::config_with_args(args))
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -134,7 +147,16 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
 fn optimize() {
     let args = Args::parse();
     let opponent = make_opponent(args.seed);
-    let candidate = make_candidate(Args::parse());
+    let candidate = match args.final_action.as_str() {
+        "max_avg" => AnySearch::new(make_candidate::<select::SecureChild>(&args)),
+        "secure_child" => {
+            let mut ts = make_candidate::<select::SecureChild>(&args);
+            ts.config.final_action.a = args.a.unwrap();
+            AnySearch::new(ts)
+        }
+        "robust_child" => AnySearch::new(make_candidate::<select::RobustChild>(&args)),
+        _ => unreachable!(),
+    };
 
     let mut strategies = vec![AnySearch::new(opponent), AnySearch::new(candidate)];
     let results = round_robin_multiple::<G, AnySearch<'_, G>>(

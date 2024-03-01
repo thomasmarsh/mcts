@@ -1,47 +1,62 @@
-from ConfigSpace import ConfigurationSpace
+from ConfigSpace import ConfigurationSpace, EqualsCondition
 import smac
-from smac import BlackBoxFacade, Callback, Scenario
+from smac import BlackBoxFacade, HyperparameterOptimizationFacade, Callback, Scenario
 from pathlib import Path
 from ConfigSpace import Categorical, Float, Integer
 from smac.runhistory import TrialInfo, TrialValue
+from smac.utils.configspace import get_config_hash
 
 import math
 import os
-
-
-__copyright__ = "Copyright 2021, AutoML.org Freiburg-Hannover"
-__license__ = "3-clause BSD"
 
 def find_root():
     return Path(__file__).parent.parent
 
 class CustomCallback(Callback):
     def __init__(self) -> None:
+        self.last = None
+        return None
+
+    def on_end(self, smbo: smac.main.smbo.SMBO):
+        return None
+    
+
+    def on_next_configurations_end(self, config_selector, config):
+        print(config)
         return None
 
     def on_tell_end(self, smbo: smac.main.smbo.SMBO, info: TrialInfo, value: TrialValue) -> bool | None:
         incumbent = smbo.intensifier.get_incumbent()
+        smbo.intensifier._n_seeds
         assert incumbent is not None
-        print(f"Current incumbent: {incumbent.get_dictionary()}")
-        print(f"Current incumbent value: {smbo.runhistory.get_cost(incumbent)}")
-        print("")
+        hash = get_config_hash(incumbent)
+        if hash != self.last:
+            cost = smbo.runhistory.get_cost(incumbent)
+            print(f"hash={hash} cost={cost} dict={dict(incumbent)}")
+            print("")
+            self.last = hash
         return None
 
 class GameSearch:
     @property
     def configspace(self) -> ConfigurationSpace:
         cs = ConfigurationSpace(seed=0)
+        alpha = Float('alpha', (0,1), default=0.5)
         c = Float('c', (0, 3), default=math.sqrt(2))
-        #bias = Float('bias', (0, 1000), default=10e-6)
-        #threshold = Integer('threshold', (0, 1000), default=100)
         epsilon = Float('epsilon', (0, 1), default=0.1)
-        q_init = Categorical("q-init", ["Draw", "Infinity", "Loss", "Parent", "Win"])
-        #cs.add_hyperparameters([c, bias, threshold, epsilon, q_init])
-        cs.add_hyperparameters([c, q_init, epsilon])
+        q_init = Categorical('q-init', ['Draw', 'Infinity', 'Loss', 'Parent', 'Win'])
+        final_action = Categorical('final-action', ['max_avg', 'robust_child', 'secure_child'])
+        a = Float('a', (0,40), default=4.0)
+        cs.add_hyperparameters([alpha, a, c, q_init, epsilon, final_action])
+
+        cond = EqualsCondition(a, final_action, 'secure_child')
+        cs.add_condition(cond)
+        print(dict(cs))
+
         return cs
 
     def train(self) -> str:
-        return str(find_root() / "target" / "release" / "hyper")
+        return str(find_root() / 'target' / 'release' / 'hyper')
 
 
 if __name__ == "__main__":
@@ -50,20 +65,26 @@ if __name__ == "__main__":
     # Scenario object specifying the optimization "environment"
     scenario = Scenario(
         model.configspace,
-        deterministic=True,
-        n_trials=50,
+        deterministic=False,
+        n_trials=1000,
         n_workers=(os.cpu_count() // 2))
+
+    Facade = HyperparameterOptimizationFacade
     
+    config_selector = Facade.get_config_selector(scenario, retrain_after=1)
+
     # Now we use SMAC to find the best hyperparameters
-    smac = BlackBoxFacade(
+    smac = Facade(
         scenario,
         model.train(),
         logging_level=20,
+        config_selector=config_selector,
         callbacks=[CustomCallback()],
         overwrite=True,  # Overrides any previous results that are found that are inconsistent with the meta-data
     )
+
     incumbent = smac.optimize()
 
     # Get cost of default configuration
     default_cost = smac.validate(model.configspace.get_default_configuration())
-    print(f"Default cost: {default_cost}")
+    print(f"default cost={default_cost}")
