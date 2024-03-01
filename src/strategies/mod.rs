@@ -114,7 +114,7 @@ mod tests {
         );
 
         // Construct new root
-        let root_id = ts.reset();
+        let root_id = ts.reset(0);
         // Helper step function
         let step = |ts: &mut TS| {
             ts.reset_iter();

@@ -199,6 +199,7 @@ pub enum NodeState<A: Action> {
 pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
+    pub player_idx: usize,
     pub stats: NodeStats<A>,
     pub state: NodeState<A>,
 }
@@ -207,10 +208,16 @@ impl<A: Action> Node<A>
 where
     A: Clone + std::hash::Hash,
 {
-    pub fn new(parent_id: index::Id, action_idx: usize, num_players: usize) -> Self {
+    pub fn new(
+        parent_id: index::Id,
+        action_idx: usize,
+        player_idx: usize,
+        num_players: usize,
+    ) -> Self {
         Self {
             parent_id,
             action_idx,
+            player_idx,
             stats: NodeStats::new(num_players),
             state: NodeState::Leaf,
         }
@@ -249,8 +256,9 @@ where
         actions
     }
 
-    pub fn new_root(num_players: usize) -> Self {
-        Self::new(index::Id::invalid_id(), usize::MAX, num_players)
+    pub fn new_root(player: usize, num_players: usize) -> Self {
+        debug_assert!((num_players == 0 && player == 0) || player < num_players);
+        Self::new(index::Id::invalid_id(), usize::MAX, player, num_players)
     }
 
     pub fn update(&mut self, utilities: &[f64]) {

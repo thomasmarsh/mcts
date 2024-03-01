@@ -22,7 +22,7 @@ pub struct Status {
 
 #[derive(Debug, Clone)]
 pub struct Trial<G: Game> {
-    pub actions: Vec<G::A>,
+    pub actions: Vec<(G::A, usize)>,
     pub state: G::S,
     pub status: Status,
     pub depth: usize,
@@ -73,7 +73,7 @@ where
                 break;
             }
             let action: &G::A = self.select_move(&state, &available, stats, player, rng);
-            actions.push(action.clone());
+            actions.push((action.clone(), G::player_to_move(&state).to_index()));
             state = G::apply(state, action);
             depth += 1;
         }

@@ -49,13 +49,15 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                         .zip(parent.children().iter().cloned().flatten())
                         .collect();
 
-                    for action in &trial.actions {
+                    for (action, p) in &trial.actions {
                         if let Some(child_id) = sibling_actions.get(action) {
                             let child = index.get_mut(*child_id);
-                            (0..G::num_players()).for_each(|i| {
-                                child.stats.player[i].amaf.num_visits += 1;
-                                child.stats.player[i].amaf.score += utilities[i];
-                            })
+                            if child.player_idx == *p {
+                                (0..G::num_players()).for_each(|i| {
+                                    child.stats.player[i].amaf.num_visits += 1;
+                                    child.stats.player[i].amaf.score += utilities[i];
+                                })
+                            }
                         }
                     }
                 }
@@ -64,7 +66,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             // update: GRAVE
             if flags.grave() {
                 let node = index.get_mut(node_id);
-                for action in &amaf_actions {
+                for (action, _) in &amaf_actions {
                     let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
                     grave_stats.num_visits += 1;
                     // TODO: what about other players utilities?
@@ -76,14 +78,14 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if flags.grave() || flags.global() {
                 let node = index.get(node_id);
                 if !node.is_root() {
-                    amaf_actions.push(node.action(index));
+                    amaf_actions.push((node.action(index), node.player_idx));
                 };
             }
         }
 
         // update: GLOBAL
         if flags.global() {
-            for action in &amaf_actions {
+            for (action, _) in &amaf_actions {
                 // let player = G::player_to_move(&ctx.state).to_index();
                 let action_stats = global.actions.entry(action.clone()).or_default();
                 action_stats.num_visits += 1;

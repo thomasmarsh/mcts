@@ -42,7 +42,9 @@ pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
     type Backprop: backprop::BackpropStrategy;
     type FinalAction: select::SelectStrategy<G>;
 
-    fn friendly_name() -> String;
+    fn friendly_name() -> String {
+        "unknown".into()
+    }
 
     // Override new to provide strategy specific defaults
     fn config() -> SearchConfig<G, Self> {
