@@ -5,6 +5,41 @@ use crate::game::Game;
 use rustc_hash::FxHashMap;
 
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
+    fn update_amaf<G: Game>(
+        &self,
+        stack: &[Id],
+        trace: &[(G::A, usize)],
+        index: &mut TreeIndex<G::A>,
+        node_id: index::Id,
+        utilities: &[f64],
+    ) {
+        let node = index.get(node_id);
+        if !node.is_root() {
+            let parent_id = node.parent_id;
+            assert!(!stack.is_empty());
+            assert_eq!(parent_id, *stack.last().unwrap());
+            let parent = index.get(parent_id);
+            let sibling_actions: FxHashMap<_, _> = parent
+                .actions()
+                .iter()
+                .cloned()
+                .zip(parent.children().iter().cloned().flatten())
+                .collect();
+
+            for (action, p) in trace {
+                if let Some(child_id) = sibling_actions.get(action) {
+                    let child = index.get_mut(*child_id);
+                    if child.player_idx == *p {
+                        (0..G::num_players()).for_each(|i| {
+                            child.stats.player[i].amaf.num_visits += 1;
+                            child.stats.player[i].amaf.score += utilities[i];
+                        })
+                    }
+                }
+            }
+        }
+    }
+
     // TODO: cleanup the arguments to this, or just move it to TreeSearch
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
@@ -36,42 +71,9 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 
             // update: AMAF
             if flags.amaf() {
-                let node = index.get(node_id);
-                if !node.is_root() {
-                    let parent_id = node.parent_id;
-                    assert!(!stack.is_empty());
-                    assert_eq!(parent_id, *stack.last().unwrap());
-                    let parent = index.get(parent_id);
-                    let sibling_actions: FxHashMap<_, _> = parent
-                        .actions()
-                        .iter()
-                        .cloned()
-                        .zip(parent.children().iter().cloned().flatten())
-                        .collect();
-
-                    for (action, p) in &trial.actions {
-                        if let Some(child_id) = sibling_actions.get(action) {
-                            let child = index.get_mut(*child_id);
-                            if child.player_idx == *p {
-                                (0..G::num_players()).for_each(|i| {
-                                    child.stats.player[i].amaf.num_visits += 1;
-                                    child.stats.player[i].amaf.score += utilities[i];
-                                })
-                            }
-                        }
-                    }
-                }
-            }
-
-            // update: GRAVE
-            if flags.grave() {
-                let node = index.get_mut(node_id);
-                for (action, _) in &amaf_actions {
-                    let grave_stats = node.stats.grave_stats.entry(action.clone()).or_default();
-                    grave_stats.num_visits += 1;
-                    // TODO: what about other players utilities?
-                    grave_stats.score += utilities[player];
-                }
+                self.update_amaf::<G>(&stack, &trial.actions, index, node_id, &utilities);
+            } else if flags.grave() {
+                self.update_amaf::<G>(&stack, &amaf_actions, index, node_id, &utilities);
             }
 
             // push_action: GRAVE | GLOBAL

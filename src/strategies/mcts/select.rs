@@ -2,14 +2,13 @@ use super::index::Id;
 use super::node::{self, NodeStats};
 use super::table::TranspositionTable;
 use super::*;
-use crate::game::{Action, Game};
+use crate::game::Game;
 use crate::strategies::Search;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
 use std::ops::Deref;
-use std::sync::atomic::Ordering::Relaxed;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
@@ -30,37 +29,30 @@ pub struct SelectContext<'a, G: Game> {
 // This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
 // Confidence bound for rooted Directed acyclic graphs.
 
-enum StatsRef<'a, A: Action> {
-    Owned(NodeStats<A>),
-    Unowned(&'a NodeStats<A>),
+enum StatsRef<'a> {
+    Owned(NodeStats),
+    Borrowed(&'a NodeStats),
 }
 
-impl<'a, A: Action> Deref for StatsRef<'a, A> {
-    type Target = NodeStats<A>;
+impl<'a> Deref for StatsRef<'a> {
+    type Target = NodeStats;
 
     fn deref(&self) -> &Self::Target {
         match self {
             StatsRef::Owned(stats) => stats,
-            StatsRef::Unowned(stats) => stats,
+            StatsRef::Borrowed(stats) => stats,
         }
     }
 }
 
 impl<'a, G: Game> SelectContext<'a, G> {
     #[inline]
-    fn child_state(&self, child_id: Id) -> G::S {
-        let child = self.index.get(child_id);
-        let action = child.action(self.index);
-        G::apply(self.state.clone(), &action)
-    }
-
-    #[inline]
-    fn get_stats(&self, state: &G::S, node_id: Id) -> StatsRef<G::A> {
+    fn get_stats(&self, node_id: Id) -> StatsRef {
         if !self.use_transpositions {
-            return StatsRef::Unowned(&self.index.get(node_id).stats);
+            return StatsRef::Borrowed(&self.index.get(node_id).stats);
         }
-        let k = G::zobrist_hash(state);
-        match self.table.get_const(k) {
+        let node = self.index.get(node_id);
+        match self.table.get_const(node.hash) {
             Some(entries) => StatsRef::Owned(
                 entries
                     .iter()
@@ -69,18 +61,13 @@ impl<'a, G: Game> SelectContext<'a, G> {
                     }),
             ),
 
-            None => StatsRef::Unowned(&self.index.get(node_id).stats),
+            None => StatsRef::Borrowed(&self.index.get(node_id).stats),
         }
     }
 
     #[inline]
-    fn current_stats(&self) -> StatsRef<'_, G::A> {
-        self.get_stats(self.state, self.current_id)
-    }
-
-    #[inline]
-    fn child_stats(&self, child_id: Id) -> StatsRef<'_, G::A> {
-        self.get_stats(&self.child_state(child_id), child_id)
+    fn current_stats(&self) -> StatsRef<'_> {
+        self.get_stats(self.current_id)
     }
 }
 
@@ -262,7 +249,7 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> (i64, f64) {
-        let stats = ctx.child_stats(child_id);
+        let stats = ctx.get_stats(child_id);
         (stats.num_visits as i64, stats.expected_score(ctx.player))
     }
 
@@ -291,7 +278,7 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        ctx.child_stats(child_id).expected_score(ctx.player)
+        ctx.get_stats(child_id).expected_score(ctx.player)
     }
 
     #[inline(always)]
@@ -325,9 +312,9 @@ impl<G: Game> SelectStrategy<G> for SecureChild {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        let stats = ctx.child_stats(child_id);
+        let stats = ctx.get_stats(child_id);
         let q = stats.expected_score(ctx.player);
-        let n = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
+        let n = stats.total_visits();
 
         q + self.a / (n as f64).sqrt()
     }
@@ -375,9 +362,9 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.child_stats(child_id);
+        let stats = ctx.get_stats(child_id);
         let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
+        let num_visits = stats.total_visits();
         let explore = (parent_log / num_visits as f64).sqrt();
         exploit + self.exploration_constant * explore
     }
@@ -441,9 +428,9 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.child_stats(child_id);
+        let stats = ctx.get_stats(child_id);
         let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
+        let num_visits = stats.total_visits();
         let sample_variance = 0f64.max(
             stats.player[ctx.player].sum_squared_score / num_visits as f64 - exploit * exploit,
         );
@@ -473,18 +460,61 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone)]
-pub struct McGrave {
-    // Called ref in the RAVE paper.
-    pub threshold: u32,
-    pub bias: f64,
-    // TODO: thread local
-    pub current_ref_id: Option<index::Id>,
+#[derive(Clone, Copy)]
+pub enum RaveSchedule {
+    // HandSelected comes from CadiaPlayer
+    // MinMSE and CadiaPlayare are both described in Gelly, Silver 2011
+    HandSelected { k: u32 }, // k=1000 for go
+    MinMSE { bias: f64 },
+    Threshold { rave: u32 }, // simple rave parameter
 }
 
-impl McGrave {
-    pub fn new() -> Self {
-        Self::default()
+impl Default for RaveSchedule {
+    fn default() -> Self {
+        RaveSchedule::HandSelected { k: 1000 }
+    }
+}
+
+impl RaveSchedule {
+    fn beta(&self, n: u32, amaf_n: u32) -> f64 {
+        let n = n as f64;
+        let amaf_n = amaf_n as f64;
+        match self {
+            RaveSchedule::HandSelected { k } => {
+                let k = *k as f64;
+                (k / (3. * n + k)).sqrt()
+            }
+            RaveSchedule::MinMSE { bias } => amaf_n / (n + amaf_n + 4. * n * amaf_n * bias * bias),
+
+            RaveSchedule::Threshold { rave } => 0f64.max(*rave as f64 - n) / *rave as f64,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Rave {
+    pub exploration_constant: f64,
+    pub threshold: u32, // 0 == RAVE, inf = HRAVE, else GRAVE
+    pub schedule: RaveSchedule,
+}
+
+impl Default for Rave {
+    fn default() -> Self {
+        Self {
+            exploration_constant: 2f64.sqrt(),
+            threshold: 700,
+            schedule: RaveSchedule::default(),
+        }
+    }
+}
+
+impl Rave {
+    pub fn new(exploration_constant: f64, threshold: u32, schedule: RaveSchedule) -> Self {
+        Self {
+            exploration_constant,
+            threshold,
+            schedule,
+        }
     }
 
     pub fn threshold(mut self, threshold: u32) -> Self {
@@ -492,159 +522,81 @@ impl McGrave {
         self
     }
 
-    pub fn bias(mut self, bias: f64) -> Self {
-        self.bias = bias;
+    pub fn schedule(mut self, schedule: RaveSchedule) -> Self {
+        self.schedule = schedule;
+        self
+    }
+
+    pub fn exploration_constant(mut self, exploration_constant: f64) -> Self {
+        self.exploration_constant = exploration_constant;
         self
     }
 }
 
-impl Default for McGrave {
-    fn default() -> Self {
-        Self {
-            threshold: 80,
-            bias: 10.0e-7,
-            current_ref_id: None,
-        }
-    }
-}
-
-#[inline(always)]
-fn grave_value(beta: f64, mean_score: f64, mean_amaf: f64) -> f64 {
-    (1. - beta) * mean_score + beta * mean_amaf
-}
-
-impl<G: Game> SelectStrategy<G> for McGrave {
-    type Score = f64;
-    type Aux = ();
-
-    #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
-        assert!(
-            !ctx.use_transpositions,
-            "GRAVE is incompatible with transposition table usage"
-        );
-        let current = ctx.index.get(ctx.current_id);
-
-        if self.current_ref_id.is_none()
-            || current.stats.num_visits > self.threshold
-            || current.is_root()
-        {
-            self.current_ref_id = Some(ctx.current_id);
-        }
-    }
-
-    #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        let t = ctx.index.get(child_id);
-        let tref = ctx.index.get(self.current_ref_id.unwrap());
-        let p = (t.stats.num_visits + t.stats.num_visits_virtual.load(Relaxed)) as f64;
-        let mean = t.stats.exploitation_score(ctx.player);
-        let (amaf, beta) = match tref.stats.grave_stats.get(&t.action(ctx.index)) {
-            None => (0., 0.),
-            Some(stats) => {
-                let wa = stats.num_visits as f64;
-                let pa = stats.score;
-                let beta = pa / (pa + p + self.bias * pa * p);
-                let amaf = wa / pa;
-                (amaf, beta)
-            }
-        };
-
-        grave_value(beta, mean, amaf)
-    }
-
-    #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
-        ctx.index
-            .get(ctx.current_id)
-            .stats
-            .value_estimate_unvisited(ctx.player, ctx.q_init)
-    }
-
-    fn backprop_flags(&self) -> BackpropFlags {
-        BackpropFlags(GRAVE)
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone)]
-pub struct McBrave {
-    pub bias: f64,
-}
-
-impl McBrave {
-    pub fn with_bias(bias: f64) -> Self {
-        Self { bias }
-    }
-}
-
-impl Default for McBrave {
-    fn default() -> Self {
-        Self { bias: 10.0e-6 }
-    }
-}
-
-impl<G: Game> SelectStrategy<G> for McBrave {
-    type Score = f64;
-    type Aux = ();
-
-    #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
-        assert!(
-            !ctx.use_transpositions,
-            "BRAVE is incompatible with transposition table usage"
-        );
-    }
-
-    #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> Self::Score {
-        let current = ctx.index.get(ctx.current_id);
-        let unvisited_value = current
-            .stats
-            .value_estimate_unvisited(ctx.player, ctx.q_init);
-        grave_value(0., unvisited_value, 0.)
-    }
-
-    #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> Self::Score {
-        let child = ctx.index.get(child_id);
-        let mean_score = child.stats.exploitation_score(ctx.player);
-
-        let mut accum_visits = 0;
-        let mut accum_score = 0.0;
-
-        let mut rave_node_id = ctx.current_id;
-        loop {
-            let rave_node = ctx.index.get(rave_node_id);
-
-            if let Some(grave_stats) = rave_node.stats.grave_stats.get(&child.action(ctx.index)) {
-                accum_score += grave_stats.score;
-                accum_visits += grave_stats.num_visits;
-            }
-
-            if rave_node.is_root() {
-                break;
-            }
-            rave_node_id = rave_node.parent_id;
+impl Rave {
+    fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id) -> Id {
+        let node = ctx.index.get(node_id);
+        if node.is_root() || node.stats.total_visits() >= self.threshold {
+            return ctx.current_id;
         }
 
-        let mean_amaf: f64;
-        let beta: f64;
-        if accum_visits == 0 {
-            mean_amaf = 0.;
-            beta = 0.;
+        // TODO: we can push this down during select descent rather than walking back up.
+        for i in (0..ctx.stack.len()).rev() {
+            let node = ctx.index.get(ctx.stack[i]);
+            if node.is_root() || node.stats.total_visits() >= self.threshold {
+                return ctx.stack[i];
+            }
+        }
+        unreachable!();
+    }
+
+    #[inline(always)]
+    fn ucb1_score(&self, stats: &StatsRef<'_>, parent_log: f64, player_idx: usize, n: u32) -> f64 {
+        let exploit = stats.exploitation_score(player_idx);
+        let explore = (parent_log / n as f64).sqrt();
+        exploit + self.exploration_constant * explore
+    }
+
+    #[inline(always)]
+    fn amaf_score(n: u32, q: f64) -> f64 {
+        if n == 0 {
+            0.
         } else {
-            let child_visits =
-                (child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed)) as f64;
-
-            mean_amaf = accum_score / accum_visits as f64;
-            beta = accum_visits as f64
-                / (accum_visits as f64
-                    + child_visits
-                    + self.bias * accum_visits as f64 * child_visits);
+            q / n as f64
         }
-        grave_value(beta, mean_score, mean_amaf)
+    }
+}
+
+impl<G: Game> SelectStrategy<G> for Rave {
+    type Score = f64;
+    type Aux = f64;
+
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
+        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
+    }
+
+    #[inline(always)]
+    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
+        let ref_id = self.get_ref(ctx, child_id);
+        let stats = ctx.get_stats(child_id);
+        let amaf_stats = ctx.get_stats(ref_id);
+
+        let n = stats.total_visits();
+        let amaf_n = amaf_stats.player[ctx.player].amaf.num_visits;
+        let amaf_q = amaf_stats.player[ctx.player].amaf.score;
+
+        let ucb1 = self.ucb1_score(&stats, parent_log, ctx.player, n);
+        let amaf = Self::amaf_score(amaf_n, amaf_q);
+
+        let b = self.schedule.beta(n, amaf_n);
+        (1. - b) * ucb1 + b * amaf
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: f64) -> f64 {
+        ctx.current_stats()
+            .value_estimate_unvisited(ctx.player, ctx.q_init)
     }
 
     fn backprop_flags(&self) -> BackpropFlags {
@@ -703,13 +655,13 @@ impl<G: Game> SelectStrategy<G> for Amaf {
 
     #[inline(always)]
     fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.child_stats(child_id);
+        let stats = ctx.get_stats(child_id);
         let amaf_n = 1.max(stats.player[ctx.player].amaf.num_visits) as f64;
         let amaf_q = stats.player[ctx.player].amaf.score;
         let amaf = amaf_q / amaf_n;
 
         let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.num_visits + stats.num_visits_virtual.load(Relaxed);
+        let num_visits = stats.total_visits();
         let explore = (parent_log / num_visits as f64).sqrt();
 
         // alpha = 1 is standard AMAF
@@ -726,136 +678,6 @@ impl<G: Game> SelectStrategy<G> for Amaf {
 
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(AMAF)
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone)]
-pub struct Ucb1Grave {
-    // Called ref in the RAVE paper.
-    pub threshold: u32,
-    pub bias: f64,
-    pub exploration_constant: f64,
-    // TODO: thread local
-    pub current_ref_id: Option<index::Id>,
-}
-
-impl Ucb1Grave {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn threshold(mut self, threshold: u32) -> Self {
-        self.threshold = threshold;
-        self
-    }
-
-    pub fn bias(mut self, bias: f64) -> Self {
-        self.bias = bias;
-        self
-    }
-
-    pub fn exploration_constant(mut self, exploration_constant: f64) -> Self {
-        self.exploration_constant = exploration_constant;
-        self
-    }
-}
-
-impl Default for Ucb1Grave {
-    fn default() -> Self {
-        Self {
-            threshold: 100,
-            bias: 10.0e-6,
-            exploration_constant: 2f64.sqrt(),
-            current_ref_id: None,
-        }
-    }
-}
-
-#[inline(always)]
-fn ucb1_grave_value(
-    beta: f64,
-    mean_score: f64,
-    mean_amaf: f64,
-    exploration_constant: f64,
-    explore: f64,
-) -> f64 {
-    grave_value(beta, mean_score, mean_amaf) + exploration_constant * explore
-}
-
-impl<G: Game> SelectStrategy<G> for Ucb1Grave {
-    type Score = f64;
-    type Aux = f64;
-
-    #[inline(always)]
-    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        assert!(!ctx.use_transpositions);
-        let current = ctx.index.get(ctx.current_id);
-        if self.current_ref_id.is_none()
-            || current.stats.num_visits > self.threshold
-            || current.is_root()
-        {
-            self.current_ref_id = Some(ctx.current_id);
-        }
-
-        ((current.stats.num_visits as f64).max(1.)).ln()
-    }
-
-    #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let current_ref = ctx.index.get(self.current_ref_id.unwrap());
-        let child = ctx.index.get(child_id);
-        let mean_score = child.stats.exploitation_score(ctx.player);
-        let child_visits =
-            (child.stats.num_visits + child.stats.num_visits_virtual.load(Relaxed)) as f64;
-        let current = ctx.index.get(ctx.current_id);
-        let (mean_amaf, beta) = match current_ref
-            .stats
-            .grave_stats
-            .get(&(current.actions()[child.action_idx]))
-        {
-            None => (0., 0.),
-            Some(grave_stats) => {
-                let grave_score = grave_stats.score;
-                let grave_visits = grave_stats.num_visits as f64;
-                let mean_amaf = grave_score / grave_visits;
-                let beta = grave_visits
-                    / (grave_visits + child_visits + self.bias * grave_visits * child_visits);
-
-                (mean_amaf, beta)
-            }
-        };
-
-        let explore = (parent_log / child_visits).sqrt();
-
-        ucb1_grave_value(
-            beta,
-            mean_score,
-            mean_amaf,
-            self.exploration_constant,
-            explore,
-        )
-    }
-
-    #[inline(always)]
-    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, parent_log: f64) -> Self::Score {
-        let current = ctx.index.get(ctx.current_id);
-        let unvisited_value = current
-            .stats
-            .value_estimate_unvisited(ctx.player, ctx.q_init);
-
-        ucb1_grave_value(
-            0.,
-            unvisited_value,
-            0.,
-            self.exploration_constant,
-            parent_log.sqrt(),
-        )
-    }
-
-    fn backprop_flags(&self) -> BackpropFlags {
-        BackpropFlags(GRAVE)
     }
 }
 

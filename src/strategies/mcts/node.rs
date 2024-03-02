@@ -1,7 +1,6 @@
 use super::*;
 use crate::game::Action;
 
-use rustc_hash::FxHashMap as HashMap;
 use serde::Serialize;
 use std::ops::Add;
 use std::str::FromStr;
@@ -43,38 +42,36 @@ impl Add for PlayerStats {
 }
 
 #[derive(Debug, Serialize)]
-pub struct NodeStats<A: Action> {
+pub struct NodeStats {
     pub num_visits: u32,
 
     // For virtual loss
     pub num_visits_virtual: AtomicU32,
 
     pub player: Vec<PlayerStats>,
-
-    // TODO: Only used for GRAVE; how to parameterize
-    #[serde(skip_serializing)]
-    pub grave_stats: HashMap<A, ActionStats>,
 }
 
-impl<A: Action> Clone for NodeStats<A> {
+impl Clone for NodeStats {
     fn clone(&self) -> Self {
         Self {
             num_visits: self.num_visits,
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
             player: self.player.clone(),
-            grave_stats: self.grave_stats.clone(),
         }
     }
 }
 
-impl<A: Action> NodeStats<A> {
+impl NodeStats {
     pub fn new(num_players: usize) -> Self {
         Self {
             num_visits: 0,
             num_visits_virtual: AtomicU32::new(0),
             player: vec![PlayerStats::default(); num_players],
-            grave_stats: Default::default(),
         }
+    }
+
+    pub fn total_visits(&self) -> u32 {
+        self.num_visits + self.num_visits_virtual.load(Relaxed)
     }
 
     pub fn update(&mut self, utilities: &[f64]) {
@@ -137,7 +134,7 @@ impl FromStr for QInit {
     }
 }
 
-impl<A: Action> Add for NodeStats<A> {
+impl Add for NodeStats {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
@@ -153,8 +150,6 @@ impl<A: Action> Add for NodeStats<A> {
                 .zip(rhs.player)
                 .map(|(x, y)| x + y)
                 .collect(),
-            // NOTE: GRAVE is not currently supported with transpositions
-            grave_stats: HashMap::default(),
         }
     }
 }
@@ -200,8 +195,9 @@ pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
     pub player_idx: usize,
-    pub stats: NodeStats<A>,
+    pub stats: NodeStats,
     pub state: NodeState<A>,
+    pub hash: u64,
 }
 
 impl<A: Action> Node<A>
@@ -213,6 +209,7 @@ where
         action_idx: usize,
         player_idx: usize,
         num_players: usize,
+        hash: u64,
     ) -> Self {
         Self {
             parent_id,
@@ -220,6 +217,7 @@ where
             player_idx,
             stats: NodeStats::new(num_players),
             state: NodeState::Leaf,
+            hash,
         }
     }
 
@@ -256,9 +254,15 @@ where
         actions
     }
 
-    pub fn new_root(player: usize, num_players: usize) -> Self {
+    pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
-        Self::new(index::Id::invalid_id(), usize::MAX, player, num_players)
+        Self::new(
+            index::Id::invalid_id(),
+            usize::MAX,
+            player,
+            num_players,
+            hash,
+        )
     }
 
     pub fn update(&mut self, utilities: &[f64]) {

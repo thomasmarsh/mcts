@@ -126,6 +126,21 @@ pub mod sym {
     }
 
     #[inline]
+    pub fn invert_symmetry(i: usize, symmetry_index: usize) -> usize {
+        match symmetry_index {
+            0 => i,
+            1 => H[i],
+            2 => V[i],
+            3 => D[i],
+            4 => H[V[i]],
+            5 => H[D[i]],
+            6 => V[D[i]],
+            7 => H[V[D[i]]],
+            _ => unreachable!("Invalid symmetry index"),
+        }
+    }
+
+    #[inline]
     pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
         debug_assert!(symmetries.iter().all(|x| *x == 0));
 
@@ -310,6 +325,50 @@ mod tests {
 
         // There are 765 unique Tic-tac-toe positions, observing symmetries.
         assert_eq!(hashed.len(), 765);
+    }
+
+    use proptest::prelude::*;
+
+    // #[inline]
+    // pub fn invert_symmetry(i: usize, symmetry_index: usize) -> usize {
+    //     match symmetry_index {
+    //         0 => i,
+    //         1 => H[i],
+    //         2 => V[i],
+    //         3 => D[i],
+    //         4 => V[H[i]],
+    //         5 => D[H[i]],
+    //         6 => D[V[i]],
+    //         7 => V[D[H[i]]],
+    //         _ => unreachable!("Invalid symmetry index"),
+    //     }
+    // }
+
+    // #[inline]
+    // pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
+    //     debug_assert!(symmetries.iter().all(|x| *x == 0));
+
+    // Define a property-based test for inversion
+    use super::*;
+    proptest! {
+
+        #[test]
+        fn test_idempotent_sym(original_index in 0..9usize, symmetry_used in 0..8usize) {
+            // Apply the symmetry
+            println!("index: {original_index}");
+            println!("symmetry: {symmetry_used}");
+            let mut xs = [0; NUM_SYMMETRIES];
+            sym::index_symmetries(original_index, &mut xs);
+            let transformed_index = xs[symmetry_used];
+            println!("index': {transformed_index}");
+
+            // Invert the symmetry
+            let inverted_index = sym::invert_symmetry(transformed_index, symmetry_used);
+            println!("index'-1: {inverted_index}");
+
+            // Check if the inversion gives back the original index
+            prop_assert_eq!(inverted_index, original_index);
+        }
     }
 
     impl render::NodeRender for HashedPosition {}

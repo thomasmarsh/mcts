@@ -107,6 +107,25 @@ fn ucd() {
             ),
     );
 
+    // hash=b3fb7a cost=0.43333333333333335 dict={'c': 0.30594919715076685, 'epsilon': 0.08928325492888689, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'min_mse', 'threshold': 607, 'bias': 4.313355255872011}
+    let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
+        SearchConfig::new()
+            .name("mcts[rave]+mast+ucd")
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
+            .select(
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+            )
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
+    );
+
     let _tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
@@ -130,6 +149,7 @@ fn ucd() {
         AnySearch::new(amaf),
         AnySearch::new(amaf_ucd),
         AnySearch::new(amaf_mast_ucd),
+        AnySearch::new(rave_mast_ucd),
         // AnySearch::new(mast),
         // AnySearch::new(mast_ucd),
         // AnySearch::new(tuned),
@@ -148,31 +168,26 @@ fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
     // alpha': 0.2929180087521672, 'c': 0.2548927841708064, 'epsilon': 0.7460807226598263, 'final-action': 'robust_child', 'q-init': 'Draw'
-    #[derive(Clone, Copy, Default)]
-    struct AmafMastDm;
 
-    impl Strategy<TrafficLights> for AmafMastDm {
-        type Select = select::Amaf;
-        type Simulate = simulate::DecisiveMove<
-            TrafficLights,
-            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
-        >;
-        type Backprop = backprop::Classic;
-        type FinalAction = select::RobustChild;
-    }
+    // hash=b3fb7a cost=0.43333333333333335 dict={'c': 0.30594919715076685, 'epsilon': 0.08928325492888689, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'min_mse', 'threshold': 607, 'bias': 4.313355255872011}
 
-    type TS = TreeSearch<TrafficLights, AmafMastDm>;
-    let ts = TS::new().config(
+    let ts: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
+            .name("mcts[rave]+mast+ucd")
+            .verbose(true)
             .expand_threshold(1)
-            .max_iterations(10_000)
+            .max_time(Duration::from_secs(5))
             .use_transpositions(true)
-            .q_init(QInit::Draw)
-            .select(select::Amaf::with_c(0.25).alpha(0.29292))
-            .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.74)),
+            .q_init(QInit::Infinity)
+            .select(
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
-            .verbose(true),
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
 
     self_play(ts);
@@ -181,18 +196,23 @@ fn traffic_lights() {
 fn knightthrough() {
     use mcts::games::knightthrough::Knightthrough;
 
-    type TS = TreeSearch<Knightthrough<8, 8>, strategy::Ucb1GraveMast>;
-    let ts = TS::new().config(
+    let ts: TreeSearch<Knightthrough<8, 8>, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
-            .max_iterations(20000)
+            .name("mcts[rave]+mast+ucd")
+            .verbose(true)
+            .expand_threshold(1)
+            .max_time(Duration::from_secs(4))
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
             .select(
-                select::Ucb1Grave::new()
-                    .exploration_constant(2.12652)
-                    .threshold(131)
-                    .bias(68.65),
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.12))
-            .verbose(true),
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
 
     self_play(ts);
@@ -201,18 +221,23 @@ fn knightthrough() {
 fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
 
-    type TS = TreeSearch<Breakthrough<6, 4>, strategy::Ucb1GraveMast>;
-    let ts = TS::new().config(
+    let ts: TreeSearch<Breakthrough<6, 4>, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
+            .name("mcts[rave]+mast+ucd")
+            .verbose(true)
+            .expand_threshold(1)
             .max_time(Duration::from_secs(10))
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
             .select(
-                select::Ucb1Grave::new()
-                    .exploration_constant(1.32562)
-                    .threshold(720)
-                    .bias(430.36),
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.98))
-            .verbose(true),
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
 
     self_play(ts);
@@ -221,18 +246,23 @@ fn breakthrough() {
 fn atarigo() {
     use mcts::games::atarigo::AtariGo;
 
-    type TS = TreeSearch<AtariGo<5>, strategy::Ucb1GraveMast>;
-    let ts = TS::new().config(
+    let ts: TreeSearch<AtariGo<7>, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
+            .name("mcts[rave]+mast+ucd")
+            .verbose(true)
+            .expand_threshold(1)
             .max_time(Duration::from_secs(10))
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
             .select(
-                select::Ucb1Grave::new()
-                    .exploration_constant(1.32562)
-                    .threshold(720)
-                    .bias(430.36),
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.98))
-            .verbose(true),
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
 
     self_play(ts);
@@ -241,19 +271,23 @@ fn atarigo() {
 fn gonnect() {
     use mcts::games::gonnect::Gonnect;
 
-    type TS = TreeSearch<Gonnect<7>, strategy::Ucb1Grave>;
-    let ts = TS::new().config(
+    let ts: TreeSearch<Gonnect<7>, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
-            .select(
-                select::Ucb1Grave::new()
-                    .exploration_constant(1.32)
-                    .threshold(700)
-                    .bias(430.),
-            )
-            .max_iterations(300000)
-            // .max_time(Duration::from_secs(10))
+            .name("mcts[rave]+mast+ucd")
+            .verbose(true)
             .expand_threshold(1)
-            .verbose(true),
+            .max_time(Duration::from_secs(10))
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
+            .select(
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+            )
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
 
     self_play(ts);
@@ -480,13 +514,13 @@ fn main() {
     pretty_env_logger::init();
 
     traffic_lights();
-    ucd();
     knightthrough();
     breakthrough();
     gonnect();
     atarigo();
     expansion_test();
     ucb_test();
+    ucd();
 
     demo_mcts();
     demo_nim();

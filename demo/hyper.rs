@@ -2,6 +2,7 @@
 /// [SMAC3](https://github.com/automl/SMAC3) for hyperparameter optimization. We
 /// Could do a grid search, but we'll try to do something smarter to save time.
 use clap::Parser;
+use mcts::strategies::mcts::select::RaveSchedule;
 use mcts::strategies::mcts::select::SelectStrategy;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -19,8 +20,6 @@ use mcts::strategies::mcts::TreeSearch;
 use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
-use rand::rngs::SmallRng;
-use rand_core::SeedableRng;
 
 use mcts::games::traffic_lights;
 
@@ -53,6 +52,9 @@ struct Args {
     seed: u64,
 
     #[arg(long)]
+    threshold: Option<u32>,
+
+    #[arg(long)]
     c: f64,
 
     #[arg(long)]
@@ -64,11 +66,23 @@ struct Args {
     #[arg(long)]
     final_action: String,
 
-    #[arg(long)]
-    alpha: f64,
+    // #[arg(long)]
+    alpha: Option<f64>,
 
     #[arg(long)]
     a: Option<f64>,
+
+    #[arg(long)]
+    bias: Option<f64>,
+
+    #[arg(long)]
+    schedule: Option<String>,
+
+    #[arg(long)]
+    k: Option<u32>,
+
+    #[arg(long)]
+    rave: Option<u32>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -76,23 +90,8 @@ struct Args {
 #[derive(Copy, Clone, Default)]
 struct CandidateStrategy<FinalAction: SelectStrategy<G>>(PhantomData<FinalAction>);
 
-impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
-    fn config_with_args(args: &Args) -> SearchConfig<G, Self> {
-        Self::config()
-            .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
-            .use_transpositions(true)
-            .select(select::Amaf::with_c(args.c).alpha(args.alpha))
-            .simulate(
-                simulate::DecisiveMove::new()
-                    .mode(simulate::DecisiveMoveMode::WinLoss)
-                    .inner(simulate::EpsilonGreedy::with_epsilon(args.epsilon)),
-            )
-            .rng(SmallRng::seed_from_u64(args.seed))
-    }
-}
-
 impl<FinalAction: SelectStrategy<G>> Strategy<G> for CandidateStrategy<FinalAction> {
-    type Select = select::Amaf;
+    type Select = select::Rave;
     type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
     type Backprop = backprop::Classic;
     type FinalAction = FinalAction;
@@ -106,6 +105,31 @@ impl<FinalAction: SelectStrategy<G>> Strategy<G> for CandidateStrategy<FinalActi
     }
 }
 
+impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
+    fn config_with_args(args: &Args) -> SearchConfig<G, Self> {
+        let schedule = match args.schedule.clone().unwrap().as_str() {
+            "hand_selected" => RaveSchedule::HandSelected { k: args.k.unwrap() },
+            "min_mse" => RaveSchedule::MinMSE {
+                bias: args.bias.unwrap(),
+            },
+            "threshold" => RaveSchedule::Threshold {
+                rave: args.rave.unwrap(),
+            },
+            _ => unreachable!(),
+        };
+        Self::config()
+            .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
+            .use_transpositions(true)
+            .select(select::Rave::new(args.c, args.threshold.unwrap(), schedule))
+            .simulate(
+                simulate::DecisiveMove::new()
+                    .mode(simulate::DecisiveMoveMode::WinLoss)
+                    .inner(simulate::EpsilonGreedy::with_epsilon(args.epsilon)),
+            )
+            .seed(args.seed)
+    }
+}
+
 fn make_candidate<FinalAction: SelectStrategy<G>>(
     args: &Args,
 ) -> TreeSearch<G, CandidateStrategy<FinalAction>> {
@@ -114,27 +138,34 @@ fn make_candidate<FinalAction: SelectStrategy<G>>(
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-fn make_opponent(seed: u64) -> TS<strategy::Ucb1GraveMast> {
-    TS::new().config(
-        base_config()
-            .q_init(QInit::Parent)
-            .select(
-                select::Ucb1Grave::new()
-                    .exploration_constant(0.69535)
-                    .threshold(285)
-                    .bias(628.),
-            )
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.0015))
-            .rng(SmallRng::seed_from_u64(seed)),
+fn make_baseline(seed: u64) -> TS<strategy::Ucb1DM> {
+    type UcdDm = TreeSearch<G, strategy::Ucb1DM>;
+    UcdDm::new().config(
+        SearchConfig::new()
+            .name("mcts[ucb1]+ucd+dm")
+            .max_iterations(10_000)
+            .expand_threshold(1)
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
+            .select(select::Ucb1::with_c(0.01f64.sqrt()))
+            .seed(seed),
     )
+    // TS::new().config(
+    //     base_config()
+    //         .q_init(QInit::Parent)
+    //         .select(
+    //             select::Ucb1Grave::new()
+    //                 .exploration_constant(0.69535)
+    //                 .threshold(285)
+    //                 .bias(628.),
+    //         )
+    //         .simulate(simulate::EpsilonGreedy::with_epsilon(0.0015))
+    //         .rng(SmallRng::seed_from_u64(seed)),
+    // )
 }
 
-fn _make_opponent(seed: u64) -> TS<strategy::Ucb1> {
-    TS::new().config(
-        base_config()
-            .select(select::Ucb1::with_c(1.625))
-            .rng(SmallRng::seed_from_u64(seed)),
-    )
+fn _make_baseline(seed: u64) -> TS<strategy::Ucb1> {
+    TS::new().config(base_config().select(select::Ucb1::with_c(1.625)).seed(seed))
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -146,7 +177,7 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
 
 fn optimize() {
     let args = Args::parse();
-    let opponent = make_opponent(args.seed);
+    let baseline = make_baseline(args.seed);
     let candidate = match args.final_action.as_str() {
         "max_avg" => AnySearch::new(make_candidate::<select::SecureChild>(&args)),
         "secure_child" => {
@@ -158,7 +189,7 @@ fn optimize() {
         _ => unreachable!(),
     };
 
-    let mut strategies = vec![AnySearch::new(opponent), AnySearch::new(candidate)];
+    let mut strategies = vec![AnySearch::new(baseline), AnySearch::new(candidate)];
     let results = round_robin_multiple::<G, AnySearch<'_, G>>(
         &mut strategies,
         ROUNDS,
@@ -170,5 +201,6 @@ fn optimize() {
 }
 
 fn main() {
+    color_backtrace::install();
     optimize();
 }

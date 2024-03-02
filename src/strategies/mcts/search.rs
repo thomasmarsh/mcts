@@ -112,7 +112,7 @@ where
 {
     pub fn new() -> Self {
         let mut index = index::Arena::new();
-        let root_id = index.insert(Node::new_root(0, G::num_players()));
+        let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
         Self {
             root_id,
             init_state: None,
@@ -128,8 +128,8 @@ where
     }
 
     #[inline]
-    pub(crate) fn new_root(&mut self, player_idx: usize) -> Id {
-        let root = Node::new_root(player_idx, G::num_players());
+    pub(crate) fn new_root(&mut self, player_idx: usize, hash: u64) -> Id {
+        let root = Node::new_root(player_idx, G::num_players(), hash);
         let root_id = self.index.insert(root);
         self.root_id = root_id;
         root_id
@@ -209,6 +209,7 @@ where
                     best_idx,
                     G::player_to_move(&state).to_index(),
                     G::num_players(),
+                    G::zobrist_hash(&state),
                 ));
 
                 if self.config.use_transpositions {
@@ -364,12 +365,12 @@ where
     }
 
     #[inline]
-    pub(crate) fn reset(&mut self, player_idx: usize) -> Id {
+    pub(crate) fn reset(&mut self, player_idx: usize, hash: u64) -> Id {
         self.index.clear();
         self.table.clear();
         self.stats.accum_depth = 0;
         self.stats.iter_count = 0;
-        self.new_root(player_idx)
+        self.new_root(player_idx, hash)
     }
 
     fn compute_pv(&mut self) {
@@ -420,7 +421,7 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
-        let root_id = self.reset(G::player_to_move(state).to_index());
+        let root_id = self.reset(G::player_to_move(state).to_index(), G::zobrist_hash(state));
         if self.config.use_transpositions {
             self.table.insert(G::zobrist_hash(state), root_id);
         }

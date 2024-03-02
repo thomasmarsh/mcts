@@ -2,7 +2,7 @@ from ConfigSpace import ConfigurationSpace, EqualsCondition
 import smac
 from smac import BlackBoxFacade, HyperparameterOptimizationFacade, Callback, Scenario
 from pathlib import Path
-from ConfigSpace import Categorical, Float, Integer
+from ConfigSpace import Categorical, Float, Integer, Constant
 from smac.runhistory import TrialInfo, TrialValue
 from smac.utils.configspace import get_config_hash
 
@@ -41,16 +41,31 @@ class GameSearch:
     @property
     def configspace(self) -> ConfigurationSpace:
         cs = ConfigurationSpace(seed=0)
-        alpha = Float('alpha', (0,1), default=0.5)
+
+        bias = Float('bias', (0, 10), default=10e-6)
         c = Float('c', (0, 3), default=math.sqrt(2))
         epsilon = Float('epsilon', (0, 1), default=0.1)
+        final_action = Constant('final-action', 'robust_child')
+        k = Integer('k', (0, 2000))
         q_init = Categorical('q-init', ['Draw', 'Infinity', 'Loss', 'Parent', 'Win'])
-        final_action = Categorical('final-action', ['max_avg', 'robust_child', 'secure_child'])
-        a = Float('a', (0,40), default=4.0)
-        cs.add_hyperparameters([alpha, a, c, q_init, epsilon, final_action])
+        rave = Integer('rave', (0, 2000))
+        schedule = Categorical('schedule', ['hand_selected', 'min_mse', 'threshold'])
+        threshold = Integer('threshold', (0, 2000), default=700)
 
-        cond = EqualsCondition(a, final_action, 'secure_child')
-        cs.add_condition(cond)
+        cs.add_hyperparameters([bias, c, epsilon, final_action, k, q_init, rave, schedule, threshold])
+
+        is_hand_selected = EqualsCondition(k, schedule, 'hand_selected')
+        is_min_mse = EqualsCondition(bias, schedule, 'min_mse')
+        is_threshold = EqualsCondition(rave, schedule, 'threshold')
+
+        cs.add_condition(is_hand_selected)
+        cs.add_condition(is_min_mse)
+        cs.add_condition(is_threshold)
+
+        # final_action = Categorical('final-action', ['max_avg', 'robust_child', 'secure_child'])
+        # a = Float('a', (0,40), default=4.0)
+        # cond = EqualsCondition(a, final_action, 'secure_child')
+        # cs.add_condition(cond)
         print(dict(cs))
 
         return cs

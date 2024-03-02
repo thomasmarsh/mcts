@@ -150,70 +150,6 @@ impl<G: Game> Strategy<G> for Ucb1TunedDMMast {
 }
 
 #[derive(Clone, Default)]
-pub struct McGrave;
-
-impl<G: Game> Strategy<G> for McGrave {
-    type Select = select::McGrave;
-    type Simulate = simulate::Uniform;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "mc-grave".into()
-    }
-
-    fn config() -> SearchConfig<G, Self> {
-        SearchConfig::new().q_init(QInit::Infinity)
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct McBrave;
-
-impl<G: Game> Strategy<G> for McBrave {
-    type Select = select::McBrave;
-    type Simulate = simulate::Uniform;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "mc-brave".into()
-    }
-
-    fn config() -> SearchConfig<G, Self> {
-        SearchConfig::new().q_init(QInit::Infinity)
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct Ucb1Grave;
-
-impl<G: Game> Strategy<G> for Ucb1Grave {
-    type Select = select::Ucb1Grave;
-    type Simulate = simulate::Uniform;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "ucb1-grave".into()
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct Ucb1GraveMast;
-
-impl<G: Game> Strategy<G> for Ucb1GraveMast {
-    type Select = select::Ucb1Grave;
-    type Simulate = simulate::EpsilonGreedy<G, simulate::Mast>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "ucb1-grave+mast".into()
-    }
-}
-
-#[derive(Clone, Default)]
 pub struct MetaMcts;
 
 impl<G: Game> Strategy<G> for MetaMcts {
@@ -243,4 +179,14 @@ impl<G: Game> Strategy<G> for QuasiBestFirst {
     fn config() -> SearchConfig<G, Self> {
         SearchConfig::new().select(select::EpsilonGreedy::new().epsilon(0.3))
     }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct RaveMastDm;
+
+impl<G: Game> Strategy<G> for RaveMastDm {
+    type Select = select::Rave;
+    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
 }

@@ -3,14 +3,15 @@ use std::time::Duration;
 
 use mcts::game::Game;
 use mcts::games::druid::{Druid, State};
+use mcts::strategies::mcts::node::QInit;
 use mcts::strategies::mcts::select::SelectStrategy;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::mcts::{backprop, select, Strategy};
-use mcts::util::Verbosity;
 use mcts::util::{round_robin_multiple, AnySearch};
+use mcts::util::{self_play, Verbosity};
 
 const NUM_ROUNDS: usize = 10;
 const PLAYOUT_DEPTH: usize = 200;
@@ -38,20 +39,6 @@ where
 fn main() {
     assert_eq!(Duration::default(), Duration::from_secs(0));
 
-    let grave: TreeSearch<Druid, strategy::McGrave> = TreeSearch::new()
-        .config(base_config().select(select::McGrave::new().threshold(40).bias(5.)));
-
-    let mut brave: TreeSearch<Druid, strategy::McBrave> =
-        TreeSearch::new().config(base_config().select(select::McBrave::with_bias(BIAS)));
-
-    let mut ucb1_grave: TreeSearch<Druid, strategy::Ucb1Grave> = TreeSearch::new().config(
-        base_config().select(
-            select::Ucb1Grave::new()
-                .bias(BIAS)
-                .exploration_constant(C_LOW),
-        ),
-    );
-
     // SMAC3 found:
     //
     // Configuration(values={
@@ -60,16 +47,25 @@ fn main() {
     //   'epsilon': 0.10750788170844316,
     //   'threshold': 211,
     // })
-    let mut ucb1_grave_mast: TreeSearch<Druid, strategy::Ucb1GraveMast> = TreeSearch::new().config(
-        base_config()
+
+    let rave_mast_ucd: TreeSearch<Druid, strategy::RaveMastDm> = TreeSearch::new().config(
+        SearchConfig::new()
+            .name("mcts[rave]+mast+ucd")
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .use_transpositions(false)
+            .q_init(QInit::Infinity)
             .select(
-                select::Ucb1Grave::new()
-                    .bias(266.8785210698843)
-                    .exploration_constant(1.86169408634305)
-                    .threshold(211),
+                select::Rave::default()
+                    .exploration_constant(0.305949)
+                    .threshold(600)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
-            .simulate(simulate::EpsilonGreedy::with_epsilon(0.10750788170844316)),
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+            ),
     );
+    self_play(rave_mast_ucd.clone());
 
     let mut amaf: TreeSearch<Druid, strategy::Amaf> =
         TreeSearch::new().config(base_config().select(select::Amaf::with_c(C_TUNED)));
@@ -119,8 +115,7 @@ fn main() {
         AnySearch::new(tuned),
         AnySearch::new(uct),
         AnySearch::new(uct_mast_high),
-        AnySearch::new(grave),
-        AnySearch::new(ucb1_grave_mast),
+        AnySearch::new(rave_mast_ucd),
         // AnySearch::new(meta),
     ];
 

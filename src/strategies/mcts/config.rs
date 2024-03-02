@@ -171,6 +171,11 @@ where
         self
     }
 
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.rng = SmallRng::seed_from_u64(seed);
+        self
+    }
+
     pub fn verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
