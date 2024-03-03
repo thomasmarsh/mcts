@@ -57,7 +57,9 @@ fn main() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )

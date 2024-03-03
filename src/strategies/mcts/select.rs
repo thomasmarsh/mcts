@@ -2,7 +2,7 @@ use super::index::Id;
 use super::node::{self, NodeStats};
 use super::table::TranspositionTable;
 use super::*;
-use crate::game::Game;
+use crate::game::{Action, Game};
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -29,13 +29,13 @@ pub struct SelectContext<'a, G: Game> {
 // This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
 // Confidence bound for rooted Directed acyclic graphs.
 
-enum StatsRef<'a> {
-    Owned(NodeStats),
-    Borrowed(&'a NodeStats),
+enum StatsRef<'a, A: Action> {
+    Owned(NodeStats<A>),
+    Borrowed(&'a NodeStats<A>),
 }
 
-impl<'a> Deref for StatsRef<'a> {
-    type Target = NodeStats;
+impl<'a, A: Action> Deref for StatsRef<'a, A> {
+    type Target = NodeStats<A>;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -47,7 +47,7 @@ impl<'a> Deref for StatsRef<'a> {
 
 impl<'a, G: Game> SelectContext<'a, G> {
     #[inline]
-    fn get_stats(&self, node_id: Id) -> StatsRef {
+    fn get_stats(&self, node_id: Id) -> StatsRef<G::A> {
         if !self.use_transpositions {
             return StatsRef::Borrowed(&self.index.get(node_id).stats);
         }
@@ -66,7 +66,7 @@ impl<'a, G: Game> SelectContext<'a, G> {
     }
 
     #[inline]
-    fn current_stats(&self) -> StatsRef<'_> {
+    fn current_stats(&self) -> StatsRef<'_, G::A> {
         self.get_stats(self.current_id)
     }
 }
@@ -438,7 +438,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
         ucb1_tuned(
             self.exploration_constant,
-            exploit,
+            0., // RAVE provides the exploitation term.
             sample_variance,
             visits_fraction,
         )
@@ -460,13 +460,46 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Ameneyro, F.V., Galvan, E., Morales, A.F.K., 2020. Playing Carcassonne with
+// Monte Carlo Tree Search.
+//
+// Cazenave, T., 2015. Generalized Rapid Action Value Estimation, in:
+// Proceedings of the Twenty-Fourth International Joint Conference on Artificial
+// Intelligence. Presented at the International Joint Conference on Artificial
+// Intelligence, Buenos Aires, Argentina.
+//
+// Gelly, S., Silver, D., 2011. Monte-Carlo tree search and rapid action value
+// estimation in computer Go. Artificial Intelligence 175, 1856–1875. https://
+// doi.org/10.1016/j.artint.2011.03.007
+//
+// Rimmel, A., Teytaud, F., Teytaud, O., 2011. Biasing Monte-Carlo
+// Simulations through RAVE Values, in: Van Den Herik, H.J., Iida, H.,
+// Plaat, A. (Eds.), Computers and Games, Lecture Notes in Computer Science.
+// Springer Berlin Heidelberg, Berlin, Heidelberg, pp. 59–68. https://
+// doi.org/10.1007/978-3-642-17928-0_6
+//
+// Sironi, C.F., Winands, M.H.M., 2016. Comparison of rapid action value
+// estimation variants for general game playing, in: 2016 IEEE Conference
+// on Computational Intelligence and Games (CIG). Presented at the 2016 IEEE
+// Conference on Computational Intelligence and Games (CIG), IEEE, Santorini,
+// Greece, pp. 1–8. https://doi.org/10.1109/CIG.2016.7860429
+//
+// Sironi, C.F., Winands, M.H.M., 2018. On-Line Parameter Tuning for Monte-Carlo
+// Tree Search in General Game Playing, in: Cazenave, T., Winands, M.H.M.,
+// Saffidine, A. (Eds.), Computer Games, Communications in Computer and
+// Information Science. Springer International Publishing, Cham, pp. 75–95.
+// https://doi.org/10.1007/978-3-319-75931-9_6
+
 #[derive(Clone, Copy)]
 pub enum RaveSchedule {
     // HandSelected comes from CadiaPlayer
     // MinMSE and CadiaPlayare are both described in Gelly, Silver 2011
-    HandSelected { k: u32 }, // k=1000 for go
+    // k=1000 for go
+    HandSelected { k: u32 },
+    // TODO: default bias
     MinMSE { bias: f64 },
-    Threshold { rave: u32 }, // simple rave parameter
+    // Traditional Rave. I have seen recommendations to start tuning with rave = 700
+    Threshold { rave: u32 },
 }
 
 impl Default for RaveSchedule {
@@ -492,28 +525,65 @@ impl RaveSchedule {
 }
 
 #[derive(Clone, Copy)]
+pub enum RaveUcb {
+    None,
+    Ucb1 { exploration_constant: f64 },
+    Ucb1Tuned { exploration_constant: f64 },
+}
+impl Default for RaveUcb {
+    fn default() -> Self {
+        Self::Ucb1 {
+            exploration_constant: 2f64.sqrt(),
+        }
+    }
+}
+
+impl RaveUcb {
+    fn score(&self, parent_log: f64, n: u32, sum_squared_score: f64, exploit: f64) -> f64 {
+        match self {
+            RaveUcb::None => 0.,
+            RaveUcb::Ucb1 {
+                exploration_constant,
+            } => exploration_constant * (parent_log / n as f64).sqrt(),
+            RaveUcb::Ucb1Tuned {
+                exploration_constant,
+            } => {
+                let sample_variance = 0f64.max(sum_squared_score / n as f64 - exploit * exploit);
+                let visits_fraction = parent_log / n as f64;
+                ucb1_tuned(
+                    *exploration_constant,
+                    exploit,
+                    sample_variance,
+                    visits_fraction,
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct Rave {
-    pub exploration_constant: f64,
     pub threshold: u32, // 0 == RAVE, inf = HRAVE, else GRAVE
     pub schedule: RaveSchedule,
+    pub ucb: RaveUcb,
 }
 
 impl Default for Rave {
     fn default() -> Self {
         Self {
-            exploration_constant: 2f64.sqrt(),
             threshold: 700,
             schedule: RaveSchedule::default(),
+            ucb: RaveUcb::default(),
         }
     }
 }
 
 impl Rave {
-    pub fn new(exploration_constant: f64, threshold: u32, schedule: RaveSchedule) -> Self {
+    pub fn new(threshold: u32, schedule: RaveSchedule, ucb: RaveUcb) -> Self {
         Self {
-            exploration_constant,
             threshold,
             schedule,
+            ucb,
         }
     }
 
@@ -527,8 +597,8 @@ impl Rave {
         self
     }
 
-    pub fn exploration_constant(mut self, exploration_constant: f64) -> Self {
-        self.exploration_constant = exploration_constant;
+    pub fn ucb(mut self, ucb: RaveUcb) -> Self {
+        self.ucb = ucb;
         self
     }
 }
@@ -550,12 +620,12 @@ impl Rave {
         unreachable!();
     }
 
-    #[inline(always)]
-    fn ucb1_score(&self, stats: &StatsRef<'_>, parent_log: f64, player_idx: usize, n: u32) -> f64 {
-        let exploit = stats.exploitation_score(player_idx);
-        let explore = (parent_log / n as f64).sqrt();
-        exploit + self.exploration_constant * explore
-    }
+    // #[inline(always)]
+    // fn ucb1_score(&self, stats: &StatsRef<'_>, parent_log: f64, player_idx: usize, n: u32) -> f64 {
+    //     let exploit = stats.exploitation_score(player_idx);
+    //     let explore = (parent_log / n as f64).sqrt();
+    //     exploit + self.exploration_constant * explore
+    // }
 
     #[inline(always)]
     fn amaf_score(n: u32, q: f64) -> f64 {
@@ -582,15 +652,30 @@ impl<G: Game> SelectStrategy<G> for Rave {
         let stats = ctx.get_stats(child_id);
         let amaf_stats = ctx.get_stats(ref_id);
 
+        let action = ctx.index.get(child_id).action(ctx.index);
         let n = stats.total_visits();
-        let amaf_n = amaf_stats.player[ctx.player].amaf.num_visits;
-        let amaf_q = amaf_stats.player[ctx.player].amaf.score;
+        let grave_stats = amaf_stats.player[ctx.player]
+            .grave
+            .get(&action)
+            .cloned()
+            .unwrap_or_default();
+        let amaf_n = grave_stats.num_visits;
+        let amaf_q = grave_stats.score;
 
-        let ucb1 = self.ucb1_score(&stats, parent_log, ctx.player, n);
+        let mean_score = stats.expected_score(ctx.player);
+
         let amaf = Self::amaf_score(amaf_n, amaf_q);
 
         let b = self.schedule.beta(n, amaf_n);
-        (1. - b) * ucb1 + b * amaf
+        let exploit = stats.exploitation_score(ctx.player);
+        let ucb = self.ucb.score(
+            parent_log,
+            n,
+            stats.player[ctx.player].sum_squared_score,
+            exploit,
+        );
+
+        (1. - b) * mean_score + b * amaf + ucb
     }
 
     #[inline(always)]

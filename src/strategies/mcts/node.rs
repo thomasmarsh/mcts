@@ -1,6 +1,7 @@
 use super::*;
 use crate::game::Action;
 
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::ops::Add;
 use std::str::FromStr;
@@ -23,35 +24,65 @@ impl Add for ActionStats {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-pub struct PlayerStats {
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayerStats<A: Action> {
     pub score: f64,
     pub sum_squared_score: f64,
     pub amaf: ActionStats,
+    pub grave: FxHashMap<A, ActionStats>,
 }
 
-impl Add for PlayerStats {
+impl<A: Action> Default for PlayerStats<A> {
+    fn default() -> Self {
+        Self {
+            score: 0.,
+            sum_squared_score: 0.,
+            amaf: ActionStats::default(),
+            grave: FxHashMap::default(),
+        }
+    }
+}
+
+fn merge_maps<K, V>(map1: FxHashMap<K, V>, map2: FxHashMap<K, V>) -> FxHashMap<K, V>
+where
+    K: Eq + std::hash::Hash,
+    V: std::ops::Add<Output = V> + Clone,
+{
+    let mut merged_map = map1;
+
+    for (key, value) in map2 {
+        merged_map
+            .entry(key)
+            .and_modify(|existing_value| *existing_value = existing_value.clone() + value.clone())
+            .or_insert(value);
+    }
+
+    merged_map
+}
+
+impl<A: Action> Add for PlayerStats<A> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         Self {
             score: self.score + rhs.score,
             sum_squared_score: self.sum_squared_score + rhs.sum_squared_score,
             amaf: self.amaf + rhs.amaf,
+            grave: merge_maps(self.grave, rhs.grave),
         }
     }
 }
 
 #[derive(Debug, Serialize)]
-pub struct NodeStats {
+pub struct NodeStats<A: Action> {
     pub num_visits: u32,
 
     // For virtual loss
     pub num_visits_virtual: AtomicU32,
 
-    pub player: Vec<PlayerStats>,
+    pub player: Vec<PlayerStats<A>>,
 }
 
-impl Clone for NodeStats {
+impl<A: Action> Clone for NodeStats<A> {
     fn clone(&self) -> Self {
         Self {
             num_visits: self.num_visits,
@@ -61,7 +92,7 @@ impl Clone for NodeStats {
     }
 }
 
-impl NodeStats {
+impl<A: Action> NodeStats<A> {
     pub fn new(num_players: usize) -> Self {
         Self {
             num_visits: 0,
@@ -134,7 +165,7 @@ impl FromStr for QInit {
     }
 }
 
-impl Add for NodeStats {
+impl<A: Action> Add for NodeStats<A> {
     type Output = Self;
 
     fn add(self, rhs: Self) -> Self::Output {
@@ -195,7 +226,7 @@ pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
     pub player_idx: usize,
-    pub stats: NodeStats,
+    pub stats: NodeStats<A>,
     pub state: NodeState<A>,
     pub hash: u64,
 }

@@ -107,7 +107,9 @@ fn ucd() {
             ),
     );
 
-    // hash=b3fb7a cost=0.43333333333333335 dict={'c': 0.30594919715076685, 'epsilon': 0.08928325492888689, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'min_mse', 'threshold': 607, 'bias': 4.313355255872011}
+    // hash=6025bf cost=0.43333333333333335 dict={'c': 0.6192158991470933, 'epsilon': 0.7234254349023104, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'threshold', 'threshold': 916, 'rave': 1787}
+    // hash=99b88f cost=0.35833333333333334 dict={'c': 0.4545644960423201, 'epsilon': 0.2061242829918312, 'final-action': 'robust_child', 'q-init': 'Win', 'schedule': 'threshold', 'threshold': 930, 'rave': 1783}
+    //hash=6f431b cost=0.35833333333333334 dict={'epsilon': 0.39082487765699625, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 565, 'bias': 9.846476027742028, 'c': 0.3266884842887521}
     let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
@@ -117,12 +119,14 @@ fn ucd() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
-                    .threshold(600)
-                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+                    .threshold(930)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.4545644,
+                    })
+                    .schedule(select::RaveSchedule::Threshold { rave: 1783 }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.20612)),
             ),
     );
 
@@ -181,7 +185,9 @@ fn traffic_lights() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
@@ -206,7 +212,9 @@ fn knightthrough() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
@@ -231,7 +239,9 @@ fn breakthrough() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
@@ -256,7 +266,9 @@ fn atarigo() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
@@ -281,7 +293,9 @@ fn gonnect() {
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
+                    .ucb(select::RaveUcb::Ucb1 {
+                        exploration_constant: 0.305949,
+                    })
                     .threshold(600)
                     .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
             )
@@ -513,6 +527,7 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
+    ucd();
     traffic_lights();
     knightthrough();
     breakthrough();
@@ -520,7 +535,6 @@ fn main() {
     atarigo();
     expansion_test();
     ucb_test();
-    ucd();
 
     demo_mcts();
     demo_nim();

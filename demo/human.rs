@@ -20,15 +20,17 @@ where
             .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
             .max_time(Duration::from_secs(10))
-            .q_init(QInit::Infinity)
+            .q_init(QInit::Parent)
             .select(
                 select::Rave::default()
-                    .exploration_constant(0.305949)
-                    .threshold(600)
-                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+                    .ucb(select::RaveUcb::Ucb1Tuned {
+                        exploration_constant: 0.69,
+                    })
+                    .threshold(285)
+                    .schedule(select::RaveSchedule::Threshold { rave: 628 }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.0015)),
             ),
     );
 

@@ -40,6 +40,26 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         }
     }
 
+    fn update_grave<G: Game>(
+        &self,
+        trace: &[(G::A, usize)],
+        index: &mut TreeIndex<G::A>,
+        node_id: index::Id,
+        utilities: &[f64],
+    ) {
+        let node = index.get_mut(node_id);
+        if !node.is_root() {
+            for (action, p) in trace {
+                let grave_stats = node.stats.player[*p]
+                    .grave
+                    .entry(action.clone())
+                    .or_default();
+                grave_stats.num_visits += 1;
+                grave_stats.score += utilities[*p];
+            }
+        }
+    }
+
     // TODO: cleanup the arguments to this, or just move it to TreeSearch
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
@@ -73,7 +93,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if flags.amaf() {
                 self.update_amaf::<G>(&stack, &trial.actions, index, node_id, &utilities);
             } else if flags.grave() {
-                self.update_amaf::<G>(&stack, &amaf_actions, index, node_id, &utilities);
+                self.update_grave::<G>(&amaf_actions, index, node_id, &utilities);
             }
 
             // push_action: GRAVE | GLOBAL

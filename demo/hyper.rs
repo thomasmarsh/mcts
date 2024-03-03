@@ -3,6 +3,7 @@
 /// Could do a grid search, but we'll try to do something smarter to save time.
 use clap::Parser;
 use mcts::strategies::mcts::select::RaveSchedule;
+use mcts::strategies::mcts::select::RaveUcb;
 use mcts::strategies::mcts::select::SelectStrategy;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -55,7 +56,7 @@ struct Args {
     threshold: Option<u32>,
 
     #[arg(long)]
-    c: f64,
+    c: Option<f64>,
 
     #[arg(long)]
     epsilon: f64,
@@ -83,6 +84,9 @@ struct Args {
 
     #[arg(long)]
     rave: Option<u32>,
+
+    #[arg(long)]
+    rave_ucb: Option<String>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -117,10 +121,21 @@ impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
             },
             _ => unreachable!(),
         };
+
+        let ucb = match args.rave_ucb.clone().unwrap().as_str() {
+            "none" => RaveUcb::None,
+            "ucb1" => RaveUcb::Ucb1 {
+                exploration_constant: args.c.unwrap(),
+            },
+            "tuned" => RaveUcb::Ucb1Tuned {
+                exploration_constant: args.c.unwrap(),
+            },
+            _ => unreachable!(),
+        };
         Self::config()
             .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
             .use_transpositions(true)
-            .select(select::Rave::new(args.c, args.threshold.unwrap(), schedule))
+            .select(select::Rave::new(args.threshold.unwrap(), schedule, ucb))
             .simulate(
                 simulate::DecisiveMove::new()
                     .mode(simulate::DecisiveMoveMode::WinLoss)

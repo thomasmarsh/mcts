@@ -1,4 +1,4 @@
-from ConfigSpace import ConfigurationSpace, EqualsCondition
+from ConfigSpace import ConfigurationSpace, EqualsCondition, OrConjunction
 import smac
 from smac import BlackBoxFacade, HyperparameterOptimizationFacade, Callback, Scenario
 from pathlib import Path
@@ -51,16 +51,20 @@ class GameSearch:
         rave = Integer('rave', (0, 2000))
         schedule = Categorical('schedule', ['hand_selected', 'min_mse', 'threshold'])
         threshold = Integer('threshold', (0, 2000), default=700)
+        ucb = Categorical('rave-ucb', ['none', 'ucb1', 'tuned'])
 
-        cs.add_hyperparameters([bias, c, epsilon, final_action, k, q_init, rave, schedule, threshold])
+        cs.add_hyperparameters([bias, c, epsilon, final_action, k, q_init, rave, schedule, threshold, ucb])
 
         is_hand_selected = EqualsCondition(k, schedule, 'hand_selected')
         is_min_mse = EqualsCondition(bias, schedule, 'min_mse')
         is_threshold = EqualsCondition(rave, schedule, 'threshold')
-
         cs.add_condition(is_hand_selected)
         cs.add_condition(is_min_mse)
         cs.add_condition(is_threshold)
+
+        is_ucb1 = EqualsCondition(c, ucb, 'ucb1')
+        is_tuned= EqualsCondition(c, ucb, 'tuned')
+        cs.add_condition(OrConjunction(is_ucb1, is_tuned))
 
         # final_action = Categorical('final-action', ['max_avg', 'robust_child', 'secure_child'])
         # a = Float('a', (0,40), default=4.0)
