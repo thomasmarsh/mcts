@@ -1,4 +1,5 @@
 use super::index::Id;
+use super::node::NodeStats;
 use super::*;
 use crate::game::Game;
 
@@ -18,21 +19,22 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             let parent_id = node.parent_id;
             assert!(!stack.is_empty());
             assert_eq!(parent_id, *stack.last().unwrap());
-            let parent = index.get(parent_id);
-            let sibling_actions: FxHashMap<_, _> = parent
-                .actions()
+            let sibling_actions: FxHashMap<_, _> = index
+                .get(parent_id)
+                .edges()
                 .iter()
-                .cloned()
-                .zip(parent.children().iter().cloned().flatten())
+                .filter_map(|edge| edge.node_id.map(|node_id| (edge.action.clone(), node_id)))
                 .collect();
 
             for (action, p) in trace {
                 if let Some(child_id) = sibling_actions.get(action) {
                     let child = index.get_mut(*child_id);
+                    let action_idx = child.action_idx;
                     if child.player_idx == *p {
                         (0..G::num_players()).for_each(|i| {
-                            child.stats.player[i].amaf.num_visits += 1;
-                            child.stats.player[i].amaf.score += utilities[i];
+                            let stats = &mut index.get_mut(parent_id).edges_mut()[action_idx].stats;
+                            stats.player[i].amaf.num_visits += 1;
+                            stats.player[i].amaf.score += utilities[i];
                         })
                     }
                 }
@@ -44,16 +46,19 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         &self,
         trace: &[(G::A, usize)],
         index: &mut TreeIndex<G::A>,
+        global: &mut TreeStats<G>,
         node_id: index::Id,
         utilities: &[f64],
     ) {
         let node = index.get_mut(node_id);
         if !node.is_root() {
             for (action, p) in trace {
-                let grave_stats = node.stats.player[*p]
+                let players = global
                     .grave
-                    .entry(action.clone())
-                    .or_default();
+                    .entry(node.hash)
+                    .or_insert_with(|| vec![Default::default(); G::num_players()]);
+                let player = players.get_mut(*p).unwrap();
+                let grave_stats = player.entry(action.clone()).or_default();
                 grave_stats.num_visits += 1;
                 grave_stats.score += utilities[*p];
             }
@@ -67,6 +72,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         mut stack: Vec<Id>,
         global: &mut TreeStats<G>,
         index: &mut TreeIndex<G::A>,
+        root_stats: &mut NodeStats,
         trial: simulate::Trial<G>,
         player: usize,
         flags: BackpropFlags,
@@ -87,20 +93,28 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         let utilities = G::compute_utilities(&trial.state);
         while let Some(node_id) = stack.pop() {
             // Standard update
-            index.get_mut(node_id).update(&utilities);
+            if index.get(node_id).is_root() {
+                root_stats.update(&utilities);
+            } else {
+                let parent_id = index.get(node_id).parent_id;
+                let action_idx = index.get(node_id).action_idx;
+                index.get_mut(parent_id).edges_mut()[action_idx]
+                    .stats
+                    .update(&utilities);
+            }
 
             // update: AMAF
             if flags.amaf() {
                 self.update_amaf::<G>(&stack, &trial.actions, index, node_id, &utilities);
             } else if flags.grave() {
-                self.update_grave::<G>(&amaf_actions, index, node_id, &utilities);
+                self.update_grave::<G>(&amaf_actions, index, global, node_id, &utilities);
             }
 
             // push_action: GRAVE | GLOBAL
             if flags.grave() || flags.global() {
                 let node = index.get(node_id);
                 if !node.is_root() {
-                    amaf_actions.push((node.action(index), node.player_idx));
+                    amaf_actions.push((node.get_action(index).unwrap(), node.player_idx));
                 };
             }
         }

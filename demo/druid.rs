@@ -48,23 +48,26 @@ fn main() {
     //   'threshold': 211,
     // })
 
+    // hash=64f84b cost=0.22499999999999998 dict={'epsilon': 0.2460151296108961, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'ucb1', 'schedule': 'threshold', 'threshold': 1456, 'c': 2.138511646538973, 'rave': 746}
+    // hash=840351 cost=0.275 dict={'epsilon': 0.7775134909898043, 'final-action': 'robust_child', 'q-init': 'Infinity', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 204, 'bias': 5.286671416833997, 'c': 0.28941824845969677}
     let rave_mast_ucd: TreeSearch<Druid, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
             .max_iterations(10_000)
-            .use_transpositions(false)
+            .use_transpositions(true)
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
-                    .ucb(select::RaveUcb::Ucb1 {
-                        exploration_constant: 0.305949,
+                    .ucb(select::RaveUcb::Ucb1Tuned {
+                        exploration_constant: 0.2894182,
                     })
-                    .threshold(600)
-                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+                    .threshold(204)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
+                simulate::DecisiveMove::new()
+                    .inner(simulate::EpsilonGreedy::with_epsilon(0.7775134)),
             ),
     );
     self_play(rave_mast_ucd.clone());
@@ -126,7 +129,7 @@ fn main() {
     round_robin_multiple::<Druid, AnySearch<'_, Druid>>(
         &mut strategies,
         NUM_ROUNDS,
-        &State::new(),
+        &<Druid as Game>::S::default(),
         Verbosity::Verbose,
     );
 }

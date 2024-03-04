@@ -1,9 +1,7 @@
 use super::*;
 use crate::game::Action;
 
-use rustc_hash::FxHashMap;
 use serde::Serialize;
-use std::ops::Add;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
@@ -14,75 +12,84 @@ pub struct ActionStats {
     pub score: f64,
 }
 
-impl Add for ActionStats {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        ActionStats {
-            num_visits: self.num_visits + rhs.num_visits,
-            score: self.score + rhs.score,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
-pub struct PlayerStats<A: Action> {
+pub struct PlayerStats {
     pub score: f64,
     pub sum_squared_score: f64,
     pub amaf: ActionStats,
-    pub grave: FxHashMap<A, ActionStats>,
 }
 
-impl<A: Action> Default for PlayerStats<A> {
+impl Default for PlayerStats {
     fn default() -> Self {
         Self {
             score: 0.,
             sum_squared_score: 0.,
             amaf: ActionStats::default(),
-            grave: FxHashMap::default(),
         }
     }
 }
 
-fn merge_maps<K, V>(map1: FxHashMap<K, V>, map2: FxHashMap<K, V>) -> FxHashMap<K, V>
-where
-    K: Eq + std::hash::Hash,
-    V: std::ops::Add<Output = V> + Clone,
-{
-    let mut merged_map = map1;
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseQInitError;
 
-    for (key, value) in map2 {
-        merged_map
-            .entry(key)
-            .and_modify(|existing_value| *existing_value = existing_value.clone() + value.clone())
-            .or_insert(value);
-    }
-
-    merged_map
-}
-
-impl<A: Action> Add for PlayerStats<A> {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            score: self.score + rhs.score,
-            sum_squared_score: self.sum_squared_score + rhs.sum_squared_score,
-            amaf: self.amaf + rhs.amaf,
-            grave: merge_maps(self.grave, rhs.grave),
+impl FromStr for QInit {
+    type Err = ParseQInitError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Draw" => Ok(QInit::Draw),
+            "Infinity" => Ok(QInit::Infinity),
+            "Loss" => Ok(QInit::Loss),
+            "Parent" => Ok(QInit::Parent),
+            "Win" => Ok(QInit::Win),
+            _ => Err(ParseQInitError),
         }
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct NodeStats<A: Action> {
+/// QInit is an unvisited value estimate, the Q value assigned to a node
+/// that has not been expanded or explored. The choice of a default unvisited
+/// child value will bias the search. Choosing win, loss, or draw can prompt
+/// an optimistic (greedy) or pessimistic move selection. Using the parent's
+/// value is a common approach and the default used here. Using infinity will
+/// encourage exploration of unvisited child nodes.
+///
+/// TODO: there are other strategies we could employ:
+///
+///   - Average: the average value from historical outcomes in simulation in this
+///     subtree. This increases the memory requirement but is a middle ground
+///     compared to setting the expansion threshold to 0.
+///
+///   - Custom: the client could provide an implementation rather than coupling
+///     this to the implementation of `SelectStratey`.
+#[allow(unused)]
+#[derive(Clone, Copy, Default)]
+pub enum QInit {
+    #[default]
+    Parent,
+    Win,
+    Loss,
+    Draw,
+    Infinity,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct Edge<A: Action> {
+    pub node_id: Option<index::Id>,
+    pub action: A,
+    pub stats: NodeStats,
+}
+
+#[derive(Serialize, Debug)]
+pub struct NodeStats {
     pub num_visits: u32,
 
     // For virtual loss
     pub num_visits_virtual: AtomicU32,
 
-    pub player: Vec<PlayerStats<A>>,
+    pub player: Vec<PlayerStats>,
 }
 
-impl<A: Action> Clone for NodeStats<A> {
+impl Clone for NodeStats {
     fn clone(&self) -> Self {
         Self {
             num_visits: self.num_visits,
@@ -92,7 +99,21 @@ impl<A: Action> Clone for NodeStats<A> {
     }
 }
 
-impl<A: Action> NodeStats<A> {
+impl<A: Action> Edge<A> {
+    pub fn is_explored(&self) -> bool {
+        self.node_id.is_some()
+    }
+
+    pub fn unexplored(action: A, num_players: usize) -> Edge<A> {
+        Self {
+            action,
+            node_id: None,
+            stats: NodeStats::new(num_players),
+        }
+    }
+}
+
+impl NodeStats {
     pub fn new(num_players: usize) -> Self {
         Self {
             num_visits: 0,
@@ -148,77 +169,11 @@ impl<A: Action> NodeStats<A> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct ParseQInitError;
-
-impl FromStr for QInit {
-    type Err = ParseQInitError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Draw" => Ok(QInit::Draw),
-            "Infinity" => Ok(QInit::Infinity),
-            "Loss" => Ok(QInit::Loss),
-            "Parent" => Ok(QInit::Parent),
-            "Win" => Ok(QInit::Win),
-            _ => Err(ParseQInitError),
-        }
-    }
-}
-
-impl<A: Action> Add for NodeStats<A> {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        NodeStats {
-            num_visits: self.num_visits + rhs.num_visits,
-            num_visits_virtual: AtomicU32::new(
-                self.num_visits_virtual.load(Relaxed) + rhs.num_visits_virtual.load(Relaxed),
-            ),
-            // TODO: group per-player stats to avoid N*M loops
-            player: self
-                .player
-                .into_iter()
-                .zip(rhs.player)
-                .map(|(x, y)| x + y)
-                .collect(),
-        }
-    }
-}
-
-/// QInit is an unvisited value estimate, the Q value assigned to a node
-/// that has not been expanded or explored. The choice of a default unvisited
-/// child value will bias the search. Choosing win, loss, or draw can prompt
-/// an optimistic (greedy) or pessimistic move selection. Using the parent's
-/// value is a common approach and the default used here. Using infinity will
-/// encourage exploration of unvisited child nodes.
-///
-/// TODO: there are other strategies we could employ:
-///
-///   - Average: the average value from historical outcomes in simulation in this
-///     subtree. This increases the memory requirement but is a middle ground
-///     compared to setting the expansion threshold to 0.
-///
-///   - Custom: the client could provide an implementation rather than coupling
-///     this to the implementation of `SelectStratey`.
-#[allow(unused)]
-#[derive(Clone, Copy, Default)]
-pub enum QInit {
-    #[default]
-    Parent,
-    Win,
-    Loss,
-    Draw,
-    Infinity,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub enum NodeState<A: Action> {
     Terminal,
     Leaf,
-    Expanded {
-        children: Vec<Option<index::Id>>, // TODO: consider storing this in arena
-        actions: Vec<A>,
-    },
+    Expanded(Vec<Edge<A>>),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -226,7 +181,6 @@ pub struct Node<A: Action> {
     pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
     pub player_idx: usize,
-    pub stats: NodeStats<A>,
     pub state: NodeState<A>,
     pub hash: u64,
 }
@@ -235,20 +189,26 @@ impl<A: Action> Node<A>
 where
     A: Clone + std::hash::Hash,
 {
-    pub fn new(
-        parent_id: index::Id,
-        action_idx: usize,
-        player_idx: usize,
-        num_players: usize,
-        hash: u64,
-    ) -> Self {
+    pub fn new(parent_id: index::Id, action_idx: usize, player_idx: usize, hash: u64) -> Self {
         Self {
             parent_id,
             action_idx,
             player_idx,
-            stats: NodeStats::new(num_players),
             state: NodeState::Leaf,
             hash,
+        }
+    }
+
+    #[inline]
+    pub fn get_action(&self, index: &TreeIndex<A>) -> Option<A> {
+        if !self.is_root() {
+            Some(
+                index.get(self.parent_id).edges()[self.action_idx]
+                    .action
+                    .clone(),
+            )
+        } else {
+            None
         }
     }
 
@@ -268,43 +228,28 @@ where
     }
 
     #[inline]
-    pub fn children(&self) -> &Vec<Option<index::Id>> {
-        // NOTE: unchecked
-        let NodeState::Expanded { children, .. } = &self.state else {
+    pub fn edges(&self) -> &Vec<Edge<A>> {
+        let NodeState::Expanded(edges) = &self.state else {
             unreachable!()
         };
-        children
+        edges
     }
 
     #[inline]
-    pub fn actions(&self) -> &Vec<A> {
-        // NOTE: unchecked
-        let NodeState::Expanded { actions, .. } = &self.state else {
+    pub fn edges_mut(&mut self) -> &mut Vec<Edge<A>> {
+        let NodeState::Expanded(edges) = &mut self.state else {
             unreachable!()
         };
-        actions
+        edges
     }
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
-        Self::new(
-            index::Id::invalid_id(),
-            usize::MAX,
-            player,
-            num_players,
-            hash,
-        )
+        Self::new(index::Id::invalid_id(), usize::MAX, player, hash)
     }
 
-    pub fn update(&mut self, utilities: &[f64]) {
-        self.stats.update(utilities);
-    }
-
-    pub fn action(&self, index: &TreeIndex<A>) -> A {
-        match &(index.get(self.parent_id).state) {
-            NodeState::Expanded { actions, .. } => actions[self.action_idx].clone(),
-            _ => unreachable!(),
-        }
+    pub fn update(&mut self, action_idx: usize, utilities: &[f64]) {
+        self.edges_mut()[action_idx].stats.update(utilities);
     }
 
     pub fn is_root(&self) -> bool {

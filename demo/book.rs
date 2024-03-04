@@ -13,7 +13,6 @@ use mcts::strategies::Search;
 
 use mcts::games::druid::Druid;
 use mcts::games::druid::Move;
-use mcts::games::druid::State;
 
 // QBF Config
 const NUM_THREADS: usize = 8;
@@ -81,7 +80,7 @@ fn main() {
 
                 for _ in 0..(NUM_GAMES / NUM_THREADS) {
                     let mut ts = make_qbf(book.lock().unwrap().clone());
-                    let (key, utilities) = ts.make_book_entry(&State::new());
+                    let (key, utilities) = ts.make_book_entry(&<Druid as Game>::S::default());
                     let mut book_mut = book.lock().unwrap();
                     book_mut.add(key.as_slice(), utilities.as_slice());
                     debug(&book_mut);

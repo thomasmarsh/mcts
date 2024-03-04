@@ -6,6 +6,7 @@ use super::index::Id;
 use super::node;
 use super::node::Node;
 use super::node::NodeState;
+use super::node::NodeStats;
 use super::select::SelectContext;
 use super::select::SelectStrategy;
 use super::simulate::SimulateStrategy;
@@ -13,11 +14,12 @@ use super::simulate::Trial;
 use super::table::TranspositionTable;
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::strategies::mcts::node::Edge;
 use crate::strategies::Search;
 use crate::timer;
 use crate::util::pv_string;
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashMap;
 
 pub struct SearchContext<G: Game> {
     pub current_id: Id,
@@ -43,8 +45,9 @@ impl<G: Game> SearchContext<G> {
 
 #[derive(Clone, Debug)]
 pub struct TreeStats<G: Game> {
-    pub actions: HashMap<G::A, node::ActionStats>,
-    pub player_actions: Vec<HashMap<G::A, node::ActionStats>>,
+    pub actions: FxHashMap<G::A, node::ActionStats>,
+    pub grave: FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
+    pub player_actions: Vec<FxHashMap<G::A, node::ActionStats>>,
     pub accum_depth: usize,
     pub iter_count: usize,
 }
@@ -52,7 +55,8 @@ pub struct TreeStats<G: Game> {
 impl<G: Game> Default for TreeStats<G> {
     fn default() -> Self {
         Self {
-            actions: Default::default(),
+            actions: FxHashMap::default(),
+            grave: FxHashMap::default(),
             player_actions: vec![Default::default(); G::num_players()],
             accum_depth: 0,
             iter_count: 0,
@@ -72,7 +76,7 @@ where
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
     pub(crate) root_id: Id,
-    pub(crate) init_state: Option<G::S>,
+    pub(crate) root_stats: NodeStats,
     pub(crate) pv: Vec<G::A>,
     pub(crate) table: TranspositionTable,
 
@@ -115,7 +119,7 @@ where
         let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
         Self {
             root_id,
-            init_state: None,
+            root_stats: NodeStats::new(G::num_players()),
             pv: vec![],
             stack: vec![],
             table: TranspositionTable::default(),
@@ -144,10 +148,12 @@ where
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
             debug_assert!(!actions.is_empty());
-            node.state = NodeState::Expanded {
-                children: vec![None; actions.len()],
-                actions,
-            };
+            node.state = NodeState::Expanded(
+                actions
+                    .into_iter()
+                    .map(|action| Edge::unexplored(action, G::num_players()))
+                    .collect(),
+            );
         }
         node.state.clone()
     }
@@ -159,8 +165,18 @@ where
         loop {
             self.stack.push(ctx.current_id);
 
+            let num_visits = if self.index.get(ctx.current_id).is_root() {
+                self.root_stats.num_visits
+            } else {
+                let parent_id = self.index.get(ctx.current_id).parent_id;
+                let action_idx = self.index.get(ctx.current_id).action_idx;
+
+                self.index.get(parent_id).edges()[action_idx]
+                    .stats
+                    .num_visits
+            };
             let node = self.index.get(ctx.current_id);
-            if node.is_terminal() || node.stats.num_visits < self.config.expand_threshold {
+            if node.is_terminal() || num_visits < self.config.expand_threshold {
                 return;
             }
 
@@ -180,8 +196,10 @@ where
                     player: player.to_index(),
                     player_to_move: G::player_to_move(&ctx.state).to_index(),
                     state: &ctx.state,
+                    root_stats: &self.root_stats,
                     index: &self.index,
                     table: &self.table,
+                    grave: &self.stats.grave,
                     use_transpositions: self.config.use_transpositions,
                 };
                 self.config
@@ -189,38 +207,38 @@ where
                     .best_child(&select_ctx, &mut self.config.rng)
             };
 
-            let NodeState::Expanded {
-                ref children,
-                actions,
-            } = &(self.index.get(ctx.current_id).state)
-            else {
+            let NodeState::Expanded(ref edges) = &(self.index.get(ctx.current_id).state) else {
                 unreachable!()
             };
 
-            if let Some(child_id) = children[best_idx] {
-                let child = self.index.get(child_id);
-                ctx.traverse_apply(child_id, &child.action(&self.index));
+            if let Some(child_id) = edges[best_idx].node_id {
+                ctx.traverse_apply(child_id, &edges[best_idx].action);
             } else {
-                let action = &actions[best_idx];
+                let action = &edges[best_idx].action;
                 let state = G::apply(ctx.state.clone(), action);
 
-                let child_id = self.index.insert(Node::new(
-                    ctx.current_id,
-                    best_idx,
-                    G::player_to_move(&state).to_index(),
-                    G::num_players(),
-                    G::zobrist_hash(&state),
-                ));
+                let hash = G::zobrist_hash(&state);
+                let child_id = {
+                    let child_node = Node::new(
+                        ctx.current_id,
+                        best_idx,
+                        G::player_to_move(&state).to_index(),
+                        hash,
+                    );
+                    self.index.insert(child_node)
+                };
 
                 if self.config.use_transpositions {
-                    self.table.insert(G::zobrist_hash(&ctx.state), child_id);
+                    self.table.insert(hash, child_id);
                 }
 
-                match &mut (self.index.get_mut(ctx.current_id).state) {
-                    NodeState::Expanded { children, .. } => {
-                        children[best_idx] = Some(child_id);
+                {
+                    match &mut (self.index.get_mut(ctx.current_id).state) {
+                        NodeState::Expanded(edges) => {
+                            edges[best_idx].node_id = Some(child_id);
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
                 }
 
                 ctx.traverse(child_id);
@@ -244,15 +262,17 @@ where
                 player: G::player_to_move(state).to_index(),
                 player_to_move: G::player_to_move(state).to_index(),
                 state,
+                root_stats: &self.root_stats,
                 index: &self.index,
                 table: &self.table,
+                grave: &self.stats.grave,
                 use_transpositions: self.config.use_transpositions,
             },
             &mut self.config.rng,
         );
 
         match &(self.index.get(self.root_id).state) {
-            NodeState::Expanded { actions, .. } => actions[idx].clone(),
+            NodeState::Expanded(edges) => edges[idx].action.clone(),
             _ => unreachable!(),
         }
     }
@@ -281,6 +301,7 @@ where
                 self.stack.clone(),
                 &mut self.stats,
                 &mut self.index,
+                &mut self.root_stats,
                 self.trial.as_ref().unwrap().clone(),
                 player,
                 flags,
@@ -312,7 +333,7 @@ where
 
         let num_threads = 1;
         let root = self.index.get(self.root_id);
-        let total_visits = root.stats.num_visits;
+        let total_visits = self.root_stats.num_visits;
         let rate = total_visits as f64 / num_threads as f64 / self.timer.elapsed().as_secs_f64();
         eprintln!(
             "Using {} threads, did {} total simulations with {:.1} rollouts/sec/core",
@@ -323,15 +344,14 @@ where
 
         // Sort moves by visit count, largest first.
         let mut children = match &(root.state) {
-            NodeState::Expanded { children, .. } => children
+            NodeState::Expanded(edges) => edges
                 .iter()
-                .flatten()
-                .map(|node_id| {
-                    let node = self.index.get(*node_id);
+                .filter(|edge| edge.is_explored())
+                .map(|edge| {
                     (
-                        node.stats.num_visits,
-                        node.stats.player[player.to_index()].score,
-                        node.action(&self.index).clone(),
+                        edge.stats.num_visits,
+                        edge.stats.player[player.to_index()].score,
+                        edge.action.clone(),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -352,10 +372,7 @@ where
             );
         }
 
-        eprintln!(
-            "PV: {}",
-            pv_string::<G>(self.pv.as_slice(), self.init_state.as_ref().unwrap())
-        )
+        eprintln!("PV: {}", pv_string::<G>(self.pv.as_slice(), state))
     }
 
     #[inline]
@@ -373,34 +390,39 @@ where
         self.new_root(player_idx, hash)
     }
 
-    fn compute_pv(&mut self) {
+    fn compute_pv(&mut self, init_state: &G::S) {
         self.pv.clear();
         let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
-        let mut state = self.init_state.clone().unwrap().clone();
+        let mut state = init_state.clone();
+        let init_player = G::player_to_move(init_state).to_index();
         while node.is_expanded() {
             let player = G::player_to_move(&state);
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 current_id: node_id,
-                player: player.to_index(),
+                player: init_player, // TODO: opponent perspective?
                 stack: self.stack.clone(),
                 state: &state,
+                root_stats: &self.root_stats,
                 player_to_move: player.to_index(),
                 index: &self.index,
                 table: &self.table,
+                grave: &self.stats.grave,
                 use_transpositions: self.config.use_transpositions,
             };
+
             let best_idx = self
                 .config
                 .final_action
                 .best_child(&select_ctx, &mut self.config.rng);
-            if let Some(child_id) = node.children()[best_idx] {
+
+            let edge = &node.edges()[best_idx];
+            if let Some(child_id) = edge.node_id {
                 node_id = child_id;
                 node = self.index.get(node_id);
-                let action = node.action(&self.index);
-                state = G::apply(state, &action);
-                self.pv.push(action);
+                state = G::apply(state, &edge.action);
+                self.pv.push(edge.action.clone());
             } else {
                 break;
             }
@@ -421,13 +443,13 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
-        let root_id = self.reset(G::player_to_move(state).to_index(), G::zobrist_hash(state));
+        let hash = G::zobrist_hash(state);
+        let root_id = self.reset(G::player_to_move(state).to_index(), hash);
         if self.config.use_transpositions {
-            self.table.insert(G::zobrist_hash(state), root_id);
+            self.table.insert(hash, root_id);
         }
 
         self.timer.start(self.config.max_time);
-        self.init_state = Some(state.clone());
 
         for _ in 0..self.config.max_iterations {
             if self.timer.done() {
@@ -441,7 +463,7 @@ where
             self.backprop(G::player_to_move(state).to_index());
         }
 
-        self.compute_pv();
+        self.compute_pv(state);
         self.verbose_summary(state);
 
         // NOTE: this can fail when root is a leaf. This happens if:
@@ -470,7 +492,7 @@ where
             .iter()
             .skip(1)
             .cloned()
-            .map(|id| self.index.get(id).action(&self.index))
+            .map(|id| self.index.get(id).get_action(&self.index).unwrap())
             .collect();
 
         let utilities = G::compute_utilities(&self.trial.as_ref().unwrap().state);

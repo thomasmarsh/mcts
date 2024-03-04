@@ -379,7 +379,7 @@ mod tests {
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
-                .max_iterations(20)
+                .max_iterations(30)
                 .q_init(QInit::Loss)
                 .use_transpositions(true),
         );
@@ -388,6 +388,6 @@ mod tests {
         println!("hits: {}", ts.table.hits);
 
         assert!(ts.table.hits > 0);
-        render::render_trans(&ts);
+        render::render_trans(&ts, &HashedPosition::default());
     }
 }

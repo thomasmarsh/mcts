@@ -84,7 +84,10 @@ use std::collections::VecDeque;
 use rustc_hash::FxHashSet as HashSet;
 use serde::Serialize;
 
-use crate::game::{Game, PlayerIndex};
+use crate::{
+    game::{Game, PlayerIndex},
+    zobrist::LazyZobristTable,
+};
 
 // TODO: trait Game should be implemented with a self parameter or some
 // other way to maintain static context so we don't have to store this here.
@@ -92,7 +95,7 @@ use crate::game::{Game, PlayerIndex};
 // 11x11 before you trigger integer overflows (unless expanding some of the types).
 pub const SIZE: Size = Size { w: 5, h: 5 };
 
-#[derive(PartialEq, Clone, Copy, Debug, Serialize)]
+#[derive(PartialEq, Clone, Copy, Debug, Serialize, Hash)]
 pub enum Player {
     Black,
     White,
@@ -176,7 +179,7 @@ pub enum Piece {
     Lintel(Orientation),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub struct Square {
     pub height: u16,
     pub piece: Option<Player>,
@@ -191,7 +194,7 @@ impl Square {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub Piece, pub u8);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 pub struct Hand {
     pub sarsens: u8,
     pub lintels: u8,
@@ -227,7 +230,7 @@ impl Hand {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 pub struct State {
     pub player: Player,
     pub board: Vec<Square>,
@@ -491,29 +494,69 @@ where
     map.join("")
 }
 
+impl std::fmt::Display for HashedState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+// A naive Zobrist hash, will require a table of size:
+//
+//     size(N, M) = 2 * ceil(log2(N*M)) * (N*M + N*(M-1) + (N-1)*M)
+//
+// For a default 10x10 sized board that is 3920 entries. This, is not too high,
+// but it is also not very efficient. In Druid, we only need to consider the
+// top-down view. Occluded pieces do not need to contribute to the hash. The
+// revised hash is better:
+//
+//     size(N, M) = 2 * ceil(log2(N*M)) * N * M
+//
+// Then size(10,10) = 1400. There is 8-way symmetry, but this is only useful
+// in the early game.
+static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
+
+#[derive(Debug, Default, Clone)]
+pub struct HashedState(State, u64);
+
 #[derive(Clone)]
 pub struct Druid;
 
 impl Game for Druid {
-    type S = State;
+    type S = HashedState;
     type A = Move;
     type P = Player;
 
-    fn generate_actions(state: &State, actions: &mut Vec<Move>) {
-        state.moves(actions);
+    fn generate_actions(state: &HashedState, actions: &mut Vec<Move>) {
+        state.0.moves(actions);
+    }
+
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        state.1
     }
 
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
-        state.apply(*m);
+        state.0.apply(*m);
+
+        let mut hash = 0;
+        state.0.board.iter().enumerate().for_each(|(i, square)| {
+            let h = square.height;
+            if h > 0 {
+                let c = square.piece.map(|x| x as usize).unwrap_or(0);
+                let index = i * (h as usize + 7 * c);
+                hash ^= HASHES.hash(index);
+            }
+        });
+        state.1 = hash;
+
         state
     }
 
     fn is_terminal(state: &Self::S) -> bool {
         // This is not quite right - should be "no moves", but that's too expensive
         // to calculate.
-        state.current_hand().sarsens == 0
-            || state.current_hand().lintels == 0
-            || state.connection().is_some()
+        state.0.current_hand().sarsens == 0
+            || state.0.current_hand().lintels == 0
+            || state.0.connection().is_some()
         // || Druid::gen_moves(state).is_empty()
     }
 
@@ -527,10 +570,38 @@ impl Game for Druid {
     }
 
     fn winner(state: &Self::S) -> Option<Player> {
-        state.connection()
+        state.0.connection()
     }
 
     fn player_to_move(state: &Self::S) -> Player {
-        state.player
+        state.0.player
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::strategies::{
+        mcts::{
+            node::QInit,
+            render::{self, NodeRender},
+            strategy, SearchConfig, TreeSearch,
+        },
+        Search,
+    };
+
+    impl NodeRender for HashedState {}
+
+    #[test]
+    fn test_druid_render() {
+        let mut search = TreeSearch::<Druid, strategy::Ucb1>::new().config(
+            SearchConfig::new()
+                .expand_threshold(1)
+                .q_init(QInit::Infinity)
+                .use_transpositions(true)
+                .max_iterations(20),
+        );
+        _ = search.choose_action(&HashedState::default());
+        render::render(&search);
     }
 }

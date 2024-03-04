@@ -40,7 +40,7 @@ class CustomCallback(Callback):
 class GameSearch:
     @property
     def configspace(self) -> ConfigurationSpace:
-        cs = ConfigurationSpace(seed=0)
+        cs = ConfigurationSpace(seed=1)
 
         bias = Float('bias', (0, 10), default=10e-6)
         c = Float('c', (0, 3), default=math.sqrt(2))

@@ -138,13 +138,13 @@ mod tests {
         let child_id = step(&mut ts);
 
         assert_eq!(child_id, root_id);
-        assert_eq!(ts.index.get(root_id).stats.num_visits, 1);
+        assert_eq!(ts.root_stats.num_visits, 1);
 
         // Second pass: expand child node
         let child_id = step(&mut ts);
 
         assert_ne!(child_id, root_id);
-        assert_eq!(ts.index.get(root_id).stats.num_visits, 2);
+        assert_eq!(ts.root_stats.num_visits, 2);
 
         // Third pass: expand child node
         let _child_id = step(&mut ts);

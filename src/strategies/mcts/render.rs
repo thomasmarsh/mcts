@@ -9,16 +9,11 @@ where
     print::<G>(&search.index, search.root_id);
 }
 
-pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>)
+pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &G::S)
 where
     G::S: NodeRender,
 {
-    print_trans::<G>(
-        &search.index,
-        &search.table,
-        search.root_id,
-        search.init_state.as_ref().unwrap().clone(),
-    );
+    print_trans::<G>(&search.index, &search.table, search.root_id, state.clone());
 }
 
 pub trait NodeRender {
@@ -68,17 +63,12 @@ fn print_trans<G>(
         }
         let node = index.get(node_id);
         if node.is_expanded() {
-            for (child_id, action) in node
-                .children()
-                .iter()
-                .zip(node.actions())
-                .filter(|x| x.0.is_some())
-            {
+            for edge in node.edges().iter().filter(|edge| edge.is_explored()) {
                 stack.push((
                     node_id,
                     print_id,
-                    child_id.unwrap(),
-                    G::apply(state.clone(), action),
+                    edge.node_id.unwrap(),
+                    G::apply(state.clone(), &edge.action),
                 ));
             }
         }
@@ -107,13 +97,12 @@ where
         }
         let node = index.get(node_id);
         if node.is_expanded() {
-            for (child_id, action) in node
-                .children()
-                .iter()
-                .zip(node.actions())
-                .filter(|x| x.0.is_some())
-            {
-                stack.push((node_id, child_id.unwrap(), G::apply(state.clone(), action)));
+            for edge in node.edges().iter().filter(|x| x.is_explored()) {
+                stack.push((
+                    node_id,
+                    edge.node_id.unwrap(),
+                    G::apply(state.clone(), &edge.action),
+                ));
             }
         }
     }

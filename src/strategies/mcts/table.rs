@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 
 type IdSet = FxHashSet<index::Id>;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct TranspositionTable {
     pub table: ZobristHashMap<IdSet>,
     pub reads: usize,

@@ -22,9 +22,7 @@ use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
 
-use mcts::games::traffic_lights;
-
-type G = traffic_lights::TrafficLights;
+type G = mcts::games::druid::Druid;
 
 type TS<S> = TreeSearch<G, S>;
 
@@ -134,7 +132,7 @@ impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
         };
         Self::config()
             .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
-            .use_transpositions(true)
+            .use_transpositions(false)
             .select(select::Rave::new(args.threshold.unwrap(), schedule, ucb))
             .simulate(
                 simulate::DecisiveMove::new()
@@ -160,7 +158,7 @@ fn make_baseline(seed: u64) -> TS<strategy::Ucb1DM> {
             .name("mcts[ucb1]+ucd+dm")
             .max_iterations(10_000)
             .expand_threshold(1)
-            .use_transpositions(true)
+            .use_transpositions(false)
             .q_init(QInit::Infinity)
             .select(select::Ucb1::with_c(0.01f64.sqrt()))
             .seed(seed),

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ZobristHash(pub u64);
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -42,7 +42,7 @@ impl BuildHasher for ZobristHashBuilder {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct ZobristHashMap<T>(pub HashMap<ZobristHash, T, ZobristHashBuilder>);
 
 impl<T> ZobristHashMap<T> {

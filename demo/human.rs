@@ -15,22 +15,25 @@ fn play<G: Game>()
 where
     G::S: std::fmt::Display,
 {
+    // hash=ba2047 cost=0.43333333333333335 dict={'epsilon': 0.6096443583623276, 'final-action': 'robust_child', 'q-init': 'Draw', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 910, 'bias': 0.6937972231158172}
+    // hash=840351 cost=0.025000000000000022 dict={'epsilon': 0.7775134909898043, 'final-action': 'robust_child', 'q-init': 'Infinity', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 204, 'bias': 5.286671416833997, 'c': 0.28941824845969677}
     let mut ts: TreeSearch<G, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
-            .name("mcts[rave]+mast+ucd")
+            .name("mcts[rave]+mast+ucd+dm")
+            .verbose(true)
             .expand_threshold(1)
             .max_time(Duration::from_secs(10))
-            .q_init(QInit::Parent)
+            .q_init(QInit::Draw)
             .select(
                 select::Rave::default()
                     .ucb(select::RaveUcb::Ucb1Tuned {
-                        exploration_constant: 0.69,
+                        exploration_constant: 0.2894182,
                     })
-                    .threshold(285)
-                    .schedule(select::RaveSchedule::Threshold { rave: 628 }),
+                    .threshold(204)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.0015)),
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.7775)),
             ),
     );
 

@@ -386,6 +386,38 @@ mod tests {
         _ = search.choose_action(&HashedPosition::default());
         assert!(search.table.hits > 0);
 
-        render::render_trans(&search);
+        render::render_trans(&search, &HashedPosition::default());
+    }
+
+    #[test]
+    fn test_grave() {
+        use crate::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+        use crate::strategies::Search;
+        type TS = TreeSearch<TrafficLights, strategy::RaveMastDm>;
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(30)
+                .q_init(QInit::Infinity)
+                .select(
+                    select::Rave::default()
+                        .threshold(2)
+                        .schedule(select::RaveSchedule::MinMSE { bias: 10e-6 })
+                        .ucb(select::RaveUcb::Ucb1Tuned {
+                            exploration_constant: 2f64.sqrt(),
+                        }),
+                )
+                .use_transpositions(true),
+        );
+        let state = HashedPosition::default();
+        _ = ts.choose_action(&state);
+        println!("hits: {}", ts.table.hits);
+        println!("table:");
+        println!("{:#?}", ts.table);
+        println!("grave:");
+        println!("{:#?}", ts.stats.grave);
+
+        assert!(ts.table.hits > 0);
+        // render::render_trans(&ts);
     }
 }

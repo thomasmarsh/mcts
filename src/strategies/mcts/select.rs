@@ -1,24 +1,26 @@
 use super::index::Id;
-use super::node::{self, NodeStats};
+use super::node::{self, Edge, NodeStats};
 use super::table::TranspositionTable;
 use super::*;
-use crate::game::{Action, Game};
+use crate::game::Game;
 use crate::strategies::Search;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
-use std::ops::Deref;
+use rustc_hash::FxHashMap;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
     pub current_id: Id,
     pub stack: Vec<Id>,
     pub state: &'a G::S,
+    pub root_stats: &'a NodeStats,
     pub player: usize,
     pub player_to_move: usize,
     pub index: &'a TreeIndex<G::A>,
     pub table: &'a TranspositionTable,
+    pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub use_transpositions: bool,
 }
 
@@ -29,45 +31,17 @@ pub struct SelectContext<'a, G: Game> {
 // This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
 // Confidence bound for rooted Directed acyclic graphs.
 
-enum StatsRef<'a, A: Action> {
-    Owned(NodeStats<A>),
-    Borrowed(&'a NodeStats<A>),
-}
-
-impl<'a, A: Action> Deref for StatsRef<'a, A> {
-    type Target = NodeStats<A>;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            StatsRef::Owned(stats) => stats,
-            StatsRef::Borrowed(stats) => stats,
-        }
-    }
-}
-
 impl<'a, G: Game> SelectContext<'a, G> {
     #[inline]
-    fn get_stats(&self, node_id: Id) -> StatsRef<G::A> {
-        if !self.use_transpositions {
-            return StatsRef::Borrowed(&self.index.get(node_id).stats);
-        }
-        let node = self.index.get(node_id);
-        match self.table.get_const(node.hash) {
-            Some(entries) => StatsRef::Owned(
-                entries
-                    .iter()
-                    .fold(NodeStats::new(G::num_players()), |stats, x| {
-                        stats + self.index.get(*x).stats.clone()
-                    }),
-            ),
+    fn current_stats(&self) -> &NodeStats {
+        if self.index.get(self.current_id).is_root() {
+            self.root_stats
+        } else {
+            let action_idx = self.index.get(self.current_id).action_idx;
+            let parent_id = self.index.get(self.current_id).parent_id;
 
-            None => StatsRef::Borrowed(&self.index.get(node_id).stats),
+            &self.index.get(parent_id).edges()[action_idx].stats
         }
-    }
-
-    #[inline]
-    fn current_stats(&self) -> StatsRef<'_, G::A> {
-        self.get_stats(self.current_id)
     }
 }
 
@@ -84,11 +58,17 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     /// Default implementation should be sufficient for all cases.
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.current_id);
-        random_best_index(current.children(), self, ctx, rng)
+        random_best_index(current.edges(), self, ctx, rng)
     }
 
     /// Given a child index, calculate a score.
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, aux: Self::Aux) -> Self::Score;
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        child_id: Id,
+        edge: &Edge<G::A>,
+        aux: Self::Aux,
+    ) -> Self::Score;
 
     /// Provide a score for any value that is not yet visited.
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, aux: Self::Aux) -> Self::Score;
@@ -152,7 +132,7 @@ where
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         if rng.gen::<f64>() < self.epsilon {
             let current = ctx.index.get(ctx.current_id);
-            let n = current.children().len();
+            let n = current.edges().len();
             rng.gen_range(0..n)
         } else {
             self.inner.best_child(ctx, rng)
@@ -163,9 +143,14 @@ where
         self.inner.setup(ctx)
     }
 
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, aux: Self::Aux) -> Self::Score {
-        println!("greedy: score_child");
-        self.inner.score_child(ctx, child_id, aux)
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        child_id: Id,
+        edge: &Edge<G::A>,
+        aux: Self::Aux,
+    ) -> Self::Score {
+        self.inner.score_child(ctx, child_id, edge, aux)
     }
 
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, aux: Self::Aux) -> Self::Score {
@@ -187,7 +172,7 @@ const PRIMES: [usize; 16] = [
 // This function is adapted from from minimax-rs.
 #[inline]
 fn random_best_index<S, G>(
-    set: &[Option<Id>],
+    set: &[Edge<G::A>],
     strategy: &mut S,
     ctx: &SelectContext<'_, G>,
     rng: &mut SmallRng,
@@ -210,8 +195,8 @@ where
     let unvisited_value = strategy.unvisited_value(ctx, aux);
 
     let child_value = |i: usize| {
-        if let Some(child_id) = &set[i] {
-            strategy.score_child(ctx, *child_id, aux)
+        if let Some(child_id) = &set[i].node_id {
+            strategy.score_child(ctx, *child_id, &set[i], aux)
         } else {
             unvisited_value
         }
@@ -248,9 +233,17 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
     fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> (i64, f64) {
-        let stats = ctx.get_stats(child_id);
-        (stats.num_visits as i64, stats.expected_score(ctx.player))
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        _: Self::Aux,
+    ) -> (i64, f64) {
+        (
+            edge.stats.num_visits as i64,
+            edge.stats.expected_score(ctx.player),
+        )
     }
 
     #[inline(always)]
@@ -277,8 +270,14 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
     fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        ctx.get_stats(child_id).expected_score(ctx.player)
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        _: Self::Aux,
+    ) -> f64 {
+        edge.stats.expected_score(ctx.player)
     }
 
     #[inline(always)]
@@ -311,12 +310,70 @@ impl<G: Game> SelectStrategy<G> for SecureChild {
     fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, _: Self::Aux) -> f64 {
-        let stats = ctx.get_stats(child_id);
-        let q = stats.expected_score(ctx.player);
-        let n = stats.total_visits();
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        _: Self::Aux,
+    ) -> f64 {
+        let q = edge.stats.expected_score(ctx.player);
+        let n = edge.stats.total_visits();
 
         q + self.a / (n as f64).sqrt()
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
+        ctx.current_stats()
+            .value_estimate_unvisited(ctx.player, ctx.q_init)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Default)]
+pub struct ThompsonSampling;
+
+impl<G: Game> SelectStrategy<G> for ThompsonSampling {
+    type Score = f64;
+    type Aux = ();
+
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
+
+    #[inline]
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        let current = ctx.index.get(ctx.current_id);
+        // This is just a weighted sampling. Need to implement some stuff for thompson sampling.
+        let weights = current
+            .edges()
+            .iter()
+            .map(|edge| {
+                edge.node_id
+                    .map(|child_id| self.score_child(ctx, child_id, edge, ()))
+                    .unwrap_or(self.unvisited_value(ctx, ())) as f32
+            })
+            .collect::<Vec<_>>();
+
+        use weighted_rand::builder::*;
+        let builder = WalkerTableBuilder::new(&weights);
+        let wa_table = builder.build();
+        wa_table.next_rng(rng)
+    }
+
+    #[inline(always)]
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        _: Self::Aux,
+    ) -> f64 {
+        let q = edge.stats.expected_score(ctx.player);
+        let n = edge.stats.total_visits();
+
+        q / (n as f64).sqrt()
     }
 
     #[inline(always)]
@@ -361,10 +418,15 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.get_stats(child_id);
-        let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.total_visits();
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        parent_log: f64,
+    ) -> f64 {
+        let exploit = edge.stats.exploitation_score(ctx.player);
+        let num_visits = edge.stats.total_visits();
         let explore = (parent_log / num_visits as f64).sqrt();
         exploit + self.exploration_constant * explore
     }
@@ -422,23 +484,27 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        let current = ctx.index.get(ctx.current_id);
-        ((current.stats.num_visits as f64).max(1.)).ln()
+        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.get_stats(child_id);
-        let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.total_visits();
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        parent_log: f64,
+    ) -> f64 {
+        let exploit = edge.stats.exploitation_score(ctx.player);
+        let num_visits = edge.stats.total_visits();
         let sample_variance = 0f64.max(
-            stats.player[ctx.player].sum_squared_score / num_visits as f64 - exploit * exploit,
+            edge.stats.player[ctx.player].sum_squared_score / num_visits as f64 - exploit * exploit,
         );
         let visits_fraction = parent_log / num_visits as f64;
 
         ucb1_tuned(
             self.exploration_constant,
-            0., // RAVE provides the exploitation term.
+            exploit,
             sample_variance,
             visits_fraction,
         )
@@ -552,7 +618,7 @@ impl RaveUcb {
                 let visits_fraction = parent_log / n as f64;
                 ucb1_tuned(
                     *exploration_constant,
-                    exploit,
+                    0., // RAVE provides the exploitation term.
                     sample_variance,
                     visits_fraction,
                 )
@@ -606,26 +672,29 @@ impl Rave {
 impl Rave {
     fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id) -> Id {
         let node = ctx.index.get(node_id);
-        if node.is_root() || node.stats.total_visits() >= self.threshold {
+        if node.is_root()
+            || ctx.index.get(node.parent_id).edges()[node.action_idx]
+                .stats
+                .total_visits()
+                >= self.threshold
+        {
             return ctx.current_id;
         }
 
         // TODO: we can push this down during select descent rather than walking back up.
         for i in (0..ctx.stack.len()).rev() {
             let node = ctx.index.get(ctx.stack[i]);
-            if node.is_root() || node.stats.total_visits() >= self.threshold {
+            if node.is_root()
+                || ctx.index.get(node.parent_id).edges()[node.action_idx]
+                    .stats
+                    .total_visits()
+                    >= self.threshold
+            {
                 return ctx.stack[i];
             }
         }
         unreachable!();
     }
-
-    // #[inline(always)]
-    // fn ucb1_score(&self, stats: &StatsRef<'_>, parent_log: f64, player_idx: usize, n: u32) -> f64 {
-    //     let exploit = stats.exploitation_score(player_idx);
-    //     let explore = (parent_log / n as f64).sqrt();
-    //     exploit + self.exploration_constant * explore
-    // }
 
     #[inline(always)]
     fn amaf_score(n: u32, q: f64) -> f64 {
@@ -647,35 +716,38 @@ impl<G: Game> SelectStrategy<G> for Rave {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        child_id: Id,
+        edge: &Edge<G::A>,
+        parent_log: f64,
+    ) -> f64 {
         let ref_id = self.get_ref(ctx, child_id);
-        let stats = ctx.get_stats(child_id);
-        let amaf_stats = ctx.get_stats(ref_id);
-
-        let action = ctx.index.get(child_id).action(ctx.index);
-        let n = stats.total_visits();
-        let grave_stats = amaf_stats.player[ctx.player]
+        let hash = ctx.index.get(ref_id).hash;
+        let grave_stats = ctx
             .grave
-            .get(&action)
-            .cloned()
+            .get(&hash)
+            .and_then(|player| player[ctx.player].get(&edge.action).cloned())
             .unwrap_or_default();
+
         let amaf_n = grave_stats.num_visits;
         let amaf_q = grave_stats.score;
 
-        let mean_score = stats.expected_score(ctx.player);
-
-        let amaf = Self::amaf_score(amaf_n, amaf_q);
-
-        let b = self.schedule.beta(n, amaf_n);
-        let exploit = stats.exploitation_score(ctx.player);
-        let ucb = self.ucb.score(
+        let n = edge.stats.total_visits();
+        let exploit = edge.stats.exploitation_score(ctx.player);
+        let explore = self.ucb.score(
             parent_log,
             n,
-            stats.player[ctx.player].sum_squared_score,
+            edge.stats.player[ctx.player].sum_squared_score,
             exploit,
         );
 
-        (1. - b) * mean_score + b * amaf + ucb
+        let b = self.schedule.beta(n, amaf_n);
+        let mean_score = edge.stats.expected_score(ctx.player);
+        let amaf = Self::amaf_score(amaf_n, amaf_q);
+
+        (1. - b) * mean_score + b * amaf + explore
     }
 
     #[inline(always)]
@@ -739,14 +811,19 @@ impl<G: Game> SelectStrategy<G> for Amaf {
     }
 
     #[inline(always)]
-    fn score_child(&self, ctx: &SelectContext<'_, G>, child_id: Id, parent_log: f64) -> f64 {
-        let stats = ctx.get_stats(child_id);
-        let amaf_n = 1.max(stats.player[ctx.player].amaf.num_visits) as f64;
-        let amaf_q = stats.player[ctx.player].amaf.score;
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        edge: &Edge<G::A>,
+        parent_log: f64,
+    ) -> f64 {
+        let amaf_n = 1.max(edge.stats.player[ctx.player].amaf.num_visits) as f64;
+        let amaf_q = edge.stats.player[ctx.player].amaf.score;
         let amaf = amaf_q / amaf_n;
 
-        let exploit = stats.exploitation_score(ctx.player);
-        let num_visits = stats.total_visits();
+        let exploit = edge.stats.exploitation_score(ctx.player);
+        let num_visits = edge.stats.total_visits();
         let explore = (parent_log / num_visits as f64).sqrt();
 
         // alpha = 1 is standard AMAF
@@ -893,40 +970,47 @@ where
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.current_id);
-        let available = current.actions();
+        let available = current.edges();
 
         let key_init = ctx
             .stack
             .iter()
             .skip(1)
-            .map(|id| ctx.index.get(*id).action(ctx.index))
+            .map(|id| ctx.index.get(*id).get_action(ctx.index).unwrap())
             .collect::<Vec<_>>();
 
         let k_score = self.k[ctx.player_to_move];
 
         let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();
-        let best = random_best(enumerated.as_slice(), rng, |(_, action): &(usize, G::A)| {
-            let mut key = key_init.clone();
-            key.push(action.clone());
+        let best = random_best(
+            enumerated.as_slice(),
+            rng,
+            |(_, edge): &(usize, Edge<G::A>)| {
+                let mut key = key_init.clone();
+                key.push(edge.action.clone());
 
-            let score = self
-                .book
-                .score(key.as_slice(), ctx.player_to_move)
-                .unwrap_or(f64::NEG_INFINITY);
-            if score > k_score {
-                score
-            } else {
-                // NOTE: we depend on random_best using this value internally
-                // as an equivalence for None types
-                f64::NEG_INFINITY
-            }
-        });
+                let score = self
+                    .book
+                    .score(key.as_slice(), ctx.player_to_move)
+                    .unwrap_or(f64::NEG_INFINITY);
+                if score > k_score {
+                    score
+                } else {
+                    // NOTE: we depend on random_best using this value internally
+                    // as an equivalence for None types
+                    f64::NEG_INFINITY
+                }
+            },
+        );
 
         if let Some((best_index, _)) = best {
             *best_index
         } else {
             let action = self.search.choose_action(ctx.state);
-            available.iter().position(|p| *p == action.clone()).unwrap()
+            available
+                .iter()
+                .position(|p| p.action == action.clone())
+                .unwrap()
         }
     }
 
@@ -934,7 +1018,7 @@ where
     fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, _: &SelectContext<'_, G>, _: Id, _: Self::Aux) -> f64 {
+    fn score_child(&self, _: &SelectContext<'_, G>, _: Id, _: &Edge<G::A>, _: Self::Aux) -> f64 {
         0.
     }
 

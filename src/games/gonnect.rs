@@ -6,7 +6,6 @@ use crate::display::RectangularBoard;
 use crate::display::RectangularBoardDisplay;
 use crate::game::Game;
 use crate::game::PlayerIndex;
-use crate::zobrist::LazyZobristTable;
 
 use serde::Serialize;
 use std::fmt;
@@ -51,7 +50,6 @@ pub struct State<const N: usize> {
     turn: Player,
     can_swap: bool,
     winner: bool,
-    hash: u64,
 }
 
 impl<const N: usize> Default for State<N> {
@@ -64,33 +62,11 @@ impl<const N: usize> Default for State<N> {
             turn: Player::default(),
             can_swap: true,
             winner: false,
-            hash: 0,
         }
     }
 }
 
-static HASHES: LazyZobristTable<128> = LazyZobristTable::new(0x50223C7);
-
 impl<const N: usize> State<N> {
-    // fn rehash(&mut self) {
-    //     self.hash = 0;
-    //     for i in self.black {
-    //         self.hash ^= HASHES.hash(i << 1);
-    //     }
-
-    //     for i in self.white {
-    //         self.hash ^= HASHES.hash((i << 1) | 1);
-    //     }
-    // }
-
-    // fn update_hash(&mut self, action: &Move) {
-    //     if action.1 > 0 {
-    //         self.rehash()
-    //     } else {
-    //         self.hash ^= HASHES.hash(((action.0 as usize) << 1) | self.turn as usize);
-    //     }
-    // }
-
     #[inline(always)]
     fn occupied(&self) -> BitBoard<N, N> {
         self.black | self.white
@@ -175,7 +151,6 @@ impl<const N: usize> State<N> {
         if self.can_swap && self.occupied().count_ones() == 1 {
             self.can_swap = false;
         }
-        // self.update_hash(action);
         if !self.winner {
             self.turn = self.turn.next();
         }
@@ -184,6 +159,8 @@ impl<const N: usize> State<N> {
     }
 }
 
+// Zobrist hashing for Gonnect is harder because of the repetition of the ko rule. A solution
+// would be to use Zobrist path hashing.
 #[derive(Clone)]
 pub struct Gonnect<const N: usize>;
 
@@ -353,11 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn test_render() {
-        let mut search = TreeSearch::<Gonnect<8>, strategy::Ucb1>::new().config(
+    fn test_gonnect_render() {
+        let mut search = TreeSearch::<Gonnect<3>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
-                .q_init(QInit::Draw)
+                .q_init(QInit::Infinity)
+                .use_transpositions(true)
                 .max_iterations(20),
         );
         _ = search.choose_action(&State::default());

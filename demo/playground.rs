@@ -62,7 +62,7 @@ fn ucd() {
             .select(select::Ucb1::with_c(0.01f64.sqrt())),
     );
 
-    let amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new().config(
+    let _amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
             .max_iterations(10_000)
@@ -107,26 +107,50 @@ fn ucd() {
             ),
     );
 
-    // hash=6025bf cost=0.43333333333333335 dict={'c': 0.6192158991470933, 'epsilon': 0.7234254349023104, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'threshold', 'threshold': 916, 'rave': 1787}
-    // hash=99b88f cost=0.35833333333333334 dict={'c': 0.4545644960423201, 'epsilon': 0.2061242829918312, 'final-action': 'robust_child', 'q-init': 'Win', 'schedule': 'threshold', 'threshold': 930, 'rave': 1783}
-    //hash=6f431b cost=0.35833333333333334 dict={'epsilon': 0.39082487765699625, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 565, 'bias': 9.846476027742028, 'c': 0.3266884842887521}
+    #[derive(Clone, Copy, Default)]
+    struct ThompsonSamplingMast;
+
+    impl Strategy<TrafficLights> for ThompsonSamplingMast {
+        type Select = select::ThompsonSampling;
+        type Simulate = simulate::DecisiveMove<
+            TrafficLights,
+            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
+        >;
+        type Backprop = backprop::Classic;
+        type FinalAction = select::RobustChild;
+    }
+
+    let thompson: TreeSearch<TrafficLights, ThompsonSamplingMast> = TreeSearch::new().config(
+        SearchConfig::new()
+            .name("mcts[thompson]+mast+ucd+dm")
+            .expand_threshold(1)
+            .max_iterations(10_000)
+            .use_transpositions(true)
+            .q_init(QInit::Infinity)
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.25)),
+            ),
+    );
+
+    // hash=d87451 cost=0.425 dict={'epsilon': 0.6110725124055632, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 592, 'bias': 2.9724932304092317}
+
+    // hash=41eaec cost=0.4083333333333334 dict={'epsilon': 0.7029674773719651, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 916, 'bias': 0.711333324644768}
+
     let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
             .max_iterations(10_000)
             .use_transpositions(true)
-            .q_init(QInit::Infinity)
+            .q_init(QInit::Win)
             .select(
                 select::Rave::default()
-                    .threshold(930)
-                    .ucb(select::RaveUcb::Ucb1 {
-                        exploration_constant: 0.4545644,
-                    })
-                    .schedule(select::RaveSchedule::Threshold { rave: 1783 }),
+                    .threshold(916)
+                    .ucb(select::RaveUcb::None)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 0.711333 }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.20612)),
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.70)),
             ),
     );
 
@@ -150,7 +174,8 @@ fn ucd() {
         AnySearch::new(uct),
         AnySearch::new(ucd),
         AnySearch::new(ucd_dm),
-        AnySearch::new(amaf),
+        // AnySearch::new(amaf),
+        AnySearch::new(thompson),
         AnySearch::new(amaf_ucd),
         AnySearch::new(amaf_mast_ucd),
         AnySearch::new(rave_mast_ucd),
