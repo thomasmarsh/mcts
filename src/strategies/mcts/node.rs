@@ -178,7 +178,6 @@ pub enum NodeState<A: Action> {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Node<A: Action> {
-    pub parent_id: index::Id, // TODO: consider storing this in arena
     pub action_idx: usize,
     pub player_idx: usize,
     pub state: NodeState<A>,
@@ -189,26 +188,12 @@ impl<A: Action> Node<A>
 where
     A: Clone + std::hash::Hash,
 {
-    pub fn new(parent_id: index::Id, action_idx: usize, player_idx: usize, hash: u64) -> Self {
+    pub fn new(action_idx: usize, player_idx: usize, hash: u64) -> Self {
         Self {
-            parent_id,
             action_idx,
             player_idx,
             state: NodeState::Leaf,
             hash,
-        }
-    }
-
-    #[inline]
-    pub fn get_action(&self, index: &TreeIndex<A>) -> Option<A> {
-        if !self.is_root() {
-            Some(
-                index.get(self.parent_id).edges()[self.action_idx]
-                    .action
-                    .clone(),
-            )
-        } else {
-            None
         }
     }
 
@@ -245,7 +230,7 @@ where
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
-        Self::new(index::Id::invalid_id(), usize::MAX, player, hash)
+        Self::new(usize::MAX, player, hash)
     }
 
     pub fn update(&mut self, action_idx: usize, utilities: &[f64]) {
@@ -253,6 +238,6 @@ where
     }
 
     pub fn is_root(&self) -> bool {
-        self.parent_id == index::Id::invalid_id()
+        self.action_idx == usize::MAX
     }
 }

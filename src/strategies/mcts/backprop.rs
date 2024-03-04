@@ -14,11 +14,11 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         node_id: index::Id,
         utilities: &[f64],
     ) {
+        // NOTE: O(n) here, but amaf could be calculated top down
         let node = index.get(node_id);
         if !node.is_root() {
-            let parent_id = node.parent_id;
             assert!(!stack.is_empty());
-            assert_eq!(parent_id, *stack.last().unwrap());
+            let parent_id = *stack.last().unwrap();
             let sibling_actions: FxHashMap<_, _> = index
                 .get(parent_id)
                 .edges()
@@ -96,7 +96,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if index.get(node_id).is_root() {
                 root_stats.update(&utilities);
             } else {
-                let parent_id = index.get(node_id).parent_id;
+                let parent_id = stack.last().cloned().unwrap();
                 let action_idx = index.get(node_id).action_idx;
                 index.get_mut(parent_id).edges_mut()[action_idx]
                     .stats
@@ -114,7 +114,9 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if flags.grave() || flags.global() {
                 let node = index.get(node_id);
                 if !node.is_root() {
-                    amaf_actions.push((node.get_action(index).unwrap(), node.player_idx));
+                    let parent_id = stack.last().cloned().unwrap();
+                    let action = index.get(parent_id).edges()[node.action_idx].action.clone();
+                    amaf_actions.push((action, node.player_idx));
                 };
             }
         }

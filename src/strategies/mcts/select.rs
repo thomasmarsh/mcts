@@ -12,7 +12,6 @@ use rustc_hash::FxHashMap;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
-    pub current_id: Id,
     pub stack: Vec<Id>,
     pub state: &'a G::S,
     pub root_stats: &'a NodeStats,
@@ -26,20 +25,27 @@ pub struct SelectContext<'a, G: Game> {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Simple Upper Confidence bound for DAGS
-//
-// This is the "update descent" approach from Saffadine, Cazenave, UCD: Upper
-// Confidence bound for rooted Directed acyclic graphs.
-
 impl<'a, G: Game> SelectContext<'a, G> {
+    fn parent_id(&self) -> Id {
+        debug_assert!(!self.index.get(self.current_id()).is_root());
+        self.stack.get(self.stack.len() - 2).cloned().unwrap()
+    }
+
+    fn current_id(&self) -> Id {
+        debug_assert!(!self.stack.is_empty());
+        *self.stack.last().unwrap()
+    }
+
     #[inline]
     fn current_stats(&self) -> &NodeStats {
-        if self.index.get(self.current_id).is_root() {
+        if self.index.get(self.current_id()).is_root() {
             self.root_stats
         } else {
-            let action_idx = self.index.get(self.current_id).action_idx;
-            let parent_id = self.index.get(self.current_id).parent_id;
-
+            let action_idx = self.index.get(self.current_id()).action_idx;
+            debug_assert_ne!(self.parent_id(), self.current_id());
+            let parent_id = self.parent_id();
+            let parent = self.index.get(parent_id);
+            debug_assert!(parent.edges().len() > action_idx);
             &self.index.get(parent_id).edges()[action_idx].stats
         }
     }
@@ -57,7 +63,7 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
 
     /// Default implementation should be sufficient for all cases.
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id);
+        let current = ctx.index.get(ctx.current_id());
         random_best_index(current.edges(), self, ctx, rng)
     }
 
@@ -131,7 +137,7 @@ where
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         if rng.gen::<f64>() < self.epsilon {
-            let current = ctx.index.get(ctx.current_id);
+            let current = ctx.index.get(ctx.current_id());
             let n = current.edges().len();
             rng.gen_range(0..n)
         } else {
@@ -344,7 +350,7 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
 
     #[inline]
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id);
+        let current = ctx.index.get(ctx.current_id());
         // This is just a weighted sampling. Need to implement some stuff for thompson sampling.
         let weights = current
             .edges()
@@ -669,31 +675,50 @@ impl Rave {
     }
 }
 
+struct ReversePairs<'a, T: 'a> {
+    stack: &'a [T],
+    index: usize,
+}
+
+impl<'a, T> ReversePairs<'a, T> {
+    fn new(stack: &'a [T]) -> Self {
+        Self {
+            stack,
+            index: stack.len(),
+        }
+    }
+}
+
+impl<'a, T> Iterator for ReversePairs<'a, T> {
+    type Item = (&'a T, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= 2 {
+            self.index -= 1;
+            Some((&self.stack[self.index - 1], &self.stack[self.index]))
+        } else {
+            None
+        }
+    }
+}
+
 impl Rave {
     fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id) -> Id {
-        let node = ctx.index.get(node_id);
-        if node.is_root()
-            || ctx.index.get(node.parent_id).edges()[node.action_idx]
+        let mut stack = ctx.stack.clone();
+        stack.push(node_id);
+        let rev_pairs = ReversePairs::new(&stack);
+
+        // TODO: we can push this down during select descent rather than walking back up.
+        for (parent_id, child_id) in rev_pairs {
+            if ctx.index.get(*parent_id).edges()[ctx.index.get(*child_id).action_idx]
                 .stats
                 .total_visits()
                 >= self.threshold
-        {
-            return ctx.current_id;
-        }
-
-        // TODO: we can push this down during select descent rather than walking back up.
-        for i in (0..ctx.stack.len()).rev() {
-            let node = ctx.index.get(ctx.stack[i]);
-            if node.is_root()
-                || ctx.index.get(node.parent_id).edges()[node.action_idx]
-                    .stats
-                    .total_visits()
-                    >= self.threshold
             {
-                return ctx.stack[i];
+                return *child_id;
             }
         }
-        unreachable!();
+        stack[0]
     }
 
     #[inline(always)]
@@ -969,16 +994,21 @@ where
     type Aux = ();
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id);
+        let current = ctx.index.get(ctx.current_id());
         let available = current.edges();
 
-        let key_init = ctx
-            .stack
-            .iter()
-            .skip(1)
-            .map(|id| ctx.index.get(*id).get_action(ctx.index).unwrap())
-            .collect::<Vec<_>>();
-
+        // The stack now contains the action path to the terminal state.
+        // TODO: factor this pair iteration out of here
+        let mut key_init = vec![];
+        for i in 0..ctx.stack.len() - 1 {
+            let parent_id = ctx.stack[i];
+            let child_id = ctx.stack[i + 1];
+            key_init.push(
+                ctx.index.get(parent_id).edges()[ctx.index.get(child_id).action_idx]
+                    .action
+                    .clone(),
+            );
+        }
         let k_score = self.k[ctx.player_to_move];
 
         let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();

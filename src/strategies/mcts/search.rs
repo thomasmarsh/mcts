@@ -168,7 +168,7 @@ where
             let num_visits = if self.index.get(ctx.current_id).is_root() {
                 self.root_stats.num_visits
             } else {
-                let parent_id = self.index.get(ctx.current_id).parent_id;
+                let parent_id = self.stack.get(self.stack.len() - 2).cloned().unwrap();
                 let action_idx = self.index.get(ctx.current_id).action_idx;
 
                 self.index.get(parent_id).edges()[action_idx]
@@ -191,7 +191,6 @@ where
             let best_idx = {
                 let select_ctx = SelectContext {
                     q_init: self.config.q_init,
-                    current_id: ctx.current_id,
                     stack: self.stack.clone(),
                     player: player.to_index(),
                     player_to_move: G::player_to_move(&ctx.state).to_index(),
@@ -219,12 +218,8 @@ where
 
                 let hash = G::zobrist_hash(&state);
                 let child_id = {
-                    let child_node = Node::new(
-                        ctx.current_id,
-                        best_idx,
-                        G::player_to_move(&state).to_index(),
-                        hash,
-                    );
+                    let child_node =
+                        Node::new(best_idx, G::player_to_move(&state).to_index(), hash);
                     self.index.insert(child_node)
                 };
 
@@ -257,8 +252,7 @@ where
         let idx = self.config.final_action.best_child(
             &SelectContext {
                 q_init: self.config.q_init,
-                current_id: self.root_id,
-                stack: self.stack.clone(),
+                stack: vec![self.root_id],
                 player: G::player_to_move(state).to_index(),
                 player_to_move: G::player_to_move(state).to_index(),
                 state,
@@ -395,14 +389,14 @@ where
         let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
+        let mut stack = vec![node_id];
         let init_player = G::player_to_move(init_state).to_index();
         while node.is_expanded() {
             let player = G::player_to_move(&state);
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
-                current_id: node_id,
                 player: init_player, // TODO: opponent perspective?
-                stack: self.stack.clone(),
+                stack: stack.clone(),
                 state: &state,
                 root_stats: &self.root_stats,
                 player_to_move: player.to_index(),
@@ -423,6 +417,7 @@ where
                 node = self.index.get(node_id);
                 state = G::apply(state, &edge.action);
                 self.pv.push(edge.action.clone());
+                stack.push(node_id);
             } else {
                 break;
             }
@@ -485,15 +480,21 @@ where
         // Run the search, with expand_threshold == 0, so we fully expand to the
         // terminal node.
         _ = self.choose_action(state);
+        if self.stack.len() < 2 {
+            return (vec![], vec![0.; G::num_players()]);
+        }
 
         // The stack now contains the action path to the terminal state.
-        let actions = self
-            .stack
-            .iter()
-            .skip(1)
-            .cloned()
-            .map(|id| self.index.get(id).get_action(&self.index).unwrap())
-            .collect();
+        let mut actions = vec![];
+        for i in 0..self.stack.len() - 1 {
+            let parent_id = self.stack[i];
+            let child_id = self.stack[i + 1];
+            actions.push(
+                self.index.get(parent_id).edges()[self.index.get(child_id).action_idx]
+                    .action
+                    .clone(),
+            );
+        }
 
         let utilities = G::compute_utilities(&self.trial.as_ref().unwrap().state);
 

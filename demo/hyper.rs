@@ -156,7 +156,7 @@ fn make_baseline(seed: u64) -> TS<strategy::Ucb1DM> {
     UcdDm::new().config(
         SearchConfig::new()
             .name("mcts[ucb1]+ucd+dm")
-            .max_iterations(10_000)
+            .max_iterations(MAX_ITER)
             .expand_threshold(1)
             .use_transpositions(false)
             .q_init(QInit::Infinity)
