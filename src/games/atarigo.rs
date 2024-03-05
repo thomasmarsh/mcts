@@ -10,7 +10,7 @@ use crate::game::PlayerIndex;
 use serde::Serialize;
 use std::fmt;
 
-#[derive(Copy, Clone, Serialize, Debug, Default)]
+#[derive(Copy, Clone, Serialize, Debug, Default, PartialEq, Eq)]
 pub enum Player {
     #[default]
     Black,
@@ -35,7 +35,7 @@ impl PlayerIndex for Player {
 #[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
 pub struct Move(u8, u64);
 
-#[derive(Clone, Copy, Serialize, Debug, Default)]
+#[derive(Clone, Copy, Serialize, Debug, Default, PartialEq, Eq)]
 pub struct State<const N: usize> {
     black: BitBoard<N, N>,
     white: BitBoard<N, N>,

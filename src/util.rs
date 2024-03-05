@@ -15,6 +15,90 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+pub struct Pairs<'a, T: 'a> {
+    stack: &'a [T],
+    index: usize,
+}
+
+impl<'a, T> Pairs<'a, T> {
+    pub fn new(stack: &'a [T]) -> Self {
+        Self { stack, index: 0 }
+    }
+}
+
+impl<'a, T> Iterator for Pairs<'a, T> {
+    type Item = (&'a T, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < (self.stack.len() - 1) {
+            let result = Some((&self.stack[self.index], &self.stack[self.index + 1]));
+            self.index += 1;
+            result
+        } else {
+            None
+        }
+    }
+}
+
+pub struct ReversePairs<'a, T: 'a> {
+    stack: &'a [T],
+    index: usize,
+}
+
+impl<'a, T> ReversePairs<'a, T> {
+    pub fn new(stack: &'a [T]) -> Self {
+        Self {
+            stack,
+            index: stack.len(),
+        }
+    }
+}
+
+impl<'a, T> Iterator for ReversePairs<'a, T> {
+    type Item = (&'a T, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= 2 {
+            self.index -= 1;
+            Some((&self.stack[self.index - 1], &self.stack[self.index]))
+        } else {
+            None
+        }
+    }
+}
+
+pub struct ReversePairs2<'a, T: 'a> {
+    stack: &'a [T],
+    index: usize,
+}
+
+impl<'a, T> ReversePairs2<'a, T> {
+    pub fn new(stack: &'a [T]) -> Self {
+        Self {
+            stack,
+            index: stack.len(),
+        }
+    }
+}
+
+impl<'a, T> Iterator for ReversePairs2<'a, T> {
+    type Item = (Option<&'a T>, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index > 0 {
+            let first = if self.index > 1 {
+                Some(&self.stack[self.index - 2])
+            } else {
+                None
+            };
+            self.index -= 1;
+            Some((first, &self.stack[self.index]))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AnySearch<'a, G: Game + Clone>(pub Arc<Mutex<Box<dyn strategies::Search<G = G> + 'a>>>);
 
@@ -341,4 +425,34 @@ pub(super) fn pv_string<G: Game>(path: &[G::A], state: &G::S) -> String {
         state = G::apply(state, m);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reverse_pairs() {
+        let stack = vec![1, 2, 3, 4, 5];
+        let mut reverse_pairs = ReversePairs::new(&stack);
+
+        assert_eq!(reverse_pairs.next(), Some((&4, &5)));
+        assert_eq!(reverse_pairs.next(), Some((&3, &4)));
+        assert_eq!(reverse_pairs.next(), Some((&2, &3)));
+        assert_eq!(reverse_pairs.next(), Some((&1, &2)));
+        assert_eq!(reverse_pairs.next(), None);
+    }
+
+    #[test]
+    fn test_first_element_iter() {
+        let stack = vec![1, 2, 3, 4, 5];
+        let mut first_element_iter = ReversePairs2::new(&stack);
+
+        assert_eq!(first_element_iter.next(), Some((Some(&4), &5)));
+        assert_eq!(first_element_iter.next(), Some((Some(&3), &4)));
+        assert_eq!(first_element_iter.next(), Some((Some(&2), &3)));
+        assert_eq!(first_element_iter.next(), Some((Some(&1), &2)));
+        assert_eq!(first_element_iter.next(), Some((None, &1)));
+        assert_eq!(first_element_iter.next(), None);
+    }
 }

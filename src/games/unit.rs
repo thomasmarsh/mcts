@@ -1,8 +1,14 @@
 use crate::game::{Game, PlayerIndex};
 
 // A trivial game with one move
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct Unit(pub bool);
+
+impl std::fmt::Display for Unit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "()")
+    }
+}
 
 #[derive(Clone)]
 pub struct UnitGame;

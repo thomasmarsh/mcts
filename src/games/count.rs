@@ -1,8 +1,14 @@
 use crate::game::*;
 use serde::Serialize;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Count(pub i32);
+
+impl std::fmt::Display for Count {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self, f)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum Move {

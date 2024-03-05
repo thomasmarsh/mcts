@@ -1,4 +1,4 @@
-use crate::{game::Game, zobrist::ZobristHash};
+use crate::game::Game;
 
 use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
 
@@ -28,17 +28,17 @@ pub trait NodeRender {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
-fn canonical_id(k: u64, table: &TranspositionTable) -> Option<index::Id> {
-    table
-        .table
-        .0
-        .get(&ZobristHash(k))
-        .map(|ts| *ts.iter().min_by_key(|x| x.get_raw()).unwrap())
+fn canonical_id<S: Eq + Clone>(
+    k: u64,
+    table: &TranspositionTable<S>,
+    state: S,
+) -> Option<index::Id> {
+    table.get_const(k, state).map(|ts| ts.node_id)
 }
 
 fn print_trans<G>(
     index: &TreeIndex<G::A>,
-    table: &TranspositionTable,
+    table: &TranspositionTable<G::S>,
     root_id: index::Id,
     init_state: G::S,
 ) where
@@ -46,13 +46,13 @@ fn print_trans<G>(
     G::S: NodeRender,
 {
     println!("graph {{");
-    println!("  graph [layout=twopi, ranksep=3, ratio=auto, concentrate=true, bgcolor=black];");
+    println!("  graph [ranksep=3, ratio=auto, concentrate=true, bgcolor=black];");
     println!("  edge [color=white];");
     println!("{}", G::S::preamble());
-    let mut stack = vec![(root_id, root_id, root_id, init_state)];
+    let mut stack = vec![(root_id, root_id, root_id, init_state.clone())];
     while let Some((parent_id, parent_print_id, node_id, state)) = stack.pop() {
         let hash = G::zobrist_hash(&state);
-        let print_id = canonical_id(hash, table).unwrap_or(root_id);
+        let print_id = canonical_id(hash, table, state.clone()).unwrap_or(root_id);
         println!("  \"{}\" {};", print_id.get_raw(), state.render());
         if parent_id != node_id {
             println!(

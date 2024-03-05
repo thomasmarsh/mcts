@@ -4,6 +4,8 @@ use crate::zobrist::LazyZobristTable;
 use serde::Serialize;
 use std::fmt;
 
+const USE_SYMMETRY: bool = false;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Piece {
     X,
@@ -28,7 +30,7 @@ impl Piece {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub u8);
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct Position {
     pub turn: Piece,
     pub board: u32,
@@ -172,7 +174,7 @@ const NUM_MOVES: usize = 18;
 
 static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0xFEAAE62226597B38);
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct HashedPosition {
     pub position: Position,
     pub(crate) hashes: [u64; 8],
@@ -182,7 +184,7 @@ impl HashedPosition {
     pub fn new() -> Self {
         Self {
             position: Position::new(),
-            hashes: [HASHES.initial(); 8],
+            hashes: [0; 8],
         }
     }
 }
@@ -206,7 +208,11 @@ impl HashedPosition {
 
     #[inline(always)]
     fn hash(&self) -> u64 {
-        self.hashes[sym::canonical_symmetry(self.position.board)]
+        if USE_SYMMETRY {
+            self.hashes[sym::canonical_symmetry(self.position.board)]
+        } else {
+            self.hashes[0]
+        }
     }
 }
 
@@ -296,35 +302,37 @@ mod tests {
 
     #[test]
     fn test_symmetries() {
-        let mut unhashed = FxHashSet::default();
-        let mut hashed = FxHashSet::default();
-        let mut n = 0;
+        if USE_SYMMETRY {
+            let mut unhashed = FxHashSet::default();
+            let mut hashed = FxHashSet::default();
+            let mut n = 0;
 
-        let mut stack = vec![HashedPosition::new()];
-        let mut actions = Vec::new();
-        while let Some(state) = stack.pop() {
-            unhashed.insert(state.position.board);
-            hashed.insert(state.hash());
-            n += 1;
+            let mut stack = vec![HashedPosition::new()];
+            let mut actions = Vec::new();
+            while let Some(state) = stack.pop() {
+                unhashed.insert(state.position.board);
+                hashed.insert(state.hash());
+                n += 1;
 
-            if !TicTacToe::is_terminal(&state) {
-                actions.clear();
-                TicTacToe::generate_actions(&state, &mut actions);
-                actions.iter().for_each(|action| {
-                    stack.push(TicTacToe::apply(state, action));
-                });
+                if !TicTacToe::is_terminal(&state) {
+                    actions.clear();
+                    TicTacToe::generate_actions(&state, &mut actions);
+                    actions.iter().for_each(|action| {
+                        stack.push(TicTacToe::apply(state, action));
+                    });
+                }
             }
+
+            println!("num positions seen: {n}");
+            println!("distinct: {}", unhashed.len());
+            println!("distinct w/symmetry: {}", hashed.len());
+
+            // There are 5478 distinct Tic-tac-toe positions, ignoring symmetries.
+            assert_eq!(unhashed.len(), 5478);
+
+            // There are 765 unique Tic-tac-toe positions, observing symmetries.
+            assert_eq!(hashed.len(), 765);
         }
-
-        println!("num positions seen: {n}");
-        println!("distinct: {}", unhashed.len());
-        println!("distinct w/symmetry: {}", hashed.len());
-
-        // There are 5478 distinct Tic-tac-toe positions, ignoring symmetries.
-        assert_eq!(unhashed.len(), 5478);
-
-        // There are 765 unique Tic-tac-toe positions, observing symmetries.
-        assert_eq!(hashed.len(), 765);
     }
 
     use proptest::prelude::*;
@@ -379,7 +387,7 @@ mod tests {
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
-                .max_iterations(300)
+                .max_iterations(3000)
                 .q_init(QInit::Loss)
                 .use_transpositions(true),
         );

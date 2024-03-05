@@ -173,27 +173,28 @@ impl NodeStats {
 pub enum NodeState<A: Action> {
     Terminal,
     Leaf,
+    // NOTE: this Vec necessitates O(n) lookups. Consider FxHashMap
     Expanded(Vec<Edge<A>>),
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Node<A: Action> {
-    pub action_idx: usize,
     pub player_idx: usize,
     pub state: NodeState<A>,
     pub hash: u64,
+    pub is_root: bool,
 }
 
 impl<A: Action> Node<A>
 where
     A: Clone + std::hash::Hash,
 {
-    pub fn new(action_idx: usize, player_idx: usize, hash: u64) -> Self {
+    pub fn new(player_idx: usize, hash: u64) -> Self {
         Self {
-            action_idx,
             player_idx,
             state: NodeState::Leaf,
             hash,
+            is_root: false,
         }
     }
 
@@ -220,6 +221,25 @@ where
         edges
     }
 
+    // NOTE: O(n) lookup
+    pub fn child_edge_mut(&mut self, child_id: index::Id) -> &mut Edge<A> {
+        self.edges_mut()
+            .iter_mut()
+            .find(|e| e.node_id == Some(child_id))
+            .unwrap()
+    }
+
+    pub fn actions(&self) -> Vec<A> {
+        self.edges()
+            .iter()
+            .map(|edge| edge.action.clone())
+            .collect()
+    }
+
+    pub fn node_ids(&self) -> Vec<Option<index::Id>> {
+        self.edges().iter().map(|edge| edge.node_id).collect()
+    }
+
     #[inline]
     pub fn edges_mut(&mut self) -> &mut Vec<Edge<A>> {
         let NodeState::Expanded(edges) = &mut self.state else {
@@ -230,7 +250,10 @@ where
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
-        Self::new(usize::MAX, player, hash)
+        Self {
+            is_root: true,
+            ..Self::new(player, hash)
+        }
     }
 
     pub fn update(&mut self, action_idx: usize, utilities: &[f64]) {
@@ -238,6 +261,6 @@ where
     }
 
     pub fn is_root(&self) -> bool {
-        self.action_idx == usize::MAX
+        self.is_root
     }
 }

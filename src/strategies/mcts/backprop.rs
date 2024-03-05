@@ -1,5 +1,5 @@
-use super::index::Id;
 use super::node::NodeStats;
+use super::stack::NodeStack;
 use super::*;
 use crate::game::Game;
 
@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
-        stack: &[Id],
+        stack: &NodeStack<G::A>,
         trace: &[(G::A, usize)],
         index: &mut TreeIndex<G::A>,
         node_id: index::Id,
@@ -17,8 +17,10 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         // NOTE: O(n) here, but amaf could be calculated top down
         let node = index.get(node_id);
         if !node.is_root() {
-            assert!(!stack.is_empty());
-            let parent_id = *stack.last().unwrap();
+            debug_assert!(!stack.is_empty());
+            let parent_id = stack.parent_id();
+            debug_assert_ne!(parent_id, node_id);
+            debug_assert!(index.get(parent_id).is_expanded());
             let sibling_actions: FxHashMap<_, _> = index
                 .get(parent_id)
                 .edges()
@@ -29,10 +31,11 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             for (action, p) in trace {
                 if let Some(child_id) = sibling_actions.get(action) {
                     let child = index.get_mut(*child_id);
-                    let action_idx = child.action_idx;
                     if child.player_idx == *p {
                         (0..G::num_players()).for_each(|i| {
-                            let stats = &mut index.get_mut(parent_id).edges_mut()[action_idx].stats;
+                            let parent = index.get_mut(parent_id);
+                            // NOTE: O(n) lookup
+                            let stats = &mut parent.child_edge_mut(*child_id).stats;
                             stats.player[i].amaf.num_visits += 1;
                             stats.player[i].amaf.score += utilities[i];
                         })
@@ -69,7 +72,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
         &self,
-        mut stack: Vec<Id>,
+        stack: &NodeStack<G::A>,
         global: &mut TreeStats<G>,
         index: &mut TreeIndex<G::A>,
         root_stats: &mut NodeStats,
@@ -79,10 +82,6 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) where
         G: Game,
     {
-        // TODO: this could be split up a bit. I've marked which logic is
-        // relevant to which strategy and reorganized to show the shape more
-        // clearly.
-
         // init_amaf: GRAVE | GLOBAL
         let mut amaf_actions = if flags.grave() || flags.global() {
             trial.actions.clone()
@@ -91,31 +90,33 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         };
 
         let utilities = G::compute_utilities(&trial.state);
-        while let Some(node_id) = stack.pop() {
-            // Standard update
-            if index.get(node_id).is_root() {
+        for (parent_id_opt, node_id) in stack.reverse_pairs2() {
+            debug_assert!(
+                (parent_id_opt.is_some() && !index.get(*node_id).is_root())
+                    || (parent_id_opt.is_none() && index.get(*node_id).is_root())
+            );
+            if index.get(*node_id).is_root() {
                 root_stats.update(&utilities);
             } else {
-                let parent_id = stack.last().cloned().unwrap();
-                let action_idx = index.get(node_id).action_idx;
-                index.get_mut(parent_id).edges_mut()[action_idx]
-                    .stats
-                    .update(&utilities);
+                let parent_id = parent_id_opt.cloned().unwrap();
+                debug_assert_ne!(parent_id, *node_id);
+                let parent = index.get_mut(parent_id);
+                parent.child_edge_mut(*node_id).stats.update(&utilities);
             }
 
             // update: AMAF
             if flags.amaf() {
-                self.update_amaf::<G>(&stack, &trial.actions, index, node_id, &utilities);
+                self.update_amaf::<G>(stack, &trial.actions, index, *node_id, &utilities);
             } else if flags.grave() {
-                self.update_grave::<G>(&amaf_actions, index, global, node_id, &utilities);
+                self.update_grave::<G>(&amaf_actions, index, global, *node_id, &utilities);
             }
 
             // push_action: GRAVE | GLOBAL
             if flags.grave() || flags.global() {
-                let node = index.get(node_id);
+                let node = index.get(*node_id);
                 if !node.is_root() {
-                    let parent_id = stack.last().cloned().unwrap();
-                    let action = index.get(parent_id).edges()[node.action_idx].action.clone();
+                    let parent_id = parent_id_opt.cloned().unwrap();
+                    let action = stack.edge(index, parent_id, *node_id).action.clone();
                     amaf_actions.push((action, node.player_idx));
                 };
             }

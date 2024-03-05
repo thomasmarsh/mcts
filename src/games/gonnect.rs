@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::fmt;
 use std::mem::swap;
 
-#[derive(Copy, Clone, Serialize, Debug, Default)]
+#[derive(Copy, Clone, Serialize, Debug, Default, PartialEq, Eq)]
 pub enum Player {
     #[default]
     Black,
@@ -41,7 +41,7 @@ impl Move {
     const NO_MOVE: Move = Move(0xfe, 0);
 }
 
-#[derive(Clone, Copy, Serialize, Debug)]
+#[derive(Clone, Copy, Serialize, Debug, PartialEq, Eq)]
 pub struct State<const N: usize> {
     black: BitBoard<N, N>,
     white: BitBoard<N, N>,
@@ -335,7 +335,7 @@ mod tests {
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)
-                .use_transpositions(true)
+                .use_transpositions(false)
                 .max_iterations(20),
         );
         _ = search.choose_action(&State::default());

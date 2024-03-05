@@ -22,7 +22,7 @@ impl PlayerIndex for Piece {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Piece {
     X,
     O,
@@ -37,7 +37,7 @@ impl Piece {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct Player {
     chips: u16,
     bid: u16,
@@ -56,7 +56,7 @@ impl Player {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Phase {
     BidX,
     BidO,
@@ -80,7 +80,7 @@ pub enum Move {
 
 const BOARD_LEN: usize = 9;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct BiddingTicTacToe {
     pub board: [Option<Piece>; BOARD_LEN],
     pub x: Player,

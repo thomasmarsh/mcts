@@ -120,7 +120,7 @@ fn ucd() {
         type FinalAction = select::RobustChild;
     }
 
-    let thompson: TreeSearch<TrafficLights, ThompsonSamplingMast> = TreeSearch::new().config(
+    let _thompson: TreeSearch<TrafficLights, ThompsonSamplingMast> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[thompson]+mast+ucd+dm")
             .expand_threshold(1)
@@ -175,7 +175,7 @@ fn ucd() {
         AnySearch::new(ucd),
         AnySearch::new(ucd_dm),
         // AnySearch::new(amaf),
-        AnySearch::new(thompson),
+        // AnySearch::new(thompson),
         AnySearch::new(amaf_ucd),
         AnySearch::new(amaf_mast_ucd),
         AnySearch::new(rave_mast_ucd),
@@ -196,29 +196,42 @@ fn ucd() {
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    // alpha': 0.2929180087521672, 'c': 0.2548927841708064, 'epsilon': 0.7460807226598263, 'final-action': 'robust_child', 'q-init': 'Draw'
+    // type Ucd = TreeSearch<TrafficLights, strategy::Ucb1>;
+    // let ucd = Ucd::new().config(
+    //     SearchConfig::new()
+    //         .name("mcts[ucb1]+ucd")
+    //         .max_iterations(10_000)
+    //         .use_transpositions(true)
+    //         .q_init(QInit::Infinity)
+    //         .select(select::Ucb1::with_c(0.01f64.sqrt()))
+    //         .seed(1),
+    // );
 
-    // hash=b3fb7a cost=0.43333333333333335 dict={'c': 0.30594919715076685, 'epsilon': 0.08928325492888689, 'final-action': 'robust_child', 'q-init': 'Infinity', 'schedule': 'min_mse', 'threshold': 607, 'bias': 4.313355255872011}
+    // hash=b4d699 cost=0.44166666666666665 dict={'epsilon': 0.9003068718838548, 'final-action': 'robust_child', 'q-init': 'Parent', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 1819, 'bias': 1.3456468981519023, 'c': 0.0563180660828948}
 
     let ts: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)
             .expand_threshold(1)
-            .max_time(Duration::from_secs(5))
+            .max_iterations(10_000)
             .use_transpositions(true)
-            .q_init(QInit::Infinity)
+            .q_init(QInit::Parent)
             .select(
                 select::Rave::default()
-                    .ucb(select::RaveUcb::Ucb1 {
-                        exploration_constant: 0.305949,
+                    .ucb(select::RaveUcb::Ucb1Tuned {
+                        exploration_constant: 0.0563180660828948,
                     })
-                    .threshold(600)
-                    .schedule(select::RaveSchedule::MinMSE { bias: 4.313335 }),
+                    .threshold(1819)
+                    .schedule(select::RaveSchedule::MinMSE {
+                        bias: 1.3456468981519023,
+                    }),
             )
             .simulate(
-                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.29739)),
-            ),
+                simulate::DecisiveMove::new()
+                    .inner(simulate::EpsilonGreedy::with_epsilon(0.9003068718838548)),
+            )
+            .seed(1),
     );
 
     self_play(ts);
@@ -233,7 +246,7 @@ fn knightthrough() {
             .verbose(true)
             .expand_threshold(1)
             .max_time(Duration::from_secs(4))
-            .use_transpositions(true)
+            .use_transpositions(false)
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
@@ -260,7 +273,7 @@ fn breakthrough() {
             .verbose(true)
             .expand_threshold(1)
             .max_time(Duration::from_secs(10))
-            .use_transpositions(true)
+            .use_transpositions(false)
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
@@ -287,7 +300,7 @@ fn atarigo() {
             .verbose(true)
             .expand_threshold(1)
             .max_time(Duration::from_secs(10))
-            .use_transpositions(true)
+            .use_transpositions(false)
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
@@ -314,7 +327,7 @@ fn gonnect() {
             .verbose(true)
             .expand_threshold(1)
             .max_time(Duration::from_secs(10))
-            .use_transpositions(true)
+            .use_transpositions(false)
             .q_init(QInit::Infinity)
             .select(
                 select::Rave::default()
@@ -552,7 +565,6 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
-    ucd();
     traffic_lights();
     knightthrough();
     breakthrough();
@@ -560,6 +572,7 @@ fn main() {
     atarigo();
     expansion_test();
     ucb_test();
+    ucd();
 
     demo_mcts();
     demo_nim();

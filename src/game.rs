@@ -22,7 +22,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// The type representing the state of your game. Ideally, this
     /// should be as small as possible and have a cheap Clone or Copy
     /// implementation.
-    type S: Clone + Default + std::fmt::Debug + Sized + Sync + Send;
+    type S: Clone + Default + std::fmt::Debug + Sized + Sync + Send + Eq + std::fmt::Display;
 
     /// The type representing actions, or moves, in your game. These
     /// also should be very cheap to clone.

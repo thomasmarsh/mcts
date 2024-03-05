@@ -2,7 +2,7 @@ use crate::game::{Game, PlayerIndex};
 
 use nimlib::{moves, NimAction, NimGame, NimRule, Split, Stack, TakeSize};
 
-#[derive(PartialEq, Copy, Clone, Debug)]
+#[derive(PartialEq, Copy, Clone, Debug, Eq)]
 pub enum Player {
     Black,
     White,
@@ -23,7 +23,7 @@ impl Player {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NimState {
     pub game: NimGame,
     pub rules: Vec<NimRule>, // NimGame has `rules`, but it's private...
@@ -49,6 +49,12 @@ impl NimState {
 impl Default for NimState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Display for NimState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self, f)
     }
 }
 

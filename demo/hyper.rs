@@ -22,7 +22,7 @@ use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
 
-type G = mcts::games::druid::Druid;
+type G = mcts::games::traffic_lights::TrafficLights;
 
 type TS<S> = TreeSearch<G, S>;
 
@@ -132,7 +132,7 @@ impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
         };
         Self::config()
             .q_init(QInit::from_str(args.q_init.as_str()).unwrap())
-            .use_transpositions(false)
+            .use_transpositions(true)
             .select(select::Rave::new(args.threshold.unwrap(), schedule, ucb))
             .simulate(
                 simulate::DecisiveMove::new()
@@ -189,6 +189,10 @@ fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
 }
 
 fn optimize() {
+    // rayon::ThreadPoolBuilder::new()
+    //     .num_threads(1)
+    //     .build_global()
+    //     .unwrap();
     let args = Args::parse();
     let baseline = make_baseline(args.seed);
     let candidate = match args.final_action.as_str() {

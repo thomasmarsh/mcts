@@ -326,6 +326,7 @@ where
         let action_scores = available
             .iter()
             .map(|action| {
+                // TODO: which player perspective?
                 let score = stats.player_actions[player]
                     .get(action)
                     .map_or(1., |stats| {

@@ -17,7 +17,7 @@ use std::ops::{
 /// smaller bitboard, you will likely need to mask off the areas outside the
 /// play area. For such concerns, the `ONES`, `UNUSED`, and `sanitize` constants
 /// and functions can be used.
-#[derive(Clone, Copy, Serialize, PartialEq, Hash)]
+#[derive(Clone, Copy, Serialize, PartialEq, Hash, Eq)]
 pub struct BitBoard<const N: usize, const M: usize>(u64);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////

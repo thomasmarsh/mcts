@@ -42,8 +42,14 @@ impl BuildHasher for ZobristHashBuilder {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct ZobristHashMap<T>(pub HashMap<ZobristHash, T, ZobristHashBuilder>);
+
+impl<T> Default for ZobristHashMap<T> {
+    fn default() -> Self {
+        Self(HashMap::default())
+    }
+}
 
 impl<T> ZobristHashMap<T> {
     #[inline]
@@ -52,7 +58,7 @@ impl<T> ZobristHashMap<T> {
     }
 
     #[inline]
-    pub fn get(&mut self, k: u64) -> Option<&T> {
+    pub fn get(&self, k: u64) -> Option<&T> {
         self.0.get(&ZobristHash(k))
     }
 
@@ -60,13 +66,17 @@ impl<T> ZobristHashMap<T> {
     pub fn entry(&mut self, k: u64) -> Entry<'_, ZobristHash, T> {
         self.0.entry(ZobristHash(k))
     }
+
+    #[inline]
+    pub fn insert(&mut self, k: u64, value: T) {
+        self.0.insert(ZobristHash(k), value);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
 pub struct ZobristTable<const N: usize> {
     hashes: [u64; N],
-    initial: u64,
     // We have a unique path via node_id in mcts, but other approaches might
     // benefit from having a path hash.  See: Kishimoto, A., Müller, M., A
     // General Solution to the Graph History Interaction Problem.
@@ -83,10 +93,7 @@ impl<const N: usize> ZobristTable<N> {
             *h = rng.gen::<u64>();
         }
 
-        ZobristTable {
-            hashes,
-            initial: rng.gen::<u64>(),
-        }
+        ZobristTable { hashes }
     }
 
     fn hash(&self, index: usize) -> u64 {
@@ -117,14 +124,5 @@ impl<const N: usize> LazyZobristTable<N> {
     #[inline(always)]
     pub fn hash(&self, index: usize) -> u64 {
         self.get_or_init().hash(index)
-    }
-
-    /// The initial value should be used as the "empty" or initial state
-    /// of the game. I've seen implementations that initialize the initial
-    /// board to zero. TODO: I'm not sure that it matters or not. Maybe zero
-    /// initialization is fine.
-    #[inline(always)]
-    pub fn initial(&self) -> u64 {
-        self.get_or_init().initial
     }
 }

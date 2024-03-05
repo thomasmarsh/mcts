@@ -11,6 +11,7 @@ use super::select::SelectContext;
 use super::select::SelectStrategy;
 use super::simulate::SimulateStrategy;
 use super::simulate::Trial;
+use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use crate::game::Game;
 use crate::game::PlayerIndex;
@@ -72,13 +73,14 @@ where
     G: Game,
     S: Strategy<G>,
     SearchConfig<G, S>: Sync + Send,
+    G::S: std::fmt::Display,
 {
     pub(crate) index: TreeIndex<G::A>,
     pub(crate) timer: timer::Timer,
     pub(crate) root_id: Id,
     pub(crate) root_stats: NodeStats,
     pub(crate) pv: Vec<G::A>,
-    pub(crate) table: TranspositionTable,
+    pub(crate) table: TranspositionTable<G::S>,
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
@@ -90,6 +92,7 @@ impl<G, S> TreeSearch<G, S>
 where
     G: Game,
     S: Strategy<G>,
+    G::S: std::fmt::Display,
 {
     pub fn config(mut self, config: SearchConfig<G, S>) -> Self {
         self.config = config;
@@ -102,6 +105,7 @@ where
     G: Game,
     S: Strategy<G>,
     SearchConfig<G, S>: Default,
+    G::S: std::fmt::Display,
 {
     fn default() -> Self {
         Self::new()
@@ -113,6 +117,7 @@ where
     G: Game,
     S: Strategy<G>,
     SearchConfig<G, S>: Default,
+    G::S: std::fmt::Display,
 {
     pub fn new() -> Self {
         let mut index = index::Arena::new();
@@ -134,13 +139,12 @@ where
     #[inline]
     pub(crate) fn new_root(&mut self, player_idx: usize, hash: u64) -> Id {
         let root = Node::new_root(player_idx, G::num_players(), hash);
-        let root_id = self.index.insert(root);
-        self.root_id = root_id;
-        root_id
+        self.root_id = self.index.insert(root);
+        self.root_id
     }
 
     #[inline]
-    pub fn expand(&mut self, node_id: Id, state: &G::S) -> NodeState<G::A> {
+    pub fn expand(&mut self, node_id: Id, state: &G::S) -> &NodeState<G::A> {
         let node = self.index.get_mut(node_id);
         if G::is_terminal(state) {
             node.state = NodeState::Terminal;
@@ -155,26 +159,20 @@ where
                     .collect(),
             );
         }
-        node.state.clone()
+        &node.state // .clone()
     }
 
     #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
-        let player = G::player_to_move(&ctx.state);
+        let player = G::player_to_move(&ctx.state).to_index();
         debug_assert!(self.stack.is_empty());
         loop {
             self.stack.push(ctx.current_id);
 
-            let num_visits = if self.index.get(ctx.current_id).is_root() {
-                self.root_stats.num_visits
-            } else {
-                let parent_id = self.stack.get(self.stack.len() - 2).cloned().unwrap();
-                let action_idx = self.index.get(ctx.current_id).action_idx;
-
-                self.index.get(parent_id).edges()[action_idx]
-                    .stats
-                    .num_visits
-            };
+            let stack = NodeStack::new(self.stack.clone());
+            let num_visits = stack
+                .current_stats(&self.index, &self.root_stats)
+                .num_visits;
             let node = self.index.get(ctx.current_id);
             if node.is_terminal() || num_visits < self.config.expand_threshold {
                 return;
@@ -191,16 +189,16 @@ where
             let best_idx = {
                 let select_ctx = SelectContext {
                     q_init: self.config.q_init,
-                    stack: self.stack.clone(),
-                    player: player.to_index(),
-                    player_to_move: G::player_to_move(&ctx.state).to_index(),
-                    state: &ctx.state,
+                    stack: &stack,
                     root_stats: &self.root_stats,
+                    player,
+                    state: &ctx.state,
                     index: &self.index,
                     table: &self.table,
                     grave: &self.stats.grave,
                     use_transpositions: self.config.use_transpositions,
                 };
+
                 self.config
                     .select
                     .best_child(&select_ctx, &mut self.config.rng)
@@ -213,28 +211,16 @@ where
             if let Some(child_id) = edges[best_idx].node_id {
                 ctx.traverse_apply(child_id, &edges[best_idx].action);
             } else {
+                {
+                    let mut actions = vec![];
+                    G::generate_actions(&ctx.state, &mut actions);
+                    debug_assert_eq!(actions[best_idx], edges[best_idx].action);
+                }
+
                 let action = &edges[best_idx].action;
                 let state = G::apply(ctx.state.clone(), action);
 
-                let hash = G::zobrist_hash(&state);
-                let child_id = {
-                    let child_node =
-                        Node::new(best_idx, G::player_to_move(&state).to_index(), hash);
-                    self.index.insert(child_node)
-                };
-
-                if self.config.use_transpositions {
-                    self.table.insert(hash, child_id);
-                }
-
-                {
-                    match &mut (self.index.get_mut(ctx.current_id).state) {
-                        NodeState::Expanded(edges) => {
-                            edges[best_idx].node_id = Some(child_id);
-                        }
-                        _ => unreachable!(),
-                    }
-                }
+                let child_id = self.new_child(&state, best_idx, ctx.current_id);
 
                 ctx.traverse(child_id);
                 ctx.state = state;
@@ -247,16 +233,45 @@ where
         }
     }
 
+    fn new_child(&mut self, state: &G::S, best_idx: usize, current_id: Id) -> Id {
+        let hash = G::zobrist_hash(state);
+        let child_id = {
+            if self.config.use_transpositions {
+                // TODO: the following won't work with symmetries
+                if let Some(entry) = self.table.get(hash, state.clone()) {
+                    entry.node_id
+                } else {
+                    let child = Node::new(G::player_to_move(state).to_index(), hash);
+                    let node_id = self.index.insert(child);
+                    self.table.insert(hash, node_id, state.clone());
+                    node_id
+                }
+            } else {
+                let child_node = Node::new(G::player_to_move(state).to_index(), hash);
+                self.index.insert(child_node)
+            }
+        };
+
+        match &mut (self.index.get_mut(current_id).state) {
+            NodeState::Expanded(edges) => {
+                edges[best_idx].node_id = Some(child_id);
+            }
+            _ => unreachable!(),
+        }
+
+        child_id
+    }
+
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
+        let stack = NodeStack::new(vec![self.root_id]);
         let idx = self.config.final_action.best_child(
             &SelectContext {
                 q_init: self.config.q_init,
-                stack: vec![self.root_id],
-                player: G::player_to_move(state).to_index(),
-                player_to_move: G::player_to_move(state).to_index(),
-                state,
+                stack: &stack,
                 root_stats: &self.root_stats,
+                player: G::player_to_move(state).to_index(),
+                state,
                 index: &self.index,
                 table: &self.table,
                 grave: &self.stats.grave,
@@ -287,12 +302,13 @@ where
         self.stats.iter_count += 1;
         self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
+        let stack = NodeStack::new(self.stack.clone());
         self.config
             .backprop
             // TODO: may as well pass &mut self? Seems like the separation
             // of concerns is not ideal.
             .update(
-                self.stack.clone(),
+                &stack,
                 &mut self.stats,
                 &mut self.index,
                 &mut self.root_stats,
@@ -389,17 +405,15 @@ where
         let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
-        let mut stack = vec![node_id];
+        let mut stack = NodeStack::new(vec![node_id]);
         let init_player = G::player_to_move(init_state).to_index();
         while node.is_expanded() {
-            let player = G::player_to_move(&state);
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 player: init_player, // TODO: opponent perspective?
-                stack: stack.clone(),
-                state: &state,
+                stack: &stack,
                 root_stats: &self.root_stats,
-                player_to_move: player.to_index(),
+                state: &state,
                 index: &self.index,
                 table: &self.table,
                 grave: &self.stats.grave,
@@ -430,6 +444,7 @@ where
     G: Game,
     S: Strategy<G>,
     SearchConfig<G, S>: Default,
+    G::S: std::fmt::Display,
 {
     type G = G;
 
@@ -441,7 +456,7 @@ where
         let hash = G::zobrist_hash(state);
         let root_id = self.reset(G::player_to_move(state).to_index(), hash);
         if self.config.use_transpositions {
-            self.table.insert(hash, root_id);
+            self.table.insert(hash, root_id, state.clone());
         }
 
         self.timer.start(self.config.max_time);
@@ -474,8 +489,8 @@ where
         &mut self,
         state: &<Self::G as Game>::S,
     ) -> (Vec<<Self::G as Game>::A>, Vec<f64>) {
-        assert_eq!(self.config.expand_threshold, 0);
-        assert_eq!(self.config.max_iterations, 1);
+        debug_assert_eq!(self.config.expand_threshold, 0);
+        debug_assert_eq!(self.config.max_iterations, 1);
 
         // Run the search, with expand_threshold == 0, so we fully expand to the
         // terminal node.
@@ -486,11 +501,11 @@ where
 
         // The stack now contains the action path to the terminal state.
         let mut actions = vec![];
-        for i in 0..self.stack.len() - 1 {
-            let parent_id = self.stack[i];
-            let child_id = self.stack[i + 1];
+        let stack = NodeStack::new(self.stack.clone());
+        for (parent_id, child_id) in stack.pairs() {
             actions.push(
-                self.index.get(parent_id).edges()[self.index.get(child_id).action_idx]
+                stack
+                    .edge(&self.index, *parent_id, *child_id)
                     .action
                     .clone(),
             );

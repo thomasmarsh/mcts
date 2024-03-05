@@ -1,8 +1,10 @@
 use super::index::Id;
 use super::node::{self, Edge, NodeStats};
+use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
 use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -12,42 +14,19 @@ use rustc_hash::FxHashMap;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
-    pub stack: Vec<Id>,
-    pub state: &'a G::S,
+    pub stack: &'a NodeStack<G::A>,
     pub root_stats: &'a NodeStats,
+    pub state: &'a G::S,
     pub player: usize,
-    pub player_to_move: usize,
     pub index: &'a TreeIndex<G::A>,
-    pub table: &'a TranspositionTable,
+    pub table: &'a TranspositionTable<G::S>,
     pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub use_transpositions: bool,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl<'a, G: Game> SelectContext<'a, G> {
-    fn parent_id(&self) -> Id {
-        debug_assert!(!self.index.get(self.current_id()).is_root());
-        self.stack.get(self.stack.len() - 2).cloned().unwrap()
-    }
-
-    fn current_id(&self) -> Id {
-        debug_assert!(!self.stack.is_empty());
-        *self.stack.last().unwrap()
-    }
-
-    #[inline]
     fn current_stats(&self) -> &NodeStats {
-        if self.index.get(self.current_id()).is_root() {
-            self.root_stats
-        } else {
-            let action_idx = self.index.get(self.current_id()).action_idx;
-            debug_assert_ne!(self.parent_id(), self.current_id());
-            let parent_id = self.parent_id();
-            let parent = self.index.get(parent_id);
-            debug_assert!(parent.edges().len() > action_idx);
-            &self.index.get(parent_id).edges()[action_idx].stats
-        }
+        self.stack.current_stats(self.index, self.root_stats)
     }
 }
 
@@ -63,7 +42,7 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
 
     /// Default implementation should be sufficient for all cases.
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id());
+        let current = ctx.index.get(ctx.stack.current_id());
         random_best_index(current.edges(), self, ctx, rng)
     }
 
@@ -137,7 +116,7 @@ where
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         if rng.gen::<f64>() < self.epsilon {
-            let current = ctx.index.get(ctx.current_id());
+            let current = ctx.index.get(ctx.stack.current_id());
             let n = current.edges().len();
             rng.gen_range(0..n)
         } else {
@@ -350,7 +329,7 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
 
     #[inline]
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id());
+        let current = ctx.index.get(ctx.stack.current_id());
         // This is just a weighted sampling. Need to implement some stuff for thompson sampling.
         let weights = current
             .edges()
@@ -675,50 +654,27 @@ impl Rave {
     }
 }
 
-struct ReversePairs<'a, T: 'a> {
-    stack: &'a [T],
-    index: usize,
-}
-
-impl<'a, T> ReversePairs<'a, T> {
-    fn new(stack: &'a [T]) -> Self {
-        Self {
-            stack,
-            index: stack.len(),
-        }
-    }
-}
-
-impl<'a, T> Iterator for ReversePairs<'a, T> {
-    type Item = (&'a T, &'a T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= 2 {
-            self.index -= 1;
-            Some((&self.stack[self.index - 1], &self.stack[self.index]))
-        } else {
-            None
-        }
-    }
-}
-
 impl Rave {
     fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id) -> Id {
         let mut stack = ctx.stack.clone();
         stack.push(node_id);
-        let rev_pairs = ReversePairs::new(&stack);
+        let rev_pairs = stack.reverse_pairs();
+
+        if ctx.index.get(node_id).is_root() {
+            return node_id;
+        }
 
         // TODO: we can push this down during select descent rather than walking back up.
         for (parent_id, child_id) in rev_pairs {
-            if ctx.index.get(*parent_id).edges()[ctx.index.get(*child_id).action_idx]
-                .stats
+            if stack
+                .get_stats(ctx.index, ctx.root_stats, *parent_id, *child_id)
                 .total_visits()
                 >= self.threshold
             {
                 return *child_id;
             }
         }
-        stack[0]
+        stack.root()
     }
 
     #[inline(always)]
@@ -994,22 +950,22 @@ where
     type Aux = ();
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        let current = ctx.index.get(ctx.current_id());
+        let current = ctx.index.get(ctx.stack.current_id());
         let available = current.edges();
 
         // The stack now contains the action path to the terminal state.
         // TODO: factor this pair iteration out of here
         let mut key_init = vec![];
-        for i in 0..ctx.stack.len() - 1 {
-            let parent_id = ctx.stack[i];
-            let child_id = ctx.stack[i + 1];
+        for (parent_id, child_id) in ctx.stack.pairs() {
             key_init.push(
-                ctx.index.get(parent_id).edges()[ctx.index.get(child_id).action_idx]
+                ctx.stack
+                    .edge(ctx.index, *parent_id, *child_id)
                     .action
                     .clone(),
             );
         }
-        let k_score = self.k[ctx.player_to_move];
+        let player_to_move = G::player_to_move(ctx.state).to_index();
+        let k_score = self.k[player_to_move];
 
         let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();
         let best = random_best(
@@ -1021,7 +977,7 @@ where
 
                 let score = self
                     .book
-                    .score(key.as_slice(), ctx.player_to_move)
+                    .score(key.as_slice(), player_to_move)
                     .unwrap_or(f64::NEG_INFINITY);
                 if score > k_score {
                     score

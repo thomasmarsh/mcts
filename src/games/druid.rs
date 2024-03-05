@@ -95,7 +95,7 @@ use crate::{
 // 11x11 before you trigger integer overflows (unless expanding some of the types).
 pub const SIZE: Size = Size { w: 5, h: 5 };
 
-#[derive(PartialEq, Clone, Copy, Debug, Serialize, Hash)]
+#[derive(PartialEq, Clone, Copy, Debug, Serialize, Hash, Eq)]
 pub enum Player {
     Black,
     White,
@@ -179,7 +179,7 @@ pub enum Piece {
     Lintel(Orientation),
 }
 
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Square {
     pub height: u16,
     pub piece: Option<Player>,
@@ -194,7 +194,7 @@ impl Square {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Move(pub Piece, pub u8);
 
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Hand {
     pub sarsens: u8,
     pub lintels: u8,
@@ -230,7 +230,7 @@ impl Hand {
     }
 }
 
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct State {
     pub player: Player,
     pub board: Vec<Square>,
@@ -515,7 +515,7 @@ impl std::fmt::Display for HashedState {
 // in the early game.
 static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HashedState(State, u64);
 
 #[derive(Clone)]

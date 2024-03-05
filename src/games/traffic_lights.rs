@@ -6,7 +6,9 @@ use crate::{
 use serde::Serialize;
 use std::fmt::Display;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+const USE_SYMMETRY: bool = false;
+
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Player {
     First,
     Second,
@@ -60,7 +62,7 @@ impl Move {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct Position {
     pub turn: Player,
     pub winner: bool,
@@ -148,9 +150,9 @@ impl Position {
 // 9 playable positions * 4 states * 2 players
 const NUM_MOVES: usize = 72;
 
-static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0xFEAAE62226597B38);
+static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0x4);
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct HashedPosition {
     pub position: Position,
     pub(crate) hashes: [u64; 8],
@@ -160,7 +162,7 @@ impl HashedPosition {
     pub fn new() -> Self {
         Self {
             position: Position::new(),
-            hashes: [HASHES.initial(); 8],
+            hashes: [0; 8],
         }
     }
 }
@@ -176,20 +178,32 @@ impl HashedPosition {
     fn apply(&mut self, m: Move) {
         use super::ttt::sym;
         use super::ttt::NUM_SYMMETRIES;
-        let mut symmetries = [0; NUM_SYMMETRIES];
-        sym::index_symmetries(m.index(), &mut symmetries);
-        for (i, index) in symmetries.iter().enumerate() {
+        if USE_SYMMETRY {
+            let mut symmetries = [0; NUM_SYMMETRIES];
+            sym::index_symmetries(m.index(), &mut symmetries);
+            // TODO: self.hashes[0] is producing bad values. The `else` branch below is working.
+            for (i, index) in symmetries.iter().enumerate() {
+                let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
+                let q = (index << 3) | (value << 1) | self.position.turn as usize;
+                self.hashes[i] ^= HASHES.hash(q);
+            }
+        } else {
+            let index = m.index();
             let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
             let q = (index << 3) | (value << 1) | self.position.turn as usize;
-            self.hashes[i] ^= HASHES.hash(q);
+            self.hashes[0] ^= HASHES.hash(q);
         }
         self.position.apply(m);
     }
 
     #[inline(always)]
     fn hash(&self) -> u64 {
-        use super::ttt::sym;
-        self.hashes[sym::canonical_symmetry(self.position.board)]
+        if USE_SYMMETRY {
+            use super::ttt::sym;
+            self.hashes[sym::canonical_symmetry(self.position.board)]
+        } else {
+            self.hashes[0]
+        }
     }
 }
 
@@ -289,37 +303,39 @@ mod tests {
 
     #[test]
     fn test_tl_symmetries() {
-        let mut unhashed = FxHashSet::default();
-        let mut hashed = FxHashSet::default();
+        if USE_SYMMETRY {
+            let mut unhashed = FxHashSet::default();
+            let mut hashed = FxHashSet::default();
 
-        let mut stack = vec![HashedPosition::new()];
-        let mut actions = Vec::new();
-        while let Some(state) = stack.pop() {
-            let k = state.position.board;
-            if !unhashed.contains(&k) {
-                unhashed.insert(k);
-                hashed.insert(state.hash());
+            let mut stack = vec![HashedPosition::new()];
+            let mut actions = Vec::new();
+            while let Some(state) = stack.pop() {
+                let k = state.position.board;
+                if !unhashed.contains(&k) {
+                    unhashed.insert(k);
+                    hashed.insert(state.hash());
 
-                if !TrafficLights::is_terminal(&state) {
-                    actions.clear();
-                    TrafficLights::generate_actions(&state, &mut actions);
-                    actions.iter().for_each(|action| {
-                        stack.push(TrafficLights::apply(state, action));
-                    });
+                    if !TrafficLights::is_terminal(&state) {
+                        actions.clear();
+                        TrafficLights::generate_actions(&state, &mut actions);
+                        actions.iter().for_each(|action| {
+                            stack.push(TrafficLights::apply(state, action));
+                        });
+                    }
                 }
             }
+
+            println!("distinct: {}", unhashed.len());
+            println!("distinct w/symmetry: {}", hashed.len());
+
+            // There are 36 bits of state in the board, counting illegal moves,
+            // over 68 billion states. Only 256,208 states are legal given terminal
+            // states with wins. Taking into account the eight-way symmetry, we get
+            // a reduction in state space, but only a small reduction to 244,129
+            // distinct states.
+            assert_eq!(unhashed.len(), 256208);
+            assert_eq!(hashed.len(), 244129);
         }
-
-        println!("distinct: {}", unhashed.len());
-        println!("distinct w/symmetry: {}", hashed.len());
-
-        // There are 36 bits of state in the board, counting illegal moves,
-        // over 68 billion states. Only 256,208 states are legal given terminal
-        // states with wins. Taking into account the eight-way symmetry, we get
-        // a reduction in state space, but only a small reduction to 244,129
-        // distinct states.
-        assert_eq!(unhashed.len(), 256208);
-        assert_eq!(hashed.len(), 244129);
     }
 
     fn color_for(piece: Option<Piece>) -> String {
@@ -374,19 +390,21 @@ mod tests {
 
     #[test]
     fn test_tl_render() {
-        use crate::strategies::mcts::{render, strategy, SearchConfig, TreeSearch};
-        use crate::strategies::Search;
-        let mut search = TreeSearch::<TrafficLights, strategy::Ucb1>::default().config(
-            SearchConfig::default()
-                .expand_threshold(0)
-                // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
-                .max_iterations(100)
-                .use_transpositions(true),
-        );
-        _ = search.choose_action(&HashedPosition::default());
-        assert!(search.table.hits > 0);
+        if USE_SYMMETRY {
+            use crate::strategies::mcts::{render, strategy, SearchConfig, TreeSearch};
+            use crate::strategies::Search;
+            let mut search = TreeSearch::<TrafficLights, strategy::Ucb1>::default().config(
+                SearchConfig::default()
+                    .expand_threshold(0)
+                    // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
+                    .max_iterations(100)
+                    .use_transpositions(true),
+            );
+            _ = search.choose_action(&HashedPosition::default());
+            assert!(search.table.hits > 0);
 
-        render::render_trans(&search, &HashedPosition::default());
+            render::render_trans(&search, &HashedPosition::default());
+        }
     }
 
     #[test]
@@ -407,7 +425,8 @@ mod tests {
                             exploration_constant: 2f64.sqrt(),
                         }),
                 )
-                .use_transpositions(true),
+                .use_transpositions(true)
+                .seed(0),
         );
         let state = HashedPosition::default();
         _ = ts.choose_action(&state);

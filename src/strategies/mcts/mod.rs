@@ -7,6 +7,7 @@ pub mod render;
 pub mod search;
 pub mod select;
 pub mod simulate;
+pub mod stack;
 pub mod strategy;
 pub mod table;
 

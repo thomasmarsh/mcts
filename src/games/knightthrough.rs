@@ -11,7 +11,7 @@ use log::Record;
 use serde::Serialize;
 use std::fmt;
 
-#[derive(Copy, Clone, Serialize, Debug, Default)]
+#[derive(Copy, Clone, Serialize, Debug, Default, PartialEq, Eq)]
 pub enum Player {
     #[default]
     Black,
@@ -48,7 +48,7 @@ impl Move {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Debug)]
+#[derive(Clone, Copy, Serialize, Debug, PartialEq, Eq)]
 pub struct State<const N: usize, const M: usize> {
     black: BitBoard<N, M>,
     white: BitBoard<N, M>,
