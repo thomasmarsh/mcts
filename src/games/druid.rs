@@ -85,8 +85,8 @@ use rustc_hash::FxHashSet as HashSet;
 use serde::Serialize;
 
 use crate::{
-    game::{Game, PlayerIndex},
-    zobrist::LazyZobristTable,
+    game::{Game, PlayerIndex, ZobristHash},
+    zobrist::{LazyZobristTable, ZobristKey},
 };
 
 // TODO: trait Game should be implemented with a self parameter or some
@@ -99,12 +99,6 @@ pub const SIZE: Size = Size { w: 5, h: 5 };
 pub enum Player {
     Black,
     White,
-}
-
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        *self as usize
-    }
 }
 
 impl Player {
@@ -236,6 +230,7 @@ pub struct State {
     pub board: Vec<Square>,
     pub hand_black: Hand,
     pub hand_white: Hand,
+    pub depth: usize,
 }
 
 // TODO:
@@ -271,6 +266,7 @@ impl State {
             ],
             hand_black: Hand::new(),
             hand_white: Hand::new(),
+            depth: 0,
         }
     }
 
@@ -373,6 +369,7 @@ impl State {
                 })
             }
         }
+        self.depth += 1;
         self.player.next();
     }
 
@@ -513,7 +510,7 @@ impl std::fmt::Display for HashedState {
 //
 // Then size(10,10) = 1400. There is 8-way symmetry, but this is only useful
 // in the early game.
-static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
+static HASHES: LazyZobristTable<1400, 200> = LazyZobristTable::new(0xD401D);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HashedState(State, u64);
@@ -524,29 +521,30 @@ pub struct Druid;
 impl Game for Druid {
     type S = HashedState;
     type A = Move;
-    type P = Player;
+    type K = u64;
 
     fn generate_actions(state: &HashedState, actions: &mut Vec<Move>) {
         state.0.moves(actions);
     }
 
-    fn zobrist_hash(state: &Self::S) -> u64 {
-        state.1
+    fn zobrist_hash(state: &Self::S) -> ZobristHash<Self::K> {
+        state.1.into()
     }
 
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
         state.0.apply(*m);
 
-        let mut hash = 0;
+        let mut hash = ZobristKey::new();
         state.0.board.iter().enumerate().for_each(|(i, square)| {
             let h = square.height;
             if h > 0 {
                 let c = square.piece.map(|x| x as usize).unwrap_or(0);
                 let index = i * (h as usize + 7 * c);
-                hash ^= HASHES.hash(index);
+                println!("depth = {}", state.0.depth);
+                HASHES.apply(index, state.0.depth, &mut hash);
             }
         });
-        state.1 = hash;
+        state.1 = hash.state;
 
         state
     }
@@ -569,12 +567,12 @@ impl Game for Druid {
         }
     }
 
-    fn winner(state: &Self::S) -> Option<Player> {
-        state.0.connection()
+    fn winner(state: &Self::S) -> Option<PlayerIndex> {
+        state.0.connection().map(|x| (x as usize).into())
     }
 
-    fn player_to_move(state: &Self::S) -> Player {
-        state.0.player
+    fn player_to_move(state: &Self::S) -> PlayerIndex {
+        (state.0.player as usize).into()
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::game::Game;
+use crate::game::{Game, ZobristHash};
 
 use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
 
@@ -9,8 +9,10 @@ where
     print::<G>(&search.index, search.root_id);
 }
 
-pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &G::S)
+pub fn render_trans<G, S>(search: &TreeSearch<G, S>, state: &G::S)
 where
+    G: Game,
+    S: Strategy<G>,
     G::S: NodeRender,
 {
     print_trans::<G>(&search.index, &search.table, search.root_id, state.clone());
@@ -28,17 +30,17 @@ pub trait NodeRender {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
-fn canonical_id<S: Eq + Clone>(
-    k: u64,
-    table: &TranspositionTable<S>,
-    state: S,
+fn canonical_id<G: Game>(
+    k: ZobristHash<G::K>,
+    table: &TranspositionTable<G>,
+    state: G::S,
 ) -> Option<index::Id> {
-    table.get_const(k, state).map(|ts| ts.node_id)
+    table.get_const(&k.hash, state).map(|ts| ts.node_id)
 }
 
 fn print_trans<G>(
-    index: &TreeIndex<G::A>,
-    table: &TranspositionTable<G::S>,
+    index: &TreeIndex<G::A, G::K>,
+    table: &TranspositionTable<G>,
     root_id: index::Id,
     init_state: G::S,
 ) where
@@ -76,7 +78,7 @@ fn print_trans<G>(
     println!("}}");
 }
 
-fn print<G>(index: &TreeIndex<G::A>, root_id: index::Id)
+fn print<G>(index: &TreeIndex<G::A, G::K>, root_id: index::Id)
 where
     G: Game,
     G::S: NodeRender,

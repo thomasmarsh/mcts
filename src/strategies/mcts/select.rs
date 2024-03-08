@@ -3,8 +3,7 @@ use super::node::{self, Edge, NodeStats};
 use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
-use crate::game::Game;
-use crate::game::PlayerIndex;
+use crate::game::{Game, PlayerIndex};
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -14,13 +13,13 @@ use rustc_hash::FxHashMap;
 
 pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
-    pub stack: &'a NodeStack<G::A>,
+    pub stack: &'a NodeStack<G::A, G::K>,
     pub root_stats: &'a NodeStats,
     pub state: &'a G::S,
-    pub player: usize,
-    pub index: &'a TreeIndex<G::A>,
-    pub table: &'a TranspositionTable<G::S>,
-    pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
+    pub player: PlayerIndex,
+    pub index: &'a TreeIndex<G::A, G::K>,
+    pub table: &'a TranspositionTable<G>,
+    pub grave: &'a FxHashMap<G::K, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub use_transpositions: bool,
 }
 
@@ -43,7 +42,7 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     /// Default implementation should be sufficient for all cases.
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.stack.current_id());
-        random_best_index(current.edges(), self, ctx, rng)
+        random_best_index(current.edges().as_slice(), self, ctx, rng)
     }
 
     /// Given a child index, calculate a score.
@@ -964,7 +963,7 @@ where
                     .clone(),
             );
         }
-        let player_to_move = G::player_to_move(ctx.state).to_index();
+        let player_to_move = G::player_to_move(ctx.state);
         let k_score = self.k[player_to_move];
 
         let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();

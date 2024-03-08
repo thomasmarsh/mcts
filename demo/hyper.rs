@@ -22,7 +22,7 @@ use mcts::util::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
 
-type G = mcts::games::traffic_lights::TrafficLights;
+type G = mcts::games::druid::Druid;
 
 type TS<S> = TreeSearch<G, S>;
 
@@ -151,18 +151,40 @@ fn make_candidate<FinalAction: SelectStrategy<G>>(
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-fn make_baseline(seed: u64) -> TS<strategy::Ucb1DM> {
-    type UcdDm = TreeSearch<G, strategy::Ucb1DM>;
-    UcdDm::new().config(
+fn make_baseline(seed: u64) -> TS<strategy::RaveMastDm> {
+    let rave_mast_ucd: TreeSearch<G, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
-            .name("mcts[ucb1]+ucd+dm")
-            .max_iterations(MAX_ITER)
+            .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
-            .use_transpositions(false)
-            .q_init(QInit::Infinity)
-            .select(select::Ucb1::with_c(0.01f64.sqrt()))
+            .max_iterations(10_000)
+            .use_transpositions(true)
+            .q_init(QInit::Win)
+            .select(
+                select::Rave::default()
+                    .threshold(916)
+                    .ucb(select::RaveUcb::None)
+                    .schedule(select::RaveSchedule::MinMSE { bias: 0.711333 }),
+            )
+            .simulate(
+                simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.70)),
+            )
             .seed(seed),
-    )
+    );
+
+    rave_mast_ucd
+
+    // type UcdDm = TreeSearch<G, strategy::Ucb1DM>;
+    // UcdDm::new().config(
+    //     SearchConfig::new()
+    //         .name("mcts[ucb1]+ucd+dm")
+    //         .max_iterations(MAX_ITER)
+    //         .expand_threshold(1)
+    //         .use_transpositions(true)
+    //         .q_init(QInit::Infinity)
+    //         .select(select::Ucb1::with_c(0.1f64.sqrt()))
+    //         .seed(seed),
+    // )
+
     // TS::new().config(
     //     base_config()
     //         .q_init(QInit::Parent)

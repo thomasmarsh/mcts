@@ -16,12 +16,6 @@ use rand::Rng;
 use serde::Serialize;
 use std::{cmp::Ordering, fmt::Display};
 
-impl PlayerIndex for Piece {
-    fn to_index(&self) -> usize {
-        *self as usize
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Piece {
     X,
@@ -253,7 +247,7 @@ impl Display for BiddingTicTacToe {
 impl Game for BiddingTicTacToe {
     type S = BiddingTicTacToe;
     type A = Move;
-    type P = Piece;
+    type K = ();
 
     fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
         actions.extend(state.gen_moves());
@@ -295,15 +289,15 @@ impl Game for BiddingTicTacToe {
         state.winner().is_some() || state.board.iter().all(|x| x.is_some())
     }
 
-    fn winner(state: &Self::S) -> Option<Piece> {
+    fn winner(state: &Self::S) -> Option<PlayerIndex> {
         if !Self::is_terminal(state) {
             unreachable!();
         }
 
-        state.winner()
+        state.winner().map(|x| (x as usize).into())
     }
 
-    fn player_to_move(state: &Self::S) -> Piece {
-        state.player_to_move()
+    fn player_to_move(state: &Self::S) -> PlayerIndex {
+        (state.player_to_move() as usize).into()
     }
 }

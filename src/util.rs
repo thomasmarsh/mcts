@@ -3,7 +3,7 @@ use rand::Rng;
 
 use rand::rngs::SmallRng;
 
-use crate::game::{Game, PlayerIndex};
+use crate::game::Game;
 use crate::strategies;
 
 use crate::strategies::random::Random;
@@ -185,13 +185,7 @@ where
         if G::is_terminal(&state) {
             let current_player = G::player_to_move(&state);
             let winner = G::winner(&state);
-            return winner.map(|p| {
-                if current_player.to_index() == p.to_index() {
-                    s
-                } else {
-                    1 - s
-                }
-            });
+            return winner.map(|p| if current_player == p { s } else { 1 - s });
         }
         let strategy = &mut strategies[s];
         let m = strategy.choose_action(&state);
@@ -241,7 +235,6 @@ impl Verbosity {
 pub fn self_play<G: Game, S: Search<G = G>>(mut search: S)
 where
     G::S: std::fmt::Display,
-    G::P: std::fmt::Debug,
 {
     let mut i = 0;
     let mut state = G::S::default();
@@ -258,7 +251,6 @@ where
 pub fn random_play<G: Game>()
 where
     G::S: std::fmt::Display,
-    G::P: std::fmt::Debug,
 {
     self_play(Random::<G>::new())
 }
@@ -273,6 +265,7 @@ where
     G: Game + Clone,
     G::S: Sync,
 {
+    assert_eq!(G::num_players(), 2);
     let mut pairs = Vec::new();
     for i in 0..strategies.len() {
         for j in 0..strategies.len() {
@@ -323,12 +316,12 @@ where
             let mut depth = 0;
             let mut state = init.clone();
             loop {
-                current = G::player_to_move(&state).to_index();
+                current = G::player_to_move(&state);
                 if G::is_terminal(&state) {
                     break;
                 }
 
-                let action = strat[current].choose_action(&state);
+                let action = strat[current.0].choose_action(&state);
                 pb.set_length(depth + strat[current].estimated_depth() as u64);
                 state = G::apply(state, &action);
                 pb.inc(1);
@@ -341,8 +334,8 @@ where
                     results[j].draws += 1;
                 }
                 Some(p) => {
-                    let winner = players[p.to_index()];
-                    let loser = players[1 - p.to_index()];
+                    let winner = players[p];
+                    let loser = players[1 - p.0];
 
                     results[winner].wins += 1;
                     results[loser].losses += 1;

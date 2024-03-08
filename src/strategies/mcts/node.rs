@@ -1,6 +1,10 @@
 use super::*;
 use crate::game::Action;
+use crate::game::HashKey;
+use crate::game::PlayerIndex;
 
+use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use serde::Serialize;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
@@ -29,23 +33,6 @@ impl Default for PlayerStats {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct ParseQInitError;
-
-impl FromStr for QInit {
-    type Err = ParseQInitError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Draw" => Ok(QInit::Draw),
-            "Infinity" => Ok(QInit::Infinity),
-            "Loss" => Ok(QInit::Loss),
-            "Parent" => Ok(QInit::Parent),
-            "Win" => Ok(QInit::Win),
-            _ => Err(ParseQInitError),
-        }
-    }
-}
-
 /// QInit is an unvisited value estimate, the Q value assigned to a node
 /// that has not been expanded or explored. The choice of a default unvisited
 /// child value will bias the search. Choosing win, loss, or draw can prompt
@@ -70,6 +57,23 @@ pub enum QInit {
     Loss,
     Draw,
     Infinity,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ParseQInitError;
+
+impl FromStr for QInit {
+    type Err = ParseQInitError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Draw" => Ok(QInit::Draw),
+            "Infinity" => Ok(QInit::Infinity),
+            "Loss" => Ok(QInit::Loss),
+            "Parent" => Ok(QInit::Parent),
+            "Win" => Ok(QInit::Win),
+            _ => Err(ParseQInitError),
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -135,7 +139,7 @@ impl NodeStats {
     }
 
     // NOTE: needs to be overridden for score bounded search
-    pub fn expected_score(&self, player_index: usize) -> f64 {
+    pub fn expected_score(&self, player_index: PlayerIndex) -> f64 {
         if self.num_visits == 0 {
             0.
         } else {
@@ -146,12 +150,12 @@ impl NodeStats {
     }
 
     // NOTE: needs to be overridden for score bounded search
-    pub fn exploitation_score(&self, player_index: usize) -> f64 {
+    pub fn exploitation_score(&self, player_index: PlayerIndex) -> f64 {
         self.expected_score(player_index)
     }
 
     // These numbers come from Ludii
-    pub fn value_estimate_unvisited(&self, player_index: usize, q_init: QInit) -> f64 {
+    pub fn value_estimate_unvisited(&self, player_index: PlayerIndex, q_init: QInit) -> f64 {
         use QInit::*;
         match q_init {
             Draw => 0.,
@@ -170,30 +174,88 @@ impl NodeStats {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub enum NodeState<A: Action> {
-    Terminal,
-    Leaf,
-    // NOTE: this Vec necessitates O(n) lookups. Consider FxHashMap
-    Expanded(Vec<Edge<A>>),
+pub struct Edges<A: Action> {
+    edges: Vec<Edge<A>>,
+    explored: FxHashMap<index::Id, usize>,
+}
+
+impl<A: Action> Edges<A> {
+    pub fn new_unexplored(edges: Vec<Edge<A>>) -> Self {
+        Self {
+            edges,
+            explored: FxHashMap::default(),
+        }
+    }
+
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.edges.len()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Edge<A>> {
+        self.edges.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Edge<A>> {
+        self.edges.iter_mut()
+    }
+
+    pub fn set_child(&mut self, index: usize, node_id: index::Id) {
+        debug_assert!(self.edges[index].node_id.is_none());
+        self.edges[index].node_id = Some(node_id);
+        // debug_assert!(!self.explored.contains_key(&node_id));
+        self.explored.insert(node_id, index);
+    }
+
+    pub fn get(&self, node_id: index::Id) -> Option<&Edge<A>> {
+        self.explored.get(&node_id).map(|index| &self.edges[*index])
+    }
+
+    pub fn get_mut(&mut self, node_id: index::Id) -> Option<&mut Edge<A>> {
+        self.explored
+            .get_mut(&node_id)
+            .map(|index| &mut self.edges[*index])
+    }
+
+    pub fn as_slice(&self) -> &[Edge<A>] {
+        self.edges.as_slice()
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [Edge<A>] {
+        self.edges.as_mut_slice()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct Node<A: Action> {
-    pub player_idx: usize,
+pub enum NodeState<A: Action> {
+    Terminal,
+    Leaf,
+    Expanded(Edges<A>),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Node<A: Action, K: HashKey> {
+    pub ancestors: FxHashSet<index::Id>,
+    pub player_idx: PlayerIndex,
     pub state: NodeState<A>,
-    pub hash: u64,
+    pub hash: K,
+    pub aggregate_stats: NodeStats,
     pub is_root: bool,
 }
 
-impl<A: Action> Node<A>
-where
-    A: Clone + std::hash::Hash,
-{
-    pub fn new(player_idx: usize, hash: u64) -> Self {
+impl<A: Action, K: HashKey> Node<A, K> {
+    pub fn new(
+        parent: Option<index::Id>,
+        num_players: usize,
+        player_idx: PlayerIndex,
+        hash: K,
+    ) -> Self {
         Self {
+            ancestors: parent.iter().cloned().collect(),
             player_idx,
             state: NodeState::Leaf,
             hash,
+            aggregate_stats: NodeStats::new(num_players),
             is_root: false,
         }
     }
@@ -214,19 +276,19 @@ where
     }
 
     #[inline]
-    pub fn edges(&self) -> &Vec<Edge<A>> {
+    pub fn edges(&self) -> &Edges<A> {
         let NodeState::Expanded(edges) = &self.state else {
             unreachable!()
         };
         edges
     }
 
-    // NOTE: O(n) lookup
-    pub fn child_edge_mut(&mut self, child_id: index::Id) -> &mut Edge<A> {
-        self.edges_mut()
-            .iter_mut()
-            .find(|e| e.node_id == Some(child_id))
-            .unwrap()
+    #[inline]
+    pub fn edges_mut(&mut self) -> &mut Edges<A> {
+        let NodeState::Expanded(edges) = &mut self.state else {
+            unreachable!()
+        };
+        edges
     }
 
     pub fn actions(&self) -> Vec<A> {
@@ -240,24 +302,18 @@ where
         self.edges().iter().map(|edge| edge.node_id).collect()
     }
 
-    #[inline]
-    pub fn edges_mut(&mut self) -> &mut Vec<Edge<A>> {
-        let NodeState::Expanded(edges) = &mut self.state else {
-            unreachable!()
-        };
-        edges
-    }
-
-    pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
-        debug_assert!((num_players == 0 && player == 0) || player < num_players);
+    pub fn new_root(player: PlayerIndex, num_players: usize, hash: K) -> Self {
+        debug_assert!((num_players == 0 && player.0 == 0) || player.0 < num_players);
         Self {
             is_root: true,
-            ..Self::new(player, hash)
+            ..Self::new(None, num_players, player, hash)
         }
     }
 
     pub fn update(&mut self, action_idx: usize, utilities: &[f64]) {
-        self.edges_mut()[action_idx].stats.update(utilities);
+        self.edges_mut().as_mut_slice()[action_idx]
+            .stats
+            .update(utilities);
     }
 
     pub fn is_root(&self) -> bool {

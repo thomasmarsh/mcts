@@ -1,6 +1,5 @@
 use super::*;
-use crate::game::Game;
-use crate::game::PlayerIndex;
+use crate::game::{Game, PlayerIndex};
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -22,7 +21,7 @@ pub struct Status {
 
 #[derive(Debug, Clone)]
 pub struct Trial<G: Game> {
-    pub actions: Vec<(G::A, usize)>,
+    pub actions: Vec<(G::A, PlayerIndex)>,
     pub state: G::S,
     pub status: Status,
     pub depth: usize,
@@ -39,7 +38,7 @@ where
         state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
-        player: usize,
+        player: PlayerIndex,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         &available[rng.gen_range(0..available.len())]
@@ -50,7 +49,7 @@ where
         mut state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
-        player: usize,
+        player: PlayerIndex,
         rng: &mut SmallRng,
     ) -> Trial<G> {
         let mut actions = Vec::new();
@@ -73,7 +72,7 @@ where
                 break;
             }
             let action: &G::A = self.select_move(&state, &available, stats, player, rng);
-            actions.push((action.clone(), G::player_to_move(&state).to_index()));
+            actions.push((action.clone(), G::player_to_move(&state)));
             state = G::apply(state, action);
             depth += 1;
         }
@@ -158,7 +157,7 @@ where
         state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
-        player: usize,
+        player: PlayerIndex,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if rng.gen::<f64>() < self.epsilon {
@@ -220,7 +219,7 @@ where
         &self,
         state: &<G as Game>::S,
         available: &'a [<G as Game>::A],
-        player: usize,
+        player: PlayerIndex,
     ) -> Option<&'a <G as Game>::A> {
         use DecisiveMoveMode::*;
 
@@ -255,7 +254,7 @@ where
                     let child_state = G::apply(state.clone(), action);
                     if G::is_terminal(&child_state) {
                         if let Some(winner) = G::winner(&child_state) {
-                            if winner.to_index() == player {
+                            if winner == player {
                                 return Some(action);
                             }
                             loser = Some(action);
@@ -294,7 +293,7 @@ where
         state: &<G as Game>::S,
         available: &'a [<G as Game>::A],
         stats: &TreeStats<G>,
-        player: usize,
+        player: PlayerIndex,
         rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
         self.choose(state, available, player)
@@ -320,7 +319,7 @@ where
         _state: &G::S,
         available: &'a [G::A],
         stats: &TreeStats<G>,
-        player: usize,
+        player: PlayerIndex,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         let action_scores = available
@@ -376,7 +375,7 @@ where
         state: &G::S,
         available: &'a [<G as Game>::A],
         _stats: &TreeStats<G>,
-        _player: usize,
+        _player: PlayerIndex,
         _rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
         let action = self.inner.choose_action(state);

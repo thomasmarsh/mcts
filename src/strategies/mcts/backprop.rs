@@ -1,16 +1,16 @@
 use super::node::NodeStats;
 use super::stack::NodeStack;
 use super::*;
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
 
 use rustc_hash::FxHashMap;
 
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
-        stack: &NodeStack<G::A>,
-        trace: &[(G::A, usize)],
-        index: &mut TreeIndex<G::A>,
+        stack: &NodeStack<G::A, G::K>,
+        trace: &[(G::A, PlayerIndex)],
+        index: &mut TreeIndex<G::A, G::K>,
         node_id: index::Id,
         utilities: &[f64],
     ) {
@@ -24,6 +24,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             let sibling_actions: FxHashMap<_, _> = index
                 .get(parent_id)
                 .edges()
+                .as_slice()
                 .iter()
                 .filter_map(|edge| edge.node_id.map(|node_id| (edge.action.clone(), node_id)))
                 .collect();
@@ -34,8 +35,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     if child.player_idx == *p {
                         (0..G::num_players()).for_each(|i| {
                             let parent = index.get_mut(parent_id);
-                            // NOTE: O(n) lookup
-                            let stats = &mut parent.child_edge_mut(*child_id).stats;
+                            let stats = &mut parent.edges_mut().get_mut(*child_id).unwrap().stats;
                             stats.player[i].amaf.num_visits += 1;
                             stats.player[i].amaf.score += utilities[i];
                         })
@@ -47,8 +47,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 
     fn update_grave<G: Game>(
         &self,
-        trace: &[(G::A, usize)],
-        index: &mut TreeIndex<G::A>,
+        trace: &[(G::A, PlayerIndex)],
+        index: &mut TreeIndex<G::A, G::K>,
         global: &mut TreeStats<G>,
         node_id: index::Id,
         utilities: &[f64],
@@ -60,10 +60,10 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     .grave
                     .entry(node.hash)
                     .or_insert_with(|| vec![Default::default(); G::num_players()]);
-                let player = players.get_mut(*p).unwrap();
+                let player = players.get_mut(p.0).unwrap();
                 let grave_stats = player.entry(action.clone()).or_default();
                 grave_stats.num_visits += 1;
-                grave_stats.score += utilities[*p];
+                grave_stats.score += utilities[p.0];
             }
         }
     }
@@ -72,12 +72,12 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
         &self,
-        stack: &NodeStack<G::A>,
+        stack: &NodeStack<G::A, G::K>,
         global: &mut TreeStats<G>,
-        index: &mut TreeIndex<G::A>,
+        index: &mut TreeIndex<G::A, G::K>,
         root_stats: &mut NodeStats,
         trial: simulate::Trial<G>,
-        player: usize,
+        player: PlayerIndex,
         flags: BackpropFlags,
     ) where
         G: Game,
@@ -100,8 +100,17 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             } else {
                 let parent_id = parent_id_opt.cloned().unwrap();
                 debug_assert_ne!(parent_id, *node_id);
-                let parent = index.get_mut(parent_id);
-                parent.child_edge_mut(*node_id).stats.update(&utilities);
+                index
+                    .get_mut(parent_id)
+                    .edges_mut()
+                    .get_mut(*node_id)
+                    .unwrap()
+                    .stats
+                    .update(&utilities);
+
+                // We keep the stats both at the node and at the edges. Czech,
+                // et al, (2020), Monte-Carlo Graph Search for AlphaZero
+                index.get_mut(*node_id).aggregate_stats.update(&utilities);
             }
 
             // update: AMAF
@@ -125,12 +134,12 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         // update: GLOBAL
         if flags.global() {
             for (action, _) in &amaf_actions {
-                // let player = G::player_to_move(&ctx.state).to_index();
+                // let player = G::player_to_move(&ctx.);
                 let action_stats = global.actions.entry(action.clone()).or_default();
                 action_stats.num_visits += 1;
                 action_stats.score += utilities[player];
 
-                let player_action_stats = global.player_actions[player]
+                let player_action_stats = global.player_actions[player.0]
                     .entry(action.clone())
                     .or_default();
                 player_action_stats.num_visits += 1;

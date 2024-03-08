@@ -26,12 +26,6 @@ impl Player {
     }
 }
 
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        *self as usize
-    }
-}
-
 #[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
 pub struct Move(u8, u8);
 
@@ -166,7 +160,7 @@ pub struct Breakthrough<const N: usize, const M: usize>;
 impl<const N: usize, const M: usize> Game for Breakthrough<N, M> {
     type S = State<N, M>;
     type A = Move;
-    type P = Player;
+    type K = ();
 
     fn apply(mut state: State<N, M>, action: &Move) -> State<N, M> {
         state.apply(action)
@@ -180,13 +174,13 @@ impl<const N: usize, const M: usize> Game for Breakthrough<N, M> {
         state.winner
     }
 
-    fn player_to_move(state: &State<N, M>) -> Player {
-        state.turn
+    fn player_to_move(state: &State<N, M>) -> PlayerIndex {
+        (state.turn as usize).into()
     }
 
-    fn winner(state: &State<N, M>) -> Option<Player> {
+    fn winner(state: &State<N, M>) -> Option<PlayerIndex> {
         if state.winner {
-            Some(state.turn)
+            Some((state.turn as usize).into())
         } else {
             None
         }

@@ -16,6 +16,7 @@ use super::table::TranspositionTable;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::strategies::mcts::node::Edge;
+use crate::strategies::mcts::node::Edges;
 use crate::strategies::Search;
 use crate::timer;
 use crate::util::pv_string;
@@ -31,23 +32,12 @@ impl<G: Game> SearchContext<G> {
     pub fn new(current_id: Id, state: G::S) -> Self {
         Self { current_id, state }
     }
-
-    #[inline]
-    fn traverse_apply(&mut self, child_id: Id, action: &G::A) {
-        self.traverse(child_id);
-        self.state = G::apply(self.state.clone(), action);
-    }
-
-    #[inline]
-    fn traverse(&mut self, child_id: Id) {
-        self.current_id = child_id;
-    }
 }
 
 #[derive(Clone, Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: FxHashMap<G::A, node::ActionStats>,
-    pub grave: FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
+    pub grave: FxHashMap<G::K, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub player_actions: Vec<FxHashMap<G::A, node::ActionStats>>,
     pub accum_depth: usize,
     pub iter_count: usize,
@@ -65,7 +55,7 @@ impl<G: Game> Default for TreeStats<G> {
     }
 }
 
-pub type TreeIndex<A> = index::Arena<Node<A>>;
+pub type TreeIndex<A, K> = index::Arena<Node<A, K>>;
 
 #[derive(Clone)]
 pub struct TreeSearch<G, S>
@@ -75,12 +65,12 @@ where
     SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {
-    pub(crate) index: TreeIndex<G::A>,
+    pub(crate) index: TreeIndex<G::A, G::K>,
     pub(crate) timer: timer::Timer,
     pub(crate) root_id: Id,
     pub(crate) root_stats: NodeStats,
     pub(crate) pv: Vec<G::A>,
-    pub(crate) table: TranspositionTable<G::S>,
+    pub(crate) table: TranspositionTable<G>,
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
@@ -121,7 +111,7 @@ where
 {
     pub fn new() -> Self {
         let mut index = index::Arena::new();
-        let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
+        let root_id = index.insert(Node::new_root(0.into(), G::num_players(), G::K::default()));
         Self {
             root_id,
             root_stats: NodeStats::new(G::num_players()),
@@ -137,7 +127,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn new_root(&mut self, player_idx: usize, hash: u64) -> Id {
+    pub(crate) fn new_root(&mut self, player_idx: PlayerIndex, hash: G::K) -> Id {
         let root = Node::new_root(player_idx, G::num_players(), hash);
         self.root_id = self.index.insert(root);
         self.root_id
@@ -152,19 +142,25 @@ where
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
             debug_assert!(!actions.is_empty());
-            node.state = NodeState::Expanded(
+            node.state = NodeState::Expanded(Edges::new_unexplored(
                 actions
                     .into_iter()
-                    .map(|action| Edge::unexplored(action, G::num_players()))
+                    .map(|action| {
+                        Edge::unexplored(
+                            // We need to convert actions into their canonical transpose
+                            G::relativize_action(state, action),
+                            G::num_players(),
+                        )
+                    })
                     .collect(),
-            );
+            ));
         }
-        &node.state // .clone()
+        &node.state
     }
 
     #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
-        let player = G::player_to_move(&ctx.state).to_index();
+        let player = G::player_to_move(&ctx.state);
         debug_assert!(self.stack.is_empty());
         loop {
             self.stack.push(ctx.current_id);
@@ -208,21 +204,26 @@ where
                 unreachable!()
             };
 
-            if let Some(child_id) = edges[best_idx].node_id {
-                ctx.traverse_apply(child_id, &edges[best_idx].action);
+            let edge = &edges.as_slice()[best_idx];
+
+            if let Some(child_id) = edge.node_id {
+                ctx.current_id = child_id;
+                let action = self.action_from_transposition(&edge.action, &ctx.state);
+                ctx.state = G::apply(ctx.state.clone(), &action);
             } else {
                 {
                     let mut actions = vec![];
                     G::generate_actions(&ctx.state, &mut actions);
-                    debug_assert_eq!(actions[best_idx], edges[best_idx].action);
+                    let action = self.action_from_transposition(&edge.action, &ctx.state);
+                    debug_assert_eq!(actions[best_idx], action);
                 }
 
-                let action = &edges[best_idx].action;
-                let state = G::apply(ctx.state.clone(), action);
+                let action = self.action_from_transposition(&edge.action, &ctx.state);
+                let state = G::apply(ctx.state.clone(), &action);
 
                 let child_id = self.new_child(&state, best_idx, ctx.current_id);
 
-                ctx.traverse(child_id);
+                ctx.current_id = child_id;
                 ctx.state = state;
 
                 if self.config.expand_threshold > 0 {
@@ -237,24 +238,33 @@ where
         let hash = G::zobrist_hash(state);
         let child_id = {
             if self.config.use_transpositions {
-                // TODO: the following won't work with symmetries
-                if let Some(entry) = self.table.get(hash, state.clone()) {
+                if let Some(entry) = self.table.get(&hash.hash, state.clone()) {
                     entry.node_id
                 } else {
-                    let child = Node::new(G::player_to_move(state).to_index(), hash);
+                    let child = Node::new(
+                        Some(current_id),
+                        G::num_players(),
+                        G::player_to_move(state),
+                        hash.hash,
+                    );
                     let node_id = self.index.insert(child);
-                    self.table.insert(hash, node_id, state.clone());
+                    self.table.insert(&hash, node_id, state.clone());
                     node_id
                 }
             } else {
-                let child_node = Node::new(G::player_to_move(state).to_index(), hash);
+                let child_node = Node::new(
+                    Some(current_id),
+                    G::num_players(),
+                    G::player_to_move(state),
+                    hash.hash,
+                );
                 self.index.insert(child_node)
             }
         };
 
         match &mut (self.index.get_mut(current_id).state) {
             NodeState::Expanded(edges) => {
-                edges[best_idx].node_id = Some(child_id);
+                edges.set_child(best_idx, child_id);
             }
             _ => unreachable!(),
         }
@@ -270,7 +280,7 @@ where
                 q_init: self.config.q_init,
                 stack: &stack,
                 root_stats: &self.root_stats,
-                player: G::player_to_move(state).to_index(),
+                player: G::player_to_move(state),
                 state,
                 index: &self.index,
                 table: &self.table,
@@ -281,13 +291,13 @@ where
         );
 
         match &(self.index.get(self.root_id).state) {
-            NodeState::Expanded(edges) => edges[idx].action.clone(),
+            NodeState::Expanded(edges) => edges.as_slice()[idx].action.clone(),
             _ => unreachable!(),
         }
     }
 
     #[inline]
-    pub(crate) fn simulate(&mut self, state: &G::S, player: usize) -> Trial<G> {
+    pub(crate) fn simulate(&mut self, state: &G::S, player: PlayerIndex) -> Trial<G> {
         self.config.simulate.playout(
             G::determinize(state.clone(), &mut self.config.rng),
             self.config.max_playout_depth,
@@ -298,7 +308,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn backprop(&mut self, player: usize) {
+    pub(crate) fn backprop(&mut self, player: PlayerIndex) {
         self.stats.iter_count += 1;
         self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
@@ -360,7 +370,7 @@ where
                 .map(|edge| {
                     (
                         edge.stats.num_visits,
-                        edge.stats.player[player.to_index()].score,
+                        edge.stats.player[player].score,
                         edge.action.clone(),
                     )
                 })
@@ -392,7 +402,7 @@ where
     }
 
     #[inline]
-    pub(crate) fn reset(&mut self, player_idx: usize, hash: u64) -> Id {
+    pub(crate) fn reset(&mut self, player_idx: PlayerIndex, hash: G::K) -> Id {
         self.index.clear();
         self.table.clear();
         self.stats.accum_depth = 0;
@@ -406,7 +416,7 @@ where
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
         let mut stack = NodeStack::new(vec![node_id]);
-        let init_player = G::player_to_move(init_state).to_index();
+        let init_player = G::player_to_move(init_state);
         while node.is_expanded() {
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
@@ -425,16 +435,26 @@ where
                 .final_action
                 .best_child(&select_ctx, &mut self.config.rng);
 
-            let edge = &node.edges()[best_idx];
+            let edge = &node.edges().as_slice()[best_idx];
             if let Some(child_id) = edge.node_id {
                 node_id = child_id;
                 node = self.index.get(node_id);
-                state = G::apply(state, &edge.action);
-                self.pv.push(edge.action.clone());
+
+                let action = self.action_from_transposition(&edge.action, &state);
+                state = G::apply(state, &action);
+                self.pv.push(action);
                 stack.push(node_id);
             } else {
                 break;
             }
+        }
+    }
+
+    fn action_from_transposition(&self, action: &G::A, state: &G::S) -> G::A {
+        if self.config.use_transpositions {
+            G::canonicalize_action(state, action.clone())
+        } else {
+            action.clone()
         }
     }
 }
@@ -454,9 +474,9 @@ where
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
         let hash = G::zobrist_hash(state);
-        let root_id = self.reset(G::player_to_move(state).to_index(), hash);
+        let root_id = self.reset(G::player_to_move(state), hash.hash);
         if self.config.use_transpositions {
-            self.table.insert(hash, root_id, state.clone());
+            self.table.insert(&hash, root_id, state.clone());
         }
 
         self.timer.start(self.config.max_time);
@@ -469,8 +489,8 @@ where
             let mut ctx = SearchContext::new(root_id, state.clone());
 
             self.select(&mut ctx);
-            self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state).to_index()));
-            self.backprop(G::player_to_move(state).to_index());
+            self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state)));
+            self.backprop(G::player_to_move(state));
         }
 
         self.compute_pv(state);

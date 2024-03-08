@@ -34,7 +34,7 @@ pub trait Search: Sync + Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::PlayerIndex;
+    use crate::zobrist::ZobristKey;
 
     #[test]
     fn test_expand0() {
@@ -102,7 +102,7 @@ mod tests {
                     board | (value << (i << 1))
                 }),
             },
-            hashes: [0; 8],
+            hashes: [ZobristKey::new(); 8],
         };
 
         // Configure new MCTS
@@ -114,22 +114,22 @@ mod tests {
         );
 
         // Construct new root
-        let root_id = ts.reset(0, 0);
+        let root_id = ts.reset(0.into(), <G as Game>::K::default());
         // Helper step function
         let step = |ts: &mut TS| {
             ts.reset_iter();
             let mut ctx = mcts::SearchContext::new(root_id, init_state);
             ts.select(&mut ctx);
-            let trial = ts.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
+            let trial = ts.simulate(&ctx.state, G::player_to_move(&init_state));
             println!("trial actions: {:?}", trial.actions);
             println!("trial status: {:?}", trial.status);
             println!("utilites: {:?}", G::compute_utilities(&trial.state));
             println!(
                 "relevant utility: {:?}",
-                G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
+                G::compute_utilities(&trial.state)[G::player_to_move(&init_state)]
             );
             ts.trial = Some(trial);
-            ts.backprop(G::player_to_move(&init_state).to_index());
+            ts.backprop(G::player_to_move(&init_state));
 
             ctx.current_id
         };

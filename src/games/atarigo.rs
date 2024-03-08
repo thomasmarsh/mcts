@@ -26,12 +26,6 @@ impl Player {
     }
 }
 
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        *self as usize
-    }
-}
-
 #[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
 pub struct Move(u8, u64);
 
@@ -108,7 +102,7 @@ pub struct AtariGo<const N: usize>;
 impl<const N: usize> Game for AtariGo<N> {
     type S = State<N>;
     type A = Move;
-    type P = Player;
+    type K = ();
 
     fn apply(mut state: State<N>, action: &Move) -> State<N> {
         state.apply(action)
@@ -125,13 +119,13 @@ impl<const N: usize> Game for AtariGo<N> {
         state.winner
     }
 
-    fn player_to_move(state: &State<N>) -> Player {
-        state.turn
+    fn player_to_move(state: &State<N>) -> PlayerIndex {
+        (state.turn as usize).into()
     }
 
-    fn winner(state: &State<N>) -> Option<Player> {
+    fn winner(state: &State<N>) -> Option<PlayerIndex> {
         if state.winner {
-            Some(state.turn)
+            Some((state.turn as usize).into())
         } else {
             None
         }

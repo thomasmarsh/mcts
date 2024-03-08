@@ -36,7 +36,7 @@ pub fn debug(book: &OpeningBook<Move>) {
     actions.enumerate().for_each(|(i, action)| {
         let child_id_opt = root.children.get(action);
         let child = child_id_opt.map(|child_id| book.index.get(*child_id));
-        let score = book.score(&[*action], 0);
+        let score = book.score(&[*action], 0.into());
         println!(
             "- {i}: {:?}, {score:?} {action:?}",
             child.map_or(0, |c| c.num_visits),

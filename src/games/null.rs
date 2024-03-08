@@ -18,16 +18,10 @@ impl std::fmt::Display for Unit {
     }
 }
 
-impl PlayerIndex for Unit {
-    fn to_index(&self) -> usize {
-        0
-    }
-}
-
 impl Game for NullGame {
     type S = Unit;
     type A = Option<Never>;
-    type P = Unit;
+    type K = ();
 
     fn apply(_: Self::S, _: &Option<Never>) -> Self::S {
         unreachable!();
@@ -43,11 +37,11 @@ impl Game for NullGame {
         unreachable!();
     }
 
-    fn winner(_: &Self::S) -> Option<Unit> {
+    fn winner(_: &Self::S) -> Option<PlayerIndex> {
         None
     }
 
-    fn player_to_move(_: &Self::S) -> Unit {
-        Unit
+    fn player_to_move(_: &Self::S) -> PlayerIndex {
+        0.into()
     }
 }

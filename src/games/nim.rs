@@ -8,12 +8,6 @@ pub enum Player {
     White,
 }
 
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        *self as usize
-    }
-}
-
 impl Player {
     pub fn next(self) -> Self {
         match self {
@@ -64,7 +58,7 @@ pub struct Nim;
 impl Game for Nim {
     type S = NimState;
     type A = NimAction;
-    type P = Player;
+    type K = ();
 
     fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
         actions.extend(moves::calculate_legal_moves(
@@ -88,14 +82,14 @@ impl Game for Nim {
         state.game.get_stacks().iter().all(|x| x.0 == 0)
     }
 
-    fn winner(state: &Self::S) -> Option<Player> {
+    fn winner(state: &Self::S) -> Option<PlayerIndex> {
         if !Self::is_terminal(state) {
             panic!();
         }
-        Some(Self::player_to_move(state).next())
+        Some((state.turn.next() as usize).into())
     }
 
-    fn player_to_move(state: &Self::S) -> Player {
-        state.turn
+    fn player_to_move(state: &Self::S) -> PlayerIndex {
+        (state.turn as usize).into()
     }
 }

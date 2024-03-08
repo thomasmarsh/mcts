@@ -29,53 +29,57 @@ type NimMCTS = TreeSearch<Nim, strategy::Ucb1>;
 type TttMCTS = TreeSearch<TicTacToe, strategy::Ucb1>;
 
 fn ucd() {
-    use mcts::games::traffic_lights::TrafficLights;
+    // type G = mcts::games::traffic_lights::TrafficLights;
+    type G = mcts::games::gonnect::Gonnect<7>;
 
-    type Uct = TreeSearch<TrafficLights, strategy::Ucb1>;
+    const MAX_ITER: usize = 20_000;
+    const USE_TRANSPOSITIONS: bool = false;
+
+    type Uct = TreeSearch<G, strategy::Ucb1>;
     let uct = Uct::new().config(
         SearchConfig::new()
-            .max_iterations(10_000)
+            .max_iterations(MAX_ITER)
             .q_init(QInit::Parent)
             .expand_threshold(1)
             .q_init(QInit::Infinity)
             .select(select::Ucb1::with_c(0.01f64.sqrt())),
     );
 
-    type Ucd = TreeSearch<TrafficLights, strategy::Ucb1>;
+    type Ucd = TreeSearch<G, strategy::Ucb1>;
     let ucd = Ucd::new().config(
         SearchConfig::new()
             .name("mcts[ucb1]+ucd")
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Infinity)
             .select(select::Ucb1::with_c(0.01f64.sqrt())),
     );
 
-    type UcdDm = TreeSearch<TrafficLights, strategy::Ucb1DM>;
+    type UcdDm = TreeSearch<G, strategy::Ucb1DM>;
     let ucd_dm = UcdDm::new().config(
         SearchConfig::new()
             .name("mcts[ucb1]+ucd+dm")
-            .max_iterations(10_000)
+            .max_iterations(MAX_ITER)
             .expand_threshold(1)
-            .use_transpositions(true)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Infinity)
             .select(select::Ucb1::with_c(0.01f64.sqrt())),
     );
 
-    let _amaf: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new().config(
+    let _amaf: TreeSearch<G, strategy::Amaf> = TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
-            .max_iterations(10_000)
+            .max_iterations(MAX_ITER)
             .q_init(QInit::Infinity)
             .select(select::Amaf::with_c(0.01f64)),
     );
 
-    let amaf_ucd: TreeSearch<TrafficLights, strategy::Amaf> = TreeSearch::new().config(
+    let amaf_ucd: TreeSearch<G, strategy::Amaf> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[amaf]+ucd")
             .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Infinity)
             .select(select::Amaf::with_c(0.01f64)),
     );
@@ -83,23 +87,20 @@ fn ucd() {
     #[derive(Clone, Copy, Default)]
     struct AmafMastDm;
 
-    impl Strategy<TrafficLights> for AmafMastDm {
+    impl Strategy<G> for AmafMastDm {
         type Select = select::Amaf;
-        type Simulate = simulate::DecisiveMove<
-            TrafficLights,
-            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
-        >;
+        type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
         type Backprop = backprop::Classic;
         type FinalAction = select::RobustChild;
     }
 
     // hash=4b2e92 cost=0.2833333333333333 dict={'c': 0.1662923670765587, 'epsilon': 0.5482781277779128, 'final-action': 'robust_child', 'q-init': 'Win'}
-    let amaf_mast_ucd: TreeSearch<TrafficLights, AmafMastDm> = TreeSearch::new().config(
+    let amaf_mast_ucd: TreeSearch<G, AmafMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[amaf]+mast+ucd")
             .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Draw)
             .select(select::Amaf::with_c(0.25).alpha(0.29292))
             .simulate(
@@ -110,22 +111,19 @@ fn ucd() {
     #[derive(Clone, Copy, Default)]
     struct ThompsonSamplingMast;
 
-    impl Strategy<TrafficLights> for ThompsonSamplingMast {
+    impl Strategy<G> for ThompsonSamplingMast {
         type Select = select::ThompsonSampling;
-        type Simulate = simulate::DecisiveMove<
-            TrafficLights,
-            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
-        >;
+        type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
         type Backprop = backprop::Classic;
         type FinalAction = select::RobustChild;
     }
 
-    let _thompson: TreeSearch<TrafficLights, ThompsonSamplingMast> = TreeSearch::new().config(
+    let _thompson: TreeSearch<G, ThompsonSamplingMast> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[thompson]+mast+ucd+dm")
             .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Infinity)
             .simulate(
                 simulate::DecisiveMove::new().inner(simulate::EpsilonGreedy::with_epsilon(0.25)),
@@ -136,12 +134,12 @@ fn ucd() {
 
     // hash=41eaec cost=0.4083333333333334 dict={'epsilon': 0.7029674773719651, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 916, 'bias': 0.711333324644768}
 
-    let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
+    let rave_mast_ucd: TreeSearch<G, strategy::RaveMastDm> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .q_init(QInit::Win)
             .select(
                 select::Rave::default()
@@ -154,19 +152,19 @@ fn ucd() {
             ),
     );
 
-    let _tuned: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
+    let _tuned: TreeSearch<G, strategy::Ucb1Tuned> = TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
-            .max_iterations(10_000)
+            .max_iterations(MAX_ITER)
             .select(select::Ucb1Tuned::with_c(1.8617)),
     );
 
-    let _tuned_ucd: TreeSearch<TrafficLights, strategy::Ucb1Tuned> = TreeSearch::new().config(
+    let _tuned_ucd: TreeSearch<G, strategy::Ucb1Tuned> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[ucb1_tuned]+ucd")
             .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
+            .max_iterations(MAX_ITER)
+            .use_transpositions(USE_TRANSPOSITIONS)
             .select(select::Ucb1Tuned::with_c(1.8617)),
     );
 
@@ -185,7 +183,7 @@ fn ucd() {
         // AnySearch::new(tuned_ucd),
     ];
 
-    _ = round_robin_multiple::<TrafficLights, AnySearch<_>>(
+    _ = round_robin_multiple::<G, AnySearch<_>>(
         &mut strats,
         1000,
         &Default::default(),
@@ -196,43 +194,43 @@ fn ucd() {
 fn traffic_lights() {
     use mcts::games::traffic_lights::TrafficLights;
 
-    // type Ucd = TreeSearch<TrafficLights, strategy::Ucb1>;
-    // let ucd = Ucd::new().config(
-    //     SearchConfig::new()
-    //         .name("mcts[ucb1]+ucd")
-    //         .max_iterations(10_000)
-    //         .use_transpositions(true)
-    //         .q_init(QInit::Infinity)
-    //         .select(select::Ucb1::with_c(0.01f64.sqrt()))
-    //         .seed(1),
-    // );
+    type Ucd = TreeSearch<TrafficLights, strategy::Amaf>;
+    let ts = Ucd::new().config(
+        SearchConfig::new()
+            .name("mcts[ucb1]+ucd")
+            .max_iterations(10_000)
+            .use_transpositions(false)
+            .q_init(QInit::Infinity)
+            .select(select::Amaf::new().exploration_constant(1.65).alpha(0.5))
+            .seed(1),
+    );
 
     // hash=b4d699 cost=0.44166666666666665 dict={'epsilon': 0.9003068718838548, 'final-action': 'robust_child', 'q-init': 'Parent', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 1819, 'bias': 1.3456468981519023, 'c': 0.0563180660828948}
 
-    let ts: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
-        SearchConfig::new()
-            .name("mcts[rave]+mast+ucd")
-            .verbose(true)
-            .expand_threshold(1)
-            .max_iterations(10_000)
-            .use_transpositions(true)
-            .q_init(QInit::Parent)
-            .select(
-                select::Rave::default()
-                    .ucb(select::RaveUcb::Ucb1Tuned {
-                        exploration_constant: 0.0563180660828948,
-                    })
-                    .threshold(1819)
-                    .schedule(select::RaveSchedule::MinMSE {
-                        bias: 1.3456468981519023,
-                    }),
-            )
-            .simulate(
-                simulate::DecisiveMove::new()
-                    .inner(simulate::EpsilonGreedy::with_epsilon(0.9003068718838548)),
-            )
-            .seed(1),
-    );
+    // let ts: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
+    //     SearchConfig::new()
+    //         .name("mcts[rave]+mast+ucd")
+    //         .verbose(true)
+    //         .expand_threshold(1)
+    //         .max_iterations(10_000)
+    //         .use_transpositions(true)
+    //         .q_init(QInit::Parent)
+    //         .select(
+    //             select::Rave::default()
+    //                 .ucb(select::RaveUcb::Ucb1Tuned {
+    //                     exploration_constant: 0.0563180660828948,
+    //                 })
+    //                 .threshold(1819)
+    //                 .schedule(select::RaveSchedule::MinMSE {
+    //                     bias: 1.3456468981519023,
+    //                 }),
+    //         )
+    //         .simulate(
+    //             simulate::DecisiveMove::new()
+    //                 .inner(simulate::EpsilonGreedy::with_epsilon(0.9003068718838548)),
+    //         )
+    //         .seed(1),
+    // );
 
     self_play(ts);
 }
@@ -565,6 +563,7 @@ fn main() {
     color_backtrace::install();
     pretty_env_logger::init();
 
+    ucd();
     traffic_lights();
     knightthrough();
     breakthrough();
@@ -572,7 +571,6 @@ fn main() {
     atarigo();
     expansion_test();
     ucb_test();
-    ucd();
 
     demo_mcts();
     demo_nim();

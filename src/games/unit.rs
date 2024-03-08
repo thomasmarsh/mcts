@@ -15,16 +15,10 @@ pub struct UnitGame;
 
 pub struct Player;
 
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        0
-    }
-}
-
 impl Game for UnitGame {
     type S = Unit;
     type A = ();
-    type P = Player;
+    type K = ();
 
     fn apply(state: Self::S, _m: &Self::A) -> Self::S {
         assert!(!state.0);
@@ -46,12 +40,12 @@ impl Game for UnitGame {
         "()".to_string()
     }
 
-    fn winner(_: &Self::S) -> Option<Player> {
-        Some(Player)
+    fn winner(_: &Self::S) -> Option<PlayerIndex> {
+        Some(0.into())
     }
 
-    fn player_to_move(_: &Self::S) -> Player {
-        Player
+    fn player_to_move(_: &Self::S) -> PlayerIndex {
+        0.into()
     }
 
     fn num_players() -> usize {

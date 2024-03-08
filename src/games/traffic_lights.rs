@@ -1,12 +1,12 @@
 use crate::{
     display::{RectangularBoard, RectangularBoardDisplay},
-    game::{Game, PlayerIndex},
-    zobrist::LazyZobristTable,
+    game::{Game, PlayerIndex, Symmetry, ZobristHash},
+    zobrist::{LazyZobristTable, ZobristKey},
 };
 use serde::Serialize;
 use std::fmt::Display;
 
-const USE_SYMMETRY: bool = false;
+const USE_SYMMETRY: bool = true;
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Player {
@@ -20,12 +20,6 @@ impl Player {
             Player::First => Player::Second,
             Player::Second => Player::First,
         }
-    }
-}
-
-impl PlayerIndex for Player {
-    fn to_index(&self) -> usize {
-        *self as usize
     }
 }
 
@@ -67,6 +61,7 @@ pub struct Position {
     pub turn: Player,
     pub winner: bool,
     pub board: u32,
+    pub depth: usize,
 }
 
 impl Default for Position {
@@ -81,6 +76,7 @@ impl Position {
             turn: Player::First,
             winner: false,
             board: 0,
+            depth: 0,
         }
     }
 
@@ -141,6 +137,7 @@ impl Position {
         self.winner = self.has_winner();
         if !self.winner {
             self.turn = self.turn.next();
+            self.depth += 1;
         }
     }
 }
@@ -150,19 +147,20 @@ impl Position {
 // 9 playable positions * 4 states * 2 players
 const NUM_MOVES: usize = 72;
 
-static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0x4);
+// TODO: there is a better upper bound on the depth
+static HASHES: LazyZobristTable<NUM_MOVES, 81> = LazyZobristTable::new(0x4);
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct HashedPosition {
     pub position: Position,
-    pub(crate) hashes: [u64; 8],
+    pub(crate) hashes: [ZobristKey; 8],
 }
 
 impl HashedPosition {
     pub fn new() -> Self {
         Self {
             position: Position::new(),
-            hashes: [0; 8],
+            hashes: [ZobristKey::new(); 8],
         }
     }
 }
@@ -185,24 +183,31 @@ impl HashedPosition {
             for (i, index) in symmetries.iter().enumerate() {
                 let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
                 let q = (index << 3) | (value << 1) | self.position.turn as usize;
-                self.hashes[i] ^= HASHES.hash(q);
+                HASHES.apply(q, self.position.depth, &mut self.hashes[i]);
             }
         } else {
             let index = m.index();
             let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
             let q = (index << 3) | (value << 1) | self.position.turn as usize;
-            self.hashes[0] ^= HASHES.hash(q);
+            HASHES.apply(q, self.position.depth, &mut self.hashes[0]);
         }
         self.position.apply(m);
     }
 
     #[inline(always)]
-    fn hash(&self) -> u64 {
+    fn hash(&self) -> ZobristHash<u64> {
         if USE_SYMMETRY {
             use super::ttt::sym;
-            self.hashes[sym::canonical_symmetry(self.position.board)]
+            let (canonical, relative) = sym::identify_symmetry(self.position.board);
+            ZobristHash {
+                hash: self.hashes[canonical].state,
+                symmetry: relative.into(),
+            }
         } else {
-            self.hashes[0]
+            ZobristHash {
+                hash: self.hashes[0].state,
+                symmetry: 0.into(),
+            }
         }
     }
 }
@@ -238,7 +243,7 @@ pub struct TrafficLights;
 impl Game for TrafficLights {
     type S = HashedPosition;
     type A = Move;
-    type P = Player;
+    type K = u64;
 
     fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
         state.position.gen_moves(actions);
@@ -251,7 +256,7 @@ impl Game for TrafficLights {
     }
 
     fn get_reward(init: &Self::S, term: &Self::S) -> f64 {
-        let utility = Self::compute_utilities(term)[Self::player_to_move(init).to_index()];
+        let utility = Self::compute_utilities(term)[Self::player_to_move(init)];
         if utility < 0. {
             return utility * 100.;
         }
@@ -269,20 +274,35 @@ impl Game for TrafficLights {
         state.position.winner
     }
 
-    fn winner(state: &Self::S) -> Option<Player> {
+    fn winner(state: &Self::S) -> Option<PlayerIndex> {
         if !Self::is_terminal(state) {
             unreachable!();
         }
 
-        Some(state.position.turn)
+        Some((state.position.turn as usize).into())
     }
 
-    fn player_to_move(state: &Self::S) -> Player {
-        state.position.turn
+    fn player_to_move(state: &Self::S) -> PlayerIndex {
+        (state.position.turn as usize).into()
     }
 
-    fn zobrist_hash(state: &Self::S) -> u64 {
+    fn zobrist_hash(state: &Self::S) -> ZobristHash<Self::K> {
         state.hash()
+    }
+
+    fn canonicalize_action(state: &Self::S, action: Self::A) -> Self::A {
+        use super::ttt::sym;
+        let (canonical, relative) = sym::identify_symmetry(state.position.board);
+        let base = sym::transform_index(action.0 as usize, 0, canonical);
+        Move(base as u8)
+    }
+
+    fn relativize_action(state: &Self::S, action: Self::A) -> Self::A {
+        use super::ttt::sym;
+        let (canonical, relative) = sym::identify_symmetry(state.position.board);
+        let base = sym::transform_index(action.0 as usize, 0, canonical);
+        let rel = sym::transform_index(base, 0, relative);
+        Move(rel as u8)
     }
 }
 
@@ -293,6 +313,7 @@ mod tests {
     use rustc_hash::FxHashSet;
 
     use super::*;
+    use crate::strategies::mcts::node::QInit;
     use crate::strategies::mcts::render;
     use crate::util::random_play;
 
@@ -313,7 +334,7 @@ mod tests {
                 let k = state.position.board;
                 if !unhashed.contains(&k) {
                     unhashed.insert(k);
-                    hashed.insert(state.hash());
+                    hashed.insert(state.hash().hash);
 
                     if !TrafficLights::is_terminal(&state) {
                         actions.clear();
@@ -390,21 +411,20 @@ mod tests {
 
     #[test]
     fn test_tl_render() {
-        if USE_SYMMETRY {
-            use crate::strategies::mcts::{render, strategy, SearchConfig, TreeSearch};
-            use crate::strategies::Search;
-            let mut search = TreeSearch::<TrafficLights, strategy::Ucb1>::default().config(
-                SearchConfig::default()
-                    .expand_threshold(0)
-                    // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
-                    .max_iterations(100)
-                    .use_transpositions(true),
-            );
-            _ = search.choose_action(&HashedPosition::default());
-            assert!(search.table.hits > 0);
+        use crate::strategies::mcts::{render, strategy, SearchConfig, TreeSearch};
+        use crate::strategies::Search;
+        let mut search = TreeSearch::<TrafficLights, strategy::Ucb1>::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .q_init(QInit::Loss)
+                // .q_init(crate::strategies::mcts::node::UnvisitedValueEstimate::Draw)
+                .max_iterations(3_000_000)
+                .use_transpositions(true),
+        );
+        _ = search.choose_action(&HashedPosition::default());
+        assert!(search.table.hits > 0);
 
-            render::render_trans(&search, &HashedPosition::default());
-        }
+        render::render_trans(&search, &HashedPosition::default());
     }
 
     #[test]

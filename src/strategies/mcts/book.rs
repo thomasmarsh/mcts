@@ -1,5 +1,5 @@
 use super::index;
-use crate::game::Action;
+use crate::game::{Action, PlayerIndex};
 
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -24,7 +24,7 @@ impl<A: Action> Entry<A> {
         self.num_visits += 1;
     }
 
-    fn score(&self, player: usize) -> Option<f64> {
+    fn score(&self, player: PlayerIndex) -> Option<f64> {
         if self.num_visits == 0 {
             None
         } else {
@@ -107,7 +107,7 @@ impl<A: Action> OpeningBook<A> {
         });
     }
 
-    pub fn score(&self, sequence: &[A], player: usize) -> Option<f64> {
+    pub fn score(&self, sequence: &[A], player: PlayerIndex) -> Option<f64> {
         let mut current_id = self.root_id;
         for action in sequence {
             if let Some(child_id) = self.get(current_id).children.get(action) {

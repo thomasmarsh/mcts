@@ -18,19 +18,13 @@ pub enum Move {
 
 pub struct Unit;
 
-impl PlayerIndex for Unit {
-    fn to_index(&self) -> usize {
-        0
-    }
-}
-
 #[derive(Clone)]
 pub struct CountingGame;
 
 impl Game for CountingGame {
     type S = Count;
     type A = Move;
-    type P = Unit;
+    type K = ();
 
     fn apply(state: Self::S, m: &Self::A) -> Self::S {
         Count(match m {
@@ -53,12 +47,12 @@ impl Game for CountingGame {
         format!("{:?}", m).to_string()
     }
 
-    fn winner(_: &Self::S) -> Option<Unit> {
-        Some(Unit)
+    fn winner(_: &Self::S) -> Option<PlayerIndex> {
+        Some(0.into())
     }
 
-    fn player_to_move(_: &Self::S) -> Unit {
-        Unit
+    fn player_to_move(_: &Self::S) -> PlayerIndex {
+        0.into()
     }
 
     fn num_players() -> usize {
