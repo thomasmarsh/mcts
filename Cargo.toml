@@ -35,6 +35,10 @@ path = "demo/hyper.rs"
 name = "book"
 path = "demo/book.rs"
 
+[[bin]]
+name = "server"
+path = "server/main.rs"
+
 [dependencies]
 nimlib = "0.1.1"
 rand = { version = "0.8.5", features = ["small_rng"] }
@@ -54,6 +58,9 @@ clap = { version = "4.5.1", features = ["derive"] }
 proptest = "1.4.0"
 weighted_rand = "0.4.2"
 rand_distr = "0.4.3"
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.7.0", features = ["fs"] }
 
 [profile.release]
 debug=true

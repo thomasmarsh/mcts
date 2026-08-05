@@ -1,0 +1,105 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1b1d22;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color: #e8e8ec;
+}
+
+#board {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+#hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  background: rgba(20, 21, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 12px 14px;
+  min-width: 220px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+#turn {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+#hands {
+  display: flex;
+  gap: 14px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: #b7b8c2;
+}
+
+.hand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hand::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+#hand-black::before { background: #3a3d46; border: 1px solid #6b6e78; }
+#hand-white::before { background: #f2e9d8; border: 1px solid #d8cdb4; }
+
+#modes {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+button.mode, #new-game {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button.mode:hover, #new-game:hover {
+  background: #34363f;
+}
+
+button.mode.active {
+  background: #5b7fd6;
+  border-color: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+#new-game {
+  width: 100%;
+}
+
+#banner {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  min-height: 18px;
+}
+
+#legend {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  z-index: 10;
+  font-size: 12px;
+  color: #8b8c96;
+}

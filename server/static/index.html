@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Druid</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="hud">
+    <div id="turn"></div>
+    <div id="hands">
+      <div class="hand" id="hand-black"></div>
+      <div class="hand" id="hand-white"></div>
+    </div>
+    <div id="modes">
+      <button data-mode="sarsen" class="mode active">Sarsen</button>
+      <button data-mode="lintelH" class="mode">Lintel &#8596;</button>
+      <button data-mode="lintelV" class="mode">Lintel &#8597;</button>
+    </div>
+    <button id="new-game">New Game</button>
+    <div id="banner"></div>
+  </div>
+  <div id="legend">Black connects top &#8596; bottom. White connects left &#8596; right.</div>
+  <canvas id="board"></canvas>
+
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/OrbitControls.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

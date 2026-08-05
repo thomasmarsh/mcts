@@ -82,7 +82,7 @@
 use std::collections::VecDeque;
 
 use rustc_hash::FxHashSet as HashSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     game::{Game, PlayerIndex},
@@ -116,10 +116,10 @@ impl Player {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct Size {
-    w: u8,
-    h: u8,
+    pub w: u8,
+    pub h: u8,
 }
 
 impl Size {
@@ -158,7 +158,7 @@ impl Pos {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Orientation {
     Horizontal,
     Vertical,
@@ -173,13 +173,13 @@ impl Orientation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Piece {
     Sarsen,
     Lintel(Orientation),
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct Square {
     pub height: u16,
     pub piece: Option<Player>,
@@ -191,10 +191,10 @@ impl Square {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Move(pub Piece, pub u8);
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct Hand {
     pub sarsens: u8,
     pub lintels: u8,
@@ -230,7 +230,7 @@ impl Hand {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
 pub struct State {
     pub player: Player,
     pub board: Vec<Square>,
@@ -517,6 +517,12 @@ static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HashedState(State, u64);
+
+impl HashedState {
+    pub fn state(&self) -> &State {
+        &self.0
+    }
+}
 
 #[derive(Clone)]
 pub struct Druid;
