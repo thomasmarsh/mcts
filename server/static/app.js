@@ -8,12 +8,19 @@
   const LINTEL_HILITE = 0x63d3ff;
 
   let scene, camera, renderer, controls, raycaster, mouse;
-  let boardGroup, piecesGroup, highlightGroup;
+  let boardGroup, piecesGroup, highlightGroup, ghostGroup;
   let pickables = [];
   let mode = "sarsen"; // "sarsen" | "lintelH" | "lintelV"
   let currentState = null;
   let currentLegalMoves = [];
   let busy = false; // true while a move/AI request is in flight
+  let hoveredMove = null; // the move currently under the cursor, for the ghost preview
+
+  // Who controls each color this session: "human" or an AI preset id (e.g.
+  // "strong"). Purely client-side -- the server has no notion of seats, it
+  // just executes whatever move/preset a request asks for. Reset on "New Game".
+  let seats = { Black: "human", White: "human" };
+  let aiPresets = []; // [{id, label, description}], loaded from /api/ai_presets
 
   // Client-side reconstruction of the *physical* stack, since the server's
   // `Square` model only stores each cell's current top owner/height and
@@ -66,12 +73,15 @@
     boardGroup = new THREE.Group();
     piecesGroup = new THREE.Group();
     highlightGroup = new THREE.Group();
-    scene.add(boardGroup, piecesGroup, highlightGroup);
+    ghostGroup = new THREE.Group();
+    scene.add(boardGroup, piecesGroup, highlightGroup, ghostGroup);
 
     raycaster = new THREE.Raycaster();
     mouse = new THREE.Vector2();
 
     renderer.domElement.addEventListener("click", onClick);
+    renderer.domElement.addEventListener("mousemove", onPointerMove);
+    renderer.domElement.addEventListener("mouseleave", clearGhost);
     window.addEventListener("resize", onResize);
 
     animate();
@@ -307,6 +317,7 @@
   function rebuildHighlights() {
     clearGroup(highlightGroup);
     pickables = [];
+    clearGhost();
     if (!currentState || currentState.terminal || busy) return;
 
     const { w } = currentState.size;
@@ -346,6 +357,68 @@
     const hits = raycaster.intersectObjects(pickables, false);
     if (hits.length === 0) return;
     postMove(hits[0].object.userData.move);
+  }
+
+  function clearGhost() {
+    clearGroup(ghostGroup);
+    hoveredMove = null;
+  }
+
+  // Renders a translucent preview of the piece `mode`'s current move would
+  // place, at the cell(s)/height it would actually land on -- reuses
+  // `footprintFor` and the same beam-vs-cube shaping as `buildPieces` so the
+  // preview matches what placing it would actually look like.
+  function buildGhost(move) {
+    clearGroup(ghostGroup);
+    if (!move || !currentState) return;
+    const { w } = currentState.size;
+    const color = currentState.player === "Black" ? BLACK_COLOR : WHITE_COLOR;
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.6,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+    });
+    const [pieceTag, index] = move;
+    const level = currentState.board[index].height;
+
+    if (pieceTag === "Sarsen") {
+      const x = index % w;
+      const z = Math.floor(index / w);
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(CUBE, CUBE, CUBE), mat);
+      cube.position.set(x, level * LEVEL_H + LEVEL_H / 2, z);
+      ghostGroup.add(cube);
+      return;
+    }
+
+    const orientation = pieceTag.Lintel;
+    const cells = footprintFor(pieceTag, index, w);
+    const mid = cells[1];
+    const x = mid % w;
+    const z = Math.floor(mid / w);
+    const sizeX = orientation === "Horizontal" ? 2 + CUBE : CUBE;
+    const sizeZ = orientation === "Vertical" ? 2 + CUBE : CUBE;
+    const box = new THREE.Mesh(new THREE.BoxGeometry(sizeX, CUBE, sizeZ), mat);
+    box.position.set(x, level * LEVEL_H + LEVEL_H / 2, z);
+    ghostGroup.add(box);
+  }
+
+  function onPointerMove(event) {
+    if (busy || !pickables.length) {
+      clearGhost();
+      return;
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(pickables, false);
+    const move = hits.length ? hits[0].object.userData.move : null;
+    if (JSON.stringify(move) === JSON.stringify(hoveredMove)) return;
+    hoveredMove = move;
+    buildGhost(move);
   }
 
   function setMode(next) {
@@ -423,6 +496,7 @@
       });
       applyMoveToLayers(move, owner);
       await refresh();
+      await maybeTriggerAiTurn();
     } catch (err) {
       console.error("move rejected", err);
     } finally {
@@ -430,14 +504,21 @@
     }
   }
 
-  async function aiMove() {
+  // `preset` picks which AI config plays this one move. Used both for
+  // seat-driven auto-play and for the manual "AI Move" button.
+  async function aiMove(preset) {
     const owner = currentState.player;
     setBusy(true);
     document.getElementById("banner").textContent = "AI is thinking…";
     try {
-      const result = await fetchJson("/api/ai_move", { method: "POST" });
+      const result = await fetchJson("/api/ai_move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preset }),
+      });
       applyMoveToLayers(result.last_move, owner);
       await refresh();
+      await maybeTriggerAiTurn();
     } catch (err) {
       console.error("AI move failed", err);
     } finally {
@@ -445,20 +526,97 @@
     }
   }
 
-  async function newGame() {
-    await fetchJson("/api/new", { method: "POST" });
+  // If it's a non-human seat's turn, play it automatically. Chains on its
+  // own for AI-vs-AI (aiMove calls this again after its own refresh).
+  async function maybeTriggerAiTurn() {
+    if (busy || !currentState || currentState.terminal) return;
+    const seat = seats[currentState.player];
+    if (seat === "human") return;
+    await aiMove(seat);
+  }
+
+  // The preset the manual "AI Move" button uses: the current seat's own
+  // preset if it's AI-controlled, otherwise a reasonable one-off "take over
+  // for me" strength.
+  function presetForManualMove() {
+    const seat = seats[currentState.player];
+    return seat === "human" ? "strong" : seat;
+  }
+
+  function populateSeatSelectors() {
+    ["seat-black", "seat-white"].forEach((id) => {
+      const sel = document.getElementById(id);
+      const previous = sel.value;
+      sel.innerHTML = "";
+      sel.appendChild(new Option("Human", "human"));
+      aiPresets.forEach((p) => sel.appendChild(new Option(`AI: ${p.label}`, p.id)));
+      if (previous) sel.value = previous;
+    });
+  }
+
+  async function loadAiPresets() {
+    try {
+      aiPresets = await fetchJson("/api/ai_presets");
+      populateSeatSelectors();
+    } catch (err) {
+      console.error("failed to load AI presets", err);
+    }
+  }
+
+  function openNewGameDialog() {
+    document.getElementById("seat-black").value = seats.Black;
+    document.getElementById("seat-white").value = seats.White;
+    document.getElementById("new-game-dialog").showModal();
+  }
+
+  async function startNewGame() {
+    const [w, h] = document
+      .getElementById("new-size")
+      .value.split("x")
+      .map(Number);
+    seats.Black = document.getElementById("seat-black").value;
+    seats.White = document.getElementById("seat-white").value;
+
+    await fetchJson("/api/new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ size: { w, h } }),
+    });
+    document.getElementById("new-game-dialog").close();
     await refresh({ rebuildBoard: true });
+    await maybeTriggerAiTurn();
+  }
+
+  const HOTKEYS = { 1: "sarsen", 2: "lintelH", 3: "lintelV" };
+
+  function onKeyDown(event) {
+    if (busy) return;
+    const tag = event.target.tagName;
+    if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
+    const next = HOTKEYS[event.key];
+    if (next) setMode(next);
   }
 
   function initUi() {
     document.querySelectorAll("button.mode").forEach((btn) => {
       btn.addEventListener("click", () => setMode(btn.dataset.mode));
     });
-    document.getElementById("new-game").addEventListener("click", newGame);
-    document.getElementById("ai-move").addEventListener("click", aiMove);
+    document.getElementById("new-game").addEventListener("click", openNewGameDialog);
+    document.getElementById("new-game-cancel").addEventListener("click", () => {
+      document.getElementById("new-game-dialog").close();
+    });
+    document.getElementById("new-game-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      startNewGame();
+    });
+    document
+      .getElementById("ai-move")
+      .addEventListener("click", () => aiMove(presetForManualMove()));
+    window.addEventListener("keydown", onKeyDown);
   }
 
   initScene();
   initUi();
+  loadAiPresets();
   refresh({ rebuildBoard: true });
 })();

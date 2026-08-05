@@ -16,22 +16,88 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 
 use mcts::game::Game;
-use mcts::games::druid::{Druid, HashedState, Move, Player, SIZE};
+use mcts::games::druid::{Druid, HashedState, Move, Player, Size};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
-// How long the AI is allowed to think per move. Druid's move generation and
-// terminal checks are expensive (see the header comment in
-// src/games/druid.rs), so this is a wall-clock budget, not an iteration
-// count -- keeps the UI responsive regardless of board size.
-const AI_TIME_BUDGET: Duration = Duration::from_secs(3);
-
 struct AppState {
     game: Mutex<HashedState>,
+}
+
+// AI opponents, from weakest to strongest. Each preset pairs a search
+// strategy with a wall-clock thinking budget -- Druid's move generation and
+// terminal checks are expensive (see the header comment in
+// src/games/druid.rs), so budgets are time-based rather than iteration
+// counts, which keeps the UI responsive regardless of board size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AiPreset {
+    Easy,
+    Medium,
+    Strong,
+    Master,
+}
+
+impl AiPreset {
+    const ALL: [AiPreset; 4] = [
+        AiPreset::Easy,
+        AiPreset::Medium,
+        AiPreset::Strong,
+        AiPreset::Master,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            AiPreset::Easy => "Easy",
+            AiPreset::Medium => "Medium",
+            AiPreset::Strong => "Strong",
+            AiPreset::Master => "Master",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            AiPreset::Easy => "Plain UCB1 with random playouts, ~1s per move. Makes tactical mistakes.",
+            AiPreset::Medium => "UCB1 with MAST-biased playouts, ~2s per move.",
+            AiPreset::Strong => {
+                "Tuned RAVE + MAST + decisive-move search, ~3s per move (SMAC3-tuned)."
+            }
+            AiPreset::Master => "Same search as Strong with a longer ~8s thinking budget.",
+        }
+    }
+
+    fn time_budget(self) -> Duration {
+        match self {
+            AiPreset::Easy => Duration::from_secs(1),
+            AiPreset::Medium => Duration::from_secs(2),
+            AiPreset::Strong => Duration::from_secs(3),
+            AiPreset::Master => Duration::from_secs(8),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AiPresetInfo {
+    id: AiPreset,
+    label: &'static str,
+    description: &'static str,
+}
+
+async fn get_ai_presets() -> Json<Vec<AiPresetInfo>> {
+    Json(
+        AiPreset::ALL
+            .iter()
+            .map(|&id| AiPresetInfo {
+                id,
+                label: id.label(),
+                description: id.description(),
+            })
+            .collect(),
+    )
 }
 
 #[derive(Serialize)]
@@ -53,7 +119,7 @@ struct GameView<'a> {
 fn view(state: &HashedState, last_move: Option<Move>) -> GameView<'_> {
     let s = state.state();
     GameView {
-        size: SIZE,
+        size: s.size,
         player: s.player,
         board: &s.board,
         hand_black: &s.hand_black,
@@ -78,10 +144,29 @@ async fn get_legal_moves(AxumState(app): AxumState<Arc<AppState>>) -> Json<Vec<M
     Json(moves)
 }
 
-async fn post_new(AxumState(app): AxumState<Arc<AppState>>) -> Json<serde_json::Value> {
+#[derive(Deserialize)]
+struct NewGameRequest {
+    size: Size,
+}
+
+async fn post_new(
+    AxumState(app): AxumState<Arc<AppState>>,
+    Json(req): Json<NewGameRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !req.size.is_supported() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "unsupported board size {}x{}: each side must be at least 3, \
+                 and the board can't be so large it overflows the Zobrist hash table",
+                req.size.w, req.size.h
+            ),
+        ));
+    }
+
     let mut state = app.game.lock().unwrap();
-    *state = HashedState::default();
-    Json(serde_json::to_value(view(&state, None)).unwrap())
+    *state = HashedState::new(req.size);
+    Ok(Json(serde_json::to_value(view(&state, None)).unwrap()))
 }
 
 async fn post_move(
@@ -104,33 +189,70 @@ async fn post_move(
     Ok(Json(serde_json::to_value(view(&state, Some(mv))).unwrap()))
 }
 
-// Config lifted from the tuned `rave_mast_ucd` setup in demo/druid.rs, which
+// `Strong` reuses the tuned `rave_mast_ucd` setup from demo/druid.rs, which
 // SMAC3 hyperparameter search found effective for this game specifically.
-fn build_ai() -> TreeSearch<Druid, strategy::RaveMastDm> {
-    TreeSearch::new().config(
-        SearchConfig::new()
-            .name("mcts[rave]+mast+ucd")
-            .expand_threshold(1)
-            .use_transpositions(true)
-            .q_init(QInit::Infinity)
-            .max_time(AI_TIME_BUDGET)
-            .select(
-                select::Rave::default()
-                    .ucb(select::RaveUcb::Ucb1Tuned {
-                        exploration_constant: 0.2894182,
+// The other presets reuse strategy types exercised there too (`Ucb1`,
+// `Ucb1Mast`), just with shorter time budgets, giving a real strength
+// gradient rather than only a time-budget knob.
+fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
+    let budget = preset.time_budget();
+    match preset {
+        AiPreset::Easy => Box::new(TreeSearch::<Druid, strategy::Ucb1>::new().config(
+            SearchConfig::new()
+                .name("ai/easy")
+                .expand_threshold(1)
+                .use_transpositions(true)
+                .q_init(QInit::Infinity)
+                .max_time(budget)
+                .select(select::Ucb1::with_c(1.414)),
+        )),
+        AiPreset::Medium => Box::new(TreeSearch::<Druid, strategy::Ucb1Mast>::new().config(
+            SearchConfig::new()
+                .name("ai/medium")
+                .expand_threshold(1)
+                .use_transpositions(true)
+                .q_init(QInit::Infinity)
+                .max_time(budget)
+                .select(select::Ucb1::with_c(1.625))
+                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
+        )),
+        AiPreset::Strong | AiPreset::Master => {
+            Box::new(TreeSearch::<Druid, strategy::RaveMastDm>::new().config(
+                SearchConfig::new()
+                    .name(if preset == AiPreset::Strong {
+                        "ai/strong"
+                    } else {
+                        "ai/master"
                     })
-                    .threshold(204)
-                    .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
-            )
-            .simulate(
-                simulate::DecisiveMove::new()
-                    .inner(simulate::EpsilonGreedy::with_epsilon(0.7775134)),
-            ),
-    )
+                    .expand_threshold(1)
+                    .use_transpositions(true)
+                    .q_init(QInit::Infinity)
+                    .max_time(budget)
+                    .select(
+                        select::Rave::default()
+                            .ucb(select::RaveUcb::Ucb1Tuned {
+                                exploration_constant: 0.2894182,
+                            })
+                            .threshold(204)
+                            .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
+                    )
+                    .simulate(
+                        simulate::DecisiveMove::new()
+                            .inner(simulate::EpsilonGreedy::with_epsilon(0.7775134)),
+                    ),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AiMoveRequest {
+    preset: AiPreset,
 }
 
 async fn post_ai_move(
     AxumState(app): AxumState<Arc<AppState>>,
+    Json(req): Json<AiMoveRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let snapshot = {
         let state = app.game.lock().unwrap();
@@ -141,9 +263,9 @@ async fn post_ai_move(
     };
 
     // Run the search on a blocking thread -- it's CPU-bound for the full
-    // AI_TIME_BUDGET and would otherwise stall the async executor.
+    // thinking budget and would otherwise stall the async executor.
     let action = tokio::task::spawn_blocking(move || {
-        let mut ai = build_ai();
+        let mut ai = build_ai(req.preset);
         ai.choose_action(&snapshot)
     })
     .await
@@ -179,6 +301,7 @@ async fn main() {
         .route("/api/legal_moves", get(get_legal_moves))
         .route("/api/move", post(post_move))
         .route("/api/ai_move", post(post_ai_move))
+        .route("/api/ai_presets", get(get_ai_presets))
         .route("/api/new", post(post_new))
         .with_state(app_state)
         .fallback_service(ServeDir::new(static_dir));

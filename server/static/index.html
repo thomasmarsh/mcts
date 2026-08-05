@@ -13,9 +13,9 @@
       <div class="hand" id="hand-white"></div>
     </div>
     <div id="modes">
-      <button data-mode="sarsen" class="mode active">Sarsen</button>
-      <button data-mode="lintelH" class="mode">Lintel &#8596;</button>
-      <button data-mode="lintelV" class="mode">Lintel &#8597;</button>
+      <button data-mode="sarsen" class="mode active">Sarsen <span class="hotkey">1</span></button>
+      <button data-mode="lintelH" class="mode">Lintel &#8596; <span class="hotkey">2</span></button>
+      <button data-mode="lintelV" class="mode">Lintel &#8597; <span class="hotkey">3</span></button>
     </div>
     <div id="actions">
       <button id="ai-move">AI Move</button>
@@ -25,6 +25,33 @@
   </div>
   <div id="legend">Black connects top &#8596; bottom. White connects left &#8596; right.</div>
   <canvas id="board"></canvas>
+
+  <dialog id="new-game-dialog">
+    <form method="dialog" id="new-game-form">
+      <h2>New Game</h2>
+      <label>
+        Board size
+        <select id="new-size">
+          <option value="5x5">5 &times; 5</option>
+          <option value="7x7">7 &times; 7</option>
+          <option value="9x9">9 &times; 9</option>
+          <option value="10x10">10 &times; 10</option>
+        </select>
+      </label>
+      <label>
+        Black
+        <select id="seat-black"></select>
+      </label>
+      <label>
+        White
+        <select id="seat-white"></select>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="new-game-cancel">Cancel</button>
+        <button type="submit" id="new-game-start">Start</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="vendor/three.min.js"></script>
   <script src="vendor/OrbitControls.js"></script>

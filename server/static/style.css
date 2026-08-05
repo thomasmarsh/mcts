@@ -84,6 +84,22 @@ button.mode.active {
   font-weight: 600;
 }
 
+.hotkey {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  color: inherit;
+  opacity: 0.85;
+}
+
+button.mode.active .hotkey {
+  background: rgba(13, 14, 18, 0.2);
+}
+
 #actions {
   display: flex;
   gap: 6px;
@@ -112,4 +128,69 @@ button.mode:disabled, #new-game:disabled, #ai-move:disabled {
   z-index: 10;
   font-size: 12px;
   color: #8b8c96;
+}
+
+#new-game-dialog {
+  background: #1e1f26;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 18px 20px;
+  min-width: 240px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+#new-game-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+#new-game-dialog h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+#new-game-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #b7b8c2;
+  margin-bottom: 12px;
+}
+
+#new-game-form select {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.dialog-actions button {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#new-game-start {
+  background: #5b7fd6;
+  border-color: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+.dialog-actions button:hover {
+  filter: brightness(1.1);
 }

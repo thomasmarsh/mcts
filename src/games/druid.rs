@@ -89,11 +89,11 @@ use crate::{
     zobrist::LazyZobristTable,
 };
 
-// TODO: trait Game should be implemented with a self parameter or some
-// other way to maintain static context so we don't have to store this here.
-// NOTE: the standard game is 10x10 (and 9x9 for Trilith). This can be set up to
-// 11x11 before you trigger integer overflows (unless expanding some of the types).
-pub const SIZE: Size = Size { w: 5, h: 5 };
+// NOTE: the standard game is 10x10 (and 9x9 for Trilith). Board size lives on
+// `State` (see `Size::is_supported` below for the ceiling this is checked
+// against) rather than here; this constant now only supplies the default
+// size for `State::default()` / existing tests and demo binaries.
+pub const DEFAULT_SIZE: Size = Size { w: 5, h: 5 };
 
 #[derive(PartialEq, Clone, Copy, Debug, Serialize, Hash, Eq)]
 pub enum Player {
@@ -116,7 +116,7 @@ impl Player {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Size {
     pub w: u8,
     pub h: u8,
@@ -126,6 +126,18 @@ impl Size {
     fn area(self) -> u16 {
         (self.w * self.h) as u16
     }
+
+    /// Whether this size is safe to build a game on: big enough for a lintel
+    /// to fit in either orientation, and small enough that the Zobrist hash
+    /// (see `HASHES` below) can address every (position, color, height-bit)
+    /// slot it needs without going out of bounds.
+    pub fn is_supported(self) -> bool {
+        if self.w < 3 || self.h < 3 {
+            return false;
+        }
+        let area = self.area() as usize;
+        area * 2 * zobrist_height_bits(area) <= HASHES_LEN
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -133,7 +145,7 @@ pub struct Pos(pub u8, pub u8);
 
 impl Pos {
     pub fn from(i: usize, size: Size) -> Pos {
-        Pos(i as u8 % size.w, i as u8 / size.h)
+        Pos(i as u8 % size.w, i as u8 / size.w)
     }
 
     pub fn index(self, width: u8) -> usize {
@@ -201,8 +213,8 @@ pub struct Hand {
 }
 
 impl Hand {
-    fn new() -> Hand {
-        let n = SIZE.w * SIZE.h;
+    fn new(size: Size) -> Hand {
+        let n = size.w * size.h;
         // Trilith provides 48 sarsens and 20 lintels for a 9x9 board, which
         // is probably too few.
         //
@@ -236,6 +248,7 @@ pub struct State {
     pub board: Vec<Square>,
     pub hand_black: Hand,
     pub hand_white: Hand,
+    pub size: Size,
 }
 
 // TODO:
@@ -254,12 +267,12 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_SIZE)
     }
 }
 
 impl State {
-    pub fn new() -> Self {
+    pub fn new(size: Size) -> Self {
         State {
             player: Player::Black,
             board: vec![
@@ -267,10 +280,11 @@ impl State {
                     height: 0,
                     piece: None,
                 };
-                SIZE.area().into()
+                size.area().into()
             ],
-            hand_black: Hand::new(),
-            hand_white: Hand::new(),
+            hand_black: Hand::new(size),
+            hand_white: Hand::new(size),
+            size,
         }
     }
 
@@ -299,8 +313,8 @@ impl State {
     }
 
     pub fn moves(&self, moves: &mut Vec<Move>) {
-        for i in 0..SIZE.area() as usize {
-            let Pos(x, y) = Pos::from(i, SIZE);
+        for i in 0..self.size.area() as usize {
+            let Pos(x, y) = Pos::from(i, self.size);
 
             // Sarsen
             if self.current_hand().sarsens > 0 {
@@ -321,15 +335,15 @@ impl State {
                     Pos(x + dx, y + dy),
                     Pos(x + dx + dx, y + dy + dy),
                 ];
-                if self.current_hand().lintels > 0 && c[2].0 < SIZE.w && c[2].1 < SIZE.h {
-                    let h = c.map(|c| self.board[c.index(SIZE.w)].height);
+                if self.current_hand().lintels > 0 && c[2].0 < self.size.w && c[2].1 < self.size.h {
+                    let h = c.map(|c| self.board[c.index(self.size.w)].height);
                     if h[0] == h[2] && h[1] <= h[0] {
-                        if let Some(p0) = self.at(c[0].index(SIZE.w)) {
-                            if let Some(p2) = self.at(c[2].index(SIZE.w)) {
+                        if let Some(p0) = self.at(c[0].index(self.size.w)) {
+                            if let Some(p2) = self.at(c[2].index(self.size.w)) {
                                 let mut count = 0;
                                 (p0 == self.player).then(|| count += 1);
                                 (p2 == self.player).then(|| count += 1);
-                                if let Some(p1) = self.at(c[1].index(SIZE.w)) {
+                                if let Some(p1) = self.at(c[1].index(self.size.w)) {
                                     if p1 == self.player && h[1] == h[0] {
                                         count += 1;
                                     }
@@ -357,13 +371,13 @@ impl State {
             }
             Piece::Lintel(orientation) => {
                 let (dx, dy) = orientation.delta();
-                let Pos(x, y) = Pos::from(m.1 as usize, SIZE);
+                let Pos(x, y) = Pos::from(m.1 as usize, self.size);
                 let c = [
                     Pos(x, y),
                     Pos(x + dx, y + dy),
                     Pos(x + dx + dx, y + dy + dy),
                 ];
-                let is = c.map(|x| Pos::index(x, SIZE.w));
+                let is = c.map(|x| Pos::index(x, self.size.w));
                 let h = self.board[m.1 as usize].height + 1;
                 is.iter().for_each(|i| {
                     self.board[*i] = Square {
@@ -377,9 +391,9 @@ impl State {
     }
 
     fn get_adjacent(&self, pos: Pos, seen: &HashSet<usize>, color: Player) -> Vec<usize> {
-        pos.adjacent(SIZE)
+        pos.adjacent(self.size)
             .into_iter()
-            .map(|x| Pos::index(x, SIZE.w))
+            .map(|x| Pos::index(x, self.size.w))
             .filter(|x| !seen.contains(x) && self.board[*x].matches(color))
             .collect()
     }
@@ -391,11 +405,11 @@ impl State {
         seen: &mut HashSet<usize>,
         color: Player,
     ) -> bool {
-        if seen.contains(&start.index(SIZE.w)) || !self.board[start.index(SIZE.w)].matches(color) {
+        if seen.contains(&start.index(self.size.w)) || !self.board[start.index(self.size.w)].matches(color) {
             return false;
         }
 
-        let mut frontier = VecDeque::from(vec![start.index(SIZE.w)]);
+        let mut frontier = VecDeque::from(vec![start.index(self.size.w)]);
 
         while let Some(idx) = frontier.pop_front() {
             if goal.contains(&idx) {
@@ -403,13 +417,13 @@ impl State {
             }
             seen.insert(idx);
 
-            frontier.extend(self.get_adjacent(Pos::from(idx, SIZE), seen, color));
+            frontier.extend(self.get_adjacent(Pos::from(idx, self.size), seen, color));
         }
         false
     }
 
     pub fn check_connection(&self, start: Vec<Pos>, end: Vec<Pos>, color: Player) -> bool {
-        let goal = HashSet::from(end.into_iter().map(|x| Pos::index(x, SIZE.w)).collect());
+        let goal = HashSet::from(end.into_iter().map(|x| Pos::index(x, self.size.w)).collect());
         let mut seen = HashSet::default();
         start
             .iter()
@@ -418,13 +432,13 @@ impl State {
 
     pub fn connection(&self) -> Option<Player> {
         let (top, bottom): (Vec<Pos>, Vec<Pos>) =
-            (0..SIZE.w).map(|x| (Pos(x, 0), Pos(x, SIZE.h - 1))).unzip();
+            (0..self.size.w).map(|x| (Pos(x, 0), Pos(x, self.size.h - 1))).unzip();
         if self.check_connection(top, bottom, Player::Black) {
             return Some(Player::Black);
         }
 
         let (left, right): (Vec<Pos>, Vec<Pos>) =
-            (0..SIZE.h).map(|y| (Pos(0, y), Pos(SIZE.w - 1, y))).unzip();
+            (0..self.size.h).map(|y| (Pos(0, y), Pos(self.size.w - 1, y))).unzip();
         if self.check_connection(left, right, Player::White) {
             return Some(Player::White);
         }
@@ -435,12 +449,12 @@ impl State {
 
 impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let color_map = generate_map(|i| match self.board[i].piece {
+        let color_map = generate_map(self.size, |i| match self.board[i].piece {
             None => " .".into(),
             Some(Player::Black) => " X".into(),
             Some(Player::White) => " O".into(),
         });
-        let height_map = generate_map(|i| match self.board[i].height {
+        let height_map = generate_map(self.size, |i| match self.board[i].height {
             0 => " .".into(),
             n => format!(" {:x}", n),
         });
@@ -457,14 +471,14 @@ impl std::fmt::Display for State {
     }
 }
 
-fn generate_map<F>(mut func: F) -> String
+fn generate_map<F>(size: Size, mut func: F) -> String
 where
     F: FnMut(usize) -> String,
 {
     let mut map = Vec::new();
 
     let column_labels = |map: &mut Vec<String>| {
-        for c in ('A'..).take(SIZE.w as usize) {
+        for c in ('A'..).take(size.w as usize) {
             map.push(format!(" {}", c));
         }
     };
@@ -472,12 +486,12 @@ where
     // Generate map
     map.push("   ".to_string());
     column_labels(&mut map);
-    let mut row = SIZE.h as usize;
+    let mut row = size.h as usize;
     map.push(format!("   \n{:>3}", row));
-    for i in 0..SIZE.area() as usize {
+    for i in 0..size.area() as usize {
         let c = func(i);
         map.push(c);
-        if (i + 1) as u8 % SIZE.w == 0 {
+        if (i + 1) as u8 % size.w == 0 {
             map.push(format!(" {}", row));
             if row < 10 {
                 map.push(" ".into());
@@ -513,7 +527,10 @@ impl std::fmt::Display for HashedState {
 //
 // Then size(10,10) = 1400. There is 8-way symmetry, but this is only useful
 // in the early game.
-static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
+//
+// This bounds the largest board size we can support -- see `Size::is_supported`.
+const HASHES_LEN: usize = 1400;
+static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xD401D);
 
 // Number of bits used to encode a cell's height: each bit gets its own
 // random table entry, XORed in when set, so a height in [0, 2^bits) maps to
@@ -533,6 +550,17 @@ fn zobrist_height_bits(n: usize) -> usize {
 pub struct HashedState(State, u64);
 
 impl HashedState {
+    /// Panics if `size` isn't `Size::is_supported` -- callers that accept a
+    /// size from outside this module (e.g. an API request) should check that
+    /// first and reject unsupported sizes there instead of hitting this.
+    pub fn new(size: Size) -> Self {
+        assert!(size.is_supported(), "unsupported board size: {size:?}");
+        // The all-zero hash is correct for any empty board under the scheme
+        // below, regardless of size: no cell has a nonzero height yet, so no
+        // bits get XORed in.
+        HashedState(State::new(size), 0)
+    }
+
     pub fn state(&self) -> &State {
         &self.0
     }
@@ -561,10 +589,10 @@ impl Game for Druid {
         // `bits` table slots, so different cells/colors never collide;
         // within a block, each bit of the height is independently XORed
         // in (see `zobrist_height_bits`).
-        let bits = zobrist_height_bits(SIZE.area() as usize);
+        let bits = zobrist_height_bits(state.0.size.area() as usize);
         debug_assert!(
-            SIZE.area() as usize * 2 * bits <= 1400,
-            "HASHES table is too small for SIZE; grow it or shrink SIZE"
+            state.0.size.is_supported(),
+            "HASHES table is too small for this board size; HashedState::new should have rejected it"
         );
 
         let mut hash = 0;
@@ -594,8 +622,8 @@ impl Game for Druid {
         // || Druid::gen_moves(state).is_empty()
     }
 
-    fn notation(_: &Self::S, m: &Self::A) -> String {
-        let Pos(x, y) = Pos::from(m.1 as usize, SIZE);
+    fn notation(state: &Self::S, m: &Self::A) -> String {
+        let Pos(x, y) = Pos::from(m.1 as usize, state.0.size);
         match m.0 {
             Piece::Sarsen => format!("S({},{})", x + 1, y + 1),
             Piece::Lintel(Orientation::Horizontal) => format!("L({},{},H)", x + 1, y + 1),
