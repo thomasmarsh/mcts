@@ -136,7 +136,7 @@ impl Size {
             return false;
         }
         let area = self.area() as usize;
-        area * 2 * zobrist_height_bits(area) <= HASHES_LEN
+        area * 2 * zobrist_height_bits(self) <= HASHES_LEN
     }
 }
 
@@ -532,13 +532,24 @@ impl std::fmt::Display for HashedState {
 const HASHES_LEN: usize = 1400;
 static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xD401D);
 
+/// Highest height a single cell can reach. A player can only raise a cell's
+/// height with pieces from their own hand (repeated sarsens on one cell, or
+/// lintels bridging out from it), and `Hand::new` hands out `n * 2` sarsens
+/// per player -- so that's the ceiling for one cell, not the board area.
+fn max_cell_height(size: Size) -> usize {
+    Hand::new(size).sarsens as usize
+}
+
 // Number of bits used to encode a cell's height: each bit gets its own
 // random table entry, XORed in when set, so a height in [0, 2^bits) maps to
 // a distinct XOR combination (the entries are independent random u64s, so
 // this is injective with overwhelming probability -- the standard trick for
 // hashing bounded counters into a Zobrist scheme). `ceil(log2(n))` matches
-// the sizing comment above.
-fn zobrist_height_bits(n: usize) -> usize {
+// the sizing comment above, where `n` is the number of distinct heights a
+// cell can take on (`max_cell_height(size) + 1`, since height ranges from 0
+// up to and including the max).
+fn zobrist_height_bits(size: Size) -> usize {
+    let n = max_cell_height(size) + 1;
     if n <= 1 {
         0
     } else {
@@ -589,10 +600,15 @@ impl Game for Druid {
         // `bits` table slots, so different cells/colors never collide;
         // within a block, each bit of the height is independently XORed
         // in (see `zobrist_height_bits`).
-        let bits = zobrist_height_bits(state.0.size.area() as usize);
+        let bits = zobrist_height_bits(state.0.size);
         debug_assert!(
             state.0.size.is_supported(),
             "HASHES table is too small for this board size; HashedState::new should have rejected it"
+        );
+        debug_assert!(
+            state.0.board.iter().all(|square| (square.height as usize) < (1usize << bits)),
+            "cell height exceeded the {bits}-bit Zobrist encoding for {:?}; max_cell_height's bound was wrong",
+            state.0.size
         );
 
         let mut hash = 0;
@@ -665,5 +681,124 @@ mod tests {
         );
         _ = search.choose_action(&HashedState::default());
         render::render(&search);
+    }
+
+    #[test]
+    fn test_self_play_smoke_no_hash_collisions() {
+        // A short self-play run with transpositions enabled, exercising the
+        // real Zobrist hashing path end-to-end. With the corrected bit
+        // width every state that lands in the same table bucket should
+        // really be the same state -- so no bucket should ever need a
+        // second `TableEntry` to disambiguate a collision.
+        let mut search: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .expand_threshold(1)
+                .q_init(QInit::Infinity)
+                .use_transpositions(true)
+                .max_iterations(50),
+        );
+
+        let mut state = HashedState::default();
+        for _ in 0..40 {
+            if Druid::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+            state = Druid::apply(state, &action);
+        }
+
+        for entries in search.table.table.0.values() {
+            assert_eq!(
+                entries.len(),
+                1,
+                "hash collision: {} distinct states shared one Zobrist hash",
+                entries.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_max_cell_height_matches_hand_sarsens() {
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+            assert_eq!(max_cell_height(size), Hand::new(size).sarsens as usize);
+        }
+    }
+
+    #[test]
+    fn test_is_supported_accepts_default_and_common_sizes() {
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+            assert!(size.is_supported(), "{size:?} should be supported under the corrected bit width");
+        }
+    }
+
+    #[test]
+    fn test_zobrist_height_encoding_is_injective_over_full_range() {
+        // Confirms the per-cell height encoding is injective across the
+        // *entire* representable range for a given bit width, not just the
+        // heights a real game can reach -- the encoding scheme itself must
+        // hold regardless of how the bound is derived.
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+            let bits = zobrist_height_bits(size);
+            // The bit width must be able to represent every height the game
+            // can actually produce on one cell.
+            assert!((1usize << bits) > max_cell_height(size));
+
+            let mut seen = HashSet::default();
+            for h in 0..(1usize << bits) {
+                let mut hash = 0u64;
+                for b in 0..bits {
+                    if h & (1 << b) != 0 {
+                        hash ^= HASHES.hash(b);
+                    }
+                }
+                assert!(
+                    seen.insert(hash),
+                    "height {h} collided with an earlier height for size {size:?} (bits={bits})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_zobrist_no_aliasing_past_old_area_sized_bit_width() {
+        // Before the fix, `zobrist_height_bits` was sized off the board
+        // area (25 for a 5x5 board), giving only `ceil(log2(25)) = 5` bits
+        // -- a mod-32 ceiling. But a single hand can stack up to
+        // `Hand::new(size).sarsens` (50) sarsens on one cell, so heights 1
+        // and 33 used to alias. Drive a real cell up through `Game::apply`
+        // and confirm every reachable height now hashes distinctly.
+        let size = DEFAULT_SIZE;
+        let cell = 0u8;
+        let max_height = max_cell_height(size);
+        assert_eq!(max_height, 50);
+
+        let mut state = HashedState::new(size);
+        let mut hashes_by_height = std::collections::HashMap::new();
+        hashes_by_height.insert(0usize, state.1);
+
+        for h in 1..=max_height {
+            // Keep depleting the same hand so the cell keeps stacking
+            // instead of running into the "only your own piece" rule that
+            // real move generation would otherwise apply.
+            state.0.player = Player::Black;
+            state = Druid::apply(state, &Move(Piece::Sarsen, cell));
+            assert_eq!(state.0.board[cell as usize].height, h as u16);
+            hashes_by_height.insert(h, state.1);
+        }
+
+        let mut seen = HashSet::default();
+        for (&h, &hash) in &hashes_by_height {
+            assert!(seen.insert(hash), "height {h} collided with another reachable height's hash");
+        }
+
+        // The specific old (buggy) collision: height 1 vs height 1 + 32.
+        let old_ceiling = 32usize;
+        assert!(max_height >= 1 + old_ceiling);
+        assert_ne!(
+            hashes_by_height[&1],
+            hashes_by_height[&(1 + old_ceiling)],
+            "height 1 and height {} alias, matching the old area-sized bug",
+            1 + old_ceiling
+        );
     }
 }

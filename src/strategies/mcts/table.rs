@@ -67,12 +67,12 @@ impl<S: Clone + Eq> TranspositionTable<S> {
 
     #[inline(always)]
     pub fn insert(&mut self, k: u64, node_id: index::Id, state: S) {
-        if self.get(k, state.clone()).is_some() {
+        if self.get_const(k, state.clone()).is_some() {
             return;
         }
         let entries = self.table.entry(k).or_default();
         if !entries.is_empty() {
-            eprintln!("collision: key={k:0x} len={}!", entries.len() + 1);
+            log::debug!("collision: key={k:0x} len={}!", entries.len() + 1);
         }
         entries.push(TableEntry { node_id, state });
     }
