@@ -50,7 +50,6 @@ where
         mut state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
-        player: usize,
         rng: &mut SmallRng,
     ) -> Trial<G> {
         let mut actions = Vec::new();
@@ -72,8 +71,9 @@ where
                 end_type = Some(EndType::NaturalEnd);
                 break;
             }
+            let player = G::player_to_move(&state).to_index();
             let action: &G::A = self.select_move(&state, &available, stats, player, rng);
-            actions.push((action.clone(), G::player_to_move(&state).to_index()));
+            actions.push((action.clone(), player));
             state = G::apply(state, action);
             depth += 1;
         }
@@ -326,7 +326,6 @@ where
         let action_scores = available
             .iter()
             .map(|action| {
-                // TODO: which player perspective?
                 let score = stats.player_actions[player]
                     .get(action)
                     .map_or(1., |stats| {

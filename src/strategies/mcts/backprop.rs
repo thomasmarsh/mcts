@@ -77,7 +77,6 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         index: &mut TreeIndex<G::A>,
         root_stats: &mut NodeStats,
         trial: simulate::Trial<G>,
-        player: usize,
         flags: BackpropFlags,
     ) where
         G: Game,
@@ -124,19 +123,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 
         // update: GLOBAL
         if flags.global() {
-            for (action, _) in &amaf_actions {
-                // let player = G::player_to_move(&ctx.state).to_index();
+            for (action, p) in &amaf_actions {
                 let action_stats = global.actions.entry(action.clone()).or_default();
                 action_stats.num_visits += 1;
-                action_stats.score += utilities[player];
+                action_stats.score += utilities[*p];
 
-                let player_action_stats = global.player_actions[player]
+                let player_action_stats = global.player_actions[*p]
                     .entry(action.clone())
                     .or_default();
                 player_action_stats.num_visits += 1;
-                for u in utilities.iter().take(G::num_players()) {
-                    player_action_stats.score += u;
-                }
+                player_action_stats.score += utilities[*p];
             }
         }
     }

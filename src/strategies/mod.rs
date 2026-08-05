@@ -120,7 +120,7 @@ mod tests {
             ts.reset_iter();
             let mut ctx = mcts::SearchContext::new(root_id, init_state);
             ts.select(&mut ctx);
-            let trial = ts.simulate(&ctx.state, G::player_to_move(&init_state).to_index());
+            let trial = ts.simulate(&ctx.state);
             println!("trial actions: {:?}", trial.actions);
             println!("trial status: {:?}", trial.status);
             println!("utilites: {:?}", G::compute_utilities(&trial.state));
@@ -129,7 +129,7 @@ mod tests {
                 G::compute_utilities(&trial.state)[G::player_to_move(&init_state).to_index()]
             );
             ts.trial = Some(trial);
-            ts.backprop(G::player_to_move(&init_state).to_index());
+            ts.backprop();
 
             ctx.current_id
         };

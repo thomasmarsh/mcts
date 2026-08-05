@@ -285,7 +285,7 @@ impl fmt::Display for HashedPosition {
 mod tests {
     use rustc_hash::FxHashSet;
 
-    use super::{HashedPosition, TicTacToe};
+    use super::{HashedPosition, Move, TicTacToe};
     use crate::{
         game::Game,
         strategies::{
@@ -397,5 +397,65 @@ mod tests {
 
         assert!(ts.table.hits > 0);
         render::render_trans(&ts, &HashedPosition::default());
+    }
+
+    // Regression test for the player-to-move perspective bug: tree descent
+    // and rollout must score every position from the perspective of whoever
+    // is actually to move there, not the real root's mover.
+    //
+    // Position (X to move), reached via moves 0, 4, 8, 1:
+    //   X O .
+    //   . O .
+    //   . . X
+    //
+    // O already threatens to win immediately at cell 7 (column 1: 1,4,7).
+    // Move(7) is the *only* move that doesn't lose outright (a brute-force
+    // negamax solve confirms: Move(7) = draw, every other legal move = loss
+    // one ply later when O completes that column). Move(6) in particular
+    // looks tempting -- it forks two lines of its own (6-7-8 and 0-3-6) --
+    // but it ignores O's threat and loses to O simply taking 7, which both
+    // wins for O and incidentally blocks X's fork. A search that scores
+    // O's replies from the root player's perspective instead of O's own
+    // will systematically under-explore O's crushing reply and can easily
+    // rate the flashy Move(6) fork above the correct, unglamorous Move(7)
+    // block.
+    fn must_block_position() -> HashedPosition {
+        let mut state = HashedPosition::new();
+        for m in [0u8, 4, 8, 1] {
+            state = TicTacToe::apply(state, &Move(m));
+        }
+        state
+    }
+
+    #[test]
+    fn test_ucb1_finds_forced_block() {
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        let state = must_block_position();
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(QInit::Loss)
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&state);
+        assert_eq!(action, Move(7));
+    }
+
+    #[test]
+    fn test_ucb1dm_finds_forced_block() {
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1DM>;
+        let state = must_block_position();
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(QInit::Loss)
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&state);
+        assert_eq!(action, Move(7));
     }
 }

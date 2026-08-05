@@ -164,7 +164,6 @@ where
 
     #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
-        let player = G::player_to_move(&ctx.state).to_index();
         debug_assert!(self.stack.is_empty());
         loop {
             self.stack.push(ctx.current_id);
@@ -174,6 +173,7 @@ where
                 .current_stats(&self.index, &self.root_stats)
                 .num_visits;
             let node = self.index.get(ctx.current_id);
+            let player = node.player_idx;
             if node.is_terminal() || num_visits < self.config.expand_threshold {
                 return;
             }
@@ -287,18 +287,17 @@ where
     }
 
     #[inline]
-    pub(crate) fn simulate(&mut self, state: &G::S, player: usize) -> Trial<G> {
+    pub(crate) fn simulate(&mut self, state: &G::S) -> Trial<G> {
         self.config.simulate.playout(
             G::determinize(state.clone(), &mut self.config.rng),
             self.config.max_playout_depth,
             &self.stats,
-            player,
             &mut self.config.rng,
         )
     }
 
     #[inline]
-    pub(crate) fn backprop(&mut self, player: usize) {
+    pub(crate) fn backprop(&mut self) {
         self.stats.iter_count += 1;
         self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
@@ -313,7 +312,6 @@ where
                 &mut self.index,
                 &mut self.root_stats,
                 self.trial.as_ref().unwrap().clone(),
-                player,
                 flags,
             );
     }
@@ -406,11 +404,11 @@ where
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
         let mut stack = NodeStack::new(vec![node_id]);
-        let init_player = G::player_to_move(init_state).to_index();
         while node.is_expanded() {
+            let player = node.player_idx;
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
-                player: init_player, // TODO: opponent perspective?
+                player,
                 stack: &stack,
                 root_stats: &self.root_stats,
                 state: &state,
@@ -469,8 +467,8 @@ where
             let mut ctx = SearchContext::new(root_id, state.clone());
 
             self.select(&mut ctx);
-            self.trial = Some(self.simulate(&ctx.state, G::player_to_move(state).to_index()));
-            self.backprop(G::player_to_move(state).to_index());
+            self.trial = Some(self.simulate(&ctx.state));
+            self.backprop();
         }
 
         self.compute_pv(state);
