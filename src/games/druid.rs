@@ -630,12 +630,34 @@ impl Game for Druid {
     }
 
     fn is_terminal(state: &Self::S) -> bool {
-        // This is not quite right - should be "no moves", but that's too expensive
-        // to calculate.
-        state.0.current_hand().sarsens == 0
-            || state.0.current_hand().lintels == 0
-            || state.0.connection().is_some()
-        // || Druid::gen_moves(state).is_empty()
+        // Per the ruleset (http://cambolbro.com/games/druid/), the game is
+        // won by completing a cross-board connection. That's the only real
+        // win condition -- a depleted hand alone does *not* end the game,
+        // since the other piece type may still have legal moves (that was
+        // the bug: this used to trigger on either hand alone).
+        //
+        // But the physical game's fallback for running out of pieces --
+        // picking up and relocating a placed piece, or doubling the piece
+        // count -- isn't implemented here, so this engine *can* reach a
+        // true no-legal-moves state that the real game never would. Left
+        // unterminated, that state feeds MCTS an empty action list (a
+        // rollout crash) or lets a random playout burn its whole budget
+        // re-stacking sarsens with no path to a connection. So: treat "no
+        // legal moves" as a terminal draw, but only pay for the
+        // `moves()` check once a hand is actually at zero for the mover --
+        // that's the only situation where running dry is possible, so it's
+        // a cheap, rare trigger rather than a call on every ply.
+        if state.0.connection().is_some() {
+            return true;
+        }
+        let hand = state.0.current_hand();
+        if hand.sarsens == 0 || hand.lintels == 0 {
+            let mut actions = Vec::new();
+            state.0.moves(&mut actions);
+            actions.is_empty()
+        } else {
+            false
+        }
     }
 
     fn notation(state: &Self::S, m: &Self::A) -> String {
@@ -800,5 +822,68 @@ mod tests {
             "height 1 and height {} alias, matching the old area-sized bug",
             1 + old_ceiling
         );
+    }
+
+    #[test]
+    fn test_is_terminal_false_when_one_hand_empty_but_other_can_move() {
+        // The pre-fix bug: is_terminal ended the game as soon as *either*
+        // hand (sarsens or lintels) hit zero, even if the other piece type
+        // still had a legal move. Set up exactly that: no sarsens left in
+        // hand, but a legal lintel exists anyway -- a lintel's support only
+        // needs the *topmost* piece at each end cell to match the mover's
+        // color, sarsen or not, so two Black-topped cells are enough.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        state.0.player = Player::Black;
+        state.0.board[Pos(0, 0).index(size.w)] = Square { height: 1, piece: Some(Player::Black) };
+        state.0.board[Pos(2, 0).index(size.w)] = Square { height: 1, piece: Some(Player::Black) };
+        state.0.hand_black.sarsens = 0;
+        state.0.hand_black.lintels = 1;
+
+        assert!(state.0.connection().is_none());
+        let mut actions = Vec::new();
+        state.0.moves(&mut actions);
+        assert!(!actions.is_empty(), "test setup should have produced a legal lintel move");
+
+        assert!(
+            !Druid::is_terminal(&state),
+            "an empty sarsen hand must not end the game while a legal lintel move exists"
+        );
+    }
+
+    #[test]
+    fn test_is_terminal_true_when_no_legal_moves_remain() {
+        // Once *both* piece types are exhausted for the mover (and there's
+        // no connection), there are no legal moves left -- this engine
+        // doesn't implement the physical game's "pick up and relocate" or
+        // "double the pieces" fallback, so treat that as a terminal draw
+        // rather than feeding MCTS an empty action list.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        state.0.player = Player::Black;
+        state.0.hand_black.sarsens = 0;
+        state.0.hand_black.lintels = 0;
+
+        assert!(state.0.connection().is_none());
+        let mut actions = Vec::new();
+        state.0.moves(&mut actions);
+        assert!(actions.is_empty());
+
+        assert!(Druid::is_terminal(&state), "no legal moves with no connection must be terminal");
+        assert_eq!(Druid::winner(&state), None, "a no-legal-moves termination is a draw, not a win");
+    }
+
+    #[test]
+    fn test_is_terminal_true_on_connection_regardless_of_hands() {
+        // A completed connection ends the game even with plenty of pieces
+        // left in hand.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        for x in 0..size.w {
+            let i = Pos(x, 0).index(size.w);
+            state.0.board[i] = Square { height: 1, piece: Some(Player::White) };
+        }
+        assert_eq!(state.0.connection(), Some(Player::White));
+        assert!(Druid::is_terminal(&state), "a completed connection must be terminal");
     }
 }
