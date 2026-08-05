@@ -84,8 +84,18 @@ button.mode.active {
   font-weight: 600;
 }
 
-#new-game {
-  width: 100%;
+#actions {
+  display: flex;
+  gap: 6px;
+}
+
+#ai-move, #new-game {
+  flex: 1;
+}
+
+button.mode:disabled, #new-game:disabled, #ai-move:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 #banner {

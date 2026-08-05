@@ -515,6 +515,20 @@ impl std::fmt::Display for HashedState {
 // in the early game.
 static HASHES: LazyZobristTable<1400> = LazyZobristTable::new(0xD401D);
 
+// Number of bits used to encode a cell's height: each bit gets its own
+// random table entry, XORed in when set, so a height in [0, 2^bits) maps to
+// a distinct XOR combination (the entries are independent random u64s, so
+// this is injective with overwhelming probability -- the standard trick for
+// hashing bounded counters into a Zobrist scheme). `ceil(log2(n))` matches
+// the sizing comment above.
+fn zobrist_height_bits(n: usize) -> usize {
+    if n <= 1 {
+        0
+    } else {
+        (usize::BITS - (n - 1).leading_zeros()) as usize
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HashedState(State, u64);
 
@@ -543,13 +557,27 @@ impl Game for Druid {
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
         state.0.apply(*m);
 
+        // Each (position, color) pair owns its own disjoint block of
+        // `bits` table slots, so different cells/colors never collide;
+        // within a block, each bit of the height is independently XORed
+        // in (see `zobrist_height_bits`).
+        let bits = zobrist_height_bits(SIZE.area() as usize);
+        debug_assert!(
+            SIZE.area() as usize * 2 * bits <= 1400,
+            "HASHES table is too small for SIZE; grow it or shrink SIZE"
+        );
+
         let mut hash = 0;
         state.0.board.iter().enumerate().for_each(|(i, square)| {
-            let h = square.height;
+            let h = square.height as usize;
             if h > 0 {
-                let c = square.piece.map(|x| x as usize).unwrap_or(0);
-                let index = i * (h as usize + 7 * c);
-                hash ^= HASHES.hash(index);
+                let c = square.piece.map(|p| p.to_index()).unwrap_or(0);
+                let base = (i * 2 + c) * bits;
+                for b in 0..bits {
+                    if h & (1 << b) != 0 {
+                        hash ^= HASHES.hash(base + b);
+                    }
+                }
             }
         });
         state.1 = hash;
