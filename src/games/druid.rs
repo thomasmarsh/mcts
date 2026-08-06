@@ -163,15 +163,17 @@ impl Pos {
     fn adjacent(&self, size: Size) -> impl Iterator<Item = Pos> {
         let &Pos(x, y) = self;
 
-        [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().filter_map(move |(dx, dy)| {
-            let nx = x as i8 + dx;
-            let ny = y as i8 + dy;
-            if (0..size.w as i8).contains(&nx) && (0..size.h as i8).contains(&ny) {
-                Some(Pos(nx as u8, ny as u8))
-            } else {
-                None
-            }
-        })
+        [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            .into_iter()
+            .filter_map(move |(dx, dy)| {
+                let nx = x as i8 + dx;
+                let ny = y as i8 + dy;
+                if (0..size.w as i8).contains(&nx) && (0..size.h as i8).contains(&ny) {
+                    Some(Pos(nx as u8, ny as u8))
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -321,47 +323,74 @@ impl State {
         }
     }
 
-    pub fn moves(&self, moves: &mut Vec<Move>) {
-        for i in 0..self.size.area() as usize {
-            let Pos(x, y) = Pos::from(i, self.size);
+    /// Whether `color` could legally place a sarsen at `i`, ignoring hand
+    /// count (callers check that separately). Depends only on `i`'s current
+    /// occupant, not height -- a sarsen can stack on top of any height, as
+    /// long as the topmost piece there (if any) is already `color`'s.
+    /// Single source of truth shared by `moves()` (ground truth, `self.player`)
+    /// and `MoveCache` (incremental, arbitrary color) so the two can't drift
+    /// apart.
+    fn sarsen_legal_at(&self, i: usize, color: Player) -> bool {
+        match self.at(i) {
+            None => true,
+            Some(p) => p == color,
+        }
+    }
 
-            // Sarsen
-            if self.current_hand().sarsens > 0 {
-                if let Some(piece) = self.at(i) {
-                    if self.player == piece {
-                        moves.push(Move(Piece::Sarsen, i as u8));
-                    }
-                } else {
-                    moves.push(Move(Piece::Sarsen, i as u8));
-                }
+    /// Whether `color` could legally place a lintel of `orientation` anchored
+    /// at `i`, ignoring hand count (callers check that separately): the
+    /// anchor's own 3 touched cells (`{i, i+d, i+2d}` for the orientation's
+    /// delta `d`) must share `h[0] == h[2]` with `h[1] <= h[0]`, and exactly 2
+    /// of the 3 must already be `color`. Returns the touched cells on
+    /// success (`None` covers both "out of bounds" and "not legal") --
+    /// callers that just want a bool can `.is_some()` it. Single source of
+    /// truth shared by `moves()`, `lintel_candidates_for` and `MoveCache`;
+    /// see `sarsen_legal_at`.
+    fn lintel_legal_at(
+        &self,
+        i: usize,
+        orientation: Orientation,
+        color: Player,
+    ) -> Option<[usize; 3]> {
+        let (dx, dy) = orientation.delta();
+        let Pos(x, y) = Pos::from(i, self.size);
+        let c = [
+            Pos(x, y),
+            Pos(x + dx, y + dy),
+            Pos(x + dx + dx, y + dy + dy),
+        ];
+        if c[2].0 >= self.size.w || c[2].1 >= self.size.h {
+            return None;
+        }
+        let cells = c.map(|p| p.index(self.size.w));
+        let h = cells.map(|i| self.board[i].height);
+        if h[0] != h[2] || h[1] > h[0] {
+            return None;
+        }
+        let (Some(p0), Some(p2)) = (self.at(cells[0]), self.at(cells[2])) else {
+            return None;
+        };
+        let mut count = 0;
+        (p0 == color).then(|| count += 1);
+        (p2 == color).then(|| count += 1);
+        if let Some(p1) = self.at(cells[1]) {
+            if p1 == color && h[1] == h[0] {
+                count += 1;
             }
+        }
+        (count == 2).then_some(cells)
+    }
 
-            // Lintel
-            for orientation in [Orientation::Horizontal, Orientation::Vertical] {
-                let (dx, dy) = orientation.delta();
-                let c = [
-                    Pos(x, y),
-                    Pos(x + dx, y + dy),
-                    Pos(x + dx + dx, y + dy + dy),
-                ];
-                if self.current_hand().lintels > 0 && c[2].0 < self.size.w && c[2].1 < self.size.h {
-                    let h = c.map(|c| self.board[c.index(self.size.w)].height);
-                    if h[0] == h[2] && h[1] <= h[0] {
-                        if let Some(p0) = self.at(c[0].index(self.size.w)) {
-                            if let Some(p2) = self.at(c[2].index(self.size.w)) {
-                                let mut count = 0;
-                                (p0 == self.player).then(|| count += 1);
-                                (p2 == self.player).then(|| count += 1);
-                                if let Some(p1) = self.at(c[1].index(self.size.w)) {
-                                    if p1 == self.player && h[1] == h[0] {
-                                        count += 1;
-                                    }
-                                }
-                                if count == 2 {
-                                    moves.push(Move(Piece::Lintel(orientation), i as u8));
-                                }
-                            }
-                        }
+    pub fn moves(&self, moves: &mut Vec<Move>) {
+        let hand = self.current_hand();
+        for i in 0..self.size.area() as usize {
+            if hand.sarsens > 0 && self.sarsen_legal_at(i, self.player) {
+                moves.push(Move(Piece::Sarsen, i as u8));
+            }
+            if hand.lintels > 0 {
+                for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+                    if self.lintel_legal_at(i, orientation, self.player).is_some() {
+                        moves.push(Move(Piece::Lintel(orientation), i as u8));
                     }
                 }
             }
@@ -369,43 +398,16 @@ impl State {
     }
 
     /// Candidate lintel placements available to `color`, alongside their
-    /// touched cells -- same legality shape as `moves()`'s lintel loop
-    /// (`h[0] == h[2]`, `h[1] <= h[0]`, exactly 2 of the 3 touched cells
-    /// already `color`), generalized to an arbitrary color instead of
-    /// `self.player` and ignoring `color`'s hand count (callers check that
-    /// separately). Used by the playout heuristic to reason about the
-    /// *opponent's* candidate moves, not just the mover's.
+    /// touched cells -- same legality as `lintel_legal_at`, generalized to an
+    /// arbitrary color instead of `self.player` and ignoring `color`'s hand
+    /// count (callers check that separately). Used by the playout heuristic
+    /// to reason about the *opponent's* candidate moves, not just the
+    /// mover's.
     fn lintel_candidates_for(&self, color: Player) -> Vec<(Move, [usize; 3])> {
         let mut out = Vec::new();
         for i in 0..self.size.area() as usize {
-            let Pos(x, y) = Pos::from(i, self.size);
             for orientation in [Orientation::Horizontal, Orientation::Vertical] {
-                let (dx, dy) = orientation.delta();
-                let c = [
-                    Pos(x, y),
-                    Pos(x + dx, y + dy),
-                    Pos(x + dx + dx, y + dy + dy),
-                ];
-                if c[2].0 >= self.size.w || c[2].1 >= self.size.h {
-                    continue;
-                }
-                let cells = c.map(|p| p.index(self.size.w));
-                let h = cells.map(|i| self.board[i].height);
-                if h[0] != h[2] || h[1] > h[0] {
-                    continue;
-                }
-                let (Some(p0), Some(p2)) = (self.at(cells[0]), self.at(cells[2])) else {
-                    continue;
-                };
-                let mut count = 0;
-                (p0 == color).then(|| count += 1);
-                (p2 == color).then(|| count += 1);
-                if let Some(p1) = self.at(cells[1]) {
-                    if p1 == color && h[1] == h[0] {
-                        count += 1;
-                    }
-                }
-                if count == 2 {
+                if let Some(cells) = self.lintel_legal_at(i, orientation, color) {
                     out.push((Move(Piece::Lintel(orientation), i as u8), cells));
                 }
             }
@@ -475,7 +477,9 @@ impl State {
         seen: &mut HashSet<usize>,
         color: Player,
     ) -> bool {
-        if seen.contains(&start.index(self.size.w)) || !self.board[start.index(self.size.w)].matches(color) {
+        if seen.contains(&start.index(self.size.w))
+            || !self.board[start.index(self.size.w)].matches(color)
+        {
             return false;
         }
 
@@ -493,7 +497,11 @@ impl State {
     }
 
     pub fn check_connection(&self, start: Vec<Pos>, end: Vec<Pos>, color: Player) -> bool {
-        let goal = HashSet::from(end.into_iter().map(|x| Pos::index(x, self.size.w)).collect());
+        let goal = HashSet::from(
+            end.into_iter()
+                .map(|x| Pos::index(x, self.size.w))
+                .collect(),
+        );
         let mut seen = HashSet::default();
         start
             .iter()
@@ -501,14 +509,16 @@ impl State {
     }
 
     pub fn connection(&self) -> Option<Player> {
-        let (top, bottom): (Vec<Pos>, Vec<Pos>) =
-            (0..self.size.w).map(|x| (Pos(x, 0), Pos(x, self.size.h - 1))).unzip();
+        let (top, bottom): (Vec<Pos>, Vec<Pos>) = (0..self.size.w)
+            .map(|x| (Pos(x, 0), Pos(x, self.size.h - 1)))
+            .unzip();
         if self.check_connection(top, bottom, Player::Black) {
             return Some(Player::Black);
         }
 
-        let (left, right): (Vec<Pos>, Vec<Pos>) =
-            (0..self.size.h).map(|y| (Pos(0, y), Pos(self.size.w - 1, y))).unzip();
+        let (left, right): (Vec<Pos>, Vec<Pos>) = (0..self.size.h)
+            .map(|y| (Pos(0, y), Pos(self.size.w - 1, y)))
+            .unzip();
         if self.check_connection(left, right, Player::White) {
             return Some(Player::White);
         }
@@ -725,7 +735,13 @@ fn cell_zobrist(i: usize, height: u16, piece: Option<Player>, bits: usize) -> u6
     }
     let c = piece.map(|p| p.to_index()).unwrap_or(0);
     let base = (i * 2 + c) * bits;
-    (0..bits).fold(0, |hash, b| if h & (1 << b) != 0 { hash ^ HASHES.hash(base + b) } else { hash })
+    (0..bits).fold(0, |hash, b| {
+        if h & (1 << b) != 0 {
+            hash ^ HASHES.hash(base + b)
+        } else {
+            hash
+        }
+    })
 }
 
 /// Full from-scratch board hash. `Game::apply` no longer uses this on the
@@ -753,7 +769,10 @@ struct DisjointSet {
 
 impl DisjointSet {
     fn new(n: usize) -> Self {
-        DisjointSet { parent: (0..n as u32).collect(), rank: vec![0; n] }
+        DisjointSet {
+            parent: (0..n as u32).collect(),
+            rank: vec![0; n],
+        }
     }
 
     fn find(&self, x: usize) -> usize {
@@ -821,7 +840,10 @@ struct Connectivity {
 impl Connectivity {
     fn new(size: Size) -> Self {
         let n = size.area() as usize + 2;
-        Connectivity { black: DisjointSet::new(n), white: DisjointSet::new(n) }
+        Connectivity {
+            black: DisjointSet::new(n),
+            white: DisjointSet::new(n),
+        }
     }
 
     fn set_mut(&mut self, color: Player) -> &mut DisjointSet {
@@ -883,7 +905,14 @@ impl Connectivity {
     /// Incorporate a move that just placed `mover`'s piece on `cells` (their
     /// post-move values already written into `board`), given each cell's
     /// pre-move `Square`.
-    fn update(&mut self, size: Size, board: &[Square], cells: &[usize], old: &[Square], mover: Player) {
+    fn update(
+        &mut self,
+        size: Size,
+        board: &[Square],
+        cells: &[usize],
+        old: &[Square],
+        mover: Player,
+    ) {
         let opponent = match mover {
             Player::Black => Player::White,
             Player::White => Player::Black,
@@ -918,23 +947,166 @@ impl Default for Connectivity {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct HashedState(State, u64, Connectivity);
+/// Per-color legality bits, ignoring hand count (callers filter that
+/// separately -- see `Game::generate_actions`): `sarsen[i]` mirrors
+/// `State::sarsen_legal_at(i, color)`, `lintel_h[i]`/`lintel_v[i]` mirror
+/// `State::lintel_legal_at(i, orientation, color).is_some()`. One of these
+/// per color, held by `MoveCache` below.
+#[derive(Clone, Debug)]
+struct MoveCandidates {
+    sarsen: Vec<bool>,
+    lintel_h: Vec<bool>,
+    lintel_v: Vec<bool>,
+}
 
-// Deliberately excludes `Connectivity` (field 2): it's a pure cache derived
-// from `(State, hash)` via `Game::apply`, but its internal union-find
-// representation -- e.g. which node ends up as which set's root -- isn't
-// canonical, so two logically-identical states reached via different move
-// orders can carry different `Connectivity` bytes despite being equal.
-// Comparing it would make this `PartialEq`/`Eq` impl unsound for the
+impl MoveCandidates {
+    fn new(area: usize) -> Self {
+        MoveCandidates {
+            sarsen: vec![false; area],
+            lintel_h: vec![false; area],
+            lintel_v: vec![false; area],
+        }
+    }
+
+    fn lintel_mut(&mut self, orientation: Orientation) -> &mut Vec<bool> {
+        match orientation {
+            Orientation::Horizontal => &mut self.lintel_h,
+            Orientation::Vertical => &mut self.lintel_v,
+        }
+    }
+}
+
+/// Incremental replacement for the legality half of `State::moves()`
+/// (hand-count filtering stays a read-time check in `generate_actions`,
+/// since it's a single hand-wide condition, not a per-cell one) -- same
+/// role `Connectivity` plays for `State::connection()`.
+///
+/// One `MoveCandidates` per color, each a `Vec<bool>` indexed by cell/anchor
+/// rather than an enumerable set (`HashSet<Move>` or similar): board area is
+/// capped at ~100 cells by `Size::is_supported`/`HASHES_LEN`, so a linear
+/// scan over the bits in `generate_actions` is already cheap (a handful of
+/// bool reads per cell) -- the actual cost this eliminates is the
+/// *legality computation* itself (per-anchor height/color comparisons
+/// across up to 3 cells), which `moves()` used to redo for every cell on
+/// every call. `MoveCache::update` pays that computation only for the
+/// bounded recheck set a move can actually affect, regardless of board
+/// size, and `generate_actions` reads the resulting bits directly.
+///
+/// Unlike `Connectivity` (whose union-find root assignment is
+/// path-dependent, so two logically-equal states can carry different
+/// internal bytes), `MoveCache` is a pure function of `State` -- both
+/// colors' bits are fully determined by board contents via
+/// `sarsen_legal_at`/`lintel_legal_at`, regardless of move order. It's
+/// still excluded from `HashedState`'s `PartialEq`/`Eq` (see the comment
+/// there), but for a different reason: not unsoundness, just redundancy --
+/// comparing it can never disagree with comparing `State` once `.0` already
+/// matches, so it would only add cost, not discriminating power.
+#[derive(Clone, Debug)]
+struct MoveCache {
+    black: MoveCandidates,
+    white: MoveCandidates,
+}
+
+impl MoveCache {
+    fn new(state: &State) -> Self {
+        let area = state.size.area() as usize;
+        let mut cache = MoveCache {
+            black: MoveCandidates::new(area),
+            white: MoveCandidates::new(area),
+        };
+        cache.rebuild(state);
+        cache
+    }
+
+    fn candidates(&self, color: Player) -> &MoveCandidates {
+        match color {
+            Player::Black => &self.black,
+            Player::White => &self.white,
+        }
+    }
+
+    fn candidates_mut(&mut self, color: Player) -> &mut MoveCandidates {
+        match color {
+            Player::Black => &mut self.black,
+            Player::White => &mut self.white,
+        }
+    }
+
+    /// Full from-scratch recompute against `state`'s current board -- used
+    /// to build a fresh cache and, in tests, to resync one after `.board`
+    /// was poked directly, bypassing `apply`.
+    fn rebuild(&mut self, state: &State) {
+        let area = state.size.area() as usize;
+        for color in [Player::Black, Player::White] {
+            let candidates = self.candidates_mut(color);
+            for i in 0..area {
+                candidates.sarsen[i] = state.sarsen_legal_at(i, color);
+                for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+                    candidates.lintel_mut(orientation)[i] =
+                        state.lintel_legal_at(i, orientation, color).is_some();
+                }
+            }
+        }
+    }
+
+    /// Patch the cache for a move that just touched `cells` on `state`'s
+    /// (post-move) board. `lintel_legal_at(anchor, ...)` only ever reads
+    /// `anchor`'s own <=3 cells, so a touched cell `j` can only change:
+    /// sarsen legality at `j` itself, and lintel legality at the <=3 anchors
+    /// per orientation whose triple includes `j` -- anchor `j` (`j` at
+    /// triple-index 0), `j - d` (index 1), and `j - 2d` (index 2), for each
+    /// orientation's delta `d`. Both colors get rechecked at every touched
+    /// cell regardless of which color moved, since a cell's occupant/height
+    /// affects both colors' legality (usually oppositely for color, but
+    /// identically for the height-only case of a same-color sarsen stack).
+    fn update(&mut self, state: &State, cells: &[usize]) {
+        let size = state.size;
+        for &j in cells {
+            for color in [Player::Black, Player::White] {
+                self.candidates_mut(color).sarsen[j] = state.sarsen_legal_at(j, color);
+            }
+            let Pos(jx, jy) = Pos::from(j, size);
+            for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+                let (dx, dy) = orientation.delta();
+                for k in 0..3i16 {
+                    let ax = jx as i16 - k * dx as i16;
+                    let ay = jy as i16 - k * dy as i16;
+                    if ax < 0 || ay < 0 || ax as u8 >= size.w || ay as u8 >= size.h {
+                        continue;
+                    }
+                    let anchor = Pos(ax as u8, ay as u8).index(size.w);
+                    for color in [Player::Black, Player::White] {
+                        let legal = state.lintel_legal_at(anchor, orientation, color).is_some();
+                        self.candidates_mut(color).lintel_mut(orientation)[anchor] = legal;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct HashedState(State, u64, Connectivity, MoveCache);
+
+// Deliberately excludes `Connectivity` (field 2) and `MoveCache` (field 3)
+// from equality -- both are pure caches derived from `State`, but comparing
+// them would either be unsound (`Connectivity`) or merely redundant
+// (`MoveCache`); see each type's own doc comment for which applies and why.
+// Comparing either would make this `PartialEq`/`Eq` impl unsound for the
 // transposition-table dedupe check (`table.rs`'s `entry.state == state`)
-// that relies on it.
+// that relies on it, in `Connectivity`'s case.
 impl PartialEq for HashedState {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0 && self.1 == other.1
     }
 }
 impl Eq for HashedState {}
+
+impl Default for MoveCache {
+    fn default() -> Self {
+        MoveCache::new(&State::default())
+    }
+}
 
 impl HashedState {
     /// Panics if `size` isn't `Size::is_supported` -- callers that accept a
@@ -945,23 +1117,27 @@ impl HashedState {
         // The all-zero hash is correct for any empty board under the scheme
         // below, regardless of size: no cell has a nonzero height yet, so no
         // bits get XORed in.
-        HashedState(State::new(size), 0, Connectivity::new(size))
+        let state = State::new(size);
+        let cache = MoveCache::new(&state);
+        HashedState(state, 0, Connectivity::new(size), cache)
     }
 
     pub fn state(&self) -> &State {
         &self.0
     }
 
-    /// Rebuild `Connectivity` from the current board. `Game::apply` is what
-    /// normally keeps it in sync incrementally; this is only needed after
-    /// mutating `.0.board` directly (bypassing `apply`), which only test
-    /// code that hand-constructs a position should ever do.
+    /// Rebuild `Connectivity` and `MoveCache` from the current board.
+    /// `Game::apply` is what normally keeps both in sync incrementally;
+    /// this is only needed after mutating `.0.board` directly (bypassing
+    /// `apply`), which only test code that hand-constructs a position
+    /// should ever do.
     #[cfg(test)]
-    fn resync_connectivity(&mut self) {
+    fn resync_caches(&mut self) {
         self.2 = Connectivity::new(self.0.size);
         for color in [Player::Black, Player::White] {
             self.2.rebuild(self.0.size, &self.0.board, color);
         }
+        self.3.rebuild(&self.0);
     }
 }
 
@@ -973,8 +1149,29 @@ impl Game for Druid {
     type A = Move;
     type P = Player;
 
+    /// A cache read (`MoveCache`, `HashedState`'s 4th field) filtered by the
+    /// mover's current hand counts, instead of `State::moves()`'s from-scratch
+    /// rescan Iterates cells in the same order `moves()` does (sarsen, then
+    /// lintel-horizontal, then lintel-vertical, per cell) so the two stay
+    /// behaviorally identical, checked by
+    /// `test_generate_actions_matches_full_recompute` below.
     fn generate_actions(state: &HashedState, actions: &mut Vec<Move>) {
-        state.0.moves(actions);
+        let s = &state.0;
+        let hand = s.current_hand();
+        let candidates = state.3.candidates(s.player);
+        for i in 0..s.size.area() as usize {
+            if hand.sarsens > 0 && candidates.sarsen[i] {
+                actions.push(Move(Piece::Sarsen, i as u8));
+            }
+            if hand.lintels > 0 {
+                if candidates.lintel_h[i] {
+                    actions.push(Move(Piece::Lintel(Orientation::Horizontal), i as u8));
+                }
+                if candidates.lintel_v[i] {
+                    actions.push(Move(Piece::Lintel(Orientation::Vertical), i as u8));
+                }
+            }
+        }
     }
 
     fn zobrist_hash(state: &Self::S) -> u64 {
@@ -1018,7 +1215,10 @@ impl Game for Druid {
         }
         state.1 = hash;
 
-        state.2.update(state.0.size, &state.0.board, &cells[..n], &old[..n], mover);
+        state
+            .2
+            .update(state.0.size, &state.0.board, &cells[..n], &old[..n], mover);
+        state.3.update(&state.0, &cells[..n]);
 
         state
     }
@@ -1103,7 +1303,9 @@ impl Game for Druid {
     fn compute_utilities(state: &Self::S) -> Vec<f64> {
         if let Some(winner) = Self::winner(state) {
             let wi = winner.to_index();
-            return (0..Self::num_players()).map(|i| if i == wi { 1. } else { -1. }).collect();
+            return (0..Self::num_players())
+                .map(|i| if i == wi { 1. } else { -1. })
+                .collect();
         }
 
         // Neither color has connected (checked above), so both distances
@@ -1115,7 +1317,13 @@ impl Game for Druid {
         let black_score = (white_dist - black_dist) / (black_dist + white_dist);
 
         (0..Self::num_players())
-            .map(|i| if i == Player::Black.to_index() { black_score } else { -black_score })
+            .map(|i| {
+                if i == Player::Black.to_index() {
+                    black_score
+                } else {
+                    -black_score
+                }
+            })
             .collect()
     }
 }
@@ -1128,7 +1336,7 @@ impl Game for Druid {
 // defending a fork/virtual connection, and (3) threatening the opponent's
 // best connection, each "with high probability" rather than deterministically
 // -- a fixed heuristic is exploitable, so the randomness matters as much as
-// the bias. See PLAN-DRUID.md session 1.
+// the bias.
 
 /// Per-heuristic weights, combined as a weighted sum (a move can satisfy more
 /// than one heuristic at once, and should score higher for it) rather than a
@@ -1156,8 +1364,7 @@ impl Default for DruidHeuristicWeights {
 /// far it currently reaches along `color`'s goal axis (row for Black, column
 /// for White). Used to approximate Browne's "threaten the opponent's best
 /// connection" / "extend your own" heuristic without a full path-probability
-/// model -- see PLAN-DRUID.md session 1's task list for why this proxy was
-/// chosen first.
+/// model.
 fn largest_component(s: &State, conn: &Connectivity, color: Player) -> (HashSet<usize>, u8) {
     let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
     for i in 0..s.size.area() as usize {
@@ -1284,7 +1491,10 @@ fn heuristic_scores(
             if is_fork_move[idx] {
                 score += weights.defend_fork;
             }
-            if touched.iter().any(|c| advance_cells.contains(c) || opp_members.contains(c)) {
+            if touched
+                .iter()
+                .any(|c| advance_cells.contains(c) || opp_members.contains(c))
+            {
                 score += weights.threaten_connection;
             }
             score
@@ -1299,8 +1509,7 @@ fn heuristic_scores(
 /// uniform-random, but when one does fire it always takes it. Browne's "high
 /// probability, not always" warning (a deterministic heuristic playout is
 /// exploitable) is Session 1's job for the caller to supply, by wrapping this
-/// in `simulate::EpsilonGreedy` rather than using it bare -- see
-/// PLAN-DRUID.md session 1.
+/// in `simulate::EpsilonGreedy` rather than using it bare.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DruidHeuristic {
     pub weights: DruidHeuristicWeights,
@@ -1436,7 +1645,10 @@ mod tests {
             Size { w: 9, h: 9 },
             Size { w: 10, h: 10 },
         ] {
-            assert!(size.is_supported(), "{size:?} should be supported under the corrected bit width");
+            assert!(
+                size.is_supported(),
+                "{size:?} should be supported under the corrected bit width"
+            );
         }
     }
 
@@ -1503,7 +1715,10 @@ mod tests {
 
         let mut seen = HashSet::default();
         for (&h, &hash) in &hashes_by_height {
-            assert!(seen.insert(hash), "height {h} collided with another reachable height's hash");
+            assert!(
+                seen.insert(hash),
+                "height {h} collided with another reachable height's hash"
+            );
         }
 
         // The specific old (buggy) collision: height 1 vs height 1 + 32.
@@ -1528,20 +1743,29 @@ mod tests {
         let size = DEFAULT_SIZE;
         let mut state = HashedState::new(size);
         state.0.player = Player::Black;
-        state.0.board[Pos(0, 0).index(size.w)] = Square { height: 1, piece: Some(Player::Black) };
-        state.0.board[Pos(2, 0).index(size.w)] = Square { height: 1, piece: Some(Player::Black) };
+        state.0.board[Pos(0, 0).index(size.w)] = Square {
+            height: 1,
+            piece: Some(Player::Black),
+        };
+        state.0.board[Pos(2, 0).index(size.w)] = Square {
+            height: 1,
+            piece: Some(Player::Black),
+        };
         state.0.hand_black.sarsens = 0;
         state.0.hand_black.lintels = 1;
         // Poking `.0.board` directly bypasses `Game::apply`, which is what
         // normally keeps `Connectivity` in sync -- resync it so
         // `is_terminal`/`terminal_status` below read the position actually
         // set up here, not whatever `Connectivity` was at `new()`.
-        state.resync_connectivity();
+        state.resync_caches();
 
         assert!(state.0.connection().is_none());
         let mut actions = Vec::new();
         state.0.moves(&mut actions);
-        assert!(!actions.is_empty(), "test setup should have produced a legal lintel move");
+        assert!(
+            !actions.is_empty(),
+            "test setup should have produced a legal lintel move"
+        );
 
         assert!(
             !Druid::is_terminal(&state),
@@ -1572,8 +1796,15 @@ mod tests {
         state.0.moves(&mut actions);
         assert!(actions.is_empty());
 
-        assert!(Druid::is_terminal(&state), "no legal moves with no connection must be terminal");
-        assert_eq!(Druid::winner(&state), None, "a no-legal-moves termination is a draw, not a win");
+        assert!(
+            Druid::is_terminal(&state),
+            "no legal moves with no connection must be terminal"
+        );
+        assert_eq!(
+            Druid::winner(&state),
+            None,
+            "a no-legal-moves termination is a draw, not a win"
+        );
         assert_eq!(
             Druid::terminal_status(&state),
             TerminalStatus::Draw,
@@ -1626,14 +1857,20 @@ mod tests {
         let mut state = HashedState::new(size);
         for x in 0..size.w {
             let i = Pos(x, 0).index(size.w);
-            state.0.board[i] = Square { height: 1, piece: Some(Player::White) };
+            state.0.board[i] = Square {
+                height: 1,
+                piece: Some(Player::White),
+            };
         }
         // See the comment on the equivalent call above: poking `.0.board`
         // directly bypasses the `Game::apply` path that normally keeps
         // `Connectivity` in sync.
-        state.resync_connectivity();
+        state.resync_caches();
         assert_eq!(state.0.connection(), Some(Player::White));
-        assert!(Druid::is_terminal(&state), "a completed connection must be terminal");
+        assert!(
+            Druid::is_terminal(&state),
+            "a completed connection must be terminal"
+        );
         assert_eq!(
             Druid::terminal_status(&state),
             TerminalStatus::Winner(Player::White),
@@ -1668,14 +1905,26 @@ mod tests {
         for y in [0, 1, size.h - 2, size.h - 1] {
             state = place(state, Player::Black, Pos(col, y));
         }
-        assert_eq!(state.0.connection(), None, "gapped column must not be connected yet");
+        assert_eq!(
+            state.0.connection(),
+            None,
+            "gapped column must not be connected yet"
+        );
         assert_eq!(Druid::winner(&state), None, "incremental winner must agree");
 
         // Filling the gap connects the two segments into one continuous
         // top-to-bottom column: Black wins.
         state = place(state, Player::Black, Pos(col, mid));
-        assert_eq!(state.0.connection(), Some(Player::Black), "filling the gap should complete the connection");
-        assert_eq!(Druid::winner(&state), Some(Player::Black), "incremental winner must agree");
+        assert_eq!(
+            state.0.connection(),
+            Some(Player::Black),
+            "filling the gap should complete the connection"
+        );
+        assert_eq!(
+            Druid::winner(&state),
+            Some(Player::Black),
+            "incremental winner must agree"
+        );
 
         // White builds sarsens flanking the bridge cell in the same row, at
         // the same height -- enough on their own (2 of 3 touched cells
@@ -1684,7 +1933,13 @@ mod tests {
         state = place(state, Player::White, Pos(col - 1, mid));
         state = place(state, Player::White, Pos(col + 1, mid));
         state.0.player = Player::White;
-        state = Druid::apply(state, &Move(Piece::Lintel(Orientation::Horizontal), Pos(col - 1, mid).index(size.w) as u8));
+        state = Druid::apply(
+            state,
+            &Move(
+                Piece::Lintel(Orientation::Horizontal),
+                Pos(col - 1, mid).index(size.w) as u8,
+            ),
+        );
 
         // The bridge cell is now White, splitting Black's column back into
         // two disconnected segments -- Black must no longer read as
@@ -1741,6 +1996,45 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_actions_matches_full_recompute() {
+        // Property test for the incremental `MoveCache`, mirroring
+        // `test_incremental_hash_matches_full_recompute` /
+        // `test_incremental_connectivity_matches_full_recompute`: after
+        // every move, `Druid::generate_actions` (a cache read) must produce
+        // exactly the same moves, in the same order, as `State::moves` (a
+        // from-scratch rescan using the same `sarsen_legal_at`/
+        // `lintel_legal_at` predicates).
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
+            let mut rng = SmallRng::seed_from_u64(0x5EED + size.w as u64 * 1000 + size.h as u64);
+
+            for game in 0..20 {
+                let mut state = HashedState::new(size);
+                let mut actions = Vec::new();
+                for ply in 0..200 {
+                    state.0.moves(&mut actions);
+                    if actions.is_empty() {
+                        break;
+                    }
+
+                    let mut cached = Vec::new();
+                    Druid::generate_actions(&state, &mut cached);
+                    assert_eq!(
+                        cached, actions,
+                        "cached move list diverged from full recompute at size={size:?} game={game} ply={ply}"
+                    );
+
+                    let m = actions[rng.gen_range(0..actions.len())];
+                    state = Druid::apply(state, &m);
+                    actions.clear();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_compute_utilities_still_scores_a_real_win_as_decisive() {
         // The heuristic branch must not shadow the real win/loss case: a
         // connected state still gets the exact +1./-1., not a value merely
@@ -1749,9 +2043,12 @@ mod tests {
         let mut state = HashedState::new(size);
         for x in 0..size.w {
             let i = Pos(x, 0).index(size.w);
-            state.0.board[i] = Square { height: 1, piece: Some(Player::White) };
+            state.0.board[i] = Square {
+                height: 1,
+                piece: Some(Player::White),
+            };
         }
-        state.resync_connectivity();
+        state.resync_caches();
         assert_eq!(state.0.connection(), Some(Player::White));
 
         let utilities = Druid::compute_utilities(&state);
@@ -1781,17 +2078,29 @@ mod tests {
         let col = 2u8;
         for y in 0..size.h - 1 {
             let i = Pos(col, y).index(size.w);
-            state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
+            state.0.board[i] = Square {
+                height: 1,
+                piece: Some(Player::Black),
+            };
         }
-        state.resync_connectivity();
+        state.resync_caches();
         assert_eq!(state.0.connection(), None, "one cell short of connecting");
 
         let utilities = Druid::compute_utilities(&state);
         let black = utilities[Player::Black.to_index()];
         let white = utilities[Player::White.to_index()];
-        assert!(black > 0., "Black is one move from winning, should score above a draw: {black}");
-        assert_eq!(black, -white, "zero-sum: the two utilities must be exact opposites");
-        assert!(black < 1., "a non-terminal cutoff must never read as a real win");
+        assert!(
+            black > 0.,
+            "Black is one move from winning, should score above a draw: {black}"
+        );
+        assert_eq!(
+            black, -white,
+            "zero-sum: the two utilities must be exact opposites"
+        );
+        assert!(
+            black < 1.,
+            "a non-terminal cutoff must never read as a real win"
+        );
     }
 
     #[test]
@@ -1809,10 +2118,17 @@ mod tests {
         let col = 1u8;
         for y in 0..size.h - 1 {
             let i = Pos(col, y).index(size.w);
-            state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
+            state.0.board[i] = Square {
+                height: 1,
+                piece: Some(Player::Black),
+            };
         }
-        state.resync_connectivity();
-        assert_eq!(state.0.connection(), None, "one cell short must not be connected yet");
+        state.resync_caches();
+        assert_eq!(
+            state.0.connection(),
+            None,
+            "one cell short must not be connected yet"
+        );
         assert_eq!(
             state.0.connect_distance(Player::Black),
             1,
@@ -1821,8 +2137,11 @@ mod tests {
 
         // Fill the last cell: now a complete column, i.e. a win.
         let i = Pos(col, size.h - 1).index(size.w);
-        state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
-        state.resync_connectivity();
+        state.0.board[i] = Square {
+            height: 1,
+            piece: Some(Player::Black),
+        };
+        state.resync_caches();
         assert_eq!(state.0.connection(), Some(Player::Black));
         assert_eq!(
             state.0.connect_distance(Player::Black),
@@ -1878,13 +2197,20 @@ mod tests {
             .position(|m| *m == stack_on_threatened)
             .expect("stacking on the threatened cell should be a legal move");
         let (block, _, _) = decode_flags(scores[idx]);
-        assert!(block, "move touching the threatened cell should get block-threat credit");
+        assert!(
+            block,
+            "move touching the threatened cell should get block-threat credit"
+        );
 
         // An unrelated move far from the threat, any fork, or either color's
         // (still singleton) components shouldn't get any credit at all.
         let unrelated = Move(Piece::Sarsen, Pos(4, 4).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == unrelated).unwrap();
-        assert_eq!(scores[idx], 0.0, "unrelated move should score 0, got {}", scores[idx]);
+        assert_eq!(
+            scores[idx], 0.0,
+            "unrelated move should score 0, got {}",
+            scores[idx]
+        );
     }
 
     #[test]
@@ -1906,9 +2232,15 @@ mod tests {
 
         let threatened_cell = Pos(1, 2).index(size.w);
         let stack_on_threatened = Move(Piece::Sarsen, threatened_cell as u8);
-        let idx = available.iter().position(|m| *m == stack_on_threatened).unwrap();
+        let idx = available
+            .iter()
+            .position(|m| *m == stack_on_threatened)
+            .unwrap();
         let (block, _, _) = decode_flags(scores[idx]);
-        assert!(!block, "opponent with no lintels left can't threaten, so no block credit is due");
+        assert!(
+            !block,
+            "opponent with no lintels left can't threaten, so no block credit is due"
+        );
     }
 
     #[test]
@@ -1936,22 +2268,34 @@ mod tests {
         let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
 
         for anchor in [Pos(0, 2), Pos(0, 3)] {
-            let fork_move = Move(Piece::Lintel(Orientation::Horizontal), anchor.index(size.w) as u8);
+            let fork_move = Move(
+                Piece::Lintel(Orientation::Horizontal),
+                anchor.index(size.w) as u8,
+            );
             let idx = available
                 .iter()
                 .position(|m| *m == fork_move)
                 .unwrap_or_else(|| panic!("expected {fork_move:?} to be legal"));
             let (_, fork, _) = decode_flags(scores[idx]);
-            assert!(fork, "{fork_move:?} completes the shared connection and should get fork credit");
+            assert!(
+                fork,
+                "{fork_move:?} completes the shared connection and should get fork credit"
+            );
         }
 
-        let single_connector = Move(Piece::Lintel(Orientation::Horizontal), Pos(2, 0).index(size.w) as u8);
+        let single_connector = Move(
+            Piece::Lintel(Orientation::Horizontal),
+            Pos(2, 0).index(size.w) as u8,
+        );
         let idx = available
             .iter()
             .position(|m| *m == single_connector)
             .expect("expected the lone connecting lintel to be legal");
         let (_, fork, _) = decode_flags(scores[idx]);
-        assert!(!fork, "a connecting move with no alternate way to complete the same connection isn't a fork");
+        assert!(
+            !fork,
+            "a connecting move with no alternate way to complete the same connection isn't a fork"
+        );
     }
 
     #[test]
@@ -1978,12 +2322,18 @@ mod tests {
         let extend = Move(Piece::Sarsen, Pos(2, 1).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == extend).unwrap();
         let (_, _, threaten) = decode_flags(scores[idx]);
-        assert!(threaten, "a move extending toward the far border should get threaten-connection credit");
+        assert!(
+            threaten,
+            "a move extending toward the far border should get threaten-connection credit"
+        );
 
         let backward = Move(Piece::Sarsen, Pos(0, 0).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == backward).unwrap();
         let (_, _, threaten) = decode_flags(scores[idx]);
-        assert!(!threaten, "an unrelated move away from both the frontier and the opponent shouldn't get credit");
+        assert!(
+            !threaten,
+            "an unrelated move away from both the frontier and the opponent shouldn't get credit"
+        );
     }
 
     #[test]
@@ -2005,7 +2355,10 @@ mod tests {
             Druid::generate_actions(&state, &mut available);
             let player = Druid::player_to_move(&state).to_index();
             let chosen = *heuristic.select_move(&state, &available, &stats, player, &mut rng);
-            assert!(available.contains(&chosen), "select_move must return one of the available moves");
+            assert!(
+                available.contains(&chosen),
+                "select_move must return one of the available moves"
+            );
             state = Druid::apply(state, &chosen);
         }
     }
