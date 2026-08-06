@@ -509,4 +509,51 @@ mod tests {
             "without the solver, the full iteration budget should still run"
         );
     }
+
+    #[test]
+    fn test_mcts_solver_tree_parallel_finds_forced_block_and_terminates_early() {
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        let state = must_block_position();
+
+        let mut solved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .num_tree_threads(4)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .seed(42),
+        );
+        let action = solved.choose_action(&state);
+        assert_eq!(action, Move(7));
+        let solved_iters = solved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            solved_iters < 5000,
+            "tree-parallel solver should stop once the shared root is proven, \
+             used {solved_iters} iterations"
+        );
+
+        let mut unsolved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .num_tree_threads(4)
+                .q_init(QInit::Loss)
+                .seed(42),
+        );
+        let action = unsolved.choose_action(&state);
+        assert_eq!(action, Move(7));
+        let unsolved_iters = unsolved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            unsolved_iters, 5000,
+            "without the solver, the full iteration budget should still run across \
+             all worker threads"
+        );
+    }
 }

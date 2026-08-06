@@ -734,9 +734,25 @@ where
     /// trees itself tree-parallel: a hybrid split, e.g. `num_threads(4)` +
     /// `num_tree_threads(2)` for 4 trees x 2 threads each on an 8-core
     /// machine.
+    ///
+    /// Not `use_mcts_solver`-safe: each worker's recursive `choose_action`
+    /// call can stop early the moment *its own* tree proves a line, leaving
+    /// it with far fewer visits than trees that ran the full budget. The
+    /// merge below picks the action with the most *summed* visits across
+    /// trees, so a proven-winning action found quickly by one tree can be
+    /// silently outvoted by an unproven action other trees merely visited
+    /// more, simply because they weren't the one that found the proof.
+    /// Fixing this needs proven-aware merging, not just summing visits, so
+    /// it's guarded off below rather than left to mis-serve silently.
     fn choose_action_root_parallel(&mut self, state: &G::S) -> G::A {
         let num_threads = self.config.num_threads.max(1);
         debug_assert!(num_threads > 1);
+        debug_assert!(
+            !self.config.use_mcts_solver,
+            "root parallelism's visit-sum merge doesn't account for trees that stop \
+             early on a solver proof -- combining num_threads > 1 with use_mcts_solver \
+             is not supported yet"
+        );
 
         // One deterministic seed per worker, derived from this search's own
         // RNG, so a fixed `.seed(...)` still gives reproducible results.
@@ -863,6 +879,21 @@ where
                     let mut rng = SmallRng::seed_from_u64(seed);
                     loop {
                         if timer.done() {
+                            break;
+                        }
+                        // MCTS-Solver: no separate atomic flag needed --
+                        // `root_id`'s `Proven` field (an `AtomicU8` on the
+                        // shared arena `Node`, see `derive_proven` in
+                        // backprop.rs) is already written by every worker's
+                        // own `backprop_step` call and visible to every
+                        // other worker through the same `shared.index`
+                        // they're already reading/writing every iteration.
+                        // Mirrors the single-threaded loop's check in
+                        // `choose_action` above, just read through the
+                        // shared arena instead of `self.index` directly.
+                        if shared.use_mcts_solver
+                            && shared.index.get(root_id).proven() != Proven::Unproven
+                        {
                             break;
                         }
                         if iterations_remaining

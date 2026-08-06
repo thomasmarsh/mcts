@@ -64,8 +64,9 @@ impl AiPreset {
             AiPreset::Easy => "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
             AiPreset::Medium => "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
             AiPreset::Strong => {
-                "Tuned RAVE + MAST + decisive-move search, ~3s per move (SMAC3-tuned), \
-                 searching one shared tree across all available CPU cores."
+                "Tuned RAVE + MAST + decisive-move search with MCTS-Solver for tactical \
+                 sharpness, ~3s per move (SMAC3-tuned), searching one shared tree across \
+                 all available CPU cores."
             }
             AiPreset::Master => {
                 "Same search as Strong, parallelized the same way, with a longer ~8s \
@@ -217,16 +218,10 @@ fn ai_thread_count() -> usize {
 // single-threaded on purpose, so the difficulty gradient reflects search
 // quality, not just core count.
 //
-// Easy/Medium now enable `use_mcts_solver(true)`.
-// This is the full-benefit, low-risk slice -- single-threaded search already
-// has the proven-root early-termination short-circuit, so
-// tactical lines get both selection-bias and early stop. Strong/Master are
-// deliberately left without the solver: they already run
-// tree-parallel via `num_tree_threads`, and early-termination is
-// explicitly single-threaded-only -- tree-parallel needs a shared
-// `AtomicBool` stop signal mirroring `iterations_remaining`'s `AtomicUsize`,
-// plus thought about root-parallel's merged-visit-count assumption. That's a
-// design decision for the future.
+// All four presets enable `use_mcts_solver(true)`: every one gets proven-win/
+// loss selection bias, and every one also gets early termination once the
+// root is proven, whether the search runs single-threaded (Easy/Medium) or
+// tree-parallel (Strong/Master, via `num_tree_threads`).
 fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
     let budget = preset.time_budget();
     match preset {
@@ -265,6 +260,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     })
                     .expand_threshold(1)
                     .use_transpositions(true)
+                    .use_mcts_solver(true)
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .num_tree_threads(ai_thread_count())
@@ -512,10 +508,65 @@ mod tests {
     }
 
     #[test]
-    fn test_easy_medium_have_solver_strong_master_do_not() {
+    fn test_all_presets_construct() {
         let _ = build_ai(AiPreset::Easy);
         let _ = build_ai(AiPreset::Medium);
         let _ = build_ai(AiPreset::Strong);
         let _ = build_ai(AiPreset::Master);
+    }
+
+    // Same forced-win position as `test_easy_preset_with_solver_finds_forced_win`,
+    // but through the tree-parallel `Strong` preset, whose worker threads each
+    // check the shared root's proven status directly rather than through a
+    // per-thread-local read. Also confirms the early-termination win pays off
+    // in wall-clock terms: on a 3-ply-deep forced win, proving the root should
+    // take a small fraction of the full budget rather than grinding it out,
+    // unlike `test_ai_move_does_not_stall_other_requests`'s undecided position
+    // (which legitimately uses the whole budget).
+    #[test]
+    fn test_strong_preset_with_solver_finds_forced_win() {
+        use mcts::games::druid::{Piece, Size};
+        let size = Size { w: 3, h: 3 };
+        let mut state = HashedState::new(size);
+        let moves = [
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+        ];
+        let cells: [u8; 7] = [0, 1, 3, 4, 2, 7, 5];
+        for (piece, cell) in moves.iter().zip(cells.iter()) {
+            let mv = mcts::games::druid::Move(*piece, *cell);
+            state = Druid::apply(state, &mv);
+        }
+        assert_eq!(Druid::player_to_move(&state), Player::White);
+        assert!(!Druid::is_terminal(&state));
+
+        let start = Instant::now();
+        let mut ai = build_ai(AiPreset::Strong);
+        let white_move = ai.choose_action(&state);
+        let white_elapsed = start.elapsed();
+        let after_white = Druid::apply(state.clone(), &white_move);
+
+        let start = Instant::now();
+        let mut ai2 = build_ai(AiPreset::Strong);
+        let black_move = ai2.choose_action(&after_white);
+        let black_elapsed = start.elapsed();
+        let after_black = Druid::apply(after_white, &black_move);
+
+        assert_eq!(
+            Druid::winner(&after_black),
+            Some(Player::Black),
+            "Strong (tree-parallel, with solver) should convert the forced win"
+        );
+        let budget = AiPreset::Strong.time_budget();
+        assert!(
+            white_elapsed < budget / 2 && black_elapsed < budget / 2,
+            "expected the proven root to short-circuit well before the {budget:?} budget, \
+             got white={white_elapsed:?} black={black_elapsed:?}"
+        );
     }
 }
