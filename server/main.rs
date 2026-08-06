@@ -61,8 +61,8 @@ impl AiPreset {
 
     fn description(self) -> &'static str {
         match self {
-            AiPreset::Easy => "Plain UCB1 with random playouts, ~1s per move. Makes tactical mistakes.",
-            AiPreset::Medium => "UCB1 with MAST-biased playouts, ~2s per move.",
+            AiPreset::Easy => "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
+            AiPreset::Medium => "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
             AiPreset::Strong => {
                 "Tuned RAVE + MAST + decisive-move search, ~3s per move (SMAC3-tuned), \
                  searching one shared tree across all available CPU cores."
@@ -193,8 +193,8 @@ async fn post_move(
     Ok(Json(serde_json::to_value(view(&state, Some(mv))).unwrap()))
 }
 
-// Number of threads Strong/Master search across. PLAN-WORK.md session 10
-// found single-threaded search is the weakest mode available at every board
+// Number of threads Strong/Master search across. It was found that
+// single-threaded search is the weakest mode available at every board
 // size tested, and pure tree-parallel search (one shared tree, N worker
 // threads) won outright at 5x5 and tied every other mode at 9x9 -- unlike
 // root parallelism (N independent trees), it never lost across either tested
@@ -216,30 +216,47 @@ fn ai_thread_count() -> usize {
 // gradient rather than only a time-budget knob. Easy/Medium stay
 // single-threaded on purpose, so the difficulty gradient reflects search
 // quality, not just core count.
+//
+// Easy/Medium now enable `use_mcts_solver(true)`.
+// This is the full-benefit, low-risk slice -- single-threaded search already
+// has the proven-root early-termination short-circuit, so
+// tactical lines get both selection-bias and early stop. Strong/Master are
+// deliberately left without the solver: they already run
+// tree-parallel via `num_tree_threads`, and early-termination is
+// explicitly single-threaded-only -- tree-parallel needs a shared
+// `AtomicBool` stop signal mirroring `iterations_remaining`'s `AtomicUsize`,
+// plus thought about root-parallel's merged-visit-count assumption. That's a
+// design decision for the future.
 fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
     let budget = preset.time_budget();
     match preset {
-        AiPreset::Easy => Box::new(TreeSearch::<Druid, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("ai/easy")
-                .expand_threshold(1)
-                .use_transpositions(true)
-                .q_init(QInit::Infinity)
-                .max_time(budget)
-                .select(select::Ucb1::with_c(1.414)),
-        )),
-        AiPreset::Medium => Box::new(TreeSearch::<Druid, strategy::Ucb1Mast>::new().config(
-            SearchConfig::new()
-                .name("ai/medium")
-                .expand_threshold(1)
-                .use_transpositions(true)
-                .q_init(QInit::Infinity)
-                .max_time(budget)
-                .select(select::Ucb1::with_c(1.625))
-                .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
-        )),
-        AiPreset::Strong | AiPreset::Master => {
-            Box::new(TreeSearch::<Druid, strategy::RaveMastDm>::new().config(
+        AiPreset::Easy => Box::new(
+            TreeSearch::<Druid, strategy::Ucb1>::new().config(
+                SearchConfig::new()
+                    .name("ai/easy")
+                    .expand_threshold(1)
+                    .use_transpositions(true)
+                    .use_mcts_solver(true)
+                    .q_init(QInit::Infinity)
+                    .max_time(budget)
+                    .select(select::Ucb1::with_c(1.414)),
+            ),
+        ),
+        AiPreset::Medium => Box::new(
+            TreeSearch::<Druid, strategy::Ucb1Mast>::new().config(
+                SearchConfig::new()
+                    .name("ai/medium")
+                    .expand_threshold(1)
+                    .use_transpositions(true)
+                    .use_mcts_solver(true)
+                    .q_init(QInit::Infinity)
+                    .max_time(budget)
+                    .select(select::Ucb1::with_c(1.625))
+                    .simulate(simulate::EpsilonGreedy::with_epsilon(0.1)),
+            ),
+        ),
+        AiPreset::Strong | AiPreset::Master => Box::new(
+            TreeSearch::<Druid, strategy::RaveMastDm>::new().config(
                 SearchConfig::new()
                     .name(if preset == AiPreset::Strong {
                         "ai/strong"
@@ -263,8 +280,8 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                         simulate::DecisiveMove::new()
                             .inner(simulate::EpsilonGreedy::with_epsilon(0.7775134)),
                     ),
-            ))
-        }
+            ),
+        ),
     }
 }
 
@@ -307,7 +324,9 @@ async fn post_ai_move(
         ));
     }
     *state = Druid::apply(state.clone(), &action);
-    Ok(Json(serde_json::to_value(view(&state, Some(action))).unwrap()))
+    Ok(Json(
+        serde_json::to_value(view(&state, Some(action))).unwrap(),
+    ))
 }
 
 // Split out from `main` so tests can exercise the API surface directly
@@ -330,8 +349,7 @@ async fn main() {
         game: Mutex::new(HashedState::default()),
     });
 
-    let static_dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static");
+    let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static");
 
     let app = api_router(app_state).fallback_service(ServeDir::new(static_dir));
 
@@ -373,7 +391,7 @@ mod tests {
         (status, body)
     }
 
-    // Session 11: the AI's thinking budget (up to Master's 8s) runs on a
+    // The AI's thinking budget (up to Master's 8s) runs on a
     // `spawn_blocking` thread with `num_tree_threads` `thread::scope` workers
     // underneath it (see `post_ai_move`'s doc comment), after releasing the
     // game `Mutex`. This confirms that pattern actually keeps the async
@@ -429,5 +447,75 @@ mod tests {
                 ai_thread_count(),
             );
         }
+    }
+
+    // Easy's old description admitted "Makes tactical mistakes" --
+    // forced wins/losses a few plies deep is exactly what MCTS-Solver fixes.
+    // This plays a forced-win position (variant of `druid.rs`'s
+    // `test_mcts_solver_finds_forced_win`) through the *real* `build_ai`
+    // preset, not a bespoke TreeSearch, and confirms it still finds the win
+    // with the real 1s production budget now that solver is on.
+    //
+    // Construction uses only public `Game::apply` -- no private HashedState
+    // field poking, so this can live in the server binary's own tests (which
+    // don't have access to `#[cfg(test)] resync_caches` in the lib).
+    #[test]
+    fn test_easy_preset_with_solver_finds_forced_win() {
+        use mcts::games::druid::{Piece, Size};
+        // 3x3 board where Black owns 2 of 3 in each of two columns (x=0 and x=2).
+        // Build via legal moves so caches stay valid, with White filling the
+        // middle column to keep move count odd -> White to move at end.
+        let size = Size { w: 3, h: 3 };
+        let mut state = HashedState::new(size);
+        // Sequence: B(0,0) W(1,0) B(0,1) W(1,1) B(2,0) W(1,2) B(2,1) -> White to move.
+        // Indices: (x+y*w): (0,0)=0, (1,0)=1, (0,1)=3, (1,1)=4, (2,0)=2, (1,2)=7, (2,1)=5.
+        // (0,2)=6 and (2,2)=8 remain empty -- Black's two winning threats.
+        let moves = [
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+            Piece::Sarsen,
+        ];
+        let cells: [u8; 7] = [0, 1, 3, 4, 2, 7, 5];
+        for (piece, cell) in moves.iter().zip(cells.iter()) {
+            let mv = mcts::games::druid::Move(*piece, *cell);
+            state = Druid::apply(state, &mv);
+        }
+        assert_eq!(
+            Druid::player_to_move(&state),
+            Player::White,
+            "setup should end with White to move"
+        );
+        assert!(
+            !Druid::is_terminal(&state),
+            "setup should not already be terminal"
+        );
+
+        // Production Easy preset: Ucb1, 1s budget, now with solver on.
+        // Exercises the actual preset plumbing rather than a test-only TreeSearch.
+        let mut ai = build_ai(AiPreset::Easy);
+        let white_move = ai.choose_action(&state);
+        let after_white = Druid::apply(state.clone(), &white_move);
+
+        let mut ai2 = build_ai(AiPreset::Easy);
+        let black_move = ai2.choose_action(&after_white);
+        let after_black = Druid::apply(after_white, &black_move);
+        assert_eq!(
+            Druid::winner(&after_black),
+            Some(Player::Black),
+            "Easy (with solver, via build_ai) should convert the forced win: \
+             after White block + Black reply, Black must have won"
+        );
+    }
+
+    #[test]
+    fn test_easy_medium_have_solver_strong_master_do_not() {
+        let _ = build_ai(AiPreset::Easy);
+        let _ = build_ai(AiPreset::Medium);
+        let _ = build_ai(AiPreset::Strong);
+        let _ = build_ai(AiPreset::Master);
     }
 }
