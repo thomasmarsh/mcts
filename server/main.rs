@@ -20,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 
 use mcts::game::Game;
-use mcts::games::druid::{Druid, HashedState, Move, Player, Size};
+use mcts::games::druid::{
+    Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, Move, Player,
+    RaveDecisiveHeuristic, Size,
+};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
@@ -64,9 +67,9 @@ impl AiPreset {
             AiPreset::Easy => "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
             AiPreset::Medium => "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
             AiPreset::Strong => {
-                "Tuned RAVE + MAST + decisive-move search with MCTS-Solver for tactical \
-                 sharpness, ~3s per move (SMAC3-tuned), searching one shared tree across \
-                 all available CPU cores."
+                "Tuned RAVE + heuristic-guided + decisive-move search with MCTS-Solver for \
+                 tactical sharpness, ~3s per move (SMAC3-tuned), searching one shared tree \
+                 across all available CPU cores."
             }
             AiPreset::Master => {
                 "Same search as Strong, parallelized the same way, with a longer ~8s \
@@ -210,13 +213,18 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-// `Strong` reuses the tuned `rave_mast_ucd` setup from demo/druid.rs, which
-// SMAC3 hyperparameter search found effective for this game specifically.
-// The other presets reuse strategy types exercised there too (`Ucb1`,
-// `Ucb1Mast`), just with shorter time budgets, giving a real strength
-// gradient rather than only a time-budget knob. Easy/Medium stay
-// single-threaded on purpose, so the difficulty gradient reflects search
-// quality, not just core count.
+// `Strong`/`Master` keep the SMAC3-tuned `select::Rave` hyperparameters from
+// demo/druid.rs's `rave_mast_ucd` setup, but the playout policy is
+// `DruidHeuristic`-guided rather than `Mast` -- PLAN-DRUID.md Session 6's
+// grid sweep (epsilon x weights, n=30+/point) found the heuristic beats a
+// uniform-playout baseline by a statistically solid margin (aggregated
+// ~62% vs. chance) at epsilon=0.5 with equal (1.0/1.0/1.0) heuristic
+// weights, so this replaces `strategy::RaveMastDm`'s `Mast`-based simulate
+// strategy with `druid::RaveDecisiveHeuristic`'s. The other presets reuse
+// strategy types exercised in demo/druid.rs too (`Ucb1`, `Ucb1Mast`), just
+// with shorter time budgets, giving a real strength gradient rather than
+// only a time-budget knob. Easy/Medium stay single-threaded on purpose, so
+// the difficulty gradient reflects search quality, not just core count.
 //
 // All four presets enable `use_mcts_solver(true)`: every one gets proven-win/
 // loss selection bias, and every one also gets early termination once the
@@ -251,7 +259,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
             ),
         ),
         AiPreset::Strong | AiPreset::Master => Box::new(
-            TreeSearch::<Druid, strategy::RaveMastDm>::new().config(
+            TreeSearch::<Druid, RaveDecisiveHeuristic>::new().config(
                 SearchConfig::new()
                     .name(if preset == AiPreset::Strong {
                         "ai/strong"
@@ -272,10 +280,15 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                             .threshold(204)
                             .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
                     )
-                    .simulate(
-                        simulate::DecisiveMove::new()
-                            .inner(simulate::EpsilonGreedy::with_epsilon(0.7775134)),
-                    ),
+                    .simulate(simulate::DecisiveMove::new().inner(
+                        simulate::EpsilonGreedy::default().epsilon(0.5).inner(
+                            DruidHeuristic::new(DruidHeuristicWeights {
+                                block_threat: 1.0,
+                                defend_fork: 1.0,
+                                threaten_connection: 1.0,
+                            }),
+                        ),
+                    )),
             ),
         ),
     }
