@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
-        stack: &NodeStack<G::A>,
+        parent_id_opt: Option<index::Id>,
         trace: &[(G::A, usize)],
         index: &mut TreeIndex<G::A>,
         node_id: index::Id,
@@ -17,8 +17,12 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         // NOTE: O(n) here, but amaf could be calculated top down
         let node = index.get(node_id);
         if !node.is_root() {
-            debug_assert!(!stack.is_empty());
-            let parent_id = stack.parent_id();
+            // parent_id must come from the caller's (parent, node) pair for
+            // *this* node, not `stack.parent_id()` (always the leaf's
+            // parent) — using the latter silently attributed AMAF updates
+            // to the wrong parent for every non-leaf node in a multi-level
+            // stack.
+            let parent_id = parent_id_opt.unwrap();
             debug_assert_ne!(parent_id, node_id);
             debug_assert!(index.get(parent_id).is_expanded());
             let sibling_actions: FxHashMap<_, _> = index
@@ -100,12 +104,20 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 let parent_id = parent_id_opt.cloned().unwrap();
                 debug_assert_ne!(parent_id, *node_id);
                 let parent = index.get_mut(parent_id);
-                parent.child_edge_mut(*node_id).stats.update(&utilities);
+                let edge_stats = &mut parent.child_edge_mut(*node_id).stats;
+                edge_stats.update(&utilities);
+                edge_stats.remove_virtual_loss();
             }
 
             // update: AMAF
             if flags.amaf() {
-                self.update_amaf::<G>(stack, &trial.actions, index, *node_id, &utilities);
+                self.update_amaf::<G>(
+                    parent_id_opt.cloned(),
+                    &trial.actions,
+                    index,
+                    *node_id,
+                    &utilities,
+                );
             } else if flags.grave() {
                 self.update_grave::<G>(&amaf_actions, index, global, *node_id, &utilities);
             }
