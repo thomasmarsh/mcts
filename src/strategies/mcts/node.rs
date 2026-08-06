@@ -126,6 +126,20 @@ impl NodeStats {
         self.num_visits + self.num_visits_virtual.load(Relaxed)
     }
 
+    /// Marks this edge as "in flight" for a concurrent tree-parallel search:
+    /// a thread has committed to this path but hasn't backpropagated a result
+    /// yet, so other threads scoring the same edge see it as worse/busier
+    /// than its real stats suggest. Must be paired with `remove_virtual_loss`
+    /// once that thread's simulation result is backpropagated.
+    pub fn add_virtual_loss(&self) {
+        self.num_visits_virtual.fetch_add(1, Relaxed);
+    }
+
+    pub fn remove_virtual_loss(&self) {
+        let prev = self.num_visits_virtual.fetch_sub(1, Relaxed);
+        debug_assert!(prev >= 1, "virtual loss removed without a matching add");
+    }
+
     pub fn update(&mut self, utilities: &[f64]) {
         self.num_visits += 1;
         utilities.iter().enumerate().for_each(|(p, reward)| {

@@ -208,6 +208,13 @@ where
                 unreachable!()
             };
 
+            // Claim this edge for the duration of the iteration so a
+            // concurrent tree-parallel search sees it as less attractive
+            // until `backprop` removes the virtual loss again. Single-threaded
+            // today, this nets out within one iteration; it exists so the
+            // scoring path is already correct once search is parallelized.
+            edges[best_idx].stats.add_virtual_loss();
+
             if let Some(child_id) = edges[best_idx].node_id {
                 ctx.traverse_apply(child_id, &edges[best_idx].action);
             } else {
