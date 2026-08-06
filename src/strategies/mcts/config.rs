@@ -71,6 +71,13 @@ where
     pub rng: SmallRng,
     pub verbose: bool,
     pub name: String,
+
+    /// Number of independent trees to search in parallel ("root
+    /// parallelism"): each thread runs its own full `TreeSearch` to
+    /// completion, and the root-level visit counts/scores are summed across
+    /// trees to pick the final action. `1` (the default) keeps the
+    /// single-threaded path with unchanged behavior/output.
+    pub num_threads: usize,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -93,6 +100,7 @@ where
             rng: SmallRng::from_entropy(),
             verbose: false,
             name: format!("mcts[{}]", S::friendly_name()),
+            num_threads: 1,
         }
     }
 }
@@ -178,6 +186,11 @@ where
 
     pub fn verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    pub fn num_threads(mut self, num_threads: usize) -> Self {
+        self.num_threads = num_threads.max(1);
         self
     }
 }

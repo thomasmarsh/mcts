@@ -67,6 +67,54 @@ mod tests {
     }
 
     #[test]
+    fn test_root_parallel_picks_a_legal_action() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_threads(4),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
+    fn test_num_threads_one_is_deterministic_given_a_seed() {
+        // `num_threads == 1` should take the untouched single-tree path
+        // (search.rs's `choose_action_root_parallel` dispatch only fires
+        // above 1), so this is a baseline regression guard that the new
+        // config field doesn't perturb existing single-threaded behavior.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+        let mut a = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .seed(42)
+                .num_threads(1),
+        );
+        let mut b = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .seed(42)
+                .num_threads(1),
+        );
+
+        assert_eq!(a.choose_action(&init_state), b.choose_action(&init_state));
+    }
+
+    #[test]
     fn test_basics() {
         use crate::games::ttt::*;
         type G = TicTacToe;

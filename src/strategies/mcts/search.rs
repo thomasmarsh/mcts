@@ -19,7 +19,11 @@ use crate::strategies::mcts::node::Edge;
 use crate::strategies::Search;
 use crate::timer;
 use crate::util::pv_string;
+use crate::util::random_best;
 
+use rand::rngs::SmallRng;
+use rand::Rng;
+use rand_core::SeedableRng;
 use rustc_hash::FxHashMap;
 
 pub struct SearchContext<G: Game> {
@@ -66,6 +70,10 @@ impl<G: Game> Default for TreeStats<G> {
 }
 
 pub type TreeIndex<A> = index::Arena<Node<A>>;
+
+/// A root child's (action, visits, per-player score) triple -- the unit
+/// root-parallel search merges across independently-searched trees.
+type ActionTotal<A> = (A, u32, Vec<f64>);
 
 #[derive(Clone)]
 pub struct TreeSearch<G, S>
@@ -442,6 +450,97 @@ where
             }
         }
     }
+
+    /// Root child visit counts/scores for this tree, keyed by action --
+    /// the summary a root-parallel search merges across threads. Only
+    /// explored edges are included (unexplored ones contribute nothing).
+    fn root_action_totals(&self) -> Vec<ActionTotal<G::A>> {
+        match &self.index.get(self.root_id).state {
+            NodeState::Expanded(edges) => edges
+                .iter()
+                .filter(|edge| edge.is_explored())
+                .map(|edge| {
+                    let scores = (0..G::num_players())
+                        .map(|p| edge.stats.player[p].score)
+                        .collect();
+                    (edge.action.clone(), edge.stats.num_visits, scores)
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    /// Root parallelism: run `config.num_threads` independent trees to
+    /// completion (each its own `TreeSearch`, reseeded so they don't all
+    /// explore identically), then merge by summing visit counts/scores per
+    /// action across trees and picking the action with the most total
+    /// visits. Doesn't touch the shared arena/stats -- each thread owns its
+    /// own tree -- so unlike tree parallelism this needs no interior
+    /// mutability anywhere in the search.
+    fn choose_action_root_parallel(&mut self, state: &G::S) -> G::A {
+        let num_threads = self.config.num_threads.max(1);
+        debug_assert!(num_threads > 1);
+
+        // One deterministic seed per worker, derived from this search's own
+        // RNG, so a fixed `.seed(...)` still gives reproducible results.
+        let seeds: Vec<u64> = (0..num_threads).map(|_| self.config.rng.gen()).collect();
+
+        // `num_threads - 1` extra trees run on their own threads; `self`
+        // runs the last one in place (on the calling thread) rather than
+        // sitting idle, so afterward its own `index`/`pv` reflect one real
+        // completed tree instead of being discarded -- picked up for free
+        // by the normal single-tree `choose_action` path's `compute_pv`/
+        // `verbose_summary` calls below.
+        let mut workers: Vec<Self> = (0..num_threads - 1).map(|_| self.clone()).collect();
+
+        let totals = std::thread::scope(|scope| {
+            let handles: Vec<_> = workers
+                .iter_mut()
+                .zip(&seeds)
+                .map(|(worker, &seed)| {
+                    worker.config.num_threads = 1;
+                    worker.config.rng = SmallRng::seed_from_u64(seed);
+                    scope.spawn(move || {
+                        worker.choose_action(state);
+                        worker.root_action_totals()
+                    })
+                })
+                .collect();
+
+            self.config.num_threads = 1;
+            self.config.rng = SmallRng::seed_from_u64(seeds[num_threads - 1]);
+            self.choose_action(state);
+
+            let mut totals = vec![self.root_action_totals()];
+            totals.extend(handles.into_iter().map(|h| h.join().unwrap()));
+            totals
+        });
+
+        self.config.num_threads = num_threads;
+
+        let mut merged: FxHashMap<G::A, (u32, Vec<f64>)> = FxHashMap::default();
+        for worker_totals in totals {
+            for (action, visits, scores) in worker_totals {
+                let entry = merged
+                    .entry(action)
+                    .or_insert_with(|| (0, vec![0.; scores.len()]));
+                entry.0 += visits;
+                for (i, s) in scores.into_iter().enumerate() {
+                    entry.1[i] += s;
+                }
+            }
+        }
+
+        let merged: Vec<ActionTotal<G::A>> = merged
+            .into_iter()
+            .map(|(action, (visits, scores))| (action, visits, scores))
+            .collect();
+        random_best(&merged, &mut self.config.rng, |(_, visits, _)| {
+            *visits as f64
+        })
+        .map(|(action, _, _)| action.clone())
+        .unwrap()
+    }
 }
 
 impl<G, S> Search for TreeSearch<G, S>
@@ -458,6 +557,10 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
+        if self.config.num_threads > 1 {
+            return self.choose_action_root_parallel(state);
+        }
+
         let hash = G::zobrist_hash(state);
         let root_id = self.reset(G::player_to_move(state).to_index(), hash);
         if self.config.use_transpositions {
