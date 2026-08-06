@@ -152,21 +152,18 @@ impl Pos {
         (self.1 * width + self.0) as usize
     }
 
-    fn adjacent(&self, size: Size) -> Vec<Pos> {
+    fn adjacent(&self, size: Size) -> impl Iterator<Item = Pos> {
         let &Pos(x, y) = self;
 
-        [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            .iter()
-            .filter_map(|&(dx, dy)| {
-                let nx = x as i8 + dx;
-                let ny = y as i8 + dy;
-                if (0..size.w as i8).contains(&nx) && (0..size.h as i8).contains(&ny) {
-                    Some(Pos(nx as u8, ny as u8))
-                } else {
-                    None
-                }
-            })
-            .collect()
+        [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().filter_map(move |(dx, dy)| {
+            let nx = x as i8 + dx;
+            let ny = y as i8 + dy;
+            if (0..size.w as i8).contains(&nx) && (0..size.h as i8).contains(&ny) {
+                Some(Pos(nx as u8, ny as u8))
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -409,7 +406,6 @@ impl State {
 
     fn get_adjacent(&self, pos: Pos, seen: &HashSet<usize>, color: Player) -> Vec<usize> {
         pos.adjacent(self.size)
-            .into_iter()
             .map(|x| Pos::index(x, self.size.w))
             .filter(|x| !seen.contains(x) && self.board[*x].matches(color))
             .collect()
