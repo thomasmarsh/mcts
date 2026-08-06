@@ -115,6 +115,80 @@ mod tests {
     }
 
     #[test]
+    fn test_leaf_parallel_picks_a_legal_action() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_rollouts_per_leaf(4),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
+    fn test_num_rollouts_per_leaf_one_is_deterministic_given_a_seed() {
+        // `num_rollouts_per_leaf == 1` (the default, or set explicitly)
+        // should take the untouched single-simulate-per-leaf path
+        // (search.rs's `choose_action` loop only branches into
+        // `simulate_many` above 1), so this is a baseline regression guard
+        // that the new config field doesn't perturb existing
+        // single-rollout behavior.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+        let mut a =
+            TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
+        let mut b = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .seed(42)
+                .num_rollouts_per_leaf(1),
+        );
+
+        assert_eq!(a.choose_action(&init_state), b.choose_action(&init_state));
+    }
+
+    #[test]
+    fn test_leaf_parallel_virtual_loss_balances_across_many_iterations() {
+        // Regression guard for the virtual-loss accounting leaf parallelism
+        // layers on top of `select`'s single unit per edge: if the extra
+        // `k - 1` units added per leaf aren't removed in lock-step across
+        // all `k` backprop calls, `NodeStats::remove_virtual_loss`'s
+        // `debug_assert!(prev >= 1, ...)` fires on underflow. A low
+        // `expand_threshold` makes `select` descend multiple levels per
+        // iteration (exercising every edge on longer stacks, not just the
+        // root's), and plenty of iterations at K=3 exercises this a lot.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(500)
+                .expand_threshold(0)
+                .num_rollouts_per_leaf(3),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
     fn test_basics() {
         use crate::games::ttt::*;
         type G = TicTacToe;

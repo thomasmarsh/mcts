@@ -311,6 +311,59 @@ where
         )
     }
 
+    /// Leaf parallelism: run `k` playouts from the same selected leaf's
+    /// `state` on separate threads (each with its own reseeded RNG and
+    /// cloned `SimulateStrategy`, since `SmallRng` isn't `Sync` and
+    /// `playout` takes `&mut self`), rather than just the one `simulate`
+    /// does. Only the rollouts run concurrently -- selection stays
+    /// single-threaded and none of this touches the shared arena, since
+    /// `playout` already only reads `&TreeStats<G>` and operates on a
+    /// state cloned for the rollout.
+    fn simulate_many(&mut self, state: &G::S, k: usize) -> Vec<Trial<G>> {
+        if k <= 1 {
+            return vec![self.simulate(state)];
+        }
+
+        let seeds: Vec<u64> = (0..k).map(|_| self.config.rng.gen()).collect();
+        let mut strategies: Vec<S::Simulate> =
+            (0..k).map(|_| self.config.simulate.clone()).collect();
+        let max_playout_depth = self.config.max_playout_depth;
+        let stats = &self.stats;
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = strategies
+                .iter_mut()
+                .zip(seeds)
+                .map(|(strategy, seed)| {
+                    let state = state.clone();
+                    scope.spawn(move || {
+                        let mut rng = SmallRng::seed_from_u64(seed);
+                        let determinized = G::determinize(state, &mut rng);
+                        strategy.playout(determinized, max_playout_depth, stats, &mut rng)
+                    })
+                })
+                .collect();
+
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    }
+
+    /// Adds `extra` additional units of virtual loss to every edge on
+    /// `stack`'s root->leaf path. `select` already added one unit per edge
+    /// on the path as it descended; when leaf parallelism is firing `k`
+    /// rollouts from that same leaf, the path needs `k` units in flight
+    /// total (one released per rollout's `backprop` call), so this tops up
+    /// the `k - 1` this particular leaf-parallel batch adds beyond the one
+    /// `select` already placed.
+    fn add_extra_virtual_loss(&self, stack: &NodeStack<G::A>, extra: usize) {
+        for (parent_id, child_id) in stack.pairs() {
+            let edge = stack.edge(&self.index, *parent_id, *child_id);
+            for _ in 0..extra {
+                edge.stats.add_virtual_loss();
+            }
+        }
+    }
+
     #[inline]
     pub(crate) fn backprop(&mut self) {
         self.stats.iter_count += 1;
@@ -577,8 +630,20 @@ where
             let mut ctx = SearchContext::new(root_id, state.clone());
 
             self.select(&mut ctx);
-            self.trial = Some(self.simulate(&ctx.state));
-            self.backprop();
+
+            let k = self.config.num_rollouts_per_leaf;
+            let trials = if k > 1 {
+                let stack = NodeStack::new(self.stack.clone());
+                self.add_extra_virtual_loss(&stack, k - 1);
+                self.simulate_many(&ctx.state, k)
+            } else {
+                vec![self.simulate(&ctx.state)]
+            };
+
+            for trial in trials {
+                self.trial = Some(trial);
+                self.backprop();
+            }
         }
 
         self.compute_pv(state);

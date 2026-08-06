@@ -78,6 +78,18 @@ where
     /// trees to pick the final action. `1` (the default) keeps the
     /// single-threaded path with unchanged behavior/output.
     pub num_threads: usize,
+
+    /// Number of rollouts to run per selected leaf ("leaf parallelism"):
+    /// after `select` walks the tree single-threaded and picks one leaf, up
+    /// to `num_rollouts_per_leaf` playouts are fired from that leaf's state
+    /// on separate threads and each backpropagated in turn, instead of just
+    /// one. Cheaper than tree parallelism since it never touches node/edge
+    /// structure concurrently -- simulate strategies already operate on a
+    /// state cloned for the rollout -- but strategies that embed their own
+    /// nested search (`simulate::MetaMcts`) should leave this at `1`, since
+    /// cloning a full nested `TreeSearch` per rollout isn't worth it there.
+    /// `1` (the default) keeps the untouched single-rollout-per-leaf path.
+    pub num_rollouts_per_leaf: usize,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -101,6 +113,7 @@ where
             verbose: false,
             name: format!("mcts[{}]", S::friendly_name()),
             num_threads: 1,
+            num_rollouts_per_leaf: 1,
         }
     }
 }
@@ -191,6 +204,11 @@ where
 
     pub fn num_threads(mut self, num_threads: usize) -> Self {
         self.num_threads = num_threads.max(1);
+        self
+    }
+
+    pub fn num_rollouts_per_leaf(mut self, num_rollouts_per_leaf: usize) -> Self {
+        self.num_rollouts_per_leaf = num_rollouts_per_leaf.max(1);
         self
     }
 }
