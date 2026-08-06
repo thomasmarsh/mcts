@@ -359,16 +359,16 @@ impl State {
         }
     }
 
-    pub fn apply(&mut self, m: Move) {
-        self.deplete(m.0);
+    /// Board cell indices touched by `m` -- 1 for a sarsen, 3 for a lintel.
+    /// Depends only on `size`/`m`, not on current board contents, so it's
+    /// safe to call before *or* after `apply` mutates the board (used by
+    /// both `apply` itself and the incremental Zobrist update in
+    /// `Game::apply`, which needs the same cells' pre- and post-move
+    /// values). Unused slots beyond the returned length are filled with `0`,
+    /// always a valid index.
+    fn move_cells(&self, m: Move) -> ([usize; 3], usize) {
         match m.0 {
-            Piece::Sarsen => {
-                let sq = &self.board[m.1 as usize];
-                self.board[m.1 as usize] = Square {
-                    height: sq.height + 1,
-                    piece: Some(self.player),
-                }
-            }
+            Piece::Sarsen => ([m.1 as usize, 0, 0], 1),
             Piece::Lintel(orientation) => {
                 let (dx, dy) = orientation.delta();
                 let Pos(x, y) = Pos::from(m.1 as usize, self.size);
@@ -377,10 +377,27 @@ impl State {
                     Pos(x + dx, y + dy),
                     Pos(x + dx + dx, y + dy + dy),
                 ];
-                let is = c.map(|x| Pos::index(x, self.size.w));
-                let h = self.board[m.1 as usize].height + 1;
-                is.iter().for_each(|i| {
-                    self.board[*i] = Square {
+                (c.map(|p| Pos::index(p, self.size.w)), 3)
+            }
+        }
+    }
+
+    pub fn apply(&mut self, m: Move) {
+        self.deplete(m.0);
+        let (cells, n) = self.move_cells(m);
+        match m.0 {
+            Piece::Sarsen => {
+                let i = cells[0];
+                let sq = &self.board[i];
+                self.board[i] = Square {
+                    height: sq.height + 1,
+                    piece: Some(self.player),
+                }
+            }
+            Piece::Lintel(_) => {
+                let h = self.board[cells[0]].height + 1;
+                cells[..n].iter().for_each(|&i| {
+                    self.board[i] = Square {
                         height: h,
                         piece: Some(self.player),
                     }
@@ -557,6 +574,30 @@ fn zobrist_height_bits(size: Size) -> usize {
     }
 }
 
+/// XOR contribution of a single cell to the board hash, for a given
+/// (height, piece) at position `i`. Shared by the incremental update in
+/// `Game::apply` and the from-scratch recompute used to validate it in
+/// tests -- both need to agree on exactly which bits a cell contributes.
+fn cell_zobrist(i: usize, height: u16, piece: Option<Player>, bits: usize) -> u64 {
+    let h = height as usize;
+    if h == 0 {
+        return 0;
+    }
+    let c = piece.map(|p| p.to_index()).unwrap_or(0);
+    let base = (i * 2 + c) * bits;
+    (0..bits).fold(0, |hash, b| if h & (1 << b) != 0 { hash ^ HASHES.hash(base + b) } else { hash })
+}
+
+/// Full from-scratch board hash. `Game::apply` no longer uses this on the
+/// hot path (see the incremental XOR-delta update there) -- kept for the
+/// property test that checks the incremental update stays in sync with it.
+#[cfg(test)]
+fn recompute_hash(state: &State, bits: usize) -> u64 {
+    state.board.iter().enumerate().fold(0, |hash, (i, square)| {
+        hash ^ cell_zobrist(i, square.height, square.piece, bits)
+    })
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HashedState(State, u64);
 
@@ -594,8 +635,6 @@ impl Game for Druid {
     }
 
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
-        state.0.apply(*m);
-
         // Each (position, color) pair owns its own disjoint block of
         // `bits` table slots, so different cells/colors never collide;
         // within a block, each bit of the height is independently XORed
@@ -605,25 +644,30 @@ impl Game for Druid {
             state.0.size.is_supported(),
             "HASHES table is too small for this board size; HashedState::new should have rejected it"
         );
+
+        // A move only ever touches the 1 (sarsen) or 3 (lintel) cells
+        // `move_cells` names -- snapshot their pre-move values so the hash
+        // can be updated by XORing those cells' old contribution out and
+        // their new contribution in, instead of recomputing the whole
+        // board every ply.
+        let (cells, n) = state.0.move_cells(*m);
+        let old: [Square; 3] = std::array::from_fn(|i| state.0.board[cells[i]]);
+
+        state.0.apply(*m);
+
         debug_assert!(
             state.0.board.iter().all(|square| (square.height as usize) < (1usize << bits)),
             "cell height exceeded the {bits}-bit Zobrist encoding for {:?}; max_cell_height's bound was wrong",
             state.0.size
         );
 
-        let mut hash = 0;
-        state.0.board.iter().enumerate().for_each(|(i, square)| {
-            let h = square.height as usize;
-            if h > 0 {
-                let c = square.piece.map(|p| p.to_index()).unwrap_or(0);
-                let base = (i * 2 + c) * bits;
-                for b in 0..bits {
-                    if h & (1 << b) != 0 {
-                        hash ^= HASHES.hash(base + b);
-                    }
-                }
-            }
-        });
+        let mut hash = state.1;
+        for k in 0..n {
+            let i = cells[k];
+            hash ^= cell_zobrist(i, old[k].height, old[k].piece, bits);
+            let sq = state.0.board[i];
+            hash ^= cell_zobrist(i, sq.height, sq.piece, bits);
+        }
         state.1 = hash;
 
         state
@@ -871,6 +915,43 @@ mod tests {
 
         assert!(Druid::is_terminal(&state), "no legal moves with no connection must be terminal");
         assert_eq!(Druid::winner(&state), None, "a no-legal-moves termination is a draw, not a win");
+    }
+
+    #[test]
+    fn test_incremental_hash_matches_full_recompute() {
+        // `Game::apply` now updates the hash incrementally (XOR out the
+        // touched cells' old contribution, XOR in the new) instead of
+        // recomputing the whole board every ply. Confirm that stays
+        // identical to a from-scratch recompute across many randomized
+        // move sequences and board sizes, including games that run long
+        // enough to restack cells past their original height.
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
+            let bits = zobrist_height_bits(size);
+            let mut rng = SmallRng::seed_from_u64(size.w as u64 * 1000 + size.h as u64);
+
+            for game in 0..20 {
+                let mut state = HashedState::new(size);
+                let mut actions = Vec::new();
+                for ply in 0..200 {
+                    state.0.moves(&mut actions);
+                    if actions.is_empty() {
+                        break;
+                    }
+                    let m = actions[rng.gen_range(0..actions.len())];
+                    state = Druid::apply(state, &m);
+                    actions.clear();
+
+                    assert_eq!(
+                        state.1,
+                        recompute_hash(&state.0, bits),
+                        "incremental hash diverged from full recompute at size={size:?} game={game} ply={ply}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
