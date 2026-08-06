@@ -460,6 +460,200 @@
       `White — ${state.hand_white.sarsens} sarsens, ${state.hand_white.lintels} lintels`;
   }
 
+  // --- Top-down board minimap (upper-right HUD) ---
+
+  let minimapDpr = 1;
+
+  function setupMinimap() {
+    const canvas = document.getElementById("minimap-canvas");
+    if (!canvas) return;
+    const css = 236;
+    minimapDpr = window.devicePixelRatio || 1;
+    canvas.style.width = css + "px";
+    canvas.style.height = css + "px";
+    canvas.width = Math.round(css * minimapDpr);
+    canvas.height = Math.round(css * minimapDpr);
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  // Taller stacks read as slightly brighter — a height cue that survives
+  // the drop from 3D to a flat top-down view.
+  function shadeForHeight(piece, height) {
+    const t = Math.min(1, height / 12);
+    const base = piece === "Black" ? [58, 61, 70] : [242, 233, 216];
+    const lit = piece === "Black" ? [112, 120, 142] : [255, 253, 246];
+    const c = base.map((v, i) => Math.round(v + (lit[i] - v) * t));
+    return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  }
+
+  function playerAccent(player) {
+    return player === "Black" ? "#9aa2b8" : "#f2e9d8";
+  }
+
+  // BFS for a border-to-border path of `color`'s cells (Black: top row to
+  // bottom row; White: left column to right column), moving through
+  // 4-adjacent cells the player owns. Returns the cell indices along one
+  // winning route, or null if no connection exists.
+  function findWinningPath(board, w, h, color) {
+    const idx = (x, y) => y * w + x;
+    const owned = (i) => board[i] && board[i].piece === color;
+    const starts = [];
+    const goal = new Set();
+    if (color === "Black") {
+      for (let x = 0; x < w; x++) starts.push(idx(x, 0));
+      for (let x = 0; x < w; x++) goal.add(idx(x, h - 1));
+    } else {
+      for (let y = 0; y < h; y++) starts.push(idx(0, y));
+      for (let y = 0; y < h; y++) goal.add(idx(w - 1, y));
+    }
+
+    const prev = new Map();
+    const queue = starts.filter(owned);
+    queue.forEach((i) => prev.set(i, -1));
+
+    let reached = -1;
+    for (let head = 0; head < queue.length && reached < 0; head++) {
+      const cur = queue[head];
+      if (goal.has(cur)) {
+        reached = cur;
+        break;
+      }
+      const cx = cur % w;
+      const cy = Math.floor(cur / w);
+      const neighbors = [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]];
+      for (const [nx, ny] of neighbors) {
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = idx(nx, ny);
+        if (!owned(ni) || prev.has(ni)) continue;
+        prev.set(ni, cur);
+        queue.push(ni);
+      }
+    }
+    if (reached < 0) return null;
+
+    const path = [];
+    for (let i = reached; i >= 0; i = prev.get(i)) path.push(i);
+    return path.reverse();
+  }
+
+  function updateMinimap(state) {
+    const canvas = document.getElementById("minimap-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(minimapDpr, 0, 0, minimapDpr, 0, 0);
+    const cssW = canvas.width / minimapDpr;
+    const cssH = canvas.height / minimapDpr;
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const { w, h } = state.size;
+    const pad = 14;
+    const gap = 3;
+    const cell = Math.max(
+      3,
+      Math.min(
+        (cssW - pad * 2 - (w - 1) * gap) / w,
+        (cssH - pad * 2 - (h - 1) * gap) / h
+      )
+    );
+    const gridW = cell * w + gap * (w - 1);
+    const gridH = cell * h + gap * (h - 1);
+    const ox = (cssW - gridW) / 2;
+    const oy = (cssH - gridH) / 2;
+
+    // Graph connectors: thick same-color links between 4-adjacent cells,
+    // drawn underneath cells so only the stubs in the inter-cell gaps show
+    // — the board's connection graph at a glance.
+    ctx.lineCap = "round";
+    for (let i = 0; i < state.board.length; i++) {
+      const sq = state.board[i];
+      if (!sq.piece) continue;
+      const x = i % w;
+      const y = Math.floor(i / w);
+      const cx = ox + x * (cell + gap) + cell / 2;
+      const cy = oy + y * (cell + gap) + cell / 2;
+      ctx.strokeStyle = shadeForHeight(sq.piece, sq.height);
+      ctx.lineWidth = cell * 0.85;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      if (x + 1 < w && state.board[i + 1].piece === sq.piece) {
+        ctx.lineTo(ox + (x + 1) * (cell + gap) + cell / 2, cy);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+      }
+      if (y + 1 < h && state.board[i + w].piece === sq.piece) {
+        ctx.lineTo(cx, oy + (y + 1) * (cell + gap) + cell / 2);
+        ctx.stroke();
+      }
+    }
+
+    // Cells
+    for (let i = 0; i < state.board.length; i++) {
+      const sq = state.board[i];
+      const x = i % w;
+      const y = Math.floor(i / w);
+      const px = ox + x * (cell + gap);
+      const py = oy + y * (cell + gap);
+      roundRect(ctx, px, py, cell, cell, Math.max(2, cell * 0.22));
+      ctx.fillStyle = sq.piece ? shadeForHeight(sq.piece, sq.height) : "#23252c";
+      ctx.fill();
+    }
+
+    // Winning connection, when one exists: a glowing route through the
+    // winner's cells from one border to the other.
+    if (state.terminal && state.winner) {
+      const path = findWinningPath(state.board, w, h, state.winner);
+      if (path) {
+        const glowColor = state.winner === "Black" ? "#8f9bff" : "#ffd98a";
+        ctx.save();
+        ctx.shadowColor = glowColor;
+        ctx.shadowBlur = 7;
+        ctx.strokeStyle = glowColor;
+        ctx.lineWidth = Math.max(2, cell * 0.18);
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        path.forEach((i, k) => {
+          const x = ox + (i % w) * (cell + gap) + cell / 2;
+          const y = oy + Math.floor(i / w) * (cell + gap) + cell / 2;
+          if (k === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // Turn ring around the grid; falls back to winner / neutral when over.
+    const ringColor = state.terminal
+      ? state.winner
+        ? playerAccent(state.winner)
+        : "#6b6e78"
+      : playerAccent(state.player);
+    ctx.strokeStyle = ringColor;
+    ctx.lineWidth = 2;
+    roundRect(ctx, ox - 4, oy - 4, gridW + 8, gridH + 8, 6);
+    ctx.stroke();
+
+    // Turn dot in the panel title, matching the hand colors in the main HUD.
+    const dot = document.getElementById("minimap-turn-dot");
+    dot.style.background = state.terminal
+      ? state.winner
+        ? state.winner === "Black" ? "#3a3d46" : "#f2e9d8"
+        : "#6b6e78"
+      : state.player === "Black" ? "#3a3d46" : "#f2e9d8";
+  }
+
   function setBusy(value) {
     busy = value;
     // Only disable the buttons that would actually race a request in
@@ -494,6 +688,7 @@
     buildPieces(state);
     rebuildHighlights();
     updateHud(state);
+    updateMinimap(state);
   }
 
   async function postMove(move) {
@@ -651,6 +846,7 @@
 
   initScene();
   initUi();
+  setupMinimap();
   loadAiPresets();
   refresh({ rebuildBoard: true });
 })();
