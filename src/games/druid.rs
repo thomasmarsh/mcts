@@ -85,7 +85,7 @@ use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    game::{Game, PlayerIndex},
+    game::{Game, PlayerIndex, TerminalStatus},
     zobrist::LazyZobristTable,
 };
 
@@ -598,8 +598,203 @@ fn recompute_hash(state: &State, bits: usize) -> u64 {
     })
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct HashedState(State, u64);
+// A union-find over board cells, plus two virtual "border" nodes, used to
+// answer `connection()` in ~O(1) instead of via a full BFS on every query.
+// Deliberately *no* path compression: `find` needs to stay a pure `&self`
+// read (union-by-rank alone keeps it at worst O(log n)) so `Connectivity`
+// can answer queries from `Game::winner`/`terminal_status`, which only get
+// `&State` -- see `Connectivity` below for why all the mutation happens in
+// `Game::apply` instead.
+#[derive(Clone, Debug)]
+struct DisjointSet {
+    parent: Vec<u32>,
+    rank: Vec<u8>,
+}
+
+impl DisjointSet {
+    fn new(n: usize) -> Self {
+        DisjointSet { parent: (0..n as u32).collect(), rank: vec![0; n] }
+    }
+
+    fn find(&self, x: usize) -> usize {
+        let mut x = x;
+        while self.parent[x] as usize != x {
+            x = self.parent[x] as usize;
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra == rb {
+            return;
+        }
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            std::cmp::Ordering::Less => self.parent[ra] = rb as u32,
+            std::cmp::Ordering::Greater => self.parent[rb] = ra as u32,
+            std::cmp::Ordering::Equal => {
+                self.parent[rb] = ra as u32;
+                self.rank[ra] += 1;
+            }
+        }
+    }
+
+    fn connected(&self, a: usize, b: usize) -> bool {
+        self.find(a) == self.find(b)
+    }
+
+    fn reset(&mut self) {
+        for (i, p) in self.parent.iter_mut().enumerate() {
+            *p = i as u32;
+        }
+        self.rank.iter_mut().for_each(|r| *r = 0);
+    }
+}
+
+/// Incremental replacement for `State::connection()`'s full BFS, maintained
+/// alongside the Zobrist hash in `HashedState`. One union-find per color,
+/// over board cells plus two virtual border nodes for that color's win axis
+/// (Black: node `area` = top row, `area + 1` = bottom row; White: `area` =
+/// left column, `area + 1` = right column) -- a color has won once its two
+/// border nodes are in the same set.
+///
+/// Pieces never leave the board and height never decreases, but the piece
+/// *color* on top of a cell isn't monotonic: a lintel's legality only
+/// requires 2 of its 3 touched cells to already carry the mover's color
+/// (`State::moves`), so the third can be a cell the opponent already built
+/// on -- placing the lintel repaints all 3 touched cells to the mover's
+/// color regardless, silently deleting a node from the losing color's
+/// connectivity graph. A plain union-find can't retract a union for that, so
+/// on a repaint like that we just rebuild the losing color's whole
+/// union-find from the board (`rebuild`, O(area) -- the same cost
+/// `connection()`'s BFS always paid, just now only on the moves that
+/// actually need it instead of every ply). That rebuild has to happen
+/// inside `Game::apply` (which has `&mut State`) rather than lazily on the
+/// next query, because `Game::winner` only gets `&State`.
+#[derive(Clone, Debug)]
+struct Connectivity {
+    black: DisjointSet,
+    white: DisjointSet,
+}
+
+impl Connectivity {
+    fn new(size: Size) -> Self {
+        let n = size.area() as usize + 2;
+        Connectivity { black: DisjointSet::new(n), white: DisjointSet::new(n) }
+    }
+
+    fn set_mut(&mut self, color: Player) -> &mut DisjointSet {
+        match color {
+            Player::Black => &mut self.black,
+            Player::White => &mut self.white,
+        }
+    }
+
+    fn set(&self, color: Player) -> &DisjointSet {
+        match color {
+            Player::Black => &self.black,
+            Player::White => &self.white,
+        }
+    }
+
+    /// Union cell `i` (already `color` in `board`) with its same-color
+    /// neighbors and, if it's on `color`'s edge, that edge's border node.
+    fn union_into(&mut self, size: Size, board: &[Square], i: usize, color: Player) {
+        let area = size.area() as usize;
+        let Pos(x, y) = Pos::from(i, size);
+        let set = self.set_mut(color);
+        match color {
+            Player::Black => {
+                if y == 0 {
+                    set.union(i, area);
+                }
+                if y == size.h - 1 {
+                    set.union(i, area + 1);
+                }
+            }
+            Player::White => {
+                if x == 0 {
+                    set.union(i, area);
+                }
+                if x == size.w - 1 {
+                    set.union(i, area + 1);
+                }
+            }
+        }
+        for adj in Pos(x, y).adjacent(size) {
+            let j = adj.index(size.w);
+            if board[j].matches(color) {
+                self.set_mut(color).union(i, j);
+            }
+        }
+    }
+
+    /// Rebuild `color`'s union-find from scratch against the current board.
+    fn rebuild(&mut self, size: Size, board: &[Square], color: Player) {
+        self.set_mut(color).reset();
+        for i in 0..size.area() as usize {
+            if board[i].matches(color) {
+                self.union_into(size, board, i, color);
+            }
+        }
+    }
+
+    /// Incorporate a move that just placed `mover`'s piece on `cells` (their
+    /// post-move values already written into `board`), given each cell's
+    /// pre-move `Square`.
+    fn update(&mut self, size: Size, board: &[Square], cells: &[usize], old: &[Square], mover: Player) {
+        let opponent = match mover {
+            Player::Black => Player::White,
+            Player::White => Player::Black,
+        };
+        if old.iter().any(|sq| sq.piece == Some(opponent)) {
+            self.rebuild(size, board, opponent);
+        }
+        for &i in cells {
+            self.union_into(size, board, i, mover);
+        }
+    }
+
+    fn connected(&self, size: Size, color: Player) -> bool {
+        let area = size.area() as usize;
+        self.set(color).connected(area, area + 1)
+    }
+
+    fn winner(&self, size: Size) -> Option<Player> {
+        if self.connected(size, Player::Black) {
+            return Some(Player::Black);
+        }
+        if self.connected(size, Player::White) {
+            return Some(Player::White);
+        }
+        None
+    }
+}
+
+impl Default for Connectivity {
+    fn default() -> Self {
+        Connectivity::new(DEFAULT_SIZE)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct HashedState(State, u64, Connectivity);
+
+// Deliberately excludes `Connectivity` (field 2): it's a pure cache derived
+// from `(State, hash)` via `Game::apply`, but its internal union-find
+// representation -- e.g. which node ends up as which set's root -- isn't
+// canonical, so two logically-identical states reached via different move
+// orders can carry different `Connectivity` bytes despite being equal.
+// Comparing it would make this `PartialEq`/`Eq` impl unsound for the
+// transposition-table dedupe check (`table.rs`'s `entry.state == state`)
+// that relies on it.
+impl PartialEq for HashedState {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+impl Eq for HashedState {}
 
 impl HashedState {
     /// Panics if `size` isn't `Size::is_supported` -- callers that accept a
@@ -610,11 +805,23 @@ impl HashedState {
         // The all-zero hash is correct for any empty board under the scheme
         // below, regardless of size: no cell has a nonzero height yet, so no
         // bits get XORed in.
-        HashedState(State::new(size), 0)
+        HashedState(State::new(size), 0, Connectivity::new(size))
     }
 
     pub fn state(&self) -> &State {
         &self.0
+    }
+
+    /// Rebuild `Connectivity` from the current board. `Game::apply` is what
+    /// normally keeps it in sync incrementally; this is only needed after
+    /// mutating `.0.board` directly (bypassing `apply`), which only test
+    /// code that hand-constructs a position should ever do.
+    #[cfg(test)]
+    fn resync_connectivity(&mut self) {
+        self.2 = Connectivity::new(self.0.size);
+        for color in [Player::Black, Player::White] {
+            self.2.rebuild(self.0.size, &self.0.board, color);
+        }
     }
 }
 
@@ -652,6 +859,7 @@ impl Game for Druid {
         // board every ply.
         let (cells, n) = state.0.move_cells(*m);
         let old: [Square; 3] = std::array::from_fn(|i| state.0.board[cells[i]]);
+        let mover = state.0.player;
 
         state.0.apply(*m);
 
@@ -670,16 +878,34 @@ impl Game for Druid {
         }
         state.1 = hash;
 
+        state.2.update(state.0.size, &state.0.board, &cells[..n], &old[..n], mover);
+
         state
     }
 
     fn is_terminal(state: &Self::S) -> bool {
+        !matches!(Self::terminal_status(state), TerminalStatus::NotTerminal)
+    }
+
+    /// Single source of truth for both `is_terminal` and `winner`: both are
+    /// answered by `Connectivity` (see above), so computing them separately
+    /// (as the default `Game::terminal_status` does) means every caller that
+    /// needs both -- e.g. the end of an MCTS rollout, which checks
+    /// `is_terminal` to stop and then `winner`/`compute_utilities` to score
+    /// it -- would otherwise redo the same connectivity read twice.
+    /// Overriding this lets callers that go through `terminal_status` get
+    /// both from one read; `is_terminal` and `winner` (below) still each do
+    /// their own read when called alone, same as before.
+    fn terminal_status(state: &Self::S) -> TerminalStatus<Player> {
         // Per the ruleset (http://cambolbro.com/games/druid/), the game is
         // won by completing a cross-board connection. That's the only real
         // win condition -- a depleted hand alone does *not* end the game,
         // since the other piece type may still have legal moves (that was
         // the bug: this used to trigger on either hand alone).
-        //
+        if let Some(winner) = state.2.winner(state.0.size) {
+            return TerminalStatus::Winner(winner);
+        }
+
         // But the physical game's fallback for running out of pieces --
         // picking up and relocating a placed piece, or doubling the piece
         // count -- isn't implemented here, so this engine *can* reach a
@@ -691,17 +917,15 @@ impl Game for Druid {
         // `moves()` check once a hand is actually at zero for the mover --
         // that's the only situation where running dry is possible, so it's
         // a cheap, rare trigger rather than a call on every ply.
-        if state.0.connection().is_some() {
-            return true;
-        }
         let hand = state.0.current_hand();
         if hand.sarsens == 0 || hand.lintels == 0 {
             let mut actions = Vec::new();
             state.0.moves(&mut actions);
-            actions.is_empty()
-        } else {
-            false
+            if actions.is_empty() {
+                return TerminalStatus::Draw;
+            }
         }
+        TerminalStatus::NotTerminal
     }
 
     fn notation(state: &Self::S, m: &Self::A) -> String {
@@ -714,7 +938,7 @@ impl Game for Druid {
     }
 
     fn winner(state: &Self::S) -> Option<Player> {
-        state.0.connection()
+        state.2.winner(state.0.size)
     }
 
     fn player_to_move(state: &Self::S) -> Player {
@@ -883,6 +1107,11 @@ mod tests {
         state.0.board[Pos(2, 0).index(size.w)] = Square { height: 1, piece: Some(Player::Black) };
         state.0.hand_black.sarsens = 0;
         state.0.hand_black.lintels = 1;
+        // Poking `.0.board` directly bypasses `Game::apply`, which is what
+        // normally keeps `Connectivity` in sync -- resync it so
+        // `is_terminal`/`terminal_status` below read the position actually
+        // set up here, not whatever `Connectivity` was at `new()`.
+        state.resync_connectivity();
 
         assert!(state.0.connection().is_none());
         let mut actions = Vec::new();
@@ -892,6 +1121,11 @@ mod tests {
         assert!(
             !Druid::is_terminal(&state),
             "an empty sarsen hand must not end the game while a legal lintel move exists"
+        );
+        assert_eq!(
+            Druid::terminal_status(&state),
+            TerminalStatus::NotTerminal,
+            "terminal_status must agree with is_terminal"
         );
     }
 
@@ -915,6 +1149,11 @@ mod tests {
 
         assert!(Druid::is_terminal(&state), "no legal moves with no connection must be terminal");
         assert_eq!(Druid::winner(&state), None, "a no-legal-moves termination is a draw, not a win");
+        assert_eq!(
+            Druid::terminal_status(&state),
+            TerminalStatus::Draw,
+            "terminal_status must agree with is_terminal/winner"
+        );
     }
 
     #[test]
@@ -964,7 +1203,115 @@ mod tests {
             let i = Pos(x, 0).index(size.w);
             state.0.board[i] = Square { height: 1, piece: Some(Player::White) };
         }
+        // See the comment on the equivalent call above: poking `.0.board`
+        // directly bypasses the `Game::apply` path that normally keeps
+        // `Connectivity` in sync.
+        state.resync_connectivity();
         assert_eq!(state.0.connection(), Some(Player::White));
         assert!(Druid::is_terminal(&state), "a completed connection must be terminal");
+        assert_eq!(
+            Druid::terminal_status(&state),
+            TerminalStatus::Winner(Player::White),
+            "terminal_status must agree with is_terminal/connection"
+        );
+    }
+
+    #[test]
+    fn test_connectivity_survives_a_move_that_flips_the_bridging_cell() {
+        // `Connectivity`'s doc comment explains the subtlety this covers: a
+        // lintel's legality only requires 2 of its 3 touched cells to
+        // already match the mover's color, so a lintel can legally repaint
+        // a cell the *opponent* owns -- silently deleting it from the
+        // opponent's connectivity graph. A union-find that only ever unions
+        // (never retracts) would keep reporting the old connection as
+        // intact after that; this drives exactly that scenario through the
+        // real `Game::apply` path and checks the incremental `winner()`
+        // against a from-scratch `state.0.connection()` at every step.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        let col = 2u8;
+        let mid = size.h / 2;
+
+        let place = |state: HashedState, player: Player, pos: Pos| -> HashedState {
+            let mut state = state;
+            state.0.player = player;
+            Druid::apply(state, &Move(Piece::Sarsen, pos.index(size.w) as u8))
+        };
+
+        // Black builds the column's top and bottom segments, leaving a gap
+        // at the middle row -- not yet connected top-to-bottom.
+        for y in [0, 1, size.h - 2, size.h - 1] {
+            state = place(state, Player::Black, Pos(col, y));
+        }
+        assert_eq!(state.0.connection(), None, "gapped column must not be connected yet");
+        assert_eq!(Druid::winner(&state), None, "incremental winner must agree");
+
+        // Filling the gap connects the two segments into one continuous
+        // top-to-bottom column: Black wins.
+        state = place(state, Player::Black, Pos(col, mid));
+        assert_eq!(state.0.connection(), Some(Player::Black), "filling the gap should complete the connection");
+        assert_eq!(Druid::winner(&state), Some(Player::Black), "incremental winner must agree");
+
+        // White builds sarsens flanking the bridge cell in the same row, at
+        // the same height -- enough on their own (2 of 3 touched cells
+        // already White) to legally place a horizontal lintel through the
+        // bridge cell without it needing to match either White end.
+        state = place(state, Player::White, Pos(col - 1, mid));
+        state = place(state, Player::White, Pos(col + 1, mid));
+        state.0.player = Player::White;
+        state = Druid::apply(state, &Move(Piece::Lintel(Orientation::Horizontal), Pos(col - 1, mid).index(size.w) as u8));
+
+        // The bridge cell is now White, splitting Black's column back into
+        // two disconnected segments -- Black must no longer read as
+        // connected, and the incremental path must agree with a from-scratch
+        // recompute rather than keep reporting the connection that used to
+        // exist through the now-repainted cell.
+        assert_eq!(
+            state.0.connection(),
+            None,
+            "the lintel should have broken Black's column by repainting the bridge cell"
+        );
+        assert_eq!(
+            Druid::winner(&state),
+            None,
+            "incremental winner() must reflect the broken bridge, not the stale pre-flip connection"
+        );
+    }
+
+    #[test]
+    fn test_incremental_connectivity_matches_full_recompute() {
+        // Randomized-game analogue of
+        // `test_incremental_hash_matches_full_recompute`: after every move,
+        // the incremental `Druid::winner` (backed by `Connectivity`) must
+        // agree with a from-scratch `state.0.connection()` BFS.
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
+            let mut rng = SmallRng::seed_from_u64(0xC0117 + size.w as u64 * 1000 + size.h as u64);
+
+            for game in 0..20 {
+                let mut state = HashedState::new(size);
+                let mut actions = Vec::new();
+                for ply in 0..200 {
+                    if state.0.connection().is_some() {
+                        break;
+                    }
+                    state.0.moves(&mut actions);
+                    if actions.is_empty() {
+                        break;
+                    }
+                    let m = actions[rng.gen_range(0..actions.len())];
+                    state = Druid::apply(state, &m);
+                    actions.clear();
+
+                    assert_eq!(
+                        Druid::winner(&state),
+                        state.0.connection(),
+                        "incremental winner diverged from full recompute at size={size:?} game={game} ply={ply}"
+                    );
+                }
+            }
+        }
     }
 }

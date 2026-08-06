@@ -16,6 +16,7 @@ pub enum Move {
     Sub,
 }
 
+#[derive(Clone, Debug)]
 pub struct Unit;
 
 impl PlayerIndex for Unit {

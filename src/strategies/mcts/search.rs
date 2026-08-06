@@ -516,7 +516,11 @@ where
             );
         }
 
-        let utilities = G::compute_utilities(&self.trial.as_ref().unwrap().state);
+        let trial = self.trial.as_ref().unwrap();
+        let utilities = trial
+            .terminal
+            .utilities(G::num_players())
+            .unwrap_or_else(|| G::compute_utilities(&trial.state));
 
         (actions, utilities)
     }

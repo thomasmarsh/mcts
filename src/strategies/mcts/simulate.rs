@@ -1,6 +1,7 @@
 use super::*;
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::TerminalStatus;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -26,6 +27,12 @@ pub struct Trial<G: Game> {
     pub state: G::S,
     pub status: Status,
     pub depth: usize,
+    /// The terminal check already performed on `state` to end the playout
+    /// loop (when it ended naturally rather than via the depth cutoff) --
+    /// consumers that need the winner/utilities of `state` should check
+    /// this before calling `Game::winner`/`Game::compute_utilities` again,
+    /// to avoid redoing whatever work `Game::terminal_status` did.
+    pub terminal: TerminalStatus<G::P>,
 }
 
 pub trait SimulateStrategy<G>: Clone + Sync + Send + Default
@@ -56,19 +63,24 @@ where
         let mut available = Vec::new();
         let mut depth = 0;
         let end_type;
+        let terminal;
         loop {
-            if G::is_terminal(&state) {
+            let status = G::terminal_status(&state);
+            if !matches!(status, TerminalStatus::NotTerminal) {
                 end_type = Some(EndType::NaturalEnd);
+                terminal = status;
                 break;
             }
             if depth >= max_playout_depth {
                 end_type = Some(EndType::TurnLimit);
+                terminal = TerminalStatus::NotTerminal;
                 break;
             }
             available.clear();
             G::generate_actions(&state, &mut available);
             if available.is_empty() {
                 end_type = Some(EndType::NaturalEnd);
+                terminal = TerminalStatus::NotTerminal;
                 break;
             }
             let player = G::player_to_move(&state).to_index();
@@ -83,6 +95,7 @@ where
             state,
             status: Status { end_type },
             depth,
+            terminal,
         }
     }
 
@@ -230,7 +243,7 @@ where
             WinLossDraw => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
-                    if G::is_terminal(&child_state) {
+                    if !matches!(G::terminal_status(&child_state), TerminalStatus::NotTerminal) {
                         return Some(action);
                     }
                 }
@@ -240,11 +253,10 @@ where
             WinLoss => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
-                    if G::is_terminal(&child_state) {
-                        if G::winner(&child_state).is_some() {
-                            return Some(action);
-                        }
-                        draw = Some(action);
+                    match G::terminal_status(&child_state) {
+                        TerminalStatus::Winner(_) => return Some(action),
+                        TerminalStatus::Draw => draw = Some(action),
+                        TerminalStatus::NotTerminal => {}
                     }
                 }
                 draw
@@ -253,15 +265,15 @@ where
             Win => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
-                    if G::is_terminal(&child_state) {
-                        if let Some(winner) = G::winner(&child_state) {
+                    match G::terminal_status(&child_state) {
+                        TerminalStatus::Winner(winner) => {
                             if winner.to_index() == player {
                                 return Some(action);
                             }
                             loser = Some(action);
-                        } else {
-                            draw = Some(action);
                         }
+                        TerminalStatus::Draw => draw = Some(action),
+                        TerminalStatus::NotTerminal => {}
                     }
                 }
                 loser.or(draw)

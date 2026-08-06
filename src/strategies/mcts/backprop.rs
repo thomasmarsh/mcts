@@ -92,7 +92,15 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             vec![]
         };
 
-        let utilities = G::compute_utilities(&trial.state);
+        // `trial.terminal` already carries the winner if `playout` ended
+        // naturally (rather than hitting the depth cutoff) -- reuse it
+        // instead of re-deriving utilities from `trial.state` via
+        // `Game::compute_utilities`, which for games like Druid would redo
+        // the same connectivity scan `playout` just paid for.
+        let utilities = trial
+            .terminal
+            .utilities(G::num_players())
+            .unwrap_or_else(|| G::compute_utilities(&trial.state));
         for (parent_id_opt, node_id) in stack.reverse_pairs2() {
             debug_assert!(
                 (parent_id_opt.is_some() && !index.get(*node_id).is_root())

@@ -13,6 +13,7 @@ impl std::fmt::Display for Unit {
 #[derive(Clone)]
 pub struct UnitGame;
 
+#[derive(Clone, Debug)]
 pub struct Player;
 
 impl PlayerIndex for Player {

@@ -18,6 +18,39 @@ pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + S
 // Blanket implementation
 impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send> Action for T {}
 
+/// The outcome of checking whether a state is terminal, bundled with the
+/// winner when it is -- so a caller that needs both `is_terminal` and
+/// `winner` on the same state (the common case at the end of a rollout) can
+/// get them from a single underlying check instead of two, when a `Game`
+/// overrides `Game::terminal_status` to compute them together (see
+/// `Druid::terminal_status`, which computes the win condition once instead
+/// of via separate `is_terminal`/`winner` calls that each redo the same
+/// connectivity scan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalStatus<P> {
+    NotTerminal,
+    Draw,
+    Winner(P),
+}
+
+impl<P: PlayerIndex> TerminalStatus<P> {
+    /// The utilities this status implies, or `None` if it isn't terminal --
+    /// matching `Game::compute_utilities`'s default (1./-1. for the winner,
+    /// 0. for a draw) without touching the state again. Callers fall back to
+    /// `Game::compute_utilities` on `None` since a non-terminal cutoff (e.g.
+    /// a playout depth limit) still needs a utility.
+    pub fn utilities(&self, num_players: usize) -> Option<Vec<f64>> {
+        match self {
+            TerminalStatus::NotTerminal => None,
+            TerminalStatus::Draw => Some(vec![0.; num_players]),
+            TerminalStatus::Winner(w) => {
+                let wi = w.to_index();
+                Some((0..num_players).map(|i| if i == wi { 1. } else { -1. }).collect())
+            }
+        }
+    }
+}
+
 pub trait Game: Sized + Clone + Sync + Send {
     /// The type representing the state of your game. Ideally, this
     /// should be as small as possible and have a cheap Clone or Copy
@@ -29,7 +62,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     type A: Action;
 
     /// The player type. This value only needs to conform to PlayerIndex.
-    type P: PlayerIndex;
+    type P: PlayerIndex + Clone + std::fmt::Debug + Sync + Send;
 
     /// Given a state, apply an action to it producing a new state.
     fn apply(state: Self::S, action: &Self::A) -> Self::S;
@@ -48,6 +81,22 @@ pub trait Game: Sized + Clone + Sync + Send {
         let mut actions = Vec::new();
         Self::generate_actions(state, &mut actions);
         actions.is_empty()
+    }
+
+    /// `is_terminal` and `winner`, bundled. The default just calls both in
+    /// sequence (so behavior is unchanged for every `Game` that doesn't
+    /// override this), but a game whose terminal check and win check share
+    /// underlying work -- e.g. Druid, where both are answered by the same
+    /// board connectivity scan -- can override this to do that work once.
+    fn terminal_status(state: &Self::S) -> TerminalStatus<Self::P> {
+        if Self::is_terminal(state) {
+            match Self::winner(state) {
+                Some(w) => TerminalStatus::Winner(w),
+                None => TerminalStatus::Draw,
+            }
+        } else {
+            TerminalStatus::NotTerminal
+        }
     }
 
     /// For games with hidden information, state may be determinized
