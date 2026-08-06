@@ -1114,12 +1114,10 @@ mod tests {
             state = Druid::apply(state, &action);
         }
 
-        for entries in search.table.table.0.values() {
+        for len in search.table.bucket_lens() {
             assert_eq!(
-                entries.len(),
-                1,
-                "hash collision: {} distinct states shared one Zobrist hash",
-                entries.len()
+                len, 1,
+                "hash collision: {len} distinct states shared one Zobrist hash"
             );
         }
     }

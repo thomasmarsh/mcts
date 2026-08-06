@@ -401,7 +401,7 @@ mod tests {
                     .use_transpositions(true),
             );
             _ = search.choose_action(&HashedPosition::default());
-            assert!(search.table.hits > 0);
+            assert!(search.table.hits.load(std::sync::atomic::Ordering::Relaxed) > 0);
 
             render::render_trans(&search, &HashedPosition::default());
         }
@@ -430,13 +430,13 @@ mod tests {
         );
         let state = HashedPosition::default();
         _ = ts.choose_action(&state);
-        println!("hits: {}", ts.table.hits);
+        println!("hits: {}", ts.table.hits.load(std::sync::atomic::Ordering::Relaxed));
         println!("table:");
         println!("{:#?}", ts.table);
         println!("grave:");
         println!("{:#?}", ts.stats.grave);
 
-        assert!(ts.table.hits > 0);
+        assert!(ts.table.hits.load(std::sync::atomic::Ordering::Relaxed) > 0);
         // render::render_trans(&ts);
     }
 }

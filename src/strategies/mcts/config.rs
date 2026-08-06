@@ -90,6 +90,16 @@ where
     /// cloning a full nested `TreeSearch` per rollout isn't worth it there.
     /// `1` (the default) keeps the untouched single-rollout-per-leaf path.
     pub num_rollouts_per_leaf: usize,
+
+    /// Number of worker threads that descend *one shared* tree concurrently
+    /// ("tree parallelism"), using virtual loss so they spread out across
+    /// the tree instead of piling onto the same path. Unlike `num_threads`
+    /// (root parallelism, independent trees merged at the end), this shares
+    /// search effort across threads -- the bigger win, at the cost of the
+    /// arena/stats needing to be concurrent-safe. Mutually exclusive with
+    /// `num_threads > 1`. `1` (the default) keeps the untouched
+    /// single-threaded path.
+    pub num_tree_threads: usize,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -114,6 +124,7 @@ where
             name: format!("mcts[{}]", S::friendly_name()),
             num_threads: 1,
             num_rollouts_per_leaf: 1,
+            num_tree_threads: 1,
         }
     }
 }
@@ -209,6 +220,11 @@ where
 
     pub fn num_rollouts_per_leaf(mut self, num_rollouts_per_leaf: usize) -> Self {
         self.num_rollouts_per_leaf = num_rollouts_per_leaf.max(1);
+        self
+    }
+
+    pub fn num_tree_threads(mut self, num_tree_threads: usize) -> Self {
+        self.num_tree_threads = num_tree_threads.max(1);
         self
     }
 }

@@ -1,18 +1,19 @@
 use super::*;
 use crate::game::Action;
 
-use serde::Serialize;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::*;
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ActionStats {
     pub num_visits: u32,
     pub score: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PlayerStats {
     pub score: f64,
     pub sum_squared_score: f64,
@@ -72,42 +73,62 @@ pub enum QInit {
     Infinity,
 }
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct Edge<A: Action> {
-    pub node_id: Option<index::Id>,
     pub action: A,
+    node_id: OnceLock<index::Id>,
     pub stats: NodeStats,
 }
 
-#[derive(Serialize, Debug)]
-pub struct NodeStats {
-    pub num_visits: u32,
+/// The mutable core of `NodeStats`: everything backprop accumulates into.
+/// Kept behind one lock so a single write covers a whole `update` call.
+#[derive(Debug, Clone)]
+struct NodeStatsData {
+    num_visits: u32,
+    player: Vec<PlayerStats>,
+}
 
-    // For virtual loss
+#[derive(Debug)]
+pub struct NodeStats {
+    // For virtual loss -- lock-free since it's touched on every descent/
+    // backprop, the hottest path in tree-parallel search.
     pub num_visits_virtual: AtomicU32,
 
-    pub player: Vec<PlayerStats>,
+    data: RwLock<NodeStatsData>,
 }
 
 impl Clone for NodeStats {
     fn clone(&self) -> Self {
+        let data = self.data.read().unwrap();
         Self {
-            num_visits: self.num_visits,
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
-            player: self.player.clone(),
+            data: RwLock::new(data.clone()),
         }
     }
 }
 
 impl<A: Action> Edge<A> {
     pub fn is_explored(&self) -> bool {
-        self.node_id.is_some()
+        self.node_id.get().is_some()
+    }
+
+    pub fn node_id(&self) -> Option<index::Id> {
+        self.node_id.get().copied()
+    }
+
+    /// Resolves the edge-creation race: if two threads land on this
+    /// unexplored edge concurrently, only the first `create` closure to
+    /// arrive actually runs (allocating a new arena node); the other blocks
+    /// and then reads the same `Id` back, rather than both creating separate
+    /// children for the same edge.
+    pub fn get_or_create_child(&self, create: impl FnOnce() -> index::Id) -> index::Id {
+        *self.node_id.get_or_init(create)
     }
 
     pub fn unexplored(action: A, num_players: usize) -> Edge<A> {
         Self {
             action,
-            node_id: None,
+            node_id: OnceLock::new(),
             stats: NodeStats::new(num_players),
         }
     }
@@ -116,14 +137,32 @@ impl<A: Action> Edge<A> {
 impl NodeStats {
     pub fn new(num_players: usize) -> Self {
         Self {
-            num_visits: 0,
             num_visits_virtual: AtomicU32::new(0),
-            player: vec![PlayerStats::default(); num_players],
+            data: RwLock::new(NodeStatsData {
+                num_visits: 0,
+                player: vec![PlayerStats::default(); num_players],
+            }),
         }
     }
 
+    pub fn num_visits(&self) -> u32 {
+        self.data.read().unwrap().num_visits
+    }
+
+    pub fn score(&self, player_index: usize) -> f64 {
+        self.data.read().unwrap().player[player_index].score
+    }
+
+    pub fn sum_squared_score(&self, player_index: usize) -> f64 {
+        self.data.read().unwrap().player[player_index].sum_squared_score
+    }
+
+    pub fn amaf(&self, player_index: usize) -> ActionStats {
+        self.data.read().unwrap().player[player_index].amaf
+    }
+
     pub fn total_visits(&self) -> u32 {
-        self.num_visits + self.num_visits_virtual.load(Relaxed)
+        self.num_visits() + self.num_visits_virtual.load(Relaxed)
     }
 
     /// Marks this edge as "in flight" for a concurrent tree-parallel search:
@@ -140,22 +179,31 @@ impl NodeStats {
         debug_assert!(prev >= 1, "virtual loss removed without a matching add");
     }
 
-    pub fn update(&mut self, utilities: &[f64]) {
-        self.num_visits += 1;
+    pub fn update(&self, utilities: &[f64]) {
+        let mut data = self.data.write().unwrap();
+        data.num_visits += 1;
         utilities.iter().enumerate().for_each(|(p, reward)| {
-            self.player[p].score += reward;
-            self.player[p].sum_squared_score += utilities[p] * utilities[p];
+            data.player[p].score += reward;
+            data.player[p].sum_squared_score += utilities[p] * utilities[p];
         });
+    }
+
+    pub fn add_amaf(&self, player_index: usize, utility: f64) {
+        let mut data = self.data.write().unwrap();
+        let amaf = &mut data.player[player_index].amaf;
+        amaf.num_visits += 1;
+        amaf.score += utility;
     }
 
     // NOTE: needs to be overridden for score bounded search
     pub fn expected_score(&self, player_index: usize) -> f64 {
-        if self.num_visits == 0 {
+        let data = self.data.read().unwrap();
+        if data.num_visits == 0 {
             0.
         } else {
             let loss_visits = self.num_visits_virtual.load(Relaxed) as f64;
 
-            (self.player[player_index].score - loss_visits) / (self.num_visits as f64 + loss_visits)
+            (data.player[player_index].score - loss_visits) / (data.num_visits as f64 + loss_visits)
         }
     }
 
@@ -172,7 +220,7 @@ impl NodeStats {
             Infinity => 10000.0,
             Loss => -1.,
             Parent => {
-                if self.num_visits == 0 {
+                if self.num_visits() == 0 {
                     10000.
                 } else {
                     self.expected_score(player_index)
@@ -183,20 +231,23 @@ impl NodeStats {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub enum NodeState<A: Action> {
     Terminal,
-    Leaf,
     // NOTE: this Vec necessitates O(n) lookups. Consider FxHashMap
     Expanded(Vec<Edge<A>>),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Node<A: Action> {
     pub player_idx: usize,
-    pub state: NodeState<A>,
     pub hash: u64,
     pub is_root: bool,
+    // Unset == not yet expanded ("leaf"). `expand` resolves this exactly
+    // once via `get_or_init`, so concurrent threads landing on the same
+    // unexpanded node race for free: only the winner runs `G::is_terminal`/
+    // `generate_actions`, the rest block and read its result.
+    state: OnceLock<NodeState<A>>,
 }
 
 impl<A: Action> Node<A>
@@ -206,40 +257,46 @@ where
     pub fn new(player_idx: usize, hash: u64) -> Self {
         Self {
             player_idx,
-            state: NodeState::Leaf,
             hash,
             is_root: false,
+            state: OnceLock::new(),
         }
     }
 
     #[inline]
     pub fn is_terminal(&self) -> bool {
-        matches!(&self.state, NodeState::Terminal)
+        matches!(self.state.get(), Some(NodeState::Terminal))
     }
 
     #[inline]
     pub fn is_leaf(&self) -> bool {
-        matches!(&self.state, NodeState::Leaf)
+        self.state.get().is_none()
     }
 
     #[inline]
     pub fn is_expanded(&self) -> bool {
-        matches!(&self.state, NodeState::Expanded { .. })
+        matches!(self.state.get(), Some(NodeState::Expanded { .. }))
+    }
+
+    /// Resolves this node's Leaf -> {Terminal, Expanded} transition exactly
+    /// once (see the `state` field doc comment).
+    pub fn expand(&self, init: impl FnOnce() -> NodeState<A>) -> &NodeState<A> {
+        self.state.get_or_init(init)
     }
 
     #[inline]
     pub fn edges(&self) -> &Vec<Edge<A>> {
-        let NodeState::Expanded(edges) = &self.state else {
+        let Some(NodeState::Expanded(edges)) = self.state.get() else {
             unreachable!()
         };
         edges
     }
 
-    // NOTE: O(n) lookup
-    pub fn child_edge_mut(&mut self, child_id: index::Id) -> &mut Edge<A> {
-        self.edges_mut()
-            .iter_mut()
-            .find(|e| e.node_id == Some(child_id))
+    pub fn child_edge(&self, child_id: index::Id) -> &Edge<A> {
+        // NOTE: O(n) lookup
+        self.edges()
+            .iter()
+            .find(|e| e.node_id() == Some(child_id))
             .unwrap()
     }
 
@@ -251,15 +308,7 @@ where
     }
 
     pub fn node_ids(&self) -> Vec<Option<index::Id>> {
-        self.edges().iter().map(|edge| edge.node_id).collect()
-    }
-
-    #[inline]
-    pub fn edges_mut(&mut self) -> &mut Vec<Edge<A>> {
-        let NodeState::Expanded(edges) = &mut self.state else {
-            unreachable!()
-        };
-        edges
+        self.edges().iter().map(|edge| edge.node_id()).collect()
     }
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
@@ -270,8 +319,8 @@ where
         }
     }
 
-    pub fn update(&mut self, action_idx: usize, utilities: &[f64]) {
-        self.edges_mut()[action_idx].stats.update(utilities);
+    pub fn update(&self, action_idx: usize, utilities: &[f64]) {
+        self.edges()[action_idx].stats.update(utilities);
     }
 
     pub fn is_root(&self) -> bool {

@@ -10,7 +10,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         &self,
         parent_id_opt: Option<index::Id>,
         trace: &[(G::A, usize)],
-        index: &mut TreeIndex<G::A>,
+        index: &TreeIndex<G::A>,
         node_id: index::Id,
         utilities: &[f64],
     ) {
@@ -29,19 +29,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 .get(parent_id)
                 .edges()
                 .iter()
-                .filter_map(|edge| edge.node_id.map(|node_id| (edge.action.clone(), node_id)))
+                .filter_map(|edge| edge.node_id().map(|node_id| (edge.action.clone(), node_id)))
                 .collect();
 
             for (action, p) in trace {
                 if let Some(child_id) = sibling_actions.get(action) {
-                    let child = index.get_mut(*child_id);
+                    let child = index.get(*child_id);
                     if child.player_idx == *p {
+                        let stats = &index.get(parent_id).child_edge(*child_id).stats;
                         (0..G::num_players()).for_each(|i| {
-                            let parent = index.get_mut(parent_id);
-                            // NOTE: O(n) lookup
-                            let stats = &mut parent.child_edge_mut(*child_id).stats;
-                            stats.player[i].amaf.num_visits += 1;
-                            stats.player[i].amaf.score += utilities[i];
+                            stats.add_amaf(i, utilities[i]);
                         })
                     }
                 }
@@ -52,16 +49,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_grave<G: Game>(
         &self,
         trace: &[(G::A, usize)],
-        index: &mut TreeIndex<G::A>,
-        global: &mut TreeStats<G>,
+        index: &TreeIndex<G::A>,
+        global: &TreeStats<G>,
         node_id: index::Id,
         utilities: &[f64],
     ) {
-        let node = index.get_mut(node_id);
+        let node = index.get(node_id);
         if !node.is_root() {
+            let mut grave = global.grave.write().unwrap();
             for (action, p) in trace {
-                let players = global
-                    .grave
+                let players = grave
                     .entry(node.hash)
                     .or_insert_with(|| vec![Default::default(); G::num_players()]);
                 let player = players.get_mut(*p).unwrap();
@@ -77,9 +74,9 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update<G>(
         &self,
         stack: &NodeStack<G::A>,
-        global: &mut TreeStats<G>,
-        index: &mut TreeIndex<G::A>,
-        root_stats: &mut NodeStats,
+        global: &TreeStats<G>,
+        index: &TreeIndex<G::A>,
+        root_stats: &NodeStats,
         trial: simulate::Trial<G>,
         flags: BackpropFlags,
     ) where
@@ -111,8 +108,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             } else {
                 let parent_id = parent_id_opt.cloned().unwrap();
                 debug_assert_ne!(parent_id, *node_id);
-                let parent = index.get_mut(parent_id);
-                let edge_stats = &mut parent.child_edge_mut(*node_id).stats;
+                let edge_stats = &index.get(parent_id).child_edge(*node_id).stats;
                 edge_stats.update(&utilities);
                 edge_stats.remove_virtual_loss();
             }
@@ -143,14 +139,14 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 
         // update: GLOBAL
         if flags.global() {
+            let mut actions = global.actions.write().unwrap();
             for (action, p) in &amaf_actions {
-                let action_stats = global.actions.entry(action.clone()).or_default();
+                let action_stats = actions.entry(action.clone()).or_default();
                 action_stats.num_visits += 1;
                 action_stats.score += utilities[*p];
 
-                let player_action_stats = global.player_actions[*p]
-                    .entry(action.clone())
-                    .or_default();
+                let mut player_actions = global.player_actions[*p].write().unwrap();
+                let player_action_stats = player_actions.entry(action.clone()).or_default();
                 player_action_stats.num_visits += 1;
                 player_action_stats.score += utilities[*p];
             }

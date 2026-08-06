@@ -189,6 +189,123 @@ mod tests {
     }
 
     #[test]
+    fn test_tree_parallel_picks_a_legal_action() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_tree_threads(4),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
+    fn test_tree_parallel_with_grave_picks_a_legal_action() {
+        // `Rave`'s GRAVE backprop flag routes through `TreeStats::grave`
+        // (read in `select_step`, written in `backprop_step`'s
+        // `update_grave`) -- exercise that lock-protected path specifically
+        // under concurrency, not just the plain-Ucb1 tests above.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::RaveMastDm>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .use_transpositions(true)
+                .num_tree_threads(4),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
+    fn test_num_tree_threads_one_is_deterministic_given_a_seed() {
+        // `num_tree_threads == 1` should take the untouched single-tree path
+        // (search.rs's `choose_action_tree_parallel` dispatch only fires
+        // above 1), so this is a baseline regression guard that the new
+        // config field doesn't perturb existing single-threaded behavior.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+        let mut a = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .seed(42)
+                .num_tree_threads(1),
+        );
+        let mut b = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .seed(42)
+                .num_tree_threads(1),
+        );
+
+        assert_eq!(a.choose_action(&init_state), b.choose_action(&init_state));
+    }
+
+    #[test]
+    fn test_tree_parallel_stress_many_threads_small_tree_high_iterations() {
+        // Concurrent stress test for the shared-arena/shared-stats path:
+        // many worker threads, a tiny game (small tree, lots of edge/node
+        // creation races per node), `expand_threshold(0)` so `select`
+        // descends multiple levels per iteration (exercising virtual loss
+        // on longer stacks, not just the root edge), and enough iterations
+        // to make edge-creation races (`Edge::get_or_create_child`) and
+        // transposition races (`TranspositionTable::get_or_insert`) likely
+        // to actually fire rather than just compile. A broken race would
+        // either panic (`NodeStats::remove_virtual_loss`'s
+        // `debug_assert!(prev >= 1, ..)` on an accounting mismatch, or a
+        // duplicate-child bug tripping other debug_asserts in `backprop`)
+        // or hang (a lock-ordering cycle) -- this test passing is itself
+        // the signal. `root_stats.num_visits()` should also exactly equal
+        // the number of completed iterations, since every iteration's
+        // `select` path passes through (and `backprop` updates) the root
+        // exactly once, regardless of thread/rollout count.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(2000)
+                .expand_threshold(0)
+                .use_transpositions(true)
+                .num_tree_threads(8),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+
+        assert_eq!(
+            ts.root_stats.num_visits() as usize,
+            ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        assert_eq!(ts.root_stats.num_visits(), 2000);
+    }
+
+    #[test]
     fn test_basics() {
         use crate::games::ttt::*;
         type G = TicTacToe;
@@ -260,13 +377,13 @@ mod tests {
         let child_id = step(&mut ts);
 
         assert_eq!(child_id, root_id);
-        assert_eq!(ts.root_stats.num_visits, 1);
+        assert_eq!(ts.root_stats.num_visits(), 1);
 
         // Second pass: expand child node
         let child_id = step(&mut ts);
 
         assert_ne!(child_id, root_id);
-        assert_eq!(ts.root_stats.num_visits, 2);
+        assert_eq!(ts.root_stats.num_visits(), 2);
 
         // Third pass: expand child node
         let _child_id = step(&mut ts);

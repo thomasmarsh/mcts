@@ -180,8 +180,8 @@ where
     let unvisited_value = strategy.unvisited_value(ctx, aux);
 
     let child_value = |i: usize| {
-        if let Some(child_id) = &set[i].node_id {
-            strategy.score_child(ctx, *child_id, &set[i], aux)
+        if let Some(child_id) = set[i].node_id() {
+            strategy.score_child(ctx, child_id, &set[i], aux)
         } else {
             unvisited_value
         }
@@ -226,7 +226,7 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
         _: Self::Aux,
     ) -> (i64, f64) {
         (
-            edge.stats.num_visits as i64,
+            edge.stats.num_visits() as i64,
             edge.stats.expected_score(ctx.player),
         )
     }
@@ -335,7 +335,7 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
             .edges()
             .iter()
             .map(|edge| {
-                edge.node_id
+                edge.node_id()
                     .map(|child_id| self.score_child(ctx, child_id, edge, ()))
                     .unwrap_or(self.unvisited_value(ctx, ())) as f32
             })
@@ -399,7 +399,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let stats = ctx.current_stats();
-        ((stats.num_visits as f64).max(1.)).ln()
+        ((stats.num_visits() as f64).max(1.)).ln()
     }
 
     #[inline(always)]
@@ -469,7 +469,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
+        ((ctx.current_stats().num_visits() as f64).max(1.)).ln()
     }
 
     #[inline(always)]
@@ -483,7 +483,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
         let exploit = edge.stats.exploitation_score(ctx.player);
         let num_visits = edge.stats.total_visits();
         let sample_variance = 0f64.max(
-            edge.stats.player[ctx.player].sum_squared_score / num_visits as f64 - exploit * exploit,
+            edge.stats.sum_squared_score(ctx.player) / num_visits as f64 - exploit * exploit,
         );
         let visits_fraction = parent_log / num_visits as f64;
 
@@ -693,7 +693,7 @@ impl<G: Game> SelectStrategy<G> for Rave {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
+        ((ctx.current_stats().num_visits() as f64).max(1.)).ln()
     }
 
     #[inline(always)]
@@ -720,7 +720,7 @@ impl<G: Game> SelectStrategy<G> for Rave {
         let explore = self.ucb.score(
             parent_log,
             n,
-            edge.stats.player[ctx.player].sum_squared_score,
+            edge.stats.sum_squared_score(ctx.player),
             exploit,
         );
 
@@ -788,7 +788,7 @@ impl<G: Game> SelectStrategy<G> for Amaf {
 
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
-        ((ctx.current_stats().num_visits as f64).max(1.)).ln()
+        ((ctx.current_stats().num_visits() as f64).max(1.)).ln()
     }
 
     #[inline(always)]
@@ -799,8 +799,9 @@ impl<G: Game> SelectStrategy<G> for Amaf {
         edge: &Edge<G::A>,
         parent_log: f64,
     ) -> f64 {
-        let amaf_n = 1.max(edge.stats.player[ctx.player].amaf.num_visits) as f64;
-        let amaf_q = edge.stats.player[ctx.player].amaf.score;
+        let amaf_stats = edge.stats.amaf(ctx.player);
+        let amaf_n = 1.max(amaf_stats.num_visits) as f64;
+        let amaf_q = amaf_stats.score;
         let amaf = amaf_q / amaf_n;
 
         let exploit = edge.stats.exploitation_score(ctx.player);

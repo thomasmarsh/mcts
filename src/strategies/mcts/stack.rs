@@ -1,6 +1,5 @@
 use super::index::Id;
 use super::node::Edge;
-use super::node::NodeState;
 use super::node::NodeStats;
 use super::search::TreeIndex;
 use crate::game::Action;
@@ -65,22 +64,8 @@ impl<A: Action> NodeStack<A> {
         *self.stack.last().unwrap()
     }
 
-    // NOTE: O(n) lookup. TODO: benchmark against FxHashMap
-    pub fn child_index(&self, index: &TreeIndex<A>, parent_id: Id, child_id: Id) -> usize {
-        index
-            .get(parent_id)
-            .edges()
-            .iter()
-            .position(|e| e.node_id.is_some_and(|id| id == child_id))
-            .unwrap()
-    }
-
     pub fn edge<'a>(&self, index: &'a TreeIndex<A>, parent_id: Id, child_id: Id) -> &'a Edge<A> {
-        let action_index = self.child_index(index, parent_id, child_id);
-        let NodeState::Expanded(ref edges) = &(index.get(parent_id).state) else {
-            unreachable!()
-        };
-        &edges[action_index]
+        index.get(parent_id).child_edge(child_id)
     }
 
     #[inline]

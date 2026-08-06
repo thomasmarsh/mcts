@@ -335,18 +335,17 @@ where
         player: usize,
         rng: &mut SmallRng,
     ) -> &'a G::A {
+        let player_actions = stats.player_actions[player].read().unwrap();
         let action_scores = available
             .iter()
             .map(|action| {
-                let score = stats.player_actions[player]
-                    .get(action)
-                    .map_or(1., |stats| {
-                        if stats.num_visits > 0 {
-                            stats.score / stats.num_visits as f64
-                        } else {
-                            1.
-                        }
-                    });
+                let score = player_actions.get(action).map_or(1., |stats| {
+                    if stats.num_visits > 0 {
+                        stats.score / stats.num_visits as f64
+                    } else {
+                        1.
+                    }
+                });
 
                 (score, action)
             })

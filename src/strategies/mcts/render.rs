@@ -67,7 +67,7 @@ fn print_trans<G>(
                 stack.push((
                     node_id,
                     print_id,
-                    edge.node_id.unwrap(),
+                    edge.node_id().unwrap(),
                     G::apply(state.clone(), &edge.action),
                 ));
             }
@@ -100,7 +100,7 @@ where
             for edge in node.edges().iter().filter(|x| x.is_explored()) {
                 stack.push((
                     node_id,
-                    edge.node_id.unwrap(),
+                    edge.node_id().unwrap(),
                     G::apply(state.clone(), &edge.action),
                 ));
             }

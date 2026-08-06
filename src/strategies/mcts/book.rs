@@ -2,9 +2,8 @@ use super::index;
 use crate::game::Action;
 
 use rustc_hash::FxHashMap;
-use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Entry<A: Action> {
     pub children: FxHashMap<A, index::Id>,
     pub utilities: Vec<f64>,
@@ -53,7 +52,7 @@ pub struct OpeningBook<A: Action> {
 
 impl<A: Action> OpeningBook<A> {
     pub fn new(num_players: usize) -> Self {
-        let mut index = index::Arena::new();
+        let index = index::Arena::new();
         let root_id = index.insert(Entry::new(num_players));
         Self {
             index,

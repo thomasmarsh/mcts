@@ -1,4 +1,5 @@
 use super::backprop::BackpropStrategy;
+use super::config::BackpropFlags;
 use super::config::SearchConfig;
 use super::config::Strategy;
 use super::index;
@@ -25,6 +26,9 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use rand_core::SeedableRng;
 use rustc_hash::FxHashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::RwLock;
 
 pub struct SearchContext<G: Game> {
     pub current_id: Id,
@@ -48,23 +52,51 @@ impl<G: Game> SearchContext<G> {
     }
 }
 
-#[derive(Clone, Debug)]
+/// Per-hash, per-player action stats -- GRAVE's accumulator, keyed by the
+/// hash of the subtree root the stats were collected under.
+type GraveTable<A> = FxHashMap<u64, Vec<FxHashMap<A, node::ActionStats>>>;
+
+/// GRAVE/global-MAST accumulators, read during select/simulate and written
+/// during backprop. Each map gets its own lock (rather than one lock over
+/// the whole struct) so, e.g., a GRAVE reader in `select` doesn't contend
+/// with an unrelated MAST reader in `simulate`. `accum_depth`/`iter_count`
+/// are plain atomics since they're incremented once per iteration and never
+/// read alongside the maps.
+#[derive(Debug)]
 pub struct TreeStats<G: Game> {
-    pub actions: FxHashMap<G::A, node::ActionStats>,
-    pub grave: FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
-    pub player_actions: Vec<FxHashMap<G::A, node::ActionStats>>,
-    pub accum_depth: usize,
-    pub iter_count: usize,
+    pub actions: RwLock<FxHashMap<G::A, node::ActionStats>>,
+    pub grave: RwLock<GraveTable<G::A>>,
+    pub player_actions: Vec<RwLock<FxHashMap<G::A, node::ActionStats>>>,
+    pub accum_depth: AtomicUsize,
+    pub iter_count: AtomicUsize,
 }
 
 impl<G: Game> Default for TreeStats<G> {
     fn default() -> Self {
         Self {
-            actions: FxHashMap::default(),
-            grave: FxHashMap::default(),
-            player_actions: vec![Default::default(); G::num_players()],
-            accum_depth: 0,
-            iter_count: 0,
+            actions: RwLock::new(FxHashMap::default()),
+            grave: RwLock::new(FxHashMap::default()),
+            player_actions: (0..G::num_players())
+                .map(|_| RwLock::new(FxHashMap::default()))
+                .collect(),
+            accum_depth: AtomicUsize::new(0),
+            iter_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl<G: Game> Clone for TreeStats<G> {
+    fn clone(&self) -> Self {
+        Self {
+            actions: RwLock::new(self.actions.read().unwrap().clone()),
+            grave: RwLock::new(self.grave.read().unwrap().clone()),
+            player_actions: self
+                .player_actions
+                .iter()
+                .map(|m| RwLock::new(m.read().unwrap().clone()))
+                .collect(),
+            accum_depth: AtomicUsize::new(self.accum_depth.load(Relaxed)),
+            iter_count: AtomicUsize::new(self.iter_count.load(Relaxed)),
         }
     }
 }
@@ -74,6 +106,216 @@ pub type TreeIndex<A> = index::Arena<Node<A>>;
 /// A root child's (action, visits, per-player score) triple -- the unit
 /// root-parallel search merges across independently-searched trees.
 type ActionTotal<A> = (A, u32, Vec<f64>);
+
+/// Bundles the parts of a `TreeSearch` that every tree-parallel worker
+/// thread reads (and, via interior mutability, writes) concurrently --
+/// everything except per-thread scratch (rng, strategy instances, and the
+/// in-progress select stack/trial).
+///
+/// `select_step`/`new_child`/`simulate_step`/`backprop_step` below take this
+/// (plus explicit scratch parameters) instead of being `TreeSearch` methods,
+/// specifically so the single-threaded path can call them as
+/// `select_step(&Shared { index: &self.index, .. }, &mut self.stack, ...)`:
+/// the borrow checker accepts disjoint borrows of `self`'s fields expressed
+/// as direct field projections like that, but not the same borrows routed
+/// through a `&self`/`&mut self` method receiver (which conceptually claims
+/// all of `self`). That's what lets both the untouched single-threaded loop
+/// and the new tree-parallel worker loop share one implementation instead of
+/// two copies that could drift.
+struct Shared<'a, G: Game> {
+    index: &'a TreeIndex<G::A>,
+    root_stats: &'a NodeStats,
+    table: &'a TranspositionTable<G::S>,
+    global: &'a TreeStats<G>,
+    expand_threshold: u32,
+    q_init: node::QInit,
+    use_transpositions: bool,
+    max_playout_depth: usize,
+}
+
+/// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
+/// even under concurrent callers (see `Node::expand`).
+#[inline]
+fn expand<'a, G: Game>(index: &'a TreeIndex<G::A>, node_id: Id, state: &G::S) -> &'a NodeState<G::A> {
+    let node = index.get(node_id);
+    node.expand(|| {
+        if G::is_terminal(state) {
+            NodeState::Terminal
+        } else {
+            let mut actions = Vec::new();
+            G::generate_actions(state, &mut actions);
+            debug_assert!(!actions.is_empty());
+            NodeState::Expanded(
+                actions
+                    .into_iter()
+                    .map(|action| Edge::unexplored(action, G::num_players()))
+                    .collect(),
+            )
+        }
+    })
+}
+
+/// Resolves an unexplored edge's child, creating it if this is the first
+/// caller to arrive (see `Edge::get_or_create_child` and
+/// `TranspositionTable::get_or_insert` for how each half of the
+/// edge-creation/transposition race is handled).
+fn new_child<G: Game>(shared: &Shared<'_, G>, state: &G::S, best_idx: usize, current_id: Id) -> Id {
+    let hash = G::zobrist_hash(state);
+    let parent = shared.index.get(current_id);
+    let edge = &parent.edges()[best_idx];
+    edge.get_or_create_child(|| {
+        if shared.use_transpositions {
+            // TODO: the following won't work with symmetries
+            shared.table.get_or_insert(hash, state.clone(), || {
+                let child = Node::new(G::player_to_move(state).to_index(), hash);
+                shared.index.insert(child)
+            })
+        } else {
+            let child_node = Node::new(G::player_to_move(state).to_index(), hash);
+            shared.index.insert(child_node)
+        }
+    })
+}
+
+/// Descend from `ctx.current_id` to a leaf, expanding/creating nodes as
+/// needed, leaving the root->leaf path in `stack`. Shared by the
+/// single-threaded path and every tree-parallel worker.
+fn select_step<G: Game>(
+    shared: &Shared<'_, G>,
+    ctx: &mut SearchContext<G>,
+    stack: &mut Vec<Id>,
+    select_strategy: &mut impl SelectStrategy<G>,
+    rng: &mut SmallRng,
+) {
+    debug_assert!(stack.is_empty());
+    let grave = shared.global.grave.read().unwrap();
+    loop {
+        stack.push(ctx.current_id);
+
+        let node_stack = NodeStack::new(stack.clone());
+        let num_visits = node_stack
+            .current_stats(shared.index, shared.root_stats)
+            .num_visits();
+        let node = shared.index.get(ctx.current_id);
+        let player = node.player_idx;
+        if node.is_terminal() || num_visits < shared.expand_threshold {
+            return;
+        }
+
+        // Get child actions
+        if node.is_leaf() {
+            let node_state = expand::<G>(shared.index, ctx.current_id, &ctx.state);
+            if matches!(node_state, NodeState::Terminal) {
+                return;
+            }
+        }
+
+        let best_idx = {
+            let select_ctx = SelectContext {
+                q_init: shared.q_init,
+                stack: &node_stack,
+                root_stats: shared.root_stats,
+                player,
+                state: &ctx.state,
+                index: shared.index,
+                table: shared.table,
+                grave: &grave,
+                use_transpositions: shared.use_transpositions,
+            };
+
+            select_strategy.best_child(&select_ctx, rng)
+        };
+
+        let edges = shared.index.get(ctx.current_id).edges();
+
+        // Claim this edge for the duration of the iteration so other
+        // tree-parallel threads see it as less attractive until `backprop`
+        // removes the virtual loss again -- this is what keeps concurrent
+        // descents from all piling onto the same path.
+        edges[best_idx].stats.add_virtual_loss();
+
+        if let Some(child_id) = edges[best_idx].node_id() {
+            ctx.traverse_apply(child_id, &edges[best_idx].action);
+        } else {
+            {
+                let mut actions = vec![];
+                G::generate_actions(&ctx.state, &mut actions);
+                debug_assert_eq!(actions[best_idx], edges[best_idx].action);
+            }
+
+            let action = &edges[best_idx].action;
+            let state = G::apply(ctx.state.clone(), action);
+
+            let child_id = new_child::<G>(shared, &state, best_idx, ctx.current_id);
+
+            ctx.traverse(child_id);
+            ctx.state = state;
+
+            if shared.expand_threshold > 0 {
+                stack.push(ctx.current_id);
+                return;
+            }
+        }
+    }
+}
+
+fn simulate_step<G: Game>(
+    max_playout_depth: usize,
+    global: &TreeStats<G>,
+    simulate_strategy: &mut impl SimulateStrategy<G>,
+    state: &G::S,
+    rng: &mut SmallRng,
+) -> Trial<G> {
+    simulate_strategy.playout(
+        G::determinize(state.clone(), rng),
+        max_playout_depth,
+        global,
+        rng,
+    )
+}
+
+/// Adds `extra` additional units of virtual loss to every edge on `stack`'s
+/// root->leaf path. `select_step` already added one unit per edge on the
+/// path as it descended; when a batch of `k` rollouts is about to fire from
+/// that same leaf (leaf parallelism, or tree parallelism's per-worker
+/// `num_rollouts_per_leaf` loop), the path needs `k` units in flight total
+/// (one released per rollout's `backprop_step` call), so this tops up the
+/// `k - 1` the batch adds beyond the one `select_step` already placed.
+fn add_path_virtual_loss<A: crate::game::Action>(
+    index: &TreeIndex<A>,
+    stack: &NodeStack<A>,
+    extra: usize,
+) {
+    for (parent_id, child_id) in stack.pairs() {
+        let edge = stack.edge(index, *parent_id, *child_id);
+        for _ in 0..extra {
+            edge.stats.add_virtual_loss();
+        }
+    }
+}
+
+fn backprop_step<G: Game>(
+    shared: &Shared<'_, G>,
+    stack: &[Id],
+    backprop_strategy: &impl BackpropStrategy,
+    trial: Trial<G>,
+    flags: BackpropFlags,
+) {
+    shared.global.iter_count.fetch_add(1, Relaxed);
+    shared
+        .global
+        .accum_depth
+        .fetch_add(trial.depth + stack.len() - 1, Relaxed);
+    let node_stack = NodeStack::new(stack.to_vec());
+    backprop_strategy.update(
+        &node_stack,
+        shared.global,
+        shared.index,
+        shared.root_stats,
+        trial,
+        flags,
+    );
+}
 
 #[derive(Clone)]
 pub struct TreeSearch<G, S>
@@ -128,7 +370,7 @@ where
     G::S: std::fmt::Display,
 {
     pub fn new() -> Self {
-        let mut index = index::Arena::new();
+        let index = index::Arena::new();
         let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
         Self {
             root_id,
@@ -152,134 +394,30 @@ where
     }
 
     #[inline]
-    pub fn expand(&mut self, node_id: Id, state: &G::S) -> &NodeState<G::A> {
-        let node = self.index.get_mut(node_id);
-        if G::is_terminal(state) {
-            node.state = NodeState::Terminal;
-        } else {
-            let mut actions = Vec::new();
-            G::generate_actions(state, &mut actions);
-            debug_assert!(!actions.is_empty());
-            node.state = NodeState::Expanded(
-                actions
-                    .into_iter()
-                    .map(|action| Edge::unexplored(action, G::num_players()))
-                    .collect(),
-            );
-        }
-        &node.state // .clone()
-    }
-
-    #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
         debug_assert!(self.stack.is_empty());
-        loop {
-            self.stack.push(ctx.current_id);
-
-            let stack = NodeStack::new(self.stack.clone());
-            let num_visits = stack
-                .current_stats(&self.index, &self.root_stats)
-                .num_visits;
-            let node = self.index.get(ctx.current_id);
-            let player = node.player_idx;
-            if node.is_terminal() || num_visits < self.config.expand_threshold {
-                return;
-            }
-
-            // Get child actions
-            if node.is_leaf() {
-                let node_state = self.expand(ctx.current_id, &ctx.state);
-                if matches!(node_state, NodeState::Terminal) {
-                    return;
-                }
-            }
-
-            let best_idx = {
-                let select_ctx = SelectContext {
-                    q_init: self.config.q_init,
-                    stack: &stack,
-                    root_stats: &self.root_stats,
-                    player,
-                    state: &ctx.state,
-                    index: &self.index,
-                    table: &self.table,
-                    grave: &self.stats.grave,
-                    use_transpositions: self.config.use_transpositions,
-                };
-
-                self.config
-                    .select
-                    .best_child(&select_ctx, &mut self.config.rng)
-            };
-
-            let NodeState::Expanded(ref edges) = &(self.index.get(ctx.current_id).state) else {
-                unreachable!()
-            };
-
-            // Claim this edge for the duration of the iteration so a
-            // concurrent tree-parallel search sees it as less attractive
-            // until `backprop` removes the virtual loss again. Single-threaded
-            // today, this nets out within one iteration; it exists so the
-            // scoring path is already correct once search is parallelized.
-            edges[best_idx].stats.add_virtual_loss();
-
-            if let Some(child_id) = edges[best_idx].node_id {
-                ctx.traverse_apply(child_id, &edges[best_idx].action);
-            } else {
-                {
-                    let mut actions = vec![];
-                    G::generate_actions(&ctx.state, &mut actions);
-                    debug_assert_eq!(actions[best_idx], edges[best_idx].action);
-                }
-
-                let action = &edges[best_idx].action;
-                let state = G::apply(ctx.state.clone(), action);
-
-                let child_id = self.new_child(&state, best_idx, ctx.current_id);
-
-                ctx.traverse(child_id);
-                ctx.state = state;
-
-                if self.config.expand_threshold > 0 {
-                    self.stack.push(ctx.current_id);
-                    return;
-                }
-            }
-        }
-    }
-
-    fn new_child(&mut self, state: &G::S, best_idx: usize, current_id: Id) -> Id {
-        let hash = G::zobrist_hash(state);
-        let child_id = {
-            if self.config.use_transpositions {
-                // TODO: the following won't work with symmetries
-                if let Some(entry) = self.table.get(hash, state.clone()) {
-                    entry.node_id
-                } else {
-                    let child = Node::new(G::player_to_move(state).to_index(), hash);
-                    let node_id = self.index.insert(child);
-                    self.table.insert(hash, node_id, state.clone());
-                    node_id
-                }
-            } else {
-                let child_node = Node::new(G::player_to_move(state).to_index(), hash);
-                self.index.insert(child_node)
-            }
-        };
-
-        match &mut (self.index.get_mut(current_id).state) {
-            NodeState::Expanded(edges) => {
-                edges[best_idx].node_id = Some(child_id);
-            }
-            _ => unreachable!(),
-        }
-
-        child_id
+        select_step(
+            &Shared {
+                index: &self.index,
+                root_stats: &self.root_stats,
+                table: &self.table,
+                global: &self.stats,
+                expand_threshold: self.config.expand_threshold,
+                q_init: self.config.q_init,
+                use_transpositions: self.config.use_transpositions,
+                max_playout_depth: self.config.max_playout_depth,
+            },
+            ctx,
+            &mut self.stack,
+            &mut self.config.select,
+            &mut self.config.rng,
+        );
     }
 
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
         let stack = NodeStack::new(vec![self.root_id]);
+        let grave = self.stats.grave.read().unwrap();
         let idx = self.config.final_action.best_child(
             &SelectContext {
                 q_init: self.config.q_init,
@@ -289,24 +427,22 @@ where
                 state,
                 index: &self.index,
                 table: &self.table,
-                grave: &self.stats.grave,
+                grave: &grave,
                 use_transpositions: self.config.use_transpositions,
             },
             &mut self.config.rng,
         );
 
-        match &(self.index.get(self.root_id).state) {
-            NodeState::Expanded(edges) => edges[idx].action.clone(),
-            _ => unreachable!(),
-        }
+        self.index.get(self.root_id).edges()[idx].action.clone()
     }
 
     #[inline]
     pub(crate) fn simulate(&mut self, state: &G::S) -> Trial<G> {
-        self.config.simulate.playout(
-            G::determinize(state.clone(), &mut self.config.rng),
+        simulate_step(
             self.config.max_playout_depth,
             &self.stats,
+            &mut self.config.simulate,
+            state,
             &mut self.config.rng,
         )
     }
@@ -338,8 +474,7 @@ where
                     let state = state.clone();
                     scope.spawn(move || {
                         let mut rng = SmallRng::seed_from_u64(seed);
-                        let determinized = G::determinize(state, &mut rng);
-                        strategy.playout(determinized, max_playout_depth, stats, &mut rng)
+                        simulate_step(max_playout_depth, stats, strategy, &state, &mut rng)
                     })
                 })
                 .collect();
@@ -348,68 +483,39 @@ where
         })
     }
 
-    /// Adds `extra` additional units of virtual loss to every edge on
-    /// `stack`'s root->leaf path. `select` already added one unit per edge
-    /// on the path as it descended; when leaf parallelism is firing `k`
-    /// rollouts from that same leaf, the path needs `k` units in flight
-    /// total (one released per rollout's `backprop` call), so this tops up
-    /// the `k - 1` this particular leaf-parallel batch adds beyond the one
-    /// `select` already placed.
     fn add_extra_virtual_loss(&self, stack: &NodeStack<G::A>, extra: usize) {
-        for (parent_id, child_id) in stack.pairs() {
-            let edge = stack.edge(&self.index, *parent_id, *child_id);
-            for _ in 0..extra {
-                edge.stats.add_virtual_loss();
-            }
-        }
+        add_path_virtual_loss(&self.index, stack, extra);
     }
 
     #[inline]
     pub(crate) fn backprop(&mut self) {
-        self.stats.iter_count += 1;
-        self.stats.accum_depth += self.trial.as_ref().unwrap().depth + self.stack.len() - 1;
+        let trial = self.trial.as_ref().unwrap().clone();
         let flags = self.config.select.backprop_flags() | self.config.simulate.backprop_flags();
-        let stack = NodeStack::new(self.stack.clone());
-        self.config
-            .backprop
-            // TODO: may as well pass &mut self? Seems like the separation
-            // of concerns is not ideal.
-            .update(
-                &stack,
-                &mut self.stats,
-                &mut self.index,
-                &mut self.root_stats,
-                self.trial.as_ref().unwrap().clone(),
-                flags,
-            );
+        backprop_step(
+            &Shared {
+                index: &self.index,
+                root_stats: &self.root_stats,
+                table: &self.table,
+                global: &self.stats,
+                expand_threshold: self.config.expand_threshold,
+                q_init: self.config.q_init,
+                use_transpositions: self.config.use_transpositions,
+                max_playout_depth: self.config.max_playout_depth,
+            },
+            &self.stack,
+            &self.config.backprop,
+            trial,
+            flags,
+        );
     }
 
-    #[allow(dead_code)]
-    fn snapshot(&self, iteration: u32) {
-        use std::fs::File;
-        use std::io::prelude::*;
-        use std::path::Path;
-
-        _ = std::fs::create_dir_all("snapshots");
-        let path_str = format!("snapshots/{iteration}.json");
-        let path = Path::new(path_str.as_str());
-        let json = serde_json::to_string(&self.index).unwrap();
-        let mut file = match File::options().create_new(true).write(true).open(path) {
-            Err(why) => panic!("couldn't open {}: {}", path.to_str().unwrap(), why),
-            Ok(file) => file,
-        };
-
-        file.write_all(json.as_bytes()).expect("can't write");
-    }
-
-    pub fn verbose_summary(&self, state: &G::S) {
+    pub fn verbose_summary(&self, state: &G::S, num_threads: usize) {
         if !self.config.verbose {
             return;
         }
 
-        let num_threads = 1;
         let root = self.index.get(self.root_id);
-        let total_visits = self.root_stats.num_visits;
+        let total_visits = self.root_stats.num_visits();
         let rate = total_visits as f64 / num_threads as f64 / self.timer.elapsed().as_secs_f64();
         eprintln!(
             "Using {} threads, did {} total simulations with {:.1} rollouts/sec/core",
@@ -419,20 +525,18 @@ where
         let player = G::player_to_move(state);
 
         // Sort moves by visit count, largest first.
-        let mut children = match &(root.state) {
-            NodeState::Expanded(edges) => edges
-                .iter()
-                .filter(|edge| edge.is_explored())
-                .map(|edge| {
-                    (
-                        edge.stats.num_visits,
-                        edge.stats.player[player.to_index()].score,
-                        edge.action.clone(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            _ => unreachable!(),
-        };
+        let mut children = root
+            .edges()
+            .iter()
+            .filter(|edge| edge.is_explored())
+            .map(|edge| {
+                (
+                    edge.stats.num_visits(),
+                    edge.stats.score(player.to_index()),
+                    edge.action.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         children.sort_by_key(|t| !t.0);
 
@@ -461,8 +565,8 @@ where
     pub(crate) fn reset(&mut self, player_idx: usize, hash: u64) -> Id {
         self.index.clear();
         self.table.clear();
-        self.stats.accum_depth = 0;
-        self.stats.iter_count = 0;
+        self.stats.accum_depth.store(0, Relaxed);
+        self.stats.iter_count.store(0, Relaxed);
         self.new_root(player_idx, hash)
     }
 
@@ -472,6 +576,7 @@ where
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
         let mut stack = NodeStack::new(vec![node_id]);
+        let grave = self.stats.grave.read().unwrap();
         while node.is_expanded() {
             let player = node.player_idx;
             let select_ctx = SelectContext {
@@ -482,7 +587,7 @@ where
                 state: &state,
                 index: &self.index,
                 table: &self.table,
-                grave: &self.stats.grave,
+                grave: &grave,
                 use_transpositions: self.config.use_transpositions,
             };
 
@@ -492,7 +597,7 @@ where
                 .best_child(&select_ctx, &mut self.config.rng);
 
             let edge = &node.edges()[best_idx];
-            if let Some(child_id) = edge.node_id {
+            if let Some(child_id) = edge.node_id() {
                 node_id = child_id;
                 node = self.index.get(node_id);
                 state = G::apply(state, &edge.action);
@@ -508,19 +613,18 @@ where
     /// the summary a root-parallel search merges across threads. Only
     /// explored edges are included (unexplored ones contribute nothing).
     fn root_action_totals(&self) -> Vec<ActionTotal<G::A>> {
-        match &self.index.get(self.root_id).state {
-            NodeState::Expanded(edges) => edges
-                .iter()
-                .filter(|edge| edge.is_explored())
-                .map(|edge| {
-                    let scores = (0..G::num_players())
-                        .map(|p| edge.stats.player[p].score)
-                        .collect();
-                    (edge.action.clone(), edge.stats.num_visits, scores)
-                })
-                .collect(),
-            _ => vec![],
-        }
+        self.index
+            .get(self.root_id)
+            .edges()
+            .iter()
+            .filter(|edge| edge.is_explored())
+            .map(|edge| {
+                let scores = (0..G::num_players())
+                    .map(|p| edge.stats.score(p))
+                    .collect();
+                (edge.action.clone(), edge.stats.num_visits(), scores)
+            })
+            .collect()
     }
 
     /// Root parallelism: run `config.num_threads` independent trees to
@@ -594,6 +698,103 @@ where
         .map(|(action, _, _)| action.clone())
         .unwrap()
     }
+
+    /// Tree parallelism: `config.num_tree_threads` worker threads descend
+    /// *one* shared `index`/`root_stats`/`table`/`stats` concurrently,
+    /// racing the same `timer` and a shared iteration budget, relying on
+    /// virtual loss (added in `select_step`, released in `backprop_step`) so
+    /// concurrent descents spread out across the tree instead of piling onto
+    /// the same path. Unlike root parallelism, this shares search effort
+    /// across threads rather than duplicating it -- the whole point of the
+    /// "make the arena/stats concurrent-safe" work above.
+    fn choose_action_tree_parallel(&mut self, state: &G::S) -> G::A {
+        let num_threads = self.config.num_tree_threads.max(1);
+        debug_assert!(num_threads > 1);
+        debug_assert_eq!(
+            self.config.num_threads, 1,
+            "tree parallelism and root parallelism are mutually exclusive"
+        );
+
+        let hash = G::zobrist_hash(state);
+        let root_id = self.reset(G::player_to_move(state).to_index(), hash);
+        if self.config.use_transpositions {
+            self.table.insert(hash, root_id, state.clone());
+        }
+
+        self.timer.start(self.config.max_time);
+
+        let shared = Shared {
+            index: &self.index,
+            root_stats: &self.root_stats,
+            table: &self.table,
+            global: &self.stats,
+            expand_threshold: self.config.expand_threshold,
+            q_init: self.config.q_init,
+            use_transpositions: self.config.use_transpositions,
+            max_playout_depth: self.config.max_playout_depth,
+        };
+        let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
+        let k = self.config.num_rollouts_per_leaf.max(1);
+        let timer = &self.timer;
+        let backprop_strategy = &self.config.backprop;
+
+        let seeds: Vec<u64> = (0..num_threads).map(|_| self.config.rng.gen()).collect();
+        let mut select_strategies: Vec<S::Select> =
+            (0..num_threads).map(|_| self.config.select.clone()).collect();
+        let mut simulate_strategies: Vec<S::Simulate> = (0..num_threads)
+            .map(|_| self.config.simulate.clone())
+            .collect();
+
+        std::thread::scope(|scope| {
+            for ((seed, select_strategy), simulate_strategy) in seeds
+                .into_iter()
+                .zip(select_strategies.iter_mut())
+                .zip(simulate_strategies.iter_mut())
+            {
+                let shared = &shared;
+                let iterations_remaining = &iterations_remaining;
+                scope.spawn(move || {
+                    let mut rng = SmallRng::seed_from_u64(seed);
+                    loop {
+                        if timer.done() {
+                            break;
+                        }
+                        if iterations_remaining
+                            .fetch_update(Relaxed, Relaxed, |n| n.checked_sub(1))
+                            .is_err()
+                        {
+                            break;
+                        }
+
+                        let mut stack = Vec::new();
+                        let mut ctx = SearchContext::new(root_id, state.clone());
+                        select_step(shared, &mut ctx, &mut stack, select_strategy, &mut rng);
+
+                        let node_stack = NodeStack::<G::A>::new(stack.clone());
+                        if k > 1 {
+                            add_path_virtual_loss(shared.index, &node_stack, k - 1);
+                        }
+                        for _ in 0..k {
+                            let trial = simulate_step(
+                                shared.max_playout_depth,
+                                shared.global,
+                                simulate_strategy,
+                                &ctx.state,
+                                &mut rng,
+                            );
+                            let flags = select_strategy.backprop_flags()
+                                | simulate_strategy.backprop_flags();
+                            backprop_step(shared, &stack, backprop_strategy, trial, flags);
+                        }
+                    }
+                });
+            }
+        });
+
+        self.compute_pv(state);
+        self.verbose_summary(state, num_threads);
+        self.select_final_action(state)
+    }
 }
 
 impl<G, S> Search for TreeSearch<G, S>
@@ -610,6 +811,9 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
+        if self.config.num_tree_threads > 1 {
+            return self.choose_action_tree_parallel(state);
+        }
         if self.config.num_threads > 1 {
             return self.choose_action_root_parallel(state);
         }
@@ -647,7 +851,7 @@ where
         }
 
         self.compute_pv(state);
-        self.verbose_summary(state);
+        self.verbose_summary(state, 1);
 
         // NOTE: this can fail when root is a leaf. This happens if:
         //
@@ -694,7 +898,8 @@ where
     }
 
     fn estimated_depth(&self) -> usize {
-        (self.stats.accum_depth as f64 / self.stats.iter_count as f64).round() as usize
+        (self.stats.accum_depth.load(Relaxed) as f64 / self.stats.iter_count.load(Relaxed) as f64)
+            .round() as usize
     }
 
     fn principle_variation(&self) -> Vec<G::A> {
