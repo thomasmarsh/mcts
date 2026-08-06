@@ -1,9 +1,90 @@
-use super::node::NodeStats;
+use super::node::{self, NodeStats, NodeState, Proven};
 use super::stack::NodeStack;
 use super::*;
 use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::TerminalStatus;
 
 use rustc_hash::FxHashMap;
+
+/// Converts a playout's terminal check into the `Proven` value it directly
+/// witnesses -- used for the zero-length-`Trial` case (design note session 3
+/// point 1): a leaf that was terminal before `expand()` ever ran on it (only
+/// possible with `expand_threshold > 1`) has no other proof source, since
+/// the tree node itself was never resolved to `NodeState::Terminal`.
+fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Proven> {
+    match status {
+        TerminalStatus::NotTerminal => None,
+        TerminalStatus::Draw => Some(Proven::Draw),
+        TerminalStatus::Winner(w) => Some(Proven::Win(w.to_index())),
+    }
+}
+
+/// Re-derives `node_id`'s `Proven` status from its (already up to date)
+/// children and, if resolved, writes it -- the per-ancestor step of MCTS-
+/// Solver's backprop pass (design note session 3 point 3). No-ops on a node
+/// that isn't `Expanded` (a `Terminal` node's `Proven` was already set once
+/// at `expand()`-time and isn't re-derived here).
+///
+/// Deliberately stricter than a literal reading of the design note's Draw
+/// clause: `Draw` is only written once *every* explored child is itself
+/// already proven (`Proven != Unproven`), not merely explored. Concluding
+/// `Draw` while a sibling is still `Unproven` would risk permanently
+/// cementing the wrong value -- `Node::try_prove` only ever writes once
+/// (compare-exchange-from-`Unproven`), so if that sibling later resolves to
+/// `Win(p)` (a real forced win for the mover), there would be no way to
+/// correct an already-committed `Draw`. Requiring every child to be proven
+/// first costs nothing this rule needs: it can only delay a proof, never
+/// weaken one, so it wouldn't observably narrow what the plan asks for
+/// (every child *is* fully resolved once search actually finishes proving
+/// this subtree).
+fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
+    let Some(NodeState::Expanded(edges)) = node.status() else {
+        return;
+    };
+    let p = node.player_idx;
+
+    let mut all_children_proven = true;
+    let mut win_q: Option<usize> = None;
+    let mut win_q_consistent = true;
+    let mut any_draw = false;
+
+    for edge in edges {
+        let Some(child_id) = edge.node_id() else {
+            all_children_proven = false;
+            continue;
+        };
+        match index.get(child_id).proven() {
+            // Fires on the first winning child found, independent of every
+            // other sibling's status (including unexplored ones) -- this is
+            // what lets a node become decided the moment *one* winning line
+            // is found.
+            Proven::Win(w) if w == p => {
+                node.try_prove(Proven::Win(p));
+                return;
+            }
+            Proven::Win(w) => match win_q {
+                None => win_q = Some(w),
+                Some(q) if q == w => {}
+                // Only reachable if `num_players() > 2`, which the solver is
+                // not scoped to (see the `debug_assert!`s at its call
+                // sites) -- guarded rather than assumed away.
+                Some(_) => win_q_consistent = false,
+            },
+            Proven::Draw => any_draw = true,
+            Proven::Unproven => all_children_proven = false,
+        }
+    }
+
+    if !all_children_proven {
+        return;
+    }
+    if any_draw {
+        node.try_prove(Proven::Draw);
+    } else if let (Some(q), true) = (win_q, win_q_consistent) {
+        node.try_prove(Proven::Win(q));
+    }
+}
 
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
@@ -79,6 +160,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         root_stats: &NodeStats,
         trial: simulate::Trial<G>,
         flags: BackpropFlags,
+        use_mcts_solver: bool,
     ) where
         G: Game,
     {
@@ -98,6 +180,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             .terminal
             .utilities(G::num_players())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
+        let mut is_leaf = true;
         for (parent_id_opt, node_id) in stack.reverse_pairs2() {
             debug_assert!(
                 (parent_id_opt.is_some() && !index.get(*node_id).is_root())
@@ -112,6 +195,33 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 edge_stats.update(&utilities);
                 edge_stats.remove_virtual_loss();
             }
+
+            // MCTS-Solver: derive/propagate proven status for this node.
+            // Runs unconditionally on every backprop call for every node on
+            // the visited path (not gated on the trial having ended at a
+            // terminal state) -- a node can newly become provable on any
+            // call once its last unproven child resolves, and the walk
+            // already visits every ancestor every time regardless of trial
+            // outcome, so no extra triggering logic is needed.
+            if use_mcts_solver {
+                debug_assert!(G::num_players() <= 2);
+                let node = index.get(*node_id);
+                // Zero-length trial: `playout`'s very first terminal check
+                // already found this exact leaf state terminal, which is
+                // the one case a rollout's endpoint *is* the tree leaf. The
+                // only leaf this can apply to is the one `expand()` hasn't
+                // resolved yet (below `expand_threshold`, still a bare
+                // "leaf" node, not `Expanded` or `Terminal`) -- an already-
+                // `Expanded` node's state is never terminal, since
+                // `expand()` would have marked it `Terminal` instead.
+                if is_leaf && trial.depth == 0 {
+                    if let Some(proven) = proven_from_terminal(&trial.terminal) {
+                        node.try_prove(proven);
+                    }
+                }
+                derive_proven::<G>(node, index);
+            }
+            is_leaf = false;
 
             // update: AMAF
             if flags.amaf() {

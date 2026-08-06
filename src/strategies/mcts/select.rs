@@ -1,5 +1,5 @@
 use super::index::Id;
-use super::node::{self, Edge, NodeStats};
+use super::node::{self, Edge, NodeStats, Proven};
 use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
@@ -154,6 +154,18 @@ const PRIMES: [usize; 16] = [
     81647, 92581, 94693,
 ];
 
+/// Whether `edge`'s child is a proven loss for `ctx.player` -- a resolved
+/// child proven `Win` for the *other* player under the `<= 2`-player
+/// scoping the solver is built for (see node.rs's `Proven` doc comment).
+/// Always `false` when the solver is off, since backprop never writes
+/// anything but `Unproven` in that case.
+#[inline]
+fn is_proven_loss<G: Game>(ctx: &SelectContext<'_, G>, edge: &Edge<G::A>) -> bool {
+    edge.node_id().is_some_and(|child_id| {
+        matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
+    })
+}
+
 // This function is adapted from from minimax-rs.
 #[inline]
 fn random_best_index<S, G>(
@@ -187,18 +199,26 @@ where
         }
     };
 
-    let mut best_score = child_value(i);
+    // Proven-loss avoidance (MCTS-Solver): prefer any non-proven-loss
+    // sibling, and only fall back to a proven-loss child when every sibling
+    // is one -- a graded rule, unlike the proven-win short-circuit (which
+    // lives at `select_step`'s call site instead, see search.rs), since it
+    // has to interact with each strategy's own scoring rather than bypass
+    // it. A no-op scan (never skips) when every edge happens to be a proven
+    // loss, or when the solver is off.
+    let skip_proven_loss = !(0..n).all(|idx| is_proven_loss(ctx, &set[idx]));
 
+    let mut best_score = None;
     let mut best_index = i;
-    for _ in 1..n {
-        i = (i + stride) % n;
-
-        let score = child_value(i);
-
-        if score > best_score {
-            best_score = score;
-            best_index = i;
+    for _ in 0..n {
+        if !(skip_proven_loss && is_proven_loss(ctx, &set[i])) {
+            let score = child_value(i);
+            if best_score.is_none_or(|best| score > best) {
+                best_score = Some(score);
+                best_index = i;
+            }
         }
+        i = (i + stride) % n;
     }
 
     best_index
@@ -335,9 +355,18 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
             .edges()
             .iter()
             .map(|edge| {
-                edge.node_id()
-                    .map(|child_id| self.score_child(ctx, child_id, edge, ()))
-                    .unwrap_or(self.unvisited_value(ctx, ())) as f32
+                if is_proven_loss(ctx, edge) {
+                    // MCTS-Solver: force a proven-loss child's weight toward
+                    // (not exactly -- `WalkerTableBuilder` wants strictly
+                    // positive weights) zero rather than excluding it, so
+                    // this stays a normal weighted sampling even when every
+                    // sibling happens to be a proven loss.
+                    f32::MIN_POSITIVE
+                } else {
+                    edge.node_id()
+                        .map(|child_id| self.score_child(ctx, child_id, edge, ()))
+                        .unwrap_or(self.unvisited_value(ctx, ())) as f32
+                }
             })
             .collect::<Vec<_>>();
 

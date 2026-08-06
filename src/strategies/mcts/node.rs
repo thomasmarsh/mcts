@@ -3,9 +3,46 @@ use crate::game::Action;
 
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::*;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+
+/// MCTS-Solver's proof status for a node's position. `Win(p)` names the
+/// winning player by index rather than by `Game::P`, matching `player_idx`'s
+/// own convention (see `Node::player_idx`) so `Node<A>` doesn't need a second
+/// generic bound just to name a player. "Loss for player p" is deliberately
+/// not represented -- with `num_players() <= 2` (this is scoped to that, see
+/// `debug_assert!`s where the solver is wired in), "not a win for me" among
+/// resolved options collapses unambiguously to "the other player wins", so
+/// it's derived at read time instead of stored twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proven {
+    Unproven,
+    Draw,
+    Win(usize),
+}
+
+impl Proven {
+    const UNPROVEN_U8: u8 = 0;
+    const DRAW_U8: u8 = 1;
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Proven::Unproven => Self::UNPROVEN_U8,
+            Proven::Draw => Self::DRAW_U8,
+            Proven::Win(p) => 2 + p as u8,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            Self::UNPROVEN_U8 => Proven::Unproven,
+            Self::DRAW_U8 => Proven::Draw,
+            p => Proven::Win((p - 2) as usize),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ActionStats {
@@ -238,7 +275,7 @@ pub enum NodeState<A: Action> {
     Expanded(Vec<Edge<A>>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Node<A: Action> {
     pub player_idx: usize,
     pub hash: u64,
@@ -248,6 +285,26 @@ pub struct Node<A: Action> {
     // unexpanded node race for free: only the winner runs `G::is_terminal`/
     // `generate_actions`, the rest block and read its result.
     state: OnceLock<NodeState<A>>,
+    // MCTS-Solver proof status, `0 = Unproven` by default. Not a `OnceLock`:
+    // unlike `state`, there's no real init work to gate behind "first caller
+    // wins" -- concurrent derivations of the same node can't disagree (see
+    // PLAN-DRUID.md session 3 point 3), so a plain compare-exchange-from-
+    // Unproven is simpler and sufficient. `Relaxed` throughout, matching
+    // `num_visits_virtual` on `NodeStats` above.
+    proven: AtomicU8,
+}
+
+// Manual impl: `AtomicU8` isn't `Clone`, so this can no longer be derived.
+impl<A: Action> Clone for Node<A> {
+    fn clone(&self) -> Self {
+        Self {
+            player_idx: self.player_idx,
+            hash: self.hash,
+            is_root: self.is_root,
+            state: self.state.clone(),
+            proven: AtomicU8::new(self.proven.load(Relaxed)),
+        }
+    }
 }
 
 impl<A: Action> Node<A>
@@ -260,7 +317,26 @@ where
             hash,
             is_root: false,
             state: OnceLock::new(),
+            proven: AtomicU8::new(Proven::UNPROVEN_U8),
         }
+    }
+
+    #[inline]
+    pub fn proven(&self) -> Proven {
+        Proven::from_u8(self.proven.load(Relaxed))
+    }
+
+    /// Writes `status`, but only if this node is still `Unproven` -- once
+    /// proven, a node's status is final. Safe to call redundantly from
+    /// multiple threads deriving the same (correct) status concurrently: a
+    /// CAS that loses the race is a harmless no-op, not a conflict (see
+    /// PLAN-DRUID.md session 3 point 3 for why concurrent derivations of a
+    /// fixed, real set of children can't disagree).
+    pub fn try_prove(&self, status: Proven) {
+        debug_assert_ne!(status, Proven::Unproven);
+        let _ = self
+            .proven
+            .compare_exchange(Proven::UNPROVEN_U8, status.to_u8(), Relaxed, Relaxed);
     }
 
     #[inline]

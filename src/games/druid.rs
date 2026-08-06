@@ -2378,4 +2378,72 @@ mod tests {
         Druid::generate_actions(&state, &mut available);
         assert!(available.contains(&action));
     }
+
+    #[test]
+    fn test_mcts_solver_finds_forced_win() {
+        // A 3x3 board where Black already owns 2 of the 3 cells in each of
+        // two disjoint columns (x=0 and x=2) needed for a top-to-bottom
+        // connection -- each column's missing cell ((0,2) and (2,2)) is an
+        // independent winning threat. It's White's move: whichever threat
+        // White blocks, Black completes the other and wins immediately next
+        // move. A forced loss for White two plies deep that requires fully
+        // resolving all 5 of White's legal replies (one sarsen per empty
+        // cell -- White owns nothing yet, so no lintel is legal either), not
+        // just spotting one immediate threat.
+        let size = Size { w: 3, h: 3 };
+        let mut state = HashedState::new(size);
+        for pos in [Pos(0, 0), Pos(0, 1), Pos(2, 0), Pos(2, 1)] {
+            state.0.board[pos.index(size.w)] = Square {
+                height: 1,
+                piece: Some(Player::Black),
+            };
+        }
+        state.0.player = Player::White;
+        state.resync_caches();
+
+        assert!(
+            state.0.connection().is_none(),
+            "test setup should not already be terminal"
+        );
+        assert_eq!(Druid::terminal_status(&state), TerminalStatus::NotTerminal);
+
+        let mut ts = TreeSearch::<Druid, strategy::Ucb1>::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(20_000)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .seed(7),
+        );
+
+        let white_move = ts.choose_action(&state);
+        let white_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            white_iters < 20_000,
+            "solver should prove White's position lost and stop early, used {white_iters} iterations"
+        );
+
+        let after_white = Druid::apply(state.clone(), &white_move);
+        assert_eq!(Druid::player_to_move(&after_white), Player::Black);
+
+        let black_move = ts.choose_action(&after_white);
+        let black_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            black_iters < 20_000,
+            "solver should find Black's immediate win and stop early, used {black_iters} iterations"
+        );
+
+        // Black wins here regardless of which cell White blocked -- either
+        // by completing the other open column directly, or (as the solver
+        // actually finds when White blocks (2,2)) via a lintel repaint: a
+        // lintel's legality only needs 2 of its 3 touched cells to already
+        // be the mover's color, so Black can lay one across (2,0)/(2,1)/
+        // (2,2) and repaint White's blocking piece at (2,2) outright.
+        let after_black = Druid::apply(after_white, &black_move);
+        assert_eq!(
+            Druid::winner(&after_black),
+            Some(Player::Black),
+            "Black should have a winning reply regardless of which column White blocked"
+        );
+    }
 }

@@ -8,6 +8,7 @@ use super::node;
 use super::node::Node;
 use super::node::NodeState;
 use super::node::NodeStats;
+use super::node::Proven;
 use super::select::SelectContext;
 use super::select::SelectStrategy;
 use super::simulate::SimulateStrategy;
@@ -16,6 +17,7 @@ use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::TerminalStatus;
 use crate::strategies::mcts::node::Edge;
 use crate::strategies::Search;
 use crate::timer;
@@ -130,18 +132,27 @@ struct Shared<'a, G: Game> {
     expand_threshold: u32,
     q_init: node::QInit,
     use_transpositions: bool,
+    use_mcts_solver: bool,
     max_playout_depth: usize,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
-/// even under concurrent callers (see `Node::expand`).
+/// even under concurrent callers (see `Node::expand`). When `use_mcts_solver`
+/// is set, also decodes and writes this node's `Proven` status the moment a
+/// terminal position is found here -- this is the one legitimate proof
+/// source for a tree node's own position (see PLAN-DRUID.md session 3 point
+/// 1; a rollout's endpoint past this leaf is not).
 #[inline]
-fn expand<'a, G: Game>(index: &'a TreeIndex<G::A>, node_id: Id, state: &G::S) -> &'a NodeState<G::A> {
+fn expand<'a, G: Game>(
+    index: &'a TreeIndex<G::A>,
+    node_id: Id,
+    state: &G::S,
+    use_mcts_solver: bool,
+) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
-        if G::is_terminal(state) {
-            NodeState::Terminal
-        } else {
+        let status = G::terminal_status(state);
+        if matches!(status, TerminalStatus::NotTerminal) {
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
             debug_assert!(!actions.is_empty());
@@ -151,6 +162,17 @@ fn expand<'a, G: Game>(index: &'a TreeIndex<G::A>, node_id: Id, state: &G::S) ->
                     .map(|action| Edge::unexplored(action, G::num_players()))
                     .collect(),
             )
+        } else {
+            if use_mcts_solver {
+                debug_assert!(G::num_players() <= 2);
+                let proven = match status {
+                    TerminalStatus::NotTerminal => unreachable!(),
+                    TerminalStatus::Draw => Proven::Draw,
+                    TerminalStatus::Winner(w) => Proven::Win(w.to_index()),
+                };
+                node.try_prove(proven);
+            }
+            NodeState::Terminal
         }
     })
 }
@@ -174,6 +196,33 @@ fn new_child<G: Game>(shared: &Shared<'_, G>, state: &G::S, best_idx: usize, cur
             let child_node = Node::new(G::player_to_move(state).to_index(), hash);
             shared.index.insert(child_node)
         }
+    })
+}
+
+/// A child of `node` already proven to win for `player`, if one exists --
+/// `None` when the solver is off, or none of `node`'s *explored* children
+/// happen to be a proven win (yet). Shared by every place that would
+/// otherwise call `SelectStrategy::best_child` (`select_step` below,
+/// `select_final_action`, and `compute_pv`) and needs to bypass it outright
+/// once the answer is already known: `Score` is a strategy-specific
+/// associated type with no generic "infinity" to bias by that would work
+/// the same way across all 10 `SelectStrategy` impls, so this lives here
+/// instead of in `select.rs`. Fires on the first such child found, matching
+/// the "any winning child" rule `derive_proven` (backprop.rs) uses to
+/// decide `node` is itself a proven win one level up.
+#[inline]
+fn proven_win_child<G: Game>(
+    use_mcts_solver: bool,
+    node: &Node<G::A>,
+    index: &TreeIndex<G::A>,
+    player: usize,
+) -> Option<usize> {
+    if !use_mcts_solver {
+        return None;
+    }
+    node.edges().iter().position(|edge| {
+        edge.node_id()
+            .is_some_and(|child_id| index.get(child_id).proven() == Proven::Win(player))
     })
 }
 
@@ -216,27 +265,35 @@ fn select_step<G: Game>(
                 if num_visits < shared.expand_threshold {
                     return;
                 }
-                let node_state = expand::<G>(shared.index, ctx.current_id, &ctx.state);
+                let node_state = expand::<G>(
+                    shared.index,
+                    ctx.current_id,
+                    &ctx.state,
+                    shared.use_mcts_solver,
+                );
                 if matches!(node_state, NodeState::Terminal) {
                     return;
                 }
             }
         }
 
-        let best_idx = {
-            let select_ctx = SelectContext {
-                q_init: shared.q_init,
-                stack: &node_stack,
-                root_stats: shared.root_stats,
-                player,
-                state: &ctx.state,
-                index: shared.index,
-                table: shared.table,
-                grave: &grave,
-                use_transpositions: shared.use_transpositions,
-            };
+        let best_idx = match proven_win_child::<G>(shared.use_mcts_solver, node, shared.index, player) {
+            Some(idx) => idx,
+            None => {
+                let select_ctx = SelectContext {
+                    q_init: shared.q_init,
+                    stack: &node_stack,
+                    root_stats: shared.root_stats,
+                    player,
+                    state: &ctx.state,
+                    index: shared.index,
+                    table: shared.table,
+                    grave: &grave,
+                    use_transpositions: shared.use_transpositions,
+                };
 
-            select_strategy.best_child(&select_ctx, rng)
+                select_strategy.best_child(&select_ctx, rng)
+            }
         };
 
         let edges = shared.index.get(ctx.current_id).edges();
@@ -327,6 +384,7 @@ fn backprop_step<G: Game>(
         shared.root_stats,
         trial,
         flags,
+        shared.use_mcts_solver,
     );
 }
 
@@ -418,6 +476,7 @@ where
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
                 use_transpositions: self.config.use_transpositions,
+                use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
             },
             ctx,
@@ -429,6 +488,21 @@ where
 
     #[inline]
     fn select_final_action(&mut self, state: &G::S) -> G::A {
+        let player = G::player_to_move(state).to_index();
+        // MCTS-Solver: `choose_action`'s iteration loop may have already
+        // stopped the moment the root was proven a win (search.rs's
+        // `use_mcts_solver` break condition), well before the winning
+        // child necessarily accumulated the most visits -- so a plain
+        // most-visited/highest-score `final_action` pick here can't be
+        // trusted to land on it. Reading the proof directly is what
+        // actually guarantees the move `choose_action` returns matches the
+        // one it just finished proving.
+        if let Some(idx) =
+            proven_win_child::<G>(self.config.use_mcts_solver, self.index.get(self.root_id), &self.index, player)
+        {
+            return self.index.get(self.root_id).edges()[idx].action.clone();
+        }
+
         let stack = NodeStack::new(vec![self.root_id]);
         let grave = self.stats.grave.read().unwrap();
         let idx = self.config.final_action.best_child(
@@ -436,7 +510,7 @@ where
                 q_init: self.config.q_init,
                 stack: &stack,
                 root_stats: &self.root_stats,
-                player: G::player_to_move(state).to_index(),
+                player,
                 state,
                 index: &self.index,
                 table: &self.table,
@@ -513,6 +587,7 @@ where
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
                 use_transpositions: self.config.use_transpositions,
+                use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
             },
             &self.stack,
@@ -604,10 +679,13 @@ where
                 use_transpositions: self.config.use_transpositions,
             };
 
-            let best_idx = self
-                .config
-                .final_action
-                .best_child(&select_ctx, &mut self.config.rng);
+            let best_idx = match proven_win_child::<G>(self.config.use_mcts_solver, node, &self.index, player) {
+                Some(idx) => idx,
+                None => self
+                    .config
+                    .final_action
+                    .best_child(&select_ctx, &mut self.config.rng),
+            };
 
             let edge = &node.edges()[best_idx];
             if let Some(child_id) = edge.node_id() {
@@ -758,6 +836,7 @@ where
             expand_threshold: self.config.expand_threshold,
             q_init: self.config.q_init,
             use_transpositions: self.config.use_transpositions,
+            use_mcts_solver: self.config.use_mcts_solver,
             max_playout_depth: self.config.max_playout_depth,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
@@ -864,6 +943,20 @@ where
 
         for _ in 0..self.config.max_iterations {
             if self.timer.done() {
+                break;
+            }
+            // MCTS-Solver: the root itself is always the last node
+            // `backprop`'s solver pass visits (see `derive_proven` in
+            // backprop.rs), so by this point its `Proven` field already
+            // reflects everything found so far -- fires the moment *a*
+            // forced win is found (the `Win(p)` rule doesn't wait on
+            // sibling root children), or once the position is fully solved
+            // for the `Win(q)`/`Draw` cases. Single-threaded loop only --
+            // the tree-/root-parallel loops need a shared/atomic stop
+            // signal instead of this per-thread-local read (see
+            // PLAN-DRUID.md session 3 point 5), deliberately deferred.
+            if self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven
+            {
                 break;
             }
             self.reset_iter();

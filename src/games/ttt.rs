@@ -458,4 +458,55 @@ mod tests {
         let action = ts.choose_action(&state);
         assert_eq!(action, Move(7));
     }
+
+    // MCTS-Solver A/B on the same forced-block position: with the solver
+    // enabled, the tree becomes fully solvable well within budget (the
+    // remaining game is only a handful of plies deep from here), so
+    // `choose_action` should stop once the root is proven rather than
+    // burning the whole `max_iterations` budget -- while still finding the
+    // same correct move. With the solver left at its default `false`, this
+    // is the untouched plain-UCT path and should run every iteration
+    // (matching `test_ucb1_finds_forced_block` above).
+    #[test]
+    fn test_mcts_solver_finds_forced_block_and_terminates_early() {
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        let state = must_block_position();
+
+        let mut solved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .seed(42),
+        );
+        let action = solved.choose_action(&state);
+        assert_eq!(action, Move(7));
+        let solved_iters = solved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            solved_iters < 5000,
+            "solver should stop once the root is proven, used {solved_iters} iterations"
+        );
+
+        let mut unsolved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(QInit::Loss)
+                .seed(42),
+        );
+        let action = unsolved.choose_action(&state);
+        assert_eq!(action, Move(7));
+        let unsolved_iters = unsolved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            unsolved_iters, 5000,
+            "without the solver, the full iteration budget should still run"
+        );
+    }
 }

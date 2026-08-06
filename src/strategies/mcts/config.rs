@@ -68,6 +68,16 @@ where
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
     pub use_transpositions: bool,
+
+    /// MCTS-Solver (Winands et al.): backprop derives and propagates proven
+    /// win/loss/draw status alongside the usual visit/score stats, selection
+    /// short-circuits onto a proven-winning child and avoids proven-losing
+    /// ones, and `choose_action` stops early once the root itself is
+    /// resolved. `false` (the default) keeps the untouched plain-UCT
+    /// behavior. Scoped to `G::num_players() <= 2` -- see
+    /// `debug_assert!`s at the call sites that derive `Proven` values.
+    pub use_mcts_solver: bool,
+
     pub rng: SmallRng,
     pub verbose: bool,
     pub name: String,
@@ -126,6 +136,7 @@ where
             max_iterations: usize::MAX,
             max_time: Default::default(),
             use_transpositions: false,
+            use_mcts_solver: false,
             rng: SmallRng::from_entropy(),
             verbose: false,
             name: format!("mcts[{}]", S::friendly_name()),
@@ -197,6 +208,11 @@ where
 
     pub fn use_transpositions(mut self, use_transpositions: bool) -> Self {
         self.use_transpositions = use_transpositions;
+        self
+    }
+
+    pub fn use_mcts_solver(mut self, use_mcts_solver: bool) -> Self {
+        self.use_mcts_solver = use_mcts_solver;
         self
     }
 
