@@ -68,6 +68,7 @@ lto=true
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
+tower = { version = "0.5", features = ["util"] }
 
 [[bench]]
 name = "ttt"

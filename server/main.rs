@@ -64,9 +64,13 @@ impl AiPreset {
             AiPreset::Easy => "Plain UCB1 with random playouts, ~1s per move. Makes tactical mistakes.",
             AiPreset::Medium => "UCB1 with MAST-biased playouts, ~2s per move.",
             AiPreset::Strong => {
-                "Tuned RAVE + MAST + decisive-move search, ~3s per move (SMAC3-tuned)."
+                "Tuned RAVE + MAST + decisive-move search, ~3s per move (SMAC3-tuned), \
+                 searching one shared tree across all available CPU cores."
             }
-            AiPreset::Master => "Same search as Strong with a longer ~8s thinking budget.",
+            AiPreset::Master => {
+                "Same search as Strong, parallelized the same way, with a longer ~8s \
+                 thinking budget."
+            }
         }
     }
 
@@ -189,11 +193,29 @@ async fn post_move(
     Ok(Json(serde_json::to_value(view(&state, Some(mv))).unwrap()))
 }
 
+// Number of threads Strong/Master search across. PLAN-WORK.md session 10
+// found single-threaded search is the weakest mode available at every board
+// size tested, and pure tree-parallel search (one shared tree, N worker
+// threads) won outright at 5x5 and tied every other mode at 9x9 -- unlike
+// root parallelism (N independent trees), it never lost across either tested
+// size and doesn't pay N times the tree memory, so it's used here as a
+// single default rather than switching configs by board size. Derived from
+// the actual machine's core count rather than hardcoding the 8 cores session
+// 10's benchmarks happened to run on, so this stays sensible on whatever
+// hardware the server runs on.
+fn ai_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 // `Strong` reuses the tuned `rave_mast_ucd` setup from demo/druid.rs, which
 // SMAC3 hyperparameter search found effective for this game specifically.
 // The other presets reuse strategy types exercised there too (`Ucb1`,
 // `Ucb1Mast`), just with shorter time budgets, giving a real strength
-// gradient rather than only a time-budget knob.
+// gradient rather than only a time-budget knob. Easy/Medium stay
+// single-threaded on purpose, so the difficulty gradient reflects search
+// quality, not just core count.
 fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
     let budget = preset.time_budget();
     match preset {
@@ -228,6 +250,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     .use_transpositions(true)
                     .q_init(QInit::Infinity)
                     .max_time(budget)
+                    .num_tree_threads(ai_thread_count())
                     .select(
                         select::Rave::default()
                             .ucb(select::RaveUcb::Ucb1Tuned {
@@ -287,6 +310,20 @@ async fn post_ai_move(
     Ok(Json(serde_json::to_value(view(&state, Some(action))).unwrap()))
 }
 
+// Split out from `main` so tests can exercise the API surface directly
+// (`tower::ServiceExt::oneshot`) without binding a real socket or serving
+// static files.
+fn api_router(app_state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/api/state", get(get_state))
+        .route("/api/legal_moves", get(get_legal_moves))
+        .route("/api/move", post(post_move))
+        .route("/api/ai_move", post(post_ai_move))
+        .route("/api/ai_presets", get(get_ai_presets))
+        .route("/api/new", post(post_new))
+        .with_state(app_state)
+}
+
 #[tokio::main]
 async fn main() {
     let app_state = Arc::new(AppState {
@@ -296,19 +333,101 @@ async fn main() {
     let static_dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static");
 
-    let app = Router::new()
-        .route("/api/state", get(get_state))
-        .route("/api/legal_moves", get(get_legal_moves))
-        .route("/api/move", post(post_move))
-        .route("/api/ai_move", post(post_ai_move))
-        .route("/api/ai_presets", get(get_ai_presets))
-        .route("/api/new", post(post_new))
-        .with_state(app_state)
-        .fallback_service(ServeDir::new(static_dir));
+    let app = api_router(app_state).fallback_service(ServeDir::new(static_dir));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878")
         .await
         .expect("failed to bind 127.0.0.1:7878");
     println!("Druid server listening on http://127.0.0.1:7878");
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode as HttpStatusCode};
+    use std::time::Instant;
+    use tower::ServiceExt;
+
+    fn test_app() -> Router {
+        let app_state = Arc::new(AppState {
+            game: Mutex::new(HashedState::default()),
+        });
+        api_router(app_state)
+    }
+
+    async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    // Session 11: the AI's thinking budget (up to Master's 8s) runs on a
+    // `spawn_blocking` thread with `num_tree_threads` `thread::scope` workers
+    // underneath it (see `post_ai_move`'s doc comment), after releasing the
+    // game `Mutex`. This confirms that pattern actually keeps the async
+    // executor free -- other requests should complete quickly while an AI
+    // move is in flight, not queue up behind it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_ai_move_does_not_stall_other_requests() {
+        let app = test_app();
+
+        let ai_app = app.clone();
+        let ai_task = tokio::spawn(async move {
+            let body = serde_json::to_vec(&serde_json::json!({"preset": "strong"})).unwrap();
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/ai_move")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let start = Instant::now();
+            let resp = ai_app.oneshot(req).await.unwrap();
+            (resp.status(), start.elapsed())
+        });
+
+        // Give the AI request time to acquire+release the game lock and get
+        // into its thinking budget before probing.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let mut probe_latencies = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            let (status, _) = http_get(app.clone(), "/api/state").await;
+            assert_eq!(status, HttpStatusCode::OK);
+            probe_latencies.push(start.elapsed());
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        let (ai_status, ai_elapsed) = ai_task.await.unwrap();
+        assert_eq!(ai_status, HttpStatusCode::OK);
+        // Sanity check that the AI request actually spent real time
+        // thinking (Strong's budget is ~3s) rather than erroring out early
+        // and making the "other requests weren't blocked" result vacuous.
+        assert!(
+            ai_elapsed >= Duration::from_secs(2),
+            "AI move returned in {ai_elapsed:?}, expected it to use ~3s of its Strong budget"
+        );
+
+        for latency in probe_latencies {
+            assert!(
+                latency < Duration::from_millis(500),
+                "GET /api/state took {latency:?} while an AI move (tree-parallel across \
+                 {} threads) was in flight -- looks like it stalled behind the AI request \
+                 instead of running concurrently",
+                ai_thread_count(),
+            );
+        }
+    }
 }

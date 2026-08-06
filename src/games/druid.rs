@@ -81,13 +81,21 @@
 
 use std::collections::VecDeque;
 
+use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     game::{Game, PlayerIndex, TerminalStatus},
+    strategies::mcts::{
+        backprop, select,
+        simulate::{self, SimulateStrategy},
+        Strategy, TreeStats,
+    },
+    util::random_best,
     zobrist::LazyZobristTable,
 };
+use rand::rngs::SmallRng;
 
 // NOTE: the standard game is 10x10 (and 9x9 for Trilith). Board size lives on
 // `State` (see `Size::is_supported` below for the ceiling this is checked
@@ -290,7 +298,11 @@ impl State {
     }
 
     pub fn current_hand(&self) -> &Hand {
-        match self.player {
+        self.hand(self.player)
+    }
+
+    fn hand(&self, color: Player) -> &Hand {
+        match color {
             Player::Black => &self.hand_black,
             Player::White => &self.hand_white,
         }
@@ -354,6 +366,51 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Candidate lintel placements available to `color`, alongside their
+    /// touched cells -- same legality shape as `moves()`'s lintel loop
+    /// (`h[0] == h[2]`, `h[1] <= h[0]`, exactly 2 of the 3 touched cells
+    /// already `color`), generalized to an arbitrary color instead of
+    /// `self.player` and ignoring `color`'s hand count (callers check that
+    /// separately). Used by the playout heuristic to reason about the
+    /// *opponent's* candidate moves, not just the mover's.
+    fn lintel_candidates_for(&self, color: Player) -> Vec<(Move, [usize; 3])> {
+        let mut out = Vec::new();
+        for i in 0..self.size.area() as usize {
+            let Pos(x, y) = Pos::from(i, self.size);
+            for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+                let (dx, dy) = orientation.delta();
+                let c = [
+                    Pos(x, y),
+                    Pos(x + dx, y + dy),
+                    Pos(x + dx + dx, y + dy + dy),
+                ];
+                if c[2].0 >= self.size.w || c[2].1 >= self.size.h {
+                    continue;
+                }
+                let cells = c.map(|p| p.index(self.size.w));
+                let h = cells.map(|i| self.board[i].height);
+                if h[0] != h[2] || h[1] > h[0] {
+                    continue;
+                }
+                let (Some(p0), Some(p2)) = (self.at(cells[0]), self.at(cells[2])) else {
+                    continue;
+                };
+                let mut count = 0;
+                (p0 == color).then(|| count += 1);
+                (p2 == color).then(|| count += 1);
+                if let Some(p1) = self.at(cells[1]) {
+                    if p1 == color && h[1] == h[0] {
+                        count += 1;
+                    }
+                }
+                if count == 2 {
+                    out.push((Move(Piece::Lintel(orientation), i as u8), cells));
+                }
+            }
+        }
+        out
     }
 
     /// Board cell indices touched by `m` -- 1 for a sarsen, 3 for a lintel.
@@ -1063,6 +1120,240 @@ impl Game for Druid {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Heuristic-guided playouts.
+//
+// Cameron Browne's guidance (quoted at the top of this file) is specific:
+// bias playouts toward (1) blocking a threat to your own piece, (2)
+// defending a fork/virtual connection, and (3) threatening the opponent's
+// best connection, each "with high probability" rather than deterministically
+// -- a fixed heuristic is exploitable, so the randomness matters as much as
+// the bias. See PLAN-DRUID.md session 1.
+
+/// Per-heuristic weights, combined as a weighted sum (a move can satisfy more
+/// than one heuristic at once, and should score higher for it) rather than a
+/// priority/first-applicable scheme -- simpler to reason about and to tune.
+/// Defaults weight blocking/forking (tactically forced, per Browne's own
+/// ordering) above the more strategic "threaten their connection".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DruidHeuristicWeights {
+    pub block_threat: f64,
+    pub defend_fork: f64,
+    pub threaten_connection: f64,
+}
+
+impl Default for DruidHeuristicWeights {
+    fn default() -> Self {
+        Self {
+            block_threat: 3.0,
+            defend_fork: 3.0,
+            threaten_connection: 1.0,
+        }
+    }
+}
+
+/// The largest same-`color` component (by cell count) under `conn`, and how
+/// far it currently reaches along `color`'s goal axis (row for Black, column
+/// for White). Used to approximate Browne's "threaten the opponent's best
+/// connection" / "extend your own" heuristic without a full path-probability
+/// model -- see PLAN-DRUID.md session 1's task list for why this proxy was
+/// chosen first.
+fn largest_component(s: &State, conn: &Connectivity, color: Player) -> (HashSet<usize>, u8) {
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::default();
+    for i in 0..s.size.area() as usize {
+        if s.board[i].matches(color) {
+            let r = conn.set(color).find(i);
+            groups.entry(r).or_default().push(i);
+        }
+    }
+    match groups.into_values().max_by_key(|v| v.len()) {
+        Some(members) => {
+            let axis = |i: usize| -> u8 {
+                let Pos(x, y) = Pos::from(i, s.size);
+                match color {
+                    Player::Black => y,
+                    Player::White => x,
+                }
+            };
+            let max_axis = members.iter().map(|&i| axis(i)).max().unwrap_or(0);
+            (members.into_iter().collect(), max_axis)
+        }
+        None => (HashSet::default(), 0),
+    }
+}
+
+/// Per-candidate-move heuristic score for `mover` to move, higher is better.
+/// Three detectors, matched to Browne's three heuristics:
+///
+/// 1. **Block a threat.** `threatened_cells` is every cell of `mover`'s that
+///    a currently-legal opponent lintel placement would repaint -- a lintel
+///    only needs 2 of its 3 touched cells to already carry the placer's
+///    color (`State::moves`), so the third can be a cell `mover` already
+///    built on. A candidate move that touches one of those cells breaks the
+///    pattern (raises the cell's height past the opponent's `h[0] == h[2]`
+///    window, or repaints it first).
+/// 2. **Defend a fork.** Group currently-available lintel moves by the pair
+///    of `mover`-color component roots they'd merge; if two or more distinct
+///    moves would complete the *same* connection, each is a "save" for that
+///    fork (either one alone secures it).
+/// 3. **Threaten the opponent's connection.** Union-find proxy for Browne's
+///    path-probability fitness: prefer touching a cell that extends `mover`'s
+///    largest component past its current reach toward the far border, or
+///    that's part of `opponent`'s largest component (repainting it via a
+///    lintel deletes a node from their biggest group -- the same mechanic
+///    `Connectivity::update`'s rebuild-on-repaint already relies on).
+fn heuristic_scores(
+    state: &HashedState,
+    mover: Player,
+    available: &[Move],
+    weights: &DruidHeuristicWeights,
+) -> Vec<f64> {
+    let s = &state.0;
+    let opponent = match mover {
+        Player::Black => Player::White,
+        Player::White => Player::Black,
+    };
+
+    let mut threatened_cells: HashSet<usize> = HashSet::default();
+    if s.hand(opponent).lintels > 0 {
+        for (_, cells) in s.lintel_candidates_for(opponent) {
+            for c in cells {
+                if s.at(c) == Some(mover) {
+                    threatened_cells.insert(c);
+                }
+            }
+        }
+    }
+
+    let mut fork_targets: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
+    for (idx, m) in available.iter().enumerate() {
+        if !matches!(m.0, Piece::Lintel(_)) {
+            continue;
+        }
+        let (cells, n) = s.move_cells(*m);
+        let mut roots = Vec::new();
+        for &c in &cells[..n] {
+            if s.at(c) == Some(mover) {
+                let r = state.2.set(mover).find(c);
+                if !roots.contains(&r) {
+                    roots.push(r);
+                }
+            }
+        }
+        if roots.len() == 2 {
+            let key = (roots[0].min(roots[1]), roots[0].max(roots[1]));
+            fork_targets.entry(key).or_default().push(idx);
+        }
+    }
+    let mut is_fork_move = vec![false; available.len()];
+    for idxs in fork_targets.values() {
+        if idxs.len() >= 2 {
+            for &i in idxs {
+                is_fork_move[i] = true;
+            }
+        }
+    }
+
+    let (my_members, my_max_axis) = largest_component(s, &state.2, mover);
+    let mut advance_cells: HashSet<usize> = HashSet::default();
+    for &i in &my_members {
+        for adj in Pos::from(i, s.size).adjacent(s.size) {
+            let j = adj.index(s.size.w);
+            let axis_j = match mover {
+                Player::Black => Pos::from(j, s.size).1,
+                Player::White => Pos::from(j, s.size).0,
+            };
+            if axis_j > my_max_axis {
+                advance_cells.insert(j);
+            }
+        }
+    }
+    let (opp_members, _) = largest_component(s, &state.2, opponent);
+
+    available
+        .iter()
+        .enumerate()
+        .map(|(idx, m)| {
+            let (cells, n) = s.move_cells(*m);
+            let touched = &cells[..n];
+
+            let mut score = 0.0;
+            if touched.iter().any(|c| threatened_cells.contains(c)) {
+                score += weights.block_threat;
+            }
+            if is_fork_move[idx] {
+                score += weights.defend_fork;
+            }
+            if touched.iter().any(|c| advance_cells.contains(c) || opp_members.contains(c)) {
+                score += weights.threaten_connection;
+            }
+            score
+        })
+        .collect()
+}
+
+/// `SimulateStrategy<Druid>` driven by `heuristic_scores`: picks among the
+/// max-scoring candidate moves (ties broken randomly by `random_best`, same
+/// as `simulate::Mast`). On its own this only ever *narrows* the choice --
+/// when no heuristic condition fires every move scores 0 and it degrades to
+/// uniform-random, but when one does fire it always takes it. Browne's "high
+/// probability, not always" warning (a deterministic heuristic playout is
+/// exploitable) is Session 1's job for the caller to supply, by wrapping this
+/// in `simulate::EpsilonGreedy` rather than using it bare -- see
+/// PLAN-DRUID.md session 1.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DruidHeuristic {
+    pub weights: DruidHeuristicWeights,
+}
+
+impl DruidHeuristic {
+    pub fn new(weights: DruidHeuristicWeights) -> Self {
+        Self { weights }
+    }
+}
+
+impl SimulateStrategy<Druid> for DruidHeuristic {
+    fn select_move<'a>(
+        &mut self,
+        state: &HashedState,
+        available: &'a [Move],
+        _stats: &TreeStats<Druid>,
+        player: usize,
+        rng: &mut SmallRng,
+    ) -> &'a Move {
+        let mover = if player == Player::Black.to_index() {
+            Player::Black
+        } else {
+            Player::White
+        };
+        let scores = heuristic_scores(state, mover, available, &self.weights);
+        let scored: Vec<(f64, &Move)> = scores.into_iter().zip(available.iter()).collect();
+        random_best(&scored, rng, |(score, _)| *score).unwrap().1
+    }
+}
+
+/// Pairs `DruidHeuristic`-guided playouts (wrapped in `DecisiveMove` +
+/// `EpsilonGreedy`, same nesting Strong/Master's `RaveMastDm` uses for
+/// `Mast`) with `RaveMastDm`'s exact select/backprop/final-action
+/// configuration (`select::Rave`, `backprop::Classic`, `select::RobustChild`)
+/// -- so a search built from this type differs from the already-SMAC3-tuned
+/// `RaveMastDm` config in server/main.rs's Strong/Master presets *only* in
+/// playout policy (`DruidHeuristic` in place of `Mast`), keeping Session 1's
+/// validation isolated to exactly the change this session made.
+#[derive(Clone, Copy, Default)]
+pub struct RaveDecisiveHeuristic;
+
+impl Strategy<Druid> for RaveDecisiveHeuristic {
+    type Select = select::Rave;
+    type Simulate = simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, DruidHeuristic>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "rave+decisive+druid_heuristic".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,6 +1365,7 @@ mod tests {
         },
         Search,
     };
+    use rand::SeedableRng;
 
     impl NodeRender for HashedState {}
 
@@ -1537,5 +1829,200 @@ mod tests {
             0,
             "a completed connection must cost exactly 0"
         );
+    }
+
+    // Weights chosen so a fired heuristic lands in its own decimal digit --
+    // `decode_flags` below reads a summed score back out unambiguously,
+    // rather than an inequality that a coincidental weight collision (e.g.
+    // default weights 3.0 + 1.0 == 3.0 + 1.0) could pass for the wrong
+    // reason.
+    const DECODABLE_WEIGHTS: DruidHeuristicWeights = DruidHeuristicWeights {
+        block_threat: 1.0,
+        defend_fork: 10.0,
+        threaten_connection: 100.0,
+    };
+
+    fn decode_flags(score: f64) -> (bool, bool, bool) {
+        let n = score.round() as i64;
+        (n % 10 == 1, (n / 10) % 10 == 1, (n / 100) % 10 == 1)
+    }
+
+    fn place_sarsen(state: HashedState, player: Player, pos: Pos, size: Size) -> HashedState {
+        let mut state = state;
+        state.0.player = player;
+        Druid::apply(state, &Move(Piece::Sarsen, pos.index(size.w) as u8))
+    }
+
+    #[test]
+    fn test_heuristic_scores_flags_blocking_a_lintel_threat() {
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+
+        // Black at (1,2), flanked by White at (0,2) and (2,2), all height 1:
+        // White's horizontal lintel anchored at (0,2) is a legal candidate
+        // (2 of its 3 touched cells already White) that would repaint
+        // Black's cell at (1,2) -- exactly the "threat" heuristic 1 detects.
+        state = place_sarsen(state, Player::Black, Pos(1, 2), size);
+        state = place_sarsen(state, Player::White, Pos(0, 2), size);
+        state = place_sarsen(state, Player::White, Pos(2, 2), size);
+        state.0.player = Player::Black;
+
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
+
+        let threatened_cell = Pos(1, 2).index(size.w);
+        let stack_on_threatened = Move(Piece::Sarsen, threatened_cell as u8);
+        let idx = available
+            .iter()
+            .position(|m| *m == stack_on_threatened)
+            .expect("stacking on the threatened cell should be a legal move");
+        let (block, _, _) = decode_flags(scores[idx]);
+        assert!(block, "move touching the threatened cell should get block-threat credit");
+
+        // An unrelated move far from the threat, any fork, or either color's
+        // (still singleton) components shouldn't get any credit at all.
+        let unrelated = Move(Piece::Sarsen, Pos(4, 4).index(size.w) as u8);
+        let idx = available.iter().position(|m| *m == unrelated).unwrap();
+        assert_eq!(scores[idx], 0.0, "unrelated move should score 0, got {}", scores[idx]);
+    }
+
+    #[test]
+    fn test_heuristic_scores_does_not_flag_a_threat_the_opponent_cannot_play() {
+        // Same geometry as the test above, but White's hand is drained of
+        // lintels first -- the repaint is structurally possible but not
+        // actually playable, so it must not be flagged as a threat.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        state = place_sarsen(state, Player::Black, Pos(1, 2), size);
+        state = place_sarsen(state, Player::White, Pos(0, 2), size);
+        state = place_sarsen(state, Player::White, Pos(2, 2), size);
+        state.0.hand_white.lintels = 0;
+        state.0.player = Player::Black;
+
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
+
+        let threatened_cell = Pos(1, 2).index(size.w);
+        let stack_on_threatened = Move(Piece::Sarsen, threatened_cell as u8);
+        let idx = available.iter().position(|m| *m == stack_on_threatened).unwrap();
+        let (block, _, _) = decode_flags(scores[idx]);
+        assert!(!block, "opponent with no lintels left can't threaten, so no block credit is due");
+    }
+
+    #[test]
+    fn test_heuristic_scores_flags_a_fork_of_two_connecting_lintels() {
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+
+        // Two Black dominoes, (0,2)-(0,3) and (2,2)-(2,3): the horizontal
+        // lintel anchored at row 2 *and* the one anchored at row 3 each
+        // independently connect the same pair of components -- a fork,
+        // either one alone secures the connection.
+        for pos in [Pos(0, 2), Pos(0, 3), Pos(2, 2), Pos(2, 3)] {
+            state = place_sarsen(state, Player::Black, pos, size);
+        }
+        // A second, unrelated pair of singleton Black cells 2 apart on row
+        // 0: exactly one lintel (anchored at (2,0)) connects *this* root
+        // pair, so it's a real connecting move but not a fork (no second,
+        // independent move completes the same connection).
+        state = place_sarsen(state, Player::Black, Pos(2, 0), size);
+        state = place_sarsen(state, Player::Black, Pos(4, 0), size);
+        state.0.player = Player::Black;
+
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
+
+        for anchor in [Pos(0, 2), Pos(0, 3)] {
+            let fork_move = Move(Piece::Lintel(Orientation::Horizontal), anchor.index(size.w) as u8);
+            let idx = available
+                .iter()
+                .position(|m| *m == fork_move)
+                .unwrap_or_else(|| panic!("expected {fork_move:?} to be legal"));
+            let (_, fork, _) = decode_flags(scores[idx]);
+            assert!(fork, "{fork_move:?} completes the shared connection and should get fork credit");
+        }
+
+        let single_connector = Move(Piece::Lintel(Orientation::Horizontal), Pos(2, 0).index(size.w) as u8);
+        let idx = available
+            .iter()
+            .position(|m| *m == single_connector)
+            .expect("expected the lone connecting lintel to be legal");
+        let (_, fork, _) = decode_flags(scores[idx]);
+        assert!(!fork, "a connecting move with no alternate way to complete the same connection isn't a fork");
+    }
+
+    #[test]
+    fn test_heuristic_scores_flags_extending_toward_the_far_border_and_opponent_chokepoints() {
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+
+        // Black's only piece is at (2,0) -- its largest (and only)
+        // component's reach along Black's goal axis (row) is y=0, so a move
+        // touching (2,1) (row 1, one closer to the far border, row 4)
+        // should get "extend toward the far border" credit.
+        state = place_sarsen(state, Player::Black, Pos(2, 0), size);
+        // White has a two-cell component at (4,2)-(4,3); a Black lintel
+        // repainting one of those cells should get "opponent chokepoint"
+        // credit for touching White's largest component.
+        state = place_sarsen(state, Player::White, Pos(4, 2), size);
+        state = place_sarsen(state, Player::White, Pos(4, 3), size);
+        state.0.player = Player::Black;
+
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
+
+        let extend = Move(Piece::Sarsen, Pos(2, 1).index(size.w) as u8);
+        let idx = available.iter().position(|m| *m == extend).unwrap();
+        let (_, _, threaten) = decode_flags(scores[idx]);
+        assert!(threaten, "a move extending toward the far border should get threaten-connection credit");
+
+        let backward = Move(Piece::Sarsen, Pos(0, 0).index(size.w) as u8);
+        let idx = available.iter().position(|m| *m == backward).unwrap();
+        let (_, _, threaten) = decode_flags(scores[idx]);
+        assert!(!threaten, "an unrelated move away from both the frontier and the opponent shouldn't get credit");
+    }
+
+    #[test]
+    fn test_druid_heuristic_select_move_returns_a_legal_move() {
+        // Smoke test across a short self-play run so `select_move` sees both
+        // an empty board (every heuristic score 0, degrading to uniform) and
+        // a populated one (heuristics actually firing) without panicking,
+        // and always returns a move from the slice it was given.
+        let mut heuristic = DruidHeuristic::default();
+        let mut rng = SmallRng::seed_from_u64(42);
+        let stats = TreeStats::<Druid>::default();
+        let mut state = HashedState::default();
+
+        for _ in 0..30 {
+            if Druid::is_terminal(&state) {
+                break;
+            }
+            let mut available = Vec::new();
+            Druid::generate_actions(&state, &mut available);
+            let player = Druid::player_to_move(&state).to_index();
+            let chosen = *heuristic.select_move(&state, &available, &stats, player, &mut rng);
+            assert!(available.contains(&chosen), "select_move must return one of the available moves");
+            state = Druid::apply(state, &chosen);
+        }
+    }
+
+    #[test]
+    fn test_rave_decisive_heuristic_drives_a_search_and_picks_a_legal_action() {
+        let mut search = TreeSearch::<Druid, RaveDecisiveHeuristic>::new().config(
+            SearchConfig::new()
+                .expand_threshold(1)
+                .q_init(QInit::Infinity)
+                .use_transpositions(true)
+                .max_iterations(30),
+        );
+        let state = HashedState::default();
+        let action = search.choose_action(&state);
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        assert!(available.contains(&action));
     }
 }
