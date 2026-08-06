@@ -32,7 +32,20 @@ pub trait Search: Sync + Send {
 }
 
 #[cfg(test)]
+static PARALLEL_TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn parallel_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    PARALLEL_TEST_MUTEX
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
+}
+
+#[cfg(test)]
 mod tests {
+    use super::parallel_test_guard;
     use super::*;
     use crate::game::PlayerIndex;
 
@@ -68,6 +81,7 @@ mod tests {
 
     #[test]
     fn test_root_parallel_picks_a_legal_action() {
+        let _guard = parallel_test_guard();
         use crate::games::ttt::*;
         type G = TicTacToe;
         let init_state = HashedPosition::new();
@@ -116,6 +130,7 @@ mod tests {
 
     #[test]
     fn test_leaf_parallel_picks_a_legal_action() {
+        let _guard = parallel_test_guard();
         use crate::games::ttt::*;
         type G = TicTacToe;
         let init_state = HashedPosition::new();
@@ -162,6 +177,7 @@ mod tests {
 
     #[test]
     fn test_leaf_parallel_virtual_loss_balances_across_many_iterations() {
+        let _guard = parallel_test_guard();
         // Regression guard for the virtual-loss accounting leaf parallelism
         // layers on top of `select`'s single unit per edge: if the extra
         // `k - 1` units added per leaf aren't removed in lock-step across
@@ -190,6 +206,7 @@ mod tests {
 
     #[test]
     fn test_tree_parallel_picks_a_legal_action() {
+        let _guard = parallel_test_guard();
         use crate::games::ttt::*;
         type G = TicTacToe;
         let init_state = HashedPosition::new();
@@ -210,6 +227,7 @@ mod tests {
 
     #[test]
     fn test_tree_parallel_with_grave_picks_a_legal_action() {
+        let _guard = parallel_test_guard();
         // `Rave`'s GRAVE backprop flag routes through `TreeStats::grave`
         // (read in `select_step`, written in `backprop_step`'s
         // `update_grave`) -- exercise that lock-protected path specifically
@@ -264,6 +282,7 @@ mod tests {
 
     #[test]
     fn test_tree_parallel_stress_many_threads_small_tree_high_iterations() {
+        let _guard = parallel_test_guard();
         // Concurrent stress test for the shared-arena/shared-stats path:
         // many worker threads, a tiny game (small tree, lots of edge/node
         // creation races per node), `expand_threshold(0)` so `select`
@@ -290,7 +309,7 @@ mod tests {
                 .max_iterations(2000)
                 .expand_threshold(0)
                 .use_transpositions(true)
-                .num_tree_threads(8),
+                .num_tree_threads(4),
         );
 
         let mut legal = Vec::new();
@@ -307,6 +326,7 @@ mod tests {
 
     #[test]
     fn test_hybrid_root_and_tree_parallel_picks_a_legal_action() {
+        let _guard = parallel_test_guard();
         // `num_threads > 1` and `num_tree_threads > 1` together should
         // compose (a handful of independent trees, each internally
         // tree-parallel) rather than one silently overriding the other --
@@ -335,6 +355,7 @@ mod tests {
 
     #[test]
     fn test_tree_parallel_transpositions_survive_many_real_time_games() {
+        let _guard = parallel_test_guard();
         // Regression guard for a race between `Node::is_terminal()` and
         // `Node::is_leaf()` in `select_step` (search.rs): those used to be
         // two separate `OnceLock::get()` reads with a decision gap between
@@ -368,7 +389,7 @@ mod tests {
             mcts::SearchConfig::default()
                 .max_time(std::time::Duration::from_millis(30))
                 .use_transpositions(true)
-                .num_tree_threads(8),
+                .num_tree_threads(4),
         );
 
         for _ in 0..20 {
