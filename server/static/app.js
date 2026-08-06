@@ -16,6 +16,11 @@
   let busy = false; // true while a move/AI request is in flight
   let hoveredMove = null; // the move currently under the cursor, for the ghost preview
   let autoplayPaused = false; // user-toggled; blocks maybeTriggerAiTurn from chaining
+  // Bumped by startNewGame. Now that "New Game" stays clickable mid-AI-turn,
+  // an in-flight /api/move or /api/ai_move request from the *old* game can
+  // resolve after a new one has started; callers stamp the epoch they
+  // started with and drop their response if it's gone stale.
+  let gameEpoch = 0;
 
   // Who controls each color this session: "human" or an AI preset id (e.g.
   // "strong"). Purely client-side -- the server has no notion of seats, it
@@ -457,10 +462,13 @@
 
   function setBusy(value) {
     busy = value;
-    // The autoplay toggle stays clickable even mid-request, so a runaway
-    // AI-vs-AI game can be interrupted before its *next* move is triggered.
+    // Only disable the buttons that would actually race a request in
+    // flight. "New Game" (and the dialog it opens) and the autoplay toggle
+    // must stay usable even mid-AI-turn -- during AI-vs-AI play `busy` is
+    // true almost continuously (each move immediately chains into the
+    // next), so gating those on it made them unclickable in practice.
     document
-      .querySelectorAll("button:not(#autoplay-toggle)")
+      .querySelectorAll("#modes button, #ai-move")
       .forEach((btn) => (btn.disabled = value));
     rebuildHighlights();
   }
@@ -490,6 +498,7 @@
 
   async function postMove(move) {
     const owner = currentState.player;
+    const epoch = gameEpoch;
     setBusy(true);
     try {
       await fetchJson("/api/move", {
@@ -497,6 +506,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(move),
       });
+      if (epoch !== gameEpoch) return; // a new game started while this was in flight
       applyMoveToLayers(move, owner);
       await refresh();
     } catch (err) {
@@ -504,6 +514,7 @@
     } finally {
       setBusy(false);
     }
+    if (epoch !== gameEpoch) return;
     // Must run after setBusy(false) -- maybeTriggerAiTurn bails out while busy.
     await maybeTriggerAiTurn();
   }
@@ -512,6 +523,7 @@
   // seat-driven auto-play and for the manual "AI Move" button.
   async function aiMove(preset) {
     const owner = currentState.player;
+    const epoch = gameEpoch;
     setBusy(true);
     document.getElementById("banner").textContent = "AI is thinking…";
     try {
@@ -520,6 +532,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ preset }),
       });
+      if (epoch !== gameEpoch) return; // a new game started while this was in flight
       applyMoveToLayers(result.last_move, owner);
       await refresh();
     } catch (err) {
@@ -527,6 +540,7 @@
     } finally {
       setBusy(false);
     }
+    if (epoch !== gameEpoch) return;
     // Must run after setBusy(false) -- maybeTriggerAiTurn bails out while busy.
     await maybeTriggerAiTurn();
   }
@@ -593,6 +607,7 @@
       .map(Number);
     seats.Black = document.getElementById("seat-black").value;
     seats.White = document.getElementById("seat-white").value;
+    gameEpoch++; // invalidate any in-flight move/AI request from the old game
 
     await fetchJson("/api/new", {
       method: "POST",
