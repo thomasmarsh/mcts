@@ -15,6 +15,7 @@
   let currentLegalMoves = [];
   let busy = false; // true while a move/AI request is in flight
   let hoveredMove = null; // the move currently under the cursor, for the ghost preview
+  let autoplayPaused = false; // user-toggled; blocks maybeTriggerAiTurn from chaining
 
   // Who controls each color this session: "human" or an AI preset id (e.g.
   // "strong"). Purely client-side -- the server has no notion of seats, it
@@ -456,8 +457,10 @@
 
   function setBusy(value) {
     busy = value;
+    // The autoplay toggle stays clickable even mid-request, so a runaway
+    // AI-vs-AI game can be interrupted before its *next* move is triggered.
     document
-      .querySelectorAll("button")
+      .querySelectorAll("button:not(#autoplay-toggle)")
       .forEach((btn) => (btn.disabled = value));
     rebuildHighlights();
   }
@@ -496,12 +499,13 @@
       });
       applyMoveToLayers(move, owner);
       await refresh();
-      await maybeTriggerAiTurn();
     } catch (err) {
       console.error("move rejected", err);
     } finally {
       setBusy(false);
     }
+    // Must run after setBusy(false) -- maybeTriggerAiTurn bails out while busy.
+    await maybeTriggerAiTurn();
   }
 
   // `preset` picks which AI config plays this one move. Used both for
@@ -518,21 +522,34 @@
       });
       applyMoveToLayers(result.last_move, owner);
       await refresh();
-      await maybeTriggerAiTurn();
     } catch (err) {
       console.error("AI move failed", err);
     } finally {
       setBusy(false);
     }
+    // Must run after setBusy(false) -- maybeTriggerAiTurn bails out while busy.
+    await maybeTriggerAiTurn();
   }
 
   // If it's a non-human seat's turn, play it automatically. Chains on its
   // own for AI-vs-AI (aiMove calls this again after its own refresh).
   async function maybeTriggerAiTurn() {
-    if (busy || !currentState || currentState.terminal) return;
+    if (busy || autoplayPaused || !currentState || currentState.terminal) return;
     const seat = seats[currentState.player];
     if (seat === "human") return;
     await aiMove(seat);
+  }
+
+  function setAutoplayPaused(value) {
+    autoplayPaused = value;
+    const btn = document.getElementById("autoplay-toggle");
+    btn.textContent = autoplayPaused ? "Resume" : "Pause";
+    btn.classList.toggle("paused", autoplayPaused);
+  }
+
+  function toggleAutoplay() {
+    setAutoplayPaused(!autoplayPaused);
+    if (!autoplayPaused) maybeTriggerAiTurn();
   }
 
   // The preset the manual "AI Move" button uses: the current seat's own
@@ -583,6 +600,7 @@
       body: JSON.stringify({ size: { w, h } }),
     });
     document.getElementById("new-game-dialog").close();
+    setAutoplayPaused(false);
     await refresh({ rebuildBoard: true });
     await maybeTriggerAiTurn();
   }
@@ -612,6 +630,7 @@
     document
       .getElementById("ai-move")
       .addEventListener("click", () => aiMove(presetForManualMove()));
+    document.getElementById("autoplay-toggle").addEventListener("click", toggleAutoplay);
     window.addEventListener("keydown", onKeyDown);
   }
 

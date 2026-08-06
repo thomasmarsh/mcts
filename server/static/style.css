@@ -105,8 +105,29 @@ button.mode.active .hotkey {
   gap: 6px;
 }
 
-#ai-move, #new-game {
+#ai-move, #new-game, #autoplay-toggle {
   flex: 1;
+}
+
+#autoplay-toggle {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#autoplay-toggle:hover {
+  background: #34363f;
+}
+
+#autoplay-toggle.paused {
+  background: #d68b5b;
+  border-color: #d68b5b;
+  color: #0d0e12;
+  font-weight: 600;
 }
 
 button.mode:disabled, #new-game:disabled, #ai-move:disabled {
