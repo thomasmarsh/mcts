@@ -9,6 +9,7 @@ pub mod knightthrough;
 pub mod nim;
 pub mod null;
 pub mod shibumi;
+pub mod tak;
 pub mod traffic_lights;
 pub mod ttt;
 pub mod unit;
