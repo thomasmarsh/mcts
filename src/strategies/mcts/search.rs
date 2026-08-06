@@ -64,11 +64,20 @@ type GraveTable<A> = FxHashMap<u64, Vec<FxHashMap<A, node::ActionStats>>>;
 /// with an unrelated MAST reader in `simulate`. `accum_depth`/`iter_count`
 /// are plain atomics since they're incremented once per iteration and never
 /// read alongside the maps.
+/// Per-player bigram table: `(prev_action, action) -> ActionStats`, keyed by
+/// the mover of `action` (not `prev_action`, which may belong to either
+/// player) -- mirrors `player_actions`'s per-mover indexing. NST's context is
+/// scoped to the current search only (the tree root's own predecessor is
+/// unknown -- see `Nst`'s doc comment), so this never carries a real
+/// game-history action in from outside the tree being searched.
+type BigramTable<A> = FxHashMap<(A, A), node::ActionStats>;
+
 #[derive(Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: RwLock<FxHashMap<G::A, node::ActionStats>>,
     pub grave: RwLock<GraveTable<G::A>>,
     pub player_actions: Vec<RwLock<FxHashMap<G::A, node::ActionStats>>>,
+    pub player_bigram_actions: Vec<RwLock<BigramTable<G::A>>>,
     pub accum_depth: AtomicUsize,
     pub iter_count: AtomicUsize,
 }
@@ -79,6 +88,9 @@ impl<G: Game> Default for TreeStats<G> {
             actions: RwLock::new(FxHashMap::default()),
             grave: RwLock::new(FxHashMap::default()),
             player_actions: (0..G::num_players())
+                .map(|_| RwLock::new(FxHashMap::default()))
+                .collect(),
+            player_bigram_actions: (0..G::num_players())
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             accum_depth: AtomicUsize::new(0),
@@ -94,6 +106,11 @@ impl<G: Game> Clone for TreeStats<G> {
             grave: RwLock::new(self.grave.read().unwrap().clone()),
             player_actions: self
                 .player_actions
+                .iter()
+                .map(|m| RwLock::new(m.read().unwrap().clone()))
+                .collect(),
+            player_bigram_actions: self
+                .player_bigram_actions
                 .iter()
                 .map(|m| RwLock::new(m.read().unwrap().clone()))
                 .collect(),
@@ -329,17 +346,36 @@ fn select_step<G: Game>(
     }
 }
 
+/// The action on the edge leading to `stack`'s last node, i.e. the most
+/// recent move played during tree descent -- `None` when `stack` is just the
+/// root (no descent happened this iteration, e.g. `expand_threshold` not yet
+/// met there). This is the bigram context `Nst::select_move` needs for the
+/// playout's first ply; `playout` tracks its own running context for every
+/// ply after that.
+#[inline]
+fn last_tree_action<G: Game>(index: &TreeIndex<G::A>, stack: &[Id]) -> Option<G::A> {
+    if stack.len() < 2 {
+        return None;
+    }
+    let parent_id = stack[stack.len() - 2];
+    let child_id = stack[stack.len() - 1];
+    Some(index.get(parent_id).child_edge(child_id).action.clone())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn simulate_step<G: Game>(
     max_playout_depth: usize,
     global: &TreeStats<G>,
     simulate_strategy: &mut impl SimulateStrategy<G>,
     state: &G::S,
+    prev_action: Option<G::A>,
     rng: &mut SmallRng,
 ) -> Trial<G> {
     simulate_strategy.playout(
         G::determinize(state.clone(), rng),
         max_playout_depth,
         global,
+        prev_action,
         rng,
     )
 }
@@ -525,11 +561,13 @@ where
 
     #[inline]
     pub(crate) fn simulate(&mut self, state: &G::S) -> Trial<G> {
+        let prev_action = last_tree_action::<G>(&self.index, &self.stack);
         simulate_step(
             self.config.max_playout_depth,
             &self.stats,
             &mut self.config.simulate,
             state,
+            prev_action,
             &mut self.config.rng,
         )
     }
@@ -552,6 +590,7 @@ where
             (0..k).map(|_| self.config.simulate.clone()).collect();
         let max_playout_depth = self.config.max_playout_depth;
         let stats = &self.stats;
+        let prev_action = last_tree_action::<G>(&self.index, &self.stack);
 
         std::thread::scope(|scope| {
             let handles: Vec<_> = strategies
@@ -559,9 +598,10 @@ where
                 .zip(seeds)
                 .map(|(strategy, seed)| {
                     let state = state.clone();
+                    let prev_action = prev_action.clone();
                     scope.spawn(move || {
                         let mut rng = SmallRng::seed_from_u64(seed);
-                        simulate_step(max_playout_depth, stats, strategy, &state, &mut rng)
+                        simulate_step(max_playout_depth, stats, strategy, &state, prev_action, &mut rng)
                     })
                 })
                 .collect();
@@ -911,12 +951,14 @@ where
                         if k > 1 {
                             add_path_virtual_loss(shared.index, &node_stack, k - 1);
                         }
+                        let prev_action = last_tree_action::<G>(shared.index, &stack);
                         for _ in 0..k {
                             let trial = simulate_step(
                                 shared.max_playout_depth,
                                 shared.global,
                                 simulate_strategy,
                                 &ctx.state,
+                                prev_action.clone(),
                                 &mut rng,
                             );
                             let flags = select_strategy.backprop_flags()

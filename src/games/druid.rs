@@ -1528,6 +1528,7 @@ impl SimulateStrategy<Druid> for DruidHeuristic {
         available: &'a [Move],
         _stats: &TreeStats<Druid>,
         player: usize,
+        _prev_action: Option<&Move>,
         rng: &mut SmallRng,
     ) -> &'a Move {
         let mover = if player == Player::Black.to_index() {
@@ -2354,7 +2355,8 @@ mod tests {
             let mut available = Vec::new();
             Druid::generate_actions(&state, &mut available);
             let player = Druid::player_to_move(&state).to_index();
-            let chosen = *heuristic.select_move(&state, &available, &stats, player, &mut rng);
+            let chosen =
+                *heuristic.select_move(&state, &available, &stats, player, None, &mut rng);
             assert!(
                 available.contains(&chosen),
                 "select_move must return one of the available moves"

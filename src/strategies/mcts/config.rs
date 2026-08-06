@@ -10,6 +10,13 @@ use rand_core::SeedableRng;
 pub const GRAVE: usize = 0b001;
 pub const GLOBAL: usize = 0b010;
 pub const AMAF: usize = 0b100;
+/// NST (Tak & Winands): bigram extension of the `GLOBAL`/MAST table. Its own
+/// bit rather than folding into `GLOBAL` -- `Nst::backprop_flags()` sets both
+/// (NST's hard-cutover backoff still needs the unigram table `GLOBAL` writes),
+/// but a plain `Mast` user shouldn't pay for the extra chronological-order
+/// reconstruction and bigram-table write NST needs (see `backprop.rs`'s
+/// `flags.nst()` block).
+pub const NST: usize = 0b1000;
 
 pub struct BackpropFlags(pub usize);
 
@@ -24,6 +31,10 @@ impl BackpropFlags {
 
     pub fn amaf(&self) -> bool {
         self.0 & AMAF == AMAF
+    }
+
+    pub fn nst(&self) -> bool {
+        self.0 & NST == NST
     }
 }
 

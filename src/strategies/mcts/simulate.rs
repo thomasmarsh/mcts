@@ -7,6 +7,7 @@ use crate::util::random_best;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
+use rustc_hash::FxHashMap;
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
@@ -47,16 +48,26 @@ where
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
+        prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         &available[rng.gen_range(0..available.len())]
     }
 
+    /// `prev_action` is the most recent action played before this playout's
+    /// first ply -- the last edge of the tree-descent path that selected
+    /// this leaf, or `None` if the leaf is the tree root itself (no descent
+    /// happened this iteration). Only consumed by context-sensitive
+    /// strategies (`Nst`); every other strategy ignores it. Scoped to the
+    /// current search only -- there is deliberately no attempt to thread in
+    /// whatever move preceded the tree root in the real game, since `G::S`
+    /// doesn't generally retain that history (see `Nst`'s doc comment).
     fn playout(
         &mut self,
         mut state: G::S,
         max_playout_depth: usize,
         stats: &TreeStats<G>,
+        mut prev_action: Option<G::A>,
         rng: &mut SmallRng,
     ) -> Trial<G> {
         let mut actions = Vec::new();
@@ -84,9 +95,12 @@ where
                 break;
             }
             let player = G::player_to_move(&state).to_index();
-            let action: &G::A = self.select_move(&state, &available, stats, player, rng);
+            let action: &G::A =
+                self.select_move(&state, &available, stats, player, prev_action.as_ref(), rng);
+            let action = action.clone();
             actions.push((action.clone(), player));
-            state = G::apply(state, action);
+            prev_action = Some(action.clone());
+            state = G::apply(state, &action);
             depth += 1;
         }
 
@@ -172,6 +186,7 @@ where
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
+        prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if rng.gen::<f64>() < self.epsilon {
@@ -181,11 +196,17 @@ where
                 available,
                 stats,
                 player,
+                prev_action,
                 rng,
             )
         } else {
-            self.inner.select_move(state, available, stats, player, rng)
+            self.inner
+                .select_move(state, available, stats, player, prev_action, rng)
         }
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        self.inner.backprop_flags()
     }
 }
 
@@ -307,11 +328,46 @@ where
         available: &'a [<G as Game>::A],
         stats: &TreeStats<G>,
         player: usize,
+        prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
-        self.choose(state, available, player)
-            .unwrap_or_else(|| self.inner.select_move(state, available, stats, player, rng))
+        self.choose(state, available, player).unwrap_or_else(|| {
+            self.inner
+                .select_move(state, available, stats, player, prev_action, rng)
+        })
     }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        self.inner.backprop_flags()
+    }
+}
+
+/// Picks among `available` by `score_of`, ties broken randomly -- the shared
+/// scoring/selection shape `Mast` and `Nst` both reduce to, since NST's only
+/// real difference from MAST is *which* table a per-action score comes from.
+fn select_by_score<'a, A>(
+    available: &'a [A],
+    rng: &mut SmallRng,
+    mut score_of: impl FnMut(&A) -> f64,
+) -> &'a A {
+    let scored: Vec<(f64, &A)> = available.iter().map(|a| (score_of(a), a)).collect();
+    random_best(&scored, rng, |(score, _)| *score).unwrap().1
+}
+
+/// A MAST-table lookup for one action: unvisited actions default to `1.`
+/// (matches MAST's original optimistic-untried-move behavior), visited ones
+/// score their running average utility.
+fn unigram_score<A: crate::game::Action>(
+    player_actions: &FxHashMap<A, node::ActionStats>,
+    action: &A,
+) -> f64 {
+    player_actions.get(action).map_or(1., |stats| {
+        if stats.num_visits > 0 {
+            stats.score / stats.num_visits as f64
+        } else {
+            1.
+        }
+    })
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -333,27 +389,91 @@ where
         available: &'a [G::A],
         stats: &TreeStats<G>,
         player: usize,
+        _prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         let player_actions = stats.player_actions[player].read().unwrap();
-        let action_scores = available
-            .iter()
-            .map(|action| {
-                let score = player_actions.get(action).map_or(1., |stats| {
-                    if stats.num_visits > 0 {
-                        stats.score / stats.num_visits as f64
-                    } else {
-                        1.
-                    }
-                });
+        select_by_score(available, rng, |action| {
+            unigram_score(&player_actions, action)
+        })
+    }
+}
 
-                (score, action)
-            })
-            .collect::<Vec<_>>();
+////////////////////////////////////////////////////////////////////////////////
 
-        random_best(&action_scores, rng, |(score, _)| *score)
-            .unwrap()
-            .1
+/// N-gram Selection Technique (NST, Tak & Winands 2012): a bigram extension
+/// of `Mast` -- instead of scoring a candidate action only by its own
+/// context-free running average (`Mast`'s `player_actions` table), it first
+/// looks up the pair `(prev_action, action)` in `player_bigram_actions` and
+/// uses that conditional average once it has at least `backoff_threshold`
+/// samples, falling back to the plain unigram/MAST score otherwise (a hard
+/// cutover, not the paper's continuous blend -- see PLAN-WORK.md session
+/// 12's design note for why).
+///
+/// The "previous action" context is scoped to the current search only: it's
+/// the last edge of the tree-descent path that selected the playout's
+/// starting leaf, or the previous ply within the same playout -- never a
+/// real move from before the tree root, since `G::S` doesn't generally
+/// retain that history and the paper's own formulation is within-rollout
+/// anyway. At the very first ply of a playout rolled out directly from the
+/// tree root (no descent happened), there is no context and this falls back
+/// to the unigram score unconditionally.
+#[derive(Clone, Copy, Debug)]
+pub struct Nst {
+    pub backoff_threshold: u32,
+}
+
+impl Default for Nst {
+    fn default() -> Self {
+        Self {
+            backoff_threshold: 5,
+        }
+    }
+}
+
+impl Nst {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn backoff_threshold(mut self, backoff_threshold: u32) -> Self {
+        self.backoff_threshold = backoff_threshold;
+        self
+    }
+}
+
+impl<G> SimulateStrategy<G> for Nst
+where
+    G: Game,
+{
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(GLOBAL | NST)
+    }
+
+    fn select_move<'a>(
+        &mut self,
+        _state: &G::S,
+        available: &'a [G::A],
+        stats: &TreeStats<G>,
+        player: usize,
+        prev_action: Option<&G::A>,
+        rng: &mut SmallRng,
+    ) -> &'a G::A {
+        let player_actions = stats.player_actions[player].read().unwrap();
+        let Some(prev) = prev_action else {
+            return select_by_score(available, rng, |action| {
+                unigram_score(&player_actions, action)
+            });
+        };
+        let bigram_actions = stats.player_bigram_actions[player].read().unwrap();
+        select_by_score(available, rng, |action| {
+            match bigram_actions.get(&(prev.clone(), action.clone())) {
+                Some(bigram_stats) if bigram_stats.num_visits >= self.backoff_threshold => {
+                    bigram_stats.score / bigram_stats.num_visits as f64
+                }
+                _ => unigram_score(&player_actions, action),
+            }
+        })
     }
 }
 
@@ -387,6 +507,7 @@ where
         available: &'a [<G as Game>::A],
         _stats: &TreeStats<G>,
         _player: usize,
+        _prev_action: Option<&G::A>,
         _rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
         let action = self.inner.choose_action(state);

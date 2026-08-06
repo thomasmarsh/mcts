@@ -486,4 +486,165 @@ mod tests {
 
         println!("{:#?}", ts.index);
     }
+
+    #[test]
+    fn test_nst_bigram_table_populated_by_backprop() {
+        use crate::games::ttt::*;
+        // Two empty cells (7, 8), O to move, no winner yet -- forces a
+        // deterministic zero-tree-descent, exactly-two-ply playout (O plays
+        // one of the two remaining cells, X is then forced into the last
+        // one, filling the board), so `trial.actions` has exactly the one
+        // consecutive pair NST's bigram table needs, with no tree-path
+        // segment to reason about.
+        let init_state = HashedPosition {
+            position: Position {
+                turn: Piece::O,
+                board: [
+                    (0, Piece::X),
+                    (1, Piece::X),
+                    (2, Piece::O),
+                    (3, Piece::X),
+                    (4, Piece::X),
+                    (5, Piece::O),
+                    (6, Piece::O),
+                ]
+                .iter()
+                .fold(0, |board, (i, piece)| {
+                    let value = match piece {
+                        Piece::X => 0b01,
+                        Piece::O => 0b10,
+                    };
+                    board | (value << (i << 1))
+                }),
+            },
+            hashes: [0; 8],
+        };
+
+        type G = TicTacToe;
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1Nst>;
+        let mut ts = TS::default().config(mcts::SearchConfig::default().seed(7));
+
+        let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
+        ts.reset_iter();
+        let mut ctx = mcts::SearchContext::new(root_id, init_state);
+        ts.select(&mut ctx);
+        let trial = ts.simulate(&ctx.state);
+        assert_eq!(
+            trial.actions.len(),
+            2,
+            "exactly two empty cells should force a two-ply playout"
+        );
+        let (first_action, first_player) = trial.actions[0];
+        let (second_action, second_player) = trial.actions[1];
+        assert_ne!(first_player, second_player);
+
+        ts.trial = Some(trial);
+        ts.backprop();
+
+        let bigram = ts.stats.player_bigram_actions[second_player]
+            .read()
+            .unwrap();
+        let stats = bigram
+            .get(&(first_action, second_action))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected bigram entry for ({:?}, {:?}) under player {}",
+                    first_action, second_action, second_player
+                )
+            });
+        assert_eq!(stats.num_visits, 1);
+
+        // The pair shouldn't have been (mis)attributed to the other player's
+        // table.
+        let other = 1 - second_player;
+        assert!(ts.stats.player_bigram_actions[other]
+            .read()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
+        use crate::games::ttt::*;
+        use mcts::simulate::{Nst, SimulateStrategy};
+        use rand::SeedableRng;
+
+        type G = TicTacToe;
+        let state = HashedPosition::new();
+        let available = vec![Move(0), Move(1)];
+        let prev = Move(2);
+
+        let stats = mcts::search::TreeStats::<G>::default();
+        // Unigram strongly favors Move(1): visited, average utility 1.0,
+        // versus Move(0)'s average 0.0.
+        {
+            let mut player_actions = stats.player_actions[0].write().unwrap();
+            player_actions.insert(
+                Move(0),
+                mcts::node::ActionStats {
+                    num_visits: 10,
+                    score: 0.,
+                },
+            );
+            player_actions.insert(
+                Move(1),
+                mcts::node::ActionStats {
+                    num_visits: 10,
+                    score: 10.,
+                },
+            );
+        }
+        // Bigram (context = `prev`) strongly favors the opposite: Move(0)
+        // over Move(1) -- but with too few samples to trust yet.
+        {
+            let mut bigram = stats.player_bigram_actions[0].write().unwrap();
+            bigram.insert(
+                (prev, Move(0)),
+                mcts::node::ActionStats {
+                    num_visits: 2,
+                    score: 2.,
+                },
+            );
+            bigram.insert(
+                (prev, Move(1)),
+                mcts::node::ActionStats {
+                    num_visits: 2,
+                    score: 0.,
+                },
+            );
+        }
+
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+
+        // Below `backoff_threshold` (default 5, only 2 samples): falls back
+        // to the unigram score, which prefers Move(1).
+        let mut below = Nst::default();
+        assert_eq!(
+            *below.select_move(&state, &available, &stats, 0, Some(&prev), &mut rng),
+            Move(1)
+        );
+
+        // Bump the bigram sample count to meet a lowered threshold: now the
+        // bigram score (favoring Move(0)) should win instead.
+        {
+            let mut bigram = stats.player_bigram_actions[0].write().unwrap();
+            bigram.get_mut(&(prev, Move(0))).unwrap().num_visits = 5;
+            bigram.get_mut(&(prev, Move(0))).unwrap().score = 5.;
+            bigram.get_mut(&(prev, Move(1))).unwrap().num_visits = 5;
+        }
+        let mut above = Nst::default().backoff_threshold(5);
+        assert_eq!(
+            *above.select_move(&state, &available, &stats, 0, Some(&prev), &mut rng),
+            Move(0)
+        );
+
+        // With no previous action at all (e.g. rolling out directly from the
+        // tree root), there's no context to look up -- always the unigram
+        // score.
+        let mut no_context = Nst::default().backoff_threshold(1);
+        assert_eq!(
+            *no_context.select_move(&state, &available, &stats, 0, None, &mut rng),
+            Move(1)
+        );
+    }
 }

@@ -242,7 +242,12 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 if !node.is_root() {
                     let parent_id = parent_id_opt.cloned().unwrap();
                     let action = stack.edge(index, parent_id, *node_id).action.clone();
-                    amaf_actions.push((action, node.player_idx));
+                    // The edge from `parent_id` to `node_id` was played by
+                    // whoever was to move *at* `parent_id` -- `node_id`'s own
+                    // `player_idx` is the mover of `node_id`'s own outgoing
+                    // edges (i.e. the *next* ply), the opposite player in an
+                    // alternating game.
+                    amaf_actions.push((action, index.get(parent_id).player_idx));
                 };
             }
         }
@@ -259,6 +264,36 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 let player_action_stats = player_actions.entry(action.clone()).or_default();
                 player_action_stats.num_visits += 1;
                 player_action_stats.score += utilities[*p];
+            }
+        }
+
+        // update: NST -- bigram extension of GLOBAL/MAST, keyed by
+        // (prev_action, action) instead of just `action`.
+        //
+        // `amaf_actions` is *not* in chronological play order: it's built
+        // as [playout suffix (already chronological)] followed by [tree-path
+        // actions appended leaf-to-root, i.e. reverse chronological] -- fine
+        // for GLOBAL/GRAVE/AMAF above, which only ever treat it as an
+        // unordered bag of (action, player) pairs, but NST's bigram context
+        // needs true consecutive-ply order. Reconstruct it by reversing the
+        // tree-path segment (the tail past `trial.actions.len()`) back to
+        // root-to-leaf order and prepending it to the (already-chronological)
+        // playout suffix -- the tree-path is always played before the
+        // playout continues from its leaf.
+        if flags.nst() {
+            let mut chronological = amaf_actions[trial.actions.len()..].to_vec();
+            chronological.reverse();
+            chronological.extend(trial.actions.iter().cloned());
+
+            for pair in chronological.windows(2) {
+                let (prev_action, _) = &pair[0];
+                let (action, p) = &pair[1];
+                let mut bigram_actions = global.player_bigram_actions[*p].write().unwrap();
+                let bigram_stats = bigram_actions
+                    .entry((prev_action.clone(), action.clone()))
+                    .or_default();
+                bigram_stats.num_visits += 1;
+                bigram_stats.score += utilities[*p];
             }
         }
     }

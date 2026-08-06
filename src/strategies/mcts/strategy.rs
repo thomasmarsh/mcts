@@ -49,6 +49,21 @@ impl<G: Game> Strategy<G> for Ucb1Mast {
     }
 }
 
+// Vanilla UCT + NST
+#[derive(Clone, Default)]
+pub struct Ucb1Nst;
+
+impl<G: Game> Strategy<G> for Ucb1Nst {
+    type Select = select::Ucb1;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Nst>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_nst".into()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Amaf;
 
