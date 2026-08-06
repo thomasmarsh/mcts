@@ -30,9 +30,11 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Move groups
 - [ ] Decisive moves / anti-decisive moves
 - [ ] Progressive bias
-- [ ] MTCS-Solver
+- [x] MTCS-Solver
 - [ ] PUCT
 - [ ] Monte Carlo paraphrase generation (MCPG)
+- [ ] Regulated Policy Optimization Selection
+- [ ] Semisplit Moves / Turn Linearization
 
 ### Simulation << MORE ADVANTAGEOUS THAN SELECTION
 - [ ] Rule based simulation policy
@@ -47,6 +49,12 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Simulation balancing 
 - [ ] Last good reply (LGR)
 - [ ] Patterns
+- [ ] Dynamic Backoff NAST (N-gram Average Sampling)
+- [ ] LGRF-2 (Last Good Reply with Forgetting)
+- [ ] UCB1-Driven Playouts
+- [ ] Shallow Cutoffs with Shallow Material Evaluation
+- [ ] PoolRollout
+- [ ] Decisive / Anti-Decisive Playout Truncation
 
 ### Tuning
 - [ ] Opening books
@@ -57,6 +65,8 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Progressive unpruning / widing
 - [ ] Absolute and Relative pruning
 - [ ] Pruning with domain knowledge
+- [ ] Elastic Tree Nodes / Dynamic State Abstraction
+- [ ] Novelty-Based Pruning
 
 ### Others
 - [ ] History heuristic
@@ -73,6 +83,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Cutoff AMAF
 - [ ] Killer RAVE
 - [ ] PoolRAVE 
+- [ ] Rapid Action Value Correction (RAVC)
 
 ### Structural
 - [ ] Iterative widening
@@ -85,10 +96,11 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] UCB for DAGs
 
 ### Paralellization
-- [ ] Virtual loss
-- [ ] Leaf paralellization
-- [ ] Root paralellization
-- [ ] Root-tree parallelization
+- [x] Virtual loss
+- [x] Leaf paralellization
+- [x] Root paralellization
+- [x] Root-tree parallelization
+- [ ] Hybrid parallelizaiton
 
 ### Backprop
 - [ ] Weighing Simulation Results (higher weight for shorter simulations, later in game sims)
