@@ -278,6 +278,27 @@ where
         matches!(self.state.get(), Some(NodeState::Expanded { .. }))
     }
 
+    /// A single, self-consistent snapshot of this node's Leaf/Terminal/
+    /// Expanded status. Callers that need to branch on more than one
+    /// aspect of this status (e.g. "is it terminal" and, separately, "is it
+    /// still a leaf") MUST derive both from one call to this method rather
+    /// than calling `is_terminal()`/`is_leaf()` back to back: those are
+    /// each their own independent `OnceLock::get()` read, and under tree
+    /// parallelism a concurrent `expand()` elsewhere -- e.g. a transposed
+    /// node shared with another thread's path -- can resolve Leaf ->
+    /// Terminal in the gap between two such reads. Each individual read is
+    /// locally correct at the instant it happens, but the combination can
+    /// fall through both branches: `is_terminal()` (checked first) sees the
+    /// still-unresolved leaf and returns `false`, then `is_leaf()` (checked
+    /// moments later) sees the now-resolved node and *also* returns
+    /// `false`, leaving neither branch's handling applied to a node that's
+    /// actually `Terminal` -- which then panics the first time something
+    /// calls `edges()` on it.
+    #[inline]
+    pub fn status(&self) -> Option<&NodeState<A>> {
+        self.state.get()
+    }
+
     /// Resolves this node's Leaf -> {Terminal, Expanded} transition exactly
     /// once (see the `state` field doc comment).
     pub fn expand(&self, init: impl FnOnce() -> NodeState<A>) -> &NodeState<A> {

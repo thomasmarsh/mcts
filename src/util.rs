@@ -207,6 +207,31 @@ pub struct Result {
     pub draws: usize,
 }
 
+impl Result {
+    pub fn total(&self) -> usize {
+        self.wins + self.losses + self.draws
+    }
+
+    /// Score counting a draw as half a win -- the standard way to fold draws
+    /// into a single win-rate proportion for a confidence interval.
+    pub fn score(&self) -> f64 {
+        self.wins as f64 + 0.5 * self.draws as f64
+    }
+
+    /// Win-rate proportion (draws counted as half a win) with its Wilson
+    /// score interval at confidence level `z` (e.g. `1.96` for ~95%).
+    /// Returns `(point_estimate, (lower, upper))`.
+    pub fn win_rate_ci(&self, z: f64) -> (f64, (f64, f64)) {
+        let total = self.total();
+        let point = if total == 0 {
+            0.5
+        } else {
+            self.score() / total as f64
+        };
+        (point, wilson_interval(self.score(), total, z))
+    }
+}
+
 impl Add for Result {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
@@ -414,6 +439,37 @@ where
     results
 }
 
+/// Wilson score confidence interval for a binomial proportion --
+/// `successes` out of `total` trials, at confidence level `z` (e.g. `1.96`
+/// for ~95%, `2.576` for ~99%). Unlike the naive `p_hat +/- z*sqrt(p_hat*(1
+/// -p_hat)/n)` normal-approximation interval, this stays inside `[0, 1]` and
+/// is accurate at the small-`n`/extreme-`p_hat` sizes self-play tournaments
+/// actually produce (a handful of dozens of games, sometimes a lopsided
+/// score), where the naive interval can be badly wrong or even leave `[0,
+/// 1]` entirely.
+///
+/// `successes` is a plain `f64` rather than an integer count so callers can
+/// pass a half-credit-for-draws score (see `Result::score`) directly --
+/// the derivation only uses `successes / total` as the sample proportion,
+/// it never needs `successes` to itself be a count of discrete Bernoulli
+/// trials.
+///
+/// Returns `(0.0, 1.0)` for `total == 0` (no information).
+pub fn wilson_interval(successes: f64, total: usize, z: f64) -> (f64, f64) {
+    if total == 0 {
+        return (0.0, 1.0);
+    }
+    let n = total as f64;
+    let p_hat = successes / n;
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let center = p_hat + z2 / (2.0 * n);
+    let margin = z * ((p_hat * (1.0 - p_hat) / n) + z2 / (4.0 * n * n)).sqrt();
+    let lower = ((center - margin) / denom).max(0.0);
+    let upper = ((center + margin) / denom).min(1.0);
+    (lower, upper)
+}
+
 pub(super) fn pv_string<G: Game>(path: &[G::A], state: &G::S) -> String {
     let mut state = state.clone();
     let mut out = String::new();
@@ -441,6 +497,50 @@ mod tests {
         assert_eq!(reverse_pairs.next(), Some((&2, &3)));
         assert_eq!(reverse_pairs.next(), Some((&1, &2)));
         assert_eq!(reverse_pairs.next(), None);
+    }
+
+    #[test]
+    fn test_wilson_interval_matches_known_reference_values() {
+        // 8/10 wins, 95% CI -- textbook Wilson interval is ~(0.49, 0.94).
+        let (lo, hi) = wilson_interval(8.0, 10, 1.96);
+        assert!((lo - 0.4902).abs() < 1e-3, "lo={lo}");
+        assert!((hi - 0.9433).abs() < 1e-3, "hi={hi}");
+
+        // A dead-even 50/50 split narrows as `n` grows, but always straddles
+        // 0.5.
+        let (lo_small, hi_small) = wilson_interval(5.0, 10, 1.96);
+        let (lo_big, hi_big) = wilson_interval(500.0, 1000, 1.96);
+        assert!(lo_small < 0.5 && hi_small > 0.5);
+        assert!(lo_big < 0.5 && hi_big > 0.5);
+        assert!(hi_big - lo_big < hi_small - lo_small);
+    }
+
+    #[test]
+    fn test_wilson_interval_stays_within_unit_range() {
+        for &successes in &[0.0, 1.0, 3.0] {
+            let (lo, hi) = wilson_interval(successes, 3, 1.96);
+            assert!((0.0..=1.0).contains(&lo));
+            assert!((0.0..=1.0).contains(&hi));
+            assert!(lo <= hi);
+        }
+    }
+
+    #[test]
+    fn test_wilson_interval_empty_sample_is_maximally_uncertain() {
+        assert_eq!(wilson_interval(0.0, 0, 1.96), (0.0, 1.0));
+    }
+
+    #[test]
+    fn test_result_win_rate_ci_counts_draws_as_half_wins() {
+        let r = Result {
+            wins: 6,
+            losses: 2,
+            draws: 4,
+        };
+        let (point, (lo, hi)) = r.win_rate_ci(1.96);
+        // score = 6 + 0.5*4 = 8, total = 12 -> point = 8/12
+        assert!((point - 8.0 / 12.0).abs() < 1e-9);
+        assert!(lo < point && point < hi);
     }
 
     #[test]

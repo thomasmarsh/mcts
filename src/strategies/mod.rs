@@ -306,6 +306,81 @@ mod tests {
     }
 
     #[test]
+    fn test_hybrid_root_and_tree_parallel_picks_a_legal_action() {
+        // `num_threads > 1` and `num_tree_threads > 1` together should
+        // compose (a handful of independent trees, each internally
+        // tree-parallel) rather than one silently overriding the other --
+        // regression guard for the dispatch-order fix in `choose_action`
+        // (root parallelism is checked first, and each of its worker trees'
+        // recursive `choose_action` call is what picks up `num_tree_threads`
+        // for that individual tree).
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_threads(2)
+                .num_tree_threads(2),
+        );
+
+        let mut legal = Vec::new();
+        G::generate_actions(&init_state, &mut legal);
+
+        let action = ts.choose_action(&init_state);
+        assert!(legal.contains(&action));
+    }
+
+    #[test]
+    fn test_tree_parallel_transpositions_survive_many_real_time_games() {
+        // Regression guard for a race between `Node::is_terminal()` and
+        // `Node::is_leaf()` in `select_step` (search.rs): those used to be
+        // two separate `OnceLock::get()` reads with a decision gap between
+        // them. Under transpositions, a *different* thread can resolve the
+        // very same node (reached via a different move order) from Leaf to
+        // Terminal in that gap: `is_terminal()` (checked first) sees the
+        // still-unresolved leaf and returns `false`, then `is_leaf()`
+        // (checked moments later) sees the now-resolved node and *also*
+        // returns `false` -- falling through both branches into
+        // `best_child()`/`Node::edges()` on a node that's actually
+        // Terminal, tripping `edges()`'s `unreachable!()`. Fixed by
+        // `Node::status()`, a single snapshot both decisions are now
+        // derived from.
+        //
+        // This didn't show up in the original tree-parallel stress test
+        // above because that one budgets by *iteration count*: 2000
+        // iterations split across 8 threads on trivially-cheap TicTacToe
+        // finishes in microseconds of real wall-clock time, sampling very
+        // few actual thread interleavings. Budgeting by *time* instead
+        // forces every thread to keep racing for the same real duration
+        // regardless of how fast an iteration is, sampling far more
+        // interleavings per test-second -- which is what actually caught
+        // this originally (on Druid, under a real multi-hundred-ms budget).
+        // Playing many full games (not just one `choose_action` call) adds
+        // further exposure across many distinct board positions.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_time(std::time::Duration::from_millis(30))
+                .use_transpositions(true)
+                .num_tree_threads(8),
+        );
+
+        for _ in 0..20 {
+            let mut state = HashedPosition::new();
+            while !G::is_terminal(&state) {
+                let action = ts.choose_action(&state);
+                state = G::apply(state, &action);
+            }
+        }
+    }
+
+    #[test]
     fn test_basics() {
         use crate::games::ttt::*;
         type G = TicTacToe;

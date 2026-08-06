@@ -77,6 +77,12 @@ where
     /// completion, and the root-level visit counts/scores are summed across
     /// trees to pick the final action. `1` (the default) keeps the
     /// single-threaded path with unchanged behavior/output.
+    ///
+    /// Composes with `num_tree_threads`: when both are `> 1`, this many
+    /// trees are searched in parallel and each of *those* is itself
+    /// tree-parallel across `num_tree_threads` threads -- a hybrid split
+    /// (e.g. 4 trees x 2 threads each on 8 cores), the standard way to
+    /// balance shared-tree lock contention against duplicated search effort.
     pub num_threads: usize,
 
     /// Number of rollouts to run per selected leaf ("leaf parallelism"):
@@ -96,9 +102,10 @@ where
     /// the tree instead of piling onto the same path. Unlike `num_threads`
     /// (root parallelism, independent trees merged at the end), this shares
     /// search effort across threads -- the bigger win, at the cost of the
-    /// arena/stats needing to be concurrent-safe. Mutually exclusive with
-    /// `num_threads > 1`. `1` (the default) keeps the untouched
-    /// single-threaded path.
+    /// arena/stats needing to be concurrent-safe. `1` (the default) keeps
+    /// the untouched single-threaded path.
+    ///
+    /// Composes with `num_threads` for a hybrid split -- see its doc comment.
     pub num_tree_threads: usize,
 }
 

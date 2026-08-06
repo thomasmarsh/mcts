@@ -198,15 +198,28 @@ fn select_step<G: Game>(
             .num_visits();
         let node = shared.index.get(ctx.current_id);
         let player = node.player_idx;
-        if node.is_terminal() || num_visits < shared.expand_threshold {
-            return;
-        }
 
-        // Get child actions
-        if node.is_leaf() {
-            let node_state = expand::<G>(shared.index, ctx.current_id, &ctx.state);
-            if matches!(node_state, NodeState::Terminal) {
-                return;
+        // A single snapshot of this node's status -- see `Node::status`'s
+        // doc comment for why this can't be two separate `is_terminal()`/
+        // `is_leaf()` calls (a concurrent `expand()` elsewhere, e.g. on a
+        // transposed node shared with another thread's path, can resolve
+        // Leaf -> Terminal in the gap between them and slip past both
+        // branches).
+        match node.status() {
+            Some(NodeState::Terminal) => return,
+            Some(NodeState::Expanded(_)) => {
+                if num_visits < shared.expand_threshold {
+                    return;
+                }
+            }
+            None => {
+                if num_visits < shared.expand_threshold {
+                    return;
+                }
+                let node_state = expand::<G>(shared.index, ctx.current_id, &ctx.state);
+                if matches!(node_state, NodeState::Terminal) {
+                    return;
+                }
             }
         }
 
@@ -634,6 +647,15 @@ where
     /// visits. Doesn't touch the shared arena/stats -- each thread owns its
     /// own tree -- so unlike tree parallelism this needs no interior
     /// mutability anywhere in the search.
+    ///
+    /// Each worker (and `self`'s own in-place tree) has `num_threads` forced
+    /// to `1` before its recursive `choose_action` call below, but
+    /// `num_tree_threads` is left untouched -- so if it's also `> 1`, that
+    /// recursive call dispatches into `choose_action_tree_parallel` instead
+    /// of the plain single-tree loop, making every one of these `num_threads`
+    /// trees itself tree-parallel: a hybrid split, e.g. `num_threads(4)` +
+    /// `num_tree_threads(2)` for 4 trees x 2 threads each on an 8-core
+    /// machine.
     fn choose_action_root_parallel(&mut self, state: &G::S) -> G::A {
         let num_threads = self.config.num_threads.max(1);
         debug_assert!(num_threads > 1);
@@ -707,13 +729,18 @@ where
     /// the same path. Unlike root parallelism, this shares search effort
     /// across threads rather than duplicating it -- the whole point of the
     /// "make the arena/stats concurrent-safe" work above.
+    ///
+    /// Composes with root parallelism for a hybrid split (a handful of
+    /// independent trees, each internally tree-parallel): `choose_action`'s
+    /// dispatch checks `num_threads` first, so by the time this is reached
+    /// -- either directly (pure tree parallelism) or via a root-parallel
+    /// worker's recursive `choose_action` call -- `num_threads` is always
+    /// `1` for *this* tree; the assert below documents that invariant
+    /// rather than an exclusion between the two modes.
     fn choose_action_tree_parallel(&mut self, state: &G::S) -> G::A {
         let num_threads = self.config.num_tree_threads.max(1);
         debug_assert!(num_threads > 1);
-        debug_assert_eq!(
-            self.config.num_threads, 1,
-            "tree parallelism and root parallelism are mutually exclusive"
-        );
+        debug_assert_eq!(self.config.num_threads, 1);
 
         let hash = G::zobrist_hash(state);
         let root_id = self.reset(G::player_to_move(state).to_index(), hash);
@@ -811,11 +838,20 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
-        if self.config.num_tree_threads > 1 {
-            return self.choose_action_tree_parallel(state);
-        }
+        // Order matters for hybrid root+tree parallelism: `num_threads`
+        // (trees) is checked first so `choose_action_root_parallel` gets a
+        // chance to spawn its independent trees; each of *those* then
+        // recurses back into this same dispatch with `num_threads` forced to
+        // `1` (see `choose_action_root_parallel`), so `num_tree_threads` is
+        // what decides whether each individual tree is itself
+        // tree-parallel. Checking `num_tree_threads` first would skip root
+        // parallelism whenever both are set > 1, silently dropping the
+        // "trees" half of a requested hybrid split.
         if self.config.num_threads > 1 {
             return self.choose_action_root_parallel(state);
+        }
+        if self.config.num_tree_threads > 1 {
+            return self.choose_action_tree_parallel(state);
         }
 
         let hash = G::zobrist_hash(state);
