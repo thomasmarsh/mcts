@@ -458,6 +458,89 @@ impl State {
 
         None
     }
+
+    /// Shortest border-to-border path `color` still needs to build, counted
+    /// in cells that aren't already `color`'s. Used only as a heuristic for
+    /// non-terminal (depth-cutoff) playouts -- see `Druid::compute_utilities`
+    /// -- so it deliberately approximates: it charges a flat cost of one per
+    /// cell regardless of piece type (a lintel covers 3 cells per hand item,
+    /// a sarsen covers one) and ignores height/legality entirely. A cell
+    /// already owned by the *opponent* still costs only one, not infinity,
+    /// since a lintel's legality only requires 2 of its 3 touched cells to
+    /// already be the mover's color (`moves()` above), so the third can
+    /// repaint an opponent's cell -- there's no such thing as a permanently
+    /// blocked cell here.
+    ///
+    /// 0-1 BFS (a plain BFS `VecDeque`, front-pushing 0-cost relaxations and
+    /// back-pushing 1-cost ones) rather than Dijkstra, since every edge cost
+    /// is 0 or 1. Every cell has a finite cost (no impassable cells), so on
+    /// a non-empty board this always finds a path -- `unwrap_or(u32::MAX)`
+    /// is unreachable in practice, just a safe default.
+    fn connect_distance(&self, color: Player) -> u32 {
+        let cost = |i: usize| -> u32 {
+            if self.board[i].matches(color) {
+                0
+            } else {
+                1
+            }
+        };
+
+        let area = self.size.area() as usize;
+        let mut dist = vec![u32::MAX; area];
+        let mut done = vec![false; area];
+        let mut deque: VecDeque<usize> = VecDeque::new();
+
+        let starts: Vec<Pos> = match color {
+            Player::Black => (0..self.size.w).map(|x| Pos(x, 0)).collect(),
+            Player::White => (0..self.size.h).map(|y| Pos(0, y)).collect(),
+        };
+        for pos in starts {
+            let i = pos.index(self.size.w);
+            let c = cost(i);
+            if c < dist[i] {
+                dist[i] = c;
+                if c == 0 {
+                    deque.push_front(i);
+                } else {
+                    deque.push_back(i);
+                }
+            }
+        }
+
+        while let Some(i) = deque.pop_front() {
+            if done[i] {
+                continue;
+            }
+            done[i] = true;
+            let d = dist[i];
+            for adj in Pos::from(i, self.size).adjacent(self.size) {
+                let j = adj.index(self.size.w);
+                if done[j] {
+                    continue;
+                }
+                let step = cost(j);
+                let nd = d + step;
+                if nd < dist[j] {
+                    dist[j] = nd;
+                    if step == 0 {
+                        deque.push_front(j);
+                    } else {
+                        deque.push_back(j);
+                    }
+                }
+            }
+        }
+
+        let goals: Vec<Pos> = match color {
+            Player::Black => (0..self.size.w).map(|x| Pos(x, self.size.h - 1)).collect(),
+            Player::White => (0..self.size.h).map(|y| Pos(self.size.w - 1, y)).collect(),
+        };
+        goals
+            .into_iter()
+            .map(|pos| dist[pos.index(self.size.w)])
+            .min()
+            .unwrap_or(u32::MAX)
+    }
 }
 
 impl std::fmt::Display for State {
@@ -944,6 +1027,40 @@ impl Game for Druid {
     fn player_to_move(state: &Self::S) -> Player {
         state.0.player
     }
+
+    /// The default (`game.rs`) scores a non-terminal state as a flat 0. for
+    /// both players. That default is only ever reached here via a playout
+    /// hitting `max_playout_depth` before either side connects (a real
+    /// winner is already handled by `terminal_status`/`trial.terminal` --
+    /// see the backprop comment at
+    /// `strategies/mcts/backprop.rs:95-103`, which only falls back to this
+    /// function when there is genuinely nothing cached). Scoring every such
+    /// cutoff as a draw throws away whatever progress either side has made
+    /// -- this is the "max_depth ... reduces the quality of playouts" issue
+    /// noted at the top of this file. Replace it with a cheap proxy for
+    /// Cameron Browne's suggested fitness = your_best_path_prob /
+    /// opponent's_best_path_prob: the difference in each color's shortest
+    /// remaining border-to-border path (`State::connect_distance`),
+    /// normalized to stay strictly inside (-1, 1) so it can never be
+    /// confused with a real win/loss.
+    fn compute_utilities(state: &Self::S) -> Vec<f64> {
+        if let Some(winner) = Self::winner(state) {
+            let wi = winner.to_index();
+            return (0..Self::num_players()).map(|i| if i == wi { 1. } else { -1. }).collect();
+        }
+
+        // Neither color has connected (checked above), so both distances
+        // are strictly positive: a distance of 0 would mean that color's
+        // border-to-border path is already all their own cells, i.e. a
+        // connection, which `Self::winner` would have already caught.
+        let black_dist = state.0.connect_distance(Player::Black) as f64;
+        let white_dist = state.0.connect_distance(Player::White) as f64;
+        let black_score = (white_dist - black_dist) / (black_dist + white_dist);
+
+        (0..Self::num_players())
+            .map(|i| if i == Player::Black.to_index() { black_score } else { -black_score })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1331,5 +1448,96 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_compute_utilities_still_scores_a_real_win_as_decisive() {
+        // The heuristic branch must not shadow the real win/loss case: a
+        // connected state still gets the exact +1./-1., not a value merely
+        // close to it.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        for x in 0..size.w {
+            let i = Pos(x, 0).index(size.w);
+            state.0.board[i] = Square { height: 1, piece: Some(Player::White) };
+        }
+        state.resync_connectivity();
+        assert_eq!(state.0.connection(), Some(Player::White));
+
+        let utilities = Druid::compute_utilities(&state);
+        assert_eq!(utilities[Player::White.to_index()], 1.);
+        assert_eq!(utilities[Player::Black.to_index()], -1.);
+    }
+
+    #[test]
+    fn test_compute_utilities_is_a_draw_on_the_symmetric_empty_board() {
+        // On an empty square board, Black's top-bottom distance and White's
+        // left-right distance are identical by symmetry, so the heuristic
+        // should agree with the old flat-draw default here specifically.
+        let state = HashedState::new(DEFAULT_SIZE);
+        let utilities = Druid::compute_utilities(&state);
+        assert_eq!(utilities, vec![0., 0.]);
+    }
+
+    #[test]
+    fn test_compute_utilities_favors_the_color_closer_to_connecting() {
+        // Black has built most of a top-to-bottom column (one cell short);
+        // White hasn't built anything. A depth-cutoff playout landing here
+        // should score this as good for Black, not a flat draw -- this is
+        // the actual bug being fixed: the old default threw this signal
+        // away entirely.
+        let size = DEFAULT_SIZE;
+        let mut state = HashedState::new(size);
+        let col = 2u8;
+        for y in 0..size.h - 1 {
+            let i = Pos(col, y).index(size.w);
+            state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
+        }
+        state.resync_connectivity();
+        assert_eq!(state.0.connection(), None, "one cell short of connecting");
+
+        let utilities = Druid::compute_utilities(&state);
+        let black = utilities[Player::Black.to_index()];
+        let white = utilities[Player::White.to_index()];
+        assert!(black > 0., "Black is one move from winning, should score above a draw: {black}");
+        assert_eq!(black, -white, "zero-sum: the two utilities must be exact opposites");
+        assert!(black < 1., "a non-terminal cutoff must never read as a real win");
+    }
+
+    #[test]
+    fn test_connect_distance_zero_iff_connected() {
+        let size = Size { w: 4, h: 4 };
+        let mut state = HashedState::new(size);
+        assert_eq!(
+            state.0.connect_distance(Player::Black),
+            size.h as u32,
+            "empty board: every row costs 1, so the full height must be paid"
+        );
+
+        // Fill every row but the last: one cell short of a top-to-bottom
+        // column.
+        let col = 1u8;
+        for y in 0..size.h - 1 {
+            let i = Pos(col, y).index(size.w);
+            state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
+        }
+        state.resync_connectivity();
+        assert_eq!(state.0.connection(), None, "one cell short must not be connected yet");
+        assert_eq!(
+            state.0.connect_distance(Player::Black),
+            1,
+            "one cell short of a column should cost exactly 1"
+        );
+
+        // Fill the last cell: now a complete column, i.e. a win.
+        let i = Pos(col, size.h - 1).index(size.w);
+        state.0.board[i] = Square { height: 1, piece: Some(Player::Black) };
+        state.resync_connectivity();
+        assert_eq!(state.0.connection(), Some(Player::Black));
+        assert_eq!(
+            state.0.connect_distance(Player::Black),
+            0,
+            "a completed connection must cost exactly 0"
+        );
     }
 }
