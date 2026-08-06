@@ -540,13 +540,17 @@ impl std::fmt::Display for HashedState {
 // top-down view. Occluded pieces do not need to contribute to the hash. The
 // revised hash is better:
 //
-//     size(N, M) = 2 * ceil(log2(N*M)) * N * M
+//     size(N, M) = 2 * N * M * bits_per_height(N, M)
 //
-// Then size(10,10) = 1400. There is 8-way symmetry, but this is only useful
-// in the early game.
+// where `bits_per_height` is `ceil(log2(max_cell_height + 1))` -- see
+// `zobrist_height_bits`/`max_cell_height`. A cell's height is bounded by a
+// player's *hand* (`Hand::new` deals `N*M*2` sarsens), not by the board
+// area, so for the standard 10x10 board that's 200 sarsens -> 8 bits ->
+// size(10,10) = 2 * 100 * 8 = 1600. There is 8-way symmetry, but this is
+// only useful in the early game.
 //
 // This bounds the largest board size we can support -- see `Size::is_supported`.
-const HASHES_LEN: usize = 1400;
+const HASHES_LEN: usize = 1600;
 static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xD401D);
 
 /// Highest height a single cell can reach. A player can only raise a cell's
@@ -1009,14 +1013,26 @@ mod tests {
 
     #[test]
     fn test_max_cell_height_matches_hand_sarsens() {
-        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+        for size in [
+            Size { w: 3, h: 3 },
+            DEFAULT_SIZE,
+            Size { w: 7, h: 7 },
+            Size { w: 9, h: 9 },
+            Size { w: 10, h: 10 },
+        ] {
             assert_eq!(max_cell_height(size), Hand::new(size).sarsens as usize);
         }
     }
 
     #[test]
     fn test_is_supported_accepts_default_and_common_sizes() {
-        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+        for size in [
+            Size { w: 3, h: 3 },
+            DEFAULT_SIZE,
+            Size { w: 7, h: 7 },
+            Size { w: 9, h: 9 },
+            Size { w: 10, h: 10 },
+        ] {
             assert!(size.is_supported(), "{size:?} should be supported under the corrected bit width");
         }
     }
@@ -1027,7 +1043,13 @@ mod tests {
         // *entire* representable range for a given bit width, not just the
         // heights a real game can reach -- the encoding scheme itself must
         // hold regardless of how the bound is derived.
-        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }, Size { w: 9, h: 9 }] {
+        for size in [
+            Size { w: 3, h: 3 },
+            DEFAULT_SIZE,
+            Size { w: 7, h: 7 },
+            Size { w: 9, h: 9 },
+            Size { w: 10, h: 10 },
+        ] {
             let bits = zobrist_height_bits(size);
             // The bit width must be able to represent every height the game
             // can actually produce on one cell.
