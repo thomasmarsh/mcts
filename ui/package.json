@@ -9,9 +9,13 @@
     "build": "vite build",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint app/src/",
+    "lint": "eslint app/src/ packages/*/src/",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@mcts/core": "workspace:*",
+    "@mcts/game": "workspace:*"
   },
   "devDependencies": {
     "eslint": "^10.5.0",
