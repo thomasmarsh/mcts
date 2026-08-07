@@ -16,4 +16,5 @@ ui/pnpm-lock.yaml
 # Vite build output (served by the cargo server's ServeDir)
 server/static/dist/
 AGENTS.md
+CLAUDE.md
 .claude
