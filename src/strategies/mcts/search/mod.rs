@@ -4,6 +4,7 @@ pub mod reuse;
 pub mod search_impl;
 pub mod shared;
 
+pub use core::MemoryStats;
 pub use shared::SearchContext;
 pub use shared::TreeIndex;
 pub use shared::TreeStats;

@@ -79,4 +79,15 @@ impl<T> Arena<T> {
     pub fn is_empty(&self) -> bool {
         self.0.read().unwrap().is_empty()
     }
+
+    /// Diagnostics-only: applies `f` to every entry currently in the arena,
+    /// holding the read lock for the whole walk. `get`/`len` alone can't
+    /// enumerate the arena's contents -- this is for memory-profiling code,
+    /// not any hot search path.
+    pub fn for_each(&self, mut f: impl FnMut(&T)) {
+        let entries = self.0.read().unwrap();
+        for entry in entries.iter() {
+            f(entry);
+        }
+    }
 }

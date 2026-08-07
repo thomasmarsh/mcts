@@ -617,6 +617,109 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     }
 }
 
+// Regression guard for the memory-profiling helpers
+// (`ChildArray::explored_len`/`heap_bytes_estimate`, `TreeSearch::
+// memory_stats`). These have no single "correct" answer to check against on
+// a real game (that's what examples/mem_profile.rs is for), but the
+// counting/estimation logic itself is a plain deterministic computation that
+// should never silently drift -- worth pinning against small,
+// hand-verifiable shapes.
+#[test]
+fn test_child_array_explored_len_and_heap_bytes_estimate() {
+    use mcts::node::ChildArray;
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2);
+    assert_eq!(children.explored_len(), 0, "nothing resolved yet");
+
+    children.get_or_create_child(1, crate::strategies::mcts::index::Id::invalid_id);
+    children.get_or_create_child(3, crate::strategies::mcts::index::Id::invalid_id);
+    assert_eq!(
+        children.explored_len(),
+        2,
+        "explored_len should count only resolved slots, not len()"
+    );
+
+    let n = 4usize;
+    let explored = 2usize;
+    let expected = n * std::mem::size_of::<u32>()
+        + n * std::mem::size_of::<std::sync::OnceLock<crate::strategies::mcts::index::Id>>()
+        + explored
+            * (std::mem::size_of::<crate::strategies::mcts::index::Id>() + std::mem::size_of::<usize>())
+        + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
+        + n * std::mem::size_of::<u32>()
+        + n * 2 * std::mem::size_of::<mcts::node::PlayerStats>();
+    assert_eq!(
+        children.heap_bytes_estimate(),
+        expected,
+        "heap_bytes_estimate should be exactly the sum of each parallel array's element count * element size"
+    );
+}
+
+#[test]
+fn test_memory_stats_matches_hand_walked_arena() {
+    use crate::games::ttt::*;
+    type G = TicTacToe;
+
+    // A handful of iterations on a fresh board: enough to expand the root
+    // and explore a couple of children, small enough to hand-verify by
+    // walking the arena the same way `memory_stats` does, independently.
+    let mut ts = mcts::TreeSearch::<G, mcts::strategy::Ucb1>::default().config(
+        mcts::SearchConfig::default()
+            .expand_threshold(1)
+            .max_iterations(10),
+    );
+    let init_state = HashedPosition::new();
+    ts.choose_action(&init_state);
+
+    let stats = ts.memory_stats();
+
+    let mut want_total = 0usize;
+    let mut want_leaf = 0usize;
+    let mut want_terminal = 0usize;
+    let mut want_expanded = 0usize;
+    let mut want_total_slots = 0usize;
+    let mut want_explored_slots = 0usize;
+    ts.index.for_each(|node: &mcts::node::Node<Move>| {
+        want_total += 1;
+        match node.status() {
+            None => want_leaf += 1,
+            Some(mcts::node::NodeState::Terminal) => want_terminal += 1,
+            Some(mcts::node::NodeState::Expanded(children)) => {
+                want_expanded += 1;
+                want_total_slots += children.len();
+                want_explored_slots += children.explored_len();
+            }
+        }
+    });
+
+    assert_eq!(stats.total_nodes, want_total);
+    assert_eq!(stats.total_nodes, ts.arena_len());
+    assert_eq!(stats.leaf_nodes, want_leaf);
+    assert_eq!(stats.terminal_nodes, want_terminal);
+    assert_eq!(stats.expanded_nodes, want_expanded);
+    assert_eq!(
+        want_leaf + want_terminal + want_expanded,
+        want_total,
+        "every arena entry is exactly one of leaf/terminal/expanded"
+    );
+    assert_eq!(stats.total_child_slots, want_total_slots);
+    assert_eq!(stats.explored_child_slots, want_explored_slots);
+    assert!(
+        stats.explored_child_slots <= stats.total_child_slots,
+        "can't explore more slots than exist"
+    );
+    assert!(want_expanded > 0, "root should have expanded with expand_threshold(1)");
+    assert_eq!(
+        stats.node_bytes,
+        stats.total_nodes * std::mem::size_of::<mcts::node::Node<Move>>()
+    );
+    assert_eq!(
+        stats.table_entries, 0,
+        "transpositions are off by default in this config"
+    );
+    assert_eq!(stats.table_bytes, 0);
+}
+
 #[test]
 fn test_nst_bigram_table_populated_by_backprop() {
     use crate::games::ttt::*;

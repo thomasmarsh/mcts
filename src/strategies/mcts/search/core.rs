@@ -1,5 +1,5 @@
 use crate::strategies::mcts::index::Id;
-use crate::strategies::mcts::node::NodeStats;
+use crate::strategies::mcts::node::{Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{add_path_virtual_loss, backprop_step, last_tree_action, proven_win_child, select_step, simulate_step};
 use crate::strategies::mcts::search::SearchContext;
@@ -16,6 +16,38 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use rand_core::SeedableRng;
 use std::sync::atomic::Ordering::Relaxed;
+
+/// Byte totals are rough estimates (`std::mem::size_of` on fixed-size parts,
+/// element-count * element-size for heap-allocated `Vec`s/maps, ignoring
+/// allocator and hashmap bucket overhead) -- good enough to rank where
+/// memory pressure actually comes from, not a precise accounting. See
+/// `TreeSearch::memory_stats`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemoryStats {
+    pub total_nodes: usize,
+    pub leaf_nodes: usize,
+    pub terminal_nodes: usize,
+    pub expanded_nodes: usize,
+    /// Sum, over every expanded node, of its child array's length -- one
+    /// slot per legal action, whether or not it was ever explored.
+    pub total_child_slots: usize,
+    /// Sum, over every expanded node, of its child array's explored slots
+    /// (`ChildArray::explored_len`).
+    pub explored_child_slots: usize,
+    /// `total_nodes * size_of::<Node<A>>()` -- every arena entry's
+    /// fixed-size footprint (this already includes its `ChildArray`'s own
+    /// fixed-size fields, inlined via `OnceLock<NodeState<A>>`, regardless
+    /// of whether that node ended up Leaf/Terminal/Expanded).
+    pub node_bytes: usize,
+    /// Estimated heap bytes owned by expanded nodes' `ChildArray`s (their
+    /// parallel `Vec`s/`FxHashMap`), summed via `ChildArray::heap_bytes_estimate`.
+    pub child_array_heap_bytes: usize,
+    /// Total `TableEntry` count across every transposition-table bucket.
+    pub table_entries: usize,
+    /// `table_entries * size_of::<G::S>()` -- the state-clone cost each
+    /// entry carries.
+    pub table_bytes: usize,
+}
 
 impl<G, S> TreeSearch<G, S>
 where
@@ -147,6 +179,32 @@ where
 
     pub fn arena_len(&self) -> usize {
         self.index.len()
+    }
+
+    /// Diagnostics-only snapshot of the arena's and transposition table's
+    /// approximate memory footprint, broken down by category. Walks every
+    /// arena entry, so this is a profiling tool, not something to call on
+    /// any hot path.
+    pub fn memory_stats(&self) -> MemoryStats {
+        let mut stats = MemoryStats::default();
+        self.index.for_each(|node: &Node<G::A>| {
+            stats.total_nodes += 1;
+            stats.node_bytes += std::mem::size_of::<Node<G::A>>();
+            match node.status() {
+                None => stats.leaf_nodes += 1,
+                Some(NodeState::Terminal) => stats.terminal_nodes += 1,
+                Some(NodeState::Expanded(children)) => {
+                    stats.expanded_nodes += 1;
+                    stats.total_child_slots += children.len();
+                    stats.explored_child_slots += children.explored_len();
+                    stats.child_array_heap_bytes += children.heap_bytes_estimate();
+                }
+            }
+        });
+        let bucket_lens = self.table.bucket_lens();
+        stats.table_entries = bucket_lens.iter().sum();
+        stats.table_bytes = stats.table_entries * std::mem::size_of::<G::S>();
+        stats
     }
 
     pub fn verbose_summary(&self, state: &G::S, num_threads: usize) {

@@ -510,6 +510,32 @@ impl<A: Action> ChildArray<A> {
         amaf.score += utility;
     }
 
+    /// Number of child slots with a resolved arena node (`is_explored`) --
+    /// i.e. actually visited at least once, vs. merely allocated as a legal
+    /// action when the parent expanded. `len() - explored_len()` is exactly
+    /// what a scheme that only allocates a child slot once an action has
+    /// actually been sampled (e.g. progressive widening) would avoid
+    /// allocating. Diagnostics-only (memory profiling).
+    pub fn explored_len(&self) -> usize {
+        (0..self.len()).filter(|&idx| self.is_explored(idx)).count()
+    }
+
+    /// Rough estimate, in bytes, of this child array's heap footprint: every
+    /// parallel array/map this struct owns, at its current length, ignoring
+    /// allocator and hashmap bucket overhead. Diagnostics-only (memory
+    /// profiling) -- not precise enough to drive anything but a relative
+    /// comparison between categories.
+    pub fn heap_bytes_estimate(&self) -> usize {
+        let n = self.len();
+        let explored = self.explored_len();
+        n * std::mem::size_of::<A>()
+            + n * std::mem::size_of::<OnceLock<index::Id>>()
+            + explored * (std::mem::size_of::<index::Id>() + std::mem::size_of::<usize>())
+            + n * std::mem::size_of::<AtomicU32>()
+            + n * std::mem::size_of::<u32>()
+            + n * self.num_players * std::mem::size_of::<PlayerStats>()
+    }
+
     /// Lifts one child's accumulated stats out into a standalone
     /// `NodeStats` -- used when tree reuse (`reuse.rs`'s `try_promote`)
     /// promotes a child into the new root. `root_stats` is never itself a
