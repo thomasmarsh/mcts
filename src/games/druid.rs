@@ -654,7 +654,7 @@ where
     for i in 0..size.area() as usize {
         let c = func(i);
         map.push(c);
-        if (i + 1) as u8 % size.w == 0 {
+        if ((i + 1) as u8).is_multiple_of(size.w) {
             map.push(format!(" {}", row));
             if row < 10 {
                 map.push(" ".into());
@@ -1724,7 +1724,7 @@ mod tests {
 
         // The specific old (buggy) collision: height 1 vs height 1 + 32.
         let old_ceiling = 32usize;
-        assert!(max_height >= 1 + old_ceiling);
+        assert!(max_height > old_ceiling);
         assert_ne!(
             hashes_by_height[&1],
             hashes_by_height[&(1 + old_ceiling)],

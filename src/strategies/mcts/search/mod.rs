@@ -1,0 +1,109 @@
+pub mod core;
+pub mod parallel;
+pub mod reuse;
+pub mod search_impl;
+pub mod shared;
+
+pub use shared::SearchContext;
+pub use shared::TreeIndex;
+pub use shared::TreeStats;
+pub use shared::Shared;
+
+use super::config::SearchConfig;
+use super::config::Strategy;
+use super::index;
+use super::index::Id;
+use super::node::Node;
+use super::node::NodeStats;
+use super::simulate::Trial;
+use super::table::TranspositionTable;
+use crate::game::Game;
+use crate::timer;
+
+#[derive(Clone)]
+pub struct TreeSearch<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    SearchConfig<G, S>: Sync + Send,
+    G::S: std::fmt::Display,
+{
+    pub(crate) index: shared::TreeIndex<G::A>,
+    pub(crate) timer: timer::Timer,
+    pub(crate) root_id: Id,
+    pub(crate) root_stats: NodeStats,
+    pub(crate) pv: Vec<G::A>,
+    pub(crate) table: TranspositionTable<G::S>,
+    /// The real state `root_id` represents, tracked purely so
+    /// `reuse_or_reset` (`SearchConfig::reuse_tree`, PLAN-WORK.md session
+    /// 13) can replay a candidate path and verify full state equality
+    /// before promoting onto it -- a `Node` only stores its Zobrist hash,
+    /// not its state, and a bare `u64` match isn't proof (a real, if
+    /// astronomically rare, 64-bit collision would otherwise silently
+    /// promote onto the wrong position and corrupt the whole tree; compare
+    /// `TranspositionTable`'s own full-state check for the same reasoning).
+    /// `None` only before the very first `choose_action` call.
+    pub(crate) root_state: Option<G::S>,
+
+    pub config: SearchConfig<G, S>,
+    pub stats: TreeStats<G>,
+    pub stack: Vec<Id>,
+    pub trial: Option<Trial<G>>,
+}
+
+impl<G, S> TreeSearch<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    G::S: std::fmt::Display,
+{
+    pub fn config(mut self, config: SearchConfig<G, S>) -> Self {
+        self.config = config;
+        self
+    }
+}
+
+impl<G, S> Default for TreeSearch<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    SearchConfig<G, S>: Default,
+    G::S: std::fmt::Display,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<G, S> TreeSearch<G, S>
+where
+    G: Game,
+    S: Strategy<G>,
+    SearchConfig<G, S>: Default,
+    G::S: std::fmt::Display,
+{
+    pub fn new() -> Self {
+        let index = index::Arena::new();
+        let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
+        Self {
+            root_id,
+            root_stats: NodeStats::new(G::num_players()),
+            root_state: None,
+            pv: vec![],
+            stack: vec![],
+            table: TranspositionTable::default(),
+            trial: None,
+            index,
+            config: S::config(),
+            timer: timer::Timer::new(),
+            stats: Default::default(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn new_root(&mut self, player_idx: usize, hash: u64) -> Id {
+        let root = Node::new_root(player_idx, G::num_players(), hash);
+        self.root_id = self.index.insert(root);
+        self.root_id
+    }
+}

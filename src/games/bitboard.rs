@@ -85,7 +85,6 @@ impl<const N: usize, const M: usize> Default for BitBoard<N, M> {
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// For the `BitBoard`, iterate over every positition set.
-
 impl<const N: usize, const M: usize> Iterator for BitBoard<N, M> {
     type Item = usize;
 

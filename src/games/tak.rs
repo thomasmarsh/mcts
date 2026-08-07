@@ -236,7 +236,7 @@ impl Move {
     #[inline(always)]
     pub fn spread(src: usize, dir: usize, take: u32, drops: u32) -> Move {
         debug_assert!(src < 64 && dir < 4);
-        debug_assert!(take >= 1 && take <= 8);
+        debug_assert!((1..=8).contains(&take));
         debug_assert!(drops < (1 << take) && drops & (1 << (take - 1)) != 0);
         Move(1 | ((src as u32) << 1) | ((dir as u32) << 7) | (take << 9) | (drops << 13))
     }
@@ -683,6 +683,7 @@ impl<const N: usize> State<N> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn resync_hash(&mut self) {
         self.hash = self.recompute_hash();
     }
@@ -839,6 +840,7 @@ impl<const N: usize> crate::strategies::mcts::render::NodeRender for State<N> {}
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};

@@ -109,11 +109,8 @@ impl<A: Action> OpeningBook<A> {
     pub fn score(&self, sequence: &[A], player: usize) -> Option<f64> {
         let mut current_id = self.root_id;
         for action in sequence {
-            if let Some(child_id) = self.get(current_id).children.get(action) {
-                current_id = *child_id;
-            } else {
-                return None;
-            }
+            let child_id = self.get(current_id).children.get(action)?;
+            current_id = *child_id;
         }
         self.get(current_id).score(player)
     }
