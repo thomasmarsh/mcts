@@ -721,4 +721,346 @@ mod tests {
             Move(1)
         );
     }
+
+    // Session 13 -- tree reuse across moves ("re-rooting", search.rs's
+    // `reuse_or_reset`/`find_reachable`). `reuse_or_reset` is exercised
+    // directly (rather than only indirectly via two `choose_action` calls)
+    // so each test can isolate exactly what the reuse mechanism itself did,
+    // uncontaminated by whatever the *next* call's own fresh iterations
+    // would separately discover.
+
+    #[test]
+    fn test_reuse_tree_promotes_matching_child_with_inherited_stats() {
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .reuse_tree(true)
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&init_state);
+        let after_own_move = G::apply(init_state, &action);
+
+        // Pick a reply that was actually explored during the search above --
+        // `generate_actions` doesn't guarantee every legal reply got visited
+        // at only 200 iterations, so read the tree directly for one that
+        // was, to deterministically exercise the promote path rather than
+        // the fallback-to-reset path.
+        let x_child_id = {
+            let root = ts.index.get(ts.root_id);
+            let edge = root.edges().iter().find(|e| e.action == action).unwrap();
+            edge.node_id()
+                .expect("the played action must have been explored")
+        };
+        let (reply, expected_id) = {
+            let x_child = ts.index.get(x_child_id);
+            let edge = x_child
+                .edges()
+                .iter()
+                .find(|e| e.is_explored())
+                .expect("some reply should have been explored at 200 iterations");
+            (edge.action, edge.node_id().unwrap())
+        };
+        let next_state = G::apply(after_own_move, &reply);
+
+        let hash = G::zobrist_hash(&next_state);
+        let player_idx = G::player_to_move(&next_state).to_index();
+        let root_id = ts.reuse_or_reset(player_idx, &next_state);
+
+        assert_eq!(
+            root_id, expected_id,
+            "should have promoted the tree node reached by these two real \
+             plies (depth 2 from the original root), not created a new one"
+        );
+        assert!(
+            ts.root_stats.num_visits() > 0,
+            "promoted root should inherit its incoming edge's accumulated \
+             visits, not start from zero like a fresh reset() would"
+        );
+        assert_eq!(ts.index.get(root_id).hash, hash);
+        assert!(ts.index.get(root_id).is_root());
+        // The node this used to be a child of must give up `is_root` --
+        // otherwise a transposition landing back on it later would read
+        // `root_stats` instead of its own edge's stats (see `reuse_or_reset`'s
+        // doc comment in search.rs).
+    }
+
+    #[test]
+    fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
+        // A genuine 64-bit Zobrist collision can't be constructed on demand,
+        // but the safety property it's guarding against -- "a hash match
+        // alone isn't proof, verify the actual state" -- can be exercised
+        // directly by corrupting `root_state` (the known-good state
+        // `find_reachable`'s candidate path gets replayed from) so it no
+        // longer matches what's actually in the tree. `find_reachable`
+        // still finds the same hash-matching candidate (it only reads tree
+        // hashes, not `root_state`), but `try_promote`'s replay-and-compare
+        // must now disagree and fall back to `reset()` rather than
+        // promoting onto a node that doesn't actually correspond to the
+        // caller's real state.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .reuse_tree(true)
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&init_state);
+        let after_own_move = G::apply(init_state, &action);
+        let x_child_id = {
+            let root = ts.index.get(ts.root_id);
+            let edge = root.edges().iter().find(|e| e.action == action).unwrap();
+            edge.node_id()
+                .expect("the played action must have been explored")
+        };
+        let reply = {
+            let x_child = ts.index.get(x_child_id);
+            x_child
+                .edges()
+                .iter()
+                .find(|e| e.is_explored())
+                .map(|e| e.action)
+                .expect("some reply should have been explored at 200 iterations")
+        };
+        let next_state = G::apply(after_own_move, &reply);
+
+        // Corrupt the replay starting point to a different, but still real
+        // and legally-replayable, one-move position -- one extra piece on a
+        // cell neither `action` nor `reply` touch, so replaying those same
+        // two actions on top of it stays perfectly legal (no overwriting an
+        // occupied cell) while still landing on a provably different
+        // (3-piece, not 2-piece) final state than the real `next_state`.
+        let used_cells = [action.0, reply.0];
+        let safe_cell = (0u8..9).find(|c| !used_cells.contains(c)).unwrap();
+        ts.root_state = Some(G::apply(init_state, &Move(safe_cell)));
+
+        let root_id = ts.reuse_or_reset(G::player_to_move(&next_state).to_index(), &next_state);
+
+        assert_eq!(
+            ts.root_stats.num_visits(),
+            0,
+            "a hash match whose replayed state disagrees with the real target \
+             state must not be promoted -- should fall back to reset()"
+        );
+        assert_eq!(ts.index.get(root_id).hash, G::zobrist_hash(&next_state));
+        assert_eq!(ts.index.len(), 1);
+    }
+
+    #[test]
+    fn test_reuse_tree_falls_back_to_reset_when_no_match() {
+        // Five real plies past the searched root -- one more than
+        // `MAX_REROOT_DEPTH` (4), so this is guaranteed unreachable within
+        // the bound regardless of how much of the (tiny) TicTacToe tree 200
+        // iterations happened to explore.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .reuse_tree(true)
+                .seed(42),
+        );
+
+        let _ = ts.choose_action(&init_state);
+
+        let mut far_state = init_state;
+        for m in [0u8, 1, 2, 3, 4] {
+            far_state = G::apply(far_state, &Move(m));
+        }
+        let hash = G::zobrist_hash(&far_state);
+        let player_idx = G::player_to_move(&far_state).to_index();
+        let root_id = ts.reuse_or_reset(player_idx, &far_state);
+
+        assert_eq!(
+            ts.root_stats.num_visits(),
+            0,
+            "no match found within MAX_REROOT_DEPTH -- should fall back to a fresh reset()"
+        );
+        assert_eq!(ts.index.get(root_id).hash, hash);
+        assert!(ts.index.get(root_id).is_root());
+        assert_eq!(
+            ts.index.len(),
+            1,
+            "reset() should have cleared the old tree entirely"
+        );
+    }
+
+    #[test]
+    fn test_reuse_tree_disabled_always_resets() {
+        // `reuse_tree` defaults to `false` -- baseline regression guard that
+        // the new field doesn't perturb the untouched full-reset behavior
+        // when left off, mirroring sessions 7-9's own "field defaults to a
+        // no-op" pattern.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let init_state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts =
+            TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
+
+        let action = ts.choose_action(&init_state);
+        let next_state = G::apply(init_state, &action);
+
+        let hash = G::zobrist_hash(&next_state);
+        let player_idx = G::player_to_move(&next_state).to_index();
+        let root_id = ts.reuse_or_reset(player_idx, &next_state);
+
+        assert_eq!(ts.root_stats.num_visits(), 0);
+        assert_eq!(ts.index.get(root_id).hash, hash);
+        assert_eq!(ts.index.len(), 1);
+    }
+
+    #[test]
+    fn test_mcts_solver_proof_survives_rerooting() {
+        // PLAN-WORK.md session 13's MCTS-Solver interaction note: a `Proven`
+        // status is a property of a position, not of the search path that
+        // found it, so it should still be readable after re-rooting promotes
+        // that position's node to root -- confirmed directly here rather
+        // than assumed.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+
+        // X to move; the only move that doesn't lose outright is Move(7)
+        // (see `must_block_position`'s doc comment in games/ttt.rs).
+        let mut state = HashedPosition::new();
+        for m in [0u8, 4, 8, 1] {
+            state = G::apply(state, &Move(m));
+        }
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(mcts::node::QInit::Loss)
+                .use_mcts_solver(true)
+                .reuse_tree(true)
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&state);
+        assert_eq!(action, Move(7));
+        let iters = ts
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            iters < 5000,
+            "the solver should have fully proven this near-forced position \
+             well within budget (used {iters} iterations)"
+        );
+        state = G::apply(state, &action);
+
+        // Every one of O's replies here is a proven loss for O (that's what
+        // made Move(7)'s node provably a win for X above) -- any legal one
+        // exercises a real, explored, proven child.
+        let mut o_replies = Vec::new();
+        G::generate_actions(&state, &mut o_replies);
+        let o_move = o_replies[0];
+        state = G::apply(state, &o_move);
+
+        let hash = G::zobrist_hash(&state);
+        let player_idx = G::player_to_move(&state).to_index();
+        let root_id = ts.reuse_or_reset(player_idx, &state);
+
+        assert_eq!(ts.index.get(root_id).hash, hash);
+        assert_ne!(
+            ts.index.get(root_id).proven(),
+            mcts::node::Proven::Unproven,
+            "the promoted node's Proven status (set while it was still a \
+             non-root descendant during move 1's search) should have \
+             survived re-rooting unchanged"
+        );
+    }
+
+    #[test]
+    fn test_reuse_tree_self_play_many_moves_no_panic() {
+        // Integration-level smoke test: a full self-play game with reuse
+        // enabled, alternating which mover's perspective is at root every
+        // ply (matching `util::self_play`'s one-engine-both-sides pattern --
+        // `find_reachable`'s target is always exactly 1 ply from the current
+        // root here, the shallowest real case). Exercises the promote path
+        // repeatedly across a real game rather than just once.
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let mut state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(100)
+                .reuse_tree(true)
+                .seed(7),
+        );
+
+        while !G::is_terminal(&state) {
+            let action = ts.choose_action(&state);
+            state = G::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn test_reuse_tree_composes_with_tree_parallel_self_play_no_panic() {
+        // `reuse_or_reset` runs single-threaded, strictly before
+        // `choose_action_tree_parallel` spawns its worker threads, so there's
+        // no concurrent access to `self.index`/`self.root_stats` while it
+        // mutates `is_root`/`root_stats` -- exercised here across a real
+        // multi-move self-play game (not just one call), same rationale as
+        // session 10's own finding that only sustained real-time multi-move
+        // games sample enough interleavings to catch tree-parallel races.
+        let _guard = parallel_test_guard();
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let mut state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_tree_threads(4)
+                .reuse_tree(true)
+                .seed(7),
+        );
+
+        while !G::is_terminal(&state) {
+            let action = ts.choose_action(&state);
+            state = G::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn test_reuse_tree_composes_with_root_parallel_self_play_no_panic() {
+        let _guard = parallel_test_guard();
+        use crate::games::ttt::*;
+        type G = TicTacToe;
+        let mut state = HashedPosition::new();
+
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .num_threads(4)
+                .reuse_tree(true)
+                .seed(7),
+        );
+
+        while !G::is_terminal(&state) {
+            let action = ts.choose_action(&state);
+            state = G::apply(state, &action);
+        }
+    }
 }

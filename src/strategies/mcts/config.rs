@@ -128,6 +128,19 @@ where
     ///
     /// Composes with `num_threads` for a hybrid split -- see its doc comment.
     pub num_tree_threads: usize,
+
+    /// Tree reuse across moves ("re-rooting"): instead of discarding the
+    /// whole search tree at the start of every `choose_action` call, try to
+    /// find the node matching the incoming state somewhere in the tree left
+    /// over from the previous call (by Zobrist hash, bounded to a few plies
+    /// of search -- see `TreeSearch::find_reachable`) and promote it to be
+    /// the new root, keeping its accumulated visit/score stats instead of
+    /// starting over. Falls back to the untouched full-reset behavior
+    /// whenever no match is found (first move of a game, or the actual play
+    /// went somewhere this side's own search never reached). `false` (the
+    /// default) keeps every prior determinism/regression test's assumption
+    /// that two `choose_action` calls with the same config never share state.
+    pub reuse_tree: bool,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -154,6 +167,7 @@ where
             num_threads: 1,
             num_rollouts_per_leaf: 1,
             num_tree_threads: 1,
+            reuse_tree: false,
         }
     }
 }
@@ -259,6 +273,11 @@ where
 
     pub fn num_tree_threads(mut self, num_tree_threads: usize) -> Self {
         self.num_tree_threads = num_tree_threads.max(1);
+        self
+    }
+
+    pub fn reuse_tree(mut self, reuse_tree: bool) -> Self {
+        self.reuse_tree = reuse_tree;
         self
     }
 }

@@ -122,6 +122,16 @@ impl<G: Game> Clone for TreeStats<G> {
 
 pub type TreeIndex<A> = index::Arena<Node<A>>;
 
+/// How many plies of catch-up `TreeSearch::find_reachable` will search past
+/// the current root before giving up and falling back to a full reset. Deep
+/// enough to cover the two real call patterns in this codebase --
+/// `util::self_play`'s single search instance advancing by exactly its own
+/// move each call (1 ply) and `util::round_robin`'s alternating instances
+/// advancing by its own move plus the opponent's reply between calls (2
+/// plies) -- with slack for a couple more without unbounded search if
+/// something calls `choose_action` less often than every ply.
+const MAX_REROOT_DEPTH: usize = 4;
+
 /// A root child's (action, visits, per-player score) triple -- the unit
 /// root-parallel search merges across independently-searched trees.
 type ActionTotal<A> = (A, u32, Vec<f64>);
@@ -438,6 +448,16 @@ where
     pub(crate) root_stats: NodeStats,
     pub(crate) pv: Vec<G::A>,
     pub(crate) table: TranspositionTable<G::S>,
+    /// The real state `root_id` represents, tracked purely so
+    /// `reuse_or_reset` (`SearchConfig::reuse_tree`, PLAN-WORK.md session
+    /// 13) can replay a candidate path and verify full state equality
+    /// before promoting onto it -- a `Node` only stores its Zobrist hash,
+    /// not its state, and a bare `u64` match isn't proof (a real, if
+    /// astronomically rare, 64-bit collision would otherwise silently
+    /// promote onto the wrong position and corrupt the whole tree; compare
+    /// `TranspositionTable`'s own full-state check for the same reasoning).
+    /// `None` only before the very first `choose_action` call.
+    pub(crate) root_state: Option<G::S>,
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
@@ -482,6 +502,7 @@ where
         Self {
             root_id,
             root_stats: NodeStats::new(G::num_players()),
+            root_state: None,
             pv: vec![],
             stack: vec![],
             table: TranspositionTable::default(),
@@ -637,6 +658,16 @@ where
         );
     }
 
+    /// Number of nodes currently held in this search's arena. Under
+    /// `SearchConfig::reuse_tree` (PLAN-WORK.md session 13) this includes
+    /// nodes left unreachable from the current root by re-rooting -- they're
+    /// harmless dead weight (see `reuse_or_reset`'s doc comment) but do
+    /// count toward real memory use, so this is "how big is this search's
+    /// footprint", not "how big is the reachable subtree".
+    pub fn arena_len(&self) -> usize {
+        self.index.len()
+    }
+
     pub fn verbose_summary(&self, state: &G::S, num_threads: usize) {
         if !self.config.verbose {
             return;
@@ -695,7 +726,147 @@ where
         self.table.clear();
         self.stats.accum_depth.store(0, Relaxed);
         self.stats.iter_count.store(0, Relaxed);
+        // Found while building session 13's reuse tests: `new_root` gives
+        // `self.root_id` a fresh (zero-visit) arena node, but `root_stats`
+        // is a separate field the arena clear doesn't touch -- so without
+        // this, every prior call's accumulated root visits/scores silently
+        // carried into the "fresh" tree from the very first `choose_action`
+        // this crate ever shipped, inflating every `SelectStrategy`'s view
+        // of the root's total visits (e.g. UCB's exploration term) a little
+        // more with every move of every game.
+        self.root_stats = NodeStats::new(G::num_players());
         self.new_root(player_idx, hash)
+    }
+
+    /// Breadth-first search, bounded to `MAX_REROOT_DEPTH` plies, for a node
+    /// reachable from `start` (inclusive) whose position hash is
+    /// `target_hash`, alongside the sequence of actions that reaches it.
+    /// Matching by hash rather than by "the action played" means this works
+    /// uniformly regardless of how many plies happened since `start` was
+    /// last searched -- 0 (repeated call on an unchanged position), 1 (this
+    /// search's own move, e.g. `self_play`'s single-engine-both-sides
+    /// pattern), or more (this engine's own move plus one or more other
+    /// movers' replies, e.g. `round_robin`'s alternating instances) -- with
+    /// no need to change `Search::choose_action`'s signature to thread an
+    /// explicit played action through from the caller.
+    ///
+    /// A hash match here is a *candidate*, not proof -- see
+    /// `reuse_or_reset`, which replays the returned action path against the
+    /// real state it knows `start` represents and verifies full equality
+    /// before trusting it.
+    ///
+    /// Returns `Some((None, start, vec![]))` if `start` itself already
+    /// matches (0 plies). Returns `Some((Some(parent_id), matched_id,
+    /// path))` otherwise, where `parent_id` is `matched_id`'s immediate
+    /// parent on the path found (needed to read the edge whose accumulated
+    /// stats become the new root's `root_stats`) and `path` is the actions
+    /// from `start` to `matched_id` in order. `None` if nothing matches
+    /// within the depth bound.
+    fn find_reachable(&self, start: Id, target_hash: u64) -> Option<(Option<Id>, Id, Vec<G::A>)> {
+        if self.index.get(start).hash == target_hash {
+            return Some((None, start, Vec::new()));
+        }
+        let mut frontier: Vec<(Id, Vec<G::A>)> = vec![(start, Vec::new())];
+        for _ in 0..MAX_REROOT_DEPTH {
+            let mut next = Vec::new();
+            for (id, path) in frontier {
+                let node = self.index.get(id);
+                if !node.is_expanded() {
+                    continue;
+                }
+                for edge in node.edges() {
+                    if let Some(child_id) = edge.node_id() {
+                        let mut child_path = path.clone();
+                        child_path.push(edge.action.clone());
+                        if self.index.get(child_id).hash == target_hash {
+                            return Some((Some(id), child_id, child_path));
+                        }
+                        next.push((child_id, child_path));
+                    }
+                }
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    /// Tree reuse across moves ("re-rooting", see `SearchConfig::
+    /// reuse_tree` and PLAN-WORK.md session 13): tries to find the node
+    /// matching `state` within `MAX_REROOT_DEPTH` plies of the current root
+    /// and promote it in place -- repointing `root_id`, moving its incoming
+    /// edge's accumulated stats onto `root_stats`, and flipping `is_root`
+    /// off the old root / on the new one -- instead of discarding the whole
+    /// tree. Falls back to the untouched full `reset()` when reuse is
+    /// disabled, this is the very first call (`root_state` still `None`, so
+    /// there's nothing to replay a candidate path against), or no verified
+    /// match is found (first move of a game, the actual play went somewhere
+    /// this side's own search never reached, or -- vanishingly unlikely,
+    /// but checked rather than assumed impossible -- a candidate's hash
+    /// matched by pure 64-bit collision and `find_reachable`'s path replay
+    /// caught it).
+    ///
+    /// Deliberately leaves every other arena node and transposition-table
+    /// entry untouched rather than compacting: they're either still
+    /// reachable from the new root (still exactly as valid as before) or
+    /// unreachable siblings of the played line (dead weight, not incorrect
+    /// -- a `TableEntry` or `Node` doesn't stop meaning what it means just
+    /// because the tree walk that would find it again got shorter). See
+    /// PLAN-WORK.md session 13's option-1-vs-2 note for the data behind that
+    /// call.
+    pub(crate) fn reuse_or_reset(&mut self, player_idx: usize, state: &G::S) -> Id {
+        let hash = G::zobrist_hash(state);
+        if self.config.reuse_tree {
+            if let Some(root_id) = self.try_promote(state, hash) {
+                self.root_state = Some(state.clone());
+                return root_id;
+            }
+        }
+        let root_id = self.reset(player_idx, hash);
+        self.root_state = Some(state.clone());
+        root_id
+    }
+
+    /// The promote half of `reuse_or_reset` -- split out so the state-replay
+    /// verification below has an early-return-friendly home. `None` means
+    /// "no verified match", i.e. the caller should fall back to `reset()`.
+    fn try_promote(&mut self, state: &G::S, hash: u64) -> Option<Id> {
+        let root_state = self.root_state.clone()?;
+        let (parent_id, matched_id, path) = self.find_reachable(self.root_id, hash)?;
+
+        let replayed = path.iter().fold(root_state, |s, a| G::apply(s, a));
+        if replayed != *state {
+            return None;
+        }
+
+        if let Some(parent_id) = parent_id {
+            let edge_stats = self
+                .index
+                .get(parent_id)
+                .child_edge(matched_id)
+                .stats
+                .clone();
+            debug_assert_eq!(
+                edge_stats.num_visits_virtual.load(Relaxed),
+                0,
+                "a reused root should never carry virtual loss in flight -- \
+                 it must have been released symmetrically by the search that \
+                 produced it"
+            );
+            // The old root must give up `is_root` before the new one
+            // claims it: `NodeStack::get_stats` substitutes `root_stats`
+            // for *any* node with `is_root() == true`, not just
+            // `self.root_id` specifically -- a stale flag left on the old
+            // root would corrupt scoring for any transposition elsewhere in
+            // the tree that happens to land back on that now-non-root
+            // position.
+            self.index.get_mut(self.root_id).is_root = false;
+            self.root_stats = edge_stats;
+            self.root_id = matched_id;
+            self.index.get_mut(self.root_id).is_root = true;
+        }
+        self.stats.accum_depth.store(0, Relaxed);
+        self.stats.iter_count.store(0, Relaxed);
+        Some(self.root_id)
     }
 
     fn compute_pv(&mut self, init_state: &G::S) {
@@ -784,6 +955,18 @@ where
     /// more, simply because they weren't the one that found the proof.
     /// Fixing this needs proven-aware merging, not just summing visits, so
     /// it's guarded off below rather than left to mis-serve silently.
+    ///
+    /// `config.reuse_tree` composes here with no extra plumbing needed: each
+    /// worker is a clone of `self` taken *before* any recursive
+    /// `choose_action` call runs, so every worker (and `self`'s own in-place
+    /// tree) starts from the same tree `self` carried over from the
+    /// previous move -- whatever that move's own reuse already promoted --
+    /// and each independently re-roots again onto its own copy inside its
+    /// recursive call. Only `self`'s own tree survives past this call (the
+    /// other `num_threads - 1` worker trees are discarded once merged), so
+    /// under root parallelism reuse only ever compounds across moves for
+    /// that one retained tree, not per-worker histories -- consistent with
+    /// root parallelism already discarding N-1 of its N trees every call.
     fn choose_action_root_parallel(&mut self, state: &G::S) -> G::A {
         let num_threads = self.config.num_threads.max(1);
         debug_assert!(num_threads > 1);
@@ -877,7 +1060,7 @@ where
         debug_assert_eq!(self.config.num_threads, 1);
 
         let hash = G::zobrist_hash(state);
-        let root_id = self.reset(G::player_to_move(state).to_index(), hash);
+        let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
         if self.config.use_transpositions {
             self.table.insert(hash, root_id, state.clone());
         }
@@ -1007,7 +1190,7 @@ where
         }
 
         let hash = G::zobrist_hash(state);
-        let root_id = self.reset(G::player_to_move(state).to_index(), hash);
+        let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
         if self.config.use_transpositions {
             self.table.insert(hash, root_id, state.clone());
         }
