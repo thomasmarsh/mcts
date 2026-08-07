@@ -14,20 +14,34 @@ mod adapters;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
+    extract::DefaultBodyLimit,
     extract::Path,
     extract::State as AxumState,
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode},
     response::Json,
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tower_http::services::ServeDir;
+use tower_http::{cors::CorsLayer, services::ServeDir, timeout::TimeoutLayer};
 
-use adapters::GameAdapter;
+use adapters::{AdapterError, GameAdapter};
+
+// A stateless server still shouldn't let a client tie up a `spawn_blocking`
+// thread indefinitely -- this bounds `ai_move`/`analyze` well above the
+// slowest preset's default budget (Druid's Master, 8s) so it only ever
+// fires on a genuinely stuck/abusive request, not normal use.
+const AI_ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
+
+// No request body this API accepts is legitimately large -- every route
+// takes a single game state/move, and Druid's board (this repo's biggest
+// state) is capped at ~100 cells by `Size::is_supported` (see
+// `src/games/druid.rs`). 1 MiB is generous headroom over any real payload.
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 struct AppState {
     games: HashMap<&'static str, Arc<dyn GameAdapter>>,
@@ -41,11 +55,11 @@ fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     all.into_iter().map(|a| (a.kind(), a)).collect()
 }
 
-fn find_adapter(app: &AppState, kind: &str) -> Result<Arc<dyn GameAdapter>, (StatusCode, String)> {
+fn find_adapter(app: &AppState, kind: &str) -> Result<Arc<dyn GameAdapter>, AdapterError> {
     app.games
         .get(kind)
         .cloned()
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown game kind {kind:?}")))
+        .ok_or_else(|| AdapterError::not_found(format!("unknown game kind {kind:?}")))
 }
 
 #[derive(Serialize)]
@@ -81,7 +95,7 @@ async fn post_new(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<NewRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let config = req.config.unwrap_or_else(|| adapter.default_config());
     let state = adapter.new_state(config)?;
@@ -98,7 +112,7 @@ async fn post_legal_moves(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<StateRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let moves = adapter.legal_moves(&req.state)?;
     Ok(Json(json!({ "moves": moves })))
@@ -108,7 +122,7 @@ async fn post_view(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<StateRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let view = adapter.view(&req.state)?;
     Ok(Json(view))
@@ -125,7 +139,7 @@ async fn post_apply(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<ApplyRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let state = adapter.apply(&req.state, &req.mv)?;
     let view = adapter.view(&state)?;
@@ -135,7 +149,7 @@ async fn post_apply(
 async fn get_ai_presets(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
-) -> Result<Json<Vec<adapters::AiPresetInfo>>, (StatusCode, String)> {
+) -> Result<Json<Vec<adapters::AiPresetInfo>>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     Ok(Json(adapter.ai_presets()))
 }
@@ -156,12 +170,12 @@ async fn post_ai_move(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<AiMoveRequest>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let search_adapter = adapter.clone();
     let result = tokio::task::spawn_blocking(move || search_adapter.ai_move(&req.state, &req.preset))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+        .map_err(|e| AdapterError::internal(e.to_string()))??;
     let view = adapter.view(&result.state)?;
     Ok(Json(
         json!({ "move": result.mv, "state": result.state, "view": view }),
@@ -180,13 +194,13 @@ async fn post_analyze(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<AnalyzeRequest>,
-) -> Result<Json<adapters::Analysis>, (StatusCode, String)> {
+) -> Result<Json<adapters::Analysis>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let analysis = tokio::task::spawn_blocking(move || {
         adapter.analyze(&req.state, &req.preset, req.budget_ms)
     })
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    .map_err(|e| AdapterError::internal(e.to_string()))??;
     Ok(Json(analysis))
 }
 
@@ -194,15 +208,46 @@ async fn post_analyze(
 // (`tower::ServiceExt::oneshot`) without binding a real socket or serving
 // static files.
 fn api_router(app_state: Arc<AppState>) -> Router {
-    Router::new()
+    // `ai_move`/`analyze` get their own `TimeoutLayer` -- they're the only
+    // routes that run a CPU-bound search on a `spawn_blocking` thread, so
+    // they're the only ones that can legitimately run long enough to need
+    // one. `tower_http`'s `TimeoutLayer` (unlike `tower::timeout`'s) returns
+    // an empty response with the given status directly on elapse rather than
+    // erroring, so it needs no separate error-handling layer to stay
+    // `Infallible` for axum's `Router`.
+    let ai_routes = Router::new()
+        .route("/api/games/{kind}/ai_move", post(post_ai_move))
+        .route("/api/games/{kind}/analyze", post(post_analyze))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            AI_ROUTE_TIMEOUT,
+        ));
+
+    let other_routes = Router::new()
         .route("/api/games", get(get_games))
         .route("/api/games/{kind}/new", post(post_new))
         .route("/api/games/{kind}/legal_moves", post(post_legal_moves))
         .route("/api/games/{kind}/view", post(post_view))
         .route("/api/games/{kind}/apply", post(post_apply))
-        .route("/api/games/{kind}/ai_presets", get(get_ai_presets))
-        .route("/api/games/{kind}/ai_move", post(post_ai_move))
-        .route("/api/games/{kind}/analyze", post(post_analyze))
+        .route("/api/games/{kind}/ai_presets", get(get_ai_presets));
+
+    // Explicitly scoped, not wildcard -- there's no cross-origin need today
+    // (the Vite dev proxy and the production `ServeDir` both serve the API
+    // same-origin), but that stops being true the moment `pnpm dev`'s proxy
+    // setup changes, and an explicit allow-list costs nothing now.
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://127.0.0.1:7878".parse::<HeaderValue>().unwrap(),
+            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+
+    other_routes
+        .merge(ai_routes)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(cors)
         .with_state(app_state)
 }
 
@@ -279,6 +324,31 @@ mod tests {
         serde_json::from_slice(body).unwrap()
     }
 
+    /// Like `http_post_json`, but takes a pre-built raw body instead of a
+    /// `serde_json::Value` -- needed for the malformed/oversized-input tests
+    /// below, which deliberately send bodies that aren't (or aren't only)
+    /// valid JSON.
+    async fn http_post_raw(
+        app: Router,
+        uri: &str,
+        body: Vec<u8>,
+    ) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
     async fn new_druid_state(app: Router, w: u8, h: u8) -> serde_json::Value {
         let (status, body) = http_post_json(
             app,
@@ -306,13 +376,57 @@ mod tests {
 
     #[tokio::test]
     async fn test_unknown_game_kind_is_404() {
-        let (status, _) = http_post_json(
+        let (status, body) = http_post_json(
             test_app(),
             "/api/games/nope/new",
             json!({ "config": { "size": { "w": 5, "h": 5 } } }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::NOT_FOUND);
+
+        // PLAN-UI.md session 9: every error response is a structured
+        // `{error, code}` JSON body now, not a bare string.
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+        assert!(body["error"].as_str().unwrap().contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn test_oversized_body_is_413() {
+        // One byte over `MAX_BODY_BYTES` -- content doesn't matter, the
+        // `DefaultBodyLimit` layer rejects it before the handler (or even
+        // the JSON parser) ever sees it.
+        let oversized = vec![b'a'; MAX_BODY_BYTES + 1];
+        let (status, _) = http_post_raw(test_app(), "/api/games/druid/new", oversized).await;
+        assert_eq!(status, HttpStatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn test_malformed_json_body_is_400_not_500() {
+        let (status, _) =
+            http_post_raw(test_app(), "/api/games/druid/new", b"{not valid json".to_vec()).await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_analyze_clamps_out_of_range_budget_ms_instead_of_rejecting() {
+        // A `budget_ms` far outside `DruidAdapter`'s clamp range must not
+        // fail the request -- it's silently bounded to a sane value instead
+        // (`adapters::druid::clamp_budget_ms`, unit-tested directly in that
+        // module). Using the forced-win position keeps this fast regardless
+        // of how large a budget was actually honored, since MCTS-Solver
+        // stops the moment the root is proven.
+        let app = test_app();
+        let state = forced_win_state();
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/druid/analyze",
+            json!({ "state": state, "preset": "easy", "budget_ms": u64::MAX }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert_ne!(body_json(&body)["suggested_move"], serde_json::Value::Null);
     }
 
     #[tokio::test]

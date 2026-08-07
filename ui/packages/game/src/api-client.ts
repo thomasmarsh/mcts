@@ -32,11 +32,23 @@ export interface ApiClient {
 }
 
 /** The server (`AdapterError`'s `IntoResponse` impl, `server/adapters/mod.rs`)
- * returns a bare-string error body today, not a JSON envelope -- structured
- * `{error, code}` bodies are PLAN-UI.md session 9's job. Read as text rather
- * than attempting to parse JSON. */
+ * returns a structured `{error, code}` JSON body (PLAN-UI.md session 9).
+ * Read as text first (a body-limit/timeout rejection, or anything below the
+ * `AdapterError` layer, may not be JSON at all) and only then try to parse
+ * it as `{error}`, falling back to the raw text. */
 async function errorMessage(r: Response): Promise<string> {
   const text = await r.text().catch(() => "");
+  if (text) {
+    try {
+      const body: unknown = JSON.parse(text);
+      if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+        return (body as { error: string }).error;
+      }
+    } catch {
+      // Not JSON (e.g. a plain-text timeout/body-limit rejection) -- fall
+      // through to the raw text below.
+    }
+  }
   return text || `API ${r.status}`;
 }
 

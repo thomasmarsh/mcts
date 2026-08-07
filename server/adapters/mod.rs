@@ -11,11 +11,16 @@ pub mod druid;
 pub mod ttt;
 
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json, Response};
 use serde_json::Value;
 
 /// An adapter-level error, carrying the HTTP status it should map to.
-/// Converts directly into axum's `(StatusCode, String)` error body so route
-/// handlers can `?` straight through a `GameAdapter` call.
+/// Implements `IntoResponse` directly (PLAN-UI.md session 9) as a structured
+/// `{error, code}` JSON body -- `code` is just the numeric status, not a
+/// separate machine-readable enum, since no caller today needs to
+/// distinguish errors any finer than the status already does. Route
+/// handlers return `Result<_, AdapterError>` and `?` straight through a
+/// `GameAdapter` call.
 #[derive(Debug)]
 pub struct AdapterError {
     pub status: StatusCode,
@@ -26,6 +31,13 @@ impl AdapterError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
             message: message.into(),
         }
     }
@@ -45,9 +57,16 @@ impl AdapterError {
     }
 }
 
-impl From<AdapterError> for (StatusCode, String) {
-    fn from(e: AdapterError) -> Self {
-        (e.status, e.message)
+#[derive(serde::Serialize)]
+struct ErrorBody {
+    error: String,
+    code: u16,
+}
+
+impl IntoResponse for AdapterError {
+    fn into_response(self) -> Response {
+        let code = self.status.as_u16();
+        (self.status, Json(ErrorBody { error: self.message, code })).into_response()
     }
 }
 

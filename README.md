@@ -46,18 +46,22 @@ Not sure if this will become a published library, but it is improving and PRs ar
 
 ## Game UI (`ui/`)
 
-To run:
+A browser UI (SolidJS + Vite, [`ui/`](ui/)) for the games in `src/games/`,
+backed by the stateless API in `server/`.
 
-- `(cd ui && pnpm install)`
+Quick start:
 
-The web UI lives in [`ui/`](ui/), a pnpm workspace with a Vite + SolidJS app (`ui/app/`).
+```
+(cd ui && pnpm install && pnpm build)
+cargo run --release
+```
 
-Two dev processes run together:
+Then open http://127.0.0.1:7878. (`server` is this repo's `default-run`
+binary, so a bare `cargo run` — release recommended, the AI presets are
+slow otherwise — always means the game server, not one of `demo/`'s
+research scratchpads.)
 
-- **Rust server** — `cargo run` serves the API and static files on
-  `http://127.0.0.1:7878`.
-- **Vite dev server** — from `ui/`, `pnpm install` once, then `pnpm dev` serves
-  the app on `http://localhost:5173` with `/api/*` proxied to the Rust server.
-
-Other `ui/` commands: `pnpm build` (production build into `server/static/dist/`),
-`pnpm typecheck`, `pnpm lint`, `pnpm test`.
+For UI development with hot reload, run `pnpm dev` (from `ui/`) alongside
+`cargo run --release` instead of `pnpm build` — it serves the app on
+http://localhost:5173 with `/api/*` proxied to the Rust server. Other `ui/`
+commands: `pnpm typecheck`, `pnpm lint`, `pnpm test`.

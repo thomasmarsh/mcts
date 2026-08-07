@@ -226,7 +226,13 @@ impl EngineCache {
     /// place and `Box<dyn Search<G>>` isn't `Clone`. Callers re-insert via
     /// `put` after use.
     fn take(&self, preset: AiPreset, hash: u64) -> Option<Box<dyn Search<G = Druid>>> {
-        let mut entries = self.entries.lock().unwrap();
+        // A panic mid-search on another request (this cache's only lock
+        // holder besides `put`) would otherwise poison the mutex for every
+        // future request forever -- this is a perf-only cache (see this
+        // type's doc comment), never consulted for correctness, so a
+        // recovered-but-possibly-inconsistent view of it is still strictly
+        // better than every subsequent `ai_move`/`analyze` call 500ing.
+        let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let pos = entries
             .iter()
             .position(|(p, h, _)| *p == preset && *h == hash)?;
@@ -236,7 +242,7 @@ impl EngineCache {
     /// Inserts `engine` as the most-recently-used entry for `(preset,
     /// hash)`, evicting the least-recently-used entry if now over capacity.
     fn put(&self, preset: AiPreset, hash: u64, engine: Box<dyn Search<G = Druid>>) {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.retain(|(p, h, _)| !(*p == preset && *h == hash));
         entries.insert(0, (preset, hash, engine));
         entries.truncate(self.capacity);
@@ -309,6 +315,21 @@ fn value_to_state(state: &Value) -> Result<HashedState, AdapterError> {
 
 fn parse_preset(preset: &str) -> Result<AiPreset, AdapterError> {
     AiPreset::parse(preset).ok_or_else(|| AdapterError::bad_request(format!("unknown preset {preset:?}")))
+}
+
+// A client-supplied `analyze` `budget_ms` override (PLAN-UI.md session 2)
+// bypasses each preset's own `default_time_budget`, so nothing upstream of
+// this adapter bounds it -- clamped, not rejected, per PLAN-UI.md session
+// 9's hardening pass: a client asking for too little/too much is a UX
+// mistake to correct, not a hostile request to reject. The upper bound
+// leaves real headroom under `main.rs`'s `AI_ROUTE_TIMEOUT` (30s) for
+// `spawn_blocking` scheduling and response-building overhead around the
+// search itself.
+const MIN_ANALYZE_BUDGET_MS: u64 = 50;
+const MAX_ANALYZE_BUDGET_MS: u64 = 20_000;
+
+fn clamp_budget_ms(budget_ms: u64) -> u64 {
+    budget_ms.clamp(MIN_ANALYZE_BUDGET_MS, MAX_ANALYZE_BUDGET_MS)
 }
 
 impl GameAdapter for DruidAdapter {
@@ -440,7 +461,7 @@ impl GameAdapter for DruidAdapter {
         // (the common case -- Session 6's `AnalysisPanel` doesn't expose a
         // budget control) still benefits from the cache normally.
         let mut ai = match budget_ms {
-            Some(ms) => build_ai(preset, Duration::from_millis(ms)),
+            Some(ms) => build_ai(preset, Duration::from_millis(clamp_budget_ms(ms))),
             None => self
                 .cache
                 .take(preset, hash)
@@ -485,5 +506,24 @@ impl GameAdapter for DruidAdapter {
             total_visits: report.total_visits,
             suggested_move,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clamp_budget_ms_bounds_out_of_range_requests() {
+        assert_eq!(clamp_budget_ms(0), MIN_ANALYZE_BUDGET_MS);
+        assert_eq!(clamp_budget_ms(1), MIN_ANALYZE_BUDGET_MS);
+        assert_eq!(clamp_budget_ms(u64::MAX), MAX_ANALYZE_BUDGET_MS);
+        assert_eq!(clamp_budget_ms(MAX_ANALYZE_BUDGET_MS + 1), MAX_ANALYZE_BUDGET_MS);
+    }
+
+    #[test]
+    fn test_clamp_budget_ms_leaves_in_range_requests_unchanged() {
+        let mid = (MIN_ANALYZE_BUDGET_MS + MAX_ANALYZE_BUDGET_MS) / 2;
+        assert_eq!(clamp_budget_ms(mid), mid);
     }
 }

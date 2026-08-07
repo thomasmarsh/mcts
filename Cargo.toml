@@ -2,7 +2,7 @@
 name = "mcts"
 version = "0.1.0"
 edition = "2021"
-default-run = "playground"
+default-run = "server"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -60,7 +60,7 @@ weighted_rand = "0.4.2"
 rand_distr = "0.4.3"
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tower-http = { version = "0.7.0", features = ["fs"] }
+tower-http = { version = "0.7.0", features = ["fs", "cors", "timeout"] }
 
 [profile.release]
 debug=true
