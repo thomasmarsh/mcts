@@ -160,6 +160,16 @@ export function appReducer<S, M, V = unknown>(
     // branch does beyond what `treeReducer` already did as a side effect of
     // the call above.
     draft.analysis = initialJobPollState<Analysis<M>>();
+    // Same reasoning extends to `position`: it's kept null (rather than
+    // whatever the previous `currentId` had) until the `position/request`
+    // effect this triggers re-derives it for the new node. This is what
+    // makes "`draft.position` is null or belongs to `draft.tree.currentId`"
+    // a true invariant of this reducer -- every branch that can move
+    // `currentId` (this one, and `move`/`aiMove`'s "done" branches below)
+    // nulls `position` in the same reduction, so nothing downstream needs to
+    // separately check `position.nodeId` against `tree.currentId` to know
+    // whether a read is stale.
+    draft.position = null;
     return treeEffect;
   }
 
@@ -332,8 +342,11 @@ export function appReducer<S, M, V = unknown>(
     if (draft.move.status === "done" && draft.move.result && action.move !== undefined) {
       gameTreeReducer(draft.tree, { tag: "applyMove", move: action.move, state: draft.move.result.state }, undefined);
       // Same staleness reasoning as the "tree" branch above -- currentId
-      // just changed.
+      // just changed, so both `analysis` and `position` must be dropped in
+      // this same reduction to preserve the "`position` is null or matches
+      // `currentId`" invariant.
       draft.analysis = initialJobPollState<Analysis<M>>();
+      draft.position = null;
     }
     return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move: action.move })) : null;
   }
@@ -372,8 +385,19 @@ export function appReducer<S, M, V = unknown>(
       const { move, state } = draft.aiMove.result;
       gameTreeReducer(draft.tree, { tag: "applyMove", move, state }, undefined);
       // Same staleness reasoning as the "tree" branch above -- currentId
-      // just changed.
+      // just changed, so both `analysis` and `position` must be dropped in
+      // this same reduction to preserve the "`position` is null or matches
+      // `currentId`" invariant. This is the fix for the race that could
+      // otherwise auto-play an AI-controlled seat's move on top of a human
+      // seat's turn: `GameShell`'s autoplay effect used to be able to read
+      // `position` (and the `currentPlayer` derived from it) one node behind
+      // `tree.currentId` immediately after this branch ran, since the
+      // `position/request` effect it triggers only *starts* the re-fetch,
+      // it doesn't resolve synchronously. Nulling `position` here means that
+      // effect now correctly sees "no position yet" instead of stale data
+      // describing the wrong player's turn.
       draft.analysis = initialJobPollState<Analysis<M>>();
+      draft.position = null;
     }
     return eff
       ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: action.epoch }))

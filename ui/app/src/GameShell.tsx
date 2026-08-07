@@ -114,6 +114,11 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // Auto-play: if the position isn't terminal and the player to move is
   // AI-controlled, fire an aiMove request -- mirrors app.js's
   // `maybeTriggerAiTurn`, re-checked after every position/seat/pause change.
+  // Safe to trust `summary()`'s `currentPlayer` here without separately
+  // checking it against `tree.currentId`: `appReducer` nulls `position`
+  // (which `summary` reads through) in the same reduction as every
+  // `currentId`-changing action, so a non-null `position`/`summary` is
+  // always for the *current* node, by construction (see reducer.ts).
   createEffect(() => {
     if (busy() || autoplayPaused()) return;
     const sum = summary();

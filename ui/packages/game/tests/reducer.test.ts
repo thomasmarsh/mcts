@@ -10,8 +10,8 @@
 import { describe, it, expect } from "vitest";
 import { Effect } from "@mcts/core";
 import { createTestStore } from "../../../tests/test-store.js";
-import { appReducer, type Env } from "../src/reducer.js";
-import { initialAppState } from "../src/state.js";
+import { appReducer, type AppAction, type Env } from "../src/reducer.js";
+import { initialAppState, type AppState } from "../src/state.js";
 import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
 import type { AiMoveResult, Analysis, StateAndView } from "../src/types.js";
 
@@ -189,6 +189,110 @@ describe("appReducer / analysis", () => {
         s.tree.nextId += 1;
         s.analysis.status = "idle";
         s.analysis.result = null;
+      },
+    );
+  });
+});
+
+// A regression suite for the bug this invariant fixes: `GameShell`'s
+// autoplay effect derives `currentPlayer` from `position`, and used to be
+// able to read it one node behind `tree.currentId` right after an aiMove
+// folded into the tree (the `position/request` re-fetch it triggers doesn't
+// resolve synchronously) -- which, for a config where one seat is
+// AI-controlled and the other human, could fire an *extra* AI move on the
+// human seat's turn before the human ever saw a legal-moves list that
+// matched the real board. Every branch below that can move `tree.currentId`
+// must null `position` in the same reduction, so `position`/`summary` are
+// never non-null for a stale node -- callers get this for free rather than
+// each having to compare `position.nodeId` to `tree.currentId` themselves.
+describe("appReducer / position", () => {
+  // `position`'s "request" branch awaits real `view`/`legalMoves` effects
+  // (via `Promise.all`, see reducer.ts) rather than resolving synchronously
+  // like the job-poll-wrapped calls elsewhere in this file -- `mockEnv`'s
+  // `Effect.none()` stubs for both never resolve, so every test below needs
+  // an `env` that actually answers them.
+  const positionEnv: Env = {
+    ...mockEnv,
+    view: <V2 = unknown>() => Effect.send({}) as unknown as Effect<V2>,
+    legalMoves: <M2>() => Effect.send({ moves: [] }) as unknown as Effect<{ moves: M2[] }>,
+  };
+
+  // `position`'s "loaded" arrives via an `Effect.fromPromise` (unlike the
+  // job-poll-wrapped calls elsewhere in this file, which resolve inline
+  // through `Effect.send`), so it needs a real microtask flush -- `drain()`
+  // -- before `receive()` can see it queued.
+  async function loadPosition<S2, M2>(ts: ReturnType<typeof createTestStore<AppState<S2, M2>, AppAction<S2, M2>, Env>>, nodeId: string) {
+    ts.send({ tag: "position", action: { tag: "request" } });
+    await ts.drain();
+    ts.receive({ tag: "position", action: { tag: "loaded", nodeId, epoch: 0, view: {}, moves: [] } }, (s) => {
+      s.position = { nodeId, view: {}, legalMoves: [] };
+    });
+  }
+
+  it("is nulled by a tree navigation that changes currentId", async () => {
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, positionEnv, init);
+    await loadPosition(ts, "n0");
+
+    ts.send({ tag: "tree", action: { tag: "undo" } }, (s) => {
+      s.position = null;
+    });
+  });
+
+  it("is nulled in the same reduction a human move advances the tree", async () => {
+    const moveResult: StateAndView<S> = { state: 1, view: {} };
+    const env: Env = { ...positionEnv, apply: <S2, V2 = unknown>() => Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>> };
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+    await loadPosition(ts, "n0");
+
+    ts.send({ tag: "move", action: { tag: "request", move: "a" } }, (s) => {
+      s.move.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "move",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: moveResult } } },
+        move: "a",
+      },
+      (s) => {
+        s.move.status = "done";
+        s.move.result = moveResult;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", parentId: s.tree.rootId, childIds: [] };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
+        s.position = null;
+      },
+    );
+  });
+
+  it("is nulled in the same reduction an aiMove advances the tree", async () => {
+    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {} };
+    const env: Env = { ...positionEnv, aiMove: <S2, M2, V2 = unknown>() => Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>> };
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+    await loadPosition(ts, "n0");
+
+    ts.send({ tag: "aiMove", action: { tag: "request", preset: "strong" } }, (s) => {
+      s.aiMove.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "aiMove",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
+      },
+      (s) => {
+        s.aiMove.status = "done";
+        s.aiMove.result = result;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: s.tree.rootId, childIds: [] };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
+        s.position = null;
       },
     );
   });
