@@ -1,6 +1,7 @@
 use super::*;
 use crate::game::Action;
 
+use rustc_hash::FxHashMap;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
@@ -313,6 +314,13 @@ struct ChildArrayData {
 pub struct ChildArray<A: Action> {
     actions: Vec<A>,
     child_ids: Vec<OnceLock<index::Id>>,
+    // Reverse of `child_ids`, populated as each child is first resolved so
+    // `child_index` (id -> idx, needed by every path that only has an `Id`
+    // in hand -- backprop walking the stack, tree reuse matching a promoted
+    // child, ...) is an O(1) lookup instead of an O(n) scan over
+    // `child_ids`. Deliberately not derivable from `child_ids` alone without
+    // a scan, hence kept as its own index.
+    id_index: RwLock<FxHashMap<index::Id, usize>>,
     // Lock-free, one per child -- same reasoning as `NodeStats`'s field of
     // the same name.
     num_visits_virtual: Vec<AtomicU32>,
@@ -323,9 +331,11 @@ pub struct ChildArray<A: Action> {
 impl<A: Action> Clone for ChildArray<A> {
     fn clone(&self) -> Self {
         let data = self.data.read().unwrap();
+        let id_index = self.id_index.read().unwrap();
         Self {
             actions: self.actions.clone(),
             child_ids: self.child_ids.clone(),
+            id_index: RwLock::new(id_index.clone()),
             num_visits_virtual: self
                 .num_visits_virtual
                 .iter()
@@ -342,6 +352,7 @@ impl<A: Action> ChildArray<A> {
         let n = actions.len();
         Self {
             child_ids: (0..n).map(|_| OnceLock::new()).collect(),
+            id_index: RwLock::new(FxHashMap::default()),
             num_visits_virtual: (0..n).map(|_| AtomicU32::new(0)).collect(),
             data: RwLock::new(ChildArrayData {
                 num_visits: vec![0; n],
@@ -383,7 +394,33 @@ impl<A: Action> ChildArray<A> {
     /// and then reads the same `Id` back, rather than both creating separate
     /// children for the same slot.
     pub fn get_or_create_child(&self, idx: usize, create: impl FnOnce() -> index::Id) -> index::Id {
-        *self.child_ids[idx].get_or_init(create)
+        // `id_index`'s insert has to happen *inside* the `OnceLock`'s own
+        // init closure, not after `get_or_init` returns: `OnceLock`
+        // guarantees the closure fully completes before *any* caller --
+        // the winner or a blocked racer -- observes the resolved value, on
+        // this call or a later one (`OnceLock::get`). Checking
+        // `child_ids[idx].get()` first and inserting into `id_index`
+        // afterward looked like a harmless fast-path, but it opened a
+        // window where another thread's *own* `get_or_create_child`/`get`
+        // call on the same idx could observe the resolved id before this
+        // call's `id_index` insert had run -- `child_index` on that id
+        // would then find nothing. `OnceLock::get_or_init` already has its
+        // own lock-free fast path for the already-resolved case, so this
+        // isn't giving up meaningful performance, just the (incorrect)
+        // extra one.
+        *self.child_ids[idx].get_or_init(|| {
+            let id = create();
+            self.id_index.write().unwrap().insert(id, idx);
+            id
+        })
+    }
+
+    /// O(1) reverse lookup of `child_ids` -- see `id_index`'s doc comment.
+    /// Only ever called with an `Id` that was itself returned by
+    /// `get_or_create_child` on this same `ChildArray`, so the entry is
+    /// always present.
+    pub fn child_index(&self, child_id: index::Id) -> usize {
+        *self.id_index.read().unwrap().get(&child_id).unwrap()
     }
 
     pub fn virtual_loss(&self, idx: usize) -> u32 {
@@ -648,11 +685,7 @@ where
     }
 
     pub fn child_index(&self, child_id: index::Id) -> usize {
-        // NOTE: O(n) lookup
-        let children = self.children();
-        (0..children.len())
-            .find(|&i| children.node_id(i) == Some(child_id))
-            .unwrap()
+        self.children().child_index(child_id)
     }
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {

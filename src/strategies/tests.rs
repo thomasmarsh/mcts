@@ -594,6 +594,76 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     );
 }
 
+// Regression guard for `ChildArray::child_index`'s indexed lookup (an O(n)
+// scan before this test was written -- see PLAN-WORK.md session 4). Two
+// parts: correctness of the id -> idx mapping itself, and the concurrency
+// race the indexed version can introduce that a plain scan can't (a thread
+// observing a resolved child id before `id_index` has caught up).
+#[test]
+fn test_child_array_child_index_matches_creation_order() {
+    use mcts::node::ChildArray;
+    use mcts::search::TreeIndex;
+    use mcts::node::Node;
+
+    let index = TreeIndex::<u32>::new();
+    let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
+
+    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1);
+    // Resolve out of creation order to make sure `child_index` isn't
+    // secretly relying on id/idx happening to already agree.
+    for &idx in &[3usize, 0, 4, 1, 2] {
+        let resolved = children.get_or_create_child(idx, || ids[idx]);
+        assert_eq!(resolved, ids[idx]);
+    }
+
+    for (idx, &id) in ids.iter().enumerate() {
+        assert_eq!(
+            children.child_index(id),
+            idx,
+            "child_index should invert get_or_create_child's id -> idx mapping"
+        );
+        // Re-resolving an already-set slot must return the same id and not
+        // disturb the reverse mapping.
+        assert_eq!(children.get_or_create_child(idx, || panic!("should not re-create")), id);
+        assert_eq!(children.child_index(id), idx);
+    }
+}
+
+#[test]
+fn test_child_array_child_index_survives_concurrent_resolution() {
+    use mcts::node::ChildArray;
+    use mcts::search::TreeIndex;
+    use mcts::node::Node;
+    use std::sync::Arc;
+
+    // Regression test for a race introduced (and caught by the existing
+    // `test_tree_parallel_transpositions_survive_many_real_time_games`)
+    // while adding `ChildArray`'s `id_index`: a naive "check `child_ids`,
+    // fall back to `get_or_init`, then update `id_index`" implementation
+    // lets one thread observe another thread's freshly-resolved child id
+    // *before* that thread's `id_index` insert has run, so `child_index`
+    // panics on a lookup miss. A slot only resolves once ever (the
+    // underlying `OnceLock`), so the race window only exists for the very
+    // first call across all racing threads -- repeat with a fresh
+    // `ChildArray` every trial to give many independent shots at hitting it,
+    // rather than one shot diluted across many now-uncontended calls.
+    for _ in 0..500 {
+        let index: Arc<TreeIndex<u32>> = Arc::new(TreeIndex::new());
+        let created_id = index.insert(Node::new(0, 0));
+        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1));
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let children = Arc::clone(&children);
+                scope.spawn(move || {
+                    let id = children.get_or_create_child(0, || created_id);
+                    assert_eq!(children.child_index(id), 0);
+                });
+            }
+        });
+    }
+}
+
 #[test]
 fn test_nst_bigram_table_populated_by_backprop() {
     use crate::games::ttt::*;
