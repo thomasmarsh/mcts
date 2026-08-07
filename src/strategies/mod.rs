@@ -488,6 +488,80 @@ mod tests {
     }
 
     #[test]
+    fn test_update_amaf_matches_by_movers_player_not_childs() {
+        // `update_amaf` is deciding, for `parent_id`'s sibling actions,
+        // whether a `trace` entry `(action, p)` is "the same player replaying
+        // the same action later in the simulation". The player who could
+        // have played any of `parent_id`'s candidate actions is
+        // `parent_id`'s own mover (`index.get(parent_id).player_idx`) -- the
+        // *sibling* node's `player_idx` is the mover of the position
+        // *after* that action (the opposite player in an alternating game,
+        // per the identical class of bug already fixed in `update`'s
+        // tree-path push, see the comment there). Comparing against the
+        // sibling's `player_idx` instead inverts the check for any
+        // alternating 2-player game.
+        use crate::games::ttt::*;
+        use mcts::backprop::{BackpropStrategy, Classic};
+        use mcts::node::{Edge, Node, NodeState};
+
+        type G = TicTacToe;
+
+        let index = mcts::search::TreeIndex::<Move>::new();
+
+        // root: O (player 1) to move.
+        let root = Node::new_root(1, 2, 0);
+        // sibling: reached by playing Move(7) at root -- X (player 0) to
+        // move there, the mover *after* root's action.
+        let sibling_id = index.insert(Node::new(0, 7));
+        // the node actually being processed this call -- a different child
+        // of root, irrelevant to the match itself beyond not being root.
+        let processed_id = index.insert(Node::new(0, 6));
+
+        let edge_a = Edge::unexplored(Move(6), 2);
+        edge_a.get_or_create_child(|| processed_id);
+        let edge_b = Edge::unexplored(Move(7), 2);
+        edge_b.get_or_create_child(|| sibling_id);
+        root.expand(|| NodeState::Expanded(vec![edge_a, edge_b]));
+        let root_id = index.insert(root);
+
+        let utilities = [0.25, 0.75];
+
+        // Case 1: O (root's mover, player 1) plays Move(7) later in the
+        // simulation -- a genuine AMAF match, should update Move(7)'s edge.
+        Classic.update_amaf::<G>(
+            Some(root_id),
+            &[(Move(7), 1)],
+            &index,
+            processed_id,
+            &utilities,
+        );
+        let sibling_edge = index.get(root_id).child_edge(sibling_id);
+        assert_eq!(
+            sibling_edge.stats.amaf(0).num_visits,
+            1,
+            "O replaying Move(7) later should count as an AMAF match"
+        );
+        assert_eq!(sibling_edge.stats.amaf(0).score, 0.25);
+        assert_eq!(sibling_edge.stats.amaf(1).score, 0.75);
+
+        // Case 2: X (the *sibling's* mover, not root's) "plays" Move(7)
+        // later -- not a valid AMAF match for root's Move(7) option, since X
+        // never had the choice to play it from root. Must not update.
+        Classic.update_amaf::<G>(
+            Some(root_id),
+            &[(Move(7), 0)],
+            &index,
+            processed_id,
+            &utilities,
+        );
+        assert_eq!(
+            index.get(root_id).child_edge(sibling_id).stats.amaf(0).num_visits,
+            1,
+            "X playing Move(7) is not a valid AMAF match for root's option and must not be counted"
+        );
+    }
+
+    #[test]
     fn test_nst_bigram_table_populated_by_backprop() {
         use crate::games::ttt::*;
         // Two empty cells (7, 8), O to move, no winner yet -- forces a

@@ -113,10 +113,15 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 .filter_map(|edge| edge.node_id().map(|node_id| (edge.action.clone(), node_id)))
                 .collect();
 
+            // The player who could have chosen any of `parent_id`'s sibling
+            // actions is `parent_id`'s own mover -- not the resulting
+            // child's `player_idx`, which names the mover of the *next* ply
+            // (the opposite player in an alternating game). Matching against
+            // the child's `player_idx` here inverted the check.
+            let mover = index.get(parent_id).player_idx;
             for (action, p) in trace {
-                if let Some(child_id) = sibling_actions.get(action) {
-                    let child = index.get(*child_id);
-                    if child.player_idx == *p {
+                if *p == mover {
+                    if let Some(child_id) = sibling_actions.get(action) {
                         let stats = &index.get(parent_id).child_edge(*child_id).stats;
                         (0..G::num_players()).for_each(|i| {
                             stats.add_amaf(i, utilities[i]);
@@ -164,8 +169,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) where
         G: Game,
     {
-        // init_amaf: GRAVE | GLOBAL
-        let mut amaf_actions = if flags.grave() || flags.global() {
+        // init_amaf: AMAF | GRAVE | GLOBAL
+        let mut amaf_actions = if flags.amaf() || flags.grave() || flags.global() {
             trial.actions.clone()
         } else {
             vec![]
@@ -224,10 +229,17 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             is_leaf = false;
 
             // update: AMAF
+            //
+            // `amaf_actions` (not the fixed `trial.actions`) so that
+            // ancestors above the immediate parent of the playout's leaf
+            // see actions played across the whole rest of the simulation --
+            // both the remaining tree-path descent and the playout -- not
+            // just the playout suffix. Mirrors GRAVE's use of the same
+            // accumulator below.
             if flags.amaf() {
                 self.update_amaf::<G>(
                     parent_id_opt.cloned(),
-                    &trial.actions,
+                    &amaf_actions,
                     index,
                     *node_id,
                     &utilities,
@@ -236,8 +248,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 self.update_grave::<G>(&amaf_actions, index, global, *node_id, &utilities);
             }
 
-            // push_action: GRAVE | GLOBAL
-            if flags.grave() || flags.global() {
+            // push_action: AMAF | GRAVE | GLOBAL
+            if flags.amaf() || flags.grave() || flags.global() {
                 let node = index.get(*node_id);
                 if !node.is_root() {
                     let parent_id = parent_id_opt.cloned().unwrap();
