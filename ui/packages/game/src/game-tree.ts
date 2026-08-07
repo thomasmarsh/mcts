@@ -60,6 +60,18 @@ export function moveEquals<M>(a: M, b: M): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** True when `tree.currentId` has no children -- the live frontier of play,
+ * as opposed to a node reached by navigating back into history (undo/redo/
+ * jumpTo). `GameShell`'s autoplay effect gates on this before driving the
+ * next AI move: without it, navigating to an ancestor node whose mover
+ * happens to be AI-controlled immediately re-triggered an aiMove from there,
+ * which either replayed the existing child (undo looking like it "snapped
+ * back" to the last move) or forked a new one (a history click going
+ * nowhere the user could see). */
+export function isFrontier<S, M>(tree: GameTree<S, M>): boolean {
+  return tree.nodes[tree.currentId]?.childIds.length === 0;
+}
+
 export function gameTreeReducer<S, M>(
   draft: GameTree<S, M>,
   action: GameTreeAction<S, M>,

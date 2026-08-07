@@ -15,9 +15,12 @@
   },
   "dependencies": {
     "@mcts/core": "workspace:*",
-    "@mcts/game": "workspace:*"
+    "@mcts/game": "workspace:*",
+    "solid-js": "^1.9.0"
   },
   "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "6.9.1",
     "eslint": "^10.5.0",
     "happy-dom": "^20.10.3",
     "typescript": "^6.0.3",

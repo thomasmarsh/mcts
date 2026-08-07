@@ -1,7 +1,7 @@
 // tests/game-tree.test.ts — Tests for the pure GameTree undo/redo/branch reducer.
 
 import { describe, it, expect } from "vitest";
-import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
+import { gameTreeReducer, initialGameTree, isFrontier } from "../src/game-tree.js";
 
 // Test-only state/move types: state is just "how many moves deep", move is a
 // label -- GameTree never inspects either, so any shape does.
@@ -143,5 +143,44 @@ describe("gameTreeReducer", () => {
     gameTreeReducer(tree, { tag: "deleteBranch", id: tree.rootId }, undefined);
     expect(tree.nodes[tree.rootId]).toBeDefined();
     expect(tree.currentId).toBe(tree.rootId);
+  });
+});
+
+// A regression suite for the bug `isFrontier` fixes: `GameShell`'s autoplay
+// effect used to fire an aiMove whenever it was an AI-controlled seat's
+// turn, with no check for whether `currentId` was actually the live tip of
+// play -- so undo/redo/jumpTo into history, landing on a node whose mover
+// happened to be AI-controlled, immediately re-triggered an aiMove *from
+// that node*.
+describe("isFrontier", () => {
+  it("is true at a leaf with no children (a fresh root, or the tip of play)", () => {
+    const tree = initialGameTree<S, M>(0);
+    expect(isFrontier(tree)).toBe(true);
+  });
+
+  it("stays true after applyMove advances current to the new leaf", () => {
+    const tree = initialGameTree<S, M>(0);
+    gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1 }, undefined);
+    expect(isFrontier(tree)).toBe(true);
+  });
+
+  it("is false once current has been navigated back to a node with children", () => {
+    const tree = initialGameTree<S, M>(0);
+    gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1 }, undefined);
+    gameTreeReducer(tree, { tag: "undo" }, undefined);
+    expect(isFrontier(tree)).toBe(false);
+  });
+
+  it("is false after jumpTo lands on an ancestor with children", () => {
+    const tree = initialGameTree<S, M>(0);
+    gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1 }, undefined);
+    gameTreeReducer(tree, { tag: "jumpTo", id: tree.rootId }, undefined);
+    expect(isFrontier(tree)).toBe(false);
+  });
+
+  it("is false for a currentId that doesn't exist in the tree", () => {
+    const tree = initialGameTree<S, M>(0);
+    tree.currentId = "does-not-exist";
+    expect(isFrontier(tree)).toBe(false);
   });
 });

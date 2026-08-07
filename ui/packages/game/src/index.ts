@@ -1,5 +1,5 @@
 export type { GameTree, GameTreeNode, GameTreeAction } from "./game-tree.js";
-export { gameTreeReducer, initialGameTree, moveEquals } from "./game-tree.js";
+export { gameTreeReducer, initialGameTree, isFrontier, moveEquals } from "./game-tree.js";
 
 export type {
   GameInfo,

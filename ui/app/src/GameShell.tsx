@@ -13,7 +13,7 @@ import { type Component, createEffect, createMemo, createSignal, For, onCleanup,
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
-import { moveEquals } from "@mcts/game";
+import { isFrontier, moveEquals } from "@mcts/game";
 import { GAME_LABELS, GAME_MODULES } from "./games.js";
 import { MoveListPanel } from "./MoveListPanel.js";
 import { AnalysisPanel } from "./AnalysisPanel.js";
@@ -71,6 +71,30 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   const [pendingConfig, setPendingConfig] = createSignal<unknown>(undefined);
   const [pendingSeats, setPendingSeats] = createSignal<Record<string, string>>({});
 
+  // `state().position` goes `null` for one reduction after *every* move/nav
+  // (reducer.ts nulls it to preserve the "position matches currentId"
+  // invariant, then GameShell's own position/request effect below re-fetches
+  // it) -- not just when a new game starts. Gating the renderer directly on
+  // `position()` therefore unmounted/remounted `Dynamic`'s `GameRenderer` on
+  // *every* move: DruidRenderer's `onMount` rebuilds its three.js scene,
+  // camera, and OrbitControls from scratch each time, which read as a
+  // flash/tear and a snapped-back camera after every AI move. `heldPosition`
+  // keeps the last-known position around across that brief gap so the
+  // renderer stays mounted continuously; it's only cleared back to `null` on
+  // a genuine new game (an `epoch` bump), which is when the fallback should
+  // actually reappear.
+  const [heldPosition, setHeldPosition] = createSignal<AppState<S, M, V>["position"]>(null);
+  let lastEpoch = state().epoch;
+  createEffect(() => {
+    const epoch = state().epoch;
+    if (epoch !== lastEpoch) {
+      lastEpoch = epoch;
+      setHeldPosition(null);
+    }
+    const p = position();
+    if (p) setHeldPosition(p);
+  });
+
   const legalMoves = createMemo(() => {
     const p = position();
     if (!p) return [];
@@ -103,9 +127,24 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // navigation. Gated on `epoch >= 1` so this never fires against the
   // pre-bootstrap placeholder root (see state.ts's `initialAppState` --
   // `epoch` only advances once a real `newGame` has completed).
+  //
+  // `state()` (the store's `useSnapshot` signal) is coarse: it changes on
+  // *every* mutation anywhere in `AppState`, not just `tree.currentId`, so
+  // this effect body reruns on every store update regardless of the `void
+  // s.tree.currentId` read below -- that read alone doesn't scope the
+  // dependency (see `reducer.ts`'s `switchGame` comment, which already
+  // documents this). Without the `lastPositionKey` guard, the `position/
+  // request` dispatch below is itself a store update, which reruns this
+  // same effect, which dispatches again -- a self-sustaining loop that a
+  // real network round trip happens to rate-limit, but which spins as fast
+  // as the event loop allows against a synchronously-resolving `Env` (e.g.
+  // a mocked one in a test), consuming memory until the process OOMs.
+  let lastPositionKey = "";
   createEffect(() => {
     const s = state();
-    void s.tree.currentId; // track
+    const key = `${s.tree.currentId}:${s.epoch}`;
+    if (key === lastPositionKey) return;
+    lastPositionKey = key;
     setHoveredMove(null);
     if (s.epoch < 1) return;
     dispatch({ tag: "position", action: { tag: "request" } });
@@ -119,8 +158,17 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // (which `summary` reads through) in the same reduction as every
   // `currentId`-changing action, so a non-null `position`/`summary` is
   // always for the *current* node, by construction (see reducer.ts).
+  //
+  // Gated on `childIds.length === 0` (the current node being a leaf) so this
+  // only ever drives the live *frontier* of the game forward -- without this,
+  // navigating back into history (undo/redo/jumpTo/arrow keys) to a node
+  // that happens to be an AI seat's turn immediately re-triggered an aiMove
+  // from there, which either replayed the same historical branch (undo
+  // looking like it "snapped back" to the last move) or forked a new one
+  // (a history click silently going nowhere the user could see).
   createEffect(() => {
     if (busy() || autoplayPaused()) return;
+    if (!isFrontier(state().tree)) return;
     const sum = summary();
     if (!sum || sum.currentPlayer === null) return;
     const seat = state().seats[sum.currentPlayer] ?? "human";
@@ -226,7 +274,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     <Show when={mod()} fallback={<div class="loading">Unknown game.</div>}>
       {(m) => (
         <>
-          <Show when={position()} fallback={<div class="loading">Starting a new game…</div>}>
+          <Show when={heldPosition()} fallback={<div class="loading">Starting a new game…</div>}>
             {(p) => (
               <Dynamic
                 component={m().Renderer}
