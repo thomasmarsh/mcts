@@ -1,0 +1,72 @@
+/* ttt.css — TttRenderer's own presentation, scoped to this package's own
+   class names (not ids), same discipline as druid.css. */
+
+.ttt-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #c7c9cf;
+}
+
+.ttt-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 96px);
+  grid-template-rows: repeat(3, 96px);
+  gap: 6px;
+  background: #5a5c66;
+  padding: 6px;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.ttt-cell {
+  --heat: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  height: 96px;
+  background: #eceef2;
+  border: none;
+  border-radius: 4px;
+  font-size: 44px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #2a2b32;
+  cursor: default;
+}
+
+.ttt-cell.legal {
+  cursor: pointer;
+  background: #dfe3ee;
+}
+
+.ttt-cell.legal:hover,
+.ttt-cell.hovered {
+  background: #cdd4e8;
+}
+
+.ttt-cell.heat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: rgba(255, 169, 77, calc(0.12 + var(--heat) * 0.55));
+  pointer-events: none;
+}
+
+.ttt-cell.proven::before {
+  background: rgba(76, 175, 122, calc(0.12 + var(--heat) * 0.55));
+}
+
+.ttt-cell.suggested {
+  outline: 3px solid #ffe066;
+  outline-offset: -3px;
+}
+
+.ttt-ghost {
+  opacity: 0.4;
+}

@@ -1,12 +1,12 @@
 use crate::display::{RectangularBoard, RectangularBoardDisplay};
 use crate::game::{Game, PlayerIndex};
 use crate::zobrist::LazyZobristTable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 const USE_SYMMETRY: bool = false;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Piece {
     X,
     O,
@@ -196,6 +196,34 @@ impl Default for HashedPosition {
 }
 
 impl HashedPosition {
+    /// Rebuilds a `HashedPosition` from a bare `Position` with no move-order
+    /// history -- needed by the stateless game server (PLAN-UI.md session 8),
+    /// which receives a client-supplied position on every request rather than
+    /// replaying moves through `apply` one at a time.
+    ///
+    /// XOR is commutative, so `apply`'s incremental `hashes[s] ^=
+    /// HASHES.hash((index << 1) | turn)` per move can be reproduced from the
+    /// final board alone, in any order -- as long as each cell's `turn` value
+    /// at the time it was placed is recoverable. It is: `apply` always sets
+    /// `board[index] = self.turn` before advancing the turn, so the piece
+    /// sitting on a filled cell today *is* the turn value that placed it.
+    pub fn from_position(position: Position) -> Self {
+        let mut hashed = Self {
+            position,
+            hashes: [0; 8],
+        };
+        let mut symmetries = [0usize; NUM_SYMMETRIES];
+        for i in 0..9 {
+            if let Some(piece) = position.get(i) {
+                sym::index_symmetries(i, &mut symmetries);
+                for (s, index) in symmetries.iter().enumerate() {
+                    hashed.hashes[s] ^= HASHES.hash((index << 1) | piece as usize);
+                }
+            }
+        }
+        hashed
+    }
+
     #[inline]
     fn apply(&mut self, m: Move) {
         let mut symmetries = [0; NUM_SYMMETRIES];
@@ -298,6 +326,19 @@ mod tests {
     #[test]
     fn test_ttt() {
         random_play::<TicTacToe>();
+    }
+
+    // `HashedPosition::from_position` must reproduce exactly what
+    // incremental `apply` calls would have produced -- this is what lets a
+    // stateless server (server/adapters/ttt.rs) rebuild a client-supplied
+    // position without knowing the move order that reached it.
+    #[test]
+    fn test_from_position_matches_incremental_hash() {
+        let mut state = HashedPosition::new();
+        for m in [4u8, 0, 8, 1, 2] {
+            state = TicTacToe::apply(state, &Move(m));
+            assert_eq!(HashedPosition::from_position(state.position), state);
+        }
     }
 
     #[test]

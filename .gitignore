@@ -4,6 +4,7 @@ __pycache__
 smac3_output
 /profile.json
 .DS_Store
+node_modules
 # Python virtual environment (uv project)
 scripts/.venv/
 # setuptools build metadata

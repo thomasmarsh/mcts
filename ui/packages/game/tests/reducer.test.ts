@@ -243,6 +243,43 @@ describe("appReducer / load", () => {
   });
 });
 
+describe("appReducer / switchGame", () => {
+  it("changes gameKind, resets per-kind slices, and drops epoch to 0 until newGame bumps it back up", () => {
+    const init = initialAppState<S, M>("druid", 0);
+    init.epoch = 2;
+    init.seats = { Black: "strong" };
+    init.aiPresets.status = "done";
+    init.aiPresets.result = [];
+    init.analysis.status = "done";
+    init.analysis.result = { actions: [], principal_variation: [], total_visits: 0, suggested_move: null };
+    init.position = { nodeId: init.tree.rootId, view: {}, legalMoves: [] };
+    const ts = createTestStore(appReducer<S, M>, mockEnv, init);
+
+    ts.send({ tag: "switchGame", gameKind: "ttt" }, (s) => {
+      s.gameKind = "ttt";
+      // position/aiPresets/analysis (and move/aiMove/newGame, already idle
+      // here) all reset back to idle -- a different kind's dialog needs its
+      // own aiPresets fetched fresh and shouldn't render the outgoing kind's
+      // position/analysis, which the new kind's S/M/V can't interpret.
+      s.position = null;
+      s.aiPresets = initialAppState<S, M>("ttt", 0).aiPresets;
+      s.analysis = initialAppState<S, M>("ttt", 0).analysis;
+      // Seats are per-kind (player ids differ, e.g. Druid's Black/White vs.
+      // ttt's X/O) -- carrying them over would misassign control of a seat
+      // id the new kind doesn't have.
+      s.seats = {};
+      // epoch drops to 0 (not just left at its prior value): `tree` still
+      // holds the outgoing kind's nodes here (only `newGame`'s own "done"
+      // branch replaces it), so `GameShell`'s `position/request` effect --
+      // which re-fires on every store update, not just when `currentId`
+      // actually changes -- must stay suppressed (`epoch < 1`) until
+      // `newGame` completes and bumps epoch back up in the same reduction
+      // that finally makes `tree` match `gameKind` again.
+      s.epoch = 0;
+    });
+  });
+});
+
 describe("appReducer / setPreset", () => {
   it("stores the selection in ui.selectedPreset", () => {
     const init = initialAppState<S, M>("druid", 0);

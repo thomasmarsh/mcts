@@ -8,6 +8,7 @@
 // (`druid`, ...), each holding its own concrete adapter type.
 
 pub mod druid;
+pub mod ttt;
 
 use axum::http::StatusCode;
 use serde_json::Value;

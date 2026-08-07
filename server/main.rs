@@ -34,7 +34,10 @@ struct AppState {
 }
 
 fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
-    let all: Vec<Arc<dyn GameAdapter>> = vec![Arc::new(adapters::druid::DruidAdapter::default())];
+    let all: Vec<Arc<dyn GameAdapter>> = vec![
+        Arc::new(adapters::druid::DruidAdapter::default()),
+        Arc::new(adapters::ttt::TttAdapter),
+    ];
     all.into_iter().map(|a| (a.kind(), a)).collect()
 }
 
@@ -288,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_games_lists_druid() {
+    async fn test_get_games_lists_both_kinds() {
         let (status, body) = http_get(test_app(), "/api/games").await;
         assert_eq!(status, HttpStatusCode::OK);
         let games = body_json(&body);
@@ -298,7 +301,7 @@ mod tests {
             .iter()
             .map(|g| g["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, vec!["druid"]);
+        assert_eq!(kinds, vec!["druid", "ttt"]);
     }
 
     #[tokio::test]
@@ -587,6 +590,143 @@ mod tests {
                  looks like it stalled behind the AI request instead of running concurrently"
             );
         }
+    }
+
+    // Tic-tac-toe (PLAN-UI.md session 8): the second game proving the
+    // `GameAdapter` contract generalizes. Deliberately lighter than Druid's
+    // suite above -- no engine-cache or concurrency tests, since
+    // `adapters::ttt::TttAdapter` has neither.
+
+    async fn new_ttt_state(app: Router) -> Value {
+        let (status, body) = http_post_json(app, "/api/games/ttt/new", json!({})).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        body_json(&body)["state"].clone()
+    }
+
+    // Same forced-block position `src/games/ttt.rs`'s own
+    // `must_block_position` test helper uses: after X plays 0/4/8 and O
+    // plays 1, O threatens to complete column 1 (cells 1, 4, 7) -- cell 7 is
+    // X's only non-losing reply.
+    async fn forced_block_state(app: Router) -> Value {
+        let mut state = new_ttt_state(app.clone()).await;
+        for mv in [0, 4, 8, 1] {
+            let (status, body) = http_post_json(
+                app.clone(),
+                "/api/games/ttt/apply",
+                json!({ "state": state, "move": mv }),
+            )
+            .await;
+            assert_eq!(status, HttpStatusCode::OK);
+            state = body_json(&body)["state"].clone();
+        }
+        state
+    }
+
+    #[tokio::test]
+    async fn test_ttt_new_game_has_nine_legal_moves() {
+        let app = test_app();
+        let state = new_ttt_state(app.clone()).await;
+
+        let (status, body) =
+            http_post_json(app, "/api/games/ttt/legal_moves", json!({ "state": state })).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert_eq!(body_json(&body)["moves"].as_array().unwrap().len(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_ttt_apply_accepts_a_legal_move_and_view_reflects_it() {
+        let app = test_app();
+        let state = new_ttt_state(app.clone()).await;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/ttt/apply",
+            json!({ "state": state, "move": 4 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        assert_eq!(body["view"]["turn"], "O");
+        assert_eq!(body["view"]["cells"][4], "X");
+        assert_eq!(body["view"]["terminal"], false);
+    }
+
+    #[tokio::test]
+    async fn test_ttt_apply_rejects_illegal_move() {
+        let app = test_app();
+        let state = new_ttt_state(app.clone()).await;
+
+        // Cell 9 is out of a 3x3 board's 0..9 range.
+        let (status, _) = http_post_json(
+            app.clone(),
+            "/api/games/ttt/apply",
+            json!({ "state": state, "move": 9 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+
+        // Playing an already-occupied cell.
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/ttt/apply",
+            json!({ "state": state, "move": 0 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let state = body_json(&body)["state"].clone();
+
+        let (status, _) = http_post_json(
+            app,
+            "/api/games/ttt/apply",
+            json!({ "state": state, "move": 0 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_ttt_ai_move_finds_the_forced_block() {
+        let app = test_app();
+        let state = forced_block_state(app.clone()).await;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/ttt/ai_move",
+            json!({ "state": state, "preset": "strong" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        assert_eq!(body["move"], 7, "expected the forced block at cell 7: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_ttt_analyze_proves_the_forced_block() {
+        let app = test_app();
+        let state = forced_block_state(app.clone()).await;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/ttt/analyze",
+            json!({ "state": state, "preset": "strong" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let analysis = body_json(&body);
+
+        assert_eq!(
+            analysis["suggested_move"], 7,
+            "expected the forced block at cell 7: {analysis}"
+        );
+        let actions = analysis["actions"].as_array().unwrap();
+        let suggested_report = actions
+            .iter()
+            .find(|a| a["action"] == 7)
+            .expect("suggested move should be an explored root action");
+        assert_eq!(
+            suggested_report["is_proven"], true,
+            "the forced block should be reported as proven: {analysis}"
+        );
     }
 
     #[tokio::test]

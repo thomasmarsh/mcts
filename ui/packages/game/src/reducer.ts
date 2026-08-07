@@ -75,7 +75,16 @@ export type AnalysisJobAction<M> =
 
 export type PositionAction<V, M> =
   | { tag: "request" }
-  | { tag: "loaded"; nodeId: string; view: V; moves: M[] };
+  /** `epoch` is the epoch this request was issued under (mirrors
+   * `aiMove`/`analysis`'s own `epoch`-stamping) -- `nodeId` alone isn't a
+   * sufficient staleness guard once `switchGame` (session 8) can change
+   * `gameKind` while a request for the *previous* kind's current node is
+   * still in flight: that response's `nodeId` can coincidentally still
+   * equal `draft.tree.currentId` (nothing else has touched the tree yet),
+   * but it carries a view/legal-moves shape the new `gameKind` can't
+   * interpret. Checking `epoch` too catches that case, since `switchGame`
+   * always changes `epoch`. */
+  | { tag: "loaded"; nodeId: string; epoch: number; view: V; moves: M[] };
 
 export type AiPresetsJobAction =
   | { tag: "request" }
@@ -91,6 +100,16 @@ export type AppAction<S, M, V = unknown> =
   | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
   | { tag: "setSeat"; player: string; control: string }
   | { tag: "setPreset"; preset: string }
+  /** Session 8: switch which game kind the New Game dialog is about to
+   * start, ahead of the actual `newGame` dispatch. Resets everything
+   * `newGame`'s own "done" branch resets (see below) plus `aiPresets`/
+   * `seats` -- both are per-`gameKind` metadata that a different kind's
+   * dialog needs fetched/cleared fresh, not carried over from whichever
+   * kind was previously active. Also drops `epoch` to 0 (see this branch's
+   * own comment) until `newGame` bumps it back up, so nothing tries to
+   * re-derive a position from `tree`'s now-mismatched-kind state in the
+   * meantime. */
+  | { tag: "switchGame"; gameKind: string }
   /** Session 7: rehydrate a save file's `{gameKind, config, tree}` wholesale
    * -- fully client-side, no `env` call. Resets the same job-poll slices and
    * bumps `epoch` the same way a completed `newGame` does, so an in-flight
@@ -154,6 +173,38 @@ export function appReducer<S, M, V = unknown>(
     return null;
   }
 
+  if (action.tag === "switchGame") {
+    draft.gameKind = action.gameKind;
+    draft.position = null;
+    draft.move = initialJobPollState<StateAndView<S, V>>();
+    draft.aiMove = initialJobPollState<AiMoveResult<S, M, V>>();
+    draft.analysis = initialJobPollState<Analysis<M>>();
+    draft.newGame = initialJobPollState<StateAndView<S, V>>();
+    draft.aiPresets = initialJobPollState<AiPresetInfo[]>();
+    draft.seats = {};
+    // `draft.tree` is deliberately left as-is here -- the outgoing kind's
+    // nodes, still shaped for the outgoing kind's S/M -- since the actual
+    // replacement only happens once the `newGame` request dispatched right
+    // after this one completes (see that branch's "done" handling below).
+    // That leaves a real, not just cosmetic, window where `gameKind` and
+    // `tree` disagree about which game's shape the tree's states are in:
+    // `GameShell`'s `position/request` effect fires on *every* store update
+    // (`useSnapshot`'s valtio subscription re-fires the whole snapshot
+    // signal on any mutation, and the effect reads that signal
+    // unconditionally before checking `tree.currentId` -- it doesn't
+    // actually gate on that value changing), so without an extra guard the
+    // very next store update after this one would fire `env.view(newKind,
+    // <oldKind-shaped state>)` and hit the server's "invalid state" 400.
+    // Resetting `epoch` to 0 reuses the exact guard `App.tsx`'s pre-
+    // bootstrap placeholder root already relies on (`if (s.epoch < 1)
+    // return;` in that effect) to suppress `position/request` until
+    // `newGame`'s completion below bumps it back to >= 1 in the same
+    // reduction that replaces `tree` -- at which point kind and tree are
+    // atomically consistent again, same as that initial-bootstrap case.
+    draft.epoch = 0;
+    return null;
+  }
+
   if (action.tag === "load") {
     draft.gameKind = action.gameKind;
     draft.config = action.config;
@@ -172,19 +223,23 @@ export function appReducer<S, M, V = unknown>(
     if (pa.tag === "request") {
       const current = draft.tree.nodes[draft.tree.currentId];
       if (!current) return null;
-      const { gameKind } = draft;
+      const { gameKind, epoch } = draft;
       const nodeId = draft.tree.currentId;
       return Effect.fromPromise(async () => {
         const [view, legal] = await Promise.all([
           toPromise(env.view<S, V>(gameKind, current.state)),
           toPromise(env.legalMoves<S, M>(gameKind, current.state)),
         ]);
-        return { nodeId, view, moves: legal.moves };
+        return { nodeId, epoch, view, moves: legal.moves };
       }).map((r): AppAction<S, M, V> => ({ tag: "position", action: { tag: "loaded", ...r } }));
     }
-    // Drop a `loaded` result for a node that's no longer current -- superseded
-    // by a later navigation/move, whose own `loaded` will land instead.
-    if (pa.nodeId === draft.tree.currentId) {
+    // Drop a `loaded` result for a node that's no longer current (superseded
+    // by a later navigation/move, whose own `loaded` will land instead) or
+    // whose epoch has since moved on (switchGame/newGame/load -- see
+    // `PositionAction`'s doc comment above for why `nodeId` alone isn't
+    // enough once a kind switch can leave `tree.currentId` pointing at a
+    // now-foreign-shaped node).
+    if (pa.nodeId === draft.tree.currentId && pa.epoch === draft.epoch) {
       draft.position = { nodeId: pa.nodeId, view: pa.view, legalMoves: pa.moves };
     }
     return null;

@@ -14,7 +14,7 @@ import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
 import { moveEquals } from "@mcts/game";
-import { GAME_MODULES } from "./games.js";
+import { GAME_LABELS, GAME_MODULES } from "./games.js";
 import { MoveListPanel } from "./MoveListPanel.js";
 import { AnalysisPanel } from "./AnalysisPanel.js";
 import { SaveLoadPanel } from "./SaveLoadPanel.js";
@@ -78,8 +78,13 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     return modeDef ? p.legalMoves.filter(modeDef.filter) : p.legalMoves;
   });
 
-  // Default to the first mode once the module resolves (mount-time only --
-  // there's only one game kind today, so this never needs to re-fire).
+  // Default to the first mode once the module resolves. Only ever fires
+  // once (guarded on `activeMode() === null`): of the two registered kinds,
+  // only Druid has `modes` at all, so a mode picked once stays valid across
+  // a session-8 kind switch either way (ttt's `legalMoves` memo below simply
+  // ignores `activeMode` when the active module has no `modes` to look it up
+  // in) -- a future third kind with its own distinct `modes` would need this
+  // revisited to re-fire per `gameKind`, not just once.
   createEffect(() => {
     const m = mod();
     if (activeMode() === null && m?.modes && m.modes.length > 0) setActiveMode(m.modes[0]!.id);
@@ -142,6 +147,25 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     for (const p of mod()?.players ?? []) seats[p] = state().seats[p] ?? "human";
     setPendingSeats(seats);
     setDialogOpen(true);
+  }
+
+  // Switches which kind the (still-open) New Game dialog is about to start
+  // -- session 8's game-kind picker. Dispatches `switchGame` immediately
+  // (rather than deferring to `startNewGame`) so the dialog's seat pickers
+  // re-fetch the new kind's own `aiPresets` and its player list updates via
+  // `mod()`/`m()` while still open. `state().tree` still holds the outgoing
+  // game's nodes until `newGame` (dispatched from `startNewGame` below)
+  // completes and replaces it -- `switchGame` drops `epoch` to 0 for that
+  // whole window (see its own comment in reducer.ts) so nothing tries to
+  // read that stale tree under the new `gameKind` in the meantime.
+  function onGameKindChange(kind: string): void {
+    if (kind === state().gameKind) return;
+    dispatch({ tag: "switchGame", gameKind: kind });
+    dispatch({ tag: "aiPresets", action: { tag: "request" } });
+    setPendingConfig(undefined);
+    const seats: Record<string, string> = {};
+    for (const p of GAME_MODULES[kind]?.players ?? []) seats[p] = "human";
+    setPendingSeats(seats);
   }
 
   function startNewGame(): void {
@@ -295,6 +319,16 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                 }}
               >
                 <h2>New Game</h2>
+                <Show when={Object.keys(GAME_MODULES).length > 1}>
+                  <label>
+                    Game
+                    <select value={state().gameKind} onChange={(e) => onGameKindChange(e.currentTarget.value)}>
+                      <For each={Object.keys(GAME_MODULES)}>
+                        {(kind) => <option value={kind}>{GAME_LABELS[kind] ?? kind}</option>}
+                      </For>
+                    </select>
+                  </label>
+                </Show>
                 <Show when={m().NewGameFields}>{(Fields) => <Dynamic component={Fields()} config={pendingConfig()} onChange={setPendingConfig} />}</Show>
                 <For each={m().players}>
                   {(player) => (

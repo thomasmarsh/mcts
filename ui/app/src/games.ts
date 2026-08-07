@@ -7,10 +7,21 @@
 
 import type { GameKindModule } from "@mcts/game";
 import { druidModule } from "@mcts/druid";
+import { tttModule } from "@mcts/ttt";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const GAME_MODULES: Record<string, GameKindModule<any, any, any>> = {
   druid: druidModule,
+  ttt: tttModule,
+};
+
+/** Display labels for the game-kind picker (New Game dialog) --
+ * `GameKindModule` itself carries no display label (Rust's
+ * `GameAdapter::label` isn't mirrored on the TS side, since nothing before
+ * session 8 needed a kind-picker UI to show one). */
+export const GAME_LABELS: Record<string, string> = {
+  druid: "Druid",
+  ttt: "Tic-Tac-Toe",
 };
 
 export const DEFAULT_GAME_KIND = "druid";

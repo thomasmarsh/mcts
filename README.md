@@ -46,14 +46,11 @@ Not sure if this will become a published library, but it is improving and PRs ar
 
 ## Game UI (`ui/`)
 
-The web UI lives in [`ui/`](ui/), a pnpm workspace with a Vite + SolidJS app
-(`ui/app/`), the vendored store framework (`ui/packages/core`, forked from
-[`@pb/core`](https://github.com/tmarsh/pb) and renamed to `@mcts/core`), the
-game-agnostic client/game-tree/renderer contract (`ui/packages/game`), and
-Druid's three.js board renderer (`ui/packages/druid`). The build output lands
-in `server/static/dist/`, which is now the *only* frontend the Rust server
-serves -- the original hand-rolled `server/static/app.js` was retired once
-this SolidJS app reached feature parity with it (PLAN-UI.md session 4).
+To run:
+
+- `(cd ui && pnpm install)`
+
+The web UI lives in [`ui/`](ui/), a pnpm workspace with a Vite + SolidJS app (`ui/app/`).
 
 Two dev processes run together:
 
@@ -63,5 +60,4 @@ Two dev processes run together:
   the app on `http://localhost:5173` with `/api/*` proxied to the Rust server.
 
 Other `ui/` commands: `pnpm build` (production build into `server/static/dist/`),
-`pnpm typecheck`, `pnpm lint`, `pnpm test`. See `PLAN-UI.md` for the full UI
-plan and session-by-session status.
+`pnpm typecheck`, `pnpm lint`, `pnpm test`.
