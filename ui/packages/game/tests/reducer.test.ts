@@ -12,7 +12,7 @@ import { Effect } from "@mcts/core";
 import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type Env } from "../src/reducer.js";
 import { initialAppState } from "../src/state.js";
-import type { AiMoveResult, Analysis } from "../src/types.js";
+import type { AiMoveResult, Analysis, StateAndView } from "../src/types.js";
 
 // Test-only state/move types -- appReducer never inspects their shape.
 type S = number;
@@ -103,5 +103,102 @@ describe("appReducer / analysis", () => {
         s.analysis.result = result;
       },
     );
+  });
+
+  // Session 6: a stale `analysis` result would otherwise go on labeling a
+  // position it was never computed for once the tree moves on -- the
+  // heatmap overlay/suggested-move highlight derive straight from this
+  // field, so a leftover result renders against the wrong board.
+  it("resets once a tree navigation changes the current position", () => {
+    const result: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const env: Env = {
+      ...mockEnv,
+      analyze: <M2>() => Effect.send(result) as unknown as Effect<Analysis<M2>>,
+    };
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send({ tag: "analysis", action: { tag: "request", preset: "strong" } }, (s) => {
+      s.analysis.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "analysis",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
+      },
+      (s) => {
+        s.analysis.status = "done";
+        s.analysis.result = result;
+      },
+    );
+
+    // `undo` at the root is itself a no-op for `currentId`, but the reset is
+    // unconditional on any tree action (see reducer.ts) rather than trying
+    // to detect whether `currentId` actually moved.
+    ts.send({ tag: "tree", action: { tag: "undo" } }, (s) => {
+      s.analysis.status = "idle";
+      s.analysis.result = null;
+    });
+  });
+
+  it("resets once a human move completes and advances the tree", () => {
+    const analysisResult: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const moveResult: StateAndView<S> = { state: 1, view: {} };
+    const env: Env = {
+      ...mockEnv,
+      analyze: <M2>() => Effect.send(analysisResult) as unknown as Effect<Analysis<M2>>,
+      apply: <S2, V2 = unknown>() => Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>>,
+    };
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send({ tag: "analysis", action: { tag: "request", preset: "strong" } }, (s) => {
+      s.analysis.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "analysis",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: analysisResult } } },
+        epoch: 0,
+      },
+      (s) => {
+        s.analysis.status = "done";
+        s.analysis.result = analysisResult;
+      },
+    );
+
+    ts.send({ tag: "move", action: { tag: "request", move: "a" } }, (s) => {
+      s.move.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "move",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: moveResult } } },
+        move: "a",
+      },
+      (s) => {
+        s.move.status = "done";
+        s.move.result = moveResult;
+        const rootId = s.tree.rootId;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", parentId: rootId, childIds: [] };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
+        s.analysis.status = "idle";
+        s.analysis.result = null;
+      },
+    );
+  });
+});
+
+describe("appReducer / setPreset", () => {
+  it("stores the selection in ui.selectedPreset", () => {
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, mockEnv, init);
+    ts.send({ tag: "setPreset", preset: "master" }, (s) => {
+      s.ui.selectedPreset = "master";
+    });
   });
 });

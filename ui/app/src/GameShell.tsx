@@ -12,9 +12,11 @@
 import { type Component, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
-import type { AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
+import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
+import { moveEquals } from "@mcts/game";
 import { GAME_MODULES } from "./games.js";
 import { MoveListPanel } from "./MoveListPanel.js";
+import { AnalysisPanel } from "./AnalysisPanel.js";
 
 type S = unknown;
 type M = unknown;
@@ -159,6 +161,37 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
 
   const presetOptions = () => (state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : []);
 
+  // Falls back to "strong" the same way `manualMovePreset` above does, only
+  // once the user hasn't picked one yet (`ui.selectedPreset`, session 6's
+  // slice of `AppState` -- see state.ts).
+  const analysisPreset = createMemo(() => {
+    const chosen = state().ui.selectedPreset;
+    if (chosen && presetOptions().some((p) => p.id === chosen)) return chosen;
+    const options = presetOptions();
+    return options.find((p) => p.id === "strong")?.id ?? options[0]?.id ?? "strong";
+  });
+
+  // Feeds `DruidRenderer`'s heatmap overlay -- one source of truth (`analysis`
+  // job-poll state) for both this and `AnalysisPanel`'s own candidate table.
+  // `undefined` (not `[]`) when there's no completed analysis for the
+  // *current* position -- reducer.ts resets `analysis` on every tree
+  // navigation/move, so a stale result never lingers past the position it
+  // was computed for.
+  const analysisOverlay = createMemo((): AnalysisOverlayEntry<M>[] | undefined => {
+    const a = state().analysis;
+    if (a.status !== "done" || !a.result) return undefined;
+    const total = a.result.total_visits || 1;
+    const suggested = a.result.suggested_move;
+    return a.result.actions.map(
+      (c): AnalysisOverlayEntry<M> => ({
+        move: c.action,
+        visitShare: c.visits / total,
+        isProven: c.is_proven,
+        isSuggested: suggested !== null && moveEquals(c.action, suggested),
+      }),
+    );
+  });
+
   return (
     <Show when={mod()} fallback={<div class="loading">Unknown game.</div>}>
       {(m) => (
@@ -175,6 +208,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                 onMove={(move: M) => dispatch({ tag: "move", action: { tag: "request", move } })}
                 hoveredMove={hoveredMove()}
                 onHover={setHoveredMove}
+                analysisOverlay={analysisOverlay()}
               />
             )}
           </Show>
@@ -227,6 +261,18 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
               tree={state().tree}
               formatMove={m().formatMove}
               onJump={(id) => dispatch({ tag: "tree", action: { tag: "jumpTo", id } })}
+            />
+            <AnalysisPanel
+              analysis={state().analysis}
+              presets={presetOptions()}
+              selectedPreset={analysisPreset()}
+              before={state().tree.nodes[state().tree.currentId]?.state}
+              formatMove={m().formatMove}
+              busy={busy()}
+              hoveredMove={hoveredMove()}
+              onSelectPreset={(preset) => dispatch({ tag: "setPreset", preset })}
+              onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", preset: analysisPreset() } })}
+              onHoverMove={setHoveredMove}
             />
           </Show>
 

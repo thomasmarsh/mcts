@@ -52,8 +52,11 @@ export type GameTreeAction<S, M> =
  * without requiring every game's move type to carry its own `Eq`. Sound for
  * every move type in this codebase (plain tuples/enums that serialize
  * losslessly, same values this package already round-trips over the wire),
- * not sound in general for types with `undefined` fields or `Map`s. */
-function moveEquals<M>(a: M, b: M): boolean {
+ * not sound in general for types with `undefined` fields or `Map`s. Exported
+ * for `AnalysisPanel`/`GameShell` (session 6) to match an analysis
+ * candidate's move against `suggested_move`/`hoveredMove` -- same soundness
+ * argument applies there. */
+export function moveEquals<M>(a: M, b: M): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 

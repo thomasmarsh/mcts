@@ -27,6 +27,15 @@ const BLACK_COLOR = 0x3a3d46;
 const WHITE_COLOR = 0xf2e9d8;
 const MOVE_HILITE = 0x52c2ee;
 
+// Session 6's analysis heatmap -- a warm hue deliberately distinct from
+// MOVE_HILITE's cyan (legal-move highlights and heatmap tiles can render on
+// the same cell simultaneously) so the two never read as one signal. Proven
+// wins get their own color outright (matches the engine's own MCTS-Solver
+// priority for `suggested_move`, not just "happens to be highly visited").
+const ANALYSIS_HEAT_COLOR = 0xffa94d;
+const ANALYSIS_PROVEN_COLOR = 0x4caf7a;
+const SUGGESTED_RING_COLOR = "#ffe066";
+
 // Marks which border each player connects across (Black: top <-> bottom,
 // White: left <-> right) -- shown as a mitered frame along the board edges
 // and a matching frame on the minimap.
@@ -220,6 +229,7 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
   let piecesGroup: THREE.Group;
   let highlightGroup: THREE.Group;
   let ghostGroup: THREE.Group;
+  let analysisGroup: THREE.Group;
   let pickables: THREE.Mesh[] = [];
   const mouse = new THREE.Vector2();
   let animationHandle = 0;
@@ -391,6 +401,69 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     const box = new THREE.Mesh(new THREE.BoxGeometry(sizeX, CUBE, sizeZ), mat);
     box.position.set(x, level * LEVEL_H + LEVEL_H / 2, z);
     ghostGroup.add(box);
+  }
+
+  /** A flat square outline (a `LineLoop`, not a wireframe plane -- a
+   * wireframe `PlaneGeometry` draws its diagonal too, which reads as a
+   * crossed-out cell rather than a ring) marking the suggested move's
+   * footprint, layered on top of its heat tile. */
+  function makeSquareOutline(half: number, color: string): THREE.LineLoop {
+    const points = [
+      new THREE.Vector3(-half, 0, -half),
+      new THREE.Vector3(half, 0, -half),
+      new THREE.Vector3(half, 0, half),
+      new THREE.Vector3(-half, 0, half),
+    ];
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({ color });
+    return new THREE.LineLoop(geo, mat);
+  }
+
+  /** Session 6: renders `props.analysisOverlay` as translucent tiles over
+   * each candidate's footprint, intensity scaled by `visitShare` relative to
+   * the strongest candidate (not to 1.0 -- a position with no single
+   * dominant move would otherwise render every tile faint even when the
+   * analysis is confident in aggregate), plus a gold outline on the
+   * suggested move's cells. Reuses `rebuildHighlights`'s shared-geometry/
+   * cloned-material pattern (one base geometry, a fresh material clone per
+   * tile so per-candidate opacity can differ) and app.js's ghost-preview
+   * visual language (translucent colored planes, not a new chrome style). */
+  function rebuildAnalysisOverlay(): void {
+    clearGroup(analysisGroup);
+    const overlay = props.analysisOverlay;
+    if (!overlay || overlay.length === 0) return;
+
+    const { w } = props.state.size;
+    const maxShare = overlay.reduce((m, e) => Math.max(m, e.visitShare), 0);
+    const tileGeo = new THREE.PlaneGeometry(0.78, 0.78);
+
+    overlay.forEach((entry) => {
+      const intensity = maxShare > 0 ? entry.visitShare / maxShare : 0;
+      const color = entry.isProven ? ANALYSIS_PROVEN_COLOR : ANALYSIS_HEAT_COLOR;
+      const opacity = 0.12 + intensity * 0.55;
+
+      footprintFor(entry.move, w).forEach((cellIdx) => {
+        const square = props.state.board[cellIdx];
+        if (!square) return;
+        const x = cellIdx % w;
+        const z = Math.floor(cellIdx / w);
+        const y = square.height * LEVEL_H + 0.04;
+
+        const tile = new THREE.Mesh(
+          tileGeo,
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }),
+        );
+        tile.rotation.x = -Math.PI / 2;
+        tile.position.set(x, y, z);
+        analysisGroup.add(tile);
+
+        if (entry.isSuggested) {
+          const ring = makeSquareOutline(0.46, SUGGESTED_RING_COLOR);
+          ring.position.set(x, y + 0.002, z);
+          analysisGroup.add(ring);
+        }
+      });
+    });
   }
 
   function pickMoveAt(clientX: number, clientY: number): Move | null {
@@ -591,7 +664,8 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     piecesGroup = new THREE.Group();
     highlightGroup = new THREE.Group();
     ghostGroup = new THREE.Group();
-    scene.add(boardGroup, piecesGroup, highlightGroup, ghostGroup);
+    analysisGroup = new THREE.Group();
+    scene.add(boardGroup, piecesGroup, highlightGroup, ghostGroup, analysisGroup);
 
     raycaster = new THREE.Raycaster();
 
@@ -614,6 +688,7 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     clearGroup(piecesGroup);
     clearGroup(highlightGroup);
     clearGroup(ghostGroup);
+    clearGroup(analysisGroup);
     renderer?.dispose();
   });
 
@@ -648,6 +723,11 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
   createEffect(() => {
     if (!ghostGroup) return;
     buildGhost(props.hoveredMove);
+  });
+
+  createEffect(() => {
+    if (!analysisGroup) return;
+    rebuildAnalysisOverlay();
   });
 
   createEffect(() => {

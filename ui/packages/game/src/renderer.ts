@@ -21,12 +21,17 @@ export interface MoveStep<S, M> {
 
 /** One candidate move from `analyze`, positioned for a heatmap overlay.
  * `visitShare` is `visits / total_visits`, pre-divided so renderers never
- * need `total_visits` themselves. Reserved for session 6 -- no renderer
- * reads this yet. */
+ * need `total_visits` themselves. `isSuggested` marks the entry matching
+ * `Analysis.suggested_move` (computed by `GameShell` via `moveEquals`, since
+ * an overlay entry only carries a move, not the wire `Analysis<M>` its
+ * suggestion came from) -- the renderer's cue to draw a distinct highlight
+ * per session 6's "not just most-visited" requirement, separate from the
+ * visit-share heat coloring every entry gets. */
 export interface AnalysisOverlayEntry<M> {
   move: M;
   visitShare: number;
   isProven: boolean;
+  isSuggested: boolean;
 }
 
 /** Everything a board renderer needs to draw one game and report

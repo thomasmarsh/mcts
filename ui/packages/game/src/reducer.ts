@@ -89,7 +89,8 @@ export type AppAction<S, M, V = unknown> =
   | { tag: "move"; action: MoveJobAction<S, M, V>; move?: M }
   | { tag: "aiMove"; action: AiMoveJobAction<S, M, V>; epoch?: number }
   | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
-  | { tag: "setSeat"; player: string; control: string };
+  | { tag: "setSeat"; player: string; control: string }
+  | { tag: "setPreset"; preset: string };
 
 /** `jobPollReduce` only ever calls `submitJob`/`pollJob` for the `"start"`/
  * `"tick"` tags. Every `submitJob` this reducer builds resolves directly to
@@ -123,10 +124,27 @@ export function appReducer<S, M, V = unknown>(
     () => undefined,
   );
   const treeEffect = treeReducer(draft, action, env);
-  if (treeEffect) return treeEffect;
+  if (action.tag === "tree") {
+    // Any tree navigation (undo/redo/jumpTo/deleteBranch) can change
+    // `currentId` -- a stale `analysis` result would otherwise go on
+    // labeling a position it was never computed for, which the heatmap
+    // overlay/suggested-move highlight would then silently mis-render
+    // against the new position's board. `GameTree`'s own reducer never
+    // returns an effect (it's pure/synchronous, see its header comment), so
+    // `treeEffect` is always null here -- this reset is the only thing this
+    // branch does beyond what `treeReducer` already did as a side effect of
+    // the call above.
+    draft.analysis = initialJobPollState<Analysis<M>>();
+    return treeEffect;
+  }
 
   if (action.tag === "setSeat") {
     draft.seats[action.player] = action.control;
+    return null;
+  }
+
+  if (action.tag === "setPreset") {
+    draft.ui.selectedPreset = action.preset;
     return null;
   }
 
@@ -234,6 +252,9 @@ export function appReducer<S, M, V = unknown>(
     );
     if (draft.move.status === "done" && draft.move.result && action.move !== undefined) {
       gameTreeReducer(draft.tree, { tag: "applyMove", move: action.move, state: draft.move.result.state }, undefined);
+      // Same staleness reasoning as the "tree" branch above -- currentId
+      // just changed.
+      draft.analysis = initialJobPollState<Analysis<M>>();
     }
     return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move: action.move })) : null;
   }
@@ -271,6 +292,9 @@ export function appReducer<S, M, V = unknown>(
     if (draft.aiMove.status === "done" && draft.aiMove.result) {
       const { move, state } = draft.aiMove.result;
       gameTreeReducer(draft.tree, { tag: "applyMove", move, state }, undefined);
+      // Same staleness reasoning as the "tree" branch above -- currentId
+      // just changed.
+      draft.analysis = initialJobPollState<Analysis<M>>();
     }
     return eff
       ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: action.epoch }))
