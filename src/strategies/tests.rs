@@ -1228,3 +1228,247 @@ fn test_reuse_tree_composes_with_root_parallel_self_play_no_panic() {
         state = G::apply(state, &action);
     }
 }
+
+// Bounded pruning after re-rooting (`SearchConfig::max_arena_len`,
+// `search/compact.rs`'s `TreeSearch::compact`).
+
+#[test]
+fn test_transposition_table_compact_drops_unmapped_and_remaps_survivors() {
+    use mcts::node::Node;
+    use mcts::search::TreeIndex;
+    use mcts::table::TranspositionTable;
+    use rustc_hash::FxHashMap;
+
+    // Two independent arenas just to mint distinct `Id`s cheaply -- this
+    // test only cares about `TranspositionTable::compact`'s own filtering
+    // logic, not any real tree shape.
+    let old_index = TreeIndex::<u32>::new();
+    let old_ids: Vec<_> = (0..4).map(|i| old_index.insert(Node::new(0, i))).collect();
+    let new_index = TreeIndex::<u32>::new();
+    let new_ids: Vec<_> = (0..2).map(|i| new_index.insert(Node::new(0, i))).collect();
+
+    let mut table: TranspositionTable<&'static str> = TranspositionTable::default();
+    // Same hash bucket, two different states -- exercises the per-bucket
+    // `Vec<TableEntry>` filtering, not just whole-bucket drop/keep.
+    table.insert(100, old_ids[0], "a");
+    table.insert(100, old_ids[1], "b");
+    table.insert(200, old_ids[2], "c");
+    table.insert(300, old_ids[3], "d");
+
+    // Only ids 0 and 2 "survive" (as if only they were reachable from the
+    // new root); 1 and 3 are the discarded-node case.
+    let mut old_to_new = FxHashMap::default();
+    old_to_new.insert(old_ids[0], new_ids[0]);
+    old_to_new.insert(old_ids[2], new_ids[1]);
+
+    table.compact(&old_to_new);
+
+    assert_eq!(
+        table.get_const(100, "a").unwrap().node_id,
+        new_ids[0],
+        "a surviving entry should be remapped to its new id"
+    );
+    assert!(
+        table.get_const(100, "b").is_none(),
+        "an entry pointing at a discarded node must be dropped, not left dangling"
+    );
+    assert_eq!(table.get_const(200, "c").unwrap().node_id, new_ids[1]);
+    assert!(table.get_const(300, "d").is_none());
+    assert_eq!(
+        table.bucket_lens().iter().sum::<usize>(),
+        2,
+        "only the two surviving entries should remain, across however many buckets"
+    );
+}
+
+#[test]
+fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
+    use mcts::index::Id;
+    use mcts::node::{ChildArray, Node};
+    use mcts::search::TreeIndex;
+    use rustc_hash::FxHashMap;
+
+    let old_index = TreeIndex::<u32>::new();
+    let old_ids: Vec<Id> = (0..3).map(|i| old_index.insert(Node::new(0, i))).collect();
+    let new_index = TreeIndex::<u32>::new();
+    let new_ids: Vec<Id> = (0..3).map(|i| new_index.insert(Node::new(0, i))).collect();
+
+    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1);
+    children.get_or_create_child(0, || old_ids[0]);
+    // Slot 1 deliberately left unresolved (never explored).
+    children.get_or_create_child(2, || old_ids[2]);
+
+    let mut old_to_new = FxHashMap::default();
+    old_to_new.insert(old_ids[0], new_ids[0]);
+    old_to_new.insert(old_ids[2], new_ids[2]);
+
+    children.remap_child_ids(&old_to_new);
+
+    assert_eq!(children.node_id(0), Some(new_ids[0]));
+    assert_eq!(
+        children.node_id(1),
+        None,
+        "an unresolved slot must stay unresolved, not get spuriously mapped"
+    );
+    assert_eq!(children.node_id(2), Some(new_ids[2]));
+    // `id_index` (the id -> idx reverse lookup) must be rebuilt to match --
+    // `child_index` panics on a miss, so this also doubles as "the entries
+    // are actually present".
+    assert_eq!(children.child_index(new_ids[0]), 0);
+    assert_eq!(children.child_index(new_ids[2]), 2);
+}
+
+#[test]
+fn test_compact_discards_unreachable_siblings_and_preserves_reachable_edges() {
+    // Integration-level correctness check for `TreeSearch::compact` itself,
+    // isolated from the threshold-wiring in `reuse_or_reset` (covered
+    // separately below): build a real tree, promote onto one played action
+    // (leaving the old root's other explored children as real garbage,
+    // exactly `reuse_tree`'s documented leave-it-forever behavior), then
+    // call `compact()` directly and confirm it keeps exactly the reachable
+    // set with every reachable edge's stats byte-for-byte preserved, just
+    // under new ids.
+    use crate::games::ttt::*;
+    use mcts::node::NodeState;
+    use std::collections::{HashSet, VecDeque};
+    type G = TicTacToe;
+
+    // Every (child hash, incoming-edge visits, incoming-edge score) reachable
+    // from `root` -- edges, not nodes, since stats live on the edge into a
+    // node (a `ChildArray` row), not the node itself (`root_stats` is the
+    // one exception, checked separately). A transposed node reached via two
+    // different parents legitimately contributes two distinct edge entries
+    // here, hence sorting the full triple (not just the hash) for a stable,
+    // duplicate-safe comparison.
+    fn snapshot_edges(index: &mcts::search::TreeIndex<Move>, root: mcts::index::Id) -> Vec<(u64, u32, f64)> {
+        let mut out = Vec::new();
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(root);
+        visited.insert(root);
+        while let Some(id) = queue.pop_front() {
+            if let Some(NodeState::Expanded(children)) = index.get(id).status() {
+                for i in 0..children.len() {
+                    if let Some(child_id) = children.node_id(i) {
+                        let child_hash = index.get(child_id).hash;
+                        out.push((child_hash, children.num_visits(i), children.score(i, 0)));
+                        if visited.insert(child_id) {
+                            queue.push_back(child_id);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        out
+    }
+
+    fn reachable_count(index: &mcts::search::TreeIndex<Move>, root: mcts::index::Id) -> usize {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(root);
+        visited.insert(root);
+        while let Some(id) = queue.pop_front() {
+            if let Some(NodeState::Expanded(children)) = index.get(id).status() {
+                for i in 0..children.len() {
+                    if let Some(child_id) = children.node_id(i) {
+                        if visited.insert(child_id) {
+                            queue.push_back(child_id);
+                        }
+                    }
+                }
+            }
+        }
+        visited.len()
+    }
+
+    let init_state = HashedPosition::new();
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let mut ts = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(300)
+            .use_transpositions(true)
+            .reuse_tree(true)
+            .seed(3),
+    );
+
+    let action = ts.choose_action(&init_state);
+    let old_len = ts.index.len();
+
+    let next_state = G::apply(init_state, &action);
+    let player_idx = G::player_to_move(&next_state).to_index();
+    // `max_arena_len` is left at its default `None` on this config, so this
+    // promotion alone can't trigger auto-compaction -- `compact()` below is
+    // exercised directly and deliberately, not via the threshold wiring.
+    ts.reuse_or_reset(player_idx, &next_state);
+
+    let root_visits_before = ts.root_stats.num_visits();
+    let root_score_before = ts.root_stats.score(0);
+    let before = snapshot_edges(&ts.index, ts.root_id);
+    let reachable_before = reachable_count(&ts.index, ts.root_id);
+
+    assert!(
+        reachable_before < old_len,
+        "promoting to one of several explored children of a 300-iteration \
+             TicTacToe root should leave real garbage behind (the root's other \
+             explored children) for this test to be meaningful"
+    );
+
+    ts.compact();
+
+    assert_eq!(
+        ts.index.len(),
+        reachable_before,
+        "compact should keep exactly the reachable set, no more and no less"
+    );
+    assert_eq!(
+        ts.root_stats.num_visits(),
+        root_visits_before,
+        "compact must not touch root_stats"
+    );
+    assert_eq!(ts.root_stats.score(0), root_score_before);
+
+    let after = snapshot_edges(&ts.index, ts.root_id);
+    assert_eq!(
+        before, after,
+        "every reachable edge's (child hash, visits, score) must survive \
+             compaction unchanged, just addressed by new ids"
+    );
+}
+
+#[test]
+fn test_max_arena_len_bounds_arena_growth_across_a_self_play_game() {
+    // Wiring check for `reuse_or_reset`'s threshold gate: a low
+    // `max_arena_len` over a full self-play game should actually engage
+    // `compact()` often enough to leave a visibly smaller final arena than
+    // the same game played with compaction off -- not just a config flag
+    // that's accepted but never fires.
+    use crate::games::ttt::*;
+    type G = TicTacToe;
+
+    fn play_game(max_arena_len: Option<usize>) -> usize {
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(50)
+                .reuse_tree(true)
+                .max_arena_len(max_arena_len)
+                .seed(5),
+        );
+        let mut state = HashedPosition::new();
+        while !G::is_terminal(&state) {
+            let action = ts.choose_action(&state);
+            state = G::apply(state, &action);
+        }
+        ts.arena_len()
+    }
+
+    let unbounded = play_game(None);
+    let bounded = play_game(Some(30));
+    assert!(
+        bounded < unbounded,
+        "a threshold (30) well below the unbounded game's final arena size \
+             ({unbounded}) should actually trigger compaction and leave a \
+             smaller final arena ({bounded}), not just be a no-op config field"
+    );
+}

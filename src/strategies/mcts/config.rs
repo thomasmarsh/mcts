@@ -141,6 +141,17 @@ where
     /// default) keeps every prior determinism/regression test's assumption
     /// that two `choose_action` calls with the same config never share state.
     pub reuse_tree: bool,
+
+    /// Bounded pruning after re-rooting: once `reuse_or_reset` promotes a
+    /// child to root and the arena's total node count exceeds this, compact
+    /// the arena down to just the subtree reachable from the new root
+    /// (`TreeSearch::compact`), discarding every unreachable sibling
+    /// `reuse_tree` would otherwise leave as garbage forever. `None` (the
+    /// default) never compacts -- unbounded growth, byte-identical to every
+    /// prior session's behavior. Only meaningful when `reuse_tree` is also
+    /// `true`; a plain `reset()` already starts from a single-node arena, so
+    /// there's nothing to compact on that path.
+    pub max_arena_len: Option<usize>,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -168,6 +179,7 @@ where
             num_rollouts_per_leaf: 1,
             num_tree_threads: 1,
             reuse_tree: false,
+            max_arena_len: None,
         }
     }
 }
@@ -278,6 +290,11 @@ where
 
     pub fn reuse_tree(mut self, reuse_tree: bool) -> Self {
         self.reuse_tree = reuse_tree;
+        self
+    }
+
+    pub fn max_arena_len(mut self, max_arena_len: Option<usize>) -> Self {
+        self.max_arena_len = max_arena_len;
         self
     }
 }

@@ -1,3 +1,4 @@
+pub mod compact;
 pub mod core;
 pub mod parallel;
 pub mod reuse;

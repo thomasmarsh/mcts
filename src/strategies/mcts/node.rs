@@ -536,6 +536,28 @@ impl<A: Action> ChildArray<A> {
             + n * self.num_players * std::mem::size_of::<PlayerStats>()
     }
 
+    /// Rewrites every resolved child id through `old_to_new`, and rebuilds
+    /// `id_index` to match -- used by arena compaction (`search/compact.rs`'s
+    /// `TreeSearch::compact`) after cloning this array's owning node into a
+    /// freshly built, garbage-free arena, when the array's `child_ids` still
+    /// point at the *old* arena's ids. Every resolved id here is guaranteed
+    /// present in `old_to_new`: compaction's reachability walk enqueues every
+    /// explored child of every node it visits, so no id resolved here can be
+    /// missing from the map.
+    pub(crate) fn remap_child_ids(&mut self, old_to_new: &FxHashMap<index::Id, index::Id>) {
+        let mut new_id_index = FxHashMap::default();
+        for (idx, slot) in self.child_ids.iter_mut().enumerate() {
+            if let Some(old_id) = slot.get().copied() {
+                let new_id = *old_to_new
+                    .get(&old_id)
+                    .expect("compaction: reachable child missing from id map");
+                *slot = OnceLock::from(new_id);
+                new_id_index.insert(new_id, idx);
+            }
+        }
+        self.id_index = RwLock::new(new_id_index);
+    }
+
     /// Lifts one child's accumulated stats out into a standalone
     /// `NodeStats` -- used when tree reuse (`reuse.rs`'s `try_promote`)
     /// promotes a child into the new root. `root_stats` is never itself a
@@ -712,6 +734,19 @@ where
 
     pub fn child_index(&self, child_id: index::Id) -> usize {
         self.children().child_index(child_id)
+    }
+
+    /// Mutable access to this node's `ChildArray`, if expanded -- `None` for
+    /// a Leaf or Terminal node. Only used by arena compaction
+    /// (`search/compact.rs`), which owns its freshly built arena exclusively
+    /// (no concurrent search in flight), so `OnceLock::get_mut` -- which
+    /// needs no locking, unlike every other read path here -- is sound.
+    #[inline]
+    pub(crate) fn children_mut(&mut self) -> Option<&mut ChildArray<A>> {
+        match self.state.get_mut() {
+            Some(NodeState::Expanded(children)) => Some(children),
+            _ => None,
+        }
     }
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {

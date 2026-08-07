@@ -88,11 +88,17 @@ where
     /// because the tree walk that would find it again got shorter).
     pub(crate) fn reuse_or_reset(&mut self, player_idx: usize, state: &G::S) -> Id {
         let hash = G::zobrist_hash(state);
-        if self.config.reuse_tree {
-            if let Some(root_id) = self.try_promote(state, hash) {
-                self.root_state = Some(state.clone());
-                return root_id;
+        if self.config.reuse_tree && self.try_promote(state, hash).is_some() {
+            self.root_state = Some(state.clone());
+            // Bounded pruning (`SearchConfig::max_arena_len`): only checked
+            // on the promote path -- a fresh `reset()` below already starts
+            // from a single-node arena, nothing to compact.
+            if let Some(max_len) = self.config.max_arena_len {
+                if self.index.len() > max_len {
+                    self.compact();
+                }
             }
+            return self.root_id;
         }
         let root_id = self.reset(player_idx, hash);
         self.root_state = Some(state.clone());
