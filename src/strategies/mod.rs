@@ -88,7 +88,7 @@ static PARALLEL_TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> =
     std::sync::OnceLock::new();
 
 #[cfg(test)]
-fn parallel_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn parallel_test_guard() -> std::sync::MutexGuard<'static, ()> {
     PARALLEL_TEST_MUTEX
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()

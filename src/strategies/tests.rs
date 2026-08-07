@@ -307,54 +307,6 @@ fn test_hybrid_root_and_tree_parallel_picks_a_legal_action() {
 }
 
 #[test]
-fn test_tree_parallel_transpositions_survive_many_real_time_games() {
-    let _guard = parallel_test_guard();
-    // Regression guard for a race between `Node::is_terminal()` and
-    // `Node::is_leaf()` in `select_step` (search.rs): those used to be
-    // two separate `OnceLock::get()` reads with a decision gap between
-    // them. Under transpositions, a *different* thread can resolve the
-    // very same node (reached via a different move order) from Leaf to
-    // Terminal in that gap: `is_terminal()` (checked first) sees the
-    // still-unresolved leaf and returns `false`, then `is_leaf()`
-    // (checked moments later) sees the now-resolved node and *also*
-    // returns `false` -- falling through both branches into
-    // `best_child()`/`Node::edges()` on a node that's actually
-    // Terminal, tripping `edges()`'s `unreachable!()`. Fixed by
-    // `Node::status()`, a single snapshot both decisions are now
-    // derived from.
-    //
-    // This didn't show up in the original tree-parallel stress test
-    // above because that one budgets by *iteration count*: 2000
-    // iterations split across 8 threads on trivially-cheap TicTacToe
-    // finishes in microseconds of real wall-clock time, sampling very
-    // few actual thread interleavings. Budgeting by *time* instead
-    // forces every thread to keep racing for the same real duration
-    // regardless of how fast an iteration is, sampling far more
-    // interleavings per test-second -- which is what actually caught
-    // this originally (on Druid, under a real multi-hundred-ms budget).
-    // Playing many full games (not just one `choose_action` call) adds
-    // further exposure across many distinct board positions.
-    use crate::games::ttt::*;
-    type G = TicTacToe;
-
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
-    let mut ts = TS::default().config(
-        mcts::SearchConfig::default()
-            .max_time(std::time::Duration::from_millis(30))
-            .use_transpositions(true)
-            .num_tree_threads(4),
-    );
-
-    for _ in 0..20 {
-        let mut state = HashedPosition::new();
-        while !G::is_terminal(&state) {
-            let action = ts.choose_action(&state);
-            state = G::apply(state, &action);
-        }
-    }
-}
-
-#[test]
 fn test_basics() {
     use crate::games::ttt::*;
     type G = TicTacToe;
@@ -636,10 +588,11 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     use mcts::node::Node;
     use std::sync::Arc;
 
-    // Regression test for a race introduced (and caught by the existing
-    // `test_tree_parallel_transpositions_survive_many_real_time_games`)
-    // while adding `ChildArray`'s `id_index`: a naive "check `child_ids`,
-    // fall back to `get_or_init`, then update `id_index`" implementation
+    // Regression test for a race introduced (and caught by
+    // `test_tree_parallel_transpositions_survive_many_real_time_games` in
+    // tests/stress.rs) while adding `ChildArray`'s `id_index`: a naive
+    // "check `child_ids`, fall back to `get_or_init`, then update
+    // `id_index`" implementation
     // lets one thread observe another thread's freshly-resolved child id
     // *before* that thread's `id_index` insert has run, so `child_index`
     // panics on a lookup miss. A slot only resolves once ever (the

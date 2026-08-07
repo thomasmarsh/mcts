@@ -318,7 +318,7 @@ mod tests {
         game::Game,
         strategies::{
             mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
-            Search,
+            parallel_test_guard, Search,
         },
         util::random_play,
     };
@@ -553,6 +553,7 @@ mod tests {
 
     #[test]
     fn test_mcts_solver_tree_parallel_finds_forced_block_and_terminates_early() {
+        let _guard = parallel_test_guard();
         type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
         let state = must_block_position();
 
