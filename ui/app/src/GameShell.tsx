@@ -14,6 +14,7 @@ import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
 import { GAME_MODULES } from "./games.js";
+import { MoveListPanel } from "./MoveListPanel.js";
 
 type S = unknown;
 type M = unknown;
@@ -118,6 +119,14 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     if (busy()) return;
     const tag = (event.target as HTMLElement | null)?.tagName;
     if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
+    if (event.key === "ArrowLeft") {
+      dispatch({ tag: "tree", action: { tag: "undo" } });
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      dispatch({ tag: "tree", action: { tag: "redo" } });
+      return;
+    }
     const hit = mod()?.modes?.find((md) => md.hotkey === event.key);
     if (hit) setActiveMode(hit.id);
   }
@@ -212,6 +221,14 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
               {summary()?.bannerText ?? ""}
             </div>
           </div>
+
+          <Show when={state().epoch >= 1}>
+            <MoveListPanel
+              tree={state().tree}
+              formatMove={m().formatMove}
+              onJump={(id) => dispatch({ tag: "tree", action: { tag: "jumpTo", id } })}
+            />
+          </Show>
 
           <Show when={dialogOpen()}>
             <dialog id="new-game-dialog" ref={(el) => queueMicrotask(() => el.showModal())}>

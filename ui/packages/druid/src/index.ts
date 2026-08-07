@@ -5,7 +5,7 @@
 import type { GameKindModule } from "@mcts/game";
 import { DruidRenderer } from "./DruidRenderer.js";
 import { NewGameFields } from "./NewGameFields.js";
-import { modes, summarize } from "./summary.js";
+import { formatMove, modes, summarize } from "./summary.js";
 import type { GameState, GameView, Move } from "./types.js";
 
 export * from "./types.js";
@@ -13,7 +13,7 @@ export { buildStackModel, footprintFor } from "./layers.js";
 export type { Beam, LayerEntry, StackModel } from "./layers.js";
 export { DruidRenderer } from "./DruidRenderer.js";
 export { NewGameFields } from "./NewGameFields.js";
-export { summarize, modes } from "./summary.js";
+export { summarize, modes, formatMove } from "./summary.js";
 
 export const druidModule: GameKindModule<GameState, Move, GameView> = {
   kind: "druid",
@@ -22,4 +22,5 @@ export const druidModule: GameKindModule<GameState, Move, GameView> = {
   summarize,
   modes,
   NewGameFields,
+  formatMove,
 };

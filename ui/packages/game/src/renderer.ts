@@ -112,4 +112,10 @@ export interface GameKindModule<S, M, V> {
   /** Board-size/etc. new-game config editor. Omit for games with no
    * meaningful config (a fixed board). */
   NewGameFields?: Component<{ config: unknown; onChange: (config: unknown) => void }>;
+  /** Human-readable label for one move (session 5's move-list panel), given
+   * the state it was applied *from* -- mirrors `MoveStep`'s own shape, since
+   * some games' labels need board context a bare move can't carry (Druid's
+   * needs `before.size` to turn a board index into a coordinate). Falls back
+   * to `JSON.stringify(move)` for a game module that omits this. */
+  formatMove?: (move: M, before: S) => string;
 }

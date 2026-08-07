@@ -3,7 +3,7 @@
 // buttons), ported from app.js's `updateHud`/`movesForMode`.
 
 import type { GameModeDef, GameSummary } from "@mcts/game";
-import type { GameView, Move } from "./types.js";
+import type { GameState, GameView, Move } from "./types.js";
 
 const BLACK_SWATCH = "#3a3d46";
 const WHITE_SWATCH = "#f2e9d8";
@@ -47,6 +47,25 @@ function handLines(view: GameView): GameSummary["lines"] {
       swatch: WHITE_SWATCH,
     },
   ];
+}
+
+const COLUMN_LETTERS = "abcdefghijklmnopqrstuvwxyz";
+
+/** Turns a board index (row-major, mirroring `layers.ts`'s `footprintFor`)
+ * into a spreadsheet-style coordinate -- the move-list panel's per-move
+ * label needs `before.size.w` to divide the index into row/col, which is why
+ * this takes the state a move was applied *from*, not the move alone. */
+function coordFor(index: number, w: number): string {
+  const col = index % w;
+  const row = Math.floor(index / w);
+  return `${COLUMN_LETTERS[col] ?? col}${row + 1}`;
+}
+
+export function formatMove(move: Move, before: GameState): string {
+  const [piece, index] = move;
+  const coord = coordFor(index, before.size.w);
+  if (piece === "Sarsen") return `Sarsen ${coord}`;
+  return piece.Lintel === "Horizontal" ? `Lintel↔ ${coord}` : `Lintel↕ ${coord}`;
 }
 
 /** Mirrors app.js's `mode`/`movesForMode`/`HOTKEYS`: which piece a click

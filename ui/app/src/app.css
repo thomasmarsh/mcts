@@ -208,6 +208,115 @@ button.mode:disabled, #new-game:disabled, #ai-move:disabled {
   filter: brightness(1.1);
 }
 
+#move-list {
+  position: fixed;
+  /* Below Druid's minimap panel (`.druid-minimap`, also fixed top-right,
+     ~284px tall at its current fixed 236px canvas size) -- a renderer-
+     specific overlay this game-agnostic panel can't see or measure, so the
+     offset is a hardcoded estimate, same as the rest of this codebase's
+     fixed-position chrome (no shared layout container exists to stack them
+     automatically). */
+  top: 300px;
+  right: 12px;
+  z-index: 10;
+  background: rgba(20, 21, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 160px;
+  max-width: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+
+#move-list ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#move-list li {
+  position: relative;
+}
+
+.move-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #b7b8c2;
+  text-align: left;
+  padding: 4px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.move-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.move-row.current {
+  background: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+.move-row .ply {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.branch-toggle {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #e8e8ec;
+  border: none;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.branch-toggle:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.branch-list {
+  list-style: none;
+  margin: 2px 0 4px 14px;
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.14);
+}
+
+.branch-option {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #b7b8c2;
+  text-align: left;
+  padding: 3px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.branch-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.branch-option.active {
+  color: #5b7fd6;
+  font-weight: 600;
+}
+
 .loading {
   position: fixed;
   inset: 0;
