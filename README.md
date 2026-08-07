@@ -43,3 +43,23 @@ Some code and general approaches come from
 [minimax-rs](https://github.com/edre/minimax-rs) which has an MCTS strategy.
 
 Not sure if this will become a published library, but it is improving and PRs are welcome.
+
+## Game UI (`ui/`)
+
+The web UI lives in [`ui/`](ui/), a pnpm workspace with a Vite + SolidJS app
+(`ui/app/`), the vendored store framework (`ui/packages/core`, forked from
+[`@pb/core`](https://github.com/tmarsh/pb) and renamed to `@mcts/core`), and a
+per-game UI package placeholder (`ui/packages/druid`). The build output lands in
+`server/static/dist/`, served alongside the existing vanilla-JS app by the Rust
+server.
+
+Two dev processes run together:
+
+- **Rust server** — `cargo run` serves the API and static files on
+  `http://127.0.0.1:7878`.
+- **Vite dev server** — from `ui/`, `pnpm install` once, then `pnpm dev` serves
+  the app on `http://localhost:5173` with `/api/*` proxied to the Rust server.
+
+Other `ui/` commands: `pnpm build` (production build into `server/static/dist/`),
+`pnpm typecheck`, `pnpm lint`, `pnpm test`. See `PLAN-UI.md` for the full UI
+plan and session-by-session status.

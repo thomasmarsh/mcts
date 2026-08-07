@@ -1,0 +1,15 @@
+{
+  "name": "mcts-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mcts/core": "workspace:*",
+    "@mcts/druid": "workspace:*",
+    "solid-js": "^1.9.0",
+    "three": "^0.185.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.0"
+  }
+}

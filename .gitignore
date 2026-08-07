@@ -8,3 +8,8 @@ smac3_output
 scripts/.venv/
 # setuptools build metadata
 *.egg-info/
+# pnpm workspace (ui/)
+ui/node_modules/
+ui/pnpm-lock.yaml
+# Vite build output (served by the cargo server's ServeDir)
+server/static/dist/
