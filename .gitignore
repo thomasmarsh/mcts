@@ -1,4 +1,5 @@
 /target
+plan/
 Cargo.lock
 __pycache__
 smac3_output
