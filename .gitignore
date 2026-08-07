@@ -4,3 +4,7 @@ __pycache__
 smac3_output
 /profile.json
 .DS_Store
+# Python virtual environment (uv project)
+scripts/.venv/
+# setuptools build metadata
+*.egg-info/

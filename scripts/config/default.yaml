@@ -1,0 +1,111 @@
+# Default hyperparameter search configuration for MCTS.
+# This file can be overridden with `hyper-cli --config my-config.yaml`.
+# All keys can also be overridden on the command line via `--override key=value`.
+
+# ---------------------------------------------------------------------------
+# SMAC3 optimisation engine settings
+# ---------------------------------------------------------------------------
+optimizer:
+  # Maximum number of trial configurations to evaluate
+  n_trials: 1000
+
+  # Whether the target function is deterministic (one seed) or noisy (multiple)
+  deterministic: false
+
+  # Number of parallel workers. Use null to default to cpu_count // 2.
+  n_workers: null
+
+  # Random seed for reproducibility
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# Target evaluation — the Rust binary SMAC invokes
+# ---------------------------------------------------------------------------
+target:
+  # Path (relative to current working directory or absolute) to the Rust binary
+  # Typical invocation: cd /path/to/mcts && uv run --project scripts/ hyper-cli
+  binary: target/release/hyper
+
+  # Evaluation hyper-parameters baked into every invocation
+  rounds: 20
+  max_iter: 10_000
+  playout_depth: 200
+  expand_threshold: 1
+
+# ---------------------------------------------------------------------------
+# Search space — each entry becomes a hyperparameter on the binary CLI.
+#
+# Types:
+#   float       -> UniformFloat hyperparameter (continuous)
+#   int         -> UniformInteger
+#   categorical -> Categorical
+#   constant    -> Constant (fixed, excluded from search)
+#
+# The binary receives the parameter value as `--kebab-case-name=<value>`.
+# ---------------------------------------------------------------------------
+parameters:
+  bias:
+    type: float
+    bounds: [0, 10]
+    default: 0.00001
+
+  c:
+    type: float
+    bounds: [0, 3]
+    default: 1.4142135623730951
+
+  epsilon:
+    type: float
+    bounds: [0, 1]
+    default: 0.1
+
+  final_action:
+    type: constant
+    value: robust_child
+
+  k:
+    type: int
+    bounds: [0, 2000]
+    default: 1000
+
+  q_init:
+    type: categorical
+    choices: [Draw, Infinity, Loss, Parent, Win]
+    default: Infinity
+
+  rave:
+    type: int
+    bounds: [0, 2000]
+    default: 700
+
+  schedule:
+    type: categorical
+    choices: [hand_selected, min_mse, threshold]
+    default: threshold
+
+  threshold:
+    type: int
+    bounds: [0, 2000]
+    default: 700
+
+  rave_ucb:
+    type: categorical
+    choices: [none, ucb1, tuned]
+    default: tuned
+
+# ---------------------------------------------------------------------------
+# Conditional parameter activation — an active parameter is always passed to
+# the binary; inactive parameters are omitted from the CLI invocation (they
+# are imputed with their default when training the surrogate model).
+#
+# Each entry: if <parent> == <value(s)>, then <children> become active.
+# ---------------------------------------------------------------------------
+conditions:
+  - if: { schedule: hand_selected }
+    then: [k]
+  - if: { schedule: min_mse }
+    then: [bias]
+  - if: { schedule: threshold }
+    then: [rave]
+  - if: { rave_ucb: [ucb1, tuned] }
+    then: [c]
