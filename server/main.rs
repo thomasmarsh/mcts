@@ -20,11 +20,10 @@ use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 
 use mcts::game::Game;
-use mcts::games::druid::{
-    Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, Move, Player,
-    RaveDecisiveHeuristic, Size,
+use mcts::games::druid::{Druid, HashedState, Move, Player, Size};
+use mcts::strategies::mcts::{
+    backprop, node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
 };
-use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
 // The preset a persisted AI engine was built for, alongside the engine
@@ -80,9 +79,9 @@ impl AiPreset {
             AiPreset::Easy => "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
             AiPreset::Medium => "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
             AiPreset::Strong => {
-                "Tuned RAVE + heuristic-guided + decisive-move search with MCTS-Solver for \
-                 tactical sharpness, ~3s per move (SMAC3-tuned), searching one shared tree \
-                 across all available CPU cores."
+                "N-gram-guided (NST) decisive-move search with MCTS-Solver for tactical \
+                 sharpness, ~3s per move, searching one shared tree across all available \
+                 CPU cores."
             }
             AiPreset::Master => {
                 "Same search as Strong, parallelized the same way, with a longer ~8s \
@@ -229,18 +228,26 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-// `Strong`/`Master` keep the SMAC3-tuned `select::Rave` hyperparameters from
-// demo/druid.rs's `rave_mast_ucd` setup, but the playout policy is
-// `DruidHeuristic`-guided rather than `Mast` -- PLAN-DRUID.md Session 6's
-// grid sweep (epsilon x weights, n=30+/point) found the heuristic beats a
-// uniform-playout baseline by a statistically solid margin (aggregated
-// ~62% vs. chance) at epsilon=0.5 with equal (1.0/1.0/1.0) heuristic
-// weights, so this replaces `strategy::RaveMastDm`'s `Mast`-based simulate
-// strategy with `druid::RaveDecisiveHeuristic`'s. The other presets reuse
-// strategy types exercised in demo/druid.rs too (`Ucb1`, `Ucb1Mast`), just
-// with shorter time budgets, giving a real strength gradient rather than
-// only a time-budget knob. Easy/Medium stay single-threaded on purpose, so
-// the difficulty gradient reflects search quality, not just core count.
+// `Strong`/`Master`'s strategy shape: `Ucb1` select (no RAVE/GRAVE) +
+// `DecisiveMove<EpsilonGreedy<Nst>>` simulate, epsilon=0.3,
+// backoff_threshold=5. PLAN-DRUID.md Session 8's recalibration -- run after
+// discovering MAST/GRAVE/AMAF were silently broken or inert in every prior
+// strength measurement (backprop_flags() never delegated through
+// EpsilonGreedy/DecisiveMove, plus two independent wrong-player attribution
+// bugs) -- found that the previously-shipped `select::Rave` +
+// `DruidHeuristic` config (tuned/validated before those fixes landed) is
+// beaten head-to-head by this simpler shape, both at a cheap fixed-iteration
+// proxy (240 games, 64.2% vs. 37.1%) and at the real 3s tree-parallel
+// production budget (16 games, 81.2% vs. 18.8%). Re-tuning `select::Rave`'s
+// hyperparameters across 8 sensible variations found none beat the plain
+// `Ucb1`-select baseline either -- RAVE/GRAVE doesn't help Druid at this
+// board size at all, so it's dropped rather than kept "just in case."
+// `DruidHeuristic`/`RaveDecisiveHeuristic` (games/druid.rs) are left in
+// place, just no longer wired here. The other presets reuse strategy types
+// exercised in demo/druid.rs too (`Ucb1`, `Ucb1Mast`), just with shorter
+// time budgets, giving a real strength gradient rather than only a
+// time-budget knob. Easy/Medium stay single-threaded on purpose, so the
+// difficulty gradient reflects search quality, not just core count.
 //
 // All four presets enable `use_mcts_solver(true)`: every one gets proven-win/
 // loss selection bias, and every one also gets early termination once the
@@ -254,6 +261,20 @@ fn ai_thread_count() -> usize {
 // core count), tree reuse doesn't cost anything to withhold-for-difficulty --
 // it just carries forward stats from positions this engine already searched,
 // which every preset benefits from equally with no extra per-move cost.
+
+// `Ucb1` select + `DecisiveMove<EpsilonGreedy<Nst>>` simulate -- see the
+// `build_ai` comment above for how this replaced the RAVE/DruidHeuristic
+// shape for Strong/Master.
+#[derive(Clone, Copy, Default)]
+struct Ucb1DmNst;
+
+impl<G: Game> Strategy<G> for Ucb1DmNst {
+    type Select = select::Ucb1;
+    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+}
+
 fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
     let budget = preset.time_budget();
     match preset {
@@ -285,7 +306,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
             ),
         ),
         AiPreset::Strong | AiPreset::Master => Box::new(
-            TreeSearch::<Druid, RaveDecisiveHeuristic>::new().config(
+            TreeSearch::<Druid, Ucb1DmNst>::new().config(
                 SearchConfig::new()
                     .name(if preset == AiPreset::Strong {
                         "ai/strong"
@@ -299,22 +320,10 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .num_tree_threads(ai_thread_count())
-                    .select(
-                        select::Rave::default()
-                            .ucb(select::RaveUcb::Ucb1Tuned {
-                                exploration_constant: 0.2894182,
-                            })
-                            .threshold(204)
-                            .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
-                    )
                     .simulate(simulate::DecisiveMove::new().inner(
-                        simulate::EpsilonGreedy::default().epsilon(0.5).inner(
-                            DruidHeuristic::new(DruidHeuristicWeights {
-                                block_threat: 1.0,
-                                defend_fork: 1.0,
-                                threaten_connection: 1.0,
-                            }),
-                        ),
+                        simulate::EpsilonGreedy::default()
+                            .epsilon(0.3)
+                            .inner(simulate::Nst::new().backoff_threshold(5)),
                     )),
             ),
         ),

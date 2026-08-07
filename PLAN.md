@@ -41,7 +41,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Contextual Monte Carlo search
 - [ ] Fill the board
 - [x] Move Average Sampling Technique (MAST)
-- [ ] N-gram selection technique (NST)
+- [x] N-gram selection technique (NST)
 - [ ] Predicate-Average Sampling Technique (PAST)
 - [ ] Feature Average Sampling Technique (FAST)
 - [ ] Use History Heuristics
@@ -90,6 +90,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Meta-MCTS (rollout should just be a function that takes a strategy as an arg)
 - [ ] Infrastructure to easily expose game to MuZero
 - [ ] N-players (n > 2)
+- [x] Tree reuse across moves (re-rooting)
 
 ### DAG
 - [ ] Support for transposition tables
