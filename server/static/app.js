@@ -4,8 +4,7 @@
 
   const BLACK_COLOR = 0x3a3d46;
   const WHITE_COLOR = 0xf2e9d8;
-  const SARSEN_HILITE = 0xffcf5c;
-  const LINTEL_HILITE = 0x63d3ff;
+  const MOVE_HILITE = 0x52c2ee; // 63d3ff; // legal-move highlight, same color regardless of piece type
 
   // Marks which border each player connects across (Black: top <-> bottom,
   // White: left <-> right) -- shown as a mitered frame along the board edges
@@ -68,7 +67,7 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xe7e8ea); // pale, paper-like backdrop -- see druid-1_clip_image012.jpg
+    scene.background = new THREE.Color(0xc7c9cf); // darker grey backdrop, still lighter than the play area
 
     camera = new THREE.PerspectiveCamera(
       45,
@@ -151,10 +150,17 @@
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#e8e8ec";
     ctx.font = "bold 88px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    // A thin light outline keeps dark text legible against the page's darker
+    // backdrop without a distracting solid chip behind it (the previous
+    // near-white-on-near-white text was effectively invisible with no
+    // outline at all).
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
+    ctx.strokeText(text, size / 2, size / 2 + 4);
+    ctx.fillStyle = "#2a2b32";
     ctx.fillText(text, size / 2, size / 2 + 4);
     const texture = new THREE.CanvasTexture(canvas);
     const material = new THREE.SpriteMaterial({
@@ -211,7 +217,7 @@
       const letter = String.fromCharCode(65 + i);
       [-0.5 - margin, h - 0.5 + margin].forEach((z) => {
         const sprite = makeLabelSprite(letter);
-        sprite.position.set(i, 0.35, z);
+        sprite.position.set(i, 0.02, z);
         boardGroup.add(sprite);
       });
     }
@@ -219,7 +225,7 @@
       const number = String(j + 1);
       [-0.5 - margin, w - 0.5 + margin].forEach((x) => {
         const sprite = makeLabelSprite(number);
-        sprite.position.set(x, 0.35, j);
+        sprite.position.set(x, 0.02, j);
         boardGroup.add(sprite);
       });
     }
@@ -318,15 +324,17 @@
   // a placed lintel should read as a single beam, not three cubes, and the
   // cell it bridges should stay visually empty below the beam if nothing
   // was actually built there.
-  const BORDER_WORLD = 0.03; // black border thickness, in world units
+  const BORDER_WORLD = 0.012; // border thickness, in world units -- thin, like a line drawing
+  const BORDER_COLOR = "#5a5c66"; // mid grey, not ink black -- greyscale line-drawing look
   const TEX_DENSITY = 64; // texture pixels per world unit
 
-  // A small canvas texture: solid black, with an inset rect of `fillColor`
-  // so the un-inset margin reads as a border. Sized to `faceW`x`faceH` (world
-  // units) rather than a fixed square, so the *baked-in* border comes out a
-  // consistent world-space thickness on both square cube faces and the long
-  // faces of a 3-cell lintel beam -- a plain square texture stretched onto an
-  // elongated face would make the border thin on the long axis.
+  // A small canvas texture: a thin grey outline rect with an inset rect of
+  // `fillColor`, so the un-inset margin reads as a crisp outline rather than
+  // a heavy black seam. Sized to `faceW`x`faceH` (world units) rather than a
+  // fixed square, so the *baked-in* border comes out a consistent world-space
+  // thickness on both square cube faces and the long faces of a 3-cell
+  // lintel beam -- a plain square texture stretched onto an elongated face
+  // would make the border thin on the long axis.
   function makeFaceTexture(fillColor, faceW, faceH) {
     const w = Math.max(8, Math.round(faceW * TEX_DENSITY));
     const h = Math.max(8, Math.round(faceH * TEX_DENSITY));
@@ -334,7 +342,7 @@
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#000000";
+    ctx.fillStyle = BORDER_COLOR;
     ctx.fillRect(0, 0, w, h);
     const bx = Math.min(w / 2 - 1, BORDER_WORLD * TEX_DENSITY);
     const by = Math.min(h / 2 - 1, BORDER_WORLD * TEX_DENSITY);
@@ -423,7 +431,7 @@
     if (!currentState || currentState.terminal || busy) return;
 
     const { w } = currentState.size;
-    const color = mode === "sarsen" ? SARSEN_HILITE : LINTEL_HILITE;
+    const color = MOVE_HILITE;
     const geo = new THREE.PlaneGeometry(0.86, 0.86);
     const mat = new THREE.MeshBasicMaterial({
       color,
@@ -720,11 +728,17 @@
       const px = ox + x * (cell + gap);
       const py = oy + y * (cell + gap);
       roundRect(ctx, px, py, cell, cell, Math.max(2, cell * 0.22));
-      ctx.fillStyle = sq.piece ? shadeForHeight(sq.piece, sq.height) : "#23252c";
+      ctx.fillStyle = sq.piece ? shadeForHeight(sq.piece, sq.height) : "#9a9da6";
       ctx.fill();
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      // Only outline empty cells, to mark unplayed squares against the same-
+      // color backing plate -- outlining played cells would draw a seam
+      // between adjacent same-color pieces, breaking the "glued together"
+      // look the connector strokes below are meant to create.
+      if (!sq.piece) {
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
 
     // Goal-edge frame: which pair of borders each player connects across,
