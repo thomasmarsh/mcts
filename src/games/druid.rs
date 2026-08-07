@@ -463,10 +463,13 @@ impl State {
         self.player.next();
     }
 
-    fn get_adjacent(&self, pos: Pos, seen: &HashSet<usize>, color: Player) -> Vec<usize> {
+    fn get_adjacent(&self, pos: Pos, seen: &mut HashSet<usize>, color: Player) -> Vec<usize> {
         pos.adjacent(self.size)
             .map(|x| Pos::index(x, self.size.w))
-            .filter(|x| !seen.contains(x) && self.board[*x].matches(color))
+            .filter(|x| self.board[*x].matches(color))
+            // `insert` returns `true` only for a value not already present, so this both
+            // filters out already-seen cells and marks newly-enqueued ones as seen.
+            .filter(|x| seen.insert(*x))
             .collect()
     }
 
@@ -477,19 +480,18 @@ impl State {
         seen: &mut HashSet<usize>,
         color: Player,
     ) -> bool {
-        if seen.contains(&start.index(self.size.w))
-            || !self.board[start.index(self.size.w)].matches(color)
-        {
+        let start_idx = start.index(self.size.w);
+        if seen.contains(&start_idx) || !self.board[start_idx].matches(color) {
             return false;
         }
+        seen.insert(start_idx);
 
-        let mut frontier = VecDeque::from(vec![start.index(self.size.w)]);
+        let mut frontier = VecDeque::from(vec![start_idx]);
 
         while let Some(idx) = frontier.pop_front() {
             if goal.contains(&idx) {
                 return true;
             }
-            seen.insert(idx);
 
             frontier.extend(self.get_adjacent(Pos::from(idx, self.size), seen, color));
         }
