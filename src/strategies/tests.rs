@@ -441,6 +441,83 @@ fn test_basics() {
 }
 
 #[test]
+fn test_root_report_flags_the_proven_winning_move() {
+    // `Search::root_report` (used by the server's `analyze` endpoint,
+    // PLAN-UI.md session 2) must surface the same forced win MCTS-Solver
+    // finds via `choose_action`, not just the single action it returns:
+    // the winning move should come back with the most visits and
+    // `is_proven`, and the PV should start with it.
+    use crate::games::ttt::*;
+    type G = TicTacToe;
+
+    // O to move, exactly one immediate win: row 0 (indices 0,1,2) needs only
+    // index 2. Row/column/diagonal lines touching O's existing pieces
+    // (indices 0, 1) are otherwise unfinished, so this is a *unique* forced
+    // win, not just one of several -- unlike a naively hand-picked board,
+    // where a second coincidental line (e.g. a column) can also be one move
+    // from completion, making "the chosen move" ambiguous between two
+    // equally winning candidates.
+    // O O .
+    // X . .
+    // X . .
+    let init_state = HashedPosition {
+        position: Position {
+            turn: Piece::O,
+            board: [
+                (0, Piece::O),
+                (1, Piece::O),
+                (3, Piece::X),
+                (6, Piece::X),
+            ]
+            .iter()
+            .fold(0, |board, (i, piece)| {
+                let value = match piece {
+                    Piece::X => 0b01,
+                    Piece::O => 0b10,
+                };
+                board | (value << (i << 1))
+            }),
+        },
+        hashes: [0; 8],
+    };
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let mut ts = TS::default().config(
+        mcts::SearchConfig::default()
+            .expand_threshold(1)
+            .use_mcts_solver(true)
+            .max_iterations(200),
+    );
+
+    let chosen = ts.choose_action(&init_state);
+    assert_eq!(chosen, Move(2), "should find the immediate winning move");
+
+    let report = ts.root_report(&init_state);
+    assert!(report.total_visits > 0);
+    assert!(!report.actions.is_empty());
+
+    let winning = report
+        .actions
+        .iter()
+        .find(|a| a.action == Move(2))
+        .expect("winning move should be an explored root action");
+    assert!(winning.is_proven, "winning move should be reported as proven");
+    // Not asserting "most visits": MCTS-Solver stops the moment the root is
+    // proven (see `choose_action`'s early-break on `Proven::Unproven`), which
+    // can fire right after the winning move's *first* visit -- whichever
+    // sibling(s) got explored earlier that same run may already have more
+    // visits by then. The move `choose_action`/`compute_pv` actually pick is
+    // still deterministic (`proven_win_child`'s scan for a proven-win child
+    // bypasses visit-based selection entirely), which is what the assertions
+    // above and below check instead.
+    assert_eq!(
+        report.principal_variation.first(),
+        Some(&Move(2)),
+        "PV should start with the winning move"
+    );
+}
+
+#[test]
 fn test_update_amaf_matches_by_movers_player_not_childs() {
     // `update_amaf` is deciding, for `parent_id`'s sibling actions,
     // whether a `trace` entry `(action, p)` is "the same player replaying

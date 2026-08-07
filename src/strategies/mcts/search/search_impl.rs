@@ -2,6 +2,8 @@ use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::stack::NodeStack;
+use crate::strategies::ActionReport;
+use crate::strategies::RootReport;
 use crate::strategies::Search;
 use crate::game::Game;
 use crate::game::PlayerIndex;
@@ -142,6 +144,49 @@ where
 
     fn principle_variation(&self) -> Vec<G::A> {
         self.pv.clone()
+    }
+
+    // Reads `self.index`/`self.root_stats` directly, which is exactly right
+    // for the single-threaded and tree-parallel paths (`choose_action_tree_parallel`
+    // in parallel.rs): both leave the real, complete root stats in `self`
+    // when `choose_action` returns, since there's one shared tree either way.
+    // Root parallelism (`choose_action_root_parallel`) is the one path this
+    // under-reports for: it merges each worker's totals into a local `merged`
+    // map to pick the final action but never writes that merge back into
+    // `self`, so `root_report` after a root-parallel call would only reflect
+    // this thread's own final worker tree, not the true cross-worker totals.
+    // Not fixed here because no current preset (`server/main.rs`'s
+    // `build_ai`) sets `num_threads > 1` -- Strong/Master use tree
+    // parallelism (`num_tree_threads`) instead, per PLAN-WORK.md session
+    // 11's finding that it strictly dominates root parallelism at every
+    // tested board size. If a preset ever does turn root parallelism back
+    // on, `choose_action_root_parallel` would need to cache its merged
+    // `ActionTotal`s somewhere `root_report` can read, mirroring this
+    // method's shape.
+    fn root_report(&self, state: &G::S) -> RootReport<G::A> {
+        let player = G::player_to_move(state).to_index();
+        let root = self.index.get(self.root_id);
+        let actions = root
+            .edges()
+            .iter()
+            .filter(|edge| edge.is_explored())
+            .map(|edge| {
+                let is_proven = edge
+                    .node_id()
+                    .is_some_and(|id| self.index.get(id).proven() != Proven::Unproven);
+                ActionReport {
+                    action: edge.action.clone(),
+                    visits: edge.stats.num_visits(),
+                    mean_value: edge.stats.expected_score(player),
+                    is_proven,
+                }
+            })
+            .collect();
+        RootReport {
+            actions,
+            principal_variation: self.pv.clone(),
+            total_visits: self.root_stats.num_visits(),
+        }
     }
 
     fn set_friendly_name(&mut self, name: &str) {

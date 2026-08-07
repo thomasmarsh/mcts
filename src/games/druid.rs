@@ -103,7 +103,7 @@ use rand::rngs::SmallRng;
 // size for `State::default()` / existing tests and demo binaries.
 pub const DEFAULT_SIZE: Size = Size { w: 5, h: 5 };
 
-#[derive(PartialEq, Clone, Copy, Debug, Serialize, Hash, Eq)]
+#[derive(PartialEq, Clone, Copy, Debug, Serialize, Deserialize, Hash, Eq)]
 pub enum Player {
     Black,
     White,
@@ -198,7 +198,7 @@ pub enum Piece {
     Lintel(Orientation),
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Square {
     pub height: u16,
     pub piece: Option<Player>,
@@ -213,7 +213,7 @@ impl Square {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Move(pub Piece, pub u8);
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hand {
     pub sarsens: u8,
     pub lintels: u8,
@@ -249,7 +249,7 @@ impl Hand {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub player: Player,
     pub board: Vec<Square>,
@@ -745,9 +745,10 @@ fn cell_zobrist(i: usize, height: u16, piece: Option<Player>, bits: usize) -> u6
 }
 
 /// Full from-scratch board hash. `Game::apply` no longer uses this on the
-/// hot path (see the incremental XOR-delta update there) -- kept for the
-/// property test that checks the incremental update stays in sync with it.
-#[cfg(test)]
+/// hot path (see the incremental XOR-delta update there) -- used by the
+/// property test that checks the incremental update stays in sync with it,
+/// and by `HashedState::from_state` to hash a board that didn't arrive via
+/// `Game::apply` (e.g. one deserialized from a client-supplied JSON state).
 fn recompute_hash(state: &State, bits: usize) -> u64 {
     state.board.iter().enumerate().fold(0, |hash, (i, square)| {
         hash ^ cell_zobrist(i, square.height, square.piece, bits)
@@ -1124,6 +1125,30 @@ impl HashedState {
 
     pub fn state(&self) -> &State {
         &self.0
+    }
+
+    /// Build a `HashedState` from an arbitrary `State`, recomputing the
+    /// Zobrist hash, `Connectivity`, and `MoveCache` from scratch rather than
+    /// deriving them incrementally via `Game::apply`. For a `State` that
+    /// wasn't built by replaying moves through `apply` -- the case for one
+    /// deserialized from a client-supplied JSON state, since only `State`
+    /// (not the derived caches) round-trips over the wire -- this is the only
+    /// way to get a `HashedState` at all. Panics if `state.size` isn't
+    /// `Size::is_supported`, matching `HashedState::new`.
+    pub fn from_state(state: State) -> Self {
+        assert!(
+            state.size.is_supported(),
+            "unsupported board size: {:?}",
+            state.size
+        );
+        let bits = zobrist_height_bits(state.size);
+        let hash = recompute_hash(&state, bits);
+        let mut connectivity = Connectivity::new(state.size);
+        for color in [Player::Black, Player::White] {
+            connectivity.rebuild(state.size, &state.board, color);
+        }
+        let cache = MoveCache::new(&state);
+        HashedState(state, hash, connectivity, cache)
     }
 
     /// Rebuild `Connectivity` and `MoveCache` from the current board.
@@ -2030,6 +2055,65 @@ mod tests {
                     let m = actions[rng.gen_range(0..actions.len())];
                     state = Druid::apply(state, &m);
                     actions.clear();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_from_state_matches_incrementally_built_state() {
+        // `HashedState::from_state` is the deserialize-path counterpart to
+        // `test_incremental_hash_matches_full_recompute` /
+        // `test_generate_actions_matches_full_recompute`: given a `State`
+        // that arrived some other way than a chain of `Game::apply` calls
+        // (e.g. deserialized from a client-supplied JSON state, which only
+        // round-trips `State`, not the derived `HashedState` caches), the
+        // hash/legal-moves/terminal status it rebuilds from scratch must
+        // agree exactly with the same board built incrementally.
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
+            let mut rng = SmallRng::seed_from_u64(0xF20_5747E + size.w as u64 * 1000 + size.h as u64);
+
+            for game in 0..20 {
+                let mut incremental = HashedState::new(size);
+                let mut actions = Vec::new();
+                for ply in 0..200 {
+                    incremental.0.moves(&mut actions);
+                    if actions.is_empty() {
+                        break;
+                    }
+                    let m = actions[rng.gen_range(0..actions.len())];
+                    incremental = Druid::apply(incremental, &m);
+                    actions.clear();
+
+                    let rebuilt = HashedState::from_state(incremental.state().clone());
+
+                    assert_eq!(
+                        rebuilt.1, incremental.1,
+                        "from_state hash diverged at size={size:?} game={game} ply={ply}"
+                    );
+                    assert_eq!(
+                        Druid::winner(&rebuilt),
+                        Druid::winner(&incremental),
+                        "from_state winner diverged at size={size:?} game={game} ply={ply}"
+                    );
+                    assert_eq!(
+                        Druid::is_terminal(&rebuilt),
+                        Druid::is_terminal(&incremental),
+                        "from_state terminal status diverged at size={size:?} game={game} ply={ply}"
+                    );
+                    if !Druid::is_terminal(&rebuilt) {
+                        let mut rebuilt_actions = Vec::new();
+                        Druid::generate_actions(&rebuilt, &mut rebuilt_actions);
+                        let mut incremental_actions = Vec::new();
+                        Druid::generate_actions(&incremental, &mut incremental_actions);
+                        assert_eq!(
+                            rebuilt_actions, incremental_actions,
+                            "from_state legal moves diverged at size={size:?} game={game} ply={ply}"
+                        );
+                    }
                 }
             }
         }
