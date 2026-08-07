@@ -1,11 +1,27 @@
 (function () {
-  const CUBE = 0.92; // visual cube size, < 1.0 so stacked blocks read as distinct layers
+  const CUBE = 1.0; // full-size so adjacent/stacked blocks touch; the black outline shell is what separates them
   const LEVEL_H = 1.0; // vertical spacing per stacked layer
 
   const BLACK_COLOR = 0x3a3d46;
   const WHITE_COLOR = 0xf2e9d8;
   const SARSEN_HILITE = 0xffcf5c;
   const LINTEL_HILITE = 0x63d3ff;
+
+  // Marks which border each player connects across (Black: top <-> bottom,
+  // White: left <-> right) -- shown as a mitered frame along the board edges
+  // and a matching frame on the minimap, so the win direction is visible at
+  // a glance. Literal black/white so it reads as "which player", not as a
+  // third accent color.
+  const EDGE_COLOR_BLACK = "#000000";
+  const EDGE_COLOR_WHITE = "#ffffff";
+
+  // Distinct from the edge frame above: a saturated glow color for the
+  // *winning* path on the minimap once the game ends. Black/white can't
+  // "glow" against a dark panel, so this keeps its own separate hues.
+  const WINNER_GLOW_BLACK = "#8f9bff";
+  const WINNER_GLOW_WHITE = "#ffd98a";
+
+  const PLAY_AREA_COLOR = 0x9a9da6; // neutral gray -- keeps black/white pieces and edges legible
 
   let scene, camera, renderer, controls, raycaster, mouse;
   let boardGroup, piecesGroup, highlightGroup, ghostGroup;
@@ -52,7 +68,7 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1b1d22);
+    scene.background = new THREE.Color(0xe7e8ea); // pale, paper-like backdrop -- see druid-1_clip_image012.jpg
 
     camera = new THREE.PerspectiveCamera(
       45,
@@ -105,6 +121,12 @@
     renderer.render(scene, camera);
   }
 
+  function disposeMaterial(mat) {
+    if (!mat) return;
+    mat.map && mat.map.dispose();
+    mat.dispose();
+  }
+
   function clearGroup(group) {
     while (group.children.length) {
       const child = group.children.pop();
@@ -113,10 +135,10 @@
       // break every label sprite created afterwards, including on the very
       // next "New Game". Only dispose geometry we know is per-instance.
       if (child.geometry && !child.isSprite) child.geometry.dispose();
-      if (child.material) {
-        child.material.map && child.material.map.dispose();
-        child.material.dispose();
-      }
+      // Piece meshes use a per-face material array (see buildBoxMaterials)
+      // so each face's border texture can match that face's own aspect ratio.
+      if (Array.isArray(child.material)) child.material.forEach(disposeMaterial);
+      else disposeMaterial(child.material);
     }
   }
 
@@ -143,6 +165,41 @@
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(0.6, 0.6, 1);
     return sprite;
+  }
+
+  // A picture-frame border around the board, split into four trapezoid
+  // segments so adjacent sides meet in a 45-degree miter at each corner
+  // (like a real picture frame) instead of overlapping rectangles: black
+  // top/bottom for Black's goal edges, white left/right for White's.
+  function frameQuad(v0, v1, v2, v3, color) {
+    const y = 0.01;
+    const positions = new Float32Array([
+      v0[0], y, v0[1],
+      v1[0], y, v1[1],
+      v2[0], y, v2[1],
+      v0[0], y, v0[1],
+      v2[0], y, v2[1],
+      v3[0], y, v3[1],
+    ]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+    return new THREE.Mesh(geo, mat);
+  }
+
+  function buildGoalEdges(size) {
+    const { w, h } = size;
+    const t = 0.14; // frame thickness
+    const x0 = -0.5, x1 = w - 0.5;
+    const z0 = -0.5, z1 = h - 0.5;
+
+    // Each segment: inner edge flush with the board, outer edge offset by
+    // `t` and widened by `t` on both ends so the miter lines up with the
+    // neighboring segment's outer corner.
+    boardGroup.add(frameQuad([x0, z0], [x1, z0], [x1 + t, z0 - t], [x0 - t, z0 - t], EDGE_COLOR_BLACK)); // top
+    boardGroup.add(frameQuad([x0, z1], [x1, z1], [x1 + t, z1 + t], [x0 - t, z1 + t], EDGE_COLOR_BLACK)); // bottom
+    boardGroup.add(frameQuad([x0, z0], [x0, z1], [x0 - t, z1 + t], [x0 - t, z0 - t], EDGE_COLOR_WHITE)); // left
+    boardGroup.add(frameQuad([x1, z0], [x1, z1], [x1 + t, z1 + t], [x1 + t, z0 - t], EDGE_COLOR_WHITE)); // right
   }
 
   // Row/column labels sit just outside the grid on all four sides, so at
@@ -177,7 +234,7 @@
 
     const base = new THREE.Mesh(
       new THREE.PlaneGeometry(w, h),
-      new THREE.MeshStandardMaterial({ color: 0x2a2c34, roughness: 1 })
+      new THREE.MeshStandardMaterial({ color: PLAY_AREA_COLOR, roughness: 1 })
     );
     base.rotation.x = -Math.PI / 2;
     base.position.set((w - 1) / 2, -0.02, (h - 1) / 2);
@@ -198,12 +255,13 @@
     }
     const gridGeo = new THREE.BufferGeometry().setFromPoints(points);
     const gridMat = new THREE.LineBasicMaterial({
-      color: 0x6b6f7d,
+      color: 0x4b4d55,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.55,
     });
     boardGroup.add(new THREE.LineSegments(gridGeo, gridMat));
 
+    buildGoalEdges(size);
     buildLabels(size);
 
     const center = new THREE.Vector3((w - 1) / 2, 0, (h - 1) / 2);
@@ -260,26 +318,68 @@
   // a placed lintel should read as a single beam, not three cubes, and the
   // cell it bridges should stay visually empty below the beam if nothing
   // was actually built there.
+  const BORDER_WORLD = 0.03; // black border thickness, in world units
+  const TEX_DENSITY = 64; // texture pixels per world unit
+
+  // A small canvas texture: solid black, with an inset rect of `fillColor`
+  // so the un-inset margin reads as a border. Sized to `faceW`x`faceH` (world
+  // units) rather than a fixed square, so the *baked-in* border comes out a
+  // consistent world-space thickness on both square cube faces and the long
+  // faces of a 3-cell lintel beam -- a plain square texture stretched onto an
+  // elongated face would make the border thin on the long axis.
+  function makeFaceTexture(fillColor, faceW, faceH) {
+    const w = Math.max(8, Math.round(faceW * TEX_DENSITY));
+    const h = Math.max(8, Math.round(faceH * TEX_DENSITY));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, w, h);
+    const bx = Math.min(w / 2 - 1, BORDER_WORLD * TEX_DENSITY);
+    const by = Math.min(h / 2 - 1, BORDER_WORLD * TEX_DENSITY);
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(bx, by, w - bx * 2, h - by * 2);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  // Since the border is baked into each face's own texture (not extruded
+  // geometry), there's nothing for adjacent flush-touching pieces to
+  // z-fight over -- every piece can safely share exact grid positions.
+  function buildBoxMaterials(colorHex, sizeX, sizeY, sizeZ) {
+    const fillColor = `#${colorHex.toString(16).padStart(6, "0")}`;
+    const matFor = (faceW, faceH) =>
+      new THREE.MeshStandardMaterial({
+        map: makeFaceTexture(fillColor, faceW, faceH),
+        roughness: 0.6,
+        metalness: 0.05,
+        flatShading: true,
+      });
+    const xMat = matFor(sizeZ, sizeY); // +x/-x faces
+    const yMat = matFor(sizeX, sizeZ); // +y/-y faces
+    const zMat = matFor(sizeX, sizeY); // +z/-z faces
+    return [xMat, xMat, yMat, yMat, zMat, zMat];
+  }
+
   function buildPieces(state) {
     clearGroup(piecesGroup);
     const { w } = state.size;
-    const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 });
     const cubeGeo = new THREE.BoxGeometry(CUBE, CUBE, CUBE);
-    const cubeEdges = new THREE.EdgesGeometry(cubeGeo);
+    // Plain unit cubes are by far the common case and are all identically
+    // proportioned, so one material set per color covers every instance.
+    const unitMats = {
+      Black: buildBoxMaterials(BLACK_COLOR, CUBE, CUBE, CUBE),
+      White: buildBoxMaterials(WHITE_COLOR, CUBE, CUBE, CUBE),
+    };
 
     layers.forEach((col, idx) => {
       const x = idx % w;
       const z = Math.floor(idx / w);
       col.forEach((entry, level) => {
         if (!entry || typeof entry === "object") return; // gap or beam-claimed
-        const color = entry === "Black" ? BLACK_COLOR : WHITE_COLOR;
-        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
-        const cube = new THREE.Mesh(cubeGeo, mat);
+        const cube = new THREE.Mesh(cubeGeo, unitMats[entry]);
         cube.position.set(x, level * LEVEL_H + LEVEL_H / 2, z);
         piecesGroup.add(cube);
-        const line = new THREE.LineSegments(cubeEdges, edgeMat);
-        line.position.copy(cube.position);
-        piecesGroup.add(line);
       });
     });
 
@@ -287,17 +387,13 @@
       const [c0, c1, c2] = beam.cells;
       const x = c1 % w;
       const z = Math.floor(c1 / w);
-      const color = beam.color === "Black" ? BLACK_COLOR : WHITE_COLOR;
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.05 });
+      const colorHex = beam.color === "Black" ? BLACK_COLOR : WHITE_COLOR;
       const sizeX = beam.orientation === "Horizontal" ? 2 + CUBE : CUBE;
       const sizeZ = beam.orientation === "Vertical" ? 2 + CUBE : CUBE;
       const geo = new THREE.BoxGeometry(sizeX, CUBE, sizeZ);
-      const box = new THREE.Mesh(geo, mat);
+      const box = new THREE.Mesh(geo, buildBoxMaterials(colorHex, sizeX, CUBE, sizeZ));
       box.position.set(x, beam.level * LEVEL_H + LEVEL_H / 2, z);
       piecesGroup.add(box);
-      const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
-      line.position.copy(box.position);
-      piecesGroup.add(line);
     });
   }
 
@@ -570,6 +666,25 @@
     const ox = (cssW - gridW) / 2;
     const oy = (cssH - gridH) / 2;
 
+    const frameT = 5; // goal-edge frame thickness
+    const ringOffset = frameT + 4; // gap between frame's outer edge and the turn ring
+    const backingPad = ringOffset + 3;
+
+    // Gray backing plate under the whole grid + frame, mirroring the 3D
+    // board's gray play area -- keeps the black/white frame and pieces
+    // legible against the dark panel instead of fighting the black end of
+    // the brightness range.
+    roundRect(
+      ctx,
+      ox - backingPad,
+      oy - backingPad,
+      gridW + backingPad * 2,
+      gridH + backingPad * 2,
+      10
+    );
+    ctx.fillStyle = "#9a9da6";
+    ctx.fill();
+
     // Graph connectors: thick same-color links between 4-adjacent cells,
     // drawn underneath cells so only the stubs in the inter-cell gaps show
     // — the board's connection graph at a glance.
@@ -607,14 +722,45 @@
       roundRect(ctx, px, py, cell, cell, Math.max(2, cell * 0.22));
       ctx.fillStyle = sq.piece ? shadeForHeight(sq.piece, sq.height) : "#23252c";
       ctx.fill();
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
+
+    // Goal-edge frame: which pair of borders each player connects across,
+    // mirroring the mitered frame on the 3D board. Drawn as four polygons
+    // (not strokes) so the corners miter cleanly instead of overlapping.
+    const frameQuad = (points, color) => {
+      ctx.beginPath();
+      points.forEach(([x, y], k) => (k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    const fx0 = ox, fx1 = ox + gridW, fy0 = oy, fy1 = oy + gridH;
+    frameQuad(
+      [[fx0, fy0], [fx1, fy0], [fx1 + frameT, fy0 - frameT], [fx0 - frameT, fy0 - frameT]],
+      EDGE_COLOR_BLACK
+    ); // top
+    frameQuad(
+      [[fx0, fy1], [fx1, fy1], [fx1 + frameT, fy1 + frameT], [fx0 - frameT, fy1 + frameT]],
+      EDGE_COLOR_BLACK
+    ); // bottom
+    frameQuad(
+      [[fx0, fy0], [fx0, fy1], [fx0 - frameT, fy1 + frameT], [fx0 - frameT, fy0 - frameT]],
+      EDGE_COLOR_WHITE
+    ); // left
+    frameQuad(
+      [[fx1, fy0], [fx1, fy1], [fx1 + frameT, fy1 + frameT], [fx1 + frameT, fy0 - frameT]],
+      EDGE_COLOR_WHITE
+    ); // right
 
     // Winning connection, when one exists: a glowing route through the
     // winner's cells from one border to the other.
     if (state.terminal && state.winner) {
       const path = findWinningPath(state.board, w, h, state.winner);
       if (path) {
-        const glowColor = state.winner === "Black" ? "#8f9bff" : "#ffd98a";
+        const glowColor = state.winner === "Black" ? WINNER_GLOW_BLACK : WINNER_GLOW_WHITE;
         ctx.save();
         ctx.shadowColor = glowColor;
         ctx.shadowBlur = 7;
@@ -642,7 +788,14 @@
       : playerAccent(state.player);
     ctx.strokeStyle = ringColor;
     ctx.lineWidth = 2;
-    roundRect(ctx, ox - 4, oy - 4, gridW + 8, gridH + 8, 6);
+    roundRect(
+      ctx,
+      ox - ringOffset,
+      oy - ringOffset,
+      gridW + ringOffset * 2,
+      gridH + ringOffset * 2,
+      8
+    );
     ctx.stroke();
 
     // Turn dot in the panel title, matching the hand colors in the main HUD.
