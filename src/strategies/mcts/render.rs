@@ -63,12 +63,13 @@ fn print_trans<G>(
         }
         let node = index.get(node_id);
         if node.is_expanded() {
-            for edge in node.edges().iter().filter(|edge| edge.is_explored()) {
+            let children = node.children();
+            for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
                     print_id,
-                    edge.node_id().unwrap(),
-                    G::apply(state.clone(), &edge.action),
+                    children.node_id(i).unwrap(),
+                    G::apply(state.clone(), children.action(i)),
                 ));
             }
         }
@@ -97,11 +98,12 @@ where
         }
         let node = index.get(node_id);
         if node.is_expanded() {
-            for edge in node.edges().iter().filter(|x| x.is_explored()) {
+            let children = node.children();
+            for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
-                    edge.node_id().unwrap(),
-                    G::apply(state.clone(), &edge.action),
+                    children.node_id(i).unwrap(),
+                    G::apply(state.clone(), children.action(i)),
                 ));
             }
         }

@@ -532,7 +532,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // alternating 2-player game.
     use crate::games::ttt::*;
     use mcts::backprop::{BackpropStrategy, Classic};
-    use mcts::node::{Edge, Node, NodeState};
+    use mcts::node::{ChildArray, Node, NodeState};
 
     type G = TicTacToe;
 
@@ -547,11 +547,10 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // of root, irrelevant to the match itself beyond not being root.
     let processed_id = index.insert(Node::new(0, 6));
 
-    let edge_a = Edge::unexplored(Move(6), 2);
-    edge_a.get_or_create_child(|| processed_id);
-    let edge_b = Edge::unexplored(Move(7), 2);
-    edge_b.get_or_create_child(|| sibling_id);
-    root.expand(|| NodeState::Expanded(vec![edge_a, edge_b]));
+    let children = ChildArray::new(vec![Move(6), Move(7)], 2);
+    children.get_or_create_child(0, || processed_id);
+    children.get_or_create_child(1, || sibling_id);
+    root.expand(|| NodeState::Expanded(children));
     let root_id = index.insert(root);
 
     let utilities = [0.25, 0.75];
@@ -565,14 +564,16 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
         processed_id,
         &utilities,
     );
-    let sibling_edge = index.get(root_id).child_edge(sibling_id);
+    let root = index.get(root_id);
+    let sibling_idx = root.child_index(sibling_id);
+    let sibling_children = root.children();
     assert_eq!(
-        sibling_edge.stats.amaf(0).num_visits,
+        sibling_children.amaf(sibling_idx, 0).num_visits,
         1,
         "O replaying Move(7) later should count as an AMAF match"
     );
-    assert_eq!(sibling_edge.stats.amaf(0).score, 0.25);
-    assert_eq!(sibling_edge.stats.amaf(1).score, 0.75);
+    assert_eq!(sibling_children.amaf(sibling_idx, 0).score, 0.25);
+    assert_eq!(sibling_children.amaf(sibling_idx, 1).score, 0.75);
 
     // Case 2: X (the *sibling's* mover, not root's) "plays" Move(7)
     // later -- not a valid AMAF match for root's Move(7) option, since X
@@ -584,8 +585,10 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
         processed_id,
         &utilities,
     );
+    let root = index.get(root_id);
+    let sibling_idx = root.child_index(sibling_id);
     assert_eq!(
-        index.get(root_id).child_edge(sibling_id).stats.amaf(0).num_visits,
+        root.children().amaf(sibling_idx, 0).num_visits,
         1,
         "X playing Move(7) is not a valid AMAF match for root's option and must not be counted"
     );
@@ -783,18 +786,21 @@ fn test_reuse_tree_promotes_matching_child_with_inherited_stats() {
     // the fallback-to-reset path.
     let x_child_id = {
         let root = ts.index.get(ts.root_id);
-        let edge = root.edges().iter().find(|e| e.action == action).unwrap();
-        edge.node_id()
+        let children = root.children();
+        let idx = (0..children.len())
+            .find(|&i| *children.action(i) == action)
+            .unwrap();
+        children
+            .node_id(idx)
             .expect("the played action must have been explored")
     };
     let (reply, expected_id) = {
         let x_child = ts.index.get(x_child_id);
-        let edge = x_child
-            .edges()
-            .iter()
-            .find(|e| e.is_explored())
+        let children = x_child.children();
+        let idx = (0..children.len())
+            .find(|&i| children.is_explored(i))
             .expect("some reply should have been explored at 200 iterations");
-        (edge.action, edge.node_id().unwrap())
+        (*children.action(idx), children.node_id(idx).unwrap())
     };
     let next_state = G::apply(after_own_move, &reply);
 
@@ -849,17 +855,20 @@ fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
     let after_own_move = G::apply(init_state, &action);
     let x_child_id = {
         let root = ts.index.get(ts.root_id);
-        let edge = root.edges().iter().find(|e| e.action == action).unwrap();
-        edge.node_id()
+        let children = root.children();
+        let idx = (0..children.len())
+            .find(|&i| *children.action(i) == action)
+            .unwrap();
+        children
+            .node_id(idx)
             .expect("the played action must have been explored")
     };
     let reply = {
         let x_child = ts.index.get(x_child_id);
-        x_child
-            .edges()
-            .iter()
-            .find(|e| e.is_explored())
-            .map(|e| e.action)
+        let children = x_child.children();
+        (0..children.len())
+            .find(|&i| children.is_explored(i))
+            .map(|i| *children.action(i))
             .expect("some reply should have been explored at 200 iterations")
     };
     let next_state = G::apply(after_own_move, &reply);

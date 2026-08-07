@@ -2,7 +2,7 @@ use super::super::book;
 use super::super::config::SearchConfig;
 use super::super::config::Strategy;
 use super::super::index::Id;
-use super::super::node::Edge;
+use super::super::node::ChildArray;
 use super::super::search::TreeSearch;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
@@ -138,29 +138,28 @@ where
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.stack.current_id());
-        let available = current.edges();
+        let available = current.children();
 
         // The stack now contains the action path to the terminal state.
         // TODO: factor this pair iteration out of here
         let mut key_init = vec![];
         for (parent_id, child_id) in ctx.stack.pairs() {
-            key_init.push(
-                ctx.stack
-                    .edge(ctx.index, *parent_id, *child_id)
-                    .action
-                    .clone(),
-            );
+            let idx = ctx.stack.child_index(ctx.index, *parent_id, *child_id);
+            let parent = ctx.index.get(*parent_id);
+            key_init.push(parent.children().action(idx).clone());
         }
         let player_to_move = G::player_to_move(ctx.state).to_index();
         let k_score = self.k[player_to_move];
 
-        let enumerated = available.iter().cloned().enumerate().collect::<Vec<_>>();
+        let enumerated: Vec<(usize, G::A)> = (0..available.len())
+            .map(|i| (i, available.action(i).clone()))
+            .collect();
         let best = random_best(
             enumerated.as_slice(),
             rng,
-            |(_, edge): &(usize, Edge<G::A>)| {
+            |(_, action): &(usize, G::A)| {
                 let mut key = key_init.clone();
-                key.push(edge.action.clone());
+                key.push(action.clone());
 
                 let score = self
                     .book
@@ -180,9 +179,8 @@ where
             *best_index
         } else {
             let action = self.search.choose_action(ctx.state);
-            available
-                .iter()
-                .position(|p| p.action == action.clone())
+            (0..available.len())
+                .find(|&i| *available.action(i) == action)
                 .unwrap()
         }
     }
@@ -191,7 +189,14 @@ where
     fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
 
     #[inline(always)]
-    fn score_child(&self, _: &SelectContext<'_, G>, _: Id, _: &Edge<G::A>, _: Self::Aux) -> f64 {
+    fn score_child(
+        &self,
+        _: &SelectContext<'_, G>,
+        _: Id,
+        _: &ChildArray<G::A>,
+        _: usize,
+        _: Self::Aux,
+    ) -> f64 {
         0.
     }
 

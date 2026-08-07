@@ -39,7 +39,7 @@ fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Pr
 /// (every child *is* fully resolved once search actually finishes proving
 /// this subtree).
 fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
-    let Some(NodeState::Expanded(edges)) = node.status() else {
+    let Some(NodeState::Expanded(children)) = node.status() else {
         return;
     };
     let p = node.player_idx;
@@ -49,8 +49,8 @@ fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
     let mut win_q_consistent = true;
     let mut any_draw = false;
 
-    for edge in edges {
-        let Some(child_id) = edge.node_id() else {
+    for i in 0..children.len() {
+        let Some(child_id) = children.node_id(i) else {
             all_children_proven = false;
             continue;
         };
@@ -106,11 +106,14 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             let parent_id = parent_id_opt.unwrap();
             debug_assert_ne!(parent_id, node_id);
             debug_assert!(index.get(parent_id).is_expanded());
-            let sibling_actions: FxHashMap<_, _> = index
-                .get(parent_id)
-                .edges()
-                .iter()
-                .filter_map(|edge| edge.node_id().map(|node_id| (edge.action.clone(), node_id)))
+            let parent = index.get(parent_id);
+            let children = parent.children();
+            // Maps directly to the sibling's index in `children`, rather
+            // than to its arena `Id`, so a match below can call
+            // `add_amaf` without a second (previously O(n)) reverse lookup
+            // from `Id` back to array position.
+            let sibling_actions: FxHashMap<_, usize> = (0..children.len())
+                .filter_map(|i| children.node_id(i).map(|_| (children.action(i).clone(), i)))
                 .collect();
 
             // The player who could have chosen any of `parent_id`'s sibling
@@ -118,13 +121,12 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             // child's `player_idx`, which names the mover of the *next* ply
             // (the opposite player in an alternating game). Matching against
             // the child's `player_idx` here inverted the check.
-            let mover = index.get(parent_id).player_idx;
+            let mover = parent.player_idx;
             for (action, p) in trace {
                 if *p == mover {
-                    if let Some(child_id) = sibling_actions.get(action) {
-                        let stats = &index.get(parent_id).child_edge(*child_id).stats;
+                    if let Some(&idx) = sibling_actions.get(action) {
                         (0..G::num_players()).for_each(|i| {
-                            stats.add_amaf(i, utilities[i]);
+                            children.add_amaf(idx, i, utilities[i]);
                         })
                     }
                 }
@@ -196,9 +198,11 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             } else {
                 let parent_id = parent_id_opt.cloned().unwrap();
                 debug_assert_ne!(parent_id, *node_id);
-                let edge_stats = &index.get(parent_id).child_edge(*node_id).stats;
-                edge_stats.update(&utilities);
-                edge_stats.remove_virtual_loss();
+                let parent = index.get(parent_id);
+                let idx = parent.child_index(*node_id);
+                let children = parent.children();
+                children.update(idx, &utilities);
+                children.remove_virtual_loss(idx);
             }
 
             // MCTS-Solver: derive/propagate proven status for this node.
@@ -253,7 +257,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 let node = index.get(*node_id);
                 if !node.is_root() {
                     let parent_id = parent_id_opt.cloned().unwrap();
-                    let action = stack.edge(index, parent_id, *node_id).action.clone();
+                    let idx = stack.child_index(index, parent_id, *node_id);
+                    let action = index.get(parent_id).children().action(idx).clone();
                     // The edge from `parent_id` to `node_id` was played by
                     // whoever was to move *at* `parent_id` -- `node_id`'s own
                     // `player_idx` is the mover of `node_id`'s own outgoing

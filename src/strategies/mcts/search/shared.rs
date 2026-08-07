@@ -3,11 +3,11 @@ use crate::strategies::mcts::config::BackpropFlags;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
+use crate::strategies::mcts::node::ChildArray;
 use crate::strategies::mcts::node::Node;
 use crate::strategies::mcts::node::NodeState;
 use crate::strategies::mcts::node::NodeStats;
 use crate::strategies::mcts::node::Proven;
-use crate::strategies::mcts::node::Edge;
 use crate::strategies::mcts::select::SelectContext;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::SimulateStrategy;
@@ -175,12 +175,7 @@ pub fn expand<'a, G: Game>(
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
             debug_assert!(!actions.is_empty());
-            NodeState::Expanded(
-                actions
-                    .into_iter()
-                    .map(|action| Edge::unexplored(action, G::num_players()))
-                    .collect(),
-            )
+            NodeState::Expanded(ChildArray::new(actions, G::num_players()))
         } else {
             if use_mcts_solver {
                 debug_assert!(G::num_players() <= 2);
@@ -203,8 +198,8 @@ pub fn expand<'a, G: Game>(
 pub fn new_child<G: Game>(shared: &Shared<'_, G>, state: &G::S, best_idx: usize, current_id: Id) -> Id {
     let hash = G::zobrist_hash(state);
     let parent = shared.index.get(current_id);
-    let edge = &parent.edges()[best_idx];
-    edge.get_or_create_child(|| {
+    let children = parent.children();
+    children.get_or_create_child(best_idx, || {
         if shared.use_transpositions {
             // TODO: the following won't work with symmetries
             shared.table.get_or_insert(hash, state.clone(), || {
@@ -239,8 +234,10 @@ pub fn proven_win_child<G: Game>(
     if !use_mcts_solver {
         return None;
     }
-    node.edges().iter().position(|edge| {
-        edge.node_id()
+    let children = node.children();
+    (0..children.len()).find(|&i| {
+        children
+            .node_id(i)
             .is_some_and(|child_id| index.get(child_id).proven() == Proven::Win(player))
     })
 }
@@ -315,24 +312,24 @@ pub fn select_step<G: Game>(
             }
         };
 
-        let edges = shared.index.get(ctx.current_id).edges();
+        let children = shared.index.get(ctx.current_id).children();
 
         // Claim this edge for the duration of the iteration so other
         // tree-parallel threads see it as less attractive until `backprop`
         // removes the virtual loss again -- this is what keeps concurrent
         // descents from all piling onto the same path.
-        edges[best_idx].stats.add_virtual_loss();
+        children.add_virtual_loss(best_idx);
 
-        if let Some(child_id) = edges[best_idx].node_id() {
-            ctx.traverse_apply(child_id, &edges[best_idx].action);
+        if let Some(child_id) = children.node_id(best_idx) {
+            ctx.traverse_apply(child_id, children.action(best_idx));
         } else {
             {
                 let mut actions = vec![];
                 G::generate_actions(&ctx.state, &mut actions);
-                debug_assert_eq!(actions[best_idx], edges[best_idx].action);
+                debug_assert_eq!(actions[best_idx], *children.action(best_idx));
             }
 
-            let action = &edges[best_idx].action;
+            let action = children.action(best_idx);
             let state = G::apply(ctx.state.clone(), action);
 
             let child_id = new_child::<G>(shared, &state, best_idx, ctx.current_id);
@@ -361,7 +358,9 @@ pub fn last_tree_action<G: Game>(index: &TreeIndex<G::A>, stack: &[Id]) -> Optio
     }
     let parent_id = stack[stack.len() - 2];
     let child_id = stack[stack.len() - 1];
-    Some(index.get(parent_id).child_edge(child_id).action.clone())
+    let parent = index.get(parent_id);
+    let idx = parent.child_index(child_id);
+    Some(parent.children().action(idx).clone())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -395,9 +394,11 @@ pub fn add_path_virtual_loss<A: crate::game::Action>(
     extra: usize,
 ) {
     for (parent_id, child_id) in stack.pairs() {
-        let edge = stack.edge(index, *parent_id, *child_id);
+        let parent = index.get(*parent_id);
+        let idx = parent.child_index(*child_id);
+        let children = parent.children();
         for _ in 0..extra {
-            edge.stats.add_virtual_loss();
+            children.add_virtual_loss(idx);
         }
     }
 }

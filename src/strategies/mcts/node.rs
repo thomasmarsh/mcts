@@ -110,11 +110,43 @@ pub enum QInit {
     Infinity,
 }
 
-#[derive(Clone, Debug)]
-pub struct Edge<A: Action> {
-    pub action: A,
-    node_id: OnceLock<index::Id>,
-    pub stats: NodeStats,
+/// Shared by `NodeStats::expected_score` and `ChildSnapshot::expected_score`
+/// so the two representations of "one node/child's accumulated stats"
+/// (owned lock vs. a row in a `ChildArray`) can't silently drift apart.
+#[inline]
+fn expected_score_from(num_visits: u32, num_visits_virtual: u32, score: f64) -> f64 {
+    if num_visits == 0 {
+        0.
+    } else {
+        let loss_visits = num_visits_virtual as f64;
+        (score - loss_visits) / (num_visits as f64 + loss_visits)
+    }
+}
+
+/// Shared by `NodeStats::value_estimate_unvisited` and
+/// `ChildArray::value_estimate_unvisited`. `expected_score` is a closure
+/// (rather than a plain `f64`) so the `Parent`+visited case is the only one
+/// that actually pays for a stats read.
+#[inline]
+fn value_estimate_unvisited_from(
+    q_init: QInit,
+    num_visits: u32,
+    expected_score: impl FnOnce() -> f64,
+) -> f64 {
+    use QInit::*;
+    match q_init {
+        Draw => 0.,
+        Infinity => 10000.0,
+        Loss => -1.,
+        Parent => {
+            if num_visits == 0 {
+                10000.
+            } else {
+                expected_score()
+            }
+        }
+        Win => 1.,
+    }
 }
 
 /// The mutable core of `NodeStats`: everything backprop accumulates into.
@@ -140,33 +172,6 @@ impl Clone for NodeStats {
         Self {
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
             data: RwLock::new(data.clone()),
-        }
-    }
-}
-
-impl<A: Action> Edge<A> {
-    pub fn is_explored(&self) -> bool {
-        self.node_id.get().is_some()
-    }
-
-    pub fn node_id(&self) -> Option<index::Id> {
-        self.node_id.get().copied()
-    }
-
-    /// Resolves the edge-creation race: if two threads land on this
-    /// unexplored edge concurrently, only the first `create` closure to
-    /// arrive actually runs (allocating a new arena node); the other blocks
-    /// and then reads the same `Id` back, rather than both creating separate
-    /// children for the same edge.
-    pub fn get_or_create_child(&self, create: impl FnOnce() -> index::Id) -> index::Id {
-        *self.node_id.get_or_init(create)
-    }
-
-    pub fn unexplored(action: A, num_players: usize) -> Edge<A> {
-        Self {
-            action,
-            node_id: OnceLock::new(),
-            stats: NodeStats::new(num_players),
         }
     }
 }
@@ -235,13 +240,8 @@ impl NodeStats {
     // NOTE: needs to be overridden for score bounded search
     pub fn expected_score(&self, player_index: usize) -> f64 {
         let data = self.data.read().unwrap();
-        if data.num_visits == 0 {
-            0.
-        } else {
-            let loss_visits = self.num_visits_virtual.load(Relaxed) as f64;
-
-            (data.player[player_index].score - loss_visits) / (data.num_visits as f64 + loss_visits)
-        }
+        let virtual_loss = self.num_visits_virtual.load(Relaxed);
+        expected_score_from(data.num_visits, virtual_loss, data.player[player_index].score)
     }
 
     // NOTE: needs to be overridden for score bounded search
@@ -251,19 +251,278 @@ impl NodeStats {
 
     // These numbers come from Ludii
     pub fn value_estimate_unvisited(&self, player_index: usize, q_init: QInit) -> f64 {
-        use QInit::*;
-        match q_init {
-            Draw => 0.,
-            Infinity => 10000.0,
-            Loss => -1.,
-            Parent => {
-                if self.num_visits() == 0 {
-                    10000.
-                } else {
-                    self.expected_score(player_index)
-                }
-            }
-            Win => 1.,
+        value_estimate_unvisited_from(q_init, self.num_visits(), || {
+            self.expected_score(player_index)
+        })
+    }
+}
+
+/// One lock acquisition's worth of a single child's stats for a single
+/// player -- what `SelectStrategy::score_child` typically needs (visits,
+/// score, sum-squared-score, AMAF). Reading these individually through
+/// `ChildArray`'s per-field accessors (as `NodeStats`'s edge-owned
+/// predecessor required) means a separate lock acquisition per field;
+/// `ChildArray::snapshot` takes the lock once and returns all of them
+/// together. See MEMORY.md's SoA charter ("composite read win").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChildSnapshot {
+    pub num_visits: u32,
+    pub num_visits_virtual: u32,
+    pub score: f64,
+    pub sum_squared_score: f64,
+    pub amaf: ActionStats,
+}
+
+impl ChildSnapshot {
+    pub fn total_visits(&self) -> u32 {
+        self.num_visits + self.num_visits_virtual
+    }
+
+    pub fn expected_score(&self) -> f64 {
+        expected_score_from(self.num_visits, self.num_visits_virtual, self.score)
+    }
+
+    pub fn exploitation_score(&self) -> f64 {
+        self.expected_score()
+    }
+}
+
+/// The mutable core of `ChildArray`: one node's worth of children's stats,
+/// as flat parallel arrays instead of N independently-locked `NodeStats`
+/// (one per child, as a `Vec<Edge<A>>` AoS layout would have). `select`'s
+/// hot loop over a node's children takes one read lock total here instead
+/// of N -- under tree parallelism, where multiple workers call
+/// `select_step` on the same node concurrently, that's an N-fold reduction
+/// in lock contention right at the point virtual loss exists to reduce it.
+#[derive(Debug, Clone)]
+struct ChildArrayData {
+    // len == num_children
+    num_visits: Vec<u32>,
+    // len == num_children * num_players, row-major by child
+    player: Vec<PlayerStats>,
+}
+
+/// A node's children, stored struct-of-arrays instead of as a
+/// `Vec<Edge<A>>` of independently-owned, independently-locked structs.
+/// `Node` itself deliberately stays array-of-structs (see `Node::children`'s
+/// doc comment) -- this is the one part of the tree with a real dense
+/// per-node hot loop (`select` scoring every child of the node it's
+/// currently at), which is what makes the SoA layout's cache-locality and
+/// lock-consolidation wins actually pay for their extra indexing.
+#[derive(Debug)]
+pub struct ChildArray<A: Action> {
+    actions: Vec<A>,
+    child_ids: Vec<OnceLock<index::Id>>,
+    // Lock-free, one per child -- same reasoning as `NodeStats`'s field of
+    // the same name.
+    num_visits_virtual: Vec<AtomicU32>,
+    data: RwLock<ChildArrayData>,
+    num_players: usize,
+}
+
+impl<A: Action> Clone for ChildArray<A> {
+    fn clone(&self) -> Self {
+        let data = self.data.read().unwrap();
+        Self {
+            actions: self.actions.clone(),
+            child_ids: self.child_ids.clone(),
+            num_visits_virtual: self
+                .num_visits_virtual
+                .iter()
+                .map(|v| AtomicU32::new(v.load(Relaxed)))
+                .collect(),
+            data: RwLock::new(data.clone()),
+            num_players: self.num_players,
+        }
+    }
+}
+
+impl<A: Action> ChildArray<A> {
+    pub fn new(actions: Vec<A>, num_players: usize) -> Self {
+        let n = actions.len();
+        Self {
+            child_ids: (0..n).map(|_| OnceLock::new()).collect(),
+            num_visits_virtual: (0..n).map(|_| AtomicU32::new(0)).collect(),
+            data: RwLock::new(ChildArrayData {
+                num_visits: vec![0; n],
+                player: vec![PlayerStats::default(); n * num_players],
+            }),
+            actions,
+            num_players,
+        }
+    }
+
+    #[inline]
+    fn player_index(&self, idx: usize, player_index: usize) -> usize {
+        idx * self.num_players + player_index
+    }
+
+    pub fn len(&self) -> usize {
+        self.actions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
+    pub fn action(&self, idx: usize) -> &A {
+        &self.actions[idx]
+    }
+
+    pub fn is_explored(&self, idx: usize) -> bool {
+        self.child_ids[idx].get().is_some()
+    }
+
+    pub fn node_id(&self, idx: usize) -> Option<index::Id> {
+        self.child_ids[idx].get().copied()
+    }
+
+    /// Resolves the edge-creation race: if two threads land on this
+    /// unexplored child concurrently, only the first `create` closure to
+    /// arrive actually runs (allocating a new arena node); the other blocks
+    /// and then reads the same `Id` back, rather than both creating separate
+    /// children for the same slot.
+    pub fn get_or_create_child(&self, idx: usize, create: impl FnOnce() -> index::Id) -> index::Id {
+        *self.child_ids[idx].get_or_init(create)
+    }
+
+    pub fn virtual_loss(&self, idx: usize) -> u32 {
+        self.num_visits_virtual[idx].load(Relaxed)
+    }
+
+    /// See `NodeStats::add_virtual_loss`'s doc comment -- same mechanism,
+    /// keyed by array index instead of by an owning struct.
+    pub fn add_virtual_loss(&self, idx: usize) {
+        self.num_visits_virtual[idx].fetch_add(1, Relaxed);
+    }
+
+    pub fn remove_virtual_loss(&self, idx: usize) {
+        let prev = self.num_visits_virtual[idx].fetch_sub(1, Relaxed);
+        debug_assert!(prev >= 1, "virtual loss removed without a matching add");
+    }
+
+    pub fn num_visits(&self, idx: usize) -> u32 {
+        self.data.read().unwrap().num_visits[idx]
+    }
+
+    pub fn total_visits(&self, idx: usize) -> u32 {
+        self.num_visits(idx) + self.virtual_loss(idx)
+    }
+
+    pub fn score(&self, idx: usize, player_index: usize) -> f64 {
+        self.data.read().unwrap().player[self.player_index(idx, player_index)].score
+    }
+
+    pub fn sum_squared_score(&self, idx: usize, player_index: usize) -> f64 {
+        self.data.read().unwrap().player[self.player_index(idx, player_index)].sum_squared_score
+    }
+
+    pub fn amaf(&self, idx: usize, player_index: usize) -> ActionStats {
+        self.data.read().unwrap().player[self.player_index(idx, player_index)].amaf
+    }
+
+    pub fn expected_score(&self, idx: usize, player_index: usize) -> f64 {
+        let data = self.data.read().unwrap();
+        let virtual_loss = self.virtual_loss(idx);
+        expected_score_from(
+            data.num_visits[idx],
+            virtual_loss,
+            data.player[self.player_index(idx, player_index)].score,
+        )
+    }
+
+    pub fn exploitation_score(&self, idx: usize, player_index: usize) -> f64 {
+        self.expected_score(idx, player_index)
+    }
+
+    pub fn value_estimate_unvisited(&self, idx: usize, player_index: usize, q_init: QInit) -> f64 {
+        value_estimate_unvisited_from(q_init, self.num_visits(idx), || {
+            self.expected_score(idx, player_index)
+        })
+    }
+
+    /// One lock acquisition covering every field a `SelectStrategy` typically
+    /// needs for one (child, player) pair, instead of the separate lock per
+    /// field that reading through `Edge<A>`'s owned `NodeStats` required.
+    pub fn snapshot(&self, idx: usize, player_index: usize) -> ChildSnapshot {
+        let data = self.data.read().unwrap();
+        let p = &data.player[self.player_index(idx, player_index)];
+        ChildSnapshot {
+            num_visits: data.num_visits[idx],
+            num_visits_virtual: self.virtual_loss(idx),
+            score: p.score,
+            sum_squared_score: p.sum_squared_score,
+            amaf: p.amaf,
+        }
+    }
+
+    pub fn update(&self, idx: usize, utilities: &[f64]) {
+        let mut data = self.data.write().unwrap();
+        data.num_visits[idx] += 1;
+        let base = idx * self.num_players;
+        utilities.iter().enumerate().for_each(|(p, reward)| {
+            data.player[base + p].score += reward;
+            data.player[base + p].sum_squared_score += reward * reward;
+        });
+    }
+
+    pub fn add_amaf(&self, idx: usize, player_index: usize, utility: f64) {
+        let mut data = self.data.write().unwrap();
+        let amaf = &mut data.player[self.player_index(idx, player_index)].amaf;
+        amaf.num_visits += 1;
+        amaf.score += utility;
+    }
+
+    /// Lifts one child's accumulated stats out into a standalone
+    /// `NodeStats` -- used when tree reuse (`reuse.rs`'s `try_promote`)
+    /// promotes a child into the new root. `root_stats` is never itself a
+    /// row in some parent's `ChildArray` (the root has no incoming edge),
+    /// so promoting a child means copying its row out rather than just
+    /// re-pointing a reference.
+    pub fn extract_stats(&self, idx: usize) -> NodeStats {
+        let data = self.data.read().unwrap();
+        let base = idx * self.num_players;
+        let player = data.player[base..base + self.num_players].to_vec();
+        NodeStats {
+            num_visits_virtual: AtomicU32::new(self.virtual_loss(idx)),
+            data: RwLock::new(NodeStatsData {
+                num_visits: data.num_visits[idx],
+                player,
+            }),
+        }
+    }
+}
+
+/// A node's stats, viewed either as the standalone root (`root_stats` is
+/// never a row in any parent's `ChildArray`, since the root has no incoming
+/// edge) or as one child row of a parent's `ChildArray`. Lets
+/// `NodeStack::current_stats`/`get_stats` return one type regardless of
+/// which case applies, instead of allocating a fresh `NodeStats` for the
+/// child case just to unify them.
+pub enum StatsRef<'a, A: Action> {
+    Root(&'a NodeStats),
+    Child(&'a ChildArray<A>, usize),
+}
+
+impl<A: Action> StatsRef<'_, A> {
+    pub fn num_visits(&self) -> u32 {
+        match self {
+            StatsRef::Root(s) => s.num_visits(),
+            StatsRef::Child(c, i) => c.num_visits(*i),
+        }
+    }
+
+    pub fn total_visits(&self) -> u32 {
+        match self {
+            StatsRef::Root(s) => s.total_visits(),
+            StatsRef::Child(c, i) => c.total_visits(*i),
+        }
+    }
+
+    pub fn value_estimate_unvisited(&self, player_index: usize, q_init: QInit) -> f64 {
+        match self {
+            StatsRef::Root(s) => s.value_estimate_unvisited(player_index, q_init),
+            StatsRef::Child(c, i) => c.value_estimate_unvisited(*i, player_index, q_init),
         }
     }
 }
@@ -271,8 +530,7 @@ impl NodeStats {
 #[derive(Clone, Debug)]
 pub enum NodeState<A: Action> {
     Terminal,
-    // NOTE: this Vec necessitates O(n) lookups. Consider FxHashMap
-    Expanded(Vec<Edge<A>>),
+    Expanded(ChildArray<A>),
 }
 
 #[derive(Debug)]
@@ -369,7 +627,7 @@ where
     /// moments later) sees the now-resolved node and *also* returns
     /// `false`, leaving neither branch's handling applied to a node that's
     /// actually `Terminal` -- which then panics the first time something
-    /// calls `edges()` on it.
+    /// calls `children()` on it.
     #[inline]
     pub fn status(&self) -> Option<&NodeState<A>> {
         self.state.get()
@@ -382,30 +640,19 @@ where
     }
 
     #[inline]
-    pub fn edges(&self) -> &Vec<Edge<A>> {
-        let Some(NodeState::Expanded(edges)) = self.state.get() else {
+    pub fn children(&self) -> &ChildArray<A> {
+        let Some(NodeState::Expanded(children)) = self.state.get() else {
             unreachable!()
         };
-        edges
+        children
     }
 
-    pub fn child_edge(&self, child_id: index::Id) -> &Edge<A> {
+    pub fn child_index(&self, child_id: index::Id) -> usize {
         // NOTE: O(n) lookup
-        self.edges()
-            .iter()
-            .find(|e| e.node_id() == Some(child_id))
+        let children = self.children();
+        (0..children.len())
+            .find(|&i| children.node_id(i) == Some(child_id))
             .unwrap()
-    }
-
-    pub fn actions(&self) -> Vec<A> {
-        self.edges()
-            .iter()
-            .map(|edge| edge.action.clone())
-            .collect()
-    }
-
-    pub fn node_ids(&self) -> Vec<Option<index::Id>> {
-        self.edges().iter().map(|edge| edge.node_id()).collect()
     }
 
     pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
@@ -414,10 +661,6 @@ where
             is_root: true,
             ..Self::new(player, hash)
         }
-    }
-
-    pub fn update(&self, action_idx: usize, utilities: &[f64]) {
-        self.edges()[action_idx].stats.update(utilities);
     }
 
     pub fn is_root(&self) -> bool {

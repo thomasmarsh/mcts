@@ -26,16 +26,15 @@ where
     G::S: std::fmt::Display,
 {
     fn root_action_totals(&self) -> Vec<ActionTotal<G::A>> {
-        self.index
-            .get(self.root_id)
-            .edges()
-            .iter()
-            .filter(|edge| edge.is_explored())
-            .map(|edge| {
+        let node = self.index.get(self.root_id);
+        let children = node.children();
+        (0..children.len())
+            .filter(|&i| children.is_explored(i))
+            .map(|i| {
                 let scores = (0..G::num_players())
-                    .map(|p| edge.stats.score(p))
+                    .map(|p| children.score(i, p))
                     .collect();
-                (edge.action.clone(), edge.stats.num_visits(), scores)
+                (children.action(i).clone(), children.num_visits(i), scores)
             })
             .collect()
     }

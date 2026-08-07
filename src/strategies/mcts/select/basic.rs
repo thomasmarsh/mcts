@@ -1,5 +1,5 @@
 use super::super::index::Id;
-use super::super::node::Edge;
+use super::super::node::ChildArray;
 use super::super::node::Proven;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
@@ -7,8 +7,12 @@ use crate::game::Game;
 
 use rand::rngs::SmallRng;
 
-fn is_proven_loss<G: Game>(ctx: &SelectContext<'_, G>, edge: &Edge<G::A>) -> bool {
-    edge.node_id().is_some_and(|child_id| {
+fn is_proven_loss<G: Game>(
+    ctx: &SelectContext<'_, G>,
+    children: &ChildArray<G::A>,
+    idx: usize,
+) -> bool {
+    children.node_id(idx).is_some_and(|child_id| {
         matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
     })
 }
@@ -31,13 +35,12 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         _: Self::Aux,
     ) -> (i64, f64) {
-        (
-            edge.stats.num_visits() as i64,
-            edge.stats.expected_score(ctx.player),
-        )
+        let snap = children.snapshot(idx, ctx.player);
+        (snap.num_visits as i64, snap.expected_score())
     }
 
     #[inline(always)]
@@ -68,10 +71,11 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        edge.stats.expected_score(ctx.player)
+        children.expected_score(idx, ctx.player)
     }
 
     #[inline(always)]
@@ -108,11 +112,13 @@ impl<G: Game> SelectStrategy<G> for SecureChild {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        let q = edge.stats.expected_score(ctx.player);
-        let n = edge.stats.total_visits();
+        let snap = children.snapshot(idx, ctx.player);
+        let q = snap.expected_score();
+        let n = snap.total_visits();
 
         q + self.a / (n as f64).sqrt()
     }
@@ -139,12 +145,11 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
     #[inline]
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.stack.current_id());
+        let children = current.children();
         // This is just a weighted sampling. Need to implement some stuff for thompson sampling.
-        let weights = current
-            .edges()
-            .iter()
-            .map(|edge| {
-                if is_proven_loss(ctx, edge) {
+        let weights = (0..children.len())
+            .map(|idx| {
+                if is_proven_loss(ctx, children, idx) {
                     // MCTS-Solver: force a proven-loss child's weight toward
                     // (not exactly -- `WalkerTableBuilder` wants strictly
                     // positive weights) zero rather than excluding it, so
@@ -152,8 +157,9 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
                     // sibling happens to be a proven loss.
                     f32::MIN_POSITIVE
                 } else {
-                    edge.node_id()
-                        .map(|child_id| self.score_child(ctx, child_id, edge, ()))
+                    children
+                        .node_id(idx)
+                        .map(|child_id| self.score_child(ctx, child_id, children, idx, ()))
                         .unwrap_or(self.unvisited_value(ctx, ())) as f32
                 }
             })
@@ -170,11 +176,13 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        let q = edge.stats.expected_score(ctx.player);
-        let n = edge.stats.total_visits();
+        let snap = children.snapshot(idx, ctx.player);
+        let q = snap.expected_score();
+        let n = snap.total_visits();
 
         q / (n as f64).sqrt()
     }

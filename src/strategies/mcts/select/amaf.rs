@@ -1,7 +1,7 @@
 use super::super::config::BackpropFlags;
 use super::super::config::AMAF;
 use super::super::index::Id;
-use super::super::node::Edge;
+use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use crate::game::Game;
@@ -58,16 +58,17 @@ impl<G: Game> SelectStrategy<G> for Amaf {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let amaf_stats = edge.stats.amaf(ctx.player);
-        let amaf_n = 1.max(amaf_stats.num_visits) as f64;
-        let amaf_q = amaf_stats.score;
+        let snap = children.snapshot(idx, ctx.player);
+        let amaf_n = 1.max(snap.amaf.num_visits) as f64;
+        let amaf_q = snap.amaf.score;
         let amaf = amaf_q / amaf_n;
 
-        let exploit = edge.stats.exploitation_score(ctx.player);
-        let num_visits = edge.stats.total_visits();
+        let exploit = snap.exploitation_score();
+        let num_visits = snap.total_visits();
         let explore = (parent_log / num_visits as f64).sqrt();
 
         // alpha = 1 is standard AMAF

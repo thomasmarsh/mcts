@@ -1,5 +1,5 @@
 use super::super::index::Id;
-use super::super::node::Edge;
+use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use crate::game::Game;
@@ -41,12 +41,13 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let exploit = edge.stats.exploitation_score(ctx.player);
-        let num_visits = edge.stats.total_visits();
-        let explore = (parent_log / num_visits as f64).sqrt();
+        let snap = children.snapshot(idx, ctx.player);
+        let exploit = snap.exploitation_score();
+        let explore = (parent_log / snap.total_visits() as f64).sqrt();
         exploit + self.exploration_constant * explore
     }
 
@@ -111,14 +112,15 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
         &self,
         ctx: &SelectContext<'_, G>,
         _child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let exploit = edge.stats.exploitation_score(ctx.player);
-        let num_visits = edge.stats.total_visits();
-        let sample_variance = 0f64.max(
-            edge.stats.sum_squared_score(ctx.player) / num_visits as f64 - exploit * exploit,
-        );
+        let snap = children.snapshot(idx, ctx.player);
+        let exploit = snap.exploitation_score();
+        let num_visits = snap.total_visits();
+        let sample_variance =
+            0f64.max(snap.sum_squared_score / num_visits as f64 - exploit * exploit);
         let visits_fraction = parent_log / num_visits as f64;
 
         ucb1_tuned(

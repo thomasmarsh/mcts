@@ -116,12 +116,9 @@ where
         let mut actions = vec![];
         let stack = NodeStack::new(self.stack.clone());
         for (parent_id, child_id) in stack.pairs() {
-            actions.push(
-                stack
-                    .edge(&self.index, *parent_id, *child_id)
-                    .action
-                    .clone(),
-            );
+            let idx = stack.child_index(&self.index, *parent_id, *child_id);
+            let parent = self.index.get(*parent_id);
+            actions.push(parent.children().action(idx).clone());
         }
 
         let trial = self.trial.as_ref().unwrap();
@@ -166,18 +163,17 @@ where
     fn root_report(&self, state: &G::S) -> RootReport<G::A> {
         let player = G::player_to_move(state).to_index();
         let root = self.index.get(self.root_id);
-        let actions = root
-            .edges()
-            .iter()
-            .filter(|edge| edge.is_explored())
-            .map(|edge| {
-                let is_proven = edge
-                    .node_id()
+        let children = root.children();
+        let actions = (0..children.len())
+            .filter(|&i| children.is_explored(i))
+            .map(|i| {
+                let is_proven = children
+                    .node_id(i)
                     .is_some_and(|id| self.index.get(id).proven() != Proven::Unproven);
                 ActionReport {
-                    action: edge.action.clone(),
-                    visits: edge.stats.num_visits(),
-                    mean_value: edge.stats.expected_score(player),
+                    action: children.action(i).clone(),
+                    visits: children.num_visits(i),
+                    mean_value: children.expected_score(i, player),
                     is_proven,
                 }
             })

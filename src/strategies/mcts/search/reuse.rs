@@ -48,10 +48,11 @@ where
                 if !node.is_expanded() {
                     continue;
                 }
-                for edge in node.edges() {
-                    if let Some(child_id) = edge.node_id() {
+                let children = node.children();
+                for i in 0..children.len() {
+                    if let Some(child_id) = children.node_id(i) {
                         let mut child_path = path.clone();
-                        child_path.push(edge.action.clone());
+                        child_path.push(children.action(i).clone());
                         if self.index.get(child_id).hash == target_hash {
                             return Some((Some(id), child_id, child_path));
                         }
@@ -113,19 +114,17 @@ where
         }
 
         if let Some(parent_id) = parent_id {
-            let edge_stats = self
-                .index
-                .get(parent_id)
-                .child_edge(matched_id)
-                .stats
-                .clone();
+            let parent = self.index.get(parent_id);
+            let idx = parent.child_index(matched_id);
+            let children = parent.children();
             debug_assert_eq!(
-                edge_stats.num_visits_virtual.load(Relaxed),
+                children.virtual_loss(idx),
                 0,
                 "a reused root should never carry virtual loss in flight -- \
                  it must have been released symmetrically by the search that \
                  produced it"
             );
+            let edge_stats = children.extract_stats(idx);
             self.index.get_mut(self.root_id).is_root = false;
             self.root_stats = edge_stats;
             self.root_id = matched_id;

@@ -1,6 +1,6 @@
 use super::index::Id;
-use super::node::Edge;
 use super::node::NodeStats;
+use super::node::StatsRef;
 use super::search::TreeIndex;
 use crate::game::Action;
 use crate::util::Pairs;
@@ -64,8 +64,11 @@ impl<A: Action> NodeStack<A> {
         *self.stack.last().unwrap()
     }
 
-    pub fn edge<'a>(&self, index: &'a TreeIndex<A>, parent_id: Id, child_id: Id) -> &'a Edge<A> {
-        index.get(parent_id).child_edge(child_id)
+    /// The index of `child_id` among `parent_id`'s children -- replaces the
+    /// old `&Edge<A>`-returning lookup now that a node's children live in a
+    /// `ChildArray` instead of individually-addressable `Edge` structs.
+    pub fn child_index(&self, index: &TreeIndex<A>, parent_id: Id, child_id: Id) -> usize {
+        index.get(parent_id).child_index(child_id)
     }
 
     #[inline]
@@ -73,9 +76,9 @@ impl<A: Action> NodeStack<A> {
         &self,
         index: &'a TreeIndex<A>,
         root_stats: &'a NodeStats,
-    ) -> &'a NodeStats {
+    ) -> StatsRef<'a, A> {
         if index.get(self.current_id()).is_root() {
-            root_stats
+            StatsRef::Root(root_stats)
         } else {
             self.get_stats(index, root_stats, self.parent_id(), self.current_id())
         }
@@ -87,12 +90,14 @@ impl<A: Action> NodeStack<A> {
         root_stats: &'a NodeStats,
         parent_id: Id,
         child_id: Id,
-    ) -> &'a NodeStats {
+    ) -> StatsRef<'a, A> {
         if index.get(child_id).is_root() {
-            root_stats
+            StatsRef::Root(root_stats)
         } else {
             debug_assert_ne!(parent_id, child_id);
-            &self.edge(index, parent_id, child_id).stats
+            let parent = index.get(parent_id);
+            let idx = parent.child_index(child_id);
+            StatsRef::Child(parent.children(), idx)
         }
     }
 }

@@ -17,7 +17,7 @@ pub use ucb::Ucb1;
 pub use ucb::Ucb1Tuned;
 
 use super::index::Id;
-use super::node::{self, Edge, NodeStats, Proven};
+use super::node::{self, ChildArray, NodeStats, Proven, StatsRef};
 use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
@@ -40,7 +40,7 @@ pub struct SelectContext<'a, G: Game> {
 }
 
 impl<'a, G: Game> SelectContext<'a, G> {
-    fn current_stats(&self) -> &NodeStats {
+    fn current_stats(&self) -> StatsRef<'_, G::A> {
         self.stack.current_stats(self.index, self.root_stats)
     }
 }
@@ -58,15 +58,16 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     /// Default implementation should be sufficient for all cases.
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.stack.current_id());
-        random_best_index(current.edges(), self, ctx, rng)
+        random_best_index(current.children(), self, ctx, rng)
     }
 
-    /// Given a child index, calculate a score.
+    /// Given a child index (its position in `children`), calculate a score.
     fn score_child(
         &self,
         ctx: &SelectContext<'_, G>,
         child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         aux: Self::Aux,
     ) -> Self::Score;
 
@@ -132,7 +133,7 @@ where
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         if rng.gen::<f64>() < self.epsilon {
             let current = ctx.index.get(ctx.stack.current_id());
-            let n = current.edges().len();
+            let n = current.children().len();
             rng.gen_range(0..n)
         } else {
             self.inner.best_child(ctx, rng)
@@ -147,10 +148,11 @@ where
         &self,
         ctx: &SelectContext<'_, G>,
         child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         aux: Self::Aux,
     ) -> Self::Score {
-        self.inner.score_child(ctx, child_id, edge, aux)
+        self.inner.score_child(ctx, child_id, children, idx, aux)
     }
 
     fn unvisited_value(&self, ctx: &SelectContext<'_, G>, aux: Self::Aux) -> Self::Score {
@@ -169,14 +171,18 @@ const PRIMES: [usize; 16] = [
     81647, 92581, 94693,
 ];
 
-/// Whether `edge`'s child is a proven loss for `ctx.player` -- a resolved
+/// Whether `children[idx]` is a proven loss for `ctx.player` -- a resolved
 /// child proven `Win` for the *other* player under the `<= 2`-player
 /// scoping the solver is built for (see node.rs's `Proven` doc comment).
 /// Always `false` when the solver is off, since backprop never writes
 /// anything but `Unproven` in that case.
 #[inline]
-fn is_proven_loss<G: Game>(ctx: &SelectContext<'_, G>, edge: &Edge<G::A>) -> bool {
-    edge.node_id().is_some_and(|child_id| {
+fn is_proven_loss<G: Game>(
+    ctx: &SelectContext<'_, G>,
+    children: &ChildArray<G::A>,
+    idx: usize,
+) -> bool {
+    children.node_id(idx).is_some_and(|child_id| {
         matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
     })
 }
@@ -184,7 +190,7 @@ fn is_proven_loss<G: Game>(ctx: &SelectContext<'_, G>, edge: &Edge<G::A>) -> boo
 // This function is adapted from from minimax-rs.
 #[inline]
 fn random_best_index<S, G>(
-    set: &[Edge<G::A>],
+    children: &ChildArray<G::A>,
     strategy: &mut S,
     ctx: &SelectContext<'_, G>,
     rng: &mut SmallRng,
@@ -198,7 +204,7 @@ where
     // coprime with n, so pick from a set of 5 digit primes.
 
     // Combine both random numbers into a single rng call.
-    let n = set.len();
+    let n = children.len();
     let r = rng.gen_range(0..n * PRIMES.len());
     let mut i = r / PRIMES.len();
     let stride = PRIMES[r % PRIMES.len()];
@@ -207,8 +213,8 @@ where
     let unvisited_value = strategy.unvisited_value(ctx, aux);
 
     let child_value = |i: usize| {
-        if let Some(child_id) = set[i].node_id() {
-            strategy.score_child(ctx, child_id, &set[i], aux)
+        if let Some(child_id) = children.node_id(i) {
+            strategy.score_child(ctx, child_id, children, i, aux)
         } else {
             unvisited_value
         }
@@ -221,12 +227,12 @@ where
     // has to interact with each strategy's own scoring rather than bypass
     // it. A no-op scan (never skips) when every edge happens to be a proven
     // loss, or when the solver is off.
-    let skip_proven_loss = !(0..n).all(|idx| is_proven_loss(ctx, &set[idx]));
+    let skip_proven_loss = !(0..n).all(|idx| is_proven_loss(ctx, children, idx));
 
     let mut best_score = None;
     let mut best_index = i;
     for _ in 0..n {
-        if !(skip_proven_loss && is_proven_loss(ctx, &set[i])) {
+        if !(skip_proven_loss && is_proven_loss(ctx, children, i)) {
             let score = child_value(i);
             if best_score.is_none_or(|best| score > best) {
                 best_score = Some(score);

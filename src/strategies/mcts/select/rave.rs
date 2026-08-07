@@ -1,7 +1,7 @@
 use super::super::config::BackpropFlags;
 use super::super::config::GRAVE;
 use super::super::index::Id;
-use super::super::node::Edge;
+use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use super::ucb::ucb1_tuned;
@@ -197,31 +197,29 @@ impl<G: Game> SelectStrategy<G> for Rave {
         &self,
         ctx: &SelectContext<'_, G>,
         child_id: Id,
-        edge: &Edge<G::A>,
+        children: &ChildArray<G::A>,
+        idx: usize,
         parent_log: f64,
     ) -> f64 {
         let ref_id = self.get_ref(ctx, child_id);
         let hash = ctx.index.get(ref_id).hash;
+        let action = children.action(idx);
         let grave_stats = ctx
             .grave
             .get(&hash)
-            .and_then(|player| player[ctx.player].get(&edge.action).cloned())
+            .and_then(|player| player[ctx.player].get(action).cloned())
             .unwrap_or_default();
 
         let amaf_n = grave_stats.num_visits;
         let amaf_q = grave_stats.score;
 
-        let n = edge.stats.total_visits();
-        let exploit = edge.stats.exploitation_score(ctx.player);
-        let explore = self.ucb.score(
-            parent_log,
-            n,
-            edge.stats.sum_squared_score(ctx.player),
-            exploit,
-        );
+        let snap = children.snapshot(idx, ctx.player);
+        let n = snap.total_visits();
+        let exploit = snap.exploitation_score();
+        let explore = self.ucb.score(parent_log, n, snap.sum_squared_score, exploit);
 
         let b = self.schedule.beta(n, amaf_n);
-        let mean_score = edge.stats.expected_score(ctx.player);
+        let mean_score = snap.expected_score();
         let amaf = Self::amaf_score(amaf_n, amaf_q);
 
         (1. - b) * mean_score + b * amaf + explore

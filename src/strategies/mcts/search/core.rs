@@ -52,7 +52,7 @@ where
         if let Some(idx) =
             proven_win_child::<G>(self.config.use_mcts_solver, self.index.get(self.root_id), &self.index, player)
         {
-            return self.index.get(self.root_id).edges()[idx].action.clone();
+            return self.index.get(self.root_id).children().action(idx).clone();
         }
 
         let stack = crate::strategies::mcts::stack::NodeStack::new(vec![self.root_id]);
@@ -72,7 +72,7 @@ where
             &mut self.config.rng,
         );
 
-        self.index.get(self.root_id).edges()[idx].action.clone()
+        self.index.get(self.root_id).children().action(idx).clone()
     }
 
     #[inline]
@@ -164,22 +164,21 @@ where
 
         let player = G::player_to_move(state);
 
-        let mut children = root
-            .edges()
-            .iter()
-            .filter(|edge| edge.is_explored())
-            .map(|edge| {
+        let children = root.children();
+        let mut summaries = (0..children.len())
+            .filter(|&i| children.is_explored(i))
+            .map(|i| {
                 (
-                    edge.stats.num_visits(),
-                    edge.stats.score(player.to_index()),
-                    edge.action.clone(),
+                    children.num_visits(i),
+                    children.score(i, player.to_index()),
+                    children.action(i).clone(),
                 )
             })
             .collect::<Vec<_>>();
 
-        children.sort_by_key(|t| !t.0);
+        summaries.sort_by_key(|t| !t.0);
 
-        for (visits, score, m) in children.into_iter().take(10) {
+        for (visits, score, m) in summaries.into_iter().take(10) {
             let win_rate = (score + visits as f64) / (visits as f64 * 2.0);
             eprintln!(
                 "{:>6} visits, {:.02}% wins: {}",
@@ -237,16 +236,16 @@ where
                     .best_child(&select_ctx, &mut self.config.rng),
             };
 
-            let edge = &node.edges()[best_idx];
-            if let Some(child_id) = edge.node_id() {
-                node_id = child_id;
-                node = self.index.get(node_id);
-                state = G::apply(state, &edge.action);
-                self.pv.push(edge.action.clone());
-                stack.push(node_id);
-            } else {
+            let children = node.children();
+            let Some(child_id) = children.node_id(best_idx) else {
                 break;
-            }
+            };
+            let action = children.action(best_idx).clone();
+            node_id = child_id;
+            node = self.index.get(node_id);
+            state = G::apply(state, &action);
+            self.pv.push(action);
+            stack.push(node_id);
         }
     }
 }
