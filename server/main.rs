@@ -27,8 +27,21 @@ use mcts::games::druid::{
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
+// The preset a persisted AI engine was built for, alongside the engine
+// itself -- kept together so a preset mismatch on the next request is a
+// simple equality check rather than needing to inspect the boxed engine.
+type PersistedAi = (AiPreset, Box<dyn Search<G = Druid>>);
+
 struct AppState {
     game: Mutex<HashedState>,
+    // The AI engine for the game in progress, persisted across moves so
+    // `reuse_tree` (PLAN-WORK.md session 13/14) has a tree to actually reuse.
+    // `None` before the first AI move of a game, or right after `/api/new`.
+    // Rebuilt (not reused) whenever the requested preset doesn't match the
+    // stored one -- `Box<dyn Search<G = Druid>>` erases which concrete
+    // `TreeSearch<Druid, S>` is inside, and a different preset is a different
+    // `S`, so there's no arena to carry over across a preset switch anyway.
+    ai: Mutex<Option<PersistedAi>>,
 }
 
 // AI opponents, from weakest to strongest. Each preset pairs a search
@@ -174,6 +187,9 @@ async fn post_new(
 
     let mut state = app.game.lock().unwrap();
     *state = HashedState::new(req.size);
+    // A new game must not inherit a finished (or in-progress) game's tree --
+    // carrying it forward would be a correctness bug, not an optimization.
+    *app.ai.lock().unwrap() = None;
     Ok(Json(serde_json::to_value(view(&state, None)).unwrap()))
 }
 
@@ -230,6 +246,14 @@ fn ai_thread_count() -> usize {
 // loss selection bias, and every one also gets early termination once the
 // root is proven, whether the search runs single-threaded (Easy/Medium) or
 // tree-parallel (Strong/Master, via `num_tree_threads`).
+//
+// All four also enable `reuse_tree(true)` (PLAN-WORK.md session 14), now that
+// `AppState` persists the same engine across a game's moves instead of
+// rebuilding one per call. Unlike single-threading Easy/Medium (session 11's
+// deliberate way of keeping the difficulty gradient about search quality, not
+// core count), tree reuse doesn't cost anything to withhold-for-difficulty --
+// it just carries forward stats from positions this engine already searched,
+// which every preset benefits from equally with no extra per-move cost.
 fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
     let budget = preset.time_budget();
     match preset {
@@ -240,6 +264,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     .expand_threshold(1)
                     .use_transpositions(true)
                     .use_mcts_solver(true)
+                    .reuse_tree(true)
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .select(select::Ucb1::with_c(1.414)),
@@ -252,6 +277,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     .expand_threshold(1)
                     .use_transpositions(true)
                     .use_mcts_solver(true)
+                    .reuse_tree(true)
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .select(select::Ucb1::with_c(1.625))
@@ -269,6 +295,7 @@ fn build_ai(preset: AiPreset) -> Box<dyn Search<G = Druid>> {
                     .expand_threshold(1)
                     .use_transpositions(true)
                     .use_mcts_solver(true)
+                    .reuse_tree(true)
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .num_tree_threads(ai_thread_count())
@@ -311,11 +338,33 @@ async fn post_ai_move(
         state.clone()
     };
 
+    // Reuse the persisted engine if it was built for this same preset --
+    // that's what gives `reuse_tree` a tree to actually reuse across moves.
+    // A preset switch can't reuse the old arena (different `Strategy`
+    // generic instantiation under the same `Box<dyn Search>`), so it just
+    // rebuilds. Taken out of the mutex entirely (rather than held across the
+    // blocking call) so `/api/new` and other requests aren't blocked on the
+    // engine for the whole thinking budget.
+    let ai = {
+        let mut slot = app.ai.lock().unwrap();
+        match slot.take() {
+            Some((preset, engine)) if preset == req.preset => engine,
+            _ => build_ai(req.preset),
+        }
+    };
+
     // Run the search on a blocking thread -- it's CPU-bound for the full
-    // thinking budget and would otherwise stall the async executor.
-    let action = tokio::task::spawn_blocking(move || {
-        let mut ai = build_ai(req.preset);
-        ai.choose_action(&snapshot)
+    // thinking budget and would otherwise stall the async executor. The
+    // engine comes back out alongside the action so it can be persisted
+    // regardless of whether the move below ends up applied or dropped --
+    // `reuse_or_reset`'s state-hash matching (PLAN-WORK.md session 13) means
+    // the *next* call is safe either way: it just re-searches from whatever
+    // the real game state turns out to be, matching a descendant if one
+    // exists or falling back to a fresh tree if not.
+    let (action, ai) = tokio::task::spawn_blocking(move || {
+        let mut ai = ai;
+        let action = ai.choose_action(&snapshot);
+        (action, ai)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -326,13 +375,17 @@ async fn post_ai_move(
     if !legal.contains(&action) {
         // The board changed (e.g. a human move landed) while the AI was
         // thinking on a now-stale snapshot -- drop the move rather than
-        // apply something no longer legal.
+        // apply something no longer legal. Still persist the engine: its
+        // exploration wasn't wasted, and the next call's `reuse_or_reset`
+        // will re-root against whatever the real state is by then.
+        *app.ai.lock().unwrap() = Some((req.preset, ai));
         return Err((
             StatusCode::CONFLICT,
             "board changed while AI was thinking".into(),
         ));
     }
     *state = Druid::apply(state.clone(), &action);
+    *app.ai.lock().unwrap() = Some((req.preset, ai));
     Ok(Json(
         serde_json::to_value(view(&state, Some(action))).unwrap(),
     ))
@@ -356,6 +409,7 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 async fn main() {
     let app_state = Arc::new(AppState {
         game: Mutex::new(HashedState::default()),
+        ai: Mutex::new(None),
     });
 
     let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static");
@@ -380,8 +434,16 @@ mod tests {
     fn test_app() -> Router {
         let app_state = Arc::new(AppState {
             game: Mutex::new(HashedState::default()),
+            ai: Mutex::new(None),
         });
         api_router(app_state)
+    }
+
+    fn test_app_state() -> Arc<AppState> {
+        Arc::new(AppState {
+            game: Mutex::new(HashedState::default()),
+            ai: Mutex::new(None),
+        })
     }
 
     async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
@@ -398,6 +460,48 @@ mod tests {
         let status = resp.status();
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         (status, body)
+    }
+
+    async fn http_post_json(
+        app: Router,
+        uri: &str,
+        json: serde_json::Value,
+    ) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    // A cheap, deterministic stand-in for what `build_ai` would normally
+    // construct: bounded by iteration count rather than wall-clock (see
+    // `src/timer.rs` -- `Timer::start` with the default zero `Duration`
+    // never signals done, so `max_iterations` alone governs when this
+    // stops), so tests using it run fast and its node-count growth is
+    // predictable. Seeding `AppState::ai` with one of these directly (rather
+    // than going through `build_ai`) makes a wiring bug -- rebuilding via
+    // `build_ai` on every call instead of reusing the persisted engine --
+    // unmistakable: a real preset's 1s+ time budget produces orders of
+    // magnitude more nodes than this ever would.
+    fn seeded_engine() -> Box<dyn Search<G = Druid>> {
+        Box::new(
+            TreeSearch::<Druid, strategy::Ucb1>::new().config(
+                SearchConfig::new()
+                    .max_iterations(20)
+                    .reuse_tree(true)
+                    .select(select::Ucb1::with_c(1.414)),
+            ),
+        )
     }
 
     // The AI's thinking budget (up to Master's 8s) runs on a
@@ -580,6 +684,134 @@ mod tests {
             white_elapsed < budget / 2 && black_elapsed < budget / 2,
             "expected the proven root to short-circuit well before the {budget:?} budget, \
              got white={white_elapsed:?} black={black_elapsed:?}"
+        );
+    }
+
+    // PLAN-WORK.md session 14's core wiring ask: two consecutive
+    // `/api/ai_move` calls, with a real human move applied in between
+    // (matching actual usage), should reuse the same persisted engine rather
+    // than `build_ai` constructing a fresh one every call. Seeds a small,
+    // bounded `seeded_engine()` in place of what `post_ai_move` would
+    // otherwise build, so a broken wiring is unmistakable in the resulting
+    // node count rather than needing to inspect private search internals.
+    #[tokio::test]
+    async fn test_reuse_tree_persists_engine_across_ai_move_calls() {
+        let app_state = test_app_state();
+        *app_state.ai.lock().unwrap() = Some((AiPreset::Easy, seeded_engine()));
+        let app = api_router(app_state.clone());
+
+        let (status, _) =
+            http_post_json(app.clone(), "/api/ai_move", serde_json::json!({"preset": "easy"}))
+                .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let n1 = {
+            let slot = app_state.ai.lock().unwrap();
+            slot.as_ref().unwrap().1.arena_len()
+        };
+        assert!(
+            n1 > 0,
+            "expected some nodes in the arena after a 20-iteration search, got {n1}"
+        );
+
+        // A real human move, applied in between -- the actual usage pattern
+        // this session's charter called out, not just two back-to-back AI
+        // calls on an unchanged board.
+        let (status, body) = http_get(app.clone(), "/api/legal_moves").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let legal: Vec<Move> = serde_json::from_slice(&body).unwrap();
+        assert!(!legal.is_empty());
+        let (status, _) =
+            http_post_json(app.clone(), "/api/move", serde_json::to_value(legal[0]).unwrap())
+                .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let (status, _) =
+            http_post_json(app.clone(), "/api/ai_move", serde_json::json!({"preset": "easy"}))
+                .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let n2 = {
+            let slot = app_state.ai.lock().unwrap();
+            let (preset, engine) = slot.as_ref().unwrap();
+            assert_eq!(*preset, AiPreset::Easy);
+            engine.arena_len()
+        };
+        assert!(
+            n2 >= n1,
+            "arena should only grow across reused calls (append-only), went from {n1} to {n2}"
+        );
+        // A real `build_ai(Easy)` preset thinks for ~1s and produces node
+        // counts in the thousands-plus; two 20-iteration searches staying
+        // far below that is the signal this wasn't silently rebuilt.
+        assert!(
+            n2 < 5_000,
+            "arena grew to {n2} nodes after only two 20-iteration searches -- looks like \
+             the persisted engine was rebuilt via build_ai instead of reused"
+        );
+    }
+
+    // `/api/new` must reset the persisted engine -- a fresh game inheriting a
+    // finished (or in-progress) game's tree is a correctness bug, not an
+    // optimization opportunity.
+    #[tokio::test]
+    async fn test_new_game_resets_persisted_ai_engine() {
+        let app_state = test_app_state();
+        *app_state.ai.lock().unwrap() = Some((AiPreset::Easy, seeded_engine()));
+        assert!(app_state.ai.lock().unwrap().is_some());
+
+        let app = api_router(app_state.clone());
+        let (status, _) = http_post_json(
+            app,
+            "/api/new",
+            serde_json::json!({"size": {"w": 5, "h": 5}}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        assert!(
+            app_state.ai.lock().unwrap().is_none(),
+            "expected /api/new to clear the persisted AI engine"
+        );
+    }
+
+    // Nothing stops a client from requesting a different preset on the next
+    // `/api/ai_move` call. A persisted engine built for one preset can't
+    // reuse another's arena (different `Strategy` generic instantiation
+    // under the same `Box<dyn Search>`), so a mismatch must rebuild rather
+    // than reuse -- and must not panic or deadlock doing so.
+    #[tokio::test]
+    async fn test_ai_move_rebuilds_on_mid_game_preset_switch() {
+        let app_state = test_app_state();
+        *app_state.ai.lock().unwrap() = Some((AiPreset::Easy, seeded_engine()));
+        let app = api_router(app_state.clone());
+
+        let (status, _) =
+            http_post_json(app.clone(), "/api/ai_move", serde_json::json!({"preset": "easy"}))
+                .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        {
+            let slot = app_state.ai.lock().unwrap();
+            assert_eq!(slot.as_ref().unwrap().0, AiPreset::Easy);
+        }
+
+        // Switch preset mid-game. Medium's own real `build_ai` budget is 2s,
+        // short enough to keep this test fast while exercising the genuine
+        // rebuild path (not a seeded stand-in) end to end.
+        let (status, _) = http_post_json(
+            app.clone(),
+            "/api/ai_move",
+            serde_json::json!({"preset": "medium"}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let slot = app_state.ai.lock().unwrap();
+        let (preset, engine) = slot.as_ref().unwrap();
+        assert_eq!(*preset, AiPreset::Medium);
+        assert!(
+            engine.arena_len() > 0,
+            "rebuilt Medium engine should have actually searched"
         );
     }
 }
