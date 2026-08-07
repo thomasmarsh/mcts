@@ -456,3 +456,35 @@ button.mode:disabled, #new-game:disabled, #ai-move:disabled {
   font-size: 15px;
   color: #b7b8c2;
 }
+
+#save-load {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.save-load-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.save-load-buttons button {
+  flex: 1;
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.save-load-buttons button:hover {
+  background: #34363f;
+}
+
+.save-load-error {
+  color: #e08a8a;
+  font-size: 12px;
+}

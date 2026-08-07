@@ -39,3 +39,6 @@ export type {
   GameModeDef,
   GameKindModule,
 } from "./renderer.js";
+
+export type { SaveFile } from "./save-load.js";
+export { SAVE_FORMAT_VERSION, serializeSave, parseSave } from "./save-load.js";

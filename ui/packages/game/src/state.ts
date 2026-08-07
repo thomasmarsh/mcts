@@ -45,6 +45,12 @@ export interface AppState<S, M, V = unknown> {
    * dropped instead of grafting an old game's move onto the new one. See
    * `reducer.ts`'s `aiMove`/`analysis` handling. */
   epoch: number;
+  /** The config the current tree's root was created from -- along with
+   * `gameKind` and `tree`, exactly what a save file needs (session 7's
+   * `save-load.ts`). Set in the same reduction that observes a completed
+   * `newGame` or handles a `load` action; `null` for the pre-bootstrap
+   * placeholder root (see `App.tsx`'s header comment). */
+  config: unknown;
   tree: GameTree<S, M>;
   position: PositionInfo<V, M> | null;
   /** Static per-kind metadata (`GameShell`'s seat pickers/AI-move preset
@@ -63,6 +69,7 @@ export function initialAppState<S, M, V = unknown>(gameKind: string, rootState: 
   return {
     gameKind,
     epoch: 0,
+    config: null,
     tree: initialGameTree<S, M>(rootState),
     position: null,
     aiPresets: initialJobPollState<AiPresetInfo[]>(),

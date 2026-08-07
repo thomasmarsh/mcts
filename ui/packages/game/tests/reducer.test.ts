@@ -12,6 +12,7 @@ import { Effect } from "@mcts/core";
 import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type Env } from "../src/reducer.js";
 import { initialAppState } from "../src/state.js";
+import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
 import type { AiMoveResult, Analysis, StateAndView } from "../src/types.js";
 
 // Test-only state/move types -- appReducer never inspects their shape.
@@ -190,6 +191,55 @@ describe("appReducer / analysis", () => {
         s.analysis.result = null;
       },
     );
+  });
+});
+
+describe("appReducer / newGame", () => {
+  it("stores the request's config alongside the fresh tree, for save/load", () => {
+    const result: StateAndView<S> = { state: 9, view: {} };
+    const env: Env = {
+      ...mockEnv,
+      newGame: <S2, V2 = unknown>() => Effect.send(result) as unknown as Effect<StateAndView<S2, V2>>,
+    };
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send({ tag: "newGame", action: { tag: "request", config: { size: { w: 7, h: 7 } } } }, (s) => {
+      s.newGame.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "newGame",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        config: { size: { w: 7, h: 7 } },
+      },
+      (s) => {
+        s.tree = initialAppState<S, M>("druid", 9).tree;
+        s.config = { size: { w: 7, h: 7 } };
+        s.epoch = 1;
+        // Folded into tree/config/epoch in the same reduction that observed
+        // "done" -- draft.newGame itself resets back to idle, unlike
+        // aiMove/analysis which stay "done" (see reducer.ts).
+        s.newGame = initialAppState<S, M>("druid", 0).newGame;
+      },
+    );
+  });
+});
+
+describe("appReducer / load", () => {
+  it("rehydrates gameKind/config/tree and resets in-flight job-poll state, bumping epoch", () => {
+    const init = initialAppState<S, M>("druid", 0);
+    const ts = createTestStore(appReducer<S, M>, mockEnv, init);
+
+    const loadedTree = initialGameTree<S, M>(5);
+    gameTreeReducer(loadedTree, { tag: "applyMove", move: "z", state: 6 }, undefined);
+
+    ts.send({ tag: "load", gameKind: "ttt", config: { n: 3 }, tree: loadedTree }, (s) => {
+      s.gameKind = "ttt";
+      s.config = { n: 3 };
+      s.tree = loadedTree;
+      s.epoch = 1;
+    });
   });
 });
 

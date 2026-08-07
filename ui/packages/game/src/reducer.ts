@@ -85,12 +85,18 @@ export type AppAction<S, M, V = unknown> =
   | { tag: "tree"; action: GameTreeAction<S, M> }
   | { tag: "position"; action: PositionAction<V, M> }
   | { tag: "aiPresets"; action: AiPresetsJobAction }
-  | { tag: "newGame"; action: NewGameJobAction<S, V> }
+  | { tag: "newGame"; action: NewGameJobAction<S, V>; config?: unknown }
   | { tag: "move"; action: MoveJobAction<S, M, V>; move?: M }
   | { tag: "aiMove"; action: AiMoveJobAction<S, M, V>; epoch?: number }
   | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
   | { tag: "setSeat"; player: string; control: string }
-  | { tag: "setPreset"; preset: string };
+  | { tag: "setPreset"; preset: string }
+  /** Session 7: rehydrate a save file's `{gameKind, config, tree}` wholesale
+   * -- fully client-side, no `env` call. Resets the same job-poll slices and
+   * bumps `epoch` the same way a completed `newGame` does, so an in-flight
+   * `aiMove`/`analysis` from the game being replaced gets dropped rather than
+   * grafted onto the loaded one (see `state.ts`'s `epoch` doc). */
+  | { tag: "load"; gameKind: string; config: unknown; tree: GameTree<S, M> };
 
 /** `jobPollReduce` only ever calls `submitJob`/`pollJob` for the `"start"`/
  * `"tick"` tags. Every `submitJob` this reducer builds resolves directly to
@@ -145,6 +151,19 @@ export function appReducer<S, M, V = unknown>(
 
   if (action.tag === "setPreset") {
     draft.ui.selectedPreset = action.preset;
+    return null;
+  }
+
+  if (action.tag === "load") {
+    draft.gameKind = action.gameKind;
+    draft.config = action.config;
+    draft.tree = action.tree;
+    draft.position = null;
+    draft.move = initialJobPollState<StateAndView<S, V>>();
+    draft.aiMove = initialJobPollState<AiMoveResult<S, M, V>>();
+    draft.analysis = initialJobPollState<Analysis<M>>();
+    draft.newGame = initialJobPollState<StateAndView<S, V>>();
+    draft.epoch += 1;
     return null;
   }
 
@@ -204,7 +223,7 @@ export function appReducer<S, M, V = unknown>(
         },
       };
       const eff = jobPollReduce(draft.newGame, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a } })) : null;
+      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a }, config: ja.config })) : null;
     }
     const eff = jobPollReduce(
       draft.newGame,
@@ -223,9 +242,14 @@ export function appReducer<S, M, V = unknown>(
       draft.aiMove = initialJobPollState<AiMoveResult<S, M, V>>();
       draft.analysis = initialJobPollState<Analysis<M>>();
       draft.epoch += 1;
+      // The request's own `config` (threaded through both effect maps above,
+      // since the "start" -> "done" round trip re-dispatches through this
+      // same branch) -- see state.ts's `config` doc for why this is what a
+      // save file needs alongside `gameKind`/`tree`.
+      draft.config = action.config;
       draft.newGame = initialJobPollState<StateAndView<S, V>>();
     }
-    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a } })) : null;
+    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a }, config: action.config })) : null;
   }
 
   if (action.tag === "move") {

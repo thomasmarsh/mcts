@@ -17,6 +17,7 @@ import { moveEquals } from "@mcts/game";
 import { GAME_MODULES } from "./games.js";
 import { MoveListPanel } from "./MoveListPanel.js";
 import { AnalysisPanel } from "./AnalysisPanel.js";
+import { SaveLoadPanel } from "./SaveLoadPanel.js";
 
 type S = unknown;
 type M = unknown;
@@ -251,6 +252,14 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                 New Game
               </button>
             </div>
+            <Show when={state().epoch >= 1}>
+              <SaveLoadPanel
+                gameKind={state().gameKind}
+                config={state().config}
+                tree={state().tree}
+                onLoad={(gameKind, config, tree) => dispatch({ tag: "load", gameKind, config, tree })}
+              />
+            </Show>
             <div id="banner" style={{ color: summary()?.bannerColor }}>
               {summary()?.bannerText ?? ""}
             </div>
