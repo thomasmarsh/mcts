@@ -1,0 +1,256 @@
+// GameShell.tsx — Game-kind-agnostic chrome: HUD (turn indicator, hand
+// counts via a per-game summary, mode buttons), New Game dialog, AI-move/
+// autoplay controls, and the renderer registry lookup (PLAN-UI.md session
+// 4). Ported from server/static/app.js's DOM-manipulation HUD logic, now
+// driven by `store.dispatch`/reactive effects instead of direct DOM writes
+// and global mutable state -- and generalized to work for any
+// `GAME_MODULES` entry, not just Druid.
+//
+// Per PLAN-UI.md's hard rule, this component never touches the network
+// itself: every effect below only ever calls `props.store.dispatch(...)`.
+
+import { type Component, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import type { Store } from "@mcts/core";
+import type { AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
+import { GAME_MODULES } from "./games.js";
+
+type S = unknown;
+type M = unknown;
+type V = unknown;
+
+/** Walks `tree`'s root-to-current path into the `MoveStep[]` shape
+ * `GameRendererProps.history` expects -- the root itself (whose `move` is
+ * always `null`) never appears as a step, only as the first step's
+ * `before`. */
+function historyPath(tree: AppState<S, M, V>["tree"]): MoveStep<S, M>[] {
+  const chain: GameTreeNode<S, M>[] = [];
+  let node: GameTreeNode<S, M> | undefined = tree.nodes[tree.currentId];
+  while (node) {
+    chain.push(node);
+    node = node.parentId ? tree.nodes[node.parentId] : undefined;
+  }
+  chain.reverse();
+  const steps: MoveStep<S, M>[] = [];
+  for (let i = 1; i < chain.length; i++) {
+    const n = chain[i]!;
+    const before = chain[i - 1]!;
+    steps.push({ move: n.move as M, before: before.state });
+  }
+  return steps;
+}
+
+export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S, M, V>> }> = (props) => {
+  const state = props.store.getState();
+  const dispatch = props.store.dispatch;
+
+  const mod = createMemo(() => GAME_MODULES[state().gameKind]);
+  const position = createMemo(() => state().position);
+  const summary = createMemo(() => {
+    const p = position();
+    const m = mod();
+    return p && m ? m.summarize(p.view) : null;
+  });
+
+  const busy = createMemo(
+    () =>
+      state().move.status === "pending" ||
+      state().aiMove.status === "pending" ||
+      state().analysis.status === "pending" ||
+      state().newGame.status === "pending",
+  );
+
+  const [activeMode, setActiveMode] = createSignal<string | null>(null);
+  const [hoveredMove, setHoveredMove] = createSignal<M | null>(null);
+  const [autoplayPaused, setAutoplayPaused] = createSignal(false);
+  const [dialogOpen, setDialogOpen] = createSignal(false);
+  const [pendingConfig, setPendingConfig] = createSignal<unknown>(undefined);
+  const [pendingSeats, setPendingSeats] = createSignal<Record<string, string>>({});
+
+  const legalMoves = createMemo(() => {
+    const p = position();
+    if (!p) return [];
+    const modeDef = mod()?.modes?.find((md) => md.id === activeMode());
+    return modeDef ? p.legalMoves.filter(modeDef.filter) : p.legalMoves;
+  });
+
+  // Default to the first mode once the module resolves (mount-time only --
+  // there's only one game kind today, so this never needs to re-fire).
+  createEffect(() => {
+    const m = mod();
+    if (activeMode() === null && m?.modes && m.modes.length > 0) setActiveMode(m.modes[0]!.id);
+  });
+
+  // Bootstrap: fetch this kind's AI presets once, and start the very first
+  // game with the server's own default config (an empty `newGame` request --
+  // see server/main.rs's `post_new`, which fills in `adapter.default_config()`
+  // when `config` is omitted).
+  onMount(() => {
+    dispatch({ tag: "aiPresets", action: { tag: "request" } });
+    dispatch({ tag: "newGame", action: { tag: "request" } });
+  });
+
+  // Re-derive view/legalMoves for whatever node is current, on every
+  // navigation. Gated on `epoch >= 1` so this never fires against the
+  // pre-bootstrap placeholder root (see state.ts's `initialAppState` --
+  // `epoch` only advances once a real `newGame` has completed).
+  createEffect(() => {
+    const s = state();
+    void s.tree.currentId; // track
+    setHoveredMove(null);
+    if (s.epoch < 1) return;
+    dispatch({ tag: "position", action: { tag: "request" } });
+  });
+
+  // Auto-play: if the position isn't terminal and the player to move is
+  // AI-controlled, fire an aiMove request -- mirrors app.js's
+  // `maybeTriggerAiTurn`, re-checked after every position/seat/pause change.
+  createEffect(() => {
+    if (busy() || autoplayPaused()) return;
+    const sum = summary();
+    if (!sum || sum.currentPlayer === null) return;
+    const seat = state().seats[sum.currentPlayer] ?? "human";
+    if (seat === "human") return;
+    dispatch({ tag: "aiMove", action: { tag: "request", preset: seat } });
+  });
+
+  function onKeyDown(event: KeyboardEvent): void {
+    if (busy()) return;
+    const tag = (event.target as HTMLElement | null)?.tagName;
+    if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
+    const hit = mod()?.modes?.find((md) => md.hotkey === event.key);
+    if (hit) setActiveMode(hit.id);
+  }
+  onMount(() => window.addEventListener("keydown", onKeyDown));
+  onCleanup(() => window.removeEventListener("keydown", onKeyDown));
+
+  function openDialog(): void {
+    setPendingConfig(undefined);
+    const seats: Record<string, string> = {};
+    for (const p of mod()?.players ?? []) seats[p] = state().seats[p] ?? "human";
+    setPendingSeats(seats);
+    setDialogOpen(true);
+  }
+
+  function startNewGame(): void {
+    for (const [player, control] of Object.entries(pendingSeats())) {
+      dispatch({ tag: "setSeat", player, control });
+    }
+    setAutoplayPaused(false);
+    dispatch({ tag: "newGame", action: { tag: "request", config: pendingConfig() } });
+    setDialogOpen(false);
+  }
+
+  const manualMovePreset = () => {
+    const sum = summary();
+    if (!sum || sum.currentPlayer === null) return "strong";
+    const seat = state().seats[sum.currentPlayer] ?? "human";
+    return seat === "human" ? "strong" : seat;
+  };
+
+  const presetOptions = () => (state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : []);
+
+  return (
+    <Show when={mod()} fallback={<div class="loading">Unknown game.</div>}>
+      {(m) => (
+        <>
+          <Show when={position()} fallback={<div class="loading">Starting a new game…</div>}>
+            {(p) => (
+              <Dynamic
+                component={m().Renderer}
+                state={state().tree.nodes[state().tree.currentId]?.state}
+                view={p().view}
+                history={historyPath(state().tree)}
+                legalMoves={legalMoves()}
+                busy={busy()}
+                onMove={(move: M) => dispatch({ tag: "move", action: { tag: "request", move } })}
+                hoveredMove={hoveredMove()}
+                onHover={setHoveredMove}
+              />
+            )}
+          </Show>
+
+          <div id="hud">
+            <div id="turn">{summary()?.turnText ?? ""}</div>
+            <div id="hands">
+              <For each={summary()?.lines ?? []}>
+                {(line) => (
+                  <div class="hand" style={{ "--swatch": line.swatch ?? "transparent" }}>
+                    {line.text}
+                  </div>
+                )}
+              </For>
+            </div>
+            <Show when={m().modes && m().modes!.length > 0}>
+              <div id="modes">
+                <For each={m().modes}>
+                  {(md) => (
+                    <button
+                      class="mode"
+                      classList={{ active: activeMode() === md.id }}
+                      disabled={busy()}
+                      onClick={() => setActiveMode(md.id)}
+                    >
+                      {md.label} {md.hotkey && <span class="hotkey">{md.hotkey}</span>}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <div id="actions">
+              <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", preset: manualMovePreset() } })}>
+                AI Move
+              </button>
+              <button id="autoplay-toggle" classList={{ paused: autoplayPaused() }} onClick={() => setAutoplayPaused((v) => !v)}>
+                {autoplayPaused() ? "Resume" : "Pause"}
+              </button>
+              <button id="new-game" onClick={openDialog}>
+                New Game
+              </button>
+            </div>
+            <div id="banner" style={{ color: summary()?.bannerColor }}>
+              {summary()?.bannerText ?? ""}
+            </div>
+          </div>
+
+          <Show when={dialogOpen()}>
+            <dialog id="new-game-dialog" ref={(el) => queueMicrotask(() => el.showModal())}>
+              <form
+                id="new-game-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  startNewGame();
+                }}
+              >
+                <h2>New Game</h2>
+                <Show when={m().NewGameFields}>{(Fields) => <Dynamic component={Fields()} config={pendingConfig()} onChange={setPendingConfig} />}</Show>
+                <For each={m().players}>
+                  {(player) => (
+                    <label>
+                      {player}
+                      <select
+                        value={pendingSeats()[player] ?? "human"}
+                        onChange={(e) => setPendingSeats((s) => ({ ...s, [player]: e.currentTarget.value }))}
+                      >
+                        <option value="human">Human</option>
+                        <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
+                      </select>
+                    </label>
+                  )}
+                </For>
+                <div class="dialog-actions">
+                  <button type="button" onClick={() => setDialogOpen(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" id="new-game-start">
+                    Start
+                  </button>
+                </div>
+              </form>
+            </dialog>
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+};

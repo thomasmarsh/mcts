@@ -1,3 +1,8 @@
+/* app.css — GameShell's game-agnostic chrome (HUD, mode buttons, actions,
+   new-game dialog) plus the page reset, ported from server/static/style.css.
+   Board/minimap presentation is Druid-specific and lives in
+   packages/druid/src/druid.css instead. */
+
 html, body {
   margin: 0;
   height: 100%;
@@ -7,10 +12,8 @@ html, body {
   color: #e8e8ec;
 }
 
-#board {
-  display: block;
-  width: 100vw;
-  height: 100vh;
+#app {
+  height: 100%;
 }
 
 #hud {
@@ -30,43 +33,6 @@ html, body {
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 8px;
-}
-
-#minimap {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  background: rgba(20, 21, 26, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 12px 14px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
-}
-
-#minimap-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #b7b8c2;
-  margin-bottom: 8px;
-}
-
-#minimap-turn-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #6b6e78;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  transition: background 0.2s;
-}
-
-#minimap-canvas {
-  display: block;
 }
 
 #hands {
@@ -89,10 +55,8 @@ html, body {
   height: 10px;
   border-radius: 50%;
   display: inline-block;
+  background: var(--swatch, transparent);
 }
-
-#hand-black::before { background: #3a3d46; border: 1px solid #6b6e78; }
-#hand-white::before { background: #f2e9d8; border: 1px solid #d8cdb4; }
 
 #modes {
   display: flex;
@@ -242,4 +206,14 @@ button.mode:disabled, #new-game:disabled, #ai-move:disabled {
 
 .dialog-actions button:hover {
   filter: brightness(1.1);
+}
+
+.loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: #b7b8c2;
 }

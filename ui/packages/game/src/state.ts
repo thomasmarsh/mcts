@@ -1,18 +1,17 @@
 // state.ts — App state: the single state tree shape (mirrors pb/ui/app/src/state.ts's
-// flat-feature-slices convention). Generic over a game's state `S` and move
-// `M` -- packages/druid's concrete types instantiate this in Session 4; this
-// package itself never names a concrete game.
+// flat-feature-slices convention). Generic over a game's state `S`, move `M`,
+// and view `V` -- packages/druid's concrete types instantiate this in
+// Session 4; this package itself never names a concrete game.
 
 import { initialJobPollState, type JobPollState } from "@mcts/core";
 import { initialGameTree, type GameTree } from "./game-tree.js";
-import type { AiMoveResult, Analysis } from "./types.js";
+import type { AiMoveResult, AiPresetInfo, Analysis, StateAndView } from "./types.js";
 
 /** Who controls each player -- keyed by the game's own player id (e.g.
  * Druid's "Black"/"White", tic-tac-toe's "X"/"O" in Session 8) rather than a
- * fixed two-seat shape, so this stays game-agnostic. Placeholder shape for
- * Session 4+'s seat-picker UI; nothing in this session reads or writes it
- * beyond `initialAppState`'s default. */
-export type SeatsState = Record<string, "human" | "ai">;
+ * fixed two-seat shape, so this stays game-agnostic. A missing entry means
+ * "human" (the default seat for any player nothing has set yet). */
+export type SeatsState = Record<string, "human" | string>;
 
 /** Misc UI-only state that doesn't belong to the tree or a job-poll slice.
  * Placeholder for Session 5/6's preset picker; grows as those sessions need
@@ -21,20 +20,55 @@ export interface UiState {
   selectedPreset: string | null;
 }
 
-export interface AppState<S, M> {
+/** View + legal moves for `nodeId` -- re-derived (session 4's `GameShell`)
+ * every time `tree.currentId` changes, since `GameTree` itself only stores a
+ * node's raw `S`, not its `V`/legal-move-list (see `reducer.ts`'s `position`
+ * handling for why: `new`/`apply`/`ai_move` already return `view` for free,
+ * but `undo`/`redo`/`jumpTo` are pure client-side moves with no accompanying
+ * server round trip, so there's no single call site to grab it from -- one
+ * "derive for whatever `currentId` is now" effect covers every case
+ * uniformly, at the cost of one redundant local request on the moved-and-
+ * already-had-the-view path). `nodeId` guards a `loaded` result actually
+ * matching the node it was requested for -- see `reducer.ts`. */
+export interface PositionInfo<V, M> {
+  nodeId: string;
+  view: V;
+  legalMoves: M[];
+}
+
+export interface AppState<S, M, V = unknown> {
   gameKind: string;
+  /** Bumped once per completed `newGame`. Stamped onto in-flight `aiMove`/
+   * `analysis` requests so a response arriving after a *new* game has
+   * started (a real request, not a bug -- Master's search can take 8s, and
+   * "New Game" deliberately stays clickable mid-AI-turn, same as app.js) gets
+   * dropped instead of grafting an old game's move onto the new one. See
+   * `reducer.ts`'s `aiMove`/`analysis` handling. */
+  epoch: number;
   tree: GameTree<S, M>;
-  aiMove: JobPollState<AiMoveResult<S, M>>;
+  position: PositionInfo<V, M> | null;
+  /** Static per-kind metadata (`GameShell`'s seat pickers/AI-move preset
+   * list), fetched once per `gameKind` -- unlike `position`, this never
+   * changes as the tree is navigated, only when `gameKind` itself does. */
+  aiPresets: JobPollState<AiPresetInfo[]>;
+  newGame: JobPollState<StateAndView<S, V>>;
+  move: JobPollState<StateAndView<S, V>>;
+  aiMove: JobPollState<AiMoveResult<S, M, V>>;
   analysis: JobPollState<Analysis<M>>;
   seats: SeatsState;
   ui: UiState;
 }
 
-export function initialAppState<S, M>(gameKind: string, rootState: S): AppState<S, M> {
+export function initialAppState<S, M, V = unknown>(gameKind: string, rootState: S): AppState<S, M, V> {
   return {
     gameKind,
+    epoch: 0,
     tree: initialGameTree<S, M>(rootState),
-    aiMove: initialJobPollState<AiMoveResult<S, M>>(),
+    position: null,
+    aiPresets: initialJobPollState<AiPresetInfo[]>(),
+    newGame: initialJobPollState<StateAndView<S, V>>(),
+    move: initialJobPollState<StateAndView<S, V>>(),
+    aiMove: initialJobPollState<AiMoveResult<S, M, V>>(),
     analysis: initialJobPollState<Analysis<M>>(),
     seats: {},
     ui: { selectedPreset: null },

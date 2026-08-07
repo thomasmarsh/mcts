@@ -207,7 +207,11 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 async fn main() {
     let app_state = Arc::new(AppState { games: registry() });
 
-    let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static");
+    // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
+    // development -- see ui/README.md) is the only frontend now; the old
+    // hand-rolled `server/static/app.js` was retired in PLAN-UI.md session 4
+    // once it stopped matching session 2's stateless API.
+    let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static/dist");
 
     let app = api_router(app_state).fallback_service(ServeDir::new(static_dir));
 

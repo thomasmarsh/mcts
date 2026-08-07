@@ -1,28 +1,25 @@
-// reducer.ts — App-level reducer: combines the `GameTree` reducer with the
-// `aiMove`/`analysis` job-poll wiring (PLAN-UI.md session 3). Owns the `Env`
-// type consumed by both this reducer and `api-client.ts`'s `createEnv` --
-// mirrors pb/ui/app/src/reducer.ts's convention of defining `AppEnv`
-// alongside the reducer that consumes it (`api-client.ts` imports this
-// module's `Env` type, not the other way around, so there's no runtime
-// circular import between the two files).
+// reducer.ts — App-level reducer: combines the `GameTree` reducer with
+// `newGame`/`move`/`aiMove`/`analysis` job-poll wiring and current-position
+// (view + legal moves) derivation (PLAN-UI.md sessions 3 and 4).
 //
-// `aiMove`/`analysis` are handled as direct branches here, not via
-// `pullback`, because -- like pb's `inlineDiagram`/`cfgDiagram` handling in
-// its own `reducer.ts` -- each dispatch needs to read `draft.gameKind` and
-// the tree's current state to build that call's `JobPollEnv` dynamically;
-// `pullback`'s `getEnv` only ever sees `env`, never `draft`. `GameTree` has
-// no such need (it never touches the network), so it's wired through
-// `pullback` normally.
+// `newGame`/`move`/`aiMove`/`analysis`/`position` are handled as direct
+// branches here, not via `pullback`, because -- like pb's `inlineDiagram`/
+// `cfgDiagram` handling in its own `reducer.ts` -- each dispatch needs to
+// read `draft.gameKind` and the tree's current state to build that call's
+// env dynamically; `pullback`'s `getEnv` only ever sees `env`, never `draft`.
+// `GameTree` has no such need (it never touches the network), so it's wired
+// through `pullback` normally.
 
 import {
   Effect,
+  initialJobPollState,
   jobPollReduce,
   pullback,
   type JobPollAction,
   type JobPollEnv,
   type JobSubmitResult,
 } from "@mcts/core";
-import { gameTreeReducer, type GameTree, type GameTreeAction } from "./game-tree.js";
+import { gameTreeReducer, initialGameTree, type GameTree, type GameTreeAction } from "./game-tree.js";
 import type { AppState } from "./state.js";
 import type {
   AiMoveResult,
@@ -50,18 +47,49 @@ export interface Env {
   analyze<S, M>(kind: string, state: S, preset: string, budgetMs?: number): Effect<Analysis<M>>;
 }
 
-export type AiMoveJobAction<S, M> =
+/** Runs an `Effect` for its single value, as a `Promise` -- lets a reducer
+ * combine two `env.xxx()` calls (e.g. `position`'s `view` + `legalMoves`)
+ * with `Promise.all` while still routing every network call through `env`,
+ * never `fetch` directly (PLAN-UI.md's hard rule only forbids the latter). */
+function toPromise<T>(effect: Effect<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    effect.execute((v) => resolve(v)).catch(reject);
+  });
+}
+
+export type NewGameJobAction<S, V> =
+  | { tag: "request"; config?: unknown }
+  | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
+
+export type MoveJobAction<S, M, V> =
+  | { tag: "request"; move: M }
+  | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
+
+export type AiMoveJobAction<S, M, V> =
   | { tag: "request"; preset: string }
-  | { tag: "job"; action: JobPollAction<AiMoveResult<S, M>> };
+  | { tag: "job"; action: JobPollAction<AiMoveResult<S, M, V>> };
 
 export type AnalysisJobAction<M> =
   | { tag: "request"; preset: string; budgetMs?: number }
   | { tag: "job"; action: JobPollAction<Analysis<M>> };
 
-export type AppAction<S, M> =
+export type PositionAction<V, M> =
+  | { tag: "request" }
+  | { tag: "loaded"; nodeId: string; view: V; moves: M[] };
+
+export type AiPresetsJobAction =
+  | { tag: "request" }
+  | { tag: "job"; action: JobPollAction<AiPresetInfo[]> };
+
+export type AppAction<S, M, V = unknown> =
   | { tag: "tree"; action: GameTreeAction<S, M> }
-  | { tag: "aiMove"; action: AiMoveJobAction<S, M> }
-  | { tag: "analysis"; action: AnalysisJobAction<M> };
+  | { tag: "position"; action: PositionAction<V, M> }
+  | { tag: "aiPresets"; action: AiPresetsJobAction }
+  | { tag: "newGame"; action: NewGameJobAction<S, V> }
+  | { tag: "move"; action: MoveJobAction<S, M, V>; move?: M }
+  | { tag: "aiMove"; action: AiMoveJobAction<S, M, V>; epoch?: number }
+  | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
+  | { tag: "setSeat"; player: string; control: string };
 
 /** `jobPollReduce` only ever calls `submitJob`/`pollJob` for the `"start"`/
  * `"tick"` tags. Every `submitJob` this reducer builds resolves directly to
@@ -82,20 +110,133 @@ function unreachableJobEnv<T>(reason: string): JobPollEnv<T> {
   };
 }
 
-export function appReducer<S, M>(
-  draft: AppState<S, M>,
-  action: AppAction<S, M>,
+export function appReducer<S, M, V = unknown>(
+  draft: AppState<S, M, V>,
+  action: AppAction<S, M, V>,
   env: Env,
-): Effect<AppAction<S, M>> | null {
-  const treeReducer = pullback<GameTree<S, M>, GameTreeAction<S, M>, AppState<S, M>, AppAction<S, M>, unknown, Env>(
+): Effect<AppAction<S, M, V>> | null {
+  const treeReducer = pullback<GameTree<S, M>, GameTreeAction<S, M>, AppState<S, M, V>, AppAction<S, M, V>, unknown, Env>(
     gameTreeReducer,
     (s) => s.tree,
     (a) => (a.tag === "tree" ? a.action : null),
-    (a): AppAction<S, M> => ({ tag: "tree", action: a }),
+    (a): AppAction<S, M, V> => ({ tag: "tree", action: a }),
     () => undefined,
   );
   const treeEffect = treeReducer(draft, action, env);
   if (treeEffect) return treeEffect;
+
+  if (action.tag === "setSeat") {
+    draft.seats[action.player] = action.control;
+    return null;
+  }
+
+  if (action.tag === "position") {
+    const pa = action.action;
+    if (pa.tag === "request") {
+      const current = draft.tree.nodes[draft.tree.currentId];
+      if (!current) return null;
+      const { gameKind } = draft;
+      const nodeId = draft.tree.currentId;
+      return Effect.fromPromise(async () => {
+        const [view, legal] = await Promise.all([
+          toPromise(env.view<S, V>(gameKind, current.state)),
+          toPromise(env.legalMoves<S, M>(gameKind, current.state)),
+        ]);
+        return { nodeId, view, moves: legal.moves };
+      }).map((r): AppAction<S, M, V> => ({ tag: "position", action: { tag: "loaded", ...r } }));
+    }
+    // Drop a `loaded` result for a node that's no longer current -- superseded
+    // by a later navigation/move, whose own `loaded` will land instead.
+    if (pa.nodeId === draft.tree.currentId) {
+      draft.position = { nodeId: pa.nodeId, view: pa.view, legalMoves: pa.moves };
+    }
+    return null;
+  }
+
+  if (action.tag === "aiPresets") {
+    const ja = action.action;
+    if (ja.tag === "request") {
+      const { gameKind } = draft;
+      const jobEnv: JobPollEnv<AiPresetInfo[]> = {
+        submitJob: () => env.aiPresets(gameKind).map((result): JobSubmitResult<AiPresetInfo[]> => ({ status: "done", result })),
+        pollJob: () => {
+          throw new Error("unreachable: ai_presets resolves synchronously (see submitJob above)");
+        },
+      };
+      const eff = jobPollReduce(draft.aiPresets, { tag: "start" }, jobEnv);
+      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiPresets", action: { tag: "job", action: a } })) : null;
+    }
+    const eff = jobPollReduce(
+      draft.aiPresets,
+      ja.action,
+      unreachableJobEnv("unreachable: a forwarded aiPresets/job action never re-submits or polls"),
+    );
+    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiPresets", action: { tag: "job", action: a } })) : null;
+  }
+
+  if (action.tag === "newGame") {
+    const ja = action.action;
+    if (ja.tag === "request") {
+      const { gameKind } = draft;
+      const jobEnv: JobPollEnv<StateAndView<S, V>> = {
+        submitJob: () =>
+          env.newGame<S, V>(gameKind, ja.config).map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
+        pollJob: () => {
+          throw new Error("unreachable: new resolves synchronously (see submitJob above)");
+        },
+      };
+      const eff = jobPollReduce(draft.newGame, { tag: "start" }, jobEnv);
+      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a } })) : null;
+    }
+    const eff = jobPollReduce(
+      draft.newGame,
+      ja.action,
+      unreachableJobEnv("unreachable: a forwarded newGame/job action never re-submits or polls"),
+    );
+    if (draft.newGame.status === "done" && draft.newGame.result) {
+      // Fold the new position straight into a fresh tree/epoch in the same
+      // reduction that observed "done" -- no separate "did newGame finish"
+      // effect for GameShell to watch for. `position` isn't populated here;
+      // it's re-derived by the `position/request` effect GameShell fires
+      // whenever `tree.currentId` changes (which this assignment triggers).
+      draft.tree = initialGameTree<S, M>(draft.newGame.result.state);
+      draft.position = null;
+      draft.move = initialJobPollState<StateAndView<S, V>>();
+      draft.aiMove = initialJobPollState<AiMoveResult<S, M, V>>();
+      draft.analysis = initialJobPollState<Analysis<M>>();
+      draft.epoch += 1;
+      draft.newGame = initialJobPollState<StateAndView<S, V>>();
+    }
+    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a } })) : null;
+  }
+
+  if (action.tag === "move") {
+    const ja = action.action;
+    if (ja.tag === "request") {
+      const current = draft.tree.nodes[draft.tree.currentId];
+      if (!current) return null;
+      const { gameKind } = draft;
+      const { move } = ja;
+      const jobEnv: JobPollEnv<StateAndView<S, V>> = {
+        submitJob: () =>
+          env.apply<S, M, V>(gameKind, current.state, move).map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
+        pollJob: () => {
+          throw new Error("unreachable: apply resolves synchronously (see submitJob above)");
+        },
+      };
+      const eff = jobPollReduce(draft.move, { tag: "start" }, jobEnv);
+      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move })) : null;
+    }
+    const eff = jobPollReduce(
+      draft.move,
+      ja.action,
+      unreachableJobEnv("unreachable: a forwarded move/job action never re-submits or polls"),
+    );
+    if (draft.move.status === "done" && draft.move.result && action.move !== undefined) {
+      gameTreeReducer(draft.tree, { tag: "applyMove", move: action.move, state: draft.move.result.state }, undefined);
+    }
+    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move: action.move })) : null;
+  }
 
   if (action.tag === "aiMove") {
     const ja = action.action;
@@ -104,24 +245,36 @@ export function appReducer<S, M>(
       if (!current) return null;
       const { gameKind } = draft;
       const { preset } = ja;
-      const jobEnv: JobPollEnv<AiMoveResult<S, M>> = {
+      const startEpoch = draft.epoch;
+      const jobEnv: JobPollEnv<AiMoveResult<S, M, V>> = {
         submitJob: () =>
           env
-            .aiMove<S, M>(gameKind, current.state, preset)
-            .map((result): JobSubmitResult<AiMoveResult<S, M>> => ({ status: "done", result })),
+            .aiMove<S, M, V>(gameKind, current.state, preset)
+            .map((result): JobSubmitResult<AiMoveResult<S, M, V>> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: ai_move resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.aiMove, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M> => ({ tag: "aiMove", action: { tag: "job", action: a } })) : null;
+      return eff
+        ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: startEpoch }))
+        : null;
     }
+    // A response from a game that's since been replaced by "New Game" --
+    // drop it rather than grafting a stale move onto the new game's tree.
+    if (action.epoch !== undefined && action.epoch !== draft.epoch) return null;
     const eff = jobPollReduce(
       draft.aiMove,
       ja.action,
       unreachableJobEnv("unreachable: a forwarded aiMove/job action never re-submits or polls"),
     );
-    return eff ? eff.map((a): AppAction<S, M> => ({ tag: "aiMove", action: { tag: "job", action: a } })) : null;
+    if (draft.aiMove.status === "done" && draft.aiMove.result) {
+      const { move, state } = draft.aiMove.result;
+      gameTreeReducer(draft.tree, { tag: "applyMove", move, state }, undefined);
+    }
+    return eff
+      ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: action.epoch }))
+      : null;
   }
 
   if (action.tag === "analysis") {
@@ -131,6 +284,7 @@ export function appReducer<S, M>(
       if (!current) return null;
       const { gameKind } = draft;
       const { preset, budgetMs } = ja;
+      const startEpoch = draft.epoch;
       const jobEnv: JobPollEnv<Analysis<M>> = {
         submitJob: () =>
           env
@@ -141,14 +295,19 @@ export function appReducer<S, M>(
         },
       };
       const eff = jobPollReduce(draft.analysis, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M> => ({ tag: "analysis", action: { tag: "job", action: a } })) : null;
+      return eff
+        ? eff.map((a): AppAction<S, M, V> => ({ tag: "analysis", action: { tag: "job", action: a }, epoch: startEpoch }))
+        : null;
     }
+    if (action.epoch !== undefined && action.epoch !== draft.epoch) return null;
     const eff = jobPollReduce(
       draft.analysis,
       ja.action,
       unreachableJobEnv("unreachable: a forwarded analysis/job action never re-submits or polls"),
     );
-    return eff ? eff.map((a): AppAction<S, M> => ({ tag: "analysis", action: { tag: "job", action: a } })) : null;
+    return eff
+      ? eff.map((a): AppAction<S, M, V> => ({ tag: "analysis", action: { tag: "job", action: a }, epoch: action.epoch }))
+      : null;
   }
 
   return null;

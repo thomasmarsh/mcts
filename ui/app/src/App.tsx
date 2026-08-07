@@ -1,32 +1,26 @@
-// App.tsx — Session 1 placeholder. Proves the workspace links, the vendored
-// @mcts/core framework compiles, and SolidJS renders through Vite.
-// No game logic, no API calls, no reducer wiring beyond a trivial createStore.
-// All of that arrives in Session 3+.
+// App.tsx — Wires the real game store (PLAN-UI.md session 4): creates the
+// `ApiClient`/`Env` pair (Session 3), the `appReducer` store seeded with a
+// placeholder root state (replaced the instant `GameShell`'s bootstrap
+// `newGame` request resolves -- see that file's header comment), and
+// mounts `GameShell`.
 
 import { render } from "solid-js/web";
 import type { Component } from "solid-js";
 import { createStore } from "@mcts/core";
-
-interface PlaceholderState {
-  message: string;
-}
+import { appReducer, createApiClient, createEnv, initialAppState, type AppAction, type AppState, type Env } from "@mcts/game";
+import { GameShell } from "./GameShell.js";
+import { DEFAULT_GAME_KIND } from "./games.js";
+import "./app.css";
 
 const App: Component = () => {
-  // Minimal createStore smoke test: proves the vendored framework links,
-  // compiles, and drives SolidJS reactivity. No real reducers — Session 3
-  // wires the game-tree reducer and API env.
-  const store = createStore<PlaceholderState, never, object>(
-    { message: "mcts/ui scaffold ready" },
-    () => null,
-    {},
+  const api = createApiClient();
+  const env = createEnv(api);
+  const store = createStore<AppState<unknown, unknown, unknown>, AppAction<unknown, unknown, unknown>, Env>(
+    initialAppState<unknown, unknown, unknown>(DEFAULT_GAME_KIND, null),
+    appReducer<unknown, unknown, unknown>,
+    env,
   );
-  const state = store.getState();
-  return (
-    <main id="app">
-      <h1>{state().message}</h1>
-      <p>Game UI workspace — Session 1 scaffolding.</p>
-    </main>
-  );
+  return <GameShell store={store} />;
 };
 
 const root = document.getElementById("app");

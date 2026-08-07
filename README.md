@@ -48,10 +48,12 @@ Not sure if this will become a published library, but it is improving and PRs ar
 
 The web UI lives in [`ui/`](ui/), a pnpm workspace with a Vite + SolidJS app
 (`ui/app/`), the vendored store framework (`ui/packages/core`, forked from
-[`@pb/core`](https://github.com/tmarsh/pb) and renamed to `@mcts/core`), and a
-per-game UI package placeholder (`ui/packages/druid`). The build output lands in
-`server/static/dist/`, served alongside the existing vanilla-JS app by the Rust
-server.
+[`@pb/core`](https://github.com/tmarsh/pb) and renamed to `@mcts/core`), the
+game-agnostic client/game-tree/renderer contract (`ui/packages/game`), and
+Druid's three.js board renderer (`ui/packages/druid`). The build output lands
+in `server/static/dist/`, which is now the *only* frontend the Rust server
+serves -- the original hand-rolled `server/static/app.js` was retired once
+this SolidJS app reached feature parity with it (PLAN-UI.md session 4).
 
 Two dev processes run together:
 

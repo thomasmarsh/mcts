@@ -14,8 +14,28 @@ export type {
 export type { ApiClient } from "./api-client.js";
 export { createApiClient, createEnv } from "./api-client.js";
 
-export type { Env, AppAction, AiMoveJobAction, AnalysisJobAction } from "./reducer.js";
+export type {
+  Env,
+  AppAction,
+  NewGameJobAction,
+  MoveJobAction,
+  AiMoveJobAction,
+  AnalysisJobAction,
+  PositionAction,
+  AiPresetsJobAction,
+} from "./reducer.js";
 export { appReducer } from "./reducer.js";
 
-export type { AppState, SeatsState, UiState } from "./state.js";
+export type { AppState, SeatsState, UiState, PositionInfo } from "./state.js";
 export { initialAppState } from "./state.js";
+
+export type {
+  MoveStep,
+  AnalysisOverlayEntry,
+  GameRendererProps,
+  GameRendererComponent,
+  HudLine,
+  GameSummary,
+  GameModeDef,
+  GameKindModule,
+} from "./renderer.js";

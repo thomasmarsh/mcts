@@ -55,10 +55,19 @@ describe("appReducer / aiMove", () => {
       {
         tag: "aiMove",
         action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
       },
       (s) => {
         s.aiMove.status = "done";
         s.aiMove.result = result;
+        // appReducer folds a completed aiMove straight into the tree in the
+        // same reduction, same as a human "move" -- see reducer.ts.
+        const rootId = s.tree.rootId;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: rootId, childIds: [] };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
       },
     );
 
@@ -87,6 +96,7 @@ describe("appReducer / analysis", () => {
       {
         tag: "analysis",
         action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
       },
       (s) => {
         s.analysis.status = "done";
