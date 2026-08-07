@@ -1,5 +1,5 @@
-// game-tree.ts — Game-agnostic undo/redo/branch reducer (PLAN-UI.md session
-// 3). Generic over a game's state `S` and move `M`; knows nothing about any
+// game-tree.ts — Game-agnostic undo/redo/branch reducer.
+// Generic over a game's state `S` and move `M`; knows nothing about any
 // particular game, and nothing about the network -- callers already have the
 // resulting state in hand (from an `env.apply()` call elsewhere) by the time
 // they dispatch `applyMove`. Pure and synchronous: never returns an `Effect`,
@@ -24,7 +24,7 @@ export interface GameTree<S, M> {
   currentId: string;
   /** Monotonic node-id counter. A plain counter (not `crypto.randomUUID()`)
    * keeps this reducer deterministic and dependency-free, which matters for
-   * save/load (Session 7) round-tripping identical ids and for tests
+   * save/load round-tripping identical ids and for tests
    * asserting on exact ids. */
   nextId: number;
 }
@@ -53,7 +53,7 @@ export type GameTreeAction<S, M> =
  * every move type in this codebase (plain tuples/enums that serialize
  * losslessly, same values this package already round-trips over the wire),
  * not sound in general for types with `undefined` fields or `Map`s. Exported
- * for `AnalysisPanel`/`GameShell` (session 6) to match an analysis
+ * for `AnalysisPanel`/`GameShell` to match an analysis
  * candidate's move against `suggested_move`/`hoveredMove` -- same soundness
  * argument applies there. */
 export function moveEquals<M>(a: M, b: M): boolean {

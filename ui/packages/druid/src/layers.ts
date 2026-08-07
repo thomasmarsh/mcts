@@ -1,11 +1,11 @@
 // layers.ts — Pure reconstruction of Druid's *physical* piece stack from a
-// move history (PLAN-UI.md session 4). Ported from server/static/app.js's
+// move history. Ported from server/static/app.js's
 // `initLayers`/`applyMoveToLayers`, but as a pure function of
 // `MoveStep<GameState, Move>[]` (available for free from `GameTree`'s
 // root-to-current path) instead of app.js's session-long replay-as-you-go
 // bookkeeping. This is strictly more correct than app.js: since a fresh
 // Druid game always starts from an empty board (no "load a game already in
-// progress" path exists yet -- see PLAN-UI.md's decision 1 and session 7),
+// progress" path exists yet),
 // the full history is always available, so there's no need for app.js's
 // "seed from whatever the current board looks like and guess" fallback for
 // pre-existing stacks.

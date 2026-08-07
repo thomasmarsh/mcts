@@ -1,11 +1,10 @@
 // Type-erased, JSON-in/JSON-out contract one `GameAdapter` per game kind
 // implements, so `main.rs`'s router depends on `Arc<dyn GameAdapter>`
-// instead of hard-coding any single game's concrete types (PLAN-UI.md
-// session 2). Every method is stateless: state flows in as a JSON `Value`
-// (round-tripped from a prior response) and back out again, never read from
-// or written to server-side session storage -- see PLAN-UI.md's "Decisions
-// made before writing this plan" #1 for why. One submodule per game kind
-// (`druid`, ...), each holding its own concrete adapter type.
+// instead of hard-coding any single game's concrete types. Every method is
+// stateless: state flows in as a JSON `Value` (round-tripped from a prior
+// response) and back out again, never read from or written to server-side
+// session storage. One submodule per game kind (`druid`, ...), each holding
+// its own concrete adapter type.
 
 pub mod druid;
 pub mod ttt;
@@ -15,7 +14,7 @@ use axum::response::{IntoResponse, Json, Response};
 use serde_json::Value;
 
 /// An adapter-level error, carrying the HTTP status it should map to.
-/// Implements `IntoResponse` directly (PLAN-UI.md session 9) as a structured
+/// Implements `IntoResponse` directly as a structured
 /// `{error, code}` JSON body -- `code` is just the numeric status, not a
 /// separate machine-readable enum, since no caller today needs to
 /// distinguish errors any finer than the status already does. Route

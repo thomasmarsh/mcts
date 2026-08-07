@@ -1,4 +1,4 @@
-// TttRenderer.tsx — A plain 3x3 DOM/CSS grid (PLAN-UI.md session 8), no
+// TttRenderer.tsx — A plain 3x3 DOM/CSS grid, no
 // three.js: the deliberate contrast with `DruidRenderer`'s WebGL board,
 // proving `GameRendererProps` doesn't secretly assume 3D or Druid's own
 // move encoding (a `[Piece, index]` tuple vs. tic-tac-toe's bare cell index).

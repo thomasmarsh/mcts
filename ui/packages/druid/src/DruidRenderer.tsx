@@ -1,6 +1,6 @@
 // DruidRenderer.tsx — Druid's three.js board, ported from
 // server/static/app.js into a typed SolidJS component against the
-// `GameRendererProps` contract (PLAN-UI.md session 4). Behavior parity with
+// `GameRendererProps` contract. Behavior parity with
 // app.js is the bar: same scene setup, piece placement, ghost-preview-on-
 // hover, minimap, and goal-edge framing -- componentized, and driven by
 // props/effects instead of app.js's page-global mutable state and manual
@@ -27,7 +27,7 @@ const BLACK_COLOR = 0x3a3d46;
 const WHITE_COLOR = 0xf2e9d8;
 const MOVE_HILITE = 0x52c2ee;
 
-// Session 6's analysis heatmap -- a warm hue deliberately distinct from
+// The analysis heatmap's color -- a warm hue deliberately distinct from
 // MOVE_HILITE's cyan (legal-move highlights and heatmap tiles can render on
 // the same cell simultaneously) so the two never read as one signal. Proven
 // wins get their own color outright (matches the engine's own MCTS-Solver
@@ -419,7 +419,7 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     return new THREE.LineLoop(geo, mat);
   }
 
-  /** Session 6: renders `props.analysisOverlay` as translucent tiles over
+  /** Renders `props.analysisOverlay` as translucent tiles over
    * each candidate's footprint, intensity scaled by `visitShare` relative to
    * the strongest candidate (not to 1.0 -- a position with no single
    * dominant move would otherwise render every tile faint even when the

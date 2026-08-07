@@ -1,5 +1,5 @@
-// packages/ttt/src/index.ts — tic-tac-toe's `GameKindModule` (PLAN-UI.md
-// session 8): everything `app/src/GameShell.tsx` needs to host it, registered
+// packages/ttt/src/index.ts — tic-tac-toe's `GameKindModule`:
+// everything `app/src/GameShell.tsx` needs to host it, registered
 // under the "ttt" key in `app/src/games.ts`'s `Record<string, GameKindModule>`.
 
 import type { GameKindModule } from "@mcts/game";

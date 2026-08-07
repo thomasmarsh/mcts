@@ -1,8 +1,6 @@
-// PLAN-DRUID.md Session 8 (recalibration after the MAST/GRAVE/AMAF
-// correctness fixes): validate the recalibration's recommendation at real
-// production settings. Earlier phases (cheap fixed-iteration,
-// single-threaded, throwaway scripts deleted after use -- see Session 8 for
-// full results) found:
+// Validates a recalibration of Druid's Strong preset (after the MAST/GRAVE/
+// AMAF correctness fixes) at real production settings. Cheap fixed-iteration,
+// single-threaded exploration (scripts not kept) found:
 //   - Rave/GRAVE select doesn't help Druid at all, even after re-tuning
 //     every hyperparameter -- plain Ucb1 select beats every Rave variant
 //     tried.
@@ -124,7 +122,7 @@ fn fmt(w: usize, l: usize, d: usize) -> String {
 }
 
 fn main() {
-    println!("=== Phase 3: recalibrated config vs. currently-shipped Strong, real budget ===");
+    println!("=== recalibrated config vs. currently-shipped Strong, real budget ===");
     println!(
         "Budget: {}s/move, tree-parallel across {} threads, 5x5 board, {} rounds ({} games)",
         BUDGET_SECS,

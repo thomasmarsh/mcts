@@ -66,7 +66,7 @@ where
     }
 
     /// Tree reuse across moves ("re-rooting", see `SearchConfig::
-    /// reuse_tree` and PLAN-WORK.md session 13): tries to find the node
+    /// reuse_tree`): tries to find the node
     /// matching `state` within `MAX_REROOT_DEPTH` plies of the current root
     /// and promote it in place -- repointing `root_id`, moving its incoming
     /// edge's accumulated stats onto `root_stats`, and flipping `is_root`
@@ -85,9 +85,7 @@ where
     /// reachable from the new root (still exactly as valid as before) or
     /// unreachable siblings of the played line (dead weight, not incorrect
     /// -- a `TableEntry` or `Node` doesn't stop meaning what it means just
-    /// because the tree walk that would find it again got shorter). See
-    /// PLAN-WORK.md session 13's option-1-vs-2 note for the data behind that
-    /// call.
+    /// because the tree walk that would find it again got shorter).
     pub(crate) fn reuse_or_reset(&mut self, player_idx: usize, state: &G::S) -> Id {
         let hash = G::zobrist_hash(state);
         if self.config.reuse_tree {

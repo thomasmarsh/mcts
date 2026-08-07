@@ -1,12 +1,12 @@
 // GameShell.tsx — Game-kind-agnostic chrome: HUD (turn indicator, hand
 // counts via a per-game summary, mode buttons), New Game dialog, AI-move/
-// autoplay controls, and the renderer registry lookup (PLAN-UI.md session
-// 4). Ported from server/static/app.js's DOM-manipulation HUD logic, now
+// autoplay controls, and the renderer registry lookup. Ported from
+// server/static/app.js's DOM-manipulation HUD logic, now
 // driven by `store.dispatch`/reactive effects instead of direct DOM writes
 // and global mutable state -- and generalized to work for any
 // `GAME_MODULES` entry, not just Druid.
 //
-// Per PLAN-UI.md's hard rule, this component never touches the network
+// Per the hard rule, this component never touches the network
 // itself: every effect below only ever calls `props.store.dispatch(...)`.
 
 import { type Component, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
@@ -203,7 +203,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   }
 
   // Switches which kind the (still-open) New Game dialog is about to start
-  // -- session 8's game-kind picker. Dispatches `switchGame` immediately
+  // -- the game-kind picker. Dispatches `switchGame` immediately
   // (rather than deferring to `startNewGame`) so the dialog's seat pickers
   // re-fetch the new kind's own `aiPresets` and its player list updates via
   // `mod()`/`m()` while still open. `state().tree` still holds the outgoing
@@ -240,7 +240,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   const presetOptions = () => (state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : []);
 
   // Falls back to "strong" the same way `manualMovePreset` above does, only
-  // once the user hasn't picked one yet (`ui.selectedPreset`, session 6's
+  // once the user hasn't picked one yet (`ui.selectedPreset`, a
   // slice of `AppState` -- see state.ts).
   const analysisPreset = createMemo(() => {
     const chosen = state().ui.selectedPreset;

@@ -1,11 +1,11 @@
-// AnalysisPanel.tsx — Analysis panel (PLAN-UI.md session 6): dispatches
-// `analyze` (Session 3's job-poll wiring), renders a scrollable table of
+// AnalysisPanel.tsx — Analysis panel: dispatches
+// `analyze` (job-poll wiring), renders a scrollable table of
 // candidate moves by visit share / mean value, the principal variation, and
 // an "Analyze" button -- analysis is real compute, so it never fires
 // automatically on navigation (see GameShell.tsx, which only ever dispatches
 // it in response to this panel's `onAnalyze`).
 //
-// Per PLAN-UI.md's hard rule, this component never touches the network --
+// Per the hard rule, this component never touches the network --
 // its only outputs are `onSelectPreset`/`onAnalyze`/`onHoverMove`, which
 // GameShell wires to dispatch/local state. It also never builds the board
 // heatmap itself: `analysisOverlay` (threaded into the renderer) is derived

@@ -1,14 +1,12 @@
-// Background strength comparison for Session 4 (PLAN-DRUID.md):
-// Easy/Medium with vs without MCTS-Solver, at the real production time
-// budgets (1s/2s). Sequential execution so each single-threaded search gets
-// the whole machine -- same rationale as Session 10/11's
-// strength_hybrid_parallel / strength_server_presets.
+// Background strength comparison: Easy/Medium with vs without MCTS-Solver,
+// at the real production time budgets (1s/2s). Sequential execution so each
+// single-threaded search gets the whole machine -- same rationale as this
+// repo's other strength_* scripts.
 //
 // This is intentionally a long-running job (tens of minutes to hours for
-// n=30). Run as a background process, not synchronously in-session, per
-// Session 11's explicit lesson: that session tried a real-budget comparison
-// synchronously and only got n=4 games (CI useless). Output goes to stdout
-// and a results file.
+// n=30). Run as a background process, not synchronously: a synchronous
+// attempt at a real-budget comparison like this previously got only n=4
+// games (CI useless). Output goes to stdout and a results file.
 //
 // Usage: cargo run --release --example strength_solver
 use std::time::Duration;
@@ -61,11 +59,11 @@ fn fmt_result(r: &GameResult) -> String {
 
 fn main() {
     let init = HashedState::default(); // 5x5, same as server's fresh page load
-    println!("=== Session 4: MCTS-Solver strength comparison (background job) ===");
+    println!("=== MCTS-Solver strength comparison (background job) ===");
     println!("Board: 5x5 default (same as server fresh state)");
     println!("This job intentionally uses real time budgets (1s/2s), runs sequentially,");
     println!("and targets n>=30 games per pairing so CI is meaningful.");
-    println!("Session 11 got n=4 synchronously -> useless CI; this is the fix.");
+    println!("A synchronous attempt previously got n=4 -> useless CI; this is the fix.");
     println!();
 
     // Easy: 1s budget, Ucb1, solver off vs on
@@ -118,5 +116,5 @@ fn main() {
     println!();
     println!("Interpretation: expect solver to be >= baseline, especially on tactical");
     println!("positions. Small n still gives wide CI; larger n is just more wall-clock.");
-    println!("This job ran as a background process per Session 4 charter, not blocking the session.");
+    println!("This job ran as a background process, not blocking synchronously.");
 }

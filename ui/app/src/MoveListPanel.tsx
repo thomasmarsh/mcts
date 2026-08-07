@@ -1,11 +1,11 @@
-// MoveListPanel.tsx — Game-tree navigator (PLAN-UI.md session 5): a linear
+// MoveListPanel.tsx — Game-tree navigator: a linear
 // list of moves along the root-to-current path, click-to-jump
 // (`GameTree.jumpTo`), and a branch indicator on any path node with more
 // than one explored child. A full SGF-style tree widget is explicitly out of
-// scope for v1 (see the plan) -- this stays a flat list plus a small popover
+// scope for v1 -- this stays a flat list plus a small popover
 // for picking among a fork's alternates.
 //
-// Per PLAN-UI.md's hard rule, this component never touches the network --
+// Per the hard rule, this component never touches the network --
 // its only output is `onJump(id)`, which `GameShell` wires to a
 // `tree/jumpTo` dispatch.
 

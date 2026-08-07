@@ -1,5 +1,5 @@
 // tests/reducer.test.ts — Tests for appReducer's aiMove/analysis job-poll
-// wiring: PLAN-UI.md session 3 wires ai_move/analyze through
+// wiring: ai_move/analyze are wired through
 // `@mcts/core`'s `jobPollReduce` even though the transport is a single
 // blocking request, not a real submit-then-poll pair -- `submitJob()`
 // resolves directly to `{status: "done", result}`. These tests confirm that
@@ -106,7 +106,7 @@ describe("appReducer / analysis", () => {
     );
   });
 
-  // Session 6: a stale `analysis` result would otherwise go on labeling a
+  // A stale `analysis` result would otherwise go on labeling a
   // position it was never computed for once the tree moves on -- the
   // heatmap overlay/suggested-move highlight derive straight from this
   // field, so a leftover result renders against the wrong board.

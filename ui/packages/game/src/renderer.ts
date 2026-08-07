@@ -1,5 +1,5 @@
-// renderer.ts — Game-agnostic renderer/GameShell contract (PLAN-UI.md session
-// 4). `packages/druid` (and later `packages/ttt`, session 8) implement
+// renderer.ts — Game-agnostic renderer/GameShell contract.
+// `packages/druid` and `packages/ttt` implement
 // `GameKindModule` once per game; `app/src/GameShell.tsx` consumes a
 // `Record<string, GameKindModule>` registry and never names a concrete S/M/V
 // itself -- the TS-side mirror of `GameAdapter`'s `Value` erasure on the Rust
@@ -25,7 +25,7 @@ export interface MoveStep<S, M> {
  * `Analysis.suggested_move` (computed by `GameShell` via `moveEquals`, since
  * an overlay entry only carries a move, not the wire `Analysis<M>` its
  * suggestion came from) -- the renderer's cue to draw a distinct highlight
- * per session 6's "not just most-visited" requirement, separate from the
+ * for "not just most-visited", separate from the
  * visit-share heat coloring every entry gets. */
 export interface AnalysisOverlayEntry<M> {
   move: M;
@@ -36,8 +36,8 @@ export interface AnalysisOverlayEntry<M> {
 
 /** Everything a board renderer needs to draw one game and report
  * interaction back up to `GameShell`. `hoveredMove` is a controlled prop
- * (not renderer-local state) on purpose: session 6's analysis panel will
- * want to preview a candidate move on the board by hovering its row, which
+ * (not renderer-local state) on purpose: the analysis panel wants
+ * to preview a candidate move on the board by hovering its row, which
  * only works if `GameShell` (not the renderer) owns the value. */
 export interface GameRendererProps<S, M, V> {
   /** Current state, after `history`'s last move. */
@@ -117,7 +117,7 @@ export interface GameKindModule<S, M, V> {
   /** Board-size/etc. new-game config editor. Omit for games with no
    * meaningful config (a fixed board). */
   NewGameFields?: Component<{ config: unknown; onChange: (config: unknown) => void }>;
-  /** Human-readable label for one move (session 5's move-list panel), given
+  /** Human-readable label for one move (used by the move-list panel), given
    * the state it was applied *from* -- mirrors `MoveStep`'s own shape, since
    * some games' labels need board context a bare move can't carry (Druid's
    * needs `before.size` to turn a board index into a coordinate). Falls back

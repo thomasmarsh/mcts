@@ -407,8 +407,7 @@ where
 /// looks up the pair `(prev_action, action)` in `player_bigram_actions` and
 /// uses that conditional average once it has at least `backoff_threshold`
 /// samples, falling back to the plain unigram/MAST score otherwise (a hard
-/// cutover, not the paper's continuous blend -- see PLAN-WORK.md session
-/// 12's design note for why).
+/// cutover, not the paper's continuous blend).
 ///
 /// The "previous action" context is scoped to the current search only: it's
 /// the last edge of the tree-descent path that selected the playout's

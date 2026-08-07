@@ -159,8 +159,8 @@ pub struct Shared<'a, G: Game> {
 /// even under concurrent callers (see `Node::expand`). When `use_mcts_solver`
 /// is set, also decodes and writes this node's `Proven` status the moment a
 /// terminal position is found here -- this is the one legitimate proof
-/// source for a tree node's own position (see PLAN-DRUID.md session 3 point
-/// 1; a rollout's endpoint past this leaf is not).
+/// source for a tree node's own position (a rollout's endpoint past this
+/// leaf is not).
 #[inline]
 pub fn expand<'a, G: Game>(
     index: &'a TreeIndex<G::A>,

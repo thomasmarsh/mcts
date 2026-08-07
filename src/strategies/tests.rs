@@ -442,8 +442,8 @@ fn test_basics() {
 
 #[test]
 fn test_root_report_flags_the_proven_winning_move() {
-    // `Search::root_report` (used by the server's `analyze` endpoint,
-    // PLAN-UI.md session 2) must surface the same forced win MCTS-Solver
+    // `Search::root_report` (used by the server's `analyze` endpoint)
+    // must surface the same forced win MCTS-Solver
     // finds via `choose_action`, not just the single action it returns:
     // the winning move should come back with the most visits and
     // `is_proven`, and the PV should start with it.
@@ -595,7 +595,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
 }
 
 // Regression guard for `ChildArray::child_index`'s indexed lookup (an O(n)
-// scan before this test was written -- see PLAN-WORK.md session 4). Two
+// scan before this test was written). Two
 // parts: correctness of the id -> idx mapping itself, and the concurrency
 // race the indexed version can introduce that a plain scan can't (a thread
 // observing a resolved child id before `id_index` has caught up).
@@ -825,7 +825,7 @@ fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     );
 }
 
-// Session 13 -- tree reuse across moves ("re-rooting", search.rs's
+// Tree reuse across moves ("re-rooting", search.rs's
 // `reuse_or_reset`/`find_reachable`). `reuse_or_reset` is exercised
 // directly (rather than only indirectly via two `choose_action` calls)
 // so each test can isolate exactly what the reuse mechanism itself did,
@@ -1035,7 +1035,7 @@ fn test_reuse_tree_disabled_always_resets() {
 
 #[test]
 fn test_mcts_solver_proof_survives_rerooting() {
-    // PLAN-WORK.md session 13's MCTS-Solver interaction note: a `Proven`
+    // A `Proven`
     // status is a property of a position, not of the search path that
     // found it, so it should still be readable after re-rooting promotes
     // that position's node to root -- confirmed directly here rather
@@ -1128,9 +1128,9 @@ fn test_reuse_tree_composes_with_tree_parallel_self_play_no_panic() {
     // `choose_action_tree_parallel` spawns its worker threads, so there's
     // no concurrent access to `self.index`/`self.root_stats` while it
     // mutates `is_root`/`root_stats` -- exercised here across a real
-    // multi-move self-play game (not just one call), same rationale as
-    // session 10's own finding that only sustained real-time multi-move
-    // games sample enough interleavings to catch tree-parallel races.
+    // multi-move self-play game (not just one call): only sustained
+    // real-time multi-move games sample enough interleavings to catch
+    // tree-parallel races.
     let _guard = parallel_test_guard();
     use crate::games::ttt::*;
     type G = TicTacToe;

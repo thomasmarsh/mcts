@@ -1,6 +1,6 @@
 // reducer.ts — App-level reducer: combines the `GameTree` reducer with
 // `newGame`/`move`/`aiMove`/`analysis` job-poll wiring and current-position
-// (view + legal moves) derivation (PLAN-UI.md sessions 3 and 4).
+// (view + legal moves) derivation.
 //
 // `newGame`/`move`/`aiMove`/`analysis`/`position` are handled as direct
 // branches here, not via `pullback`, because -- like pb's `inlineDiagram`/
@@ -31,7 +31,7 @@ import type {
 } from "./types.js";
 
 /** Every network operation a reducer in this package may perform, lifted to
- * `Effect` -- see PLAN-UI.md's "Hard rule": no reducer or component calls
+ * `Effect` -- hard rule: no reducer or component calls
  * `fetch`/`ApiClient` directly, only `env.xxx()`. Each method is generic per
  * call (not per `Env` instance) so this single `Env` type serves every game
  * kind/state/move combination without itself naming one.
@@ -50,7 +50,7 @@ export interface Env {
 /** Runs an `Effect` for its single value, as a `Promise` -- lets a reducer
  * combine two `env.xxx()` calls (e.g. `position`'s `view` + `legalMoves`)
  * with `Promise.all` while still routing every network call through `env`,
- * never `fetch` directly (PLAN-UI.md's hard rule only forbids the latter). */
+ * never `fetch` directly (the hard rule only forbids the latter). */
 function toPromise<T>(effect: Effect<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     effect.execute((v) => resolve(v)).catch(reject);
@@ -77,7 +77,7 @@ export type PositionAction<V, M> =
   | { tag: "request" }
   /** `epoch` is the epoch this request was issued under (mirrors
    * `aiMove`/`analysis`'s own `epoch`-stamping) -- `nodeId` alone isn't a
-   * sufficient staleness guard once `switchGame` (session 8) can change
+   * sufficient staleness guard once `switchGame` can change
    * `gameKind` while a request for the *previous* kind's current node is
    * still in flight: that response's `nodeId` can coincidentally still
    * equal `draft.tree.currentId` (nothing else has touched the tree yet),
@@ -100,7 +100,7 @@ export type AppAction<S, M, V = unknown> =
   | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
   | { tag: "setSeat"; player: string; control: string }
   | { tag: "setPreset"; preset: string }
-  /** Session 8: switch which game kind the New Game dialog is about to
+  /** Switch which game kind the New Game dialog is about to
    * start, ahead of the actual `newGame` dispatch. Resets everything
    * `newGame`'s own "done" branch resets (see below) plus `aiPresets`/
    * `seats` -- both are per-`gameKind` metadata that a different kind's
@@ -110,7 +110,7 @@ export type AppAction<S, M, V = unknown> =
    * re-derive a position from `tree`'s now-mismatched-kind state in the
    * meantime. */
   | { tag: "switchGame"; gameKind: string }
-  /** Session 7: rehydrate a save file's `{gameKind, config, tree}` wholesale
+  /** Rehydrate a save file's `{gameKind, config, tree}` wholesale
    * -- fully client-side, no `env` call. Resets the same job-poll slices and
    * bumps `epoch` the same way a completed `newGame` does, so an in-flight
    * `aiMove`/`analysis` from the game being replaced gets dropped rather than

@@ -1,6 +1,6 @@
 // `GameAdapter` impl for Druid -- ports `main.rs`'s former Druid-specific,
-// session-stateful handlers onto the stateless per-game contract
-// (PLAN-UI.md session 2). `build_ai`/`AiPreset`/`ai_thread_count` are
+// session-stateful handlers onto the stateless per-game contract.
+// `build_ai`/`AiPreset`/`ai_thread_count` are
 // unchanged from the prior server, just relocated here.
 
 use std::sync::Mutex;
@@ -112,9 +112,9 @@ fn ai_thread_count() -> usize {
 
 // `Strong`/`Master`'s strategy shape: `Ucb1` select (no RAVE/GRAVE) +
 // `DecisiveMove<EpsilonGreedy<Nst>>` simulate, epsilon=0.3,
-// backoff_threshold=5. See PLAN-DRUID.md session 8 for the recalibration
-// that replaced the previously-shipped `select::Rave` + `DruidHeuristic`
-// shape with this simpler one.
+// backoff_threshold=5. This is the result of a recalibration that replaced
+// the previously-shipped `select::Rave` + `DruidHeuristic` shape with this
+// simpler one.
 #[derive(Clone, Copy, Default)]
 struct Ucb1DmNst;
 
@@ -126,9 +126,9 @@ impl<G: Game> Strategy<G> for Ucb1DmNst {
 }
 
 // All four presets enable `use_mcts_solver(true)` (proven-win/loss selection
-// bias and early termination) and `reuse_tree(true)` (PLAN-WORK.md session
-// 14 -- carries forward stats when the same cached engine is handed a state
-// it's already partly explored; see `EngineCache`'s doc comment for how that
+// bias and early termination) and `reuse_tree(true)` (carries forward stats
+// when the same cached engine is handed a state it's already partly
+// explored; see `EngineCache`'s doc comment for how that
 // interacts with this server's now-stateless request model). Easy/Medium
 // stay single-threaded on purpose, so the difficulty gradient reflects
 // search quality, not just core count.
@@ -204,7 +204,7 @@ fn build_ai(preset: AiPreset, budget: Duration) -> Box<dyn Search<G = Druid>> {
 /// a stateless, branch-capable client can no longer guarantee; each
 /// `TreeSearch`'s own `reuse_tree`/`reuse_or_reset` still does its job
 /// *within* a cache hit (repeated calls on the same state keep growing the
-/// same arena, per PLAN-WORK.md session 14), just not across the miss this
+/// same arena), just not across the miss this
 /// cache doesn't try to bridge.
 type CacheEntry = (AiPreset, u64, Box<dyn Search<G = Druid>>);
 
@@ -294,7 +294,7 @@ fn state_to_value(state: &HashedState) -> Value {
 /// directly. Checks `size.is_supported()` and the board length before
 /// calling `from_state` (which otherwise asserts/panics on either) --
 /// deeper shape validation (e.g. a hand count that couldn't arise from real
-/// play) is deliberately left to PLAN-UI.md session 9's hardening pass, not
+/// play) is deliberately left to a future hardening pass, not
 /// this one.
 fn value_to_state(state: &Value) -> Result<HashedState, AdapterError> {
     let state: State = serde_json::from_value(state.clone())
@@ -317,11 +317,11 @@ fn parse_preset(preset: &str) -> Result<AiPreset, AdapterError> {
     AiPreset::parse(preset).ok_or_else(|| AdapterError::bad_request(format!("unknown preset {preset:?}")))
 }
 
-// A client-supplied `analyze` `budget_ms` override (PLAN-UI.md session 2)
+// A client-supplied `analyze` `budget_ms` override
 // bypasses each preset's own `default_time_budget`, so nothing upstream of
-// this adapter bounds it -- clamped, not rejected, per PLAN-UI.md session
-// 9's hardening pass: a client asking for too little/too much is a UX
-// mistake to correct, not a hostile request to reject. The upper bound
+// this adapter bounds it -- clamped, not rejected: a client asking for too
+// little/too much is a UX mistake to correct, not a hostile request to
+// reject. The upper bound
 // leaves real headroom under `main.rs`'s `AI_ROUTE_TIMEOUT` (30s) for
 // `spawn_blocking` scheduling and response-building overhead around the
 // search itself.
@@ -458,7 +458,7 @@ impl GameAdapter for DruidAdapter {
         // fixed at construction (`SearchConfig` has no "change the budget
         // of an in-progress search" hook), so honoring a per-call override
         // and caching are mutually exclusive here. The default-budget path
-        // (the common case -- Session 6's `AnalysisPanel` doesn't expose a
+        // (the common case -- `AnalysisPanel` doesn't expose a
         // budget control) still benefits from the cache normally.
         let mut ai = match budget_ms {
             Some(ms) => build_ai(preset, Duration::from_millis(clamp_budget_ms(ms))),

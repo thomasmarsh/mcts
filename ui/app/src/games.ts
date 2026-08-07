@@ -1,6 +1,5 @@
 // games.ts — The game-kind registry `GameShell` picks a renderer/module
-// from (PLAN-UI.md session 4). One entry per game; session 8 adds
-// `ttt: tttModule` here and nowhere else. Necessarily type-erased at this
+// from. One entry per game. Necessarily type-erased at this
 // boundary (a single `Record` can't carry each module's own concrete
 // S/M/V) -- the TS-side mirror of `GameAdapter`'s `Value` erasure on the
 // Rust side (see `server/adapters/mod.rs`).
@@ -17,8 +16,8 @@ export const GAME_MODULES: Record<string, GameKindModule<any, any, any>> = {
 
 /** Display labels for the game-kind picker (New Game dialog) --
  * `GameKindModule` itself carries no display label (Rust's
- * `GameAdapter::label` isn't mirrored on the TS side, since nothing before
- * session 8 needed a kind-picker UI to show one). */
+ * `GameAdapter::label` isn't mirrored on the TS side, since nothing
+ * needs a kind-picker UI to show one besides this). */
 export const GAME_LABELS: Record<string, string> = {
   druid: "Druid",
   ttt: "Tic-Tac-Toe",

@@ -1,6 +1,6 @@
 // api-client.ts — Typed fetch wrapper for the mcts stateless game server
 // (server/main.rs / server/adapters/mod.rs's `GameAdapter` contract).
-// PLAN-UI.md's "Hard rule": this is the *only* file in this package allowed
+// Hard rule: this is the *only* file in this package allowed
 // to reference `fetch` -- enforced by the fetch-ban eslint rule in
 // ui/eslint.config.js. Three layers, mirroring pb/ui/app/src/api-client.ts:
 //   1. `ApiClient` -- a plain interface of `Promise`-returning methods.
@@ -32,7 +32,7 @@ export interface ApiClient {
 }
 
 /** The server (`AdapterError`'s `IntoResponse` impl, `server/adapters/mod.rs`)
- * returns a structured `{error, code}` JSON body (PLAN-UI.md session 9).
+ * returns a structured `{error, code}` JSON body.
  * Read as text first (a body-limit/timeout rejection, or anything below the
  * `AdapterError` layer, may not be JSON at all) and only then try to parse
  * it as `{error}`, falling back to the raw text. */

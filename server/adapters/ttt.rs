@@ -1,5 +1,5 @@
-// `GameAdapter` impl for tic-tac-toe (PLAN-UI.md session 8) -- the second
-// game proving Session 2's contract generalizes beyond Druid. Deliberately
+// `GameAdapter` impl for tic-tac-toe -- the second
+// game proving the contract generalizes beyond Druid. Deliberately
 // far smaller than `adapters::druid`: no engine-reuse cache (a tic-tac-toe
 // search is cheap enough -- a few thousand iterations at most -- that
 // rebuilding an engine from scratch on every call is not worth the extra
@@ -124,7 +124,7 @@ fn state_to_value(state: &HashedPosition) -> Value {
 /// the `Piece`/array shapes are validated by `serde` here (a wrong-length
 /// `cells` array is rejected for free by the fixed-size `[Option<Piece>; 9]`
 /// type) -- deeper consistency checks (e.g. a `turn` that doesn't match the
-/// piece counts on the board) are deliberately left to PLAN-UI.md session 9's
+/// piece counts on the board) are deliberately left to a future
 /// hardening pass, matching `adapters::druid::value_to_state`'s own
 /// discipline.
 fn value_to_state(state: &Value) -> Result<HashedPosition, AdapterError> {
@@ -155,7 +155,7 @@ impl GameAdapter for TttAdapter {
 
     fn description(&self) -> &'static str {
         "Classic 3x3 tic-tac-toe -- the trivial second game exercising the game-agnostic \
-         UI contract (PLAN-UI.md session 8)."
+         UI contract."
     }
 
     fn default_config(&self) -> Value {

@@ -1,6 +1,5 @@
 // tests/test-store.ts — TCA-style exhaustive TestStore for feature reducers.
-// Ported from pb/ui/tests/test-store.ts (PLAN-UI.md session 3 -- "mirror,
-// don't redesign").
+// Ported from pb/ui/tests/test-store.ts -- mirror, don't redesign.
 //
 // Pattern:
 //   ts.send(action, state => { state.foo = "bar"; })

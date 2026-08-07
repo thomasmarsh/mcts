@@ -1,6 +1,6 @@
-// save-load.ts — Client-side save/load (PLAN-UI.md session 7): serializes
-// {formatVersion, gameKind, config, tree} to/from JSON text. Fully local per
-// decision 1 (the client already holds the full game tree) -- no `env` call,
+// save-load.ts — Client-side save/load: serializes
+// {formatVersion, gameKind, config, tree} to/from JSON text. Fully local:
+// the client already holds the full game tree -- no `env` call,
 // no `fetch`. Lives here rather than app/src because it's game-agnostic
 // (generic over S/M, same as game-tree.ts); the file download/upload DOM
 // mechanics (anchor `download`, `<input type=file>`) belong to app/src's
@@ -10,7 +10,7 @@ import type { GameTree, GameTreeNode } from "./game-tree.js";
 
 /** Bumped whenever `GameTree`'s node shape changes in a way that would make
  * an older save unreadable -- costs nothing today and avoids an unreadable-
- * old-save problem the first time that happens (PLAN-UI.md session 7). */
+ * old-save problem the first time that happens. */
 export const SAVE_FORMAT_VERSION = 1;
 
 export interface SaveFile<S, M> {

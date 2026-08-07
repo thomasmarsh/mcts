@@ -1,6 +1,6 @@
 // types.ts — Wire types mirroring server/adapters/mod.rs's `GameAdapter`
-// contract and server/main.rs's route response shapes (PLAN-UI.md session 3
-// -- "type against the real contract, not the original sketch"). Field names
+// contract and server/main.rs's route response shapes -- typed against the
+// real contract, not a sketch. Field names
 // match the JSON wire format exactly (snake_case): none of the Rust structs
 // this mirrors set `#[serde(rename_all = ...)]`, so there's no
 // camelCase-translation layer here either. Kept separate from both

@@ -197,8 +197,8 @@ impl Default for HashedPosition {
 
 impl HashedPosition {
     /// Rebuilds a `HashedPosition` from a bare `Position` with no move-order
-    /// history -- needed by the stateless game server (PLAN-UI.md session 8),
-    /// which receives a client-supplied position on every request rather than
+    /// history -- needed by the stateless game server, which receives a
+    /// client-supplied position on every request rather than
     /// replaying moves through `apply` one at a time.
     ///
     /// XOR is commutative, so `apply`'s incremental `hashes[s] ^=

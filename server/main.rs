@@ -2,7 +2,7 @@
 //
 // Stateless per request: every route that needs a position takes the full
 // game state as JSON and hands back the result -- there is no server-side
-// session, no mutable game-in-progress, and no auth (PLAN-UI.md session 2).
+// session, no mutable game-in-progress, and no auth.
 // The client is expected to hold the authoritative game tree; the server
 // only ever computes (never remembers) a position's legal moves, successor
 // state, AI move, or analysis. The one server-side mutable state is each
@@ -257,8 +257,8 @@ async fn main() {
 
     // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
     // development -- see ui/README.md) is the only frontend now; the old
-    // hand-rolled `server/static/app.js` was retired in PLAN-UI.md session 4
-    // once it stopped matching session 2's stateless API.
+    // hand-rolled `server/static/app.js` was retired once it stopped
+    // matching the stateless API.
     let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static/dist");
 
     let app = api_router(app_state).fallback_service(ServeDir::new(static_dir));
@@ -384,8 +384,8 @@ mod tests {
         .await;
         assert_eq!(status, HttpStatusCode::NOT_FOUND);
 
-        // PLAN-UI.md session 9: every error response is a structured
-        // `{error, code}` JSON body now, not a bare string.
+        // Every error response is a structured
+        // `{error, code}` JSON body, not a bare string.
         let body = body_json(&body);
         assert_eq!(body["code"], 404);
         assert!(body["error"].as_str().unwrap().contains("nope"));
@@ -706,7 +706,7 @@ mod tests {
         }
     }
 
-    // Tic-tac-toe (PLAN-UI.md session 8): the second game proving the
+    // Tic-tac-toe: the second game proving the
     // `GameAdapter` contract generalizes. Deliberately lighter than Druid's
     // suite above -- no engine-cache or concurrency tests, since
     // `adapters::ttt::TttAdapter` has neither.

@@ -1,11 +1,11 @@
-// Background strength comparison for PLAN-DRUID.md Session 6's production
-// wiring: the newly-wired `Strong` preset (RAVE select/backprop unchanged,
+// Background strength comparison for the production wiring of the `Strong`
+// preset: the newly-wired `Strong` preset (RAVE select/backprop unchanged,
 // `DruidHeuristic`-guided playouts at the grid sweep's chosen epsilon=0.5 /
 // equal(1,1,1) weights) vs. the previously-shipped config it replaced
 // (`Mast`-guided playouts at epsilon=0.7775134, SMAC3-tuned). Both configs
 // run with `use_mcts_solver(true)` (matching what's actually shipped both
-// before and after this session), so the comparison isolates the playout
-// policy swap alone, same principle Session 1 used for its own validation.
+// before and after this change), so the comparison isolates the playout
+// policy swap alone.
 //
 // Real production budget (3s/move, tree-parallel across all cores), so each
 // move already saturates every core -- sequential game execution, same
@@ -59,7 +59,7 @@ fn old_config(name: &str) -> TreeSearch<Druid, strategy::RaveMastDm> {
 }
 
 // Newly-wired Strong config: RaveDecisiveHeuristic (DruidHeuristic-guided
-// playouts), epsilon=0.5 / equal(1,1,1) weights per Session 6's grid sweep.
+// playouts), epsilon=0.5 / equal(1,1,1) weights per the grid sweep.
 fn new_config(name: &str) -> TreeSearch<Druid, RaveDecisiveHeuristic> {
     TreeSearch::new().config(
         SearchConfig::new()
@@ -134,7 +134,7 @@ fn main() {
         println!("  {} : {}", strategies[i].friendly_name(), fmt_result(r));
     }
     println!();
-    println!("Interpretation: expect the new config to be >= the old one, per Session 6's grid");
+    println!("Interpretation: expect the new config to be >= the old one, per the grid");
     println!("sweep finding that DruidHeuristic-guided playouts beat a uniform baseline decisively");
     println!("at this epsilon/weights combo. Small n still gives wide CI; larger n is just more wall-clock.");
 }

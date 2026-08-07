@@ -1,7 +1,6 @@
 // tests/save-load.test.ts — Tests for save-load.ts's serialize/parse round
-// trip and malformed-input rejection (PLAN-UI.md session 7's validation
-// bullet: "save a game with several branches, reload, confirm the full tree
-// -- not just the mainline -- survives intact").
+// trip and malformed-input rejection ("save a game with several branches,
+// reload, confirm the full tree -- not just the mainline -- survives intact").
 
 import { describe, it, expect } from "vitest";
 import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";

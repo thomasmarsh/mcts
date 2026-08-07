@@ -8,8 +8,8 @@ use crate::game::TerminalStatus;
 use rustc_hash::FxHashMap;
 
 /// Converts a playout's terminal check into the `Proven` value it directly
-/// witnesses -- used for the zero-length-`Trial` case (design note session 3
-/// point 1): a leaf that was terminal before `expand()` ever ran on it (only
+/// witnesses -- used for the zero-length-`Trial` case: a leaf that was
+/// terminal before `expand()` ever ran on it (only
 /// possible with `expand_threshold > 1`) has no other proof source, since
 /// the tree node itself was never resolved to `NodeState::Terminal`.
 fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Proven> {
@@ -22,11 +22,11 @@ fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Pr
 
 /// Re-derives `node_id`'s `Proven` status from its (already up to date)
 /// children and, if resolved, writes it -- the per-ancestor step of MCTS-
-/// Solver's backprop pass (design note session 3 point 3). No-ops on a node
+/// Solver's backprop pass. No-ops on a node
 /// that isn't `Expanded` (a `Terminal` node's `Proven` was already set once
 /// at `expand()`-time and isn't re-derived here).
 ///
-/// Deliberately stricter than a literal reading of the design note's Draw
+/// Deliberately stricter than a literal reading of the Draw
 /// clause: `Draw` is only written once *every* explored child is itself
 /// already proven (`Proven != Unproven`), not merely explored. Concluding
 /// `Draw` while a sibling is still `Unproven` would risk permanently

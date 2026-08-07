@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // tests/integration.test.ts — Exercises the real ApiClient against a live
-// `cargo run` server (PLAN-UI.md session 3 acceptance #3): proves the TS
+// `cargo run` server: proves the TS
 // types actually match the live Rust contract, not just each other. Gated
 // behind the server actually being up (`describe.runIf`) so `pnpm test`
 // still passes when nothing is running on 127.0.0.1:7878 -- start the

@@ -1,5 +1,5 @@
 // summary.ts — tic-tac-toe's `GameSummary`/`formatMove`, the per-game half
-// of `GameShell`'s HUD chrome (PLAN-UI.md session 8). No `modes` (unlike
+// of `GameShell`'s HUD chrome. No `modes` (unlike
 // Druid's Sarsen/Lintel buttons) -- tic-tac-toe's move space has no
 // meaningful subdivision, so the module simply omits that field.
 

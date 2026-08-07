@@ -1,5 +1,5 @@
-// packages/druid/src/index.ts — Druid's `GameKindModule` (PLAN-UI.md session
-// 4): everything `app/src/GameShell.tsx` needs to host Druid, registered
+// packages/druid/src/index.ts — Druid's `GameKindModule`:
+// everything `app/src/GameShell.tsx` needs to host Druid, registered
 // under the "druid" key in that file's `Record<string, GameKindModule>`.
 
 import type { GameKindModule } from "@mcts/game";

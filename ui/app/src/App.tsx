@@ -1,5 +1,5 @@
-// App.tsx — Wires the real game store (PLAN-UI.md session 4): creates the
-// `ApiClient`/`Env` pair (Session 3), the `appReducer` store seeded with a
+// App.tsx — Wires the real game store: creates the
+// `ApiClient`/`Env` pair, the `appReducer` store seeded with a
 // placeholder root state (replaced the instant `GameShell`'s bootstrap
 // `newGame` request resolves -- see that file's header comment), and
 // mounts `GameShell`.

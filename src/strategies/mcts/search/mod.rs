@@ -35,8 +35,8 @@ where
     pub(crate) pv: Vec<G::A>,
     pub(crate) table: TranspositionTable<G::S>,
     /// The real state `root_id` represents, tracked purely so
-    /// `reuse_or_reset` (`SearchConfig::reuse_tree`, PLAN-WORK.md session
-    /// 13) can replay a candidate path and verify full state equality
+    /// `reuse_or_reset` (`SearchConfig::reuse_tree`) can replay a candidate
+    /// path and verify full state equality
     /// before promoting onto it -- a `Node` only stores its Zobrist hash,
     /// not its state, and a bare `u64` match isn't proof (a real, if
     /// astronomically rare, 64-bit collision would otherwise silently

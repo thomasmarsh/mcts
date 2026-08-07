@@ -1533,7 +1533,7 @@ fn heuristic_scores(
 /// when no heuristic condition fires every move scores 0 and it degrades to
 /// uniform-random, but when one does fire it always takes it. Browne's "high
 /// probability, not always" warning (a deterministic heuristic playout is
-/// exploitable) is Session 1's job for the caller to supply, by wrapping this
+/// exploitable) is the caller's job to satisfy, by wrapping this
 /// in `simulate::EpsilonGreedy` rather than using it bare.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DruidHeuristic {
@@ -1573,8 +1573,8 @@ impl SimulateStrategy<Druid> for DruidHeuristic {
 /// configuration (`select::Rave`, `backprop::Classic`, `select::RobustChild`)
 /// -- so a search built from this type differs from the already-SMAC3-tuned
 /// `RaveMastDm` config in server/main.rs's Strong/Master presets *only* in
-/// playout policy (`DruidHeuristic` in place of `Mast`), keeping Session 1's
-/// validation isolated to exactly the change this session made.
+/// playout policy (`DruidHeuristic` in place of `Mast`), keeping the
+/// validation isolated to exactly that one change.
 #[derive(Clone, Copy, Default)]
 pub struct RaveDecisiveHeuristic;
 

@@ -60,8 +60,8 @@ where
             // sibling root children), or once the position is fully solved
             // for the `Win(q)`/`Draw` cases. Single-threaded loop only --
             // the tree-/root-parallel loops need a shared/atomic stop
-            // signal instead of this per-thread-local read (see
-            // PLAN-DRUID.md session 3 point 5), deliberately deferred.
+            // signal instead of this per-thread-local read, deliberately
+            // deferred.
             if self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven
             {
                 break;
@@ -154,9 +154,9 @@ where
     // this thread's own final worker tree, not the true cross-worker totals.
     // Not fixed here because no current preset (`server/main.rs`'s
     // `build_ai`) sets `num_threads > 1` -- Strong/Master use tree
-    // parallelism (`num_tree_threads`) instead, per PLAN-WORK.md session
-    // 11's finding that it strictly dominates root parallelism at every
-    // tested board size. If a preset ever does turn root parallelism back
+    // parallelism (`num_tree_threads`) instead: it strictly dominates root
+    // parallelism at every tested board size. If a preset ever does turn
+    // root parallelism back
     // on, `choose_action_root_parallel` would need to cache its merged
     // `ActionTotal`s somewhere `root_report` can read, mirroring this
     // method's shape.

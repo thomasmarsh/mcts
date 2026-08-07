@@ -1,9 +1,9 @@
-// SaveLoadPanel.tsx — Save/load (PLAN-UI.md session 7): fully client-side,
-// no server round-trip -- per decision 1 the client already holds the full
+// SaveLoadPanel.tsx — Save/load: fully client-side,
+// no server round-trip -- the client already holds the full
 // game tree, so Export/Import serialize/parse `{gameKind, config, tree}`
 // straight from/into local state via `@mcts/game`'s `save-load.ts`.
 //
-// Per PLAN-UI.md's hard rule, this component never touches the network --
+// Per the hard rule, this component never touches the network --
 // its only output is `onLoad(gameKind, config, tree)`, which GameShell wires
 // to a `load` dispatch. File I/O here is local Blob/`<input type=file>`
 // mechanics, not `fetch`, so it doesn't run afoul of that rule (same

@@ -582,9 +582,9 @@ pub struct Node<A: Action> {
     state: OnceLock<NodeState<A>>,
     // MCTS-Solver proof status, `0 = Unproven` by default. Not a `OnceLock`:
     // unlike `state`, there's no real init work to gate behind "first caller
-    // wins" -- concurrent derivations of the same node can't disagree (see
-    // PLAN-DRUID.md session 3 point 3), so a plain compare-exchange-from-
-    // Unproven is simpler and sufficient. `Relaxed` throughout, matching
+    // wins" -- concurrent derivations of the same node can't disagree, so a
+    // plain compare-exchange-from-Unproven is simpler and sufficient.
+    // `Relaxed` throughout, matching
     // `num_visits_virtual` on `NodeStats` above.
     proven: AtomicU8,
 }
@@ -624,9 +624,9 @@ where
     /// Writes `status`, but only if this node is still `Unproven` -- once
     /// proven, a node's status is final. Safe to call redundantly from
     /// multiple threads deriving the same (correct) status concurrently: a
-    /// CAS that loses the race is a harmless no-op, not a conflict (see
-    /// PLAN-DRUID.md session 3 point 3 for why concurrent derivations of a
-    /// fixed, real set of children can't disagree).
+    /// CAS that loses the race is a harmless no-op, not a conflict --
+    /// concurrent derivations of a fixed, real set of children can't
+    /// disagree.
     pub fn try_prove(&self, status: Proven) {
         debug_assert_ne!(status, Proven::Unproven);
         let _ = self
