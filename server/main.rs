@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mcts::bench::schema;
+use mcts::bench::{ingest, schema};
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -272,6 +272,32 @@ async fn main() {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
     });
+
+    // Start the background ingest loop.  Every 5 seconds it reads
+    // registry.log and running runs' log.jsonl files, upserts into the
+    // DuckDB, and runs PID liveness reconciliation — so runs launched
+    // via the API have their match results and terminal status appear
+    // within one polling cycle of the child process exiting.
+    {
+        let ingest_state = bench_state.clone();
+        let bench_runs = bench_state.bench_runs_dir.clone();
+        tokio::spawn(async move {
+            // Wait a few seconds before the first poll so short-lived
+            // processes have time to finish, letting the first ingest
+            // pass catch them in one shot rather than waiting for a
+            // second tick.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if let Ok(db) = ingest_state.db.lock() {
+                    if let Err(e) = ingest::ingest_once(&db, &bench_runs) {
+                        eprintln!("bench ingest error: {e}");
+                    }
+                }
+            }
+        });
+    }
 
     // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
     // development -- see ui/README.md) is the only frontend now; the old

@@ -349,13 +349,17 @@ fn play_one_match<W: Write>(
 /// `strategy_ids` using the provided `BenchGame`.  Emits one
 /// `LogRecord::MatchResult` per game to `writer`.  Returns aggregate
 /// `Result` per strategy (same index order as `strategy_ids`).
+///
+/// `seq` is a mutable counter that increments monotonically across all
+/// games played, so callers like `round_robin_bench_multiple` can chain
+/// calls without sequence-number collisions.
 pub fn round_robin_bench<W: Write>(
     game: &dyn BenchGame,
     strategy_ids: &[String],
     writer: &mut W,
     verbose: Verbosity,
+    seq: &mut u64,
 ) -> Vec<Result> {
-    let mut seq: u64 = 1;
     let mut results = vec![Result::default(); strategy_ids.len()];
     let n = strategy_ids.len();
     let total_games = n * (n - 1);
@@ -380,8 +384,8 @@ pub fn round_robin_bench<W: Write>(
             if i == j {
                 continue;
             }
-            let (a_wins, b_wins) = play_one_match(game, &strategy_ids[i], &strategy_ids[j], seq, writer);
-            seq += 1;
+            let (a_wins, b_wins) = play_one_match(game, &strategy_ids[i], &strategy_ids[j], *seq, writer);
+            *seq += 1;
             results[i].wins += a_wins;
             results[i].losses += b_wins;
             results[j].wins += b_wins;
@@ -408,8 +412,9 @@ pub fn round_robin_bench_multiple<W: Write>(
     verbose: Verbosity,
 ) -> Vec<Result> {
     let mut results = vec![Result::default(); strategy_ids.len()];
+    let mut seq: u64 = 1;
     for _ in 0..rounds {
-        let new_results = round_robin_bench(game, strategy_ids, writer, verbose);
+        let new_results = round_robin_bench(game, strategy_ids, writer, verbose, &mut seq);
         for (index, result) in new_results.iter().enumerate() {
             results[index] += *result;
         }
@@ -529,7 +534,8 @@ mod tests {
 
         // 3 strategies -> 6 ordered pairs (i != j)
         let mut buf: Vec<u8> = Vec::new();
-        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent);
+        let mut seq: u64 = 1;
+        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent, &mut seq);
 
         // 6 match result records
         let records: Vec<LogRecord> = buf
@@ -571,7 +577,8 @@ mod tests {
         let ids: Vec<String> = vec!["a".into()];
 
         let mut buf: Vec<u8> = Vec::new();
-        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent);
+        let mut seq: u64 = 1;
+        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent, &mut seq);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].total(), 0);
         assert!(buf.is_empty());
