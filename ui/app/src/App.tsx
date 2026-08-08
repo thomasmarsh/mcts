@@ -2,12 +2,22 @@
 // `ApiClient`/`Env` pair, the `appReducer` store seeded with a
 // placeholder root state (replaced the instant `GameShell`'s bootstrap
 // `newGame` request resolves -- see that file's header comment), and
-// mounts `GameShell`.
+// mounts `GameShell`. Also fetches `GET /api/games` once on mount to
+// populate the kind-picker labels (replacing the former hand-maintained
+// `GAME_LABELS`).
 
 import { render } from "solid-js/web";
-import type { Component } from "solid-js";
+import { onMount, type Component } from "solid-js";
 import { createStore } from "@mcts/core";
-import { appReducer, createApiClient, createEnv, initialAppState, type AppAction, type AppState, type Env } from "@mcts/game";
+import {
+  appReducer,
+  createApiClient,
+  createEnv,
+  initialAppState,
+  type AppAction,
+  type AppState,
+  type Env,
+} from "@mcts/game";
 import { GameShell } from "./GameShell.js";
 import { DEFAULT_GAME_KIND } from "./games.js";
 import "./app.css";
@@ -20,6 +30,16 @@ const App: Component = () => {
     appReducer<unknown, unknown, unknown>,
     env,
   );
+
+  onMount(async () => {
+    try {
+      const games = await api.getGames();
+      store.dispatch({ tag: "setGames", games });
+    } catch (e) {
+      console.warn("Failed to fetch game list:", e);
+    }
+  });
+
   return <GameShell store={store} />;
 };
 

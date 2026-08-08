@@ -115,7 +115,11 @@ export type AppAction<S, M, V = unknown> =
    * bumps `epoch` the same way a completed `newGame` does, so an in-flight
    * `aiMove`/`analysis` from the game being replaced gets dropped rather than
    * grafted onto the loaded one (see `state.ts`'s `epoch` doc). */
-  | { tag: "load"; gameKind: string; config: unknown; tree: GameTree<S, M> };
+  | { tag: "load"; gameKind: string; config: unknown; tree: GameTree<S, M> }
+  /** Static game metadata from `GET /api/games`, fetched once at startup by
+   * `App.tsx`'s `onMount`. Not a job-poll slice since this is a one-time
+   * synchronous replacement, not a repeatable request. */
+  | { tag: "setGames"; games: GameInfo[] };
 
 /** `jobPollReduce` only ever calls `submitJob`/`pollJob` for the `"start"`/
  * `"tick"` tags. Every `submitJob` this reducer builds resolves directly to
@@ -225,6 +229,11 @@ export function appReducer<S, M, V = unknown>(
     draft.analysis = initialJobPollState<Analysis<M>>();
     draft.newGame = initialJobPollState<StateAndView<S, V>>();
     draft.epoch += 1;
+    return null;
+  }
+
+  if (action.tag === "setGames") {
+    draft.gamesInfo = action.games;
     return null;
   }
 

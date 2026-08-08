@@ -6,5 +6,4 @@
 import { fakeModule } from "./fake-game.js";
 
 export const GAME_MODULES = { fake: fakeModule };
-export const GAME_LABELS = { fake: "Fake" };
 export const DEFAULT_GAME_KIND = "fake";

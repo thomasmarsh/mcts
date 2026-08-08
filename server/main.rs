@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, services::ServeDir, timeout::TimeoutLayer};
 
+use adapters::simple::SimpleAdapter;
 use adapters::{AdapterError, GameAdapter};
 
 // A stateless server still shouldn't let a client tie up a `spawn_blocking`
@@ -50,8 +51,8 @@ struct AppState {
 fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     let all: Vec<Arc<dyn GameAdapter>> = vec![
         Arc::new(adapters::druid::DruidAdapter::default()),
-        Arc::new(adapters::traffic_lights::TrafficLightsAdapter),
-        Arc::new(adapters::ttt::TttAdapter),
+        Arc::new(SimpleAdapter::<mcts::games::ttt::TicTacToe>::new()),
+        Arc::new(SimpleAdapter::<mcts::games::traffic_lights::TrafficLights>::new()),
     ];
     all.into_iter().map(|a| (a.kind(), a)).collect()
 }
@@ -708,7 +709,7 @@ mod tests {
     // Tic-tac-toe: the second game proving the
     // `GameAdapter` contract generalizes. Deliberately lighter than Druid's
     // suite above -- no engine-cache or concurrency tests, since
-    // `adapters::ttt::TttAdapter` has neither.
+    // `SimpleAdapter::<TicTacToe>` has neither.
 
     async fn new_ttt_state(app: Router) -> Value {
         let (status, body) = http_post_json(app, "/api/games/ttt/new", json!({})).await;

@@ -5,7 +5,7 @@
 
 import { initialJobPollState, type JobPollState } from "@mcts/core";
 import { initialGameTree, type GameTree } from "./game-tree.js";
-import type { AiMoveResult, AiPresetInfo, Analysis, StateAndView } from "./types.js";
+import type { AiMoveResult, AiPresetInfo, Analysis, GameInfo, StateAndView } from "./types.js";
 
 /** Who controls each player -- keyed by the game's own player id (e.g.
  * Druid's "Black"/"White", tic-tac-toe's "X"/"O") rather than a
@@ -53,6 +53,11 @@ export interface AppState<S, M, V = unknown> {
   config: unknown;
   tree: GameTree<S, M>;
   position: PositionInfo<V, M> | null;
+  /** Static per-kind metadata from `GET /api/games`, fetched once at
+   * startup. Used by the New Game dialog's kind picker for labels and
+   * descriptions. Filled by a `setGames` dispatch from `App.tsx`'s
+   * `onMount`. */
+  gamesInfo: GameInfo[];
   /** Static per-kind metadata (`GameShell`'s seat pickers/AI-move preset
    * list), fetched once per `gameKind` -- unlike `position`, this never
    * changes as the tree is navigated, only when `gameKind` itself does. */
@@ -70,6 +75,7 @@ export function initialAppState<S, M, V = unknown>(gameKind: string, rootState: 
     gameKind,
     epoch: 0,
     config: null,
+    gamesInfo: [],
     tree: initialGameTree<S, M>(rootState),
     position: null,
     aiPresets: initialJobPollState<AiPresetInfo[]>(),

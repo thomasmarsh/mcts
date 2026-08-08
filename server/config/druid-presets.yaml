@@ -1,0 +1,51 @@
+# Druid AI preset configuration.
+#
+# Each preset maps to a Rust-level strategy shape (determined by `build_ai`'s
+# match in `druid.rs`). Only scalar knobs are externalized here; the strategy
+# type composition (which Select/Simulate/Backprop types are used) is a
+# Rust-level generic choice, not data -- changing that still requires editing
+# `druid.rs` itself.
+#
+# `num_threads`: a literal integer (e.g. 1) means exactly that many search
+#   threads; the sentinel `"auto"` means "detect available parallelism and
+#   use all cores."
+# `epsilon`: the `EpsilonGreedy` random-playout bias (Medium/Strong/Master).
+#   Presets that don't use EpsilonGreedy (Easy) ignore this field.
+# `backoff_threshold`: the N-gram backoff threshold for NST playouts
+#   (Strong/Master). Presets that don't use NST ignore this field.
+# `select_c`: the UCB1 exploration constant. Presets that override their
+#   select strategy (Strong/Master's Ucb1DmNst compose type) ignore this.
+
+presets:
+  easy:
+    label: "Easy"
+    description: "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move."
+    time_budget_ms: 1000
+    select_c: 1.414
+    num_threads: 1
+
+  medium:
+    label: "Medium"
+    description: "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move."
+    time_budget_ms: 2000
+    select_c: 1.625
+    num_threads: 1
+    epsilon: 0.1
+
+  strong:
+    label: "Strong"
+    description: "N-gram-guided (NST) decisive-move search with MCTS-Solver for tactical sharpness, ~3s per move, searching one shared tree across all available CPU cores."
+    time_budget_ms: 3000
+    select_c: 1.414
+    num_threads: "auto"
+    epsilon: 0.3
+    backoff_threshold: 5
+
+  master:
+    label: "Master"
+    description: "Same search as Strong, parallelized the same way, with a longer ~8s thinking budget."
+    time_budget_ms: 8000
+    select_c: 1.414
+    num_threads: "auto"
+    epsilon: 0.3
+    backoff_threshold: 5

@@ -7,6 +7,7 @@
 // its own concrete adapter type.
 
 pub mod druid;
+pub mod simple;
 pub mod traffic_lights;
 pub mod ttt;
 
@@ -63,11 +64,11 @@ impl IntoResponse for AdapterError {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AiPresetInfo {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub description: &'static str,
+    pub id: String,
+    pub label: String,
+    pub description: String,
 }
 
 /// The result of a completed `ai_move`: the move chosen and the resulting

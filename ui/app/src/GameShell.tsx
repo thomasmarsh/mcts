@@ -14,7 +14,7 @@ import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
-import { GAME_LABELS, GAME_MODULES } from "./games.js";
+import { GAME_MODULES } from "./games.js";
 import { MoveListPanel } from "./MoveListPanel.js";
 import { AnalysisPanel } from "./AnalysisPanel.js";
 import { SaveLoadPanel } from "./SaveLoadPanel.js";
@@ -377,7 +377,10 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                     Game
                     <select value={state().gameKind} onChange={(e) => onGameKindChange(e.currentTarget.value)}>
                       <For each={Object.keys(GAME_MODULES)}>
-                        {(kind) => <option value={kind}>{GAME_LABELS[kind] ?? kind}</option>}
+                        {(kind) => {
+                          const label = state().gamesInfo.find((g) => g.kind === kind)?.label ?? kind;
+                          return <option value={kind}>{label}</option>;
+                        }}
                       </For>
                     </select>
                   </label>

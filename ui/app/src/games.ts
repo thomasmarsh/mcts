@@ -3,6 +3,12 @@
 // boundary (a single `Record` can't carry each module's own concrete
 // S/M/V) -- the TS-side mirror of `GameAdapter`'s `Value` erasure on the
 // Rust side (see `server/adapters/mod.rs`).
+//
+// Game-kind display labels are not maintained here: they come from
+// `GET /api/games` (`env.getGames()`) fetched on mount and stored in
+// `AppState.gamesInfo` (see `App.tsx`). If a caller needs a display name, it
+// should look up the kind in `state().gamesInfo` or fall back to the raw
+// kind string.
 
 import type { GameKindModule } from "@mcts/game";
 import { druidModule } from "@mcts/druid";
@@ -14,16 +20,6 @@ export const GAME_MODULES: Record<string, GameKindModule<any, any, any>> = {
   druid: druidModule,
   "traffic-lights": trafficLightsModule,
   ttt: tttModule,
-};
-
-/** Display labels for the game-kind picker (New Game dialog) --
- * `GameKindModule` itself carries no display label (Rust's
- * `GameAdapter::label` isn't mirrored on the TS side, since nothing
- * needs a kind-picker UI to show one besides this). */
-export const GAME_LABELS: Record<string, string> = {
-  druid: "Druid",
-  "traffic-lights": "Traffic Lights",
-  ttt: "Tic-Tac-Toe",
 };
 
 export const DEFAULT_GAME_KIND = "druid";
