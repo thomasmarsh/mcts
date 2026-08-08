@@ -11,10 +11,14 @@
 // never consulted for correctness.
 
 mod adapters;
+mod bench;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use mcts::bench::schema;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -257,13 +261,27 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 async fn main() {
     let app_state = Arc::new(AppState { games: registry() });
 
+    // Open (or create) the benchmark database.  Only the server process ever
+    // opens `bench.duckdb` read-write; `bin/bench` and the Python SMAC3
+    // harness communicate via JSONL files and the registry log instead.
+    let bench_runs_dir = PathBuf::from(mcts::bench::launch::BENCH_RUNS_DIR);
+    let bench_db_path = bench_runs_dir.join("bench.duckdb");
+    let bench_conn = schema::open(&bench_db_path)
+        .expect("failed to open benchmark database");
+    let bench_state = Arc::new(bench::BenchState {
+        db: std::sync::Mutex::new(bench_conn),
+        bench_runs_dir,
+    });
+
     // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
     // development -- see ui/README.md) is the only frontend now; the old
     // hand-rolled `server/static/app.js` was retired once it stopped
     // matching the stateless API.
     let static_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("server/static/dist");
 
-    let app = api_router(app_state).fallback_service(ServeDir::new(static_dir));
+    let app = api_router(app_state)
+        .merge(bench::bench_router(bench_state))
+        .fallback_service(ServeDir::new(static_dir));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878")
         .await

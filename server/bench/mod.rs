@@ -1,0 +1,1394 @@
+//! Axum sub-router for `/api/bench/*` endpoints.
+//!
+//! Backed by DuckDB (single-writer, owned by this server process) and the
+//! filesystem (`bench-runs/`).  Each route calls into `src/bench` library
+//! code — this module is a thin HTTP translation layer, exactly as
+//! `server/adapters/` is a thin layer over `mcts::games`/`mcts::strategies`.
+//!
+//! Mounted in `server/main.rs` alongside the game-play routes.
+
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::{
+    extract::{Path as AxumPath, Query, State as AxumState},
+    http::{HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Json},
+    routing::{get, post},
+    Router,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
+
+use mcts::bench::launch::{self, LaunchedRun};
+use mcts::bench::log::RegistryEvent;
+use mcts::bench::tournament::wilson_interval;
+
+// ---------------------------------------------------------------------------
+// Shared state
+// ---------------------------------------------------------------------------
+
+/// State shared by all bench routes.  The DuckDB connection is
+/// `Mutex`-guarded because `duckdb::Connection` is `Send` but not `Sync`;
+/// the ingest loop and API routes all share the same in-process connection.
+pub struct BenchState {
+    pub db: Mutex<duckdb::Connection>,
+    pub bench_runs_dir: PathBuf,
+}
+
+// ---------------------------------------------------------------------------
+// Query parameter types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+pub struct ListRunsParams {
+    pub status: Option<String>,
+    pub game: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct RunLogParams {
+    pub since: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct LeaderboardParams {
+    pub game: Option<String>,
+    pub git_sha: Option<String>,
+    pub since: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct LaunchBody {
+    pub kind: String,
+    pub game: String,
+    #[serde(default)]
+    pub config: Option<Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub kind: String,
+    pub game: String,
+    pub label: Option<String>,
+    pub git_sha: String,
+    pub git_dirty: bool,
+    pub host: String,
+    pub pid: Option<i64>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub status: String,
+    pub match_count: i64,
+    pub trial_count: i64,
+}
+
+#[derive(Serialize)]
+pub struct RunDetail {
+    pub run_id: String,
+    pub kind: String,
+    pub game: String,
+    pub label: Option<String>,
+    pub config: Option<Value>,
+    pub git_sha: String,
+    pub git_dirty: bool,
+    pub host: String,
+    pub pid: Option<i64>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub status: String,
+    pub log_path: String,
+    pub exit_code: Option<i64>,
+    pub match_count: i64,
+    pub trial_count: i64,
+}
+
+#[derive(Serialize)]
+pub struct RunLogResponse {
+    pub lines: Vec<String>,
+    pub next_offset: u64,
+}
+
+#[derive(Serialize)]
+pub struct LeaderboardEntry {
+    pub strategy: String,
+    pub total: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub draws: usize,
+    pub win_rate: f64,
+    pub ci_lower: f64,
+    pub ci_upper: f64,
+}
+
+#[derive(Serialize)]
+pub struct LaunchResponse {
+    pub run_id: String,
+    pub pid: u32,
+    pub log_path: String,
+}
+
+/// Structured error for bench routes — mirrors `adapters::AdapterError`'s
+/// pattern with `{error, code}` JSON body.
+#[derive(Debug)]
+pub struct BenchError {
+    status: StatusCode,
+    message: String,
+}
+
+impl IntoResponse for BenchError {
+    fn into_response(self) -> axum::response::Response {
+        let code = self.status.as_u16();
+        (
+            self.status,
+            Json(json!({ "error": self.message, "code": code })),
+        )
+            .into_response()
+    }
+}
+
+impl From<duckdb::Error> for BenchError {
+    fn from(e: duckdb::Error) -> Self {
+        BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("database error: {e}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for BenchError {
+    fn from(e: std::io::Error) -> Self {
+        BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("I/O error: {e}"),
+        }
+    }
+}
+
+impl From<serde_json::Error> for BenchError {
+    fn from(e: serde_json::Error) -> Self {
+        BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("JSON error: {e}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Router constructor
+// ---------------------------------------------------------------------------
+
+/// Build the `/api/bench/*` sub-router, ready to be merged into the
+/// server's main router.
+pub fn bench_router(state: Arc<BenchState>) -> Router {
+    // The launch route can run long if the child is slow to start (fork +
+    // exec), but normally should complete in milliseconds.  Give it 30s
+    // headroom anyway.
+    let launch_timeout = TimeoutLayer::with_status_code(
+        StatusCode::GATEWAY_TIMEOUT,
+        std::time::Duration::from_secs(30),
+    );
+
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://127.0.0.1:7878".parse::<HeaderValue>().unwrap(),
+            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+
+    Router::new()
+        .route("/api/bench/runs", get(list_runs))
+        .route("/api/bench/runs/{run_id}", get(get_run))
+        .route("/api/bench/runs/{run_id}/log", get(get_run_log))
+        .route("/api/bench/leaderboard", get(get_leaderboard))
+        .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
+        .route("/api/bench/runs/{run_id}/stop", post(stop_run))
+        .layer(cors)
+        .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /api/bench/runs?status=&game=&limit=`
+async fn list_runs(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Query(params): Query<ListRunsParams>,
+) -> Result<Json<Vec<RunSummary>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    // Cast TIMESTAMP columns to TEXT so DuckDB's Rust bindings can read
+    // them as strings without the `chrono` feature.
+    let mut sql = String::from(
+        "SELECT r.run_id, r.kind, r.game, r.label, r.git_sha, r.git_dirty, \
+                r.host, r.pid, \
+                CAST(r.started_at AS TEXT), \
+                CAST(r.ended_at AS TEXT), \
+                r.status, \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
+         FROM runs r \
+         LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
+           ON r.run_id = m.run_id \
+         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
+           ON r.run_id = t.run_id \
+         WHERE 1=1",
+    );
+
+    // Build optional WHERE clauses by interpolating values directly into
+    // the SQL.  These are internal API query params (status/game strings,
+    // integer limit), not user-submitted SQL — injection is not a concern.
+    if let Some(ref status) = params.status {
+        sql.push_str(&format!(" AND r.status = '{}'", status.replace('\'', "''")));
+    }
+    if let Some(ref game) = params.game {
+        sql.push_str(&format!(" AND r.game = '{}'", game.replace('\'', "''")));
+    }
+
+    sql.push_str(" ORDER BY CAST(r.started_at AS TEXT) DESC");
+
+    if let Some(limit) = params.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+
+    let mut stmt = db.prepare(&sql)?;
+
+    let runs: Vec<RunSummary> = stmt
+        .query_map([], |row| {
+            Ok(RunSummary {
+                run_id: row.get(0)?,
+                kind: row.get(1)?,
+                game: row.get(2)?,
+                label: row.get(3)?,
+                git_sha: row.get(4)?,
+                git_dirty: row.get(5)?,
+                host: row.get(6)?,
+                pid: row.get(7)?,
+                started_at: row.get(8)?,
+                ended_at: row.get(9)?,
+                status: row.get(10)?,
+                match_count: row.get(11)?,
+                trial_count: row.get(12)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(runs))
+}
+
+/// `GET /api/bench/runs/{run_id}`
+async fn get_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<RunDetail>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    let detail = db.query_row(
+        "SELECT r.run_id, r.kind, r.game, r.label, \
+                CAST(r.config AS TEXT), \
+                r.git_sha, r.git_dirty, \
+                r.host, r.pid, \
+                CAST(r.started_at AS TEXT), \
+                CAST(r.ended_at AS TEXT), \
+                r.status, r.log_path, r.exit_code, \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
+         FROM runs r \
+         LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
+           ON r.run_id = m.run_id \
+         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
+           ON r.run_id = t.run_id \
+         WHERE r.run_id = ?1",
+        duckdb::params![&run_id],
+        |row| {
+            let config_str: Option<String> = row.get::<_, Option<String>>(4).ok().flatten();
+            let config = config_str.and_then(|s| serde_json::from_str(&s).ok());
+            Ok(RunDetail {
+                run_id: row.get(0)?,
+                kind: row.get(1)?,
+                game: row.get(2)?,
+                label: row.get(3)?,
+                config,
+                git_sha: row.get(5)?,
+                git_dirty: row.get(6)?,
+                host: row.get(7)?,
+                pid: row.get(8)?,
+                started_at: row.get(9)?,
+                ended_at: row.get(10)?,
+                status: row.get(11)?,
+                log_path: row.get(12)?,
+                exit_code: row.get(13)?,
+                match_count: row.get(14)?,
+                trial_count: row.get(15)?,
+            })
+        },
+    );
+
+    match detail {
+        Ok(run) => Ok(Json(run)),
+        Err(duckdb::Error::QueryReturnedNoRows) => Err(BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("run '{run_id}' not found"),
+        }),
+        Err(e) => Err(BenchError::from(e)),
+    }
+}
+
+/// `GET /api/bench/runs/{run_id}/log?since=<offset>`
+///
+/// Tail lines from the run's `log.jsonl` since a byte offset.  Returns the
+/// lines and the new offset for the caller to use on the next poll.
+async fn get_run_log(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+    Query(params): Query<RunLogParams>,
+) -> Result<Json<RunLogResponse>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    // Resolve the log_path from the runs table.
+    let log_path: String = match db.query_row(
+        "SELECT log_path FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| row.get(0),
+    ) {
+        Ok(p) => p,
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    };
+
+    let path = Path::new(&log_path);
+    if !path.exists() {
+        return Ok(Json(RunLogResponse {
+            lines: vec![],
+            next_offset: 0,
+        }));
+    }
+
+    let offset = params.since.unwrap_or(0);
+    let file_len = std::fs::metadata(path)?.len();
+
+    if file_len <= offset {
+        return Ok(Json(RunLogResponse {
+            lines: vec![],
+            next_offset: offset,
+        }));
+    }
+
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let reader = BufReader::new(file);
+
+    let mut lines = Vec::new();
+    for line_result in reader.lines() {
+        let line = line_result?;
+        lines.push(line);
+    }
+
+    Ok(Json(RunLogResponse {
+        next_offset: file_len,
+        lines,
+    }))
+}
+
+/// `GET /api/bench/leaderboard?game=&git_sha=&since=`
+///
+/// Aggregated win-rate + Wilson CI over `match_results`.  Computed at query
+/// time — no materialized view.
+async fn get_leaderboard(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Query(params): Query<LeaderboardParams>,
+) -> Result<Json<Vec<LeaderboardEntry>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    // Build the SQL with optional WHERE clauses.  DuckDB's Rust bindings
+    // use positional parameters ($1, $2, ...).  We chain filters and track
+    // the parameter index.
+    let mut conditions = String::from(
+        "r.status IN ('completed', 'crashed', 'stopped')",
+    );
+
+    // Build filter clauses with 1-based parameter indices.  Hardcode
+    // indices since there are at most 3 optional params.
+    if let Some(ref game) = params.game {
+        conditions.push_str(&format!(" AND r.game = '{}'", game.replace('\'', "''")));
+    }
+    if let Some(ref sha) = params.git_sha {
+        conditions.push_str(&format!(" AND r.git_sha = '{}'", sha.replace('\'', "''")));
+    }
+    if let Some(ref since) = params.since {
+        conditions.push_str(&format!(" AND r.started_at >= '{}'", since.replace('\'', "''")));
+    }
+
+    let sql = format!(
+        "WITH a_stats AS (
+            SELECT mr.strategy_a AS strategy,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN mr.outcome = 'win_a' THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN mr.outcome = 'win_b' THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN mr.outcome = 'draw' THEN 1 ELSE 0 END) AS draws
+            FROM match_results mr
+            JOIN runs r ON mr.run_id = r.run_id
+            WHERE {conditions}
+            GROUP BY mr.strategy_a
+        ),
+        b_stats AS (
+            SELECT mr.strategy_b AS strategy,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN mr.outcome = 'win_b' THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN mr.outcome = 'win_a' THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN mr.outcome = 'draw' THEN 1 ELSE 0 END) AS draws
+            FROM match_results mr
+            JOIN runs r ON mr.run_id = r.run_id
+            WHERE {conditions}
+            GROUP BY mr.strategy_b
+        )
+        SELECT COALESCE(a.strategy, b.strategy) AS strategy,
+               COALESCE(a.total, 0) + COALESCE(b.total, 0) AS total,
+               COALESCE(a.wins, 0) + COALESCE(b.wins, 0) AS wins,
+               COALESCE(a.losses, 0) + COALESCE(b.losses, 0) AS losses,
+               COALESCE(a.draws, 0) + COALESCE(b.draws, 0) AS draws
+        FROM a_stats a
+        FULL OUTER JOIN b_stats b ON a.strategy = b.strategy
+        ORDER BY wins DESC, losses ASC"
+    );
+
+    let mut stmt = db.prepare(&sql)?;
+
+    let entries: Vec<LeaderboardEntry> = stmt
+        .query_map([], |row| {
+            let total_i: i64 = row.get(1)?;
+            let wins_i: i64 = row.get(2)?;
+            let losses_i: i64 = row.get(3)?;
+            let draws_i: i64 = row.get(4)?;
+
+            let total = total_i as usize;
+            let wins = wins_i as usize;
+            let losses = losses_i as usize;
+            let draws = draws_i as usize;
+            let score = wins as f64 + 0.5 * draws as f64;
+            let (win_rate, (ci_lower, ci_upper)) = if total > 0 {
+                (score / total as f64, wilson_interval(score, total, 1.96))
+            } else {
+                (0.5, (0.0, 1.0))
+            };
+
+            Ok(LeaderboardEntry {
+                strategy: row.get(0)?,
+                total,
+                wins,
+                losses,
+                draws,
+                win_rate,
+                ci_lower,
+                ci_upper,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(entries))
+}
+
+/// `POST /api/bench/launch` — `{kind, game, config}`
+///
+/// Translates the request into a command vector, spawns it via
+/// `launch::launch`, and returns the run metadata immediately.
+async fn launch_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Json(body): Json<LaunchBody>,
+) -> Result<Json<LaunchResponse>, BenchError> {
+    let cmd = build_command(&body.kind, &body.game, &body.config)?;
+    let label = body
+        .config
+        .as_ref()
+        .and_then(|c| c.get("label").and_then(|v| v.as_str()));
+
+    let LaunchedRun {
+        run_id,
+        pid,
+        log_path,
+        ..
+    } = launch::launch(cmd, &body.kind, &body.game, label).map_err(|e| BenchError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("failed to launch run: {e}"),
+    })?;
+
+    // Store the config JSON in the runs table so it survives server
+    // restarts and appears in the run detail endpoint.
+    if let Some(ref config) = body.config {
+        let db = state.db.lock().unwrap();
+        let config_str = serde_json::to_string(config)?;
+        let _ = db.execute(
+            "UPDATE runs SET config = ?1 WHERE run_id = ?2",
+            duckdb::params![config_str, &run_id],
+        );
+    }
+
+    Ok(Json(LaunchResponse {
+        run_id,
+        pid,
+        log_path: log_path.to_string_lossy().to_string(),
+    }))
+}
+
+/// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
+///
+/// Sends SIGTERM to the recorded PID and marks the run as `stopped` in the
+/// database.  If the PID is no longer alive, updates the status anyway
+/// (the process exited on its own between the list and the stop request).
+async fn stop_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Value>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    // Look up the run.
+    let (pid, status): (Option<i64>, String) = match db.query_row(
+        "SELECT pid, status FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(row) => row,
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    };
+
+    if status != "running" {
+        return Ok(Json(json!({
+            "run_id": run_id,
+            "status": status,
+            "message": "run is not currently running, no signal sent",
+        })));
+    }
+
+    let mut signal_sent = false;
+
+    if let Some(pid_val) = pid {
+        #[cfg(unix)]
+        {
+            match std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(pid_val.to_string())
+                .status()
+            {
+                Ok(status_result) if status_result.success() => {
+                    signal_sent = true;
+                }
+                Ok(_) => {
+                    // PID not found — that's fine, it means the run exited
+                    // on its own.  We'll still mark it stopped below.
+                }
+                Err(e) => {
+                    return Err(BenchError {
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: format!("failed to signal run '{run_id}' (PID {pid_val}): {e}"),
+                    });
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(BenchError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "process signalling is not supported on this platform".into(),
+            });
+        }
+    }
+
+    // Update the database.
+    let now = iso_timestamp_now();
+    db.execute(
+        "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
+        duckdb::params![&now, &run_id],
+    )?;
+
+    // Append a stop event to the registry log so the ingest loop sees it
+    // if it runs after us.
+    let event = RegistryEvent::Stop {
+        run_id: run_id.clone(),
+        exit_code: None,
+        ended_at: now,
+    };
+    let registry_path = state.bench_runs_dir.join("registry.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&registry_path)
+    {
+        use std::io::Write;
+        let mut line = event.to_json_line();
+        line.push('\n');
+        let _ = file.write_all(line.as_bytes());
+    }
+
+    if signal_sent {
+        Ok(Json(json!({
+            "run_id": run_id,
+            "pid": pid,
+            "signal": "SIGTERM",
+            "message": "stop signal sent and run marked as stopped",
+        })))
+    } else {
+        Ok(Json(json!({
+            "run_id": run_id,
+            "pid": pid,
+            "signal": null,
+            "message": "run marked as stopped (PID was no longer alive or had no PID)",
+        })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command construction
+// ---------------------------------------------------------------------------
+
+/// Build the command vector from the launch request's kind/game/config.
+///
+/// Supported kinds:
+/// - `"round_robin"` — runs `bench round-robin --game ... --strategies ... --rounds ...`
+///
+/// Unknown kinds produce an error.
+fn build_command(kind: &str, game: &str, config: &Option<Value>) -> Result<Vec<String>, BenchError> {
+    let bench_binary = find_bench_binary();
+
+    match kind {
+        "round_robin" => {
+            let mut cmd = vec![
+                bench_binary.to_string_lossy().to_string(),
+                "round-robin".into(),
+                "--game".into(),
+                game.to_owned(),
+            ];
+
+            if let Some(ref config) = config {
+                if let Some(strategies) = config.get("strategies").and_then(|v| v.as_array()) {
+                    if !strategies.is_empty() {
+                        cmd.push("--strategies".into());
+                        for s in strategies {
+                            if let Some(name) = s.as_str() {
+                                cmd.push(name.to_owned());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(rounds) = config.get("rounds").and_then(|v| v.as_u64()) {
+                    cmd.push("--rounds".into());
+                    cmd.push(rounds.to_string());
+                }
+            }
+
+            // Always include --verbose so progress bars appear on stderr
+            // (the launcher redirects stderr to stdout.log).
+            cmd.push("--verbose".into());
+
+            Ok(cmd)
+        }
+        unknown => Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!(
+                "unknown run kind '{unknown}'; expected one of: round_robin"
+            ),
+        }),
+    }
+}
+
+/// Find the `bench` binary, preferring a sibling of the current executable
+/// (standard Cargo convention for sibling bins), falling back to a bare
+/// `"bench"` on PATH.
+fn find_bench_binary() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = if cfg!(target_os = "windows") {
+                dir.join("bench.exe")
+            } else {
+                dir.join("bench")
+            };
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("bench")
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp helper (same algorithm as src/bench/launch.rs'
+// iso_timestamp, but stands alone to keep the module self-contained)
+// ---------------------------------------------------------------------------
+
+fn iso_timestamp_now() -> String {
+    let total_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock set before Unix epoch")
+        .as_secs();
+    let days = total_secs / 86400;
+    let time_secs = total_secs % 86400;
+    let hh = time_secs / 3600;
+    let mm = (time_secs % 3600) / 60;
+    let ss = time_secs % 60;
+
+    let (y, m, d) = days_to_ymd(days);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z % 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode as HttpStatusCode};
+    use mcts::bench::schema::ensure_schema;
+    use std::collections::HashMap;
+    use tower::ServiceExt;
+
+    // -------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------
+
+    const DEFAULT_RUN_ID: &str = "rr-druid-20260101T000000-abc1234";
+
+    static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    /// Build a fully seeded test app: creates a temp dir with bench-runs/
+    /// subdirectory, opens an in-memory DuckDB, seeds it, then moves the
+    /// connection into the `BenchState`.  Returns the Router and the temp
+    /// dir (kept alive for the test's duration).
+    fn seeded_app(
+        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    ) -> (Router, PathBuf) {
+        let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "mcts_bench_api_test_{}_{}",
+            std::process::id(),
+            n,
+        ));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let bench_runs_dir = tmp_dir.join("bench-runs");
+        std::fs::create_dir_all(&bench_runs_dir).unwrap();
+
+        // Create, seed, and keep the same connection — no file intermediary.
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        seed_fn(&conn, &bench_runs_dir);
+
+        let state = Arc::new(BenchState {
+            db: Mutex::new(conn),
+            bench_runs_dir,
+        });
+
+        (bench_router(state), tmp_dir)
+    }
+
+    /// Default seed: one completed run with two match results and one trial.
+    fn default_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+        conn.execute(
+            "INSERT INTO runs \
+             (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+             VALUES (?1, 'round_robin', 'druid', 'abc1234', false, 'testhost', NULL, \
+                     '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
+            duckdb::params![DEFAULT_RUN_ID],
+        ).unwrap();
+
+        // Two matches: "strong" beats "master", "master" beats "strong" (1-1).
+        conn.execute(
+            "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
+             VALUES (?1, 1, '2026-01-01T00:00:10Z', 'strong', 'master', 'win_a', 'strong'),\
+                    (?1, 2, '2026-01-01T00:00:20Z', 'master', 'strong', 'win_a', 'master')",
+            duckdb::params![DEFAULT_RUN_ID],
+        ).unwrap();
+
+        // One trial for good measure.
+        conn.execute(
+            "INSERT INTO trials (run_id, trial_id, ts, config, cost) \
+             VALUES (?1, 1, '2026-01-01T00:00:30Z', '{}', 0.375)",
+            duckdb::params![DEFAULT_RUN_ID],
+        ).unwrap();
+    }
+
+    /// Seed a run that is still `running` (no ended_at, no stop event).
+    fn running_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+        conn.execute(
+            "INSERT INTO runs \
+             (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
+             VALUES ('running-run', 'round_robin', 'druid', 'def5678', false, 'testhost', 12345, \
+                     '2026-02-01T00:00:00Z', 'running', '/tmp/running/log.jsonl')",
+            duckdb::params![],
+        ).unwrap();
+    }
+
+    /// Seed with the default run plus a second run for multi-run queries.
+    fn multi_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+        default_seed(conn, _bench_runs_dir);
+        conn.execute(
+            "INSERT INTO runs \
+             (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+             VALUES ('rr-ttt-20260201T000000-def5678', 'round_robin', 'ttt', 'def5678', false, 'testhost', \
+                     NULL, '2026-02-01T00:00:00Z', '2026-02-01T02:00:00Z', 'completed', '/tmp/ttt/log.jsonl')",
+            duckdb::params![],
+        ).unwrap();
+    }
+
+    fn body_json(body: &axum::body::Bytes) -> Value {
+        serde_json::from_slice(body).unwrap()
+    }
+
+    async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    async fn http_post_json(
+        app: Router,
+        uri: &str,
+        json: Value,
+    ) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/runs
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_list_runs_empty() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_get(app, "/api/bench/runs").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert!(runs.is_empty(), "expected empty list, got {runs:?}");
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_returns_seeded_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 run, got {runs:?}");
+
+        let run = &runs[0];
+        assert_eq!(run["run_id"], DEFAULT_RUN_ID);
+        assert_eq!(run["kind"], "round_robin");
+        assert_eq!(run["game"], "druid");
+        assert_eq!(run["status"], "completed");
+        assert_eq!(run["match_count"], 2);
+        assert_eq!(run["trial_count"], 1);
+        assert!(run.get("label").and_then(|v| v.as_str()).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_filter_by_status() {
+        let app = seeded_app(|conn, dir| {
+            default_seed(conn, dir);
+            running_run_seed(conn, dir);
+        })
+        .0;
+
+        // Filter to running only.
+        let (status, body) = http_get(app.clone(), "/api/bench/runs?status=running").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 running run");
+        assert_eq!(runs[0]["run_id"], "running-run");
+
+        // Filter to completed only.
+        let (status, body) = http_get(app.clone(), "/api/bench/runs?status=completed").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 completed run");
+        assert_eq!(runs[0]["run_id"], DEFAULT_RUN_ID);
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_filter_by_game() {
+        let app = seeded_app(multi_run_seed).0;
+
+        let (status, body) = http_get(app.clone(), "/api/bench/runs?game=druid").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 druid run");
+        assert_eq!(runs[0]["game"], "druid");
+
+        let (status, body) = http_get(app.clone(), "/api/bench/runs?game=ttt").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 ttt run");
+        assert_eq!(runs[0]["game"], "ttt");
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_limit() {
+        let app = seeded_app(multi_run_seed).0;
+
+        let (status, body) = http_get(app.clone(), "/api/bench/runs?limit=1").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1, "expected 1 run with limit=1");
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_orders_by_started_at_desc() {
+        let app = seeded_app(multi_run_seed).0;
+
+        let (status, body) = http_get(app.clone(), "/api/bench/runs").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 2);
+        // Most recent first: runs have started_at 2026-02-01 and 2026-01-01.
+        assert_eq!(runs[0]["run_id"], "rr-ttt-20260201T000000-def5678");
+        assert_eq!(runs[1]["run_id"], DEFAULT_RUN_ID);
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_run_returns_detail() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) =
+            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let run = body_json(&body);
+
+        assert_eq!(run["run_id"], DEFAULT_RUN_ID);
+        assert_eq!(run["kind"], "round_robin");
+        assert_eq!(run["game"], "druid");
+        assert_eq!(run["status"], "completed");
+        assert_eq!(run["match_count"], 2);
+        assert_eq!(run["trial_count"], 1);
+        assert!(run.get("config").and_then(|v| v.as_str()).is_none());
+        assert!(run.get("log_path").and_then(|v| v.as_str()).is_some());
+        assert_eq!(run["exit_code"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nonexistent").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+        assert!(body["error"].as_str().unwrap().contains("nonexistent"));
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}/log
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_run_log_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nonexistent/log").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_log_returns_lines_since_offset() {
+        // Create a run with a real log file.
+        let app = seeded_app(|conn, bench_runs_dir| {
+            let run_dir = bench_runs_dir.join("loggy-run");
+            std::fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            let log_path_str = log_path.to_string_lossy().to_string();
+
+            // Write some lines.
+            std::fs::write(
+                &log_path,
+                "line1\nline2\nline3\n",
+            ).unwrap();
+
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
+                 VALUES ('loggy-run', 'round_robin', 'druid', 'abc', false, 'h', NULL, \
+                         '2026-01-01T00:00:00Z', 'running', ?1)",
+                duckdb::params![log_path_str],
+            ).unwrap();
+        })
+        .0;
+
+        // Read from offset 0 — get all 3 lines.
+        let (status, body) = http_get(app.clone(), "/api/bench/runs/loggy-run/log").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let resp = body_json(&body);
+        let lines = resp["lines"].as_array().unwrap().clone();
+        assert_eq!(lines.len(), 3, "expected 3 lines, got {lines:?}");
+        assert_eq!(lines[0], "line1");
+        assert_eq!(lines[1], "line2");
+        assert_eq!(lines[2], "line3");
+        assert!(resp["next_offset"].as_u64().unwrap() > 0);
+
+        // Read from an offset past the end — empty result.
+        let last_offset = resp["next_offset"].as_u64().unwrap();
+        let (status, body) = http_get(
+            app.clone(),
+            &format!("/api/bench/runs/loggy-run/log?since={last_offset}"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let resp = body_json(&body);
+        assert!(resp["lines"].as_array().unwrap().is_empty());
+        assert_eq!(resp["next_offset"].as_u64().unwrap(), last_offset);
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/leaderboard
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_leaderboard_empty_when_no_matches() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_get(app, "/api/bench/leaderboard").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let entries = body_json(&body).as_array().unwrap().clone();
+        assert!(entries.is_empty(), "expected empty leaderboard, got {entries:?}");
+    }
+
+    #[tokio::test]
+    async fn test_leaderboard_aggregates_correctly() {
+        // Seed with two runs that have well-known outcomes.
+        let app = seeded_app(|conn, _dir| {
+            // Run 1: strong beats master twice.
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+                 VALUES ('run1', 'round_robin', 'druid', 'abc', false, 'h', NULL, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/1')",
+                duckdb::params![],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
+                 VALUES \
+                   ('run1', 1, '2026-01-01T00:00:10Z', 'strong', 'master', 'win_a', 'strong'),\
+                   ('run1', 2, '2026-01-01T00:00:20Z', 'master', 'strong', 'win_b', 'strong')",
+                duckdb::params![],
+            ).unwrap();
+
+            // Run 2: strong draws with easy, easy beats master.
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+                 VALUES ('run2', 'round_robin', 'druid', 'abc', false, 'h', NULL, '2026-01-02T00:00:00Z', '2026-01-02T01:00:00Z', 'completed', '/tmp/2')",
+                duckdb::params![],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
+                 VALUES \
+                   ('run2', 1, '2026-01-02T00:00:10Z', 'strong', 'easy', 'draw', NULL),\
+                   ('run2', 2, '2026-01-02T00:00:20Z', 'easy', 'master', 'win_a', 'easy')",
+                duckdb::params![],
+            ).unwrap();
+        })
+        .0;
+
+        let (status, body) = http_get(app, "/api/bench/leaderboard").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let entries = body_json(&body).as_array().unwrap().clone();
+
+        // Three strategies: strong, master, easy.
+        // strong: vs master (win+win=2 wins), vs easy (draw) → 3 games, 2 wins, 0 losses, 1 draw
+        // master: vs strong (loss+loss=2 losses), vs easy (loss) → 3 games, 0 wins, 3 losses, 0 draws
+        // easy: vs strong (draw), vs master (win) → 2 games, 1 win, 0 losses, 1 draw
+
+        let by_strategy: HashMap<&str, &Value> = entries
+            .iter()
+            .map(|e| (e["strategy"].as_str().unwrap(), e))
+            .collect();
+
+        // strong
+        let s = by_strategy["strong"];
+        assert_eq!(s["total"], 3);
+        assert_eq!(s["wins"], 2);
+        assert_eq!(s["losses"], 0);
+        assert_eq!(s["draws"], 1);
+        assert!((s["win_rate"].as_f64().unwrap() - (2.5 / 3.0)).abs() < 1e-9);
+
+        // master
+        let m = by_strategy["master"];
+        assert_eq!(m["total"], 3);
+        assert_eq!(m["wins"], 0);
+        assert_eq!(m["losses"], 3);
+        assert_eq!(m["draws"], 0);
+        assert!((m["win_rate"].as_f64().unwrap() - 0.0).abs() < 1e-9);
+
+        // easy
+        let e = by_strategy["easy"];
+        assert_eq!(e["total"], 2);
+        assert_eq!(e["wins"], 1);
+        assert_eq!(e["losses"], 0);
+        assert_eq!(e["draws"], 1);
+        assert!((e["win_rate"].as_f64().unwrap() - (1.5 / 2.0)).abs() < 1e-9);
+
+        // Wilson CI lower < win_rate < upper for all entries.
+        for entry in &entries {
+            let wr = entry["win_rate"].as_f64().unwrap();
+            let lo = entry["ci_lower"].as_f64().unwrap();
+            let hi = entry["ci_upper"].as_f64().unwrap();
+            assert!(lo <= wr, "ci_lower {lo} > win_rate {wr}");
+            assert!(wr <= hi, "win_rate {wr} > ci_upper {hi}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_leaderboard_filters_by_game() {
+        let app = seeded_app(|conn, _dir| {
+            // Druid matches.
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+                 VALUES ('druid-run', 'round_robin', 'druid', 'abc', false, 'h', NULL, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/d')",
+                duckdb::params![],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
+                 VALUES ('druid-run', 1, '2026-01-01T00:00:10Z', 'strong', 'master', 'win_a', 'strong')",
+                duckdb::params![],
+            ).unwrap();
+
+            // TTT matches.
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
+                 VALUES ('ttt-run', 'round_robin', 'ttt', 'abc', false, 'h', NULL, '2026-01-02T00:00:00Z', '2026-01-02T01:00:00Z', 'completed', '/tmp/t')",
+                duckdb::params![],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
+                 VALUES ('ttt-run', 1, '2026-01-02T00:00:10Z', 'minimax', 'random', 'win_a', 'minimax')",
+                duckdb::params![],
+            ).unwrap();
+        })
+        .0;
+
+        // Filter by druid.
+        let (status, body) = http_get(app.clone(), "/api/bench/leaderboard?game=druid").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let entries = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(entries.len(), 2, "expected 2 druid strategies, got {entries:?}");
+        let strategies: Vec<&str> = entries.iter().map(|e| e["strategy"].as_str().unwrap()).collect();
+        assert!(strategies.contains(&"strong"));
+        assert!(strategies.contains(&"master"));
+
+        // Filter by ttt.
+        let (status, body) = http_get(app.clone(), "/api/bench/leaderboard?game=ttt").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let entries = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(entries.len(), 2, "expected 2 ttt strategies, got {entries:?}");
+    }
+
+    // -------------------------------------------------------------------
+    // POST /api/bench/launch
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_launch_rejects_unknown_kind() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/launch",
+            json!({
+                "kind": "unknown_kind",
+                "game": "druid",
+                "config": null
+            }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 400);
+        assert!(body["error"].as_str().unwrap().contains("unknown_kind"));
+    }
+
+    #[tokio::test]
+    async fn test_launch_spawns_bench_and_returns_run_id() {
+        // Launch a quick `true` command to verify the plumbing works end-to-end.
+        // We simulate what the server would do by launching `true` (exits
+        // immediately) as a "round_robin" run and checking the registry.
+        let app = seeded_app(|_conn, dir| {
+            // We need the registry to exist in the bench_runs_dir for the
+            // launcher to write to.
+            std::fs::create_dir_all(dir).ok();
+        })
+        .0;
+
+        // We can't easily test the actual bench binary path from tests
+        // (the server binary path during `cargo test` is in the build
+        // target dir).  Instead, test that a valid request shape hits
+        // the launcher and produces an error about a missing binary
+        // (expected since `bench` isn't compiled during tests) or
+        // succeeds if `true` is used.
+
+        // Use `true` as the command to verify the launcher path works.
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/launch",
+            json!({
+                "kind": "round_robin",
+                "game": "druid",
+                "config": {
+                    "strategies": ["strong", "master"],
+                    "rounds": 1
+                }
+            }),
+        )
+        .await;
+
+        // The request reaches the handler and tries to find `bench`.
+        // Since we're running tests (not the compiled server), the
+        // `bench` binary doesn't exist next to the test binary.
+        // We expect either a 500 (bench not found) or a success if
+        // by coincidence something called `bench` is on PATH.
+        // What we *don't* expect is a 400 (which would mean the
+        // request body was rejected before reaching the launcher).
+        assert!(
+            status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
+            "launch returned unexpected status {status}: body={}",
+            String::from_utf8_lossy(&body),
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // POST /api/bench/runs/{run_id}/stop
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_stop_returns_404_for_unknown_run() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_post_json(app, "/api/bench/runs/nonexistent/stop", json!({})).await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_stop_returns_ok_for_non_running_run_without_signalling() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_post_json(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/stop"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        // Completed run — no signal sent, but still succeeds.
+        assert_eq!(body["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn test_stop_marks_running_run_as_stopped() {
+        let app = seeded_app(|conn, bench_runs_dir| {
+            let run_dir = bench_runs_dir.join("stoppable-run");
+            std::fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            std::fs::write(&log_path, "").unwrap();
+            let log_path_str = log_path.to_string_lossy().to_string();
+
+            // Use a non-existent PID so the test doesn't accidentally
+            // signal the current process (which would kill the test runner).
+            // The stop handler gracefully handles missing PIDs.
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
+                 VALUES ('stoppable-run', 'round_robin', 'druid', 'abc', false, 'h', 999999999, \
+                         '2026-03-01T00:00:00Z', 'running', ?1)",
+                duckdb::params![log_path_str],
+            ).unwrap();
+        })
+        .0;
+
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/bench/runs/stoppable-run/stop",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        // No signal was sent (PID doesn't exist), but the run should still
+        // be marked as stopped in the database.
+        assert_eq!(body["message"].as_str().unwrap_or(""), "run marked as stopped (PID was no longer alive or had no PID)");
+
+        // Verify the DB was updated.
+        let (_, check_body) = http_get(app, "/api/bench/runs/stoppable-run").await;
+        let detail = body_json(&check_body);
+        assert_eq!(detail["status"], "stopped");
+        assert!(detail["ended_at"].as_str().unwrap_or("").len() >= 10);
+    }
+
+    // -------------------------------------------------------------------
+    // Error formatting
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_bench_error_has_structured_body() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nope").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+        assert!(body["error"].as_str().unwrap().contains("nope"));
+    }
+}

@@ -7,7 +7,7 @@
 //! PID and returning immediately.
 //!
 //! `ingest --once` is a one-shot debug/validation subcommand for the ingest
-//! loop (see Session 4).  It must not be used while `server` is running
+//! loop.  It must not be used while `server` is running
 //! (DuckDB single-writer constraint).
 
 use std::io::stdout;
@@ -80,7 +80,7 @@ enum Command {
     /// One-shot ingest for debugging / validation.  Reads registry.log
     /// and all active runs' log.jsonl files, upserts into DuckDB at the
     /// given path, then exits.  **Not for concurrent use with `server`**
-    /// (DuckDB single-writer constraint per plan/bench.md).
+    /// (DuckDB single-writer constraint).
     Ingest {
         /// Path to the DuckDB database file.
         #[arg(long, default_value = "bench-runs/bench.duckdb")]
