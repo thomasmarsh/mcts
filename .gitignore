@@ -18,3 +18,4 @@ server/static/dist/
 AGENTS.md
 CLAUDE.md
 .claude
+bench-runs/

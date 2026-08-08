@@ -63,6 +63,7 @@ axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tower-http = { version = "0.7.0", features = ["fs", "cors", "timeout"] }
 serde_yaml = "0.9"
+duckdb = { version = "1.1", features = ["bundled"] }
 
 [profile.release]
 debug=true

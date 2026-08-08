@@ -1,3 +1,5 @@
+pub mod bench;
+pub mod build_info;
 pub mod display;
 pub mod game;
 pub mod games;
