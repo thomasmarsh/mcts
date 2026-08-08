@@ -158,7 +158,7 @@ fn generate_run_id(kind: &str, game: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// ISO-8601 UTC timestamp: `2026-08-08T12:00:00Z`.
-fn iso_timestamp() -> String {
+pub(crate) fn iso_timestamp() -> String {
     let total_secs = unix_secs();
     let (y, m, d, hh, mm, ss) = secs_to_ymdhms(total_secs);
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")

@@ -15,7 +15,9 @@ use std::io::stdout;
 use clap::{Parser, Subcommand};
 
 use mcts::bench::games::registry;
+use mcts::bench::ingest;
 use mcts::bench::launch::{self, LaunchedRun};
+use mcts::bench::schema;
 use mcts::bench::tournament::round_robin_bench_multiple;
 use mcts::util::Verbosity;
 
@@ -202,8 +204,37 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
-fn cmd_ingest_once(_db_path: &str) {
-    // Placeholder — implementation comes in Session 4.
-    eprintln!("ingest --once: not yet implemented (Session 4)");
-    std::process::exit(1);
+fn cmd_ingest_once(db_path: &str) {
+    let db_path = std::path::Path::new(db_path);
+    let conn = match schema::open(db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to open DuckDB at {}: {e}", db_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let bench_runs_dir = std::path::Path::new(launch::BENCH_RUNS_DIR);
+    match ingest::ingest_once(&conn, bench_runs_dir) {
+        Ok(()) => {
+            // Print summary counts so the user can verify idempotency.
+            let run_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+                .unwrap_or(0);
+            let mr_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM match_results", [], |row| row.get(0))
+                .unwrap_or(0);
+            let trial_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM trials", [], |row| row.get(0))
+                .unwrap_or(0);
+            println!(
+                "ingest complete: {} runs, {} match_results, {} trials",
+                run_count, mr_count, trial_count,
+            );
+        }
+        Err(e) => {
+            eprintln!("error: ingest failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }

@@ -19,3 +19,8 @@ AGENTS.md
 CLAUDE.md
 .claude
 bench-runs/
+
+# Per-machine Cargo build configuration (machine-specific paths like
+# DUCKDB_LIB_DIR, DUCKDB_INCLUDE_DIR for Homebrew-installed DuckDB)
+.cargo/config.toml
+
