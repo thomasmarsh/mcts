@@ -99,7 +99,7 @@ export const LaunchForm: Component<{
     <form id="launch-form" onSubmit={onSubmit}>
       <h3>Launch New Run</h3>
 
-      <Show when={launchStatus() === "done"}>
+      <Show when={launchStatus() === "done" && !launchResponseError()}>
         <div class="launch-success">
           Run launched: <code>{state().launch.result?.run_id}</code>
         </div>

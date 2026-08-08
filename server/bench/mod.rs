@@ -624,13 +624,46 @@ async fn launch_run(
         message: format!("failed to launch run: {e}"),
     })?;
 
-    // Store the config JSON in the runs table so it survives server
-    // restarts and appears in the run detail endpoint.
+    let started_at = iso_timestamp_now();
+
+    // Insert the run into the runs table so it appears immediately in
+    // the runs list (no ingest loop dependency).
+    {
+        let db = state.db.lock().unwrap();
+        let config_str = body
+            .config
+            .as_ref()
+            .map(|c| serde_json::to_string(c).unwrap_or_default());
+        let hostname = hostname();
+        db.execute(
+            "INSERT INTO runs \
+             (run_id, kind, game, label, config, git_sha, git_dirty, \
+              host, pid, started_at, status, log_path) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', ?11)",
+            duckdb::params![
+                &run_id,
+                &body.kind,
+                &body.game,
+                label,
+                config_str,
+                mcts::build_info::MCTS_GIT_SHA,
+                mcts::build_info::MCTS_GIT_DIRTY == "true",
+                hostname,
+                pid as i64,
+                &started_at,
+                log_path.to_string_lossy().to_string(),
+            ],
+        )?;
+    }
+
+    // Store config in the runs table so it survives server restarts.
+    // (Separate UPDATE for the rare case the row was created by the
+    // ingest loop between the INSERT above and here.)
     if let Some(ref config) = body.config {
         let db = state.db.lock().unwrap();
         let config_str = serde_json::to_string(config)?;
         let _ = db.execute(
-            "UPDATE runs SET config = ?1 WHERE run_id = ?2",
+            "UPDATE runs SET config = ?1 WHERE run_id = ?2 AND config IS NULL",
             duckdb::params![config_str, &run_id],
         );
     }
@@ -827,12 +860,10 @@ fn build_command(kind: &str, game: &str, config: &Option<Value>) -> Result<Vec<S
 
             if let Some(ref config) = config {
                 if let Some(strategies) = config.get("strategies").and_then(|v| v.as_array()) {
-                    if !strategies.is_empty() {
-                        cmd.push("--strategies".into());
-                        for s in strategies {
-                            if let Some(name) = s.as_str() {
-                                cmd.push(name.to_owned());
-                            }
+                    for s in strategies {
+                        if let Some(name) = s.as_str() {
+                            cmd.push("--strategies".into());
+                            cmd.push(name.to_owned());
                         }
                     }
                 }
@@ -875,6 +906,20 @@ fn find_bench_binary() -> PathBuf {
         }
     }
     PathBuf::from("bench")
+}
+
+/// Resolve the hostname of the current machine.  Uses `HOSTNAME` env var
+/// first (portable across Unix/Windows), falls back to the `hostname`
+/// command, then `"unknown"`.
+fn hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
 }
 
 // ---------------------------------------------------------------------------
