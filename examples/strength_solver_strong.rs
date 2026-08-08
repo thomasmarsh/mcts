@@ -24,7 +24,7 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-fn strong_config(use_solver: bool, name: &str) -> TreeSearch<Druid, strategy::RaveMastDm> {
+fn strong_config(use_solver: bool, name: &str) -> TreeSearch<Druid, strategy::RaveMastDm<Druid>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

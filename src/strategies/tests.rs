@@ -189,7 +189,7 @@ fn test_tree_parallel_with_grave_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::RaveMastDm>;
+    type TS = mcts::TreeSearch<G, mcts::strategy::RaveMastDm<G>>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(300)

@@ -29,9 +29,7 @@
 use std::time::Duration;
 
 use mcts::games::druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
-use mcts::strategies::mcts::{
-    backprop, node::QInit, select, simulate, SearchConfig, Strategy, TreeSearch,
-};
+use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::util::{battle_royale, wilson_interval};
 
 const ROUNDS: usize = 8; // 16 games, alternating who moves first
@@ -43,14 +41,7 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-#[derive(Clone, Copy, Default)]
-struct Ucb1DmNst;
-impl<G: mcts::game::Game> Strategy<G> for Ucb1DmNst {
-    type Select = select::Ucb1;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-}
+type Ucb1DmNst = strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
 
 fn new_config() -> TreeSearch<Druid, Ucb1DmNst> {
     TreeSearch::new().config(

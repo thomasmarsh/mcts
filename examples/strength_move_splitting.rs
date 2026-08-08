@@ -36,21 +36,13 @@ use std::time::Duration;
 use mcts::game::{Game, TerminalStatus};
 use mcts::games::druid as new_druid;
 use mcts::games::druid_flat as old_druid;
-use mcts::strategies::mcts::{backprop, node::QInit, select, simulate, SearchConfig, Strategy, TreeSearch};
+use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 use mcts::util::Result as GameResult;
 
 /// Shipped Strong preset shape (`server/adapters/druid.rs`'s `Ucb1DmNst`),
-/// generic over `Game` so the same struct drives both engines under test.
-#[derive(Clone, Copy, Default)]
-struct Ucb1DmNst;
-
-impl<G: Game> Strategy<G> for Ucb1DmNst {
-    type Select = select::Ucb1;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-}
+/// generic over `Game` so the same alias drives both engines under test.
+type Ucb1DmNst<G> = strategy::Compose<select::Ucb1, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>>;
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
@@ -59,7 +51,7 @@ fn ai_thread_count() -> usize {
 /// Byte-for-byte the shipped Strong/Master config shape from
 /// `server/adapters/druid.rs::build_ai`, generic over which `Druid` (old
 /// flat or new linearized) it searches.
-fn strong_config<G: Game>(budget: Duration) -> TreeSearch<G, Ucb1DmNst> {
+fn strong_config<G: Game>(budget: Duration) -> TreeSearch<G, Ucb1DmNst<G>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("strength/strong")
@@ -108,8 +100,8 @@ const BOARD_OLD: old_druid::Size = old_druid::Size { w: 5, h: 5 };
 /// (kept as the single source of truth after every ply, including plies the
 /// old engine played, via `old_to_new`).
 fn play_one_game(
-    new_engine: &mut TreeSearch<new_druid::Druid, Ucb1DmNst>,
-    old_engine: &mut TreeSearch<old_druid::Druid, Ucb1DmNst>,
+    new_engine: &mut TreeSearch<new_druid::Druid, Ucb1DmNst<new_druid::Druid>>,
+    old_engine: &mut TreeSearch<old_druid::Druid, Ucb1DmNst<old_druid::Druid>>,
     new_moves_first: bool,
 ) -> TerminalStatus<new_druid::Player> {
     let mut new_state = new_druid::HashedState::new(BOARD);

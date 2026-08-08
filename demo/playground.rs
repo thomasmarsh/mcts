@@ -4,13 +4,11 @@ use mcts::game::Game;
 use mcts::games::nim;
 use mcts::games::ttt;
 use mcts::strategies::flat_mc::FlatMonteCarloStrategy;
-use mcts::strategies::mcts::backprop;
 use mcts::strategies::mcts::node::QInit;
 use mcts::strategies::mcts::select;
 use mcts::strategies::mcts::simulate;
 use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
-use mcts::strategies::mcts::Strategy;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
@@ -80,18 +78,10 @@ fn ucd() {
             .select(select::Amaf::with_c(0.01f64)),
     );
 
-    #[derive(Clone, Copy, Default)]
-    struct AmafMastDm;
-
-    impl Strategy<TrafficLights> for AmafMastDm {
-        type Select = select::Amaf;
-        type Simulate = simulate::DecisiveMove<
-            TrafficLights,
-            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
-        >;
-        type Backprop = backprop::Classic;
-        type FinalAction = select::RobustChild;
-    }
+    type AmafMastDm = strategy::Compose<
+        select::Amaf,
+        simulate::DecisiveMove<TrafficLights, simulate::EpsilonGreedy<TrafficLights, simulate::Mast>>,
+    >;
 
     // hash=4b2e92 cost=0.2833333333333333 dict={'c': 0.1662923670765587, 'epsilon': 0.5482781277779128, 'final-action': 'robust_child', 'q-init': 'Win'}
     let amaf_mast_ucd: TreeSearch<TrafficLights, AmafMastDm> = TreeSearch::new().config(
@@ -107,18 +97,10 @@ fn ucd() {
             ),
     );
 
-    #[derive(Clone, Copy, Default)]
-    struct ThompsonSamplingMast;
-
-    impl Strategy<TrafficLights> for ThompsonSamplingMast {
-        type Select = select::ThompsonSampling;
-        type Simulate = simulate::DecisiveMove<
-            TrafficLights,
-            simulate::EpsilonGreedy<TrafficLights, simulate::Mast>,
-        >;
-        type Backprop = backprop::Classic;
-        type FinalAction = select::RobustChild;
-    }
+    type ThompsonSamplingMast = strategy::Compose<
+        select::ThompsonSampling,
+        simulate::DecisiveMove<TrafficLights, simulate::EpsilonGreedy<TrafficLights, simulate::Mast>>,
+    >;
 
     let _thompson: TreeSearch<TrafficLights, ThompsonSamplingMast> = TreeSearch::new().config(
         SearchConfig::new()
@@ -136,7 +118,7 @@ fn ucd() {
 
     // hash=41eaec cost=0.4083333333333334 dict={'epsilon': 0.7029674773719651, 'final-action': 'robust_child', 'q-init': 'Win', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 916, 'bias': 0.711333324644768}
 
-    let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
+    let rave_mast_ucd: TreeSearch<TrafficLights, strategy::RaveMastDm<TrafficLights>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .expand_threshold(1)
@@ -209,7 +191,7 @@ fn traffic_lights() {
 
     // hash=b4d699 cost=0.44166666666666665 dict={'epsilon': 0.9003068718838548, 'final-action': 'robust_child', 'q-init': 'Parent', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 1819, 'bias': 1.3456468981519023, 'c': 0.0563180660828948}
 
-    let ts: TreeSearch<TrafficLights, strategy::RaveMastDm> = TreeSearch::new().config(
+    let ts: TreeSearch<TrafficLights, strategy::RaveMastDm<TrafficLights>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)
@@ -240,7 +222,7 @@ fn traffic_lights() {
 fn knightthrough() {
     use mcts::games::knightthrough::Knightthrough;
 
-    let ts: TreeSearch<Knightthrough<8, 8>, strategy::RaveMastDm> = TreeSearch::new().config(
+    let ts: TreeSearch<Knightthrough<8, 8>, strategy::RaveMastDm<Knightthrough<8, 8>>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)
@@ -267,7 +249,7 @@ fn knightthrough() {
 fn breakthrough() {
     use mcts::games::breakthrough::Breakthrough;
 
-    let ts: TreeSearch<Breakthrough<6, 4>, strategy::RaveMastDm> = TreeSearch::new().config(
+    let ts: TreeSearch<Breakthrough<6, 4>, strategy::RaveMastDm<Breakthrough<6, 4>>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)
@@ -294,7 +276,7 @@ fn breakthrough() {
 fn atarigo() {
     use mcts::games::atarigo::AtariGo;
 
-    let ts: TreeSearch<AtariGo<7>, strategy::RaveMastDm> = TreeSearch::new().config(
+    let ts: TreeSearch<AtariGo<7>, strategy::RaveMastDm<AtariGo<7>>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)
@@ -321,7 +303,7 @@ fn atarigo() {
 fn gonnect() {
     use mcts::games::gonnect::Gonnect;
 
-    let ts: TreeSearch<Gonnect<7>, strategy::RaveMastDm> = TreeSearch::new().config(
+    let ts: TreeSearch<Gonnect<7>, strategy::RaveMastDm<Gonnect<7>>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd")
             .verbose(true)

@@ -12,7 +12,7 @@ use serde_json::Value;
 use mcts::game::Game;
 use mcts::games::druid::{apply_placed, Druid, HashedState, Move, Orientation, Piece, PieceKind, PlacedPiece, Player, Size, Square, State};
 use mcts::strategies::mcts::{
-    backprop, node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
+    node::QInit, select, simulate, strategy, SearchConfig, TreeSearch,
 };
 use mcts::strategies::Search;
 
@@ -115,15 +115,7 @@ fn ai_thread_count() -> usize {
 // backoff_threshold=5. This is the result of a recalibration that replaced
 // the previously-shipped `select::Rave` + `DruidHeuristic` shape with this
 // simpler one.
-#[derive(Clone, Copy, Default)]
-struct Ucb1DmNst;
-
-impl<G: Game> Strategy<G> for Ucb1DmNst {
-    type Select = select::Ucb1;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-}
+type Ucb1DmNst = strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
 
 // All four presets enable `use_mcts_solver(true)` (proven-win/loss selection
 // bias and early termination) and `reuse_tree(true)` (carries forward stats

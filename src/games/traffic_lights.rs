@@ -430,7 +430,7 @@ mod tests {
     fn test_grave() {
         use crate::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
         use crate::strategies::Search;
-        type TS = TreeSearch<TrafficLights, strategy::RaveMastDm>;
+        type TS = TreeSearch<TrafficLights, strategy::RaveMastDm<TrafficLights>>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)

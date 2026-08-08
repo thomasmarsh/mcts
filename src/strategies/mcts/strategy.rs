@@ -3,6 +3,35 @@ use super::SearchConfig;
 use super::node::QInit;
 use super::*;
 use crate::game::Game;
+use std::marker::PhantomData;
+
+/// Ad hoc composition of the four `Strategy` axes without declaring a new
+/// marker type: `TreeSearch<G, Compose<select::Ucb1, simulate::Uniform>>` is
+/// the fully static equivalent of a bespoke `struct` + `impl Strategy<G>`
+/// (still monomorphized -- `Compose` carries no runtime state, just the four
+/// type parameters). `Backprop`/`FinalAction` default to the common
+/// `Classic`/`RobustChild` pair; name them explicitly to override either.
+/// Reach for a named marker type (like the ones below) instead of `Compose`
+/// only when the strategy needs its own `friendly_name()` or a `config()`
+/// override with non-default settings.
+#[derive(Clone, Copy, Default)]
+pub struct Compose<Sel, Sim, Bp = backprop::Classic, FA = select::RobustChild>(
+    PhantomData<(Sel, Sim, Bp, FA)>,
+);
+
+impl<G, Sel, Sim, Bp, FA> Strategy<G> for Compose<Sel, Sim, Bp, FA>
+where
+    G: Game,
+    Sel: select::SelectStrategy<G>,
+    Sim: simulate::SimulateStrategy<G>,
+    Bp: backprop::BackpropStrategy,
+    FA: select::SelectStrategy<G>,
+{
+    type Select = Sel;
+    type Simulate = Sim;
+    type Backprop = Bp;
+    type FinalAction = FA;
+}
 
 // Vanilla UCT
 #[derive(Clone, Default)]
@@ -227,12 +256,8 @@ impl<G: Game> Strategy<G> for QuasiBestFirst {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-pub struct RaveMastDm;
-
-impl<G: Game> Strategy<G> for RaveMastDm {
-    type Select = select::Rave;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-}
+/// Rave select + DecisiveMove<EpsilonGreedy<Mast>> simulate, the shape every
+/// non-Druid demo/test call site tunes hyperparameters around. Generic over
+/// `G` (unlike the other named strategies above) because its `Simulate` type
+/// embeds `G` itself.
+pub type RaveMastDm<G> = Compose<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;

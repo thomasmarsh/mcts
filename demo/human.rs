@@ -17,7 +17,7 @@ where
 {
     // hash=ba2047 cost=0.43333333333333335 dict={'epsilon': 0.6096443583623276, 'final-action': 'robust_child', 'q-init': 'Draw', 'rave-ucb': 'none', 'schedule': 'min_mse', 'threshold': 910, 'bias': 0.6937972231158172}
     // hash=840351 cost=0.025000000000000022 dict={'epsilon': 0.7775134909898043, 'final-action': 'robust_child', 'q-init': 'Infinity', 'rave-ucb': 'tuned', 'schedule': 'min_mse', 'threshold': 204, 'bias': 5.286671416833997, 'c': 0.28941824845969677}
-    let mut ts: TreeSearch<G, strategy::RaveMastDm> = TreeSearch::new().config(
+    let mut ts: TreeSearch<G, strategy::RaveMastDm<G>> = TreeSearch::new().config(
         SearchConfig::new()
             .name("mcts[rave]+mast+ucd+dm")
             .verbose(true)

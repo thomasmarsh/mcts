@@ -13,26 +13,14 @@ use std::time::{Duration, Instant};
 use mcts::game::Game;
 use mcts::games::druid::{Druid, HashedState, Size};
 use mcts::strategies::mcts::{
-    backprop, node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
+    node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
 };
 use mcts::strategies::Search;
 
 /// Shipped Strong preset strategy shape: Ucb1 select + DecisiveMove wrapping
 /// EpsilonGreedy wrapping NST. The struct lives in server/adapters/druid.rs
 /// (not the lib crate), so we define a local equivalent.
-#[derive(Clone, Copy, Default)]
-struct Ucb1DmNstLocal;
-
-impl<G: Game> Strategy<G> for Ucb1DmNstLocal {
-    type Select = select::Ucb1;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "ucb1+dm+eps+nst".into()
-    }
-}
+type Ucb1DmNstLocal = strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
 
 /// Shipped Strong config with the given time budget and tree thread count.
 fn strong_config(budget: Duration, tree_threads: usize) -> TreeSearch<Druid, Ucb1DmNstLocal> {
