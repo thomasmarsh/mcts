@@ -14,6 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@mcts/bench": "workspace:*",
     "@mcts/core": "workspace:*",
     "@mcts/game": "workspace:*",
     "solid-js": "^1.9.0"

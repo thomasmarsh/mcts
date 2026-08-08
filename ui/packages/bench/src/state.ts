@@ -3,8 +3,12 @@
 // game store — it gets its own `createStore(benchReducer, benchEnv)` — so
 // nothing here references game types.
 
-import { initialJobPollState, type JobPollState } from "@mcts/core";
+import {
+  initialJobPollState,
+  type JobPollState,
+} from "@mcts/core";
 import type {
+  BenchKindInfo,
   LeaderboardEntry,
   LeaderboardFilters,
   LaunchResponse,
@@ -59,6 +63,8 @@ export interface BenchState {
   launch: JobPollState<LaunchResponse>;
   /** Last failed stop attempt's message; cleared by the next `stopRun`. */
   stopError: string | null;
+  /** Available run kinds loaded on mount — populates the launch form. */
+  kinds: JobPollState<BenchKindInfo[]>;
 }
 
 export function initialBenchState(): BenchState {
@@ -71,5 +77,6 @@ export function initialBenchState(): BenchState {
     leaderboardFilters: { game: null, gitSha: null, since: null },
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
+    kinds: initialJobPollState<BenchKindInfo[]>(),
   };
 }

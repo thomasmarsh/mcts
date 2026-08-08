@@ -1,0 +1,513 @@
+/* bench.css — Bench UI chrome: run list, log tail, launch form, detail panel.
+   Follows the same visual language as app.css (dark theme, rounded panels,
+   rgba backgrounds with subtle borders). */
+
+#bench-app {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+
+#bench-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 380px;
+  min-width: 320px;
+  background: rgba(20, 21, 26, 0.9);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  overflow-y: auto;
+}
+
+/* ── Launch Form ─────────────────────────────────────────────────────── */
+
+#launch-form {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+}
+
+#launch-form h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8e8ec;
+}
+
+#launch-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #b7b8c2;
+  margin-bottom: 10px;
+}
+
+#launch-form select,
+#launch-form input[type="number"] {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+#launch-form select:disabled,
+#launch-form input:disabled {
+  opacity: 0.5;
+}
+
+#strategy-picker {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+#strategy-picker legend {
+  font-size: 12px;
+  color: #b7b8c2;
+  padding: 0 4px;
+}
+
+.strategy-option {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 4px;
+  cursor: pointer;
+}
+
+.strategy-option input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: #5b7fd6;
+}
+
+.strategy-label {
+  font-weight: 600;
+  color: #e8e8ec;
+  font-size: 12px;
+}
+
+.strategy-desc {
+  font-size: 11px;
+  color: #8a8b96;
+  display: block;
+}
+
+#launch-button {
+  width: 100%;
+  background: #5b7fd6;
+  border: 1px solid #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#launch-button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+#launch-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.launch-success {
+  background: rgba(76, 175, 122, 0.15);
+  border: 1px solid rgba(76, 175, 122, 0.3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #4caf7a;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.launch-error {
+  background: rgba(224, 138, 138, 0.15);
+  border: 1px solid rgba(224, 138, 138, 0.3);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #e08a8a;
+  margin-bottom: 10px;
+}
+
+.launch-empty,
+.loading-bench {
+  padding: 20px;
+  text-align: center;
+  color: #8a8b96;
+  font-size: 13px;
+}
+
+/* ── Run List ────────────────────────────────────────────────────────── */
+
+#run-list-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#run-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+}
+
+#run-list-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#refresh-runs {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #b7b8c2;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+#refresh-runs:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8e8ec;
+}
+
+#refresh-runs:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#run-filters {
+  display: flex;
+  gap: 6px;
+  padding: 6px 14px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+#run-filters select,
+#run-filters input {
+  flex: 1;
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+#run-filters input {
+  flex: 0 0 80px;
+  min-width: 60px;
+}
+
+#apply-filters {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#apply-filters:hover {
+  background: #34363f;
+}
+
+#run-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.run-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.run-row-open {
+  background: rgba(91, 127, 214, 0.12);
+}
+
+.run-row-game {
+  font-weight: 600;
+  color: #e8e8ec;
+  min-width: 40px;
+}
+
+.run-row-matches {
+  color: #8a8b96;
+  min-width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-row-time {
+  color: #6b6e78;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.run-row-id {
+  color: #6b6e78;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.run-list-empty {
+  padding: 30px 14px;
+  text-align: center;
+  color: #6b6e78;
+  font-size: 13px;
+}
+
+/* ── Status Badges ───────────────────────────────────────────────────── */
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  min-width: 56px;
+  text-align: center;
+}
+
+.badge-running {
+  background: rgba(91, 127, 214, 0.25);
+  color: #8aaff0;
+}
+
+.badge-completed {
+  background: rgba(76, 175, 122, 0.2);
+  color: #4caf7a;
+}
+
+.badge-crashed {
+  background: rgba(224, 138, 138, 0.2);
+  color: #e08a8a;
+}
+
+.badge-stopped {
+  background: rgba(214, 139, 91, 0.2);
+  color: #d68b5b;
+}
+
+/* ── Run Detail Panel ────────────────────────────────────────────────── */
+
+#run-detail-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(20, 21, 26, 0.75);
+  min-width: 0;
+}
+
+#run-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#run-detail-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#run-detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#stop-run-btn,
+#close-run-btn {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#stop-run-btn:hover,
+#close-run-btn:hover {
+  background: #34363f;
+}
+
+#stop-run-btn {
+  background: #8a3a3a;
+  border-color: #8a3a3a;
+  color: #f0d0d0;
+  font-weight: 600;
+}
+
+#stop-run-btn:hover {
+  background: #a04444;
+}
+
+/* ── Run Detail Meta ─────────────────────────────────────────────────── */
+
+#run-detail-meta {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+
+.meta-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.meta-label {
+  color: #8a8b96;
+  min-width: 70px;
+}
+
+.meta-value {
+  color: #e8e8ec;
+}
+
+.meta-value code {
+  font-size: 11px;
+  color: #8aaff0;
+}
+
+/* ── Log Tail ────────────────────────────────────────────────────────── */
+
+#log-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #b7b8c2;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.log-status {
+  font-size: 11px;
+  color: #6b6e78;
+}
+
+.log-status code {
+  font-size: 10px;
+}
+
+.log-error {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #e08a8a;
+  background: rgba(224, 138, 138, 0.1);
+  border-bottom: 1px solid rgba(224, 138, 138, 0.15);
+}
+
+#log-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 16px;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #c7c9cf;
+}
+
+.log-empty {
+  padding: 20px;
+  text-align: center;
+  color: #6b6e78;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+.log-line {
+  white-space: pre;
+  word-break: break-all;
+}
+
+.log-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── App-level tabs ──────────────────────────────────────────────────── */
+
+#app-tabs {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 100;
+  display: flex;
+  gap: 4px;
+}
+
+.tab-btn {
+  background: rgba(30, 31, 38, 0.85);
+  color: #b7b8c2;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab-btn:hover {
+  background: rgba(42, 44, 52, 0.9);
+  color: #e8e8ec;
+}
+
+.tab-btn.active {
+  background: #5b7fd6;
+  border-color: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+/* Override full-height layout when bench tab is active */
+body.bench-active #hud,
+body.bench-active #move-list,
+body.bench-active #analysis-panel {
+  display: none;
+}

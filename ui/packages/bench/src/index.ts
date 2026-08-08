@@ -8,13 +8,16 @@ export type {
   StopResponse,
   RunFilters,
   LeaderboardFilters,
+  BenchKindInfo,
+  BenchGameInfo,
+  StrategyInfo,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 
 export type { BenchState, OpenRunState, LogTailState } from "./state.js";
 export { initialBenchState } from "./state.js";
 
-export type { BenchEnv, BenchAction, RunsAction, LeaderboardAction, LaunchAction } from "./reducer.js";
+export type { BenchEnv, BenchAction, RunsAction, LeaderboardAction, LaunchAction, KindsAction } from "./reducer.js";
 export {
   benchReducer,
   tailDelayMs,
@@ -25,3 +28,8 @@ export {
 
 export type { BenchApiClient } from "./api-client.js";
 export { createBenchApiClient, createBenchEnv } from "./api-client.js";
+
+export { LaunchForm } from "./LaunchForm.js";
+export { RunList } from "./RunList.js";
+export { RunDetailPanel } from "./RunDetailPanel.js";
+export { BenchApp } from "./BenchApp.js";

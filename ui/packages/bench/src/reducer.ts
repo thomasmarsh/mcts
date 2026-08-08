@@ -28,6 +28,7 @@ import {
 import type { BenchState } from "./state.js";
 import {
   isTerminalStatus,
+  type BenchKindInfo,
   type LaunchResponse,
   type LeaderboardEntry,
   type LeaderboardFilters,
@@ -49,6 +50,7 @@ export interface BenchEnv {
   getLeaderboard(filters: LeaderboardFilters): Effect<LeaderboardEntry[]>;
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
+  getBenchKinds(): Effect<BenchKindInfo[]>;
 }
 
 export const TAIL_BACKOFF_START_MS = 1000;
@@ -91,7 +93,13 @@ export type BenchAction =
   | { tag: "launch"; action: LaunchAction }
   | { tag: "stopRun"; runId: string }
   | { tag: "stopFinished"; runId: string }
-  | { tag: "stopFailed"; runId: string; error: string };
+  | { tag: "stopFailed"; runId: string; error: string }
+  /** Load all available bench kinds/games/strategies for the launch form. */
+  | { tag: "kinds"; action: KindsAction };
+
+export type KindsAction =
+  | { tag: "request" }
+  | { tag: "job"; action: JobPollAction<BenchKindInfo[]> };
 
 /** Runs an `Effect` for its single value, as a `Promise` — lets the tick
  * branch combine `getRunLog` + `getRun` with `Promise.all` while still
@@ -318,6 +326,47 @@ export function benchReducer(
   if (action.tag === "stopFailed") {
     draft.stopError = action.error;
     return null;
+  }
+
+  if (action.tag === "kinds") {
+    const ka = action.action;
+    if (ka.tag === "request") {
+      const jobEnv: JobPollEnv<BenchKindInfo[]> = {
+        submitJob: () =>
+          env.getBenchKinds().map(
+            (result): JobSubmitResult<BenchKindInfo[]> => ({
+              status: "done",
+              result,
+            }),
+          ),
+        pollJob: () => {
+          throw new Error(
+            "unreachable: kinds resolves synchronously (see submitJob above)",
+          );
+        },
+      };
+      const eff = jobPollReduce(draft.kinds, { tag: "start" }, jobEnv);
+      return eff
+        ? eff.map(
+            (a): BenchAction => ({ tag: "kinds", action: { tag: "job", action: a } }),
+          )
+        : null;
+    }
+    const eff = jobPollReduce(
+      draft.kinds,
+      ka.action,
+      unreachableJobEnv(
+        "unreachable: a forwarded kinds/job action never re-submits or polls",
+      ),
+    );
+    return eff
+      ? eff.map(
+          (a): BenchAction => ({
+            tag: "kinds",
+            action: { tag: "job", action: a },
+          }),
+        )
+      : null;
   }
 
   return null;

@@ -109,3 +109,24 @@ export interface LeaderboardFilters {
   gitSha: string | null;
   since: string | null;
 }
+
+/** `GET /api/bench/kinds` element — metadata for one run kind. */
+export interface BenchKindInfo {
+  kind: string;
+  label: string;
+  description: string;
+  games: BenchGameInfo[];
+}
+
+/** Per-game info within a run kind. */
+export interface BenchGameInfo {
+  game: string;
+  strategies: StrategyInfo[];
+}
+
+/** A playable strategy for a game kind. */
+export interface StrategyInfo {
+  id: string;
+  label: string;
+  description: string;
+}

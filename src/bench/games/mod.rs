@@ -9,6 +9,7 @@ pub mod druid;
 use std::collections::HashMap;
 
 /// Information about a playable strategy for a game kind.
+#[derive(serde::Serialize)]
 pub struct StrategyInfo {
     pub id: String,
     pub label: String,

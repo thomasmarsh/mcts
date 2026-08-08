@@ -73,6 +73,7 @@ const mockEnv: BenchEnv = {
   getLeaderboard: () => Effect.none(),
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
+  getBenchKinds: () => Effect.none(),
 };
 
 // ── Runs list ───────────────────────────────────────────────────────────────

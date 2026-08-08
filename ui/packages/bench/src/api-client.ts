@@ -13,6 +13,7 @@
 import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
 import type {
+  BenchKindInfo,
   LaunchResponse,
   LeaderboardEntry,
   LeaderboardFilters,
@@ -30,6 +31,7 @@ export interface BenchApiClient {
   getLeaderboard(filters?: Partial<LeaderboardFilters>): Promise<LeaderboardEntry[]>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
+  getBenchKinds(): Promise<BenchKindInfo[]>;
 }
 
 /** The server (`BenchError`'s `IntoResponse` impl, server/bench/mod.rs)
@@ -104,6 +106,9 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async stopRun(runId: string): Promise<StopResponse> {
       return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/stop`));
     },
+    async getBenchKinds(): Promise<BenchKindInfo[]> {
+      return fetchJson(url("/api/bench/kinds"));
+    },
   };
 }
 
@@ -116,5 +121,6 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getLeaderboard: (filters: LeaderboardFilters) => lift(() => api.getLeaderboard(filters)),
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
+    getBenchKinds: () => lift(() => api.getBenchKinds()),
   };
 }

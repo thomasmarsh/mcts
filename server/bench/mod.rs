@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
+use mcts::bench::games::{self, StrategyInfo};
 use mcts::bench::launch::{self, LaunchedRun};
 use mcts::bench::log::RegistryEvent;
 use mcts::bench::tournament::wilson_interval;
@@ -136,6 +137,22 @@ pub struct LaunchResponse {
     pub log_path: String,
 }
 
+/// Metadata for a run kind exposed via `GET /api/bench/kinds`.
+#[derive(Serialize)]
+pub struct BenchKindInfo {
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+    pub games: Vec<BenchGameInfo>,
+}
+
+/// Per-game information within a run kind.
+#[derive(Serialize)]
+pub struct BenchGameInfo {
+    pub game: String,
+    pub strategies: Vec<StrategyInfo>,
+}
+
 /// Structured error for bench routes — mirrors `adapters::AdapterError`'s
 /// pattern with `{error, code}` JSON body.
 #[derive(Debug)]
@@ -207,6 +224,7 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     Router::new()
+        .route("/api/bench/kinds", get(list_kinds))
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
@@ -502,6 +520,37 @@ async fn get_leaderboard(
         .collect();
 
     Ok(Json(entries))
+}
+
+/// `GET /api/bench/kinds`
+///
+/// Returns metadata for every available run kind, including which games
+/// and strategies are registered per kind.  Data-driven counterpart to
+/// `POST /api/bench/launch` — the UI uses this to populate the launch form
+/// dynamically rather than hardcoding one form per kind.
+async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
+    let game_registry = games::registry();
+
+    let mut games: Vec<BenchGameInfo> = game_registry
+        .iter()
+        .map(|(game_kind, bg)| BenchGameInfo {
+            game: game_kind.to_string(),
+            strategies: bg.strategies(),
+        })
+        .collect();
+    games.sort_by(|a, b| a.game.cmp(&b.game));
+
+    // Currently only one run kind: round_robin.  Add more kinds here as
+    // they're implemented.
+    let kinds = vec![BenchKindInfo {
+        kind: "round_robin".to_string(),
+        label: "Round Robin".to_string(),
+        description: "Every strategy plays every other strategy an equal number of times, both as first and second player.  Results are streamed as match_result JSONL lines, aggregated into a win-rate leaderboard with Wilson confidence intervals."
+            .to_string(),
+        games,
+    }];
+
+    Json(kinds)
 }
 
 /// `POST /api/bench/launch` — `{kind, game, config}`
