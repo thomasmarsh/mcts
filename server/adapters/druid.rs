@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use mcts::game::Game;
-use mcts::games::druid::{Druid, HashedState, Move, Player, Size, Square, State};
+use mcts::games::druid::{apply_placed, Druid, HashedState, Move, Orientation, Piece, PieceKind, PlacedPiece, Player, Size, Square, State};
 use mcts::strategies::mcts::{
     backprop, node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
 };
@@ -367,28 +367,28 @@ impl GameAdapter for DruidAdapter {
         let state = value_to_state(state)?;
         let mut moves = Vec::new();
         if !Druid::is_terminal(&state) {
-            Druid::generate_actions(&state, &mut moves);
+            state.state().moves(&mut moves);
         }
         Ok(moves
             .into_iter()
-            .map(|m| serde_json::to_value(m).expect("Move always serializes"))
+            .map(|m| serde_json::to_value(m).expect("PlacedPiece always serializes"))
             .collect())
     }
 
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, AdapterError> {
         let state = value_to_state(state)?;
-        let mv: Move = serde_json::from_value(mv.clone())
+        let mv: PlacedPiece = serde_json::from_value(mv.clone())
             .map_err(|e| AdapterError::bad_request(format!("invalid move: {e}")))?;
 
         if Druid::is_terminal(&state) {
             return Err(AdapterError::bad_request("game is over"));
         }
         let mut legal = Vec::new();
-        Druid::generate_actions(&state, &mut legal);
+        state.state().moves(&mut legal);
         if !legal.contains(&mv) {
             return Err(AdapterError::bad_request("illegal move"));
         }
-        Ok(state_to_value(&Druid::apply(state, &mv)))
+        Ok(state_to_value(&apply_placed(state, mv)))
     }
 
     fn view(&self, state: &Value) -> Result<Value, AdapterError> {
@@ -430,14 +430,37 @@ impl GameAdapter for DruidAdapter {
             .take(preset, hash)
             .unwrap_or_else(|| build_ai(preset, preset.default_time_budget()));
 
-        let action = ai.choose_action(&state);
-        let next = Druid::apply(state, &action);
-        self.cache.put(preset, hash, ai);
+        // Loop through linearized sub-actions (Piece -> Orientation? -> Cell)
+        // until the placement is complete, accumulating choices to reconstruct
+        // a PlacedPiece for the wire response.
+        let mut chosen_kind: Option<PieceKind> = None;
+        let mut chosen_orientation: Option<Orientation> = None;
+        let mut ai_state = state.clone();
 
-        Ok(AiMoveResult {
-            mv: serde_json::to_value(action).expect("Move always serializes"),
-            state: state_to_value(&next),
-        })
+        loop {
+            let mv = ai.choose_action(&ai_state);
+            ai_state = Druid::apply(ai_state, &mv);
+            match mv {
+                Move::Piece(kind) => chosen_kind = Some(kind),
+                Move::Orientation(o) => chosen_orientation = Some(o),
+                Move::Cell(idx) => {
+                    let piece = match chosen_kind {
+                        Some(PieceKind::Sarsen) => Piece::Sarsen,
+                        Some(PieceKind::Lintel) => {
+                            Piece::Lintel(chosen_orientation.unwrap_or(Orientation::Horizontal))
+                        }
+                        _ => unreachable!("Cell action without prior Piece"),
+                    };
+                    let result = PlacedPiece(piece, idx);
+                    self.cache.put(preset, hash, ai);
+                    return Ok(AiMoveResult {
+                        mv: serde_json::to_value(result)
+                            .expect("PlacedPiece always serializes"),
+                        state: state_to_value(&ai_state),
+                    });
+                }
+            }
+        }
     }
 
     fn analyze(
@@ -468,13 +491,13 @@ impl GameAdapter for DruidAdapter {
                 .unwrap_or_else(|| build_ai(preset, preset.default_time_budget())),
         };
 
-        // Reuses `choose_action`'s own search rather than a separate
-        // read-only pass: today the two are behaviorally identical (same
-        // selection/backprop), and a dedicated pass would just be this same
-        // loop again. Named explicitly since "analysis shouldn't have side
-        // effects" is a reasonable expectation this breaks -- calling
-        // `analyze` genuinely runs (and, on a cache hit, extends) a real
-        // search, same as `ai_move` does.
+        // Run search on the root position (one choose_action call populates
+        // the tree for the root's first-level sub-decisions). Since the tree
+        // is rerooted after each sub-action, we don't loop here: the report
+        // reflects the current root's children, which are Move::Piece and
+        // Move::Orientation sub-actions. The first PV action is typically
+        // one of those sub-actions, not a full PlacedPiece -- the client
+        // uses analysis for display only, so this is acceptable.
         let _ = ai.choose_action(&state);
         let report = ai.root_report(&state);
 

@@ -210,8 +210,38 @@ impl Square {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PieceKind {
+    Sarsen,
+    Lintel,
+}
+
+impl Piece {
+    pub fn kind(self) -> PieceKind {
+        match self {
+            Piece::Sarsen => PieceKind::Sarsen,
+            Piece::Lintel(_) => PieceKind::Lintel,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Move(pub Piece, pub u8);
+pub struct PlacedPiece(pub Piece, pub u8);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum Pending {
+    #[default]
+    None,
+    Piece(PieceKind),
+    Oriented(Orientation),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Move {
+    Piece(PieceKind),
+    Orientation(Orientation),
+    Cell(u8),
+}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hand {
@@ -256,13 +286,15 @@ pub struct State {
     pub hand_black: Hand,
     pub hand_white: Hand,
     pub size: Size,
+    #[serde(default)]
+    pub pending: Pending,
 }
 
 // TODO:
 //
 // A move can be implemented as a u16 to support up to 128x128 board sizes:
 //
-// Move: u16
+// PlacedPiece: u16
 // - orientation: 1  bit
 // - piece_type:  1  bit
 // - location:    14 bits (up to 128 * 128 = 16384)
@@ -292,6 +324,7 @@ impl State {
             hand_black: Hand::new(size),
             hand_white: Hand::new(size),
             size,
+            pending: Pending::None,
         }
     }
 
@@ -381,16 +414,16 @@ impl State {
         (count == 2).then_some(cells)
     }
 
-    pub fn moves(&self, moves: &mut Vec<Move>) {
+    pub fn moves(&self, moves: &mut Vec<PlacedPiece>) {
         let hand = self.current_hand();
         for i in 0..self.size.area() as usize {
             if hand.sarsens > 0 && self.sarsen_legal_at(i, self.player) {
-                moves.push(Move(Piece::Sarsen, i as u8));
+                moves.push(PlacedPiece(Piece::Sarsen, i as u8));
             }
             if hand.lintels > 0 {
                 for orientation in [Orientation::Horizontal, Orientation::Vertical] {
                     if self.lintel_legal_at(i, orientation, self.player).is_some() {
-                        moves.push(Move(Piece::Lintel(orientation), i as u8));
+                        moves.push(PlacedPiece(Piece::Lintel(orientation), i as u8));
                     }
                 }
             }
@@ -403,12 +436,12 @@ impl State {
     /// count (callers check that separately). Used by the playout heuristic
     /// to reason about the *opponent's* candidate moves, not just the
     /// mover's.
-    fn lintel_candidates_for(&self, color: Player) -> Vec<(Move, [usize; 3])> {
+    fn lintel_candidates_for(&self, color: Player) -> Vec<(PlacedPiece, [usize; 3])> {
         let mut out = Vec::new();
         for i in 0..self.size.area() as usize {
             for orientation in [Orientation::Horizontal, Orientation::Vertical] {
                 if let Some(cells) = self.lintel_legal_at(i, orientation, color) {
-                    out.push((Move(Piece::Lintel(orientation), i as u8), cells));
+                    out.push((PlacedPiece(Piece::Lintel(orientation), i as u8), cells));
                 }
             }
         }
@@ -422,7 +455,7 @@ impl State {
     /// `Game::apply`, which needs the same cells' pre- and post-move
     /// values). Unused slots beyond the returned length are filled with `0`,
     /// always a valid index.
-    fn move_cells(&self, m: Move) -> ([usize; 3], usize) {
+    fn move_cells(&self, m: PlacedPiece) -> ([usize; 3], usize) {
         match m.0 {
             Piece::Sarsen => ([m.1 as usize, 0, 0], 1),
             Piece::Lintel(orientation) => {
@@ -438,7 +471,7 @@ impl State {
         }
     }
 
-    pub fn apply(&mut self, m: Move) {
+    pub fn apply(&mut self, m: PlacedPiece) {
         self.deplete(m.0);
         let (cells, n) = self.move_cells(m);
         match m.0 {
@@ -701,6 +734,26 @@ impl std::fmt::Display for HashedState {
 const HASHES_LEN: usize = 1600;
 static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xD401D);
 
+const PENDING_HASHES_LEN: usize = 5;
+static PENDING_HASHES: LazyZobristTable<PENDING_HASHES_LEN> = LazyZobristTable::new(0xD402D);
+
+fn pending_index(p: Pending) -> usize {
+    match p {
+        Pending::None => 0,
+        Pending::Piece(PieceKind::Sarsen) => 1,
+        Pending::Piece(PieceKind::Lintel) => 2,
+        Pending::Oriented(Orientation::Horizontal) => 3,
+        Pending::Oriented(Orientation::Vertical) => 4,
+    }
+}
+
+fn pending_zobrist(p: Pending) -> u64 {
+    match p {
+        Pending::None => 0,
+        _ => PENDING_HASHES.hash(pending_index(p)),
+    }
+}
+
 /// Highest height a single cell can reach. A player can only raise a cell's
 /// height with pieces from their own hand (repeated sarsens on one cell, or
 /// lintels bridging out from it), and `Hand::new` hands out `n * 2` sarsens
@@ -960,6 +1013,9 @@ struct MoveCandidates {
     sarsen: Vec<bool>,
     lintel_h: Vec<bool>,
     lintel_v: Vec<bool>,
+    sarsen_any: bool,
+    lintel_h_any: bool,
+    lintel_v_any: bool,
 }
 
 impl MoveCandidates {
@@ -968,6 +1024,9 @@ impl MoveCandidates {
             sarsen: vec![false; area],
             lintel_h: vec![false; area],
             lintel_v: vec![false; area],
+            sarsen_any: false,
+            lintel_h_any: false,
+            lintel_v_any: false,
         }
     }
 
@@ -975,6 +1034,19 @@ impl MoveCandidates {
         match orientation {
             Orientation::Horizontal => &mut self.lintel_h,
             Orientation::Vertical => &mut self.lintel_v,
+        }
+    }
+
+    fn has_any_sarsen(&self) -> bool {
+        self.sarsen_any
+    }
+    fn has_any_lintel(&self) -> bool {
+        self.lintel_h_any || self.lintel_v_any
+    }
+    fn has_any_lintel_orient(&self, o: Orientation) -> bool {
+        match o {
+            Orientation::Horizontal => self.lintel_h_any,
+            Orientation::Vertical => self.lintel_v_any,
         }
     }
 }
@@ -985,7 +1057,7 @@ impl MoveCandidates {
 /// role `Connectivity` plays for `State::connection()`.
 ///
 /// One `MoveCandidates` per color, each a `Vec<bool>` indexed by cell/anchor
-/// rather than an enumerable set (`HashSet<Move>` or similar): board area is
+/// rather than an enumerable set (`HashSet<PlacedPiece>` or similar): board area is
 /// capped at ~100 cells by `Size::is_supported`/`HASHES_LEN`, so a linear
 /// scan over the bits in `generate_actions` is already cheap (a handful of
 /// bool reads per cell) -- the actual cost this eliminates is the
@@ -1049,6 +1121,9 @@ impl MoveCache {
                         state.lintel_legal_at(i, orientation, color).is_some();
                 }
             }
+            candidates.sarsen_any = candidates.sarsen.iter().any(|&b| b);
+            candidates.lintel_h_any = candidates.lintel_h.iter().any(|&b| b);
+            candidates.lintel_v_any = candidates.lintel_v.iter().any(|&b| b);
         }
     }
 
@@ -1084,6 +1159,12 @@ impl MoveCache {
                     }
                 }
             }
+        }
+        for color in [Player::Black, Player::White] {
+            let c = self.candidates_mut(color);
+            c.sarsen_any = c.sarsen.iter().any(|&b| b);
+            c.lintel_h_any = c.lintel_h.iter().any(|&b| b);
+            c.lintel_v_any = c.lintel_v.iter().any(|&b| b);
         }
     }
 }
@@ -1122,7 +1203,8 @@ impl HashedState {
         // bits get XORed in.
         let state = State::new(size);
         let cache = MoveCache::new(&state);
-        HashedState(state, 0, Connectivity::new(size), cache)
+        let hash = pending_zobrist(state.pending);
+        HashedState(state, hash, Connectivity::new(size), cache)
     }
 
     pub fn state(&self) -> &State {
@@ -1144,7 +1226,7 @@ impl HashedState {
             state.size
         );
         let bits = zobrist_height_bits(state.size);
-        let hash = recompute_hash(&state, bits);
+        let hash = recompute_hash(&state, bits) ^ pending_zobrist(state.pending);
         let mut connectivity = Connectivity::new(state.size);
         for color in [Player::Black, Player::White] {
             connectivity.rebuild(state.size, &state.board, color);
@@ -1171,31 +1253,61 @@ impl HashedState {
 #[derive(Clone)]
 pub struct Druid;
 
+/// Apply a whole-turn placement by sequencing the 2-3 linearized
+/// sub-actions. Used by the server adapter and by tests that do not
+/// exercise the MCTS tree.
+pub fn apply_placed(mut state: HashedState, placed: PlacedPiece) -> HashedState {
+    let kind = placed.0.kind();
+    state = Druid::apply(state, &Move::Piece(kind));
+    if let Piece::Lintel(o) = placed.0 {
+        state = Druid::apply(state, &Move::Orientation(o));
+    }
+    state = Druid::apply(state, &Move::Cell(placed.1));
+    state
+}
+
 impl Game for Druid {
     type S = HashedState;
     type A = Move;
     type P = Player;
 
-    /// A cache read (`MoveCache`, `HashedState`'s 4th field) filtered by the
-    /// mover's current hand counts, instead of `State::moves()`'s from-scratch
-    /// rescan Iterates cells in the same order `moves()` does (sarsen, then
-    /// lintel-horizontal, then lintel-vertical, per cell) so the two stay
-    /// behaviorally identical, checked by
-    /// `test_generate_actions_matches_full_recompute` below.
     fn generate_actions(state: &HashedState, actions: &mut Vec<Move>) {
         let s = &state.0;
         let hand = s.current_hand();
         let candidates = state.3.candidates(s.player);
-        for i in 0..s.size.area() as usize {
-            if hand.sarsens > 0 && candidates.sarsen[i] {
-                actions.push(Move(Piece::Sarsen, i as u8));
-            }
-            if hand.lintels > 0 {
-                if candidates.lintel_h[i] {
-                    actions.push(Move(Piece::Lintel(Orientation::Horizontal), i as u8));
+        match s.pending {
+            Pending::None => {
+                if hand.sarsens > 0 && candidates.has_any_sarsen() {
+                    actions.push(Move::Piece(PieceKind::Sarsen));
                 }
-                if candidates.lintel_v[i] {
-                    actions.push(Move(Piece::Lintel(Orientation::Vertical), i as u8));
+                if hand.lintels > 0 && candidates.has_any_lintel() {
+                    actions.push(Move::Piece(PieceKind::Lintel));
+                }
+            }
+            Pending::Piece(PieceKind::Sarsen) => {
+                for i in 0..s.size.area() as usize {
+                    if candidates.sarsen[i] {
+                        actions.push(Move::Cell(i as u8));
+                    }
+                }
+            }
+            Pending::Piece(PieceKind::Lintel) => {
+                if candidates.has_any_lintel_orient(Orientation::Horizontal) {
+                    actions.push(Move::Orientation(Orientation::Horizontal));
+                }
+                if candidates.has_any_lintel_orient(Orientation::Vertical) {
+                    actions.push(Move::Orientation(Orientation::Vertical));
+                }
+            }
+            Pending::Oriented(o) => {
+                let bits = match o {
+                    Orientation::Horizontal => &candidates.lintel_h,
+                    Orientation::Vertical => &candidates.lintel_v,
+                };
+                for (i, &legal) in bits.iter().enumerate() {
+                    if legal {
+                        actions.push(Move::Cell(i as u8));
+                    }
                 }
             }
         }
@@ -1206,48 +1318,69 @@ impl Game for Druid {
     }
 
     fn apply(mut state: Self::S, m: &Self::A) -> Self::S {
-        // Each (position, color) pair owns its own disjoint block of
-        // `bits` table slots, so different cells/colors never collide;
-        // within a block, each bit of the height is independently XORed
-        // in (see `zobrist_height_bits`).
-        let bits = zobrist_height_bits(state.0.size);
-        debug_assert!(
-            state.0.size.is_supported(),
-            "HASHES table is too small for this board size; HashedState::new should have rejected it"
-        );
-
-        // A move only ever touches the 1 (sarsen) or 3 (lintel) cells
-        // `move_cells` names -- snapshot their pre-move values so the hash
-        // can be updated by XORing those cells' old contribution out and
-        // their new contribution in, instead of recomputing the whole
-        // board every ply.
-        let (cells, n) = state.0.move_cells(*m);
-        let old: [Square; 3] = std::array::from_fn(|i| state.0.board[cells[i]]);
-        let mover = state.0.player;
-
-        state.0.apply(*m);
-
-        debug_assert!(
-            state.0.board.iter().all(|square| (square.height as usize) < (1usize << bits)),
-            "cell height exceeded the {bits}-bit Zobrist encoding for {:?}; max_cell_height's bound was wrong",
-            state.0.size
-        );
-
-        let mut hash = state.1;
-        for k in 0..n {
-            let i = cells[k];
-            hash ^= cell_zobrist(i, old[k].height, old[k].piece, bits);
-            let sq = state.0.board[i];
-            hash ^= cell_zobrist(i, sq.height, sq.piece, bits);
+        match *m {
+            Move::Piece(kind) => {
+                debug_assert_eq!(state.0.pending, Pending::None);
+                let old = state.0.pending;
+                state.0.pending = Pending::Piece(kind);
+                let mut hash = state.1;
+                hash ^= pending_zobrist(old);
+                hash ^= pending_zobrist(state.0.pending);
+                state.1 = hash;
+                state
+            }
+            Move::Orientation(o) => {
+                debug_assert_eq!(state.0.pending, Pending::Piece(PieceKind::Lintel));
+                let old = state.0.pending;
+                state.0.pending = Pending::Oriented(o);
+                let mut hash = state.1;
+                hash ^= pending_zobrist(old);
+                hash ^= pending_zobrist(state.0.pending);
+                state.1 = hash;
+                state
+            }
+            Move::Cell(idx) => {
+                let piece = match state.0.pending {
+                    Pending::Piece(PieceKind::Sarsen) => Piece::Sarsen,
+                    Pending::Oriented(o) => Piece::Lintel(o),
+                    _ => unreachable!("Cell action with pending {:?}", state.0.pending),
+                };
+                let placed = PlacedPiece(piece, idx);
+                let bits = zobrist_height_bits(state.0.size);
+                debug_assert!(
+                    state.0.size.is_supported(),
+                    "HASHES table is too small for this board size; HashedState::new should have rejected it"
+                );
+                let (cells, n) = state.0.move_cells(placed);
+                let old: [Square; 3] = std::array::from_fn(|i| state.0.board[cells[i]]);
+                let mover = state.0.player;
+                let old_pending = state.0.pending;
+                state.0.apply(placed);
+                // State::apply flips player; now reset pending.
+                // Must update hash for pending reset and board delta.
+                debug_assert!(
+                    state.0.board.iter().all(|square| (square.height as usize) < (1usize << bits)),
+                    "cell height exceeded the {bits}-bit Zobrist encoding for {:?}; max_cell_height's bound was wrong",
+                    state.0.size
+                );
+                let mut hash = state.1;
+                hash ^= pending_zobrist(old_pending);
+                hash ^= pending_zobrist(Pending::None);
+                for k in 0..n {
+                    let i = cells[k];
+                    hash ^= cell_zobrist(i, old[k].height, old[k].piece, bits);
+                    let sq = state.0.board[i];
+                    hash ^= cell_zobrist(i, sq.height, sq.piece, bits);
+                }
+                state.1 = hash;
+                state.0.pending = Pending::None;
+                state
+                    .2
+                    .update(state.0.size, &state.0.board, &cells[..n], &old[..n], mover);
+                state.3.update(&state.0, &cells[..n]);
+                state
+            }
         }
-        state.1 = hash;
-
-        state
-            .2
-            .update(state.0.size, &state.0.board, &cells[..n], &old[..n], mover);
-        state.3.update(&state.0, &cells[..n]);
-
-        state
     }
 
     fn is_terminal(state: &Self::S) -> bool {
@@ -1296,11 +1429,22 @@ impl Game for Druid {
     }
 
     fn notation(state: &Self::S, m: &Self::A) -> String {
-        let Pos(x, y) = Pos::from(m.1 as usize, state.0.size);
-        match m.0 {
-            Piece::Sarsen => format!("S({},{})", x + 1, y + 1),
-            Piece::Lintel(Orientation::Horizontal) => format!("L({},{},H)", x + 1, y + 1),
-            Piece::Lintel(Orientation::Vertical) => format!("L({},{},V)", x + 1, y + 1),
+        match *m {
+            Move::Piece(k) => format!("choose {:?}", k),
+            Move::Orientation(o) => format!("orient {:?}", o),
+            Move::Cell(idx) => {
+                let Pos(x, y) = Pos::from(idx as usize, state.0.size);
+                let piece = match state.0.pending {
+                    Pending::Piece(PieceKind::Sarsen) => Piece::Sarsen,
+                    Pending::Oriented(o) => Piece::Lintel(o),
+                    _ => return format!("Cell({},{})", x + 1, y + 1),
+                };
+                match piece {
+                    Piece::Sarsen => format!("S({},{})", x + 1, y + 1),
+                    Piece::Lintel(Orientation::Horizontal) => format!("L({},{},H)", x + 1, y + 1),
+                    Piece::Lintel(Orientation::Vertical) => format!("L({},{},V)", x + 1, y + 1),
+                }
+            }
         }
     }
 
@@ -1439,7 +1583,7 @@ fn largest_component(s: &State, conn: &Connectivity, color: Player) -> (HashSet<
 fn heuristic_scores(
     state: &HashedState,
     mover: Player,
-    available: &[Move],
+    available: &[PlacedPiece],
     weights: &DruidHeuristicWeights,
 ) -> Vec<f64> {
     let s = &state.0;
@@ -1548,6 +1692,24 @@ impl DruidHeuristic {
     }
 }
 
+fn max_heuristic_for_cells(
+    state: &HashedState,
+    mover: Player,
+    piece: Piece,
+    cells: &[usize],
+    weights: &DruidHeuristicWeights,
+) -> f64 {
+    if cells.is_empty() {
+        return 0.0;
+    }
+    let placed: Vec<PlacedPiece> = cells
+        .iter()
+        .map(|&c| PlacedPiece(piece, c as u8))
+        .collect();
+    let scores = heuristic_scores(state, mover, &placed, weights);
+    scores.into_iter().fold(f64::NEG_INFINITY, f64::max)
+}
+
 impl SimulateStrategy<Druid> for DruidHeuristic {
     fn select_move<'a>(
         &mut self,
@@ -1563,7 +1725,56 @@ impl SimulateStrategy<Druid> for DruidHeuristic {
         } else {
             Player::White
         };
-        let scores = heuristic_scores(state, mover, available, &self.weights);
+        let s = &state.0;
+        let scores: Vec<f64> = available
+            .iter()
+            .map(|m| match *m {
+                Move::Piece(PieceKind::Sarsen) => {
+                    let cells: Vec<usize> = (0..s.size.area() as usize)
+                        .filter(|&i| state.3.candidates(mover).sarsen[i])
+                        .collect();
+                    max_heuristic_for_cells(state, mover, Piece::Sarsen, &cells, &self.weights)
+                }
+                Move::Piece(PieceKind::Lintel) => {
+                    let mut best = f64::NEG_INFINITY;
+                    for o in [Orientation::Horizontal, Orientation::Vertical] {
+                        let piece = Piece::Lintel(o);
+                        let bits = match o {
+                            Orientation::Horizontal => &state.3.candidates(mover).lintel_h,
+                            Orientation::Vertical => &state.3.candidates(mover).lintel_v,
+                        };
+                        let cells: Vec<usize> = (0..s.size.area() as usize)
+                            .filter(|&i| bits[i])
+                            .collect();
+                        let v = max_heuristic_for_cells(state, mover, piece, &cells, &self.weights);
+                        if v > best {
+                            best = v;
+                        }
+                    }
+                    if best == f64::NEG_INFINITY { 0.0 } else { best }
+                }
+                Move::Orientation(o) => {
+                    let piece = Piece::Lintel(o);
+                    let bits = match o {
+                        Orientation::Horizontal => &state.3.candidates(mover).lintel_h,
+                        Orientation::Vertical => &state.3.candidates(mover).lintel_v,
+                    };
+                    let cells: Vec<usize> = (0..s.size.area() as usize)
+                        .filter(|&i| bits[i])
+                        .collect();
+                    max_heuristic_for_cells(state, mover, piece, &cells, &self.weights)
+                }
+                Move::Cell(idx) => {
+                    let piece = match s.pending {
+                        Pending::Piece(PieceKind::Sarsen) => Piece::Sarsen,
+                        Pending::Oriented(o) => Piece::Lintel(o),
+                        _ => Piece::Sarsen,
+                    };
+                    let placed = [PlacedPiece(piece, idx)];
+                    heuristic_scores(state, mover, &placed, &self.weights)[0]
+                }
+            })
+            .collect();
         let scored: Vec<(f64, &Move)> = scores.into_iter().zip(available.iter()).collect();
         random_best(&scored, rng, |(score, _)| *score).unwrap().1
     }
@@ -1749,7 +1960,7 @@ mod tests {
             // instead of running into the "only your own piece" rule that
             // real move generation would otherwise apply.
             state.0.player = Player::Black;
-            state = Druid::apply(state, &Move(Piece::Sarsen, cell));
+            state = apply_placed(state, PlacedPiece(Piece::Sarsen, cell));
             assert_eq!(state.0.board[cell as usize].height, h as u16);
             hashes_by_height.insert(h, state.1);
         }
@@ -1877,12 +2088,12 @@ mod tests {
                         break;
                     }
                     let m = actions[rng.gen_range(0..actions.len())];
-                    state = Druid::apply(state, &m);
+                    state = apply_placed(state, m);
                     actions.clear();
 
                     assert_eq!(
                         state.1,
-                        recompute_hash(&state.0, bits),
+                        recompute_hash(&state.0, bits) ^ pending_zobrist(state.0.pending),
                         "incremental hash diverged from full recompute at size={size:?} game={game} ply={ply}"
                     );
                 }
@@ -1938,7 +2149,7 @@ mod tests {
         let place = |state: HashedState, player: Player, pos: Pos| -> HashedState {
             let mut state = state;
             state.0.player = player;
-            Druid::apply(state, &Move(Piece::Sarsen, pos.index(size.w) as u8))
+            apply_placed(state, PlacedPiece(Piece::Sarsen, pos.index(size.w) as u8))
         };
 
         // Black builds the column's top and bottom segments, leaving a gap
@@ -1974,9 +2185,7 @@ mod tests {
         state = place(state, Player::White, Pos(col - 1, mid));
         state = place(state, Player::White, Pos(col + 1, mid));
         state.0.player = Player::White;
-        state = Druid::apply(
-            state,
-            &Move(
+        state = apply_placed(state, PlacedPiece(
                 Piece::Lintel(Orientation::Horizontal),
                 Pos(col - 1, mid).index(size.w) as u8,
             ),
@@ -2023,7 +2232,7 @@ mod tests {
                         break;
                     }
                     let m = actions[rng.gen_range(0..actions.len())];
-                    state = Druid::apply(state, &m);
+                    state = apply_placed(state, m);
                     actions.clear();
 
                     assert_eq!(
@@ -2038,15 +2247,53 @@ mod tests {
 
     #[test]
     fn test_generate_actions_matches_full_recompute() {
-        // Property test for the incremental `MoveCache`, mirroring
-        // `test_incremental_hash_matches_full_recompute` /
-        // `test_incremental_connectivity_matches_full_recompute`: after
-        // every move, `Druid::generate_actions` (a cache read) must produce
-        // exactly the same moves, in the same order, as `State::moves` (a
-        // from-scratch rescan using the same `sarsen_legal_at`/
-        // `lintel_legal_at` predicates).
+        // Ground-truth `State::moves` vs the linearized `generate_actions`
+        // tree. Every complete `PlacedPiece` reachable by walking
+        // `Piece -> (Orientation) -> Cell` through `Druid::generate_actions`
+        // must equal the flat `State::moves` set, and vice-versa.
         use rand::rngs::SmallRng;
         use rand::{Rng, SeedableRng};
+        use std::collections::HashSet;
+
+        fn collect_via_tree(state: &HashedState) -> HashSet<PlacedPiece> {
+            let mut out = HashSet::default();
+            let mut piece_actions = Vec::new();
+            Druid::generate_actions(state, &mut piece_actions);
+            for pa in piece_actions {
+                match pa {
+                    Move::Piece(kind) => {
+                        let s1 = Druid::apply(state.clone(), &pa);
+                        let mut next = Vec::new();
+                        Druid::generate_actions(&s1, &mut next);
+                        match kind {
+                            PieceKind::Sarsen => {
+                                for ca in next {
+                                    if let Move::Cell(idx) = ca {
+                                        out.insert(PlacedPiece(Piece::Sarsen, idx));
+                                    }
+                                }
+                            }
+                            PieceKind::Lintel => {
+                                for oa in next {
+                                    if let Move::Orientation(o) = oa {
+                                        let s2 = Druid::apply(s1.clone(), &oa);
+                                        let mut cells = Vec::new();
+                                        Druid::generate_actions(&s2, &mut cells);
+                                        for ca in cells {
+                                            if let Move::Cell(idx) = ca {
+                                                out.insert(PlacedPiece(Piece::Lintel(o), idx));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => panic!("root actions must be Piece"),
+                }
+            }
+            out
+        }
 
         for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
             let mut rng = SmallRng::seed_from_u64(0x5EED + size.w as u64 * 1000 + size.h as u64);
@@ -2060,15 +2307,15 @@ mod tests {
                         break;
                     }
 
-                    let mut cached = Vec::new();
-                    Druid::generate_actions(&state, &mut cached);
+                    let ground: HashSet<PlacedPiece> = actions.iter().copied().collect();
+                    let via_tree = collect_via_tree(&state);
                     assert_eq!(
-                        cached, actions,
-                        "cached move list diverged from full recompute at size={size:?} game={game} ply={ply}"
+                        via_tree, ground,
+                        "tree-collected moves diverged from ground truth at size={size:?} game={game} ply={ply}"
                     );
 
                     let m = actions[rng.gen_range(0..actions.len())];
-                    state = Druid::apply(state, &m);
+                    state = apply_placed(state, m);
                     actions.clear();
                 }
             }
@@ -2100,7 +2347,7 @@ mod tests {
                         break;
                     }
                     let m = actions[rng.gen_range(0..actions.len())];
-                    incremental = Druid::apply(incremental, &m);
+                    incremental = apply_placed(incremental, m);
                     actions.clear();
 
                     let rebuilt = HashedState::from_state(incremental.state().clone());
@@ -2269,7 +2516,7 @@ mod tests {
     fn place_sarsen(state: HashedState, player: Player, pos: Pos, size: Size) -> HashedState {
         let mut state = state;
         state.0.player = player;
-        Druid::apply(state, &Move(Piece::Sarsen, pos.index(size.w) as u8))
+        apply_placed(state, PlacedPiece(Piece::Sarsen, pos.index(size.w) as u8))
     }
 
     #[test]
@@ -2287,11 +2534,11 @@ mod tests {
         state.0.player = Player::Black;
 
         let mut available = Vec::new();
-        Druid::generate_actions(&state, &mut available);
+        state.0.moves(&mut available);
         let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
 
         let threatened_cell = Pos(1, 2).index(size.w);
-        let stack_on_threatened = Move(Piece::Sarsen, threatened_cell as u8);
+        let stack_on_threatened = PlacedPiece(Piece::Sarsen, threatened_cell as u8);
         let idx = available
             .iter()
             .position(|m| *m == stack_on_threatened)
@@ -2304,7 +2551,7 @@ mod tests {
 
         // An unrelated move far from the threat, any fork, or either color's
         // (still singleton) components shouldn't get any credit at all.
-        let unrelated = Move(Piece::Sarsen, Pos(4, 4).index(size.w) as u8);
+        let unrelated = PlacedPiece(Piece::Sarsen, Pos(4, 4).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == unrelated).unwrap();
         assert_eq!(
             scores[idx], 0.0,
@@ -2327,11 +2574,11 @@ mod tests {
         state.0.player = Player::Black;
 
         let mut available = Vec::new();
-        Druid::generate_actions(&state, &mut available);
+        state.0.moves(&mut available);
         let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
 
         let threatened_cell = Pos(1, 2).index(size.w);
-        let stack_on_threatened = Move(Piece::Sarsen, threatened_cell as u8);
+        let stack_on_threatened = PlacedPiece(Piece::Sarsen, threatened_cell as u8);
         let idx = available
             .iter()
             .position(|m| *m == stack_on_threatened)
@@ -2364,11 +2611,11 @@ mod tests {
         state.0.player = Player::Black;
 
         let mut available = Vec::new();
-        Druid::generate_actions(&state, &mut available);
+        state.0.moves(&mut available);
         let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
 
         for anchor in [Pos(0, 2), Pos(0, 3)] {
-            let fork_move = Move(
+            let fork_move = PlacedPiece(
                 Piece::Lintel(Orientation::Horizontal),
                 anchor.index(size.w) as u8,
             );
@@ -2383,7 +2630,7 @@ mod tests {
             );
         }
 
-        let single_connector = Move(
+        let single_connector = PlacedPiece(
             Piece::Lintel(Orientation::Horizontal),
             Pos(2, 0).index(size.w) as u8,
         );
@@ -2416,10 +2663,10 @@ mod tests {
         state.0.player = Player::Black;
 
         let mut available = Vec::new();
-        Druid::generate_actions(&state, &mut available);
+        state.0.moves(&mut available);
         let scores = heuristic_scores(&state, Player::Black, &available, &DECODABLE_WEIGHTS);
 
-        let extend = Move(Piece::Sarsen, Pos(2, 1).index(size.w) as u8);
+        let extend = PlacedPiece(Piece::Sarsen, Pos(2, 1).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == extend).unwrap();
         let (_, _, threaten) = decode_flags(scores[idx]);
         assert!(
@@ -2427,7 +2674,7 @@ mod tests {
             "a move extending toward the far border should get threaten-connection credit"
         );
 
-        let backward = Move(Piece::Sarsen, Pos(0, 0).index(size.w) as u8);
+        let backward = PlacedPiece(Piece::Sarsen, Pos(0, 0).index(size.w) as u8);
         let idx = available.iter().position(|m| *m == backward).unwrap();
         let (_, _, threaten) = decode_flags(scores[idx]);
         assert!(
@@ -2487,64 +2734,138 @@ mod tests {
         // connection -- each column's missing cell ((0,2) and (2,2)) is an
         // independent winning threat. It's White's move: whichever threat
         // White blocks, Black completes the other and wins immediately next
-        // move. A forced loss for White two plies deep that requires fully
-        // resolving all 5 of White's legal replies (one sarsen per empty
-        // cell -- White owns nothing yet, so no lintel is legal either), not
-        // just spotting one immediate threat.
+        // turn. A forced loss for White that the solver should prove at the
+        // root in well under the iteration budget.
         let size = Size { w: 3, h: 3 };
-        let mut state = HashedState::new(size);
+        let mut raw = State::new(size);
         for pos in [Pos(0, 0), Pos(0, 1), Pos(2, 0), Pos(2, 1)] {
-            state.0.board[pos.index(size.w)] = Square {
+            raw.board[pos.index(size.w)] = Square {
                 height: 1,
                 piece: Some(Player::Black),
             };
         }
-        state.0.player = Player::White;
-        state.resync_caches();
+        raw.player = Player::White;
+        let state = HashedState::from_state(raw);
 
         assert!(
-            state.0.connection().is_none(),
+            state.state().connection().is_none(),
             "test setup should not already be terminal"
         );
         assert_eq!(Druid::terminal_status(&state), TerminalStatus::NotTerminal);
 
+        // One single-threaded solver call. Don't loop `choose_action` across
+        // multiple sub-ply states -- the solver resolves the full forced-loss
+        // position at root, and the PV itself already traces Black's winning
+        // reply through White's best block. Checking `root_report` / PV
+        // directly avoids the O(iter_budget * depth) cost of replaying every
+        // sub-ply through a fresh tree each time.
         let mut ts = TreeSearch::<Druid, strategy::Ucb1>::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
-                .max_iterations(20_000)
+                .max_iterations(2000)
                 .q_init(QInit::Loss)
                 .use_mcts_solver(true)
                 .seed(7),
         );
 
-        let white_move = ts.choose_action(&state);
-        let white_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        let chosen = ts.choose_action(&state);
+        let total_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
-            white_iters < 20_000,
-            "solver should prove White's position lost and stop early, used {white_iters} iterations"
+            total_iters < 2000,
+            "solver should prove White's position lost and stop early, used {total_iters} iterations"
         );
 
-        let after_white = Druid::apply(state.clone(), &white_move);
-        assert_eq!(Druid::player_to_move(&after_white), Player::Black);
-
-        let black_move = ts.choose_action(&after_white);
-        let black_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        // The root should be proven as a win for Black (the solver resolves
+        // that every White reply leads to a Black win).
+        let report = ts.root_report(&state);
+        let black_win = report
+            .actions
+            .iter()
+            .find(|a| a.action == chosen)
+            .expect("chosen action should appear in root report");
         assert!(
-            black_iters < 20_000,
-            "solver should find Black's immediate win and stop early, used {black_iters} iterations"
+            black_win.is_proven,
+            "the PV's first action should be proven"
         );
 
-        // Black wins here regardless of which cell White blocked -- either
-        // by completing the other open column directly, or (as the solver
-        // actually finds when White blocks (2,2)) via a lintel repaint: a
-        // lintel's legality only needs 2 of its 3 touched cells to already
-        // be the mover's color, so Black can lay one across (2,0)/(2,1)/
-        // (2,2) and repaint White's blocking piece at (2,2) outright.
-        let after_black = Druid::apply(after_white, &black_move);
+        // Replay the PV from root to verify it ends with Black winning.
+        let pv = ts.principle_variation();
+        assert!(!pv.is_empty(), "PV should contain at least one move");
         assert_eq!(
-            Druid::winner(&after_black),
+            pv.first(),
+            Some(&chosen),
+            "PV should start with the chosen action"
+        );
+
+        let terminal_state = pv.iter().fold(state.clone(), Druid::apply);
+        assert_eq!(
+            Druid::winner(&terminal_state),
             Some(Player::Black),
-            "Black should have a winning reply regardless of which column White blocked"
+            "PV should end with Black winning: replaying {} plies gave {:?}",
+            pv.len(),
+            Druid::winner(&terminal_state),
+        );
+    }
+
+    #[test]
+    fn test_terminal_status_false_when_pending_not_none() {
+        // The board state is unchanged by a Piece/Orientation sub-action,
+        // so a mid-turn (pending != None) position must never be reported
+        // as terminal — the game only ends after a Cell sub-action that
+        // completes or blocks a connection.
+        let size = Size { w: 3, h: 3 };
+        let mut state = HashedState::new(size);
+        // Advance one piece-kind decision into the pending state.
+        state = Druid::apply(state, &Move::Piece(PieceKind::Sarsen));
+        assert_ne!(state.0.pending, Pending::None);
+
+        assert!(
+            !Druid::is_terminal(&state),
+            "mid-turn state must not be terminal"
+        );
+        assert_eq!(Druid::winner(&state), None, "mid-turn state has no winner");
+        assert!(
+            matches!(Druid::terminal_status(&state), TerminalStatus::NotTerminal),
+            "terminal_status must agree with is_terminal"
+        );
+        // compute_utilities must not report a decisive ±1 for a mid-turn
+        // state (it should fall through to the heuristic path).
+        let utilities = Druid::compute_utilities(&state);
+        assert!(
+            utilities.iter().all(|&u| u.abs() < 1.0),
+            "mid-turn utilities must not be decisive (±1), got {:?}",
+            utilities
+        );
+    }
+
+    #[test]
+    fn test_decisive_move_does_not_fire_at_piece_or_orientation_phases() {
+        // DecisiveMove::choose checks one ply ahead via G::apply +
+        // terminal_status. A Piece/Orientation sub-action doesn't change
+        // the board, so terminal_status always returns NotTerminal, and
+        // DecisiveMove falls through to the inner strategy. This test
+        // verifies that a search configured with DecisiveMove doesn't
+        // panic and returns a valid sub-action when starting mid-turn.
+        let mut state = HashedState::new(Size { w: 3, h: 3 });
+        // Pre-set pending to Piece(Sarsen) so generate_actions returns Cell
+        // actions — DecisiveMove's inner strategy must pick one.
+        state = Druid::apply(state, &Move::Piece(PieceKind::Sarsen));
+
+        let mut search = TreeSearch::<Druid, RaveDecisiveHeuristic>::new().config(
+            SearchConfig::new()
+                .expand_threshold(1)
+                .q_init(QInit::Infinity)
+                .use_transpositions(true)
+                .max_iterations(30),
+        );
+        let action = search.choose_action(&state);
+        let mut available = Vec::new();
+        Druid::generate_actions(&state, &mut available);
+        assert!(
+            available.contains(&action),
+            "DecisiveMove must return a valid sub-action mid-turn, got {:?} among {:?}",
+            action,
+            available
         );
     }
 }

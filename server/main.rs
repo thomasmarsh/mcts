@@ -485,7 +485,6 @@ mod tests {
         // `HashedState::from_state` -- see its doc comment in
         // `src/games/druid.rs`), confirmed here via the public HTTP surface
         // rather than reaching into adapter internals.
-        use mcts::game::Game;
         let app = test_app();
         let state = new_druid_state(app.clone(), 5, 5).await;
 
@@ -495,8 +494,8 @@ mod tests {
         let moves = body_json(&body)["moves"].as_array().unwrap().len();
 
         let expected = HashedState::new(mcts::games::druid::Size { w: 5, h: 5 });
-        let mut expected_moves: Vec<mcts::games::druid::Move> = Vec::new();
-        mcts::games::druid::Druid::generate_actions(&expected, &mut expected_moves);
+        let mut expected_moves: Vec<mcts::games::druid::PlacedPiece> = Vec::new();
+        expected.state().moves(&mut expected_moves);
         assert_eq!(moves, expected_moves.len());
     }
 
@@ -504,14 +503,13 @@ mod tests {
     // Black owns 2 of 3 in each of two columns on a 3x3 board, giving Black
     // two winning threats after White is forced to block one.
     fn forced_win_state() -> serde_json::Value {
-        use mcts::game::Game;
-        use mcts::games::druid::{Druid, Move, Piece, Size};
+        use mcts::games::druid::{apply_placed, PlacedPiece, Piece, Size};
         let size = Size { w: 3, h: 3 };
         let mut state = HashedState::new(size);
-        let moves = [Piece::Sarsen; 7];
+        let p = [Piece::Sarsen; 7];
         let cells: [u8; 7] = [0, 1, 3, 4, 2, 7, 5];
-        for (piece, cell) in moves.iter().zip(cells.iter()) {
-            state = Druid::apply(state, &Move(*piece, *cell));
+        for (piece, cell) in p.iter().zip(cells.iter()) {
+            state = apply_placed(state, PlacedPiece(*piece, *cell));
         }
         serde_json::to_value(state.state()).unwrap()
     }
