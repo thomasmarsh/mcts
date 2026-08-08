@@ -50,6 +50,7 @@ struct AppState {
 fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     let all: Vec<Arc<dyn GameAdapter>> = vec![
         Arc::new(adapters::druid::DruidAdapter::default()),
+        Arc::new(adapters::traffic_lights::TrafficLightsAdapter),
         Arc::new(adapters::ttt::TttAdapter),
     ];
     all.into_iter().map(|a| (a.kind(), a)).collect()
@@ -371,7 +372,7 @@ mod tests {
             .iter()
             .map(|g| g["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, vec!["druid", "ttt"]);
+        assert_eq!(kinds, vec!["druid", "traffic-lights", "ttt"]);
     }
 
     #[tokio::test]
@@ -839,6 +840,256 @@ mod tests {
             suggested_report["is_proven"], true,
             "the forced block should be reported as proven: {analysis}"
         );
+    }
+
+    // Traffic Lights: the third game proving the
+    // `GameAdapter` contract generalizes. Verifies in particular that
+    // board state accumulates across sequential `apply` calls (a bug
+    // where `value_to_state` used raw `Piece` discriminants instead of
+    // the board-bit encoding would silently drop all R cells, making
+    // every move look like a reset to the initial position).
+
+    async fn new_tl_state(app: Router) -> Value {
+        let (status, body) =
+            http_post_json(app, "/api/games/traffic-lights/new", json!({})).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        body_json(&body)["state"].clone()
+    }
+
+    #[tokio::test]
+    async fn test_tl_new_game_has_nine_legal_moves() {
+        let app = test_app();
+        let state = new_tl_state(app.clone()).await;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/traffic-lights/legal_moves",
+            json!({ "state": state }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let json = body_json(&body);
+        let moves = json["moves"].as_array().unwrap();
+        // Every cell is empty → one legal move per cell (place R).
+        assert_eq!(moves.len(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_tl_apply_preserves_state_across_moves() {
+        // The core regression test: apply moves sequentially and confirm
+        // the board state is not lost between calls.
+        let app = test_app();
+        let mut state = new_tl_state(app.clone()).await;
+
+        // Player A places R at cell 0 → move encoding: (0 << 2) | 0 = 0
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 0 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        state = body["state"].clone();
+        let cells = body["view"]["cells"].as_array().unwrap();
+        assert_eq!(cells[0], "R", "cell 0 should be R after first move");
+        assert_eq!(body["view"]["turn"], "B", "turn should switch to B");
+        assert_eq!(body["view"]["terminal"], false);
+
+        // Player B places R at cell 1 → move encoding: (1 << 2) | 0 = 4
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 4 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        state = body["state"].clone();
+        let cells = body["view"]["cells"].as_array().unwrap();
+        assert_eq!(cells[0], "R", "cell 0 should still be R");
+        assert_eq!(cells[1], "R", "cell 1 should be R");
+        assert_eq!(body["view"]["turn"], "A");
+
+        // Player A advances cell 0 from R → Y → move encoding: (0 << 2) | 1 = 1
+        let (status, step3_body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 1 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let step3 = body_json(&step3_body);
+        let cells = step3["view"]["cells"].as_array().unwrap();
+        assert_eq!(cells[0], "Y", "cell 0 should be Y after advance");
+        assert_eq!(cells[1], "R", "cell 1 should still be R");
+        assert_eq!(step3["view"]["turn"], "B");
+        state = step3["state"].clone();
+
+        // Player B advances cell 1 from R → Y → move encoding: (1 << 2) | 1 = 5
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 5 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        let cells = body["view"]["cells"].as_array().unwrap();
+        assert_eq!(cells[0], "Y", "cell 0 should still be Y");
+        assert_eq!(cells[1], "Y", "cell 1 should be Y");
+        assert_eq!(body["view"]["turn"], "A");
+    }
+
+    #[tokio::test]
+    async fn test_tl_apply_rejects_illegal_move() {
+        let app = test_app();
+        let state = new_tl_state(app.clone()).await;
+
+        // Move index 9 is out of the 3×3 board (cells 0..8).
+        let (status, _) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 36 }), // (9 << 2) | 0 = 36
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+
+        // Play cell 0 then try to play it again with the wrong move
+        // (same move again, which would mean placing R on an already-R
+        // cell — the engine sees a different piece encoding than what
+        // the cell's current state expects).
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 0 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let state = body_json(&body)["state"].clone();
+
+        // Same raw move again — cell 0 is now R, so placing R (move 0)
+        // is illegal; the only legal move for cell 0 now is Y (move 1).
+        let (status, _) = http_post_json(
+            app,
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 0 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_tl_ai_move_finds_a_legal_action() {
+        let app = test_app();
+        let state = new_tl_state(app.clone()).await;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/traffic-lights/ai_move",
+            json!({ "state": state, "preset": "easy" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        let mv = body["move"].as_u64().unwrap() as u8;
+        let index = (mv >> 2) as usize;
+        assert!(index < 9, "AI move index {index} should be within the board");
+        // AI chose a legal move and returned a new state with that cell occupied.
+        let cells = body["view"]["cells"].as_array().unwrap();
+        assert_eq!(cells[index], "R", "AI-placed cell {index} should be R");
+    }
+
+    #[tokio::test]
+    async fn test_tl_user_center_ai_then_advance_center() {
+        // Reproduction of the user-reported scenario: user plays
+        // center, AI plays, then user tries to play again.
+        // Confirms the server stays consistent throughout.
+        let app = test_app();
+        let mut state = new_tl_state(app.clone()).await;
+
+        // Play cell 4 (center) with R: move = (4 << 2) | 0 = 16
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": 16 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let resp = body_json(&body);
+        assert_eq!(resp["view"]["cells"][4], "R");
+        assert_eq!(resp["view"]["turn"], "B");
+        state = resp["state"].clone();
+
+        // Get legal moves before the AI plays.
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/legal_moves",
+            json!({ "state": state }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let legal = body_json(&body);
+        let pre_ai: Vec<u8> = serde_json::from_value(legal["moves"].clone()).unwrap();
+        // Cell 4 is R → must advance to Y (move 17)
+        assert!(pre_ai.contains(&17), "advance cell 4 R->Y should be legal: {pre_ai:?}");
+
+        // AI plays as B.
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/ai_move",
+            json!({ "state": state, "preset": "strong" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let resp = body_json(&body);
+        let ai_move: u8 = serde_json::from_value(resp["move"].clone()).unwrap();
+        assert!(
+            pre_ai.contains(&ai_move),
+            "AI move {ai_move} must be in legal set {pre_ai:?}"
+        );
+        state = resp["state"].clone();
+
+        // The state after AI is self-consistent: generate legal moves
+        // and verify every cell has exactly one legal move.
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/traffic-lights/legal_moves",
+            json!({ "state": state }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let legal = body_json(&body);
+        let post_ai: Vec<u8> = serde_json::from_value(legal["moves"].clone()).unwrap();
+        // Exactly 9 moves (one per cell)
+        assert_eq!(post_ai.len(), 9, "should have 9 legal moves: {post_ai:?}");
+
+        // The cell the AI played on must have advanced (not regressed).
+        let view = &resp["view"];
+        let cells = view["cells"].as_array().unwrap();
+        let ai_idx = (ai_move >> 2) as usize;
+        let val = cells[ai_idx].as_str().map(|s| s.to_owned());
+        assert!(
+            val.is_some(),
+            "AI-played cell {ai_idx} should not be empty after move"
+        );
+
+        // Any user cell they can click will work.
+        // Pick the first non-AI cell and play it.
+        let user_idx = if ai_idx == 4 { 0usize } else { 4usize };
+        let user_moves: Vec<u8> = post_ai
+            .iter()
+            .copied()
+            .filter(|m| (m >> 2) as usize == user_idx)
+            .collect();
+        assert_eq!(user_moves.len(), 1, "cell {user_idx} must have one legal move");
+        let (status, _body) = http_post_json(
+            app,
+            "/api/games/traffic-lights/apply",
+            json!({ "state": state, "move": user_moves[0] }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
     }
 
     #[tokio::test]

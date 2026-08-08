@@ -1,0 +1,131 @@
+/* traffic-lights.css — TrafficLightsRenderer's own presentation, scoped to
+   this package's own class names (same discipline as ttt.css/druid.css). */
+
+.tl-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #2d2d2d;
+}
+
+.tl-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 112px);
+  grid-template-rows: repeat(3, 112px);
+  gap: 8px;
+  background: #1a1a1a;
+  padding: 8px;
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.tl-cell {
+  --heat: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 112px;
+  height: 112px;
+  background: #3a3a3a;
+  border: 2px solid #555;
+  border-radius: 56px;
+  font-size: 44px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: default;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+/* Empty cell — subtle inner glow */
+.tl-cell.empty {
+  background: #3a3a3a;
+  border-color: #555;
+}
+
+/* Legal empty cells get a slight hover glow */
+.tl-cell.empty.legal {
+  cursor: pointer;
+  border-color: #777;
+}
+
+.tl-cell.empty.legal:hover,
+.tl-cell.empty.hovered {
+  border-color: #aaa;
+  box-shadow: inset 0 0 16px rgba(255, 255, 255, 0.1);
+}
+
+/* Red piece */
+.tl-cell.piece-R {
+  background: radial-gradient(circle at 40% 35%, #ff6b6b, #c0392b);
+  border-color: #a93226;
+  box-shadow: 0 0 12px rgba(231, 76, 60, 0.5);
+}
+
+.tl-cell.piece-R.legal {
+  cursor: pointer;
+}
+
+.tl-cell.piece-R.legal:hover,
+.tl-cell.piece-R.hovered {
+  box-shadow: 0 0 20px rgba(231, 76, 60, 0.8);
+  border-color: #e74c3c;
+}
+
+/* Yellow piece */
+.tl-cell.piece-Y {
+  background: radial-gradient(circle at 40% 35%, #ffe066, #f39c12);
+  border-color: #d68910;
+  box-shadow: 0 0 12px rgba(243, 156, 18, 0.5);
+}
+
+.tl-cell.piece-Y.legal {
+  cursor: pointer;
+}
+
+.tl-cell.piece-Y.legal:hover,
+.tl-cell.piece-Y.hovered {
+  box-shadow: 0 0 20px rgba(243, 156, 18, 0.8);
+  border-color: #f39c12;
+}
+
+/* Green piece */
+.tl-cell.piece-G {
+  background: radial-gradient(circle at 40% 35%, #58d68d, #27ae60);
+  border-color: #1e8449;
+  box-shadow: 0 0 12px rgba(39, 174, 96, 0.5);
+}
+
+.tl-cell.piece-G {
+  opacity: 0.85;
+}
+
+/* Heatmap overlay — warm glow on top of the piece colour */
+.tl-cell.heat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 56px;
+  background: rgba(255, 169, 77, calc(0.08 + var(--heat) * 0.45));
+  pointer-events: none;
+}
+
+.tl-cell.proven::before {
+  background: rgba(76, 175, 122, calc(0.08 + var(--heat) * 0.45));
+}
+
+.tl-cell.suggested {
+  outline: 4px solid #ffe066;
+  outline-offset: -4px;
+}
+
+/* Ghost preview — shown on legal empty cells when hovering */
+.tl-ghost {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  opacity: 0.35;
+  background: radial-gradient(circle at 40% 35%, #ff6b6b, #c0392b);
+}

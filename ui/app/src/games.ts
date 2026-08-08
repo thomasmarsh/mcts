@@ -6,11 +6,13 @@
 
 import type { GameKindModule } from "@mcts/game";
 import { druidModule } from "@mcts/druid";
+import { trafficLightsModule } from "@mcts/traffic-lights";
 import { tttModule } from "@mcts/ttt";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const GAME_MODULES: Record<string, GameKindModule<any, any, any>> = {
   druid: druidModule,
+  "traffic-lights": trafficLightsModule,
   ttt: tttModule,
 };
 
@@ -20,6 +22,7 @@ export const GAME_MODULES: Record<string, GameKindModule<any, any, any>> = {
  * needs a kind-picker UI to show one besides this). */
 export const GAME_LABELS: Record<string, string> = {
   druid: "Druid",
+  "traffic-lights": "Traffic Lights",
   ttt: "Tic-Tac-Toe",
 };
 

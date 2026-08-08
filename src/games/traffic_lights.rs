@@ -55,7 +55,7 @@ impl Move {
         }
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         (self.0 >> 2) as usize
     }
 }
@@ -84,7 +84,7 @@ impl Position {
         }
     }
 
-    fn get(&self, index: usize) -> Option<Piece> {
+    pub fn get(&self, index: usize) -> Option<Piece> {
         match ((self.board as usize) >> (index * 2)) & 0b11 {
             0b00 => None,
             0b01 => Some(Piece::R),
@@ -174,6 +174,25 @@ impl Default for HashedPosition {
 }
 
 impl HashedPosition {
+    /// Rebuild a `HashedPosition` from a raw `Position`, computing hashes
+    /// from scratch (no prior hash to XOR from). Mirrors
+    /// `ttt::HashedPosition::from_position`.
+    pub fn from_position(position: Position) -> Self {
+        let mut tmp = Self { position, hashes: [0; 8] };
+        // Walk every cell that is occupied and XOR its hash contribution
+        // to rebuild the full hash from scratch.
+        for i in 0..9 {
+            let value = ((tmp.position.board as usize) >> (i * 2)) & 0b11;
+            if value == 0 {
+                continue;
+            }
+            let q = (i << 3) | (value << 1) | tmp.position.turn as usize;
+            tmp.hashes[0] ^= HASHES.hash(q);
+        }
+        tmp
+    }
+
+
     #[inline]
     fn apply(&mut self, m: Move) {
         use super::ttt::sym;
@@ -270,11 +289,11 @@ impl Game for TrafficLights {
     }
 
     fn winner(state: &Self::S) -> Option<Player> {
-        if !Self::is_terminal(state) {
-            unreachable!();
+        if state.position.winner {
+            Some(state.position.turn)
+        } else {
+            None
         }
-
-        Some(state.position.turn)
     }
 
     fn player_to_move(state: &Self::S) -> Player {

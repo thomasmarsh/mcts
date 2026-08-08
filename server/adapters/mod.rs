@@ -7,6 +7,7 @@
 // its own concrete adapter type.
 
 pub mod druid;
+pub mod traffic_lights;
 pub mod ttt;
 
 use axum::http::StatusCode;
