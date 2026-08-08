@@ -20,13 +20,12 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Max Child
 - [x] Robust Child
 - [ ] Max-Robust Child
-- [ ] Secure Child
+- [x] Secure Child
 - [x] UCT
 - [x] UCB1-tuned
 - [ ] Bayesian UCT
 - [ ] EXP3 (probabilistic, partial observable games, simultaneous moves)
 - [ ] Hierarchical optimistic optimization for trees
-- [ ] First play urgency
 - [ ] Move groups
 - [ ] Decisive moves / anti-decisive moves
 - [ ] Progressive bias
