@@ -3,7 +3,7 @@
 from .config import ParamDef, SearchConfig
 from .space import build_space
 from .target import make_target
-from .callback import IncumbentTracker
+from .callback import IncumbentTracker, TrialTracker
 
 __all__ = [
     "Config",
@@ -12,4 +12,5 @@ __all__ = [
     "build_space",
     "make_target",
     "IncumbentTracker",
+    "TrialTracker",
 ]

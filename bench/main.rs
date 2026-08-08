@@ -11,6 +11,7 @@
 //! (DuckDB single-writer constraint).
 
 use std::io::stdout;
+use std::process::{Command as StdCommand, Stdio};
 
 use clap::{Parser, Subcommand};
 
@@ -19,6 +20,7 @@ use mcts::bench::ingest;
 use mcts::bench::launch::{self, LaunchedRun};
 use mcts::bench::schema;
 use mcts::bench::tournament::round_robin_bench_multiple;
+use mcts::build_info;
 use mcts::util::Verbosity;
 
 #[derive(Parser)]
@@ -77,6 +79,36 @@ enum Command {
         cmd: Vec<String>,
     },
 
+    /// Launch a SMAC3 hyperparameter-optimisation run.  Runs
+    /// ``uv run --project scripts/ hyper-cli ...`` in the foreground
+    /// (streaming JSONL to stdout) or, with ``--background``, through the
+    /// detached-process launcher so the run survives the launching
+    /// process and appears in DuckDB/the UI.
+    Smac3 {
+        /// Path to the SMAC3 YAML config file (passed through to
+        /// ``hyper-cli --config``).
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Config override (``key=value``, repeatable).  Passed through
+        /// as ``hyper-cli --override key=value``.
+        #[arg(long = "override", default_values_t = Vec::<String>::new())]
+        overrides: Vec<String>,
+
+        /// Game kind for registry attribution (e.g. "druid").
+        #[arg(long)]
+        game: String,
+
+        /// Optional human-readable label for the run.
+        #[arg(long)]
+        label: Option<String>,
+
+        /// Launch in the background (detached process) instead of
+        /// running in the foreground.
+        #[arg(long)]
+        background: bool,
+    },
+
     /// One-shot ingest for debugging / validation.  Reads registry.log
     /// and all active runs' log.jsonl files, upserts into DuckDB at the
     /// given path, then exits.  **Not for concurrent use with `server`**
@@ -105,6 +137,14 @@ fn main() {
             label,
             cmd,
         } => cmd_launch(&kind, &game, label.as_deref(), &cmd),
+
+        Command::Smac3 {
+            config,
+            overrides,
+            game,
+            label,
+            background,
+        } => cmd_smac3(config.as_deref(), &overrides, &game, label.as_deref(), background),
 
         Command::Ingest { db } => cmd_ingest_once(&db),
     }
@@ -202,6 +242,94 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
         "game": game,
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
+
+/// Build the argv for a ``uv run --project scripts/ hyper-cli ...``
+/// invocation, incorporating the config file, overrides, and git SHA.
+fn build_smac3_command(config: Option<&str>, overrides: &[String]) -> Vec<String> {
+    let mut cmd = vec![
+        "uv".to_string(),
+        "run".to_string(),
+        "--project".to_string(),
+        "scripts/".to_string(),
+        "hyper-cli".to_string(),
+    ];
+
+    if let Some(config_path) = config {
+        cmd.push("--config".to_string());
+        cmd.push(config_path.to_string());
+    }
+
+    for ov in overrides {
+        cmd.push("--override".to_string());
+        cmd.push(ov.clone());
+    }
+
+    // Pass the compile-time git SHA so the Python side can include it
+    // in its JSONL output for attribution.
+    cmd.push("--git-sha".to_string());
+    cmd.push(build_info::MCTS_GIT_SHA.to_string());
+
+    cmd
+}
+
+fn cmd_smac3(
+    config: Option<&str>,
+    overrides: &[String],
+    game: &str,
+    label: Option<&str>,
+    background: bool,
+) {
+    let cmd = build_smac3_command(config, overrides);
+
+    if background {
+        // Launch via the detached-process launcher.
+        let LaunchedRun {
+            run_id,
+            pid,
+            log_path,
+            ..
+        } = match launch::launch(cmd, "smac3", game, label) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: failed to launch SMAC3 run: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        let output = serde_json::json!({
+            "run_id": run_id,
+            "pid": pid,
+            "log_path": log_path.to_string_lossy(),
+            "kind": "smac3",
+            "game": game,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        // Run in the foreground — inherit stdout/stderr so the Python
+        // JSONL stream goes directly to the terminal or whoever is
+        // piping stdout.
+        let mut child = match StdCommand::new(&cmd[0])
+            .args(&cmd[1..])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: failed to spawn '{}': {e}", cmd[0]);
+                std::process::exit(1);
+            }
+        };
+
+        let status = child.wait().unwrap_or_else(|e| {
+            eprintln!("error: failed to wait on child: {e}");
+            std::process::exit(1);
+        });
+
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 fn cmd_ingest_once(db_path: &str) {

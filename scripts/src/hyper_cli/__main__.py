@@ -23,7 +23,7 @@ from typing import Any
 from smac import Scenario
 from smac.facade import HyperparameterOptimizationFacade
 
-from .callback import IncumbentTracker
+from .callback import IncumbentTracker, TrialTracker
 from .config import SearchConfig
 from .space import build_space
 from .target import make_target
@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable debug logging",
     )
+    p.add_argument(
+        "--git-sha",
+        type=str,
+        default=None,
+        help="Git SHA for attribution (auto-detected if omitted)",
+    )
     return p
 
 
@@ -129,7 +135,7 @@ def main() -> None:
     smac = HyperparameterOptimizationFacade(
         scenario,
         train,
-        callbacks=[IncumbentTracker()],
+        callbacks=[IncumbentTracker(), TrialTracker(git_sha=args.git_sha)],
         logging_level=logging.INFO if not args.verbose else logging.DEBUG,
         overwrite=True,
     )
