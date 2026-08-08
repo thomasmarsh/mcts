@@ -145,6 +145,7 @@ impl Size {
         }
         let area = self.area() as usize;
         area * 2 * zobrist_height_bits(self) <= HASHES_LEN
+            && 4 * zobrist_height_bits(self) <= HAND_HASHES_LEN
     }
 }
 
@@ -737,6 +738,65 @@ static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xD401D);
 const PENDING_HASHES_LEN: usize = 5;
 static PENDING_HASHES: LazyZobristTable<PENDING_HASHES_LEN> = LazyZobristTable::new(0xD402D);
 
+// `player`/hand counts used to be recoverable from the board alone (parity
+// of total pieces placed determines the mover, remaining hand counts follow
+// from move history) -- so the hash below omitted them. That assumption
+// breaks for Druid: a lintel placement raises all 3 touched cells to
+// `height(cells[0]) + 1` regardless of the other two cells' prior heights,
+// which decouples "how many turns were played" from "what the board looks
+// like". Two different, both-legally-reachable (board, pending) values can
+// then differ in `player` and/or hand counts while hashing identically,
+// silently aliasing unrelated MCTS transposition-table nodes. Hashing
+// `player` and both hands' remaining counts closes that gap.
+const PLAYER_HASHES_LEN: usize = 1;
+static PLAYER_HASHES: LazyZobristTable<PLAYER_HASHES_LEN> = LazyZobristTable::new(0xD403D);
+
+/// XOR contribution of player-to-move. `Black` contributes 0 (same
+/// convention as `Pending::None` in `pending_zobrist`), so only one table
+/// entry is needed to toggle between the two players.
+fn player_zobrist(p: Player) -> u64 {
+    match p {
+        Player::Black => 0,
+        Player::White => PLAYER_HASHES.hash(0),
+    }
+}
+
+// Sized for 2 players * 2 piece kinds * the largest per-track bit width
+// (`zobrist_height_bits`'s max under `HASHES_LEN`, currently 8) = 32.
+// `Size::is_supported` checks this bound the same way it checks `HASHES_LEN`.
+const HAND_HASHES_LEN: usize = 32;
+static HAND_HASHES: LazyZobristTable<HAND_HASHES_LEN> = LazyZobristTable::new(0xD404D);
+
+fn kind_index(k: PieceKind) -> usize {
+    match k {
+        PieceKind::Sarsen => 0,
+        PieceKind::Lintel => 1,
+    }
+}
+
+/// XOR contribution of one player's remaining count of `kind` pieces --
+/// same bit-subset trick as `cell_zobrist`, applied to a bounded counter (a
+/// hand count) instead of a board cell's height. Reuses the cell-height bit
+/// width (`bits`, from `zobrist_height_bits`): a hand's sarsen count is
+/// bounded by exactly that value (`Hand::new`'s `n * 2` is
+/// `max_cell_height`'s definition) and its lintel count (`n`) never needs
+/// more bits than that, so one shared width covers both tracks.
+fn hand_zobrist(player: Player, kind: PieceKind, count: u8, bits: usize) -> u64 {
+    let c = count as usize;
+    if c == 0 {
+        return 0;
+    }
+    let track = player.to_index() * 2 + kind_index(kind);
+    let base = track * bits;
+    (0..bits).fold(0, |hash, b| {
+        if c & (1 << b) != 0 {
+            hash ^ HAND_HASHES.hash(base + b)
+        } else {
+            hash
+        }
+    })
+}
+
 fn pending_index(p: Pending) -> usize {
     match p {
         Pending::None => 0,
@@ -808,6 +868,22 @@ fn recompute_hash(state: &State, bits: usize) -> u64 {
     state.board.iter().enumerate().fold(0, |hash, (i, square)| {
         hash ^ cell_zobrist(i, square.height, square.piece, bits)
     })
+}
+
+/// Full from-scratch hash: board cells, pending sub-move, player-to-move,
+/// and both players' remaining hand counts -- every component the
+/// incremental update in `Game::apply` maintains. Used by `HashedState::new`/
+/// `from_state` (states that don't arrive via `Game::apply`, so have nothing
+/// to update incrementally) and by the property test that checks the
+/// incremental update stays in sync with it.
+fn full_hash(state: &State, bits: usize) -> u64 {
+    recompute_hash(state, bits)
+        ^ pending_zobrist(state.pending)
+        ^ player_zobrist(state.player)
+        ^ hand_zobrist(Player::Black, PieceKind::Sarsen, state.hand_black.sarsens, bits)
+        ^ hand_zobrist(Player::Black, PieceKind::Lintel, state.hand_black.lintels, bits)
+        ^ hand_zobrist(Player::White, PieceKind::Sarsen, state.hand_white.sarsens, bits)
+        ^ hand_zobrist(Player::White, PieceKind::Lintel, state.hand_white.lintels, bits)
 }
 
 // A union-find over board cells, plus two virtual "border" nodes, used to
@@ -1198,12 +1274,10 @@ impl HashedState {
     /// first and reject unsupported sizes there instead of hitting this.
     pub fn new(size: Size) -> Self {
         assert!(size.is_supported(), "unsupported board size: {size:?}");
-        // The all-zero hash is correct for any empty board under the scheme
-        // below, regardless of size: no cell has a nonzero height yet, so no
-        // bits get XORed in.
         let state = State::new(size);
         let cache = MoveCache::new(&state);
-        let hash = pending_zobrist(state.pending);
+        let bits = zobrist_height_bits(size);
+        let hash = full_hash(&state, bits);
         HashedState(state, hash, Connectivity::new(size), cache)
     }
 
@@ -1226,7 +1300,7 @@ impl HashedState {
             state.size
         );
         let bits = zobrist_height_bits(state.size);
-        let hash = recompute_hash(&state, bits) ^ pending_zobrist(state.pending);
+        let hash = full_hash(&state, bits);
         let mut connectivity = Connectivity::new(state.size);
         for color in [Player::Black, Player::White] {
             connectivity.rebuild(state.size, &state.board, color);
@@ -1355,9 +1429,20 @@ impl Game for Druid {
                 let old: [Square; 3] = std::array::from_fn(|i| state.0.board[cells[i]]);
                 let mover = state.0.player;
                 let old_pending = state.0.pending;
+                let kind = piece.kind();
+                let old_hand_count = match kind {
+                    PieceKind::Sarsen => state.0.hand(mover).sarsens,
+                    PieceKind::Lintel => state.0.hand(mover).lintels,
+                };
                 state.0.apply(placed);
-                // State::apply flips player; now reset pending.
-                // Must update hash for pending reset and board delta.
+                // State::apply flips player and depletes `mover`'s hand; now
+                // reset pending. Must update hash for pending reset, board
+                // delta, the player toggle, and the hand-count delta.
+                let next_player = state.0.player;
+                let new_hand_count = match kind {
+                    PieceKind::Sarsen => state.0.hand(mover).sarsens,
+                    PieceKind::Lintel => state.0.hand(mover).lintels,
+                };
                 debug_assert!(
                     state.0.board.iter().all(|square| (square.height as usize) < (1usize << bits)),
                     "cell height exceeded the {bits}-bit Zobrist encoding for {:?}; max_cell_height's bound was wrong",
@@ -1366,6 +1451,10 @@ impl Game for Druid {
                 let mut hash = state.1;
                 hash ^= pending_zobrist(old_pending);
                 hash ^= pending_zobrist(Pending::None);
+                hash ^= player_zobrist(mover);
+                hash ^= player_zobrist(next_player);
+                hash ^= hand_zobrist(mover, kind, old_hand_count, bits);
+                hash ^= hand_zobrist(mover, kind, new_hand_count, bits);
                 for k in 0..n {
                     let i = cells[k];
                     hash ^= cell_zobrist(i, old[k].height, old[k].piece, bits);
@@ -2066,12 +2155,17 @@ mod tests {
 
     #[test]
     fn test_incremental_hash_matches_full_recompute() {
-        // `Game::apply` now updates the hash incrementally (XOR out the
-        // touched cells' old contribution, XOR in the new) instead of
-        // recomputing the whole board every ply. Confirm that stays
-        // identical to a from-scratch recompute across many randomized
-        // move sequences and board sizes, including games that run long
-        // enough to restack cells past their original height.
+        // `Game::apply` now updates the hash incrementally (XOR out the old
+        // contribution, XOR in the new) instead of recomputing from scratch
+        // every step. Confirm that stays identical to a from-scratch
+        // recompute across many randomized move sequences and board sizes,
+        // including games that run long enough to restack cells past their
+        // original height. Drives `Druid::generate_actions`/`Druid::apply`
+        // directly (the linearized sub-actions, not whole-turn
+        // `PlacedPiece`s via `apply_placed`) so the check runs after *every*
+        // sub-move -- including the mid-turn `pending != None` states
+        // between a `Move::Piece`/`Move::Orientation` and its `Move::Cell`,
+        // which a whole-turn-only check never observes.
         use rand::rngs::SmallRng;
         use rand::{Rng, SeedableRng};
 
@@ -2083,18 +2177,18 @@ mod tests {
                 let mut state = HashedState::new(size);
                 let mut actions = Vec::new();
                 for ply in 0..200 {
-                    state.0.moves(&mut actions);
+                    Druid::generate_actions(&state, &mut actions);
                     if actions.is_empty() {
                         break;
                     }
                     let m = actions[rng.gen_range(0..actions.len())];
-                    state = apply_placed(state, m);
+                    state = Druid::apply(state, &m);
                     actions.clear();
 
                     assert_eq!(
                         state.1,
-                        recompute_hash(&state.0, bits) ^ pending_zobrist(state.0.pending),
-                        "incremental hash diverged from full recompute at size={size:?} game={game} ply={ply}"
+                        full_hash(&state.0, bits),
+                        "incremental hash diverged from full recompute at size={size:?} game={game} ply={ply} move={m:?}"
                     );
                 }
             }

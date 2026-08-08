@@ -67,3 +67,58 @@ fn test_tree_parallel_transpositions_survive_many_real_time_games() {
         }
     }
 }
+
+#[test]
+fn test_druid_hash_no_collision_across_many_random_games() {
+    let _guard = stress_test_guard();
+    // `Druid::zobrist_hash` used to cover only board cells + the pending
+    // sub-move, on the assumption that player-to-move and hand counts are
+    // always recoverable from the board. That's false once lintels are in
+    // play -- a lintel placement can raise a cell's height by more than 1,
+    // decoupling turn-count from board appearance -- so two different,
+    // both-legally-reachable states could hash identically and silently
+    // alias in the MCTS transposition table. The fix extended the hash to
+    // cover player-to-move and both hands' remaining counts; this plays many
+    // random games and asserts no two distinct states ever share a hash,
+    // the same technique `examples/test_hash_collision.rs` used to find the
+    // original collision (in 2,485 games -- this runs comfortably past that
+    // margin). That example is kept separately for bigger ad-hoc runs (its
+    // default is 200,000 games), since a run that size is too slow for even
+    // this suite.
+    use mcts::game::Game;
+    use mcts::games::druid::{Druid, HashedState, Size, State};
+    use rand::rngs::SmallRng;
+    use rand::seq::SliceRandom;
+    use rand::SeedableRng;
+    use std::collections::HashMap;
+
+    let size = Size { w: 5, h: 5 };
+    let mut rng = SmallRng::seed_from_u64(1);
+    let mut seen: HashMap<u64, State> = HashMap::new();
+
+    for _game in 0..5_000u64 {
+        let mut state = HashedState::new(size);
+        for _ply in 0..400 {
+            if Druid::is_terminal(&state) {
+                break;
+            }
+            let mut actions = Vec::new();
+            Druid::generate_actions(&state, &mut actions);
+            if actions.is_empty() {
+                break;
+            }
+
+            let hash = Druid::zobrist_hash(&state);
+            if let Some(prev) = seen.insert(hash, state.state().clone()) {
+                assert_eq!(
+                    prev,
+                    *state.state(),
+                    "hash collision: two distinct states shared one Zobrist hash"
+                );
+            }
+
+            let action = *actions.choose(&mut rng).unwrap();
+            state = Druid::apply(state, &action);
+        }
+    }
+}
