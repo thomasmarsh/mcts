@@ -1247,38 +1247,63 @@ fn test_transposition_table_compact_drops_unmapped_and_remaps_survivors() {
     let new_index = TreeIndex::<u32>::new();
     let new_ids: Vec<_> = (0..2).map(|i| new_index.insert(Node::new(0, i))).collect();
 
-    let mut table: TranspositionTable<&'static str> = TranspositionTable::default();
-    // Same hash bucket, two different states -- exercises the per-bucket
-    // `Vec<TableEntry>` filtering, not just whole-bucket drop/keep.
-    table.insert(100, old_ids[0], "a");
-    table.insert(100, old_ids[1], "b");
-    table.insert(200, old_ids[2], "c");
-    table.insert(300, old_ids[3], "d");
+    let mut table = TranspositionTable::default();
+    table.insert(100, old_ids[0]);
+    table.insert(200, old_ids[1]);
+    table.insert(300, old_ids[2]);
+    table.insert(400, old_ids[3]);
 
-    // Only ids 0 and 2 "survive" (as if only they were reachable from the
-    // new root); 1 and 3 are the discarded-node case.
+    // Only ids 0 and 1 "survive" (as if only they were reachable from the
+    // new root); 2 and 3 are the discarded-node case.
     let mut old_to_new = FxHashMap::default();
     old_to_new.insert(old_ids[0], new_ids[0]);
-    old_to_new.insert(old_ids[2], new_ids[1]);
+    old_to_new.insert(old_ids[1], new_ids[1]);
 
     table.compact(&old_to_new);
 
     assert_eq!(
-        table.get_const(100, "a").unwrap().node_id,
+        table.get_const(100).unwrap(),
         new_ids[0],
         "a surviving entry should be remapped to its new id"
     );
+    assert_eq!(table.get_const(200).unwrap(), new_ids[1]);
     assert!(
-        table.get_const(100, "b").is_none(),
+        table.get_const(300).is_none(),
         "an entry pointing at a discarded node must be dropped, not left dangling"
     );
-    assert_eq!(table.get_const(200, "c").unwrap().node_id, new_ids[1]);
-    assert!(table.get_const(300, "d").is_none());
+    assert!(table.get_const(400).is_none());
     assert_eq!(
-        table.bucket_lens().iter().sum::<usize>(),
+        table.len(),
         2,
-        "only the two surviving entries should remain, across however many buckets"
+        "only the two surviving entries should remain"
     );
+}
+
+#[test]
+fn test_transposition_table_trusts_the_hash_first_write_wins() {
+    use mcts::node::Node;
+    use mcts::search::TreeIndex;
+    use mcts::table::TranspositionTable;
+
+    // The table no longer stores state to disambiguate a same-hash
+    // "collision" -- a second insert at an already-occupied hash is a
+    // no-op, and the first write's id is what every future lookup returns.
+    // This is the accepted tradeoff documented in `table.rs`: real 64-bit
+    // Zobrist collisions are vanishingly rare, so trusting the hash outright
+    // beats paying to store and compare state on every lookup.
+    let index = TreeIndex::<u32>::new();
+    let ids: Vec<_> = (0..2).map(|i| index.insert(Node::new(0, i))).collect();
+
+    let table = TranspositionTable::default();
+    let first = table.get_or_insert(42, || ids[0]);
+    let second = table.get_or_insert(42, || ids[1]);
+
+    assert_eq!(first, ids[0]);
+    assert_eq!(
+        second, ids[0],
+        "a same-hash lookup returns the first entry, never inserting the second"
+    );
+    assert_eq!(table.len(), 1);
 }
 
 #[test]

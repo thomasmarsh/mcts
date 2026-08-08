@@ -146,7 +146,7 @@ pub(crate) type ActionTotal<A> = (A, u32, Vec<f64>);
 pub struct Shared<'a, G: Game> {
     pub index: &'a TreeIndex<G::A>,
     pub root_stats: &'a NodeStats,
-    pub table: &'a TranspositionTable<G::S>,
+    pub table: &'a TranspositionTable,
     pub global: &'a TreeStats<G>,
     pub expand_threshold: u32,
     pub q_init: node::QInit,
@@ -202,7 +202,7 @@ pub fn new_child<G: Game>(shared: &Shared<'_, G>, state: &G::S, best_idx: usize,
     children.get_or_create_child(best_idx, || {
         if shared.use_transpositions {
             // TODO: the following won't work with symmetries
-            shared.table.get_or_insert(hash, state.clone(), || {
+            shared.table.get_or_insert(hash, || {
                 let child = Node::new(G::player_to_move(state).to_index(), hash);
                 shared.index.insert(child)
             })

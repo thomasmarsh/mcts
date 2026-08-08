@@ -109,7 +109,7 @@ where
         let hash = G::zobrist_hash(state);
         let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
         if self.config.use_transpositions {
-            self.table.insert(hash, root_id, state.clone());
+            self.table.insert(hash, root_id);
         }
 
         self.timer.start(self.config.max_time);

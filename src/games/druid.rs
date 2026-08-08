@@ -1621,11 +1621,15 @@ mod tests {
 
     #[test]
     fn test_self_play_smoke_no_hash_collisions() {
-        // A short self-play run with transpositions enabled, exercising the
-        // real Zobrist hashing path end-to-end. With the corrected bit
-        // width every state that lands in the same table bucket should
-        // really be the same state -- so no bucket should ever need a
-        // second `TableEntry` to disambiguate a collision.
+        // A short self-play run exercising the real Zobrist hashing path
+        // end-to-end. The transposition table itself no longer stores state
+        // to verify this against (`table.rs` trusts the hash outright, on
+        // the strength of exactly this property holding), so this test
+        // verifies it independently: collect every state reached along the
+        // played line, plus every one-ply successor considered along the
+        // way (the same breadth of states real expansion would hash and
+        // insert), into our own map, and confirm no two distinct states
+        // ever share a hash.
         let mut search: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
@@ -1634,21 +1638,30 @@ mod tests {
                 .max_iterations(50),
         );
 
+        let mut seen: std::collections::HashMap<u64, State> = std::collections::HashMap::new();
+        let mut check = |s: &HashedState| {
+            let hash = Druid::zobrist_hash(s);
+            let state = s.state().clone();
+            if let Some(prev) = seen.insert(hash, state.clone()) {
+                assert_eq!(prev, state, "hash collision: two distinct states shared one Zobrist hash");
+            }
+        };
+
         let mut state = HashedState::default();
         for _ in 0..40 {
             if Druid::is_terminal(&state) {
                 break;
             }
+            check(&state);
+            let mut actions = Vec::new();
+            Druid::generate_actions(&state, &mut actions);
+            for action in &actions {
+                check(&Druid::apply(state.clone(), action));
+            }
             let action = search.choose_action(&state);
             state = Druid::apply(state, &action);
         }
-
-        for len in search.table.bucket_lens() {
-            assert_eq!(
-                len, 1,
-                "hash collision: {len} distinct states shared one Zobrist hash"
-            );
-        }
+        check(&state);
     }
 
     #[test]

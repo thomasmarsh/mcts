@@ -42,10 +42,12 @@ pub struct MemoryStats {
     /// Estimated heap bytes owned by expanded nodes' `ChildArray`s (their
     /// parallel `Vec`s/`FxHashMap`), summed via `ChildArray::heap_bytes_estimate`.
     pub child_array_heap_bytes: usize,
-    /// Total `TableEntry` count across every transposition-table bucket.
+    /// Total entry count in the transposition table.
     pub table_entries: usize,
-    /// `table_entries * size_of::<G::S>()` -- the state-clone cost each
-    /// entry carries.
+    /// `table_entries * (size_of::<u64>() + size_of::<index::Id>())` --
+    /// the table stores only a hash-to-node-id mapping (see `table.rs`),
+    /// no game state, so unlike `node_bytes`/`child_array_heap_bytes` this
+    /// is an exact accounting, not an estimate.
     pub table_bytes: usize,
 }
 
@@ -201,9 +203,9 @@ where
                 }
             }
         });
-        let bucket_lens = self.table.bucket_lens();
-        stats.table_entries = bucket_lens.iter().sum();
-        stats.table_bytes = stats.table_entries * std::mem::size_of::<G::S>();
+        stats.table_entries = self.table.len();
+        stats.table_bytes =
+            stats.table_entries * (std::mem::size_of::<u64>() + std::mem::size_of::<Id>());
         stats
     }
 

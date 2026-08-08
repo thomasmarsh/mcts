@@ -35,15 +35,19 @@ where
     pub(crate) root_id: Id,
     pub(crate) root_stats: NodeStats,
     pub(crate) pv: Vec<G::A>,
-    pub(crate) table: TranspositionTable<G::S>,
+    pub(crate) table: TranspositionTable,
     /// The real state `root_id` represents, tracked purely so
     /// `reuse_or_reset` (`SearchConfig::reuse_tree`) can replay a candidate
     /// path and verify full state equality
     /// before promoting onto it -- a `Node` only stores its Zobrist hash,
     /// not its state, and a bare `u64` match isn't proof (a real, if
     /// astronomically rare, 64-bit collision would otherwise silently
-    /// promote onto the wrong position and corrupt the whole tree; compare
-    /// `TranspositionTable`'s own full-state check for the same reasoning).
+    /// promote onto the wrong position and corrupt the whole tree). The
+    /// transposition table accepts that same risk on every lookup (trusting
+    /// the hash outright, see `table.rs`) since a false merge there just
+    /// reuses one node's stats for two positions -- re-rooting onto the
+    /// wrong position outright is a worse failure mode, so it gets this
+    /// dedicated check instead of trusting the hash.
     /// `None` only before the very first `choose_action` call.
     pub(crate) root_state: Option<G::S>,
 

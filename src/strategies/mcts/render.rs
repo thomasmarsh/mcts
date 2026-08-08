@@ -28,17 +28,9 @@ pub trait NodeRender {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
-fn canonical_id<S: Eq + Clone>(
-    k: u64,
-    table: &TranspositionTable<S>,
-    state: S,
-) -> Option<index::Id> {
-    table.get_const(k, state).map(|ts| ts.node_id)
-}
-
 fn print_trans<G>(
     index: &TreeIndex<G::A>,
-    table: &TranspositionTable<G::S>,
+    table: &TranspositionTable,
     root_id: index::Id,
     init_state: G::S,
 ) where
@@ -52,7 +44,7 @@ fn print_trans<G>(
     let mut stack = vec![(root_id, root_id, root_id, init_state.clone())];
     while let Some((parent_id, parent_print_id, node_id, state)) = stack.pop() {
         let hash = G::zobrist_hash(&state);
-        let print_id = canonical_id(hash, table, state.clone()).unwrap_or(root_id);
+        let print_id = table.get_const(hash).unwrap_or(root_id);
         println!("  \"{}\" {};", print_id.get_raw(), state.render());
         if parent_id != node_id {
             println!(

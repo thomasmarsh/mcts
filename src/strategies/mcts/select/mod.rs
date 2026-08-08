@@ -34,7 +34,7 @@ pub struct SelectContext<'a, G: Game> {
     pub state: &'a G::S,
     pub player: usize,
     pub index: &'a TreeIndex<G::A>,
-    pub table: &'a TranspositionTable<G::S>,
+    pub table: &'a TranspositionTable,
     pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub use_transpositions: bool,
 }

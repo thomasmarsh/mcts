@@ -6,21 +6,27 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::RwLock;
 
-#[derive(Clone, Debug)]
-pub struct TableEntry<S: Eq> {
-    pub node_id: index::Id,
-    pub state: S,
-}
-
+/// Maps a Zobrist hash to the arena node for that position. Stores no state
+/// at all -- a same-hash lookup is trusted outright rather than verified
+/// against a stored clone. This is sound because the table already buckets
+/// on the *full* 64-bit hash (unlike a fixed-size, index-truncated table,
+/// which needs a separate verification tag): a same-bucket "collision" here
+/// would have to be a genuine full 64-bit Zobrist collision, vanishingly
+/// rare for a well-distributed hash. The accepted tradeoff: if a genuine
+/// 64-bit collision ever does occur, the second
+/// position silently reuses the first position's node rather than getting
+/// its own -- first write wins, no error, no detection. At real table sizes
+/// (single-digit millions of entries per game) the odds of that are
+/// astronomically below other failure sources (e.g. cosmic-ray bit flips).
 #[derive(Debug)]
-pub struct TranspositionTable<S: Eq> {
-    table: RwLock<ZobristHashMap<Vec<TableEntry<S>>>>,
+pub struct TranspositionTable {
+    table: RwLock<ZobristHashMap<index::Id>>,
     pub reads: AtomicUsize,
     pub writes: AtomicUsize,
     pub hits: AtomicUsize,
 }
 
-impl<S: Eq> Default for TranspositionTable<S> {
+impl Default for TranspositionTable {
     fn default() -> Self {
         Self {
             table: RwLock::new(ZobristHashMap::default()),
@@ -31,7 +37,7 @@ impl<S: Eq> Default for TranspositionTable<S> {
     }
 }
 
-impl<S: Clone + Eq> Clone for TranspositionTable<S> {
+impl Clone for TranspositionTable {
     fn clone(&self) -> Self {
         Self {
             table: RwLock::new(self.table.read().unwrap().clone()),
@@ -42,7 +48,7 @@ impl<S: Clone + Eq> Clone for TranspositionTable<S> {
     }
 }
 
-impl<S: Clone + Eq> TranspositionTable<S> {
+impl TranspositionTable {
     #[inline]
     pub fn clear(&mut self) {
         self.table.get_mut().unwrap().clear();
@@ -52,34 +58,34 @@ impl<S: Clone + Eq> TranspositionTable<S> {
     }
 
     #[inline]
-    pub fn get_const(&self, k: u64, state: S) -> Option<TableEntry<S>> {
-        let table = self.table.read().unwrap();
-        table
-            .get(k)
-            .and_then(|entries| entries.iter().find(|entry| entry.state == state).cloned())
+    pub fn get_const(&self, k: u64) -> Option<index::Id> {
+        self.table.read().unwrap().get(k).copied()
+    }
+
+    /// Number of entries currently in the table (diagnostics only).
+    pub fn len(&self) -> usize {
+        self.table.read().unwrap().0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Concurrent-safe get-or-insert: the whole check-then-insert happens
-    /// under one write lock, so two threads racing on the same `(k, state)`
-    /// can't both decide "not found" and each insert a duplicate node --
-    /// `create` only actually runs (and its resulting node only actually
-    /// gets inserted) for whichever thread's check comes first.
+    /// under one write lock, so two threads racing on the same `k` can't
+    /// both decide "not found" and each insert a duplicate node -- `create`
+    /// only actually runs (and its resulting node only actually gets
+    /// inserted) for whichever thread's check comes first.
     #[inline]
-    pub fn get_or_insert(&self, k: u64, state: S, create: impl FnOnce() -> index::Id) -> index::Id {
+    pub fn get_or_insert(&self, k: u64, create: impl FnOnce() -> index::Id) -> index::Id {
         self.reads.fetch_add(1, Relaxed);
         let mut table = self.table.write().unwrap();
-        if let Some(entries) = table.get(k) {
-            if let Some(entry) = entries.iter().find(|entry| entry.state == state) {
-                self.hits.fetch_add(1, Relaxed);
-                return entry.node_id;
-            }
+        if let Some(&id) = table.get(k) {
+            self.hits.fetch_add(1, Relaxed);
+            return id;
         }
         let node_id = create();
-        let entries = table.entry(k).or_default();
-        if !entries.is_empty() {
-            log::debug!("collision: key={k:0x} len={}!", entries.len() + 1);
-        }
-        entries.push(TableEntry { node_id, state });
+        table.insert(k, node_id);
         self.writes.fetch_add(1, Relaxed);
         node_id
     }
@@ -88,8 +94,8 @@ impl<S: Clone + Eq> TranspositionTable<S> {
     /// id in hand (e.g. seeding the root) rather than needing one created
     /// on demand.
     #[inline(always)]
-    pub fn insert(&self, k: u64, node_id: index::Id, state: S) {
-        self.get_or_insert(k, state, || node_id);
+    pub fn insert(&self, k: u64, node_id: index::Id) {
+        self.get_or_insert(k, || node_id);
     }
 
     /// Arena compaction's table half (`search/compact.rs`'s
@@ -108,23 +114,12 @@ impl<S: Clone + Eq> TranspositionTable<S> {
     /// moves, with no concurrent search in flight.
     pub fn compact(&mut self, old_to_new: &FxHashMap<index::Id, index::Id>) {
         let table = self.table.get_mut().unwrap();
-        table.0.retain(|_, entries| {
-            entries.retain_mut(|entry| match old_to_new.get(&entry.node_id) {
-                Some(&new_id) => {
-                    entry.node_id = new_id;
-                    true
-                }
-                None => false,
-            });
-            !entries.is_empty()
+        table.0.retain(|_, id| match old_to_new.get(id) {
+            Some(&new_id) => {
+                *id = new_id;
+                true
+            }
+            None => false,
         });
-    }
-
-    /// Test/debug helper: the number of distinct states currently sharing
-    /// each Zobrist hash bucket. A bucket length above 1 is a real 64-bit
-    /// hash collision (as opposed to the pre-session-2 bit-width bug, which
-    /// made same-hash-but-different-state collisions routine).
-    pub fn bucket_lens(&self) -> Vec<usize> {
-        self.table.read().unwrap().0.values().map(Vec::len).collect()
     }
 }
