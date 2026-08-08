@@ -10,8 +10,8 @@ use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::mcts::{backprop, select, Strategy};
-use mcts::util::{round_robin_multiple, AnySearch};
-use mcts::util::{self_play, Verbosity};
+use mcts::bench::tournament::round_robin_multiple;
+use mcts::util::{self_play, AnySearch, Verbosity};
 
 const NUM_ROUNDS: usize = 10;
 const PLAYOUT_DEPTH: usize = 200;
@@ -126,10 +126,10 @@ fn main() {
 
     // Convert the vector of trait objects into a vector of mutable references
 
-    round_robin_multiple::<Druid, AnySearch<'_, Druid>>(
+    round_robin_multiple::<Druid, _>(
         &mut strategies,
         NUM_ROUNDS,
-        &<Druid as Game>::S::default(),
+        &mut std::io::stdout(),
         Verbosity::Verbose,
     );
 }

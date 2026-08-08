@@ -11,10 +11,11 @@
 // Usage: cargo run --release --example strength_solver
 use std::time::Duration;
 
-use mcts::games::druid::{Druid, HashedState};
+use mcts::games::druid::Druid;
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch, strategy};
 use mcts::strategies::Search;
-use mcts::util::{AnySearch, Result as GameResult, Verbosity, round_robin_multiple};
+use mcts::bench::tournament::{Result as GameResult, round_robin_multiple};
+use mcts::util::{AnySearch, Verbosity};
 
 fn easy_config(use_solver: bool, budget: Duration, name: &str) -> TreeSearch<Druid, strategy::Ucb1> {
     TreeSearch::new().config(
@@ -58,7 +59,6 @@ fn fmt_result(r: &GameResult) -> String {
 }
 
 fn main() {
-    let init = HashedState::default(); // 5x5, same as server's fresh page load
     println!("=== MCTS-Solver strength comparison (background job) ===");
     println!("Board: 5x5 default (same as server fresh state)");
     println!("This job intentionally uses real time budgets (1s/2s), runs sequentially,");
@@ -75,10 +75,10 @@ fn main() {
         AnySearch::new(easy_config(false, Duration::from_secs(1), "easy/no-solver")),
         AnySearch::new(easy_config(true, Duration::from_secs(1), "easy/solver")),
     ];
-    let easy_results = round_robin_multiple::<Druid, AnySearch<Druid>>(
+    let easy_results = round_robin_multiple::<Druid, _>(
         &mut easy_strategies,
         easy_rounds,
-        &init,
+        &mut std::io::stdout(),
         Verbosity::Verbose,
     );
     for (i, r) in easy_results.iter().enumerate() {
@@ -93,10 +93,10 @@ fn main() {
         AnySearch::new(medium_config(false, Duration::from_secs(2), "medium/no-solver")),
         AnySearch::new(medium_config(true, Duration::from_secs(2), "medium/solver")),
     ];
-    let medium_results = round_robin_multiple::<Druid, AnySearch<Druid>>(
+    let medium_results = round_robin_multiple::<Druid, _>(
         &mut medium_strategies,
         medium_rounds,
-        &init,
+        &mut std::io::stdout(),
         Verbosity::Verbose,
     );
     for (i, r) in medium_results.iter().enumerate() {

@@ -22,11 +22,12 @@
 use std::time::Duration;
 
 use mcts::games::druid::{
-    Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
+    Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic,
 };
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::util::{round_robin_multiple, AnySearch, Result as GameResult, Verbosity};
+use mcts::bench::tournament::{round_robin_multiple, Result as GameResult};
+use mcts::util::{AnySearch, Verbosity};
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -82,7 +83,6 @@ fn fmt_result(r: &GameResult) -> String {
 }
 
 fn main() {
-    let init = HashedState::default(); // 5x5, same as server's fresh page load
     println!("=== reuse_tree strength comparison (background job) ===");
     println!(
         "Board: 5x5 default. Real Strong preset config (3s/move, tree-parallel across {} cores).",
@@ -102,10 +102,10 @@ fn main() {
         AnySearch::new(strong_config(false, "strong/reuse-off")),
         AnySearch::new(strong_config(true, "strong/reuse-on")),
     ];
-    let results = round_robin_multiple::<Druid, AnySearch<Druid>>(
+    let results = round_robin_multiple::<Druid, _>(
         &mut strategies,
         rounds,
-        &init,
+        &mut std::io::stdout(),
         Verbosity::Verbose,
     );
 

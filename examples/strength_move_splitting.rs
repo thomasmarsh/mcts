@@ -38,7 +38,7 @@ use mcts::games::druid as new_druid;
 use mcts::games::druid_flat as old_druid;
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::util::Result as GameResult;
+use mcts::bench::tournament::Result as GameResult;
 
 /// Shipped Strong preset shape (`server/adapters/druid.rs`'s `Ucb1DmNst`),
 /// generic over `Game` so the same alias drives both engines under test.

@@ -13,10 +13,11 @@
 // Usage: cargo run --release --example strength_solver_strong
 use std::time::Duration;
 
-use mcts::games::druid::{Druid, HashedState};
+use mcts::games::druid::Druid;
 use mcts::strategies::mcts::{select, simulate, strategy, node::QInit, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::util::{round_robin_multiple, AnySearch, Result as GameResult, Verbosity};
+use mcts::bench::tournament::{round_robin_multiple, Result as GameResult};
+use mcts::util::{AnySearch, Verbosity};
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -64,7 +65,6 @@ fn fmt_result(r: &GameResult) -> String {
 }
 
 fn main() {
-    let init = HashedState::default(); // 5x5, same as server's fresh page load
     println!("=== Strong preset MCTS-Solver strength comparison (background job) ===");
     println!("Board: 5x5 default (same as server fresh state)");
     println!(
@@ -84,10 +84,10 @@ fn main() {
         AnySearch::new(strong_config(false, "strong/no-solver")),
         AnySearch::new(strong_config(true, "strong/solver")),
     ];
-    let results = round_robin_multiple::<Druid, AnySearch<Druid>>(
+    let results = round_robin_multiple::<Druid, _>(
         &mut strategies,
         rounds,
-        &init,
+        &mut std::io::stdout(),
         Verbosity::Verbose,
     );
     for (i, r) in results.iter().enumerate() {

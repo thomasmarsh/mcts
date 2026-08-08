@@ -2,5 +2,7 @@
 //! opens `bench.duckdb` directly; `bin/bench` and Python tools communicate
 //! via JSONL files and the registry log.
 
+pub mod games;
 pub mod log;
 pub mod schema;
+pub mod tournament;

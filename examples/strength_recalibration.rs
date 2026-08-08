@@ -30,7 +30,8 @@ use std::time::Duration;
 
 use mcts::games::druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
-use mcts::util::{battle_royale, wilson_interval};
+use mcts::bench::tournament::wilson_interval;
+use mcts::util::battle_royale;
 
 const ROUNDS: usize = 8; // 16 games, alternating who moves first
 const BUDGET_SECS: u64 = 3;

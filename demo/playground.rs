@@ -12,13 +12,14 @@ use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::TreeSearch;
 use mcts::strategies::random::Random;
 use mcts::strategies::Search;
+use mcts::bench::tournament::round_robin_multiple;
 use mcts::util::battle_royale;
 use mcts::util::self_play;
 use mcts::util::AnySearch;
+use mcts::util::Verbosity;
 
 use mcts::games::nim::*;
 use mcts::games::ttt::*;
-use mcts::util::round_robin_multiple;
 
 type TttFlatMC = FlatMonteCarloStrategy<TicTacToe>;
 type NimFlatMC = FlatMonteCarloStrategy<Nim>;
@@ -167,11 +168,11 @@ fn ucd() {
         // AnySearch::new(tuned_ucd),
     ];
 
-    _ = round_robin_multiple::<TrafficLights, AnySearch<_>>(
+    _ = round_robin_multiple::<TrafficLights, _>(
         &mut strats,
         1000,
-        &Default::default(),
-        mcts::util::Verbosity::Verbose,
+        &mut std::io::stdout(),
+        Verbosity::Verbose,
     );
 }
 
@@ -348,11 +349,11 @@ fn expansion_test() {
 
     let mut strats = vec![AnySearch::new(expand5), AnySearch::new(expand0)];
 
-    _ = round_robin_multiple::<ttt::BiddingTicTacToe, AnySearch<_>>(
+    _ = round_robin_multiple::<ttt::BiddingTicTacToe, _>(
         &mut strats,
         1000,
-        &ttt::BiddingTicTacToe::new(),
-        mcts::util::Verbosity::Verbose,
+        &mut std::io::stdout(),
+        Verbosity::Verbose,
     );
 }
 
@@ -368,11 +369,11 @@ fn ucb_test() {
 
     let mut strats = vec![AnySearch::new(flat), AnySearch::new(ucb1)];
 
-    _ = round_robin_multiple::<Nim, AnySearch<_>>(
+    _ = round_robin_multiple::<Nim, _>(
         &mut strats,
         5,
-        &NimState::new(),
-        mcts::util::Verbosity::Verbose,
+        &mut std::io::stdout(),
+        Verbosity::Verbose,
     );
 }
 

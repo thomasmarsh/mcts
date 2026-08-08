@@ -18,7 +18,7 @@ use mcts::strategies::mcts::strategy;
 use mcts::strategies::mcts::SearchConfig;
 use mcts::strategies::mcts::Strategy;
 use mcts::strategies::mcts::TreeSearch;
-use mcts::util::round_robin_multiple;
+use mcts::bench::tournament::round_robin_multiple;
 use mcts::util::AnySearch;
 use mcts::util::Verbosity;
 
@@ -183,7 +183,7 @@ fn _make_baseline(seed: u64) -> TS<strategy::Ucb1> {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-fn calc_cost(results: Vec<mcts::util::Result>) -> f64 {
+fn calc_cost(results: Vec<mcts::bench::tournament::Result>) -> f64 {
     let w = results[1].wins as f64;
     1.0 - w / (ROUNDS * 2) as f64
 }
@@ -207,10 +207,10 @@ fn optimize() {
     };
 
     let mut strategies = vec![AnySearch::new(baseline), AnySearch::new(candidate)];
-    let results = round_robin_multiple::<G, AnySearch<'_, G>>(
+    let results = round_robin_multiple::<G, _>(
         &mut strategies,
         ROUNDS,
-        &<G as Game>::S::default(),
+        &mut std::io::sink(),
         Verbosity::Silent,
     );
     let cost = calc_cost(results);
