@@ -3,28 +3,35 @@
 // autoplay controls, and the renderer registry lookup. Ported from
 // server/static/app.js's DOM-manipulation HUD logic, now
 // driven by `store.dispatch`/reactive effects instead of direct DOM writes
-// and global mutable state -- and generalized to work for any
+// and global mutable state — and generalized to work for any
 // `GAME_MODULES` entry, not just Druid.
+//
+// Game modules are loaded lazily (see `games.ts`) — `createResource` drives
+// the async fetch, and the existing `<Show when={mod()}>` fallback doubles as
+// the loading indicator.
 //
 // Per the hard rule, this component never touches the network
 // itself: every effect below only ever calls `props.store.dispatch(...)`.
 
-import { type Component, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { type Component, createEffect, createMemo, createResource, createSignal, For, lazy, onCleanup, onMount, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
-import { GAME_MODULES } from "./games.js";
-import { MoveListPanel } from "./MoveListPanel.js";
-import { AnalysisPanel } from "./AnalysisPanel.js";
-import { SaveLoadPanel } from "./SaveLoadPanel.js";
+import { GAME_META, GAME_MODULES } from "./games.js";
+
+// Panels are lazy-loaded so they only pull in their own dependencies when
+// the user actually starts a game (`state().epoch >= 1`).
+const MoveListPanel = lazy(() => import("./MoveListPanel.js").then((m) => ({ default: m.MoveListPanel })));
+const AnalysisPanel = lazy(() => import("./AnalysisPanel.js").then((m) => ({ default: m.AnalysisPanel })));
+const SaveLoadPanel = lazy(() => import("./SaveLoadPanel.js").then((m) => ({ default: m.SaveLoadPanel })));
 
 type S = unknown;
 type M = unknown;
 type V = unknown;
 
 /** Walks `tree`'s root-to-current path into the `MoveStep[]` shape
- * `GameRendererProps.history` expects -- the root itself (whose `move` is
+ * `GameRendererProps.history` expects — the root itself (whose `move` is
  * always `null`) never appears as a step, only as the first step's
  * `before`. */
 function historyPath(tree: AppState<S, M, V>["tree"]): MoveStep<S, M>[] {
@@ -48,7 +55,20 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
 
-  const mod = createMemo(() => GAME_MODULES[state().gameKind]);
+  // Asynchronously load the game-kind module. The resource's source tracks
+  // `state().gameKind`, so switching kinds (via the new-game dialog) triggers
+  // a re-fetch. `modData()` returns `undefined` while loading, which the
+  // `<Show when={mod()}>` wrapper displays as the "Unknown game." fallback.
+  const [modData] = createResource(
+    () => state().gameKind,
+    async (kind: string) => {
+      const load = GAME_MODULES[kind];
+      if (!load) throw new Error(`Unknown game kind: ${kind}`);
+      return load();
+    },
+  );
+  const mod = () => modData();
+
   const position = createMemo(() => state().position);
   const summary = createMemo(() => {
     const p = position();
@@ -74,7 +94,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // `state().position` goes `null` for one reduction after *every* move/nav
   // (reducer.ts nulls it to preserve the "position matches currentId"
   // invariant, then GameShell's own position/request effect below re-fetches
-  // it) -- not just when a new game starts. Gating the renderer directly on
+  // it) — not just when a new game starts. Gating the renderer directly on
   // `position()` therefore unmounted/remounted `Dynamic`'s `GameRenderer` on
   // *every* move: DruidRenderer's `onMount` rebuilds its three.js scene,
   // camera, and OrbitControls from scratch each time, which read as a
@@ -107,7 +127,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // only Druid has `modes` at all, so a mode picked once stays valid across
   // a session-8 kind switch either way (ttt's `legalMoves` memo below simply
   // ignores `activeMode` when the active module has no `modes` to look it up
-  // in) -- a future third kind with its own distinct `modes` would need this
+  // in) — a future third kind with its own distinct `modes` would need this
   // revisited to re-fire per `gameKind`, not just once.
   createEffect(() => {
     const m = mod();
@@ -115,7 +135,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   });
 
   // Bootstrap: fetch this kind's AI presets once, and start the very first
-  // game with the server's own default config (an empty `newGame` request --
+  // game with the server's own default config (an empty `newGame` request —
   // see server/main.rs's `post_new`, which fills in `adapter.default_config()`
   // when `config` is omitted).
   onMount(() => {
@@ -125,17 +145,17 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
 
   // Re-derive view/legalMoves for whatever node is current, on every
   // navigation. Gated on `epoch >= 1` so this never fires against the
-  // pre-bootstrap placeholder root (see state.ts's `initialAppState` --
+  // pre-bootstrap placeholder root (see state.ts's `initialAppState` —
   // `epoch` only advances once a real `newGame` has completed).
   //
   // `state()` (the store's `useSnapshot` signal) is coarse: it changes on
   // *every* mutation anywhere in `AppState`, not just `tree.currentId`, so
   // this effect body reruns on every store update regardless of the `void
-  // s.tree.currentId` read below -- that read alone doesn't scope the
+  // s.tree.currentId` read below — that read alone doesn't scope the
   // dependency (see `reducer.ts`'s `switchGame` comment, which already
   // documents this). Without the `lastPositionKey` guard, the `position/
   // request` dispatch below is itself a store update, which reruns this
-  // same effect, which dispatches again -- a self-sustaining loop that a
+  // same effect, which dispatches again — a self-sustaining loop that a
   // real network round trip happens to rate-limit, but which spins as fast
   // as the event loop allows against a synchronously-resolving `Env` (e.g.
   // a mocked one in a test), consuming memory until the process OOMs.
@@ -151,7 +171,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   });
 
   // Auto-play: if the position isn't terminal and the player to move is
-  // AI-controlled, fire an aiMove request -- mirrors app.js's
+  // AI-controlled, fire an aiMove request — mirrors app.js's
   // `maybeTriggerAiTurn`, re-checked after every position/seat/pause change.
   // Safe to trust `summary()`'s `currentPlayer` here without separately
   // checking it against `tree.currentId`: `appReducer` nulls `position`
@@ -160,7 +180,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   // always for the *current* node, by construction (see reducer.ts).
   //
   // Gated on `childIds.length === 0` (the current node being a leaf) so this
-  // only ever drives the live *frontier* of the game forward -- without this,
+  // only ever drives the live *frontier* of the game forward — without this,
   // navigating back into history (undo/redo/jumpTo/arrow keys) to a node
   // that happens to be an AI seat's turn immediately re-triggered an aiMove
   // from there, which either replayed the same historical branch (undo
@@ -197,18 +217,18 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   function openDialog(): void {
     setPendingConfig(undefined);
     const seats: Record<string, string> = {};
-    for (const p of mod()?.players ?? []) seats[p] = state().seats[p] ?? "human";
+    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = state().seats[p] ?? "human";
     setPendingSeats(seats);
     setDialogOpen(true);
   }
 
   // Switches which kind the (still-open) New Game dialog is about to start
-  // -- the game-kind picker. Dispatches `switchGame` immediately
+  // — the game-kind picker. Dispatches `switchGame` immediately
   // (rather than deferring to `startNewGame`) so the dialog's seat pickers
   // re-fetch the new kind's own `aiPresets` and its player list updates via
-  // `mod()`/`m()` while still open. `state().tree` still holds the outgoing
+  // `GAME_META` while still open. `state().tree` still holds the outgoing
   // game's nodes until `newGame` (dispatched from `startNewGame` below)
-  // completes and replaces it -- `switchGame` drops `epoch` to 0 for that
+  // completes and replaces it — `switchGame` drops `epoch` to 0 for that
   // whole window (see its own comment in reducer.ts) so nothing tries to
   // read that stale tree under the new `gameKind` in the meantime.
   function onGameKindChange(kind: string): void {
@@ -217,7 +237,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     dispatch({ tag: "aiPresets", action: { tag: "request" } });
     setPendingConfig(undefined);
     const seats: Record<string, string> = {};
-    for (const p of GAME_MODULES[kind]?.players ?? []) seats[p] = "human";
+    for (const p of GAME_META[kind]?.players ?? []) seats[p] = "human";
     setPendingSeats(seats);
   }
 
@@ -241,7 +261,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
 
   // Falls back to "strong" the same way `manualMovePreset` above does, only
   // once the user hasn't picked one yet (`ui.selectedPreset`, a
-  // slice of `AppState` -- see state.ts).
+  // slice of `AppState` — see state.ts).
   const analysisPreset = createMemo(() => {
     const chosen = state().ui.selectedPreset;
     if (chosen && presetOptions().some((p) => p.id === chosen)) return chosen;
@@ -249,10 +269,10 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     return options.find((p) => p.id === "strong")?.id ?? options[0]?.id ?? "strong";
   });
 
-  // Feeds `DruidRenderer`'s heatmap overlay -- one source of truth (`analysis`
+  // Feeds `DruidRenderer`'s heatmap overlay — one source of truth (`analysis`
   // job-poll state) for both this and `AnalysisPanel`'s own candidate table.
   // `undefined` (not `[]`) when there's no completed analysis for the
-  // *current* position -- reducer.ts resets `analysis` on every tree
+  // *current* position — reducer.ts resets `analysis` on every tree
   // navigation/move, so a stale result never lingers past the position it
   // was computed for.
   const analysisOverlay = createMemo((): AnalysisOverlayEntry<M>[] | undefined => {
@@ -271,148 +291,157 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   });
 
   return (
-    <Show when={mod()} fallback={<div class="loading">Unknown game.</div>}>
-      {(m) => (
-        <>
-          <Show when={heldPosition()} fallback={<div class="loading">Starting a new game…</div>}>
-            {(p) => (
-              <Dynamic
-                component={m().Renderer}
-                state={state().tree.nodes[state().tree.currentId]?.state}
-                view={p().view}
-                history={historyPath(state().tree)}
-                legalMoves={legalMoves()}
-                busy={busy()}
-                onMove={(move: M) => dispatch({ tag: "move", action: { tag: "request", move } })}
-                hoveredMove={hoveredMove()}
-                onHover={setHoveredMove}
-                analysisOverlay={analysisOverlay()}
-              />
-            )}
-          </Show>
+    <>
+      <Show when={mod()} fallback={<div class="loading">Loading game…</div>}>
+        {(m) => (
+          <>
+            <Show when={heldPosition()} fallback={<div class="loading">Starting a new game…</div>}>
+              {(p) => (
+                <Dynamic
+                  component={m().Renderer}
+                  state={state().tree.nodes[state().tree.currentId]?.state}
+                  view={p().view}
+                  history={historyPath(state().tree)}
+                  legalMoves={legalMoves()}
+                  busy={busy()}
+                  onMove={(move: M) => dispatch({ tag: "move", action: { tag: "request", move } })}
+                  hoveredMove={hoveredMove()}
+                  onHover={setHoveredMove}
+                  analysisOverlay={analysisOverlay()}
+                />
+              )}
+            </Show>
 
-          <div id="hud">
-            <div id="turn">{summary()?.turnText ?? ""}</div>
-            <div id="hands">
-              <For each={summary()?.lines ?? []}>
-                {(line) => (
-                  <div class="hand" style={{ "--swatch": line.swatch ?? "transparent" }}>
-                    {line.text}
-                  </div>
-                )}
-              </For>
-            </div>
-            <Show when={m().modes && m().modes!.length > 0}>
-              <div id="modes">
-                <For each={m().modes}>
-                  {(md) => (
-                    <button
-                      class="mode"
-                      classList={{ active: activeMode() === md.id }}
-                      disabled={busy()}
-                      onClick={() => setActiveMode(md.id)}
-                    >
-                      {md.label} {md.hotkey && <span class="hotkey">{md.hotkey}</span>}
-                    </button>
+            <div id="hud">
+              <div id="turn">{summary()?.turnText ?? ""}</div>
+              <div id="hands">
+                <For each={summary()?.lines ?? []}>
+                  {(line) => (
+                    <div class="hand" style={{ "--swatch": line.swatch ?? "transparent" }}>
+                      {line.text}
+                    </div>
                   )}
                 </For>
               </div>
-            </Show>
-            <div id="actions">
-              <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", preset: manualMovePreset() } })}>
-                AI Move
-              </button>
-              <button id="autoplay-toggle" classList={{ paused: autoplayPaused() }} onClick={() => setAutoplayPaused((v) => !v)}>
-                {autoplayPaused() ? "Resume" : "Pause"}
-              </button>
-              <button id="new-game" onClick={openDialog}>
-                New Game
-              </button>
+              <Show when={m().modes && m().modes!.length > 0}>
+                <div id="modes">
+                  <For each={m().modes}>
+                    {(md) => (
+                      <button
+                        class="mode"
+                        classList={{ active: activeMode() === md.id }}
+                        disabled={busy()}
+                        onClick={() => setActiveMode(md.id)}
+                      >
+                        {md.label} {md.hotkey && <span class="hotkey">{md.hotkey}</span>}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <div id="actions">
+                <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", preset: manualMovePreset() } })}>
+                  AI Move
+                </button>
+                <button id="autoplay-toggle" classList={{ paused: autoplayPaused() }} onClick={() => setAutoplayPaused((v) => !v)}>
+                  {autoplayPaused() ? "Resume" : "Pause"}
+                </button>
+                <button id="new-game" onClick={openDialog}>
+                  New Game
+                </button>
+              </div>
+              <Show when={state().epoch >= 1}>
+                <SaveLoadPanel
+                  gameKind={state().gameKind}
+                  config={state().config}
+                  tree={state().tree}
+                  onLoad={(gameKind, config, tree) => dispatch({ tag: "load", gameKind, config, tree })}
+                />
+              </Show>
+              <div id="banner" style={{ color: summary()?.bannerColor }}>
+                {summary()?.bannerText ?? ""}
+              </div>
             </div>
+
             <Show when={state().epoch >= 1}>
-              <SaveLoadPanel
-                gameKind={state().gameKind}
-                config={state().config}
+              <MoveListPanel
                 tree={state().tree}
-                onLoad={(gameKind, config, tree) => dispatch({ tag: "load", gameKind, config, tree })}
+                formatMove={m().formatMove}
+                onJump={(id) => dispatch({ tag: "tree", action: { tag: "jumpTo", id } })}
+              />
+              <AnalysisPanel
+                analysis={state().analysis}
+                presets={presetOptions()}
+                selectedPreset={analysisPreset()}
+                before={state().tree.nodes[state().tree.currentId]?.state}
+                formatMove={m().formatMove}
+                busy={busy()}
+                hoveredMove={hoveredMove()}
+                onSelectPreset={(preset) => dispatch({ tag: "setPreset", preset })}
+                onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", preset: analysisPreset() } })}
+                onHoverMove={setHoveredMove}
               />
             </Show>
-            <div id="banner" style={{ color: summary()?.bannerColor }}>
-              {summary()?.bannerText ?? ""}
+          </>
+        )}
+      </Show>
+
+      {/* Dialog is outside the mod() Show wrapper so it stays open across
+          game-kind switches even while the new module is still loading. */}
+      <Show when={dialogOpen()}>
+        <dialog
+          id="new-game-dialog"
+          ref={(el) => queueMicrotask(() => el.showModal())}
+        >
+          <form
+            id="new-game-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              startNewGame();
+            }}
+          >
+            <h2>New Game</h2>
+            <Show when={Object.keys(GAME_MODULES).length > 1}>
+              <label>
+                Game
+                <select value={state().gameKind} onChange={(e) => onGameKindChange(e.currentTarget.value)}>
+                  <For each={Object.keys(GAME_MODULES)}>
+                    {(kind) => {
+                      const label = state().gamesInfo.find((g) => g.kind === kind)?.label ?? kind;
+                      return <option value={kind}>{label}</option>;
+                    }}
+                  </For>
+                </select>
+              </label>
+            </Show>
+            <Show when={mod()?.NewGameFields}>
+              {(Fields) => <Dynamic component={Fields()} config={pendingConfig()} onChange={setPendingConfig} />}
+            </Show>
+            <For each={GAME_META[state().gameKind]?.players ?? []}>
+              {(player) => (
+                <label>
+                  {player}
+                  <select
+                    value={pendingSeats()[player] ?? "human"}
+                    onChange={(e) => setPendingSeats((s) => ({ ...s, [player]: e.currentTarget.value }))}
+                  >
+                    <option value="human">Human</option>
+                    <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
+                  </select>
+                </label>
+              )}
+            </For>
+            <div class="dialog-actions">
+              <button type="button" onClick={() => setDialogOpen(false)}>
+                Cancel
+              </button>
+              <button type="submit" id="new-game-start">
+                Start
+              </button>
             </div>
-          </div>
-
-          <Show when={state().epoch >= 1}>
-            <MoveListPanel
-              tree={state().tree}
-              formatMove={m().formatMove}
-              onJump={(id) => dispatch({ tag: "tree", action: { tag: "jumpTo", id } })}
-            />
-            <AnalysisPanel
-              analysis={state().analysis}
-              presets={presetOptions()}
-              selectedPreset={analysisPreset()}
-              before={state().tree.nodes[state().tree.currentId]?.state}
-              formatMove={m().formatMove}
-              busy={busy()}
-              hoveredMove={hoveredMove()}
-              onSelectPreset={(preset) => dispatch({ tag: "setPreset", preset })}
-              onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", preset: analysisPreset() } })}
-              onHoverMove={setHoveredMove}
-            />
-          </Show>
-
-          <Show when={dialogOpen()}>
-            <dialog id="new-game-dialog" ref={(el) => queueMicrotask(() => el.showModal())}>
-              <form
-                id="new-game-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  startNewGame();
-                }}
-              >
-                <h2>New Game</h2>
-                <Show when={Object.keys(GAME_MODULES).length > 1}>
-                  <label>
-                    Game
-                    <select value={state().gameKind} onChange={(e) => onGameKindChange(e.currentTarget.value)}>
-                      <For each={Object.keys(GAME_MODULES)}>
-                        {(kind) => {
-                          const label = state().gamesInfo.find((g) => g.kind === kind)?.label ?? kind;
-                          return <option value={kind}>{label}</option>;
-                        }}
-                      </For>
-                    </select>
-                  </label>
-                </Show>
-                <Show when={m().NewGameFields}>{(Fields) => <Dynamic component={Fields()} config={pendingConfig()} onChange={setPendingConfig} />}</Show>
-                <For each={m().players}>
-                  {(player) => (
-                    <label>
-                      {player}
-                      <select
-                        value={pendingSeats()[player] ?? "human"}
-                        onChange={(e) => setPendingSeats((s) => ({ ...s, [player]: e.currentTarget.value }))}
-                      >
-                        <option value="human">Human</option>
-                        <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
-                      </select>
-                    </label>
-                  )}
-                </For>
-                <div class="dialog-actions">
-                  <button type="button" onClick={() => setDialogOpen(false)}>
-                    Cancel
-                  </button>
-                  <button type="submit" id="new-game-start">
-                    Start
-                  </button>
-                </div>
-              </form>
-            </dialog>
-          </Show>
-        </>
-      )}
-    </Show>
+          </form>
+        </dialog>
+      </Show>
+    </>
   );
 };

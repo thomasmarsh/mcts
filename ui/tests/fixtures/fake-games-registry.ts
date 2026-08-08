@@ -5,5 +5,12 @@
 
 import { fakeModule } from "./fake-game.js";
 
-export const GAME_MODULES = { fake: fakeModule };
+export const GAME_MODULES: Record<string, () => Promise<typeof fakeModule>> = {
+  fake: () => Promise.resolve(fakeModule),
+};
+
+export const GAME_META: Record<string, { players: string[] }> = {
+  fake: { players: ["A", "B"] },
+};
+
 export const DEFAULT_GAME_KIND = "fake";

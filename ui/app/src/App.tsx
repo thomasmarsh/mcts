@@ -1,16 +1,20 @@
 // App.tsx — Wires the real game store: creates the
 // `ApiClient`/`Env` pair, the `appReducer` store seeded with a
 // placeholder root state (replaced the instant `GameShell`'s bootstrap
-// `newGame` request resolves -- see that file's header comment), and
+// `newGame` request resolves — see that file's header comment), and
 // mounts `GameShell`. Also fetches `GET /api/games` once on mount to
 // populate the kind-picker labels (replacing the former hand-maintained
 // `GAME_LABELS`).
 //
 // Tab navigation: "Game" tab shows the existing `GameShell`; "Bench" tab
 // shows the new `BenchApp` (run list, log tail, launch form).
+//
+// Both `GameShell` and `BenchApp` are lazy-loaded so each tab's dependency
+// tree ends up in its own chunk — the Game tab pulls in three.js (via the
+// Druid renderer), while the Bench tab stays lean.
 
 import { render } from "solid-js/web";
-import { createEffect, createSignal, onMount, Show, type Component } from "solid-js";
+import { createEffect, createSignal, lazy, onMount, Show } from "solid-js";
 import { createStore } from "@mcts/core";
 import {
   appReducer,
@@ -21,13 +25,14 @@ import {
   type AppState,
   type Env,
 } from "@mcts/game";
-import { BenchApp } from "@mcts/bench";
-import { GameShell } from "./GameShell.js";
 import { DEFAULT_GAME_KIND } from "./games.js";
 import "./app.css";
 import "./bench.css";
 
-const App: Component = () => {
+const GameShell = lazy(() => import("./GameShell.js").then((m) => ({ default: m.GameShell })));
+const BenchApp = lazy(() => import("@mcts/bench").then((m) => ({ default: m.BenchApp })));
+
+const App = () => {
   const api = createApiClient();
   const env = createEnv(api);
   const store = createStore<AppState<unknown, unknown, unknown>, AppAction<unknown, unknown, unknown>, Env>(

@@ -53,6 +53,7 @@ Quick start:
 
 ```
 (cd ui && pnpm install && pnpm build)
+cargo build --release --bin bench
 cargo run --release
 ```
 
@@ -60,6 +61,10 @@ Then open http://127.0.0.1:7878. (`server` is this repo's `default-run`
 binary, so a bare `cargo run` — release recommended, the AI presets are
 slow otherwise — always means the game server, not one of `demo/`'s
 research scratchpads.)
+
+The `bench` binary must be compiled separately (`cargo build --release --bin bench`)
+because it is a separate target — the server spawns it as a child process
+for round-robin benchmarking runs.
 
 For UI development with hot reload, run `pnpm dev` (from `ui/`) alongside
 `cargo run --release` instead of `pnpm build` — it serves the app on
