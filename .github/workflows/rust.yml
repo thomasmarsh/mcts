@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  DUCKDB_DOWNLOAD_LIB: 1
 
 jobs:
   build:
@@ -16,6 +17,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Cache DuckDB binary
+      uses: actions/cache@v4
+      with:
+        path: target/duckdb-download
+        key: duckdb-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
     - name: Build
       run: cargo build --verbose
     - name: Run tests
