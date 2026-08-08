@@ -71,6 +71,7 @@ const mockEnv: BenchEnv = {
   getRun: () => Effect.none(),
   getRunLog: () => Effect.none(),
   getLeaderboard: () => Effect.none(),
+  fetchCommitTrends: () => Effect.none(),
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
   getBenchKinds: () => Effect.none(),
@@ -425,6 +426,48 @@ describe("benchReducer / leaderboard", () => {
       },
     );
     expect(seen).toEqual([{ game: "druid", gitSha: "abc1234", since: null }]);
+  });
+
+  it("fetchCommitTrends populates commitTrends on success", async () => {
+    const trendData = {
+      abc1234: [{ strategy: "strong", total: 2, wins: 1, losses: 0, draws: 1, win_rate: 0.75, ci_lower: 0.3, ci_upper: 0.99 }],
+      def5678: [{ strategy: "strong", total: 5, wins: 3, losses: 1, draws: 1, win_rate: 0.7, ci_lower: 0.4, ci_upper: 0.92 }],
+    };
+    const env: BenchEnv = {
+      ...mockEnv,
+      fetchCommitTrends: () => Effect.send(trendData),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "fetchCommitTrends", game: "druid" }, (s) => {
+      s.commitTrends = { data: {}, shas: [], status: "loading", error: null };
+    });
+    await ts.drain();
+    ts.receive(
+      { tag: "commitTrendsLoaded", data: trendData, shas: ["def5678", "abc1234"] },
+      (s) => {
+        s.commitTrends = { data: trendData, shas: ["def5678", "abc1234"], status: "done", error: null };
+      },
+    );
+  });
+
+  it("fetchCommitTrends stores error on failure", async () => {
+    const env: BenchEnv = {
+      ...mockEnv,
+      fetchCommitTrends: () => Effect.fromPromise(() => Promise.reject(new Error("boom"))),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "fetchCommitTrends", game: "druid" }, (s) => {
+      s.commitTrends = { data: {}, shas: [], status: "loading", error: null };
+    });
+    await ts.drain();
+    ts.receive(
+      { tag: "commitTrendsFailed", error: "Error: boom" },
+      (s) => {
+        s.commitTrends = { data: {}, shas: [], status: "error", error: "Error: boom" };
+      },
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import {
 } from "@mcts/core";
 import type {
   BenchKindInfo,
+  CommitTrendData,
   LeaderboardEntry,
   LeaderboardFilters,
   LaunchResponse,
@@ -48,6 +49,15 @@ export interface OpenRunState {
   tail: LogTailState;
 }
 
+/** Win-rate-over-commits trend data: one leaderboard snapshot per git SHA. */
+export interface CommitTrendsState {
+  data: CommitTrendData;
+  /** Sorted SHAs, newest first. */
+  shas: string[];
+  status: "idle" | "loading" | "done" | "error";
+  error: string | null;
+}
+
 export interface BenchState {
   runs: JobPollState<RunSummary[]>;
   runFilters: RunFilters;
@@ -60,6 +70,7 @@ export interface BenchState {
   openGeneration: number;
   leaderboard: JobPollState<LeaderboardEntry[]>;
   leaderboardFilters: LeaderboardFilters;
+  commitTrends: CommitTrendsState;
   launch: JobPollState<LaunchResponse>;
   /** Last failed stop attempt's message; cleared by the next `stopRun`. */
   stopError: string | null;
@@ -75,6 +86,7 @@ export function initialBenchState(): BenchState {
     openGeneration: 0,
     leaderboard: initialJobPollState<LeaderboardEntry[]>(),
     leaderboardFilters: { game: null, gitSha: null, since: null },
+    commitTrends: { data: {}, shas: [], status: "idle", error: null },
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),

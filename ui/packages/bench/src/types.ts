@@ -77,6 +77,19 @@ export interface LeaderboardEntry {
   ci_upper: number;
 }
 
+/** Map of git SHA to its leaderboard entries — the shape returned by a
+ * commit-trends fetch that queries the leaderboard for every SHA that has
+ * run data. */
+export type CommitTrendData = Record<string, LeaderboardEntry[]>;
+
+/** Sorted list of (sha, entries) pairs, pre-computed so the chart doesn't
+ * re-derive it from the map on every render. */
+export interface CommitTrendRow {
+  sha: string;
+  shortSha: string;
+  entries: LeaderboardEntry[];
+}
+
 /** `POST /api/bench/launch` response. */
 export interface LaunchResponse {
   run_id: string;

@@ -1,4 +1,5 @@
-/* bench.css — Bench UI chrome: run list, log tail, launch form, detail panel.
+/* bench.css — Bench UI chrome: run list, log tail, launch form, detail panel,
+   leaderboard, chart, and commit comparison.
    Follows the same visual language as app.css (dark theme, rounded panels,
    rgba backgrounds with subtle borders). */
 
@@ -6,6 +7,7 @@
   display: flex;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 #bench-sidebar {
@@ -510,4 +512,475 @@ body.bench-active #hud,
 body.bench-active #move-list,
 body.bench-active #analysis-panel {
   display: none;
+}
+
+/* ── Bench sub-tabs ─────────────────────────────────────────────────── */
+
+#bench-sub-tabs {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  display: flex;
+  gap: 4px;
+}
+
+.sub-tab-btn {
+  background: rgba(30, 31, 38, 0.85);
+  color: #b7b8c2;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s, color 0.15s;
+}
+
+.sub-tab-btn:hover {
+  background: rgba(42, 44, 52, 0.9);
+  color: #e8e8ec;
+}
+
+.sub-tab-btn.active {
+  background: #5b7fd6;
+  border-color: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+/* ── Bench runs layout ──────────────────────────────────────────────── */
+
+#bench-runs-layout {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* ── Bench leaderboard layout (two-column) ──────────────────────────── */
+
+#bench-leaderboard-layout {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  flex: 1;
+  padding-top: 44px; /* space for sub-tabs */
+}
+
+#leaderboard-left {
+  flex: 0 0 auto;
+  width: 440px;
+  min-width: 340px;
+  overflow-y: auto;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#leaderboard-right {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+/* ── Leaderboard Table ──────────────────────────────────────────────── */
+
+#leaderboard-panel {
+  padding: 12px 14px;
+}
+
+#leaderboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+#leaderboard-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#refresh-leaderboard {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #b7b8c2;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+#refresh-leaderboard:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8e8ec;
+}
+
+#refresh-leaderboard:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#leaderboard-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+#leaderboard-filters input {
+  flex: 1;
+  min-width: 0;
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+#leaderboard-filters input::placeholder {
+  color: #6b6e78;
+}
+
+#lb-apply-filters {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#lb-apply-filters:hover {
+  background: #34363f;
+}
+
+#leaderboard-scroll {
+  overflow-x: auto;
+}
+
+#leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#leaderboard-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: #8a8b96;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  user-select: none;
+}
+
+#leaderboard-table th.sortable {
+  cursor: pointer;
+  transition: color 0.1s;
+}
+
+#leaderboard-table th.sortable:hover {
+  color: #e8e8ec;
+}
+
+#leaderboard-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.lb-row {
+  transition: background 0.1s;
+}
+
+.lb-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.lb-strategy {
+  font-weight: 600;
+  color: #e8e8ec;
+}
+
+.lb-total {
+  color: #b7b8c2;
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-wld {
+  color: #8a8b96;
+  white-space: nowrap;
+}
+
+.lb-rate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.lb-bar-bg {
+  flex: 1;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  overflow: hidden;
+  max-width: 120px;
+}
+
+.lb-bar-fill {
+  height: 100%;
+  background: #5b7fd6;
+  border-radius: 5px;
+  transition: width 0.3s ease;
+}
+
+.lb-rate-text {
+  color: #e8e8ec;
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+}
+
+.lb-ci {
+  color: #8a8b96;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lb-empty {
+  padding: 30px 14px;
+  text-align: center;
+  color: #6b6e78;
+  font-size: 13px;
+}
+
+.lb-error {
+  padding: 12px 14px;
+  text-align: center;
+  color: #e08a8a;
+  font-size: 13px;
+}
+
+/* ── Win Rate Chart ─────────────────────────────────────────────────── */
+
+#chart-panel {
+  background: rgba(20, 21, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 14px;
+  position: relative;
+}
+
+#chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#chart-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#chart-controls {
+  display: flex;
+  gap: 6px;
+}
+
+#chart-controls select {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+#chart-svg-wrapper {
+  display: flex;
+  justify-content: center;
+}
+
+#winrate-chart {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.chart-dot {
+  cursor: pointer;
+}
+
+#chart-tooltip {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(20, 21, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  max-width: 240px;
+}
+
+.tooltip-sha {
+  font-family: monospace;
+  font-size: 11px;
+  color: #8aaff0;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1px 0;
+}
+
+.tooltip-label {
+  color: #8a8b96;
+}
+
+.tooltip-value {
+  color: #e8e8ec;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Commit Comparison ──────────────────────────────────────────────── */
+
+#comparison-panel {
+  background: rgba(20, 21, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+#comparison-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#comparison-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#comparison-controls select {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+#comparison-pickers {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.picker-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker-group label {
+  font-size: 12px;
+  color: #8a8b96;
+  white-space: nowrap;
+}
+
+.picker-group select {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+#comparison-table-wrapper {
+  overflow-x: auto;
+}
+
+#comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#comparison-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: #8a8b96;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+
+#comparison-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.comp-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.comp-strategy {
+  font-weight: 600;
+  color: #e8e8ec;
+}
+
+.comp-ci {
+  display: block;
+  font-size: 10px;
+  color: #6b6e78;
+  font-variant-numeric: tabular-nums;
+}
+
+.delta-up {
+  color: #4caf7a;
+  font-weight: 700;
+}
+
+.delta-down {
+  color: #e08a8a;
+  font-weight: 700;
+}
+
+.delta-flat {
+  color: #8a8b96;
+}
+
+.col-delta {
+  text-align: right;
+}
+
+.comp-delta {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }

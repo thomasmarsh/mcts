@@ -14,6 +14,7 @@ import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
 import type {
   BenchKindInfo,
+  CommitTrendData,
   LaunchResponse,
   LeaderboardEntry,
   LeaderboardFilters,
@@ -29,6 +30,9 @@ export interface BenchApiClient {
   getRun(runId: string): Promise<RunDetail>;
   getRunLog(runId: string, since?: number): Promise<RunLogResponse>;
   getLeaderboard(filters?: Partial<LeaderboardFilters>): Promise<LeaderboardEntry[]>;
+  /** Fetch the leaderboard for each distinct git SHA that has run data
+   * for the given game. Returns a map of SHA -> entries. */
+  fetchCommitTrends(game: string | null): Promise<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
@@ -100,6 +104,24 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
         url(`/api/bench/leaderboard${queryString({ game: filters.game, git_sha: filters.gitSha, since: filters.since })}`),
       );
     },
+    async fetchCommitTrends(game: string | null): Promise<CommitTrendData> {
+      // First fetch runs to discover distinct git SHAs.
+      const runs = await this.listRuns({ game, limit: 1000 });
+      const shaSet = new Set<string>();
+      for (const r of runs) {
+        if (!r.git_dirty) shaSet.add(r.git_sha);
+      }
+      const shas = Array.from(shaSet).sort();
+      // Fetch leaderboard for each SHA in parallel.
+      const results = await Promise.all(
+        shas.map((sha) => this.getLeaderboard({ game, gitSha: sha, since: null })),
+      );
+      const data: CommitTrendData = {};
+      for (let i = 0; i < shas.length; i++) {
+        data[shas[i]!] = results[i]!;
+      }
+      return data;
+    },
     async launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse> {
       return postJson(url("/api/bench/launch"), { kind, game, config });
     },
@@ -119,6 +141,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getRun: (runId: string) => lift(() => api.getRun(runId)),
     getRunLog: (runId: string, since: number) => lift(() => api.getRunLog(runId, since)),
     getLeaderboard: (filters: LeaderboardFilters) => lift(() => api.getLeaderboard(filters)),
+    fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),

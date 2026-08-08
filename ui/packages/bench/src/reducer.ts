@@ -29,6 +29,7 @@ import type { BenchState } from "./state.js";
 import {
   isTerminalStatus,
   type BenchKindInfo,
+  type CommitTrendData,
   type LaunchResponse,
   type LeaderboardEntry,
   type LeaderboardFilters,
@@ -48,6 +49,9 @@ export interface BenchEnv {
   getRun(runId: string): Effect<RunDetail>;
   getRunLog(runId: string, since: number): Effect<RunLogResponse>;
   getLeaderboard(filters: LeaderboardFilters): Effect<LeaderboardEntry[]>;
+  /** Fetch one leaderboard snapshot per distinct git SHA that has runs for
+   * the given game, building a map from SHA -> entries. */
+  fetchCommitTrends(game: string | null): Effect<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
@@ -90,6 +94,10 @@ export type BenchAction =
   | { tag: "leaderboard"; action: LeaderboardAction }
   /** Replace the leaderboard filters and refetch with them. */
   | { tag: "setLeaderboardFilters"; game: string | null; gitSha: string | null; since: string | null }
+  /** Fetch win-rate data for every commit that has runs. */
+  | { tag: "fetchCommitTrends"; game: string | null }
+  | { tag: "commitTrendsLoaded"; data: CommitTrendData; shas: string[] }
+  | { tag: "commitTrendsFailed"; error: string }
   | { tag: "launch"; action: LaunchAction }
   | { tag: "stopRun"; runId: string }
   | { tag: "stopFinished"; runId: string }
@@ -277,6 +285,31 @@ export function benchReducer(
   if (action.tag === "setLeaderboardFilters") {
     draft.leaderboardFilters = { game: action.game, gitSha: action.gitSha, since: action.since };
     return startLeaderboardFetch(draft, env);
+  }
+
+  if (action.tag === "fetchCommitTrends") {
+    draft.commitTrends = { data: {}, shas: [], status: "loading", error: null };
+    return env
+      .fetchCommitTrends(action.game)
+      .map((data): BenchAction => ({
+        tag: "commitTrendsLoaded",
+        data,
+        shas: Object.keys(data).sort().reverse(),
+      }))
+      .catch((e): BenchAction => ({
+        tag: "commitTrendsFailed",
+        error: String(e),
+      }));
+  }
+
+  if (action.tag === "commitTrendsLoaded") {
+    draft.commitTrends = { data: action.data, shas: action.shas, status: "done", error: null };
+    return null;
+  }
+
+  if (action.tag === "commitTrendsFailed") {
+    draft.commitTrends = { data: {}, shas: [], status: "error", error: action.error };
+    return null;
   }
 
   if (action.tag === "launch") {

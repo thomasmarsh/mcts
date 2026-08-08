@@ -4,6 +4,7 @@ export type {
   RunDetail,
   RunLogResponse,
   LeaderboardEntry,
+  CommitTrendData,
   LaunchResponse,
   StopResponse,
   RunFilters,
@@ -14,7 +15,7 @@ export type {
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 
-export type { BenchState, OpenRunState, LogTailState } from "./state.js";
+export type { BenchState, OpenRunState, LogTailState, CommitTrendsState } from "./state.js";
 export { initialBenchState } from "./state.js";
 
 export type { BenchEnv, BenchAction, RunsAction, LeaderboardAction, LaunchAction, KindsAction } from "./reducer.js";
@@ -32,4 +33,7 @@ export { createBenchApiClient, createBenchEnv } from "./api-client.js";
 export { LaunchForm } from "./LaunchForm.js";
 export { RunList } from "./RunList.js";
 export { RunDetailPanel } from "./RunDetailPanel.js";
+export { LeaderboardTable } from "./LeaderboardTable.js";
+export { WinRateChart } from "./WinRateChart.js";
+export { CommitComparison } from "./CommitComparison.js";
 export { BenchApp } from "./BenchApp.js";
