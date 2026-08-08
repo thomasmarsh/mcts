@@ -32,6 +32,12 @@ export const LaunchForm: Component<{
 
   const launchStatus = createMemo(() => state().launch.status);
   const launchError = createMemo(() => (state().launch.status === "error" ? state().launch.error : null));
+  // If the launch HTTP call succeeded but the child process died immediately
+  // (e.g. bad CLI args), the response carries the stderr in `launch_error`.
+  const launchResponseError = createMemo(() => {
+    const r = state().launch.result;
+    return r?.launch_error ?? null;
+  });
 
   const busy = createMemo(() => launchStatus() === "pending");
 
@@ -97,6 +103,12 @@ export const LaunchForm: Component<{
         <div class="launch-success">
           Run launched: <code>{state().launch.result?.run_id}</code>
         </div>
+        <Show when={launchResponseError()}>
+          <div class="launch-error launch-error-response">
+            <strong>Launch error:</strong>
+            <pre>{launchResponseError()}</pre>
+          </div>
+        </Show>
       </Show>
 
       <Show when={launchError()}>

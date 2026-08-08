@@ -70,6 +70,7 @@ const mockEnv: BenchEnv = {
   listRuns: () => Effect.none(),
   getRun: () => Effect.none(),
   getRunLog: () => Effect.none(),
+  getRunStdout: () => Effect.none(),
   getLeaderboard: () => Effect.none(),
   fetchCommitTrends: () => Effect.none(),
   launchRun: () => Effect.none(),

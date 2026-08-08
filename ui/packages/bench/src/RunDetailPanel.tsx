@@ -6,6 +6,7 @@
 
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
+import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
 
 const MAX_VISIBLE_LINES = 500;
@@ -20,6 +21,30 @@ export const RunDetailPanel: Component<{
   const detail = createMemo(() => openRun()?.detail ?? null);
   const tail = createMemo(() => openRun()?.tail ?? null);
   const stopError = createMemo(() => state().stopError);
+
+  // One-shot fetch for the raw stdout.log (stderr output).  Not part of
+  // the reducer — this is a debug view fetched on demand.
+  const [stdoutContent, setStdoutContent] = createSignal<string | null>(null);
+  const [stdoutError, setStdoutError] = createSignal<string | null>(null);
+  const [stdoutLoading, setStdoutLoading] = createSignal(false);
+  const [stdoutVisible, setStdoutVisible] = createSignal(false);
+
+  async function fetchStdout(): Promise<void> {
+    const run = openRun();
+    if (!run) return;
+    setStdoutLoading(true);
+    setStdoutError(null);
+    try {
+      const api = createBenchApiClient();
+      const content = await api.getRunStdout(run.runId);
+      setStdoutContent(content);
+      setStdoutVisible(true);
+    } catch (e: unknown) {
+      setStdoutError(String(e));
+    } finally {
+      setStdoutLoading(false);
+    }
+  }
 
   // Auto-scroll to bottom when new lines arrive.
   let logEndRef: HTMLDivElement | undefined;
@@ -120,6 +145,14 @@ export const RunDetailPanel: Component<{
                 )}
               </span>
             </Show>
+            <button
+              id="show-stdout-btn"
+              onClick={fetchStdout}
+              disabled={stdoutLoading()}
+              title="Fetch the raw stdout.log (stderr output from the run process)"
+            >
+              {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stdout" : "Show Stdout Log"}
+            </button>
           </div>
           <Show when={tail()?.error}>
             <div class="log-error">Error: {tail()!.error}</div>
@@ -136,6 +169,25 @@ export const RunDetailPanel: Component<{
             </Show>
           </div>
         </div>
+
+        <Show when={stdoutVisible() && stdoutContent() !== null}>
+          <div id="stdout-panel">
+            <div id="stdout-header">
+              <span>Stdout Log (stderr output)</span>
+              <button onClick={() => setStdoutVisible(false)}>Hide</button>
+            </div>
+            <Show when={stdoutContent() && stdoutContent()!.length > 0}>
+              <pre id="stdout-content">{stdoutContent()}</pre>
+            </Show>
+            <Show when={stdoutContent() !== null && stdoutContent()!.length === 0}>
+              <div class="log-empty">stdout.log is empty</div>
+            </Show>
+          </div>
+        </Show>
+
+        <Show when={stdoutError()}>
+          <div class="log-error">Stdout fetch error: {stdoutError()}</div>
+        </Show>
       </div>
     </Show>
   );

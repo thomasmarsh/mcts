@@ -48,6 +48,9 @@ export interface BenchEnv {
   listRuns(filters: RunFilters): Effect<RunSummary[]>;
   getRun(runId: string): Effect<RunDetail>;
   getRunLog(runId: string, since: number): Effect<RunLogResponse>;
+  /** Fetch the full raw content of the run's stdout.log file (stderr
+   * output redirected by the launcher). */
+  getRunStdout(runId: string): Effect<string>;
   getLeaderboard(filters: LeaderboardFilters): Effect<LeaderboardEntry[]>;
   /** Fetch one leaderboard snapshot per distinct git SHA that has runs for
    * the given game, building a map from SHA -> entries. */

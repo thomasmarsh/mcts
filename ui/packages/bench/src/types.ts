@@ -95,6 +95,11 @@ export interface LaunchResponse {
   run_id: string;
   pid: number;
   log_path: string;
+  /** If the child process exited within 500ms of launch, the contents of
+   * its stderr (redirected to stdout.log).  Absent or null means the
+   * child was still alive after the check window — the launch succeeded
+   * normally. */
+  launch_error?: string | null;
 }
 
 /** `POST /api/bench/runs/{run_id}/stop` response — the Rust handler builds

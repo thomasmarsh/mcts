@@ -29,6 +29,9 @@ export interface BenchApiClient {
   listRuns(filters?: { status?: string | null; game?: string | null; limit?: number }): Promise<RunSummary[]>;
   getRun(runId: string): Promise<RunDetail>;
   getRunLog(runId: string, since?: number): Promise<RunLogResponse>;
+  /** Fetch the full raw content of the run's stdout.log file (stderr
+   * output redirected by the launcher). */
+  getRunStdout(runId: string): Promise<string>;
   getLeaderboard(filters?: Partial<LeaderboardFilters>): Promise<LeaderboardEntry[]>;
   /** Fetch the leaderboard for each distinct git SHA that has run data
    * for the given game. Returns a map of SHA -> entries. */
@@ -99,6 +102,11 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getRunLog(runId: string, since?: number): Promise<RunLogResponse> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/log${queryString({ since })}`));
     },
+    async getRunStdout(runId: string): Promise<string> {
+      const r = await fetch(url(`/api/bench/runs/${encodeURIComponent(runId)}/stdout`));
+      if (!r.ok) throw new Error(await errorMessage(r));
+      return r.text();
+    },
     async getLeaderboard(filters: Partial<LeaderboardFilters> = {}): Promise<LeaderboardEntry[]> {
       return fetchJson(
         url(`/api/bench/leaderboard${queryString({ game: filters.game, git_sha: filters.gitSha, since: filters.since })}`),
@@ -140,6 +148,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     listRuns: (filters: RunFilters) => lift(() => api.listRuns(filters)),
     getRun: (runId: string) => lift(() => api.getRun(runId)),
     getRunLog: (runId: string, since: number) => lift(() => api.getRunLog(runId, since)),
+    getRunStdout: (runId: string) => lift(() => api.getRunStdout(runId)),
     getLeaderboard: (filters: LeaderboardFilters) => lift(() => api.getLeaderboard(filters)),
     fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),

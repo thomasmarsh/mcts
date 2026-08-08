@@ -10,7 +10,7 @@
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{Path as AxumPath, Query, State as AxumState},
@@ -135,6 +135,11 @@ pub struct LaunchResponse {
     pub run_id: String,
     pub pid: u32,
     pub log_path: String,
+    /// If the child process exited within 500ms of launch, the contents of
+    /// its stderr (redirected to stdout.log).  None means the child was
+    /// still alive after the check window — the launch succeeded normally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_error: Option<String>,
 }
 
 /// Metadata for a run kind exposed via `GET /api/bench/kinds`.
@@ -228,6 +233,7 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
+        .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
         .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
@@ -360,6 +366,47 @@ async fn get_run(
         }),
         Err(e) => Err(BenchError::from(e)),
     }
+}
+
+/// `GET /api/bench/runs/{run_id}/stdout`
+///
+/// Returns the full raw content of the run's `stdout.log` file (stderr
+/// output redirected by the launcher).  Unlike `log.jsonl`, this is
+/// unstructured human-readable output — clap errors, panic traces, etc.
+/// Useful for debugging a crashed run.
+async fn get_run_stdout(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<String, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    let log_path: String = match db.query_row(
+        "SELECT log_path FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| row.get(0),
+    ) {
+        Ok(p) => p,
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    };
+
+    // stdout.log is a sibling of log.jsonl.
+    let log_path_obj = Path::new(&log_path);
+    let stdout_path = log_path_obj
+        .parent()
+        .map(|p| p.join("stdout.log"))
+        .unwrap_or_else(|| PathBuf::from("stdout.log"));
+
+    if !stdout_path.exists() {
+        return Ok(String::new());
+    }
+
+    Ok(std::fs::read_to_string(&stdout_path)?)
 }
 
 /// `GET /api/bench/runs/{run_id}/log?since=<offset>`
@@ -571,7 +618,7 @@ async fn launch_run(
         run_id,
         pid,
         log_path,
-        ..
+        log_dir,
     } = launch::launch(cmd, &body.kind, &body.game, label).map_err(|e| BenchError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("failed to launch run: {e}"),
@@ -588,10 +635,59 @@ async fn launch_run(
         );
     }
 
+    // Post-spawn check: give the child 500ms to start and possibly fail
+    // (e.g. bad arguments to the bench CLI).  If it's already dead, read
+    // stdout.log for the error and return it to the caller.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let launch_error: Option<String> = if !launch::is_alive(pid) {
+        let stdout_path = log_dir.join("stdout.log");
+        let error_content =
+            std::fs::read_to_string(&stdout_path).unwrap_or_default();
+        let trimmed = error_content.trim().to_string();
+
+        // Mark the run as crashed in the database.
+        let now = iso_timestamp_now();
+        {
+            let db = state.db.lock().unwrap();
+            let _ = db.execute(
+                "UPDATE runs SET ended_at = ?1, status = 'crashed' \
+                 WHERE run_id = ?2 AND status = 'running'",
+                duckdb::params![&now, &run_id],
+            );
+        }
+
+        // Append a stop event to the registry log so the ingest loop
+        // sees it on its next pass (even though we already updated the
+        // DB, the ingest loop's reconciliation pass would eventually catch
+        // this too — writing the event keeps registry.log authoritative).
+        let event = RegistryEvent::Stop {
+            run_id: run_id.clone(),
+            exit_code: None,
+            ended_at: now,
+        };
+        let registry_path = state.bench_runs_dir.join("registry.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&registry_path)
+        {
+            use std::io::Write;
+            let mut line = event.to_json_line();
+            line.push('\n');
+            let _ = file.write_all(line.as_bytes());
+        }
+
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    } else {
+        None
+    };
+
     Ok(Json(LaunchResponse {
         run_id,
         pid,
         log_path: log_path.to_string_lossy().to_string(),
+        launch_error,
     }))
 }
 
