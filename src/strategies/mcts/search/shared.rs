@@ -305,6 +305,7 @@ pub fn select_step<G: Game>(
                     index: shared.index,
                     table: shared.table,
                     grave: &grave,
+                    global: shared.global,
                     use_transpositions: shared.use_transpositions,
                 };
 

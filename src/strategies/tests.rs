@@ -1497,3 +1497,232 @@ fn test_max_arena_len_bounds_arena_growth_across_a_self_play_game() {
              smaller final arena ({bounded}), not just be a no-op config field"
     );
 }
+
+#[test]
+fn test_progressive_history_global_table_populated_by_backprop() {
+    // Mirrors `test_nst_bigram_table_populated_by_backprop`: Progressive
+    // History reads the same GLOBAL/MAST `player_actions` table `Mast`/`Nst`
+    // populate, so its own `backprop_flags()` needs to actually set GLOBAL
+    // rather than relying on some other strategy in the pipeline to do it.
+    use crate::games::ttt::*;
+    // Two empty cells (7, 8), O to move: forces a deterministic
+    // zero-tree-descent, single-ply-then-terminal playout, so there's
+    // exactly one action to check landed in the table.
+    let init_state = HashedPosition {
+        position: Position {
+            turn: Piece::O,
+            board: [
+                (0, Piece::X),
+                (1, Piece::X),
+                (2, Piece::O),
+                (3, Piece::X),
+                (4, Piece::X),
+                (5, Piece::O),
+                (6, Piece::O),
+            ]
+            .iter()
+            .fold(0, |board, (i, piece)| {
+                let value = match piece {
+                    Piece::X => 0b01,
+                    Piece::O => 0b10,
+                };
+                board | (value << (i << 1))
+            }),
+        },
+        hashes: [0; 8],
+    };
+
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1ProgressiveHistory>;
+    let mut ts = TS::default().config(mcts::SearchConfig::default().seed(7));
+
+    let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
+    ts.reset_iter();
+    let mut ctx = mcts::SearchContext::new(root_id, init_state);
+    ts.select(&mut ctx);
+    let trial = ts.simulate(&ctx.state);
+    let (first_action, first_player) = trial.actions[0];
+
+    ts.trial = Some(trial);
+    ts.backprop();
+
+    let player_actions = ts.stats.player_actions[first_player].read().unwrap();
+    let stats = player_actions
+        .get(&first_action)
+        .unwrap_or_else(|| panic!("expected a GLOBAL table entry for {first_action:?}"));
+    assert_eq!(stats.num_visits, 1);
+}
+
+#[test]
+fn test_progressive_history_biases_toward_global_high_scoring_action() {
+    // With two children tied on their own local UCB stats, Progressive
+    // History's bonus term (drawn from the GLOBAL/MAST table) should break
+    // the tie toward whichever action has scored well elsewhere in the
+    // tree -- the whole point of warm-starting selection with cross-tree
+    // history instead of just this node's own (still noisy) evidence.
+    use crate::games::ttt::*;
+    use mcts::node;
+    use mcts::search::shared::{expand, new_child};
+    use mcts::select::{ProgressiveHistory, SelectContext, SelectStrategy};
+    use mcts::stack::NodeStack;
+    use mcts::Shared;
+    use rand::SeedableRng;
+
+    type G = TicTacToe;
+    let init_state = HashedPosition::new();
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1ProgressiveHistory>;
+    let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
+
+    let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
+    expand::<G>(&ts.index, root_id, &init_state, false);
+
+    let root = ts.index.get(root_id);
+    let children = root.children();
+
+    let shared = Shared {
+        index: &ts.index,
+        root_stats: &ts.root_stats,
+        table: &ts.table,
+        global: &ts.stats,
+        expand_threshold: 1,
+        q_init: node::QInit::Loss,
+        use_transpositions: false,
+        use_mcts_solver: false,
+        max_playout_depth: 0,
+    };
+
+    // Children 0 and 1: identical local visit/score stats -- a tie on raw
+    // UCB1 alone.
+    for idx in [0usize, 1usize] {
+        new_child(
+            &shared,
+            &G::apply(init_state, children.action(idx)),
+            idx,
+            root_id,
+        );
+        children.update(idx, &[0.5, 0.5]);
+    }
+
+    let player = root.player_idx;
+    {
+        let mut player_actions = ts.stats.player_actions[player].write().unwrap();
+        player_actions.insert(
+            *children.action(0),
+            node::ActionStats {
+                num_visits: 10,
+                score: 9.,
+            },
+        );
+        player_actions.insert(
+            *children.action(1),
+            node::ActionStats {
+                num_visits: 10,
+                score: 1.,
+            },
+        );
+    }
+
+    let stack = NodeStack::new(vec![root_id]);
+    let grave = Default::default();
+    let select_ctx = SelectContext {
+        q_init: node::QInit::Loss,
+        stack: &stack,
+        root_stats: &ts.root_stats,
+        state: &init_state,
+        player,
+        index: &ts.index,
+        table: &ts.table,
+        grave: &grave,
+        global: &ts.stats,
+        use_transpositions: false,
+    };
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let mut strategy = ProgressiveHistory::default();
+    assert_eq!(
+        strategy.best_child(&select_ctx, &mut rng),
+        0,
+        "should favor the action with the stronger GLOBAL/history average score"
+    );
+}
+
+#[test]
+fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
+    // `MaxRobustChild` should only follow raw visit count (`RobustChild`'s
+    // rule) when the most-visited child is *also* the highest-scoring one.
+    // Here it deliberately isn't, so the two strategies must disagree.
+    use crate::games::ttt::*;
+    use mcts::node;
+    use mcts::search::shared::{expand, new_child};
+    use mcts::select::{MaxRobustChild, RobustChild, SelectContext, SelectStrategy};
+    use mcts::stack::NodeStack;
+    use mcts::Shared;
+    use rand::SeedableRng;
+
+    type G = TicTacToe;
+    let init_state = HashedPosition::new();
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1MaxRobust>;
+    let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
+
+    let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
+    expand::<G>(&ts.index, root_id, &init_state, false);
+
+    let root = ts.index.get(root_id);
+    let children = root.children();
+    assert!(children.len() >= 2, "empty board should have several legal moves");
+
+    let shared = Shared {
+        index: &ts.index,
+        root_stats: &ts.root_stats,
+        table: &ts.table,
+        global: &ts.stats,
+        expand_threshold: 1,
+        q_init: node::QInit::Loss,
+        use_transpositions: false,
+        use_mcts_solver: false,
+        max_playout_depth: 0,
+    };
+
+    // Child 0: heavily visited, mediocre average score.
+    new_child(&shared, &G::apply(init_state, children.action(0)), 0, root_id);
+    for _ in 0..20 {
+        children.update(0, &[0.5, 0.5]);
+    }
+
+    // Child 1: barely visited, but a much higher average score.
+    new_child(&shared, &G::apply(init_state, children.action(1)), 1, root_id);
+    children.update(1, &[1.0, 0.0]);
+
+    let stack = NodeStack::new(vec![root_id]);
+    let grave = Default::default();
+    let select_ctx = SelectContext {
+        q_init: node::QInit::Loss,
+        stack: &stack,
+        root_stats: &ts.root_stats,
+        state: &init_state,
+        player: root.player_idx,
+        index: &ts.index,
+        table: &ts.table,
+        grave: &grave,
+        global: &ts.stats,
+        use_transpositions: false,
+    };
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+
+    let mut robust = RobustChild;
+    assert_eq!(
+        robust.best_child(&select_ctx, &mut rng),
+        0,
+        "RobustChild should follow raw visit count regardless of score"
+    );
+
+    let mut max_robust = MaxRobustChild;
+    assert_eq!(
+        max_robust.best_child(&select_ctx, &mut rng),
+        1,
+        "MaxRobustChild should defer to average score once visits and score disagree"
+    );
+}

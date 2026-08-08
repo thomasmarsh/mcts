@@ -19,7 +19,7 @@ things implemented (perhaps only partially) are checked off on the list.
 ### Selection
 - [x] Max Child
 - [x] Robust Child
-- [ ] Max-Robust Child
+- [x] Max-Robust Child
 - [x] Secure Child
 - [x] UCT
 - [x] UCB1-tuned
@@ -69,7 +69,7 @@ things implemented (perhaps only partially) are checked off on the list.
 
 ### Others
 - [ ] History heuristic
-- [ ] Progressive History
+- [x] Progressive History
 
 ### AMAF Variants
 - [x] AMAF

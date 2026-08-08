@@ -87,6 +87,90 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Chaslot, G.M.J-B., Winands, M.H.M., van den Herik, H.J., Uiterwijk, J.W.H.M.,
+// Bouzy, B., 2008. Progressive Strategies for Monte-Carlo Tree Search, in:
+// New Mathematics and Natural Computation.
+
+/// The max-robust child is the child that has both the highest visit count
+/// (`RobustChild`) and the highest average score (`MaxAvgScore`) at once --
+/// the two criteria agreeing is meant to be read as extra confidence in the
+/// pick. When no single child dominates both, Chaslot et al. suggest either
+/// falling back to the max child or the robust child; this picks the max
+/// child (highest average score). That fallback choice is what keeps this
+/// distinct from plain `RobustChild`: `RobustChild` always sorts on visits
+/// first, so falling back to a visits-first tie-break here (the other
+/// option in the paper) would make the dominance check a no-op -- the
+/// dominant child, by construction, already has the most visits, so a
+/// visits-first fallback would pick it anyway whether or not it's flagged
+/// dominant, and every other case is decided by the fallback alone.
+#[derive(Default, Clone)]
+pub struct MaxRobustChild;
+
+impl MaxRobustChild {
+    /// The child index that is simultaneously the most-visited and the
+    /// highest-scoring, if one exists. `None` when the two criteria pick
+    /// different children (or when no children are visited yet).
+    fn dominant_child<G: Game>(ctx: &SelectContext<'_, G>) -> Option<usize> {
+        let current = ctx.index.get(ctx.stack.current_id());
+        let children = current.children();
+
+        let mut most_visited: Option<(usize, u32)> = None;
+        let mut highest_scoring: Option<(usize, f64)> = None;
+        for idx in 0..children.len() {
+            if children.node_id(idx).is_none() {
+                continue;
+            }
+            let snap = children.snapshot(idx, ctx.player);
+            let visits = snap.total_visits();
+            let score = snap.expected_score();
+            if most_visited.is_none_or(|(_, v)| visits > v) {
+                most_visited = Some((idx, visits));
+            }
+            if highest_scoring.is_none_or(|(_, s)| score > s) {
+                highest_scoring = Some((idx, score));
+            }
+        }
+
+        match (most_visited, highest_scoring) {
+            (Some((v_idx, _)), Some((s_idx, _))) if v_idx == s_idx => Some(v_idx),
+            _ => None,
+        }
+    }
+}
+
+impl<G: Game> SelectStrategy<G> for MaxRobustChild {
+    type Score = (bool, f64);
+    type Aux = Option<usize>;
+
+    #[inline(always)]
+    fn setup(&mut self, ctx: &SelectContext<'_, G>) -> Self::Aux {
+        Self::dominant_child(ctx)
+    }
+
+    #[inline(always)]
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        children: &ChildArray<G::A>,
+        idx: usize,
+        dominant: Self::Aux,
+    ) -> (bool, f64) {
+        let score = children.expected_score(idx, ctx.player);
+        (dominant == Some(idx), score)
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> (bool, f64) {
+        let q = ctx
+            .current_stats()
+            .value_estimate_unvisited(ctx.player, ctx.q_init);
+        (false, q)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// The secure child is the child that maximizes a lower confidence bound.
 #[derive(Clone)]
 pub struct SecureChild {

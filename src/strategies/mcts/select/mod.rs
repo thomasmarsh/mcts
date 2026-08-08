@@ -1,14 +1,17 @@
 pub mod amaf;
 pub mod basic;
+pub mod history;
 pub mod quasi;
 pub mod rave;
 pub mod ucb;
 
 pub use amaf::Amaf;
 pub use basic::MaxAvgScore;
+pub use basic::MaxRobustChild;
 pub use basic::RobustChild;
 pub use basic::SecureChild;
 pub use basic::ThompsonSampling;
+pub use history::ProgressiveHistory;
 pub use quasi::QuasiBestFirst;
 pub use rave::Rave;
 pub use rave::RaveSchedule;
@@ -18,6 +21,7 @@ pub use ucb::Ucb1Tuned;
 
 use super::index::Id;
 use super::node::{self, ChildArray, NodeStats, Proven, StatsRef};
+use super::search::shared::TreeStats;
 use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
@@ -36,6 +40,7 @@ pub struct SelectContext<'a, G: Game> {
     pub index: &'a TreeIndex<G::A>,
     pub table: &'a TranspositionTable,
     pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
+    pub global: &'a TreeStats<G>,
     pub use_transpositions: bool,
 }
 

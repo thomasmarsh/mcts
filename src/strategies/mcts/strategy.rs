@@ -64,6 +64,37 @@ impl<G: Game> Strategy<G> for Ucb1Nst {
     }
 }
 
+// Vanilla UCT + Progressive History
+#[derive(Clone, Default)]
+pub struct Ucb1ProgressiveHistory;
+
+impl<G: Game> Strategy<G> for Ucb1ProgressiveHistory {
+    type Select = select::ProgressiveHistory;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_progressive_history".into()
+    }
+}
+
+// Vanilla UCT, but the final move choice requires visits and average score
+// to agree (falling back to average score alone when they don't).
+#[derive(Clone, Default)]
+pub struct Ucb1MaxRobust;
+
+impl<G: Game> Strategy<G> for Ucb1MaxRobust {
+    type Select = select::Ucb1;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::MaxRobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_max_robust".into()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Amaf;
 

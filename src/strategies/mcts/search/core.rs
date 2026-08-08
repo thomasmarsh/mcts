@@ -101,6 +101,7 @@ where
                 index: &self.index,
                 table: &self.table,
                 grave: &grave,
+                global: &self.stats,
                 use_transpositions: self.config.use_transpositions,
             },
             &mut self.config.rng,
@@ -285,6 +286,7 @@ where
                 index: &self.index,
                 table: &self.table,
                 grave: &grave,
+                global: &self.stats,
                 use_transpositions: self.config.use_transpositions,
             };
 
