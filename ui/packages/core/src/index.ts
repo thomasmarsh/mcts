@@ -1,4 +1,5 @@
-export { Effect } from "./effect.js";
+export { Effect, realScheduler } from "./effect.js";
+export type { Scheduler, EffectContext } from "./effect.js";
 export type { Dispatch, Reducer } from "./reducer.js";
 export { pullback, pullbackWithNav, combine } from "./reducer.js";
 export type { Store, ScopedStore } from "./store.js";
