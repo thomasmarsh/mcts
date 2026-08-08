@@ -4,6 +4,7 @@ pub mod bitboard;
 pub mod breakthrough;
 pub mod count;
 pub mod druid;
+pub mod druid_flat;
 pub mod gonnect;
 pub mod knightthrough;
 pub mod nim;
