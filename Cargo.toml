@@ -37,6 +37,10 @@ name = "book"
 path = "demo/book.rs"
 
 [[bin]]
+name = "bench"
+path = "bench/main.rs"
+
+[[bin]]
 name = "server"
 path = "server/main.rs"
 

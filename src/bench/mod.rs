@@ -3,6 +3,7 @@
 //! via JSONL files and the registry log.
 
 pub mod games;
+pub mod launch;
 pub mod log;
 pub mod schema;
 pub mod tournament;
