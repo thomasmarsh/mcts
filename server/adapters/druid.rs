@@ -50,11 +50,51 @@ struct PresetConfig {
 }
 
 /// `"auto"` (use all available cores) or a fixed `usize`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+///
+/// Custom `Deserialize` so YAML can express `"auto"` as a string
+/// and `4` as an integer, rather than requiring `#[serde(untagged)]`
+/// whose unit-variant try won't accept a non-null string like `"auto"`.
+#[derive(Debug, Clone)]
 enum ThreadCountSpec {
     Auto,
     Fixed(usize),
+}
+
+impl<'de> serde::Deserialize<'de> for ThreadCountSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ThreadCountVisitor;
+
+        impl<'de> de::Visitor<'de> for ThreadCountVisitor {
+            type Value = ThreadCountSpec;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("integer or \"auto\"")
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<ThreadCountSpec, E> {
+                Ok(ThreadCountSpec::Fixed(v as usize))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<ThreadCountSpec, E> {
+                Ok(ThreadCountSpec::Fixed(v as usize))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ThreadCountSpec, E> {
+                if v == "auto" {
+                    Ok(ThreadCountSpec::Auto)
+                } else {
+                    Err(de::Error::unknown_variant(v, &["auto"]))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(ThreadCountVisitor)
+    }
 }
 
 impl ThreadCountSpec {
