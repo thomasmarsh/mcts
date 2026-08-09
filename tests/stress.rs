@@ -122,3 +122,83 @@ fn test_druid_hash_no_collision_across_many_random_games() {
         }
     }
 }
+
+#[test]
+fn test_othello_many_random_games_complete() {
+    let _guard = stress_test_guard();
+    // Verifies that many random Othello games always terminate without
+    // panicking, and collects basic statistics (winner distribution, move
+    // counts) as a sanity check on the game implementation.
+    use mcts::game::Game;
+    use mcts::games::othello::*;
+    use rand::seq::SliceRandom;
+
+    let mut rng = rand::thread_rng();
+    const NUM_GAMES: usize = 2_000;
+
+    let mut move_counts: Vec<usize> = Vec::with_capacity(NUM_GAMES);
+    let mut non_pass_counts: Vec<usize> = Vec::with_capacity(NUM_GAMES);
+    let mut black_wins: u64 = 0;
+    let mut white_wins: u64 = 0;
+    let mut draws: u64 = 0;
+
+    for _ in 0..NUM_GAMES {
+        let mut state = State::default();
+        let mut total_actions = 0usize;
+        let mut non_pass_actions = 0usize;
+
+        while !Othello::is_terminal(&state) {
+            let mut actions = Vec::new();
+            Othello::generate_actions(&state, &mut actions);
+            assert!(
+                !actions.is_empty(),
+                "non-terminal state produced zero actions"
+            );
+
+            let action = *actions.choose(&mut rng).unwrap();
+            if action != Move::PASS {
+                non_pass_actions += 1;
+            }
+            state = Othello::apply(state, &action);
+            total_actions += 1;
+            assert!(
+                total_actions <= 200,
+                "game exceeded 200 actions ({total_actions})"
+            );
+        }
+
+        move_counts.push(total_actions);
+        non_pass_counts.push(non_pass_actions);
+        match Othello::winner(&state) {
+            Some(Player::Black) => black_wins += 1,
+            Some(Player::White) => white_wins += 1,
+            None => draws += 1,
+        }
+    }
+
+    let total = black_wins + white_wins + draws;
+    assert_eq!(total, NUM_GAMES as u64, "all games must produce a result");
+
+    let avg_moves = move_counts.iter().sum::<usize>() as f64 / NUM_GAMES as f64;
+    let avg_non_pass = non_pass_counts.iter().sum::<usize>() as f64 / NUM_GAMES as f64;
+
+    eprintln!("Othello random game stats ({NUM_GAMES} games):");
+    eprintln!("  Avg total actions: {avg_moves:.1}");
+    eprintln!("  Avg disc placements: {avg_non_pass:.1}");
+    eprintln!(
+        "  Black wins: {black_wins} ({:.1}%)",
+        100.0 * black_wins as f64 / NUM_GAMES as f64
+    );
+    eprintln!(
+        "  White wins: {white_wins} ({:.1}%)",
+        100.0 * white_wins as f64 / NUM_GAMES as f64
+    );
+    eprintln!(
+        "  Draws: {draws} ({:.1}%)",
+        100.0 * draws as f64 / NUM_GAMES as f64
+    );
+
+    // All games had at least some disc placements (can't all pass immediately
+    // from the initial position, which has 4 legal moves).
+    assert!(avg_non_pass >= 4.0, "implausibly few non-pass moves: {avg_non_pass:.1}");
+}

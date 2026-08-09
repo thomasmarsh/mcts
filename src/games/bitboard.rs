@@ -458,6 +458,26 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
         (self & !Self::wall(Direction::West)) >> 1
     }
 
+    #[inline(always)]
+    pub fn shift_northeast(self) -> Self {
+        (self & !Self::wall(Direction::North) & !Self::wall(Direction::East)) << (M + 1)
+    }
+
+    #[inline(always)]
+    pub fn shift_northwest(self) -> Self {
+        (self & !Self::wall(Direction::North) & !Self::wall(Direction::West)) << (M - 1)
+    }
+
+    #[inline(always)]
+    pub fn shift_southeast(self) -> Self {
+        (self & !Self::wall(Direction::South) & !Self::wall(Direction::East)) >> (M - 1)
+    }
+
+    #[inline(always)]
+    pub fn shift_southwest(self) -> Self {
+        (self & !Self::wall(Direction::South) & !Self::wall(Direction::West)) >> (M + 1)
+    }
+
     #[inline]
     pub fn shift(self, direction: Direction) -> Self {
         match direction {
@@ -765,6 +785,86 @@ mod tests {
             b = b.shift(direction);
             assert_eq!(b, BitBoard::wall(direction));
         }
+    }
+
+    #[test]
+    fn test_diagonal_shifts_8x8() {
+        type B = BitBoard<8, 8>;
+
+        // Bit 27 (row 3, col 3 = d4): the four diagonals.
+        let center = B::from_index(27);
+        assert_eq!(center.shift_northeast(), B::from_index(36)); // e5 (row 4, col 4)
+        assert_eq!(center.shift_northwest(), B::from_index(34)); // c5 (row 4, col 2)
+        assert_eq!(center.shift_southeast(), B::from_index(20)); // e3 (row 2, col 4)
+        assert_eq!(center.shift_southwest(), B::from_index(18)); // c3 (row 2, col 2)
+
+        // Bit 0 (row 0, col 0 = a1): NE goes to b2 (row 1, col 1), all others off board.
+        let corner = B::from_index(0);
+        assert_eq!(corner.shift_northeast(), B::from_index(9)); // b2
+        assert_eq!(corner.shift_northwest(), B::EMPTY);
+        assert_eq!(corner.shift_southeast(), B::EMPTY);
+        assert_eq!(corner.shift_southwest(), B::EMPTY);
+
+        // Bit 63 (row 7, col 7 = h8): SW goes to g7 (row 6, col 6), all others off board.
+        let far_corner = B::from_index(63);
+        assert_eq!(far_corner.shift_northeast(), B::EMPTY);
+        assert_eq!(far_corner.shift_northwest(), B::EMPTY);
+        assert_eq!(far_corner.shift_southeast(), B::EMPTY);
+        assert_eq!(far_corner.shift_southwest(), B::from_index(54)); // g7
+
+        // Bit 7 (row 0, col 7 = h1): NW goes to g2 (row 1, col 6), others off board.
+        let east_edge = B::from_index(7);
+        assert_eq!(east_edge.shift_northeast(), B::EMPTY);
+        assert_eq!(east_edge.shift_northwest(), B::from_index(14)); // g2 (row 1, col 6)
+        assert_eq!(east_edge.shift_southeast(), B::EMPTY);
+        assert_eq!(east_edge.shift_southwest(), B::EMPTY);
+
+        // Bit 56 (row 7, col 0 = a8): SE goes to b7 (row 6, col 1), others off board.
+        let west_edge = B::from_index(56);
+        assert_eq!(west_edge.shift_northeast(), B::EMPTY);
+        assert_eq!(west_edge.shift_northwest(), B::EMPTY);
+        assert_eq!(west_edge.shift_southeast(), B::from_index(49)); // b7 (row 6, col 1)
+        assert_eq!(west_edge.shift_southwest(), B::EMPTY);
+
+        // Bit 35 (row 4, col 3 = d5): NE goes to e6, NW to c6, SE to e4, SW to c4
+        let inner = B::from_index(35);
+        assert_eq!(inner.shift_northeast(), B::from_index(44)); // e6 (row 5, col 4)
+        assert_eq!(inner.shift_northwest(), B::from_index(42)); // c6 (row 5, col 2)
+        assert_eq!(inner.shift_southeast(), B::from_index(28)); // e4 (row 3, col 4)
+        assert_eq!(inner.shift_southwest(), B::from_index(26)); // c4 (row 3, col 2)
+    }
+
+    #[test]
+    fn test_diagonal_wrapping_prevented() {
+        type B = BitBoard<8, 8>;
+        // A piece in column 7 (H) must not wrap to column A when shifting NE or SE.
+        // Bit 15 (row 1, col 7 = h2): NE would wrap to a3 without east-wall mask.
+        // But h2 is at east wall (col 7), so NE = (row 2, col 8) is off board → EMPTY.
+        assert_eq!(B::from_index(15).shift_northeast(), B::EMPTY);
+        // h2.shift_southeast(): (row 0, col 8) off board → EMPTY
+        assert_eq!(B::from_index(15).shift_southeast(), B::EMPTY);
+        // h2.shift_northwest(): (row 2, col 6 = g3, index 22) valid
+        assert_eq!(B::from_index(15).shift_northwest(), B::from_index(22));
+        // h2.shift_southwest(): (row 0, col 6 = g1, index 6) valid
+        assert_eq!(B::from_index(15).shift_southwest(), B::from_index(6));
+
+        // Bit 7 (row 0, col 7 = h1): all NE/SE shifts off board.
+        assert_eq!(B::from_index(7).shift_northeast(), B::EMPTY);
+        assert_eq!(B::from_index(7).shift_northwest(), B::from_index(14)); // g2
+        assert_eq!(B::from_index(7).shift_southeast(), B::EMPTY);
+        assert_eq!(B::from_index(7).shift_southwest(), B::EMPTY);
+
+        // A piece in column 0 (A) must not wrap to column H when shifting NW or SW.
+        // Bit 8 (row 1, col 0 = a2): NW would wrap to h3 without west-wall mask.
+        // a2 is at west wall (col 0) AND not at north wall (row 1 < 7).
+        // NW = (row 2, col -1) off board → EMPTY
+        assert_eq!(B::from_index(8).shift_northwest(), B::EMPTY);
+        // a2.shift_southwest(): (row 0, col -1) off board → EMPTY
+        assert_eq!(B::from_index(8).shift_southwest(), B::EMPTY);
+        // a2.shift_northeast(): (row 2, col 1 = b3, index 17) valid
+        assert_eq!(B::from_index(8).shift_northeast(), B::from_index(17));
+        // a2.shift_southeast(): (row 0, col 1 = b1, index 1) valid
+        assert_eq!(B::from_index(8).shift_southeast(), B::from_index(1));
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod druid_flat;
 pub mod gonnect;
 pub mod knightthrough;
 pub mod nim;
+pub mod othello;
 pub mod null;
 pub mod shibumi;
 pub mod tak;
