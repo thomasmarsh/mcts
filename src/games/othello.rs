@@ -249,6 +249,38 @@ impl Move {
 
 type BB = BitBoard<BOARD_SIZE, BOARD_SIZE>;
 
+/// Kogge-Stone dumb7fill: flood from source `p` through opponent `o` in a
+/// direction (left shift) bounded by wall mask `mask`.  Returns opponent
+/// discs that form a contiguous chain reachable from `p`.
+///
+/// The refinement propagator `pro` ensures only squares whose entire path
+/// (1, 2, then 4 steps) stays within opponent pieces are included — blocking
+/// jumps across gaps or player discs.
+#[inline]
+fn flood_left(p: BB, o: BB, shift: usize, mask: BB) -> BB {
+    let mut gen = (p << shift) & mask & o;
+    let mut pro = o & mask;
+    gen |= (gen << shift) & pro;
+    pro &= pro << shift;
+    gen |= (gen << (shift * 2)) & pro;
+    pro &= pro << (shift * 2);
+    gen |= (gen << (shift * 4)) & pro;
+    gen
+}
+
+/// Kogge-Stone dumb7fill (right-shift variant).
+#[inline]
+fn flood_right(p: BB, o: BB, shift: usize, mask: BB) -> BB {
+    let mut gen = (p >> shift) & mask & o;
+    let mut pro = o & mask;
+    gen |= (gen >> shift) & pro;
+    pro &= pro >> shift;
+    gen |= (gen >> (shift * 2)) & pro;
+    pro &= pro >> (shift * 2);
+    gen |= (gen >> (shift * 4)) & pro;
+    gen
+}
+
 /// Given the bitboard of the current player and the opponent, return a
 /// bitboard where each set bit represents a legal move.
 ///
@@ -258,36 +290,6 @@ type BB = BitBoard<BOARD_SIZE, BOARD_SIZE>;
 pub fn generate_moves(player: BB, opponent: BB) -> BB {
     let empty = !(player | opponent);
     let mut legal = BB::EMPTY;
-
-    // Helper: flood through opponent pieces in a given direction (left shift).
-    // `shift` = bit-count to move per step, `mask` = edge-wrapping guard.
-    let flood_left = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        // Start with a single-step propagation from the source to opponent.
-        let mut gen = (p << shift) & mask & o;
-        // The propagator starts as all opponent bits in the mask.
-        let mut pro = o & mask;
-        // Round 1: fill distance-2 spans.  Update gen BEFORE refining pro.
-        gen |= (gen << shift) & pro;
-        pro &= pro << shift;
-        // Round 2: fill distance-4 spans.
-        gen |= (gen << (shift * 2)) & pro;
-        pro &= pro << (shift * 2);
-        // Round 4: fill distance-8 spans.
-        gen |= (gen << (shift * 4)) & pro;
-        gen
-    };
-
-    // Helper: flood through opponent pieces in a given direction (right shift).
-    let flood_right = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut gen = (p >> shift) & mask & o;
-        let mut pro = o & mask;
-        gen |= (gen >> shift) & pro;
-        pro &= pro >> shift;
-        gen |= (gen >> (shift * 2)) & pro;
-        pro &= pro >> (shift * 2);
-        gen |= (gen >> (shift * 4)) & pro;
-        gen
-    };
 
     // ── Left-shift directions ──
 
@@ -343,30 +345,6 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
 /// verify that one more step reaches a friendly piece.
 pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
     let mut flips = BB::EMPTY;
-
-    // Helper: flood through opponent pieces in a given direction (left shift).
-    let flood_left = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut gen = (p << shift) & mask & o;
-        let mut pro = o & mask;
-        gen |= (gen << shift) & pro;
-        pro &= pro << shift;
-        gen |= (gen << (shift * 2)) & pro;
-        pro &= pro << (shift * 2);
-        gen |= (gen << (shift * 4)) & pro;
-        gen
-    };
-
-    // Helper: flood through opponent pieces in a given direction (right shift).
-    let flood_right = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut gen = (p >> shift) & mask & o;
-        let mut pro = o & mask;
-        gen |= (gen >> shift) & pro;
-        pro &= pro >> shift;
-        gen |= (gen >> (shift * 2)) & pro;
-        pro &= pro >> (shift * 2);
-        gen |= (gen >> (shift * 4)) & pro;
-        gen
-    };
 
     // ── Left-shift directions ──
     let n = flood_left(move_mask, opponent, 8, BB::ONES);
