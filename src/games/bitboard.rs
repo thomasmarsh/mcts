@@ -388,6 +388,11 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
     pub fn is_disjoint(self, rhs: Self) -> bool {
         self & rhs == Self::EMPTY
     }
+
+    /// Extract the raw underlying u64 bitmask.
+    pub fn bits(self) -> u64 {
+        self.0
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////

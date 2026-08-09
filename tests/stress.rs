@@ -202,3 +202,203 @@ fn test_othello_many_random_games_complete() {
     // from the initial position, which has 4 legal moves).
     assert!(avg_non_pass >= 4.0, "implausibly few non-pass moves: {avg_non_pass:.1}");
 }
+
+/// Stress-test the Othello engine against the naive loop-based oracle for
+/// every position reachable during random play, checking all 8 symmetries.
+///
+/// Runs 10 000 random games (~400 000 positions), each checked against 8
+/// symmetries = ~3.2 million oracle comparisons.  Every mismatch is reported
+/// with the game seed and ply.
+#[test]
+fn test_othello_oracle_symmetry_stress() {
+    let _guard = stress_test_guard();
+    type BB = mcts::games::bitboard::BitBoard<8, 8>;
+    use mcts::game::Game;
+    use mcts::games::othello::{self, Othello, State, Move, Player,
+        naive_generate_moves, naive_get_flips, naive_apply,
+    };
+    use mcts::games::othello::sym;
+
+    // Seeded RNG (xoroshiro-like for speed; just use a simple LCG for Rust).
+    // Seed chosen arbitrarily: 0xdead_beef_cafe_babe
+    let mut rng: u64 = 0xdead_beef_cafe_babe;
+    let next_rand = |rng: &mut u64| -> u64 {
+        // xorshift64*
+        let mut x = *rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *rng = x;
+        x.wrapping_mul(0x9e3779b97f4a7c15)
+    };
+
+    const NUM_GAMES: u64 = 100_000;
+    const MAX_PLIES: usize = 128;
+
+    for game in 0..NUM_GAMES {
+        let game_seed = rng; // snapshot for diagnostics
+        let mut state = State::default();
+
+        for ply in 0..MAX_PLIES {
+            let (player, opponent) = match state.turn {
+                Player::Black => (state.black, state.white),
+                Player::White => (state.white, state.black),
+            };
+
+            // ---- Check invariants ----
+            assert_eq!(
+                state.black.bits() & state.white.bits(),
+                0,
+                "game={game} ply={ply}: overlapping bits"
+            );
+
+            // ---- Compare generate_moves vs oracle, all symmetries ----
+            for sym_idx in 0..8 {
+                // Build symmetric bitboards
+                let mut black_sym = BB::EMPTY;
+                let mut white_sym = BB::EMPTY;
+                for i in 0..64 {
+                    let si = sym::index_symmetries(i)[sym_idx];
+                    if state.black.get_at(i / 8, i % 8) {
+                        black_sym |= BB::from_index(si);
+                    }
+                    if state.white.get_at(i / 8, i % 8) {
+                        white_sym |= BB::from_index(si);
+                    }
+                }
+
+                // Determine player/opponent in symmetric frame
+                let (p_sym, o_sym) = match state.turn {
+                    Player::Black => (black_sym, white_sym),
+                    Player::White => (white_sym, black_sym),
+                };
+
+                let prod = othello::generate_moves(p_sym, o_sym);
+                let naive = naive_generate_moves(p_sym, o_sym);
+                if prod != naive {
+                    panic!(
+                        "game={game} (seed={game_seed:#x}) ply={ply} sym={sym_idx}: \
+                         generate_moves mismatch\n  player={:#018x}\n  opponent={:#018x}\n  \
+                         prod={:#018x}\n  naive={:#018x}",
+                        p_sym.bits(), o_sym.bits(),
+                        prod.bits(), naive.bits(),
+                    );
+                }
+            }
+
+            // ---- Pick a random legal move ----
+            let legal = othello::generate_moves(player, opponent);
+            let naive_legal = naive_generate_moves(player, opponent);
+            if legal != naive_legal {
+                panic!(
+                    "game={game} (seed={game_seed:#x}) ply={ply}: generate_moves mismatch at identity\n  \
+                     prod={:#018x}\n  naive={:#018x}",
+                    legal.bits(), naive_legal.bits(),
+                );
+            }
+
+            if legal.is_empty() {
+                // No legal moves: try pass
+                // Check that naive also has no legal moves
+                assert!(naive_legal.is_empty(),
+                    "game={game} ply={ply}: naive has moves but prod doesn't");
+
+                let after_pass = othello::generate_moves(opponent, player);
+                let after_naive = naive_generate_moves(opponent, player);
+                if after_pass != after_naive {
+                    panic!(
+                        "game={game} (seed={game_seed:#x}) ply={ply}: after-pass generate_moves mismatch\n  \
+                         prod={:#018x}\n  naive={:#018x}",
+                        after_pass.bits(), after_naive.bits(),
+                    );
+                }
+                if after_pass.is_empty() {
+                    // Double pass: game over
+                    break;
+                }
+                // Apply pass
+                let prod_state = Othello::apply(state, &Move::PASS);
+                let naive_state = naive_apply(state, &Move::PASS);
+                assert_eq!(
+                    prod_state.black, naive_state.black,
+                    "game={game} ply={ply}: pass: black mismatch"
+                );
+                assert_eq!(
+                    prod_state.white, naive_state.white,
+                    "game={game} ply={ply}: pass: white mismatch"
+                );
+                assert_eq!(
+                    prod_state.turn, naive_state.turn,
+                    "game={game} ply={ply}: pass: turn mismatch"
+                );
+                state = prod_state;
+                continue;
+            }
+
+            // Pick a random legal move
+            let legal_bits = legal.bits();
+            let num_legal = legal_bits.count_ones();
+            // Choose uniformly among legal moves
+            let choice = (next_rand(&mut rng) as usize) % (num_legal as usize);
+            let mut mv_idx = 0;
+            let mut found = 0u8;
+            for i in 0..64 {
+                if (legal_bits >> i) & 1 != 0 {
+                    if found == choice as u8 {
+                        mv_idx = i as u8;
+                        break;
+                    }
+                    found += 1;
+                }
+            }
+
+            // ---- Compare get_flips ----
+            let mv_bb = BB::from_index(mv_idx as usize);
+            let prod_flips = othello::get_flips(player, opponent, mv_bb);
+            let naive_flips = naive_get_flips(player, opponent, mv_bb);
+            if prod_flips != naive_flips {
+                panic!(
+                    "game={game} (seed={game_seed:#x}) ply={ply} move={}: \
+                     get_flips mismatch\n  prod={:#018x}\n  naive={:#018x}",
+                    mv_idx,
+                    prod_flips.bits(), naive_flips.bits(),
+                );
+            }
+
+            // ---- Apply move and compare states ----
+            let prod_state = Othello::apply(state, &Move(mv_idx));
+            let naive_state = naive_apply(state, &Move(mv_idx));
+            if prod_state.black != naive_state.black
+                || prod_state.white != naive_state.white
+                || prod_state.turn != naive_state.turn
+                || prod_state.last_pass != naive_state.last_pass
+            {
+                // Debug: compare moves for both turns on the same bitboard
+                let black_moves_prod = othello::generate_moves(prod_state.black, prod_state.white);
+                let white_moves_prod = othello::generate_moves(prod_state.white, prod_state.black);
+                let black_moves_naive = naive_generate_moves(naive_state.black, naive_state.white);
+                let white_moves_naive = naive_generate_moves(naive_state.white, naive_state.black);
+                panic!(
+                    "game={game} (seed={game_seed:#x}) ply={ply} move={}: state mismatch\n  \
+                     prod: B={:#018x} W={:#018x} turn={:?} last_pass={}\n  \
+                     naive: B={:#018x} W={:#018x} turn={:?} last_pass={}\n  \
+                     prod: Black_moves={:#018x} White_moves={:#018x}\n  \
+                     naive: Black_moves={:#018x} White_moves={:#018x}",
+                    mv_idx,
+                    prod_state.black.bits(), prod_state.white.bits(),
+                    prod_state.turn, prod_state.last_pass,
+                    naive_state.black.bits(), naive_state.white.bits(),
+                    naive_state.turn, naive_state.last_pass,
+                    black_moves_prod.bits(), white_moves_prod.bits(),
+                    black_moves_naive.bits(), white_moves_naive.bits(),
+                );
+            }
+
+            state = prod_state;
+        }
+
+        if game % 1000 == 0 {
+            eprintln!("  Othello oracle stress: {game}/{NUM_GAMES} games complete");
+        }
+    }
+}

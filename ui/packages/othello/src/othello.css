@@ -1,0 +1,125 @@
+/* othello.css — OthelloRenderer's own presentation, scoped to this
+   package's own class names (not ids). */
+
+.othello-board {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #1a5c2a;
+}
+
+.othello-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 64px);
+  grid-template-rows: repeat(8, 64px);
+  gap: 2px;
+  background: #2d8f3e;
+  padding: 4px;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.othello-cell {
+  --heat: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  background: #3aaf4e;
+  border: 1px solid #2a8a3a;
+  border-radius: 4px;
+  font-size: 36px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #111;
+  cursor: default;
+  padding: 0;
+  line-height: 1;
+}
+
+.othello-cell.cell-black {
+  color: #000;
+}
+
+.othello-cell.cell-white {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.othello-cell.legal {
+  cursor: pointer;
+}
+
+.othello-cell.legal:hover,
+.othello-cell.hovered {
+  background: #4fc45e;
+}
+
+.othello-cell::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: transparent;
+  pointer-events: none;
+}
+
+.othello-cell.cell-black::before,
+.othello-cell.cell-white::before {
+  background: currentColor;
+}
+
+.othello-cell.heat::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 200, calc(0.08 + var(--heat) * 0.50));
+  pointer-events: none;
+}
+
+.othello-cell.proven::after {
+  background: rgba(76, 175, 122, calc(0.12 + var(--heat) * 0.55));
+}
+
+.othello-cell.suggested {
+  outline: 3px solid #ffe066;
+  outline-offset: -3px;
+}
+
+.othello-ghost {
+  opacity: 0.35;
+  font-size: 36px;
+  pointer-events: none;
+}
+
+.othello-pass {
+  margin-top: 16px;
+  padding: 8px 24px;
+  font-size: 18px;
+  font-family: inherit;
+  background: #2d8f3e;
+  color: #eee;
+  border: 2px solid #3aaf4e;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.othello-pass:hover {
+  background: #3aaf4e;
+}
+
+.othello-pass:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.othello-pass.suggested {
+  outline: 3px solid #ffe066;
+  outline-offset: -3px;
+}

@@ -7,6 +7,7 @@
 // its own concrete adapter type.
 
 pub mod druid;
+pub mod othello;
 pub mod simple;
 pub mod traffic_lights;
 pub mod ttt;

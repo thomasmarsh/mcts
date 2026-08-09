@@ -32,7 +32,7 @@ fn zobrist_piece(pos: usize, player: Player) -> usize {
 // Dihedral symmetries (D4) for 8×8 board
 // ---------------------------------------------------------------------------
 
-pub(crate) mod sym {
+pub mod sym {
     // Dead-code allowed because symmetry infrastructure will be used in
     // production (canonicalization, hash reduction) once the game logic is
     // further along.
@@ -262,26 +262,31 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     // Helper: flood through opponent pieces in a given direction (left shift).
     // `shift` = bit-count to move per step, `mask` = edge-wrapping guard.
     let flood_left = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut prop = (p << shift) & mask & o;
-        // Parallel prefix: after each round, `prop` spans 2× the radius.
-        prop |= (prop << shift) & mask & o;
-        // For longer jumps the mask must also shift to guard the wider span.
-        let mask2 = mask & (mask << (shift * 2));
-        prop |= (prop << (shift * 2)) & mask2 & o;
-        let mask4 = mask & (mask << (shift * 4));
-        prop |= (prop << (shift * 4)) & mask4 & o;
-        prop
+        // Start with a single-step propagation from the source to opponent.
+        let mut gen = (p << shift) & mask & o;
+        // The propagator starts as all opponent bits in the mask.
+        let mut pro = o & mask;
+        // Round 1: fill distance-2 spans.  Update gen BEFORE refining pro.
+        gen |= (gen << shift) & pro;
+        pro &= pro << shift;
+        // Round 2: fill distance-4 spans.
+        gen |= (gen << (shift * 2)) & pro;
+        pro &= pro << (shift * 2);
+        // Round 4: fill distance-8 spans.
+        gen |= (gen << (shift * 4)) & pro;
+        gen
     };
 
     // Helper: flood through opponent pieces in a given direction (right shift).
     let flood_right = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut prop = (p >> shift) & mask & o;
-        prop |= (prop >> shift) & mask & o;
-        let mask2 = mask & (mask >> (shift * 2));
-        prop |= (prop >> (shift * 2)) & mask2 & o;
-        let mask4 = mask & (mask >> (shift * 4));
-        prop |= (prop >> (shift * 4)) & mask4 & o;
-        prop
+        let mut gen = (p >> shift) & mask & o;
+        let mut pro = o & mask;
+        gen |= (gen >> shift) & pro;
+        pro &= pro >> shift;
+        gen |= (gen >> (shift * 2)) & pro;
+        pro &= pro >> (shift * 2);
+        gen |= (gen >> (shift * 4)) & pro;
+        gen
     };
 
     // ── Left-shift directions ──
@@ -298,13 +303,13 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     // << 9 = row+1, col+1; col 7 wraps to col 0 → mask NOT_H during
     // propagation.  Final <<9 can produce next-row col 0 from col 7
     // (a wrapping artifact) → final mask NOT_A.
-    let ne = flood_left(player, opponent, 9, !BB::wall(Direction::East));
+    let ne = flood_left(player, opponent, 9, !BB::wall(Direction::West));
     legal |= (ne << 9) & !BB::wall(Direction::West) & empty;
 
     // East (+1) — guard against wrapping from col 7 to col 0.
     // Final <<1 from propagation-cleaned columns cannot wrap.
-    let e = flood_left(player, opponent, 1, !BB::wall(Direction::East));
-    legal |= (e << 1) & empty;
+    let e = flood_left(player, opponent, 1, !BB::wall(Direction::West));
+    legal |= (e << 1) & !BB::wall(Direction::West) & empty;
 
     // ── Right-shift directions ──
 
@@ -315,7 +320,7 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     // South-West (-9) — guard against wrapping from col 0 to col 7.
     // Propagation uses NOT_A.  Final >>9 can produce same-row col 7 from
     // col 0 (a wrapping artifact) → final mask NOT_H.
-    let sw = flood_right(player, opponent, 9, !BB::wall(Direction::West));
+    let sw = flood_right(player, opponent, 9, !BB::wall(Direction::East));
     legal |= (sw >> 9) & !BB::wall(Direction::East) & empty;
 
     // South-East (-7) — guard against wrapping from col 7 to col 0.
@@ -324,8 +329,8 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     legal |= (se >> 7) & !BB::wall(Direction::West) & empty;
 
     // West (>> 1).  Final >>1 from cleaned columns cannot wrap.
-    let w = flood_right(player, opponent, 1, !BB::wall(Direction::West));
-    legal |= (w >> 1) & empty;
+    let w = flood_right(player, opponent, 1, !BB::wall(Direction::East));
+    legal |= (w >> 1) & !BB::wall(Direction::East) & empty;
 
     legal
 }
@@ -341,24 +346,26 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
 
     // Helper: flood through opponent pieces in a given direction (left shift).
     let flood_left = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut prop = (p << shift) & mask & o;
-        prop |= (prop << shift) & mask & o;
-        let mask2 = mask & (mask << (shift * 2));
-        prop |= (prop << (shift * 2)) & mask2 & o;
-        let mask4 = mask & (mask << (shift * 4));
-        prop |= (prop << (shift * 4)) & mask4 & o;
-        prop
+        let mut gen = (p << shift) & mask & o;
+        let mut pro = o & mask;
+        gen |= (gen << shift) & pro;
+        pro &= pro << shift;
+        gen |= (gen << (shift * 2)) & pro;
+        pro &= pro << (shift * 2);
+        gen |= (gen << (shift * 4)) & pro;
+        gen
     };
 
     // Helper: flood through opponent pieces in a given direction (right shift).
     let flood_right = |p: BB, o: BB, shift: usize, mask: BB| -> BB {
-        let mut prop = (p >> shift) & mask & o;
-        prop |= (prop >> shift) & mask & o;
-        let mask2 = mask & (mask >> (shift * 2));
-        prop |= (prop >> (shift * 2)) & mask2 & o;
-        let mask4 = mask & (mask >> (shift * 4));
-        prop |= (prop >> (shift * 4)) & mask4 & o;
-        prop
+        let mut gen = (p >> shift) & mask & o;
+        let mut pro = o & mask;
+        gen |= (gen >> shift) & pro;
+        pro &= pro >> shift;
+        gen |= (gen >> (shift * 2)) & pro;
+        pro &= pro >> (shift * 2);
+        gen |= (gen >> (shift * 4)) & pro;
+        gen
     };
 
     // ── Left-shift directions ──
@@ -367,7 +374,7 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= n;
     }
 
-    let ne = flood_left(move_mask, opponent, 9, !BB::wall(Direction::East));
+    let ne = flood_left(move_mask, opponent, 9, !BB::wall(Direction::West));
     if ((ne << 9) & !BB::wall(Direction::West) & player).intersects(player) {
         flips |= ne;
     }
@@ -377,7 +384,7 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= nw;
     }
 
-    let e = flood_left(move_mask, opponent, 1, !BB::wall(Direction::East));
+    let e = flood_left(move_mask, opponent, 1, !BB::wall(Direction::West));
     if ((e << 1) & !BB::wall(Direction::West) & player).intersects(player) {
         flips |= e;
     }
@@ -388,7 +395,7 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= s;
     }
 
-    let sw = flood_right(move_mask, opponent, 9, !BB::wall(Direction::West));
+    let sw = flood_right(move_mask, opponent, 9, !BB::wall(Direction::East));
     if ((sw >> 9) & !BB::wall(Direction::East) & player).intersects(player) {
         flips |= sw;
     }
@@ -398,7 +405,7 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= se;
     }
 
-    let w = flood_right(move_mask, opponent, 1, !BB::wall(Direction::West));
+    let w = flood_right(move_mask, opponent, 1, !BB::wall(Direction::East));
     if ((w >> 1) & !BB::wall(Direction::East) & player).intersects(player) {
         flips |= w;
     }
@@ -406,22 +413,136 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
     flips
 }
 
+/// Naive (loop-based) reference oracle for Othello legality and flipping.
+/// Uses only the BB API (`from_coord`, `intersects`, `get_at`, `|`, `&`, `!`)
+/// for clarity and correctness — no raw u64 arithmetic.
+const DIRS: [(i32, i32); 8] = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1),
+];
+
+pub fn naive_generate_moves(player: BB, opponent: BB) -> BB {
+    if player.is_empty() || opponent.is_empty() {
+        return BB::EMPTY;
+    }
+    let occupied = player | opponent;
+    let mut legal = BB::EMPTY;
+    for idx in 0..64 {
+        if occupied.get_at(idx / 8, idx % 8) {
+            continue;
+        }
+        let (sr, sc) = (idx as i32 / 8, idx as i32 % 8);
+        'dirs: for &(dr, dc) in &DIRS {
+            let mut r = sr + dr;
+            let mut c = sc + dc;
+            if !(0..8).contains(&r) || !(0..8).contains(&c) {
+                continue;
+            }
+            if !opponent.intersects(BB::from_coord(r as usize, c as usize)) {
+                continue;
+            }
+            loop {
+                r += dr;
+                c += dc;
+                if !(0..8).contains(&r) || !(0..8).contains(&c) {
+                    break;
+                }
+                let pos = BB::from_coord(r as usize, c as usize);
+                if player.intersects(pos) {
+                    legal |= BB::from_coord(sr as usize, sc as usize);
+                    break 'dirs;
+                }
+                if !opponent.intersects(pos) {
+                    break;
+                }
+            }
+        }
+    }
+    legal
+}
+
+pub fn naive_get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
+    let sq = move_mask.bits().trailing_zeros() as usize;
+    let (sr, sc) = (sq / 8, sq % 8);
+    let (sr, sc) = (sr as i32, sc as i32);
+    let mut flips = BB::EMPTY;
+    for &(dr, dc) in &DIRS {
+        let mut r = sr + dr;
+        let mut c = sc + dc;
+        if !(0..8).contains(&r) || !(0..8).contains(&c) {
+            continue;
+        }
+        let mut line = BB::EMPTY;
+        loop {
+            let pos = BB::from_coord(r as usize, c as usize);
+            if opponent.intersects(pos) {
+                line |= pos;
+            } else if player.intersects(pos) {
+                flips |= line;
+                break;
+            } else {
+                break;
+            }
+            r += dr;
+            c += dc;
+            if !(0..8).contains(&r) || !(0..8).contains(&c) {
+                break;
+            }
+        }
+    }
+    flips
+}
+
+pub fn naive_apply(state: State, action: &Move) -> State {
+    if *action == Move::PASS {
+        return State {
+            black: state.black,
+            white: state.white,
+            turn: state.turn.next(),
+            last_pass: true,
+            hashes: [0u64; 8],
+        };
+    }
+    let mv = action.0 as usize;
+    let (player, opponent) = match state.turn {
+        Player::Black => (state.black, state.white),
+        Player::White => (state.white, state.black),
+    };
+    let move_bb = BB::from_index(mv);
+    let flips_bb = naive_get_flips(player, opponent, move_bb);
+    let new_player = player ^ move_bb ^ flips_bb;
+    let new_opponent = opponent ^ flips_bb;
+    let (new_black, new_white, new_turn) = match state.turn {
+        Player::Black => (new_player, new_opponent, Player::White),
+        Player::White => (new_opponent, new_player, Player::Black),
+    };
+    State {
+        black: new_black,
+        white: new_white,
+        turn: new_turn,
+        last_pass: false,
+        hashes: [0u64; 8],
+    }
+}
+
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct State {
-    black: BB,
-    white: BB,
-    turn: Player,
+    pub black: BB,
+    pub white: BB,
+    pub turn: Player,
     /// Set to true when the previous player passed (had no legal moves).
     /// Reset to false on a real move.
-    last_pass: bool,
+    pub last_pass: bool,
     /// Incrementally-maintained Zobrist hash for each of the 8 symmetries.
     /// `hashes[0]` is the identity-symmetry hash; the others can be used
     /// for canonical-symmetry reduction once `canonical_symmetry` is added.
-    hashes: [u64; 8],
+    pub hashes: [u64; 8],
 }
 
 impl Default for State {
@@ -1117,4 +1238,35 @@ mod tests {
             }
         }
     }
+
+    /// Replays the 24-move game from the 13:04:52 JSON, printing all states.
+    #[test]
+    fn test_130452_replay() {
+        let moves: [u8; 24] = [26, 20, 29, 18, 19, 22, 37, 45, 17, 25, 24,
+                                34, 44, 16, 33, 53, 42, 32, 30, 49, 56, 51,
+                                43, 41];
+        let mut state = State::default();
+        // Play the first 23 moves (0-22).  The JSON is corrupted from n21
+        // onward so move 23 (b6) is not necessarily legal in our correct replay.
+        for (i, &mv) in moves[..23].iter().enumerate() {
+            let (player, opponent) = match state.turn {
+                Player::Black => (state.black, state.white),
+                Player::White => (state.white, state.black),
+            };
+            let (b, w) = (state.black.bits(), state.white.bits());
+            assert_eq!(b & w, 0, "ply {}: overlap", i);
+            assert!(generate_moves(player, opponent)
+                    .intersects(BB::from_index(mv as usize)),
+                    "ply {}: move {} not legal", i, mv);
+            let pf = get_flips(player, opponent, BB::from_index(mv as usize));
+            let nf = naive_get_flips(player, opponent, BB::from_index(mv as usize));
+            assert_eq!(pf, nf, "ply {}: flip mismatch: prod={:#x} naive={:#x}", i, pf.bits(), nf.bits());
+            state = Othello::apply(state, &Move(mv));
+        }
+        // The JSON was corrupted from n21 onward, so b6(41) at ply 23
+        // may not be legal in our correct replay.  Just assert invariants.
+        assert_eq!(state.occupied().count_ones(), 27, "23 moves = 27 discs");
+        assert_eq!(state.black.bits() & state.white.bits(), 0, "no overlap");
+    }
+
 }
