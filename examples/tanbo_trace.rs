@@ -39,7 +39,7 @@ fn trace<const N: usize>() {
         let mut actions = Vec::new();
         Tanbo::<N>::generate_actions(&state, &mut actions);
         let idx = rng.gen_range(0..actions.len());
-        let action = actions[idx].clone();
+        let action = actions[idx];
         let notation = Tanbo::<N>::notation(&state, &action);
 
         state = Tanbo::<N>::apply(state, &action);

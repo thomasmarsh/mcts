@@ -1,0 +1,124 @@
+/* tanbo.css — Tanbo board renderer: a 9×9 grid with group-connection
+   indicators between orthogonally adjacent stones of the same colour. */
+
+.tanbo-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #c7c9cf;
+}
+
+.tanbo-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 64px);
+  grid-template-rows: repeat(9, 64px);
+  gap: 0;
+  background: #d4a454;
+  padding: 6px;
+  border-radius: 6px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.tanbo-cell {
+  --heat: 0;
+  position: relative;
+  width: 64px;
+  height: 64px;
+  background: #d4a454;
+  border: none;
+  cursor: default;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Stone — centered 44px circle */
+.tanbo-stone {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  z-index: 2;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+/* Connector bars — fill the gap between orthogonally adjacent same-colour
+   stones.  Stone is 44px, cell is 64px → 10px margin each side.  Gap
+   between two adjacent stone edges = 20px.  Connector sits at z-index 1
+   (under the stones at z-index 2) so it cleanly joins them visually. */
+
+.tanbo-connector {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.tanbo-connector.right {
+  left: 54px;      /* stone right edge */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;     /* fills the 20px gap to the neighbour stone's left edge */
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+}
+
+.tanbo-connector.down {
+  top: 54px;       /* stone bottom edge */
+  left: 50%;
+  transform: translateX(-50%);
+  height: 20px;    /* fills the 20px gap to the neighbour stone's top edge */
+  width: 8px;
+  border-radius: 0 0 4px 4px;
+}
+
+/* Ghost preview for legal moves on hover */
+.tanbo-ghost {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  opacity: 0.35;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Legal-move clickability */
+.tanbo-cell.legal {
+  cursor: pointer;
+}
+
+.tanbo-cell.legal:hover {
+  background: #dbb45c;
+}
+
+.tanbo-cell.hovered {
+  background: #dbb45c;
+}
+
+/* Analysis heatmap overlay */
+.tanbo-cell.heat::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 4px;
+  background: rgba(255, 169, 77, calc(0.10 + var(--heat) * 0.50));
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tanbo-cell.proven::after {
+  background: rgba(76, 175, 122, calc(0.10 + var(--heat) * 0.50));
+}
+
+.tanbo-cell.suggested {
+  outline: 3px solid #ffe066;
+  outline-offset: -3px;
+}

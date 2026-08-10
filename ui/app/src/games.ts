@@ -28,6 +28,7 @@ export const GAME_MODULES: Record<string, () => Promise<GameKindModule<any, any,
   druid: () => import("@mcts/druid").then((m) => m.druidModule),
   knightthrough: () => import("@mcts/knightthrough").then((m) => m.knightthroughModule),
   othello: () => import("@mcts/othello").then((m) => m.othelloModule),
+  tanbo: () => import("@mcts/tanbo").then((m) => m.tanboModule),
   "traffic-lights": () => import("@mcts/traffic-lights").then((m) => m.trafficLightsModule),
   ttt: () => import("@mcts/ttt").then((m) => m.tttModule),
 };
@@ -42,6 +43,7 @@ export const GAME_META: Record<string, { players: string[] }> = {
   druid: { players: ["Black", "White"] },
   knightthrough: { players: ["Black", "White"] },
   othello: { players: ["Black", "White"] },
+  tanbo: { players: ["Black", "White"] },
   "traffic-lights": { players: ["A", "B"] },
   ttt: { players: ["X", "O"] },
 };

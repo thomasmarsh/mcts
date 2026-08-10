@@ -11,6 +11,7 @@ pub mod druid;
 pub mod knightthrough;
 pub mod othello;
 pub mod simple;
+pub mod tanbo;
 pub mod traffic_lights;
 pub mod ttt;
 

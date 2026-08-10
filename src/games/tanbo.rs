@@ -44,9 +44,9 @@ type Cell = Option<Player>;
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct State<const N: usize> {
     /// Flat array of cells, length N*N.
-    board: Vec<Cell>,
-    turn: Player,
-    winner: Option<Player>,
+    pub board: Vec<Cell>,
+    pub turn: Player,
+    pub winner: Option<Player>,
 }
 
 impl<const N: usize> Default for State<N> {
@@ -521,15 +521,15 @@ mod tests {
         //   W . .
         //   B . .
         let mut b = vec![None; 9];
-        b[0 * 3 + 1] = Some(Player::Black); // (0,1)
-        b[1 * 3 + 0] = Some(Player::White); // (1,0)
-        b[2 * 3 + 0] = Some(Player::Black); // (2,0)
+        b[1] = Some(Player::Black); // (0,1)
+        b[3] = Some(Player::White); // (1,0)
+        b[6] = Some(Player::Black); // (2,0)
 
         State::<3>::remove_bounded(Player::Black, &mut b);
 
         // White at (1,0) has legal moves and must survive.
         assert_eq!(
-            b[1 * 3 + 0],
+            b[3],
             Some(Player::White),
             "White should not be bounded"
         );
@@ -543,11 +543,11 @@ mod tests {
         // extension (every empty neighbour is adjacent to 0 or 2+ White
         // stones), so it should be removed after Black's move.
         let mut board = vec![None; 81];
-        board[4 * 9 + 0] = Some(Player::White); // (4,0)
+        board[36] = Some(Player::White); // (4,0)
         // Surround with Black
-        board[3 * 9 + 0] = Some(Player::Black); // (3,0)
-        board[4 * 9 + 1] = Some(Player::Black); // (4,1)
-        board[5 * 9 + 0] = Some(Player::Black); // (5,0)
+        board[27] = Some(Player::Black); // (3,0)
+        board[37] = Some(Player::Black); // (4,1)
+        board[45] = Some(Player::Black); // (5,0)
         // (4,0) is on the left edge, so no neighbour to the west.
 
         let state = State::<9> {
