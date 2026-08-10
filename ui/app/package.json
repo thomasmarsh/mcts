@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mcts/breakthrough": "workspace:*",
     "@mcts/core": "workspace:*",
     "@mcts/druid": "workspace:*",
+    "@mcts/knightthrough": "workspace:*",
     "@mcts/othello": "workspace:*",
     "@mcts/traffic-lights": "workspace:*",
     "@mcts/ttt": "workspace:*",

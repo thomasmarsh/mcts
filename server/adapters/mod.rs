@@ -6,7 +6,9 @@
 // session storage. One submodule per game kind (`druid`, ...), each holding
 // its own concrete adapter type.
 
+pub mod breakthrough;
 pub mod druid;
+pub mod knightthrough;
 pub mod othello;
 pub mod simple;
 pub mod traffic_lights;

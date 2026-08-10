@@ -1,0 +1,154 @@
+/* chess-variant.css — Shared 8×8 board styling for Knightthrough/Breakthrough */
+
+.cv-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.cv-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  gap: 0;
+  max-width: 480px;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 2px solid #4b4d55;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.cv-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: none;
+  padding: 0;
+  font-size: 24px;
+  cursor: default;
+  outline: none;
+  transition: background-color 0.1s ease;
+}
+
+.cv-light {
+  background: #f0d9b5;
+}
+
+.cv-dark {
+  background: #b58863;
+}
+
+/* Piece disc — black */
+.cv-piece-black {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80%;
+  height: 80%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #555, #1a1a1a);
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* Piece disc — white */
+.cv-piece-white {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80%;
+  height: 80%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff, #ddd);
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* Ghost preview on hover */
+.cv-piece-ghost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80%;
+  height: 80%;
+  border-radius: 50%;
+  font-size: 32px;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* Legal move — empty target shows a small dot */
+.cv-cell.legal {
+  cursor: pointer;
+}
+
+.cv-cell.legal::after {
+  content: "";
+  position: absolute;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+}
+
+/* Movable piece (no source selected yet) — subtle highlight to indicate clickability */
+.cv-cell.cv-movable {
+  cursor: pointer;
+}
+
+.cv-cell.cv-movable .cv-piece-black,
+.cv-cell.cv-movable .cv-piece-white {
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(0, 0, 0, 0.08);
+}
+
+/* Selected source piece — bright ring */
+.cv-cell.cv-selected-source {
+  cursor: pointer;
+}
+
+.cv-cell.cv-selected-source .cv-piece-black {
+  box-shadow: 0 0 0 3px #ffe066, 1px 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.cv-cell.cv-selected-source .cv-piece-white {
+  box-shadow: 0 0 0 3px #ffe066, 1px 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Capturable piece — ring highlight */
+.cv-cell.legal.capture-legal {
+  cursor: pointer;
+}
+
+.cv-cell.legal.capture-legal::after {
+  display: none;
+}
+
+.cv-cell.legal.capture-legal .cv-piece-black,
+.cv-cell.legal.capture-legal .cv-piece-white {
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.2), 1px 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* Hovered cell */
+.cv-cell.hovered {
+  background: #cdd26a !important;
+}
+
+/* Analysis heatmap overlay */
+.cv-cell.heat {
+  background: #ffa94d !important;
+  opacity: 0.3;
+}
+
+.cv-cell.proven {
+  background: #4caf7a !important;
+  opacity: 0.35;
+}
+
+.cv-cell.suggested {
+  box-shadow: inset 0 0 0 3px #ffe066;
+}

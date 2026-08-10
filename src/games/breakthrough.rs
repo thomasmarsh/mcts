@@ -33,16 +33,16 @@ impl PlayerIndex for Player {
 }
 
 #[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
-pub struct Move(u8, u8);
+pub struct Move(pub u8, pub u8);
 
 impl Move {
     #[inline(always)]
-    fn src(self) -> usize {
+    pub fn src(self) -> usize {
         self.0 as usize
     }
 
     #[inline(always)]
-    fn dst(self) -> usize {
+    pub fn dst(self) -> usize {
         self.1 as usize
     }
 }
@@ -76,6 +76,15 @@ impl<const N: usize, const M: usize> Default for State<N, M> {
 }
 
 impl<const N: usize, const M: usize> State<N, M> {
+    pub fn black(&self) -> BitBoard<N, M> { self.black }
+    pub fn white(&self) -> BitBoard<N, M> { self.white }
+    pub fn turn(&self) -> Player { self.turn }
+    pub fn has_winner(&self) -> bool { self.winner }
+
+    pub fn new(black: BitBoard<N, M>, white: BitBoard<N, M>, turn: Player, winner: bool) -> Self {
+        Self { black, white, turn, winner }
+    }
+
     #[inline(always)]
     fn occupied(&self) -> BitBoard<N, M> {
         self.black | self.white

@@ -54,7 +54,9 @@ struct AppState {
 
 fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     let all: Vec<Arc<dyn GameAdapter>> = vec![
+        Arc::new(SimpleAdapter::<mcts::games::breakthrough::Breakthrough<8, 8>>::new()),
         Arc::new(adapters::druid::DruidAdapter::default()),
+        Arc::new(SimpleAdapter::<mcts::games::knightthrough::Knightthrough<8, 8>>::new()),
         Arc::new(SimpleAdapter::<mcts::games::othello::Othello>::new()),
         Arc::new(SimpleAdapter::<mcts::games::traffic_lights::TrafficLights>::new()),
         Arc::new(SimpleAdapter::<mcts::games::ttt::TicTacToe>::new()),
@@ -418,7 +420,7 @@ mod tests {
             .iter()
             .map(|g| g["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, vec!["druid", "othello", "traffic-lights", "ttt"]);
+        assert_eq!(kinds, vec!["breakthrough", "druid", "knightthrough", "othello", "traffic-lights", "ttt"]);
     }
 
     #[tokio::test]

@@ -402,3 +402,355 @@ fn test_othello_oracle_symmetry_stress() {
         }
     }
 }
+
+// ============================================================================
+// Breakthrough & Knightthrough oracle stress tests
+// ============================================================================
+
+use mcts::game::Game;
+use mcts::games::bitboard::BitBoard;
+use mcts::games::breakthrough;
+use mcts::games::knightthrough;
+
+// ---- Custom Player enum for the naive representation (matches both game
+// Player types structurally) ----
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Player {
+    Black,
+    White,
+}
+
+impl Player {
+    fn next(self) -> Self {
+        match self {
+            Player::Black => Player::White,
+            Player::White => Player::Black,
+        }
+    }
+}
+
+// ---- Naive 8×8 board: flat array, row-major (row 0 = south wall) -----------
+
+type NaiveBoard = [Option<Player>; 64];
+
+fn naive_from_bitboards(black: &BitBoard<8, 8>, white: &BitBoard<8, 8>) -> NaiveBoard {
+    let mut board = [None; 64];
+    for i in 0..64 {
+        if black.get(i) {
+            board[i] = Some(Player::Black);
+        } else if white.get(i) {
+            board[i] = Some(Player::White);
+        }
+    }
+    board
+}
+
+// ---- Naive breakthrough move generation (loops and branches) ----------------
+
+fn naive_breakthrough_moves(board: &NaiveBoard, turn: Player) -> Vec<breakthrough::Move> {
+    let mut moves = Vec::new();
+    for src in 0..64 {
+        if board[src] != Some(turn) {
+            continue;
+        }
+        let row = src / 8;
+        let col = src % 8;
+
+        let (straight, sw, se) = match turn {
+            Player::Black => {
+                if row == 0 {
+                    continue;
+                }
+                (
+                    src - 8,
+                    if col > 0 { Some(src - 9) } else { None },
+                    if col < 7 { Some(src - 7) } else { None },
+                )
+            }
+            Player::White => {
+                if row == 7 {
+                    continue;
+                }
+                (
+                    src + 8,
+                    if col > 0 { Some(src + 7) } else { None },
+                    if col < 7 { Some(src + 9) } else { None },
+                )
+            }
+        };
+
+        // Straight: must be empty
+        if board[straight].is_none() {
+            moves.push(breakthrough::Move(src as u8, straight as u8));
+        }
+
+        // South-west / north-west: must not be own piece
+        if let Some(dst) = sw {
+            if board[dst] != Some(turn) {
+                moves.push(breakthrough::Move(src as u8, dst as u8));
+            }
+        }
+        // South-east / north-east: must not be own piece
+        if let Some(dst) = se {
+            if board[dst] != Some(turn) {
+                moves.push(breakthrough::Move(src as u8, dst as u8));
+            }
+        }
+    }
+    moves
+}
+
+// ---- Naive knightthrough move generation (loops and branches) ---------------
+
+const KNIGHT_OFFSETS: [(isize, isize); 8] = [
+    (2, 1),
+    (2, -1),
+    (-2, 1),
+    (-2, -1),
+    (1, 2),
+    (1, -2),
+    (-1, 2),
+    (-1, -2),
+];
+
+fn naive_knightthrough_moves(board: &NaiveBoard, turn: Player) -> Vec<knightthrough::Move> {
+    let mut moves = Vec::new();
+    for src in 0..64 {
+        if board[src] != Some(turn) {
+            continue;
+        }
+        let row = src / 8;
+        let col = src % 8;
+
+        for (dr, dc) in &KNIGHT_OFFSETS {
+            let r = row as isize + dr;
+            let c = col as isize + dc;
+            if r >= 0 && r < 8 && c >= 0 && c < 8 {
+                let dst = (r as usize) * 8 + (c as usize);
+                if board[dst] != Some(turn) {
+                    moves.push(knightthrough::Move(src as u8, dst as u8));
+                }
+            }
+        }
+    }
+    moves
+}
+
+// ---- Naive apply (shared between breakthrough and knightthrough) ------------
+
+/// Apply a move to the naive board. Returns `true` if the game ended (goal
+/// reached or all opponent pieces captured).
+fn naive_apply(board: &mut NaiveBoard, turn: &mut Player, src: u8, dst: u8) -> bool {
+    let src = src as usize;
+    let dst = dst as usize;
+    let piece = board[src]
+        .take()
+        .expect("src must contain a piece");
+    board[dst] = Some(piece);
+
+    // Check win: reached opponent's back rank
+    let reached_goal = match piece {
+        Player::Black => dst < 8,   // south wall = row 0
+        Player::White => dst >= 56, // north wall = row 7
+    };
+    if reached_goal {
+        return true;
+    }
+
+    // Check win: all opponent pieces captured
+    let opponent = match piece {
+        Player::Black => Player::White,
+        Player::White => Player::Black,
+    };
+    if !board.iter().any(|&p| p == Some(opponent)) {
+        return true;
+    }
+
+    *turn = turn.next();
+    false
+}
+
+// ---- Coordinate helpers for diagnostics ------------
+
+fn coord_str(index: usize) -> String {
+    let col = index % 8;
+    let row = index / 8;
+    format!("{}{}", (b'a' + col as u8) as char, row + 1)
+}
+
+// ---- Stress test generated per game kind via macro -----------------------
+
+macro_rules! stress_oracle_test {
+    ($test_name:ident, $game_mod:ident, $Game:ident, $naive_moves_fn:ident, $label:expr, $num_games:expr, $games_label:expr) => {
+        #[test]
+        fn $test_name() {
+            let _guard = stress_test_guard();
+            let label = $label;
+            let games_label = $games_label;
+            let num_games = $num_games;
+
+            let mut rng: u64 = 0xcafe_babe_dead_beef;
+            let next_rand = |rng: &mut u64| -> u64 {
+                let mut x = *rng;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                *rng = x;
+                x.wrapping_mul(0x9e3779b97f4a7c15)
+            };
+
+            let mut goal_wins = 0u64;
+            let mut capture_wins = 0u64;
+            let mut stuck_games = 0u64;
+
+            use mcts::game::PlayerIndex;
+            use $game_mod::$Game as GameT;
+            use $game_mod::State as GameState;
+
+            for game in 0..num_games {
+                let game_seed = rng;
+
+                let mut bb_state = GameState::<8, 8>::default();
+                let mut naive_board = naive_from_bitboards(&bb_state.black(), &bb_state.white());
+                let mut naive_turn = Player::Black;
+
+                for ply in 0..512 {
+                    // -- Verify state matches --
+                    let bb_board = naive_from_bitboards(&bb_state.black(), &bb_state.white());
+                    assert_eq!(
+                        bb_board, naive_board,
+                        "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
+                         board state mismatch",
+                    );
+
+                    // -- Verify piece counts --
+                    let black_count = naive_board.iter().filter(|&&p| p == Some(Player::Black)).count();
+                    let white_count = naive_board.iter().filter(|&&p| p == Some(Player::White)).count();
+                    assert_eq!(
+                        bb_state.black().count_ones() as usize,
+                        black_count,
+                        "{label} game={game} ply={ply}: black piece count mismatch",
+                    );
+                    assert_eq!(
+                        bb_state.white().count_ones() as usize,
+                        white_count,
+                        "{label} game={game} ply={ply}: white piece count mismatch",
+                    );
+
+                    // -- Generate moves from both --
+                    let mut bb_actions = Vec::new();
+                    GameT::<8, 8>::generate_actions(&bb_state, &mut bb_actions);
+
+                    let naive_actions = $naive_moves_fn(&naive_board, naive_turn);
+
+                    // -- Sort both for comparison (ordering may differ) --
+                    let mut bb_sorted: Vec<_> = bb_actions.iter().map(|m| (m.0, m.1)).collect();
+                    let mut naive_sorted: Vec<_> = naive_actions.iter().map(|m| (m.0, m.1)).collect();
+                    bb_sorted.sort();
+                    naive_sorted.sort();
+
+                    assert_eq!(
+                        bb_sorted, naive_sorted,
+                        "{label} game={game} (seed={game_seed:#x}) ply={ply} \
+                         turn={naive_turn:?}: move list mismatch\n  \
+                         bb: {:?}\n  naive: {:?}",
+                        bb_sorted, naive_sorted,
+                    );
+
+                    // -- Check terminal / stuck --
+                    let bb_terminal = GameT::<8, 8>::is_terminal(&bb_state);
+
+                    if bb_actions.is_empty() && !bb_terminal {
+                        stuck_games += 1;
+                        // Engine doesn't detect capture-as-loss — end game.
+                        // Determine winner from naive board.
+                        if black_count == 0 {
+                            capture_wins += 1;
+                        } else if white_count == 0 {
+                            capture_wins += 1;
+                        }
+                        break;
+                    }
+
+                    if bb_actions.is_empty() {
+                        break;
+                    }
+
+                    // -- Pick a random legal move --
+                    let pick = (next_rand(&mut rng) as usize) % naive_actions.len();
+                    let mv = naive_actions[pick];
+
+                    // -- Apply to both and verify --
+                    let bb_next = GameT::<8, 8>::apply(bb_state, &mv);
+                    let game_ended = naive_apply(&mut naive_board, &mut naive_turn, mv.0, mv.1);
+
+                    {
+                        let bb_next_board = naive_from_bitboards(&bb_next.black(), &bb_next.white());
+                        assert_eq!(
+                            bb_next_board, naive_board,
+                            "{label} game={game} (seed={game_seed:#x}) ply={ply} \
+                             move={}: state mismatch after apply",
+                            coord_str(mv.0 as usize),
+                        );
+                    }
+
+                    if game_ended {
+                        assert!(
+                            bb_next.has_winner(),
+                            "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
+                             naive says game ended but bitboard doesn't have winner flag",
+                        );
+                        assert_eq!(
+                            bb_next.turn().to_index(), naive_turn as usize,
+                            "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
+                             turn mismatch after winning move",
+                        );
+                        goal_wins += 1;
+                        break;
+                    } else {
+                        assert_eq!(
+                            bb_next.turn().to_index(), naive_turn as usize,
+                            "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
+                             turn mismatch after non-winning move",
+                        );
+                    }
+
+                    bb_state = bb_next;
+                }
+
+                if game % 100 == 99 {
+                    eprintln!(
+                        "  {label} oracle stress ({games_label}): {}/{} games complete",
+                        game, num_games - 1,
+                    );
+                }
+            }
+
+            eprintln!(
+                "{label} oracle stress ({games_label}): {num_games} games, \
+                 goal_wins={goal_wins}, capture_wins={capture_wins}, stuck_games={stuck_games}",
+            );
+        }
+    };
+}
+
+stress_oracle_test!(
+    test_breakthrough_oracle_stress_5000,
+    breakthrough,
+    Breakthrough,
+    naive_breakthrough_moves,
+    "Breakthrough",
+    5_000,
+    "5k games"
+);
+
+stress_oracle_test!(
+    test_knightthrough_oracle_stress_5000,
+    knightthrough,
+    Knightthrough,
+    naive_knightthrough_moves,
+    "Knightthrough",
+    5_000,
+    "5k games"
+);
