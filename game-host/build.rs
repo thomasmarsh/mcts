@@ -1,58 +1,68 @@
 // Bake git SHA and dirty-worktree flag into every binary at compile time.
 // Search & round-robin results carry this attribution so regression hunting
 // can filter/join on `git_sha` rather than relying on imprecise timestamps.
+//
+// The git dir is resolved with `git rev-parse --absolute-git-dir` rather than
+// guessed from the manifest dir, so this works no matter where the workspace
+// lives relative to the checkout (and with worktrees, `GIT_DIR`, etc.). The
+// emitted `rerun-if-changed` paths must exist: cargo treats a referenced but
+// missing file as always-dirty, which would rerun this script (and, through
+// it, every crate that consumes game-host) on every build.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    // game-host is at workspace root, so its manifest dir is the repo root.
-    // (If moved deeper, this would need `parent()` navigation.)
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     // --- git SHA ---
-    let sha = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .and_then(|out| {
-            if out.status.success() {
-                String::from_utf8(out.stdout).ok().map(|s| s.trim().to_owned())
-            } else {
-                None
-            }
-        })
+    let sha = git(&["rev-parse", "HEAD"], manifest_dir)
         .unwrap_or_else(|| "unknown".to_owned());
-
     println!("cargo:rustc-env=GIT_SHA={sha}");
 
     // --- dirty-worktree flag ---
     let dirty = Command::new("git")
         .args(["status", "--porcelain"])
-        .current_dir(repo_root)
+        .current_dir(manifest_dir)
         .output()
-        .ok()
         .map(|out| !out.stdout.is_empty())
         .unwrap_or(false);
+    println!("cargo:rustc-env=GIT_DIRTY={}", if dirty { "true" } else { "false" });
 
-    println!(
-        "cargo:rustc-env=GIT_DIRTY={}",
-        if dirty { "true" } else { "false" }
-    );
-
-    // Re-run if HEAD moves or the ref it points at changes.
-    let git_dir = repo_root.join(".git");
+    // --- re-run on commit / ref move ---
+    // Resolve the actual git dir so the rerun-if-changed paths below exist;
+    // a missing path turns a build script permanently dirty and forces the
+    // whole workspace to rebuild every time.
+    let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"], manifest_dir)
+        .map(PathBuf::from)
+    else {
+        return; // not a git checkout: keep the "unknown"/clean defaults
+    };
     println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
 
-    if let Ok(head_contents) = std::fs::read_to_string(git_dir.join("HEAD")) {
-        if let Some(ref_path) = head_contents
-            .strip_prefix("ref: ")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            let full = repo_root.join(".git").join(ref_path);
-            println!("cargo:rerun-if-changed={}", full.display());
-        }
+    if let Some(ref_path) = read_ref(&git_dir.join("HEAD")) {
+        println!("cargo:rerun-if-changed={}", ref_path.display());
     }
+}
+
+/// Support a `ref: refs/heads/<branch>` HEAD by returning the ref file path.
+fn read_ref(head_path: &Path) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(head_path).ok()?;
+    contents
+        .strip_prefix("ref: ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|ref_path| head_path.parent().unwrap().join(ref_path))
+}
+
+/// Run a git command, returning trimmed stdout as a String (or None on error).
+fn git(args: &[&str], cwd: &Path) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
 }
