@@ -1,0 +1,26 @@
+[package]
+name = "game-druid"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_druid"
+path = "src/lib.rs"
+
+[[bin]]
+name = "game-druid"
+path = "src/main.rs"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+game-host = { path = "../../game-host" }
+rustc-hash = "1.1.0"
+rand = { version = "0.8.5", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+rand_xorshift = "0.3.0"
+rand_core = "0.6.4"

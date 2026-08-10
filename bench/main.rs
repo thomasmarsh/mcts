@@ -15,12 +15,12 @@ use std::process::{Command as StdCommand, Stdio};
 
 use clap::{Parser, Subcommand};
 
-use mcts::bench::games::registry;
-use mcts::bench::ingest;
-use mcts::bench::launch::{self, LaunchedRun};
-use mcts::bench::schema;
-use mcts::bench::tournament::round_robin_bench_multiple;
-use mcts::build_info;
+use mcts_bench::registry;
+use mcts_bench::ingest;
+use mcts_bench::launch::{self, LaunchedRun};
+use mcts_bench::schema;
+use mcts_bench::tournament::round_robin_bench_multiple;
+use game_host::build_info;
 use mcts::util::Verbosity;
 
 #[derive(Parser)]
@@ -268,7 +268,7 @@ fn build_smac3_command(config: Option<&str>, overrides: &[String]) -> Vec<String
     // Pass the compile-time git SHA so the Python side can include it
     // in its JSONL output for attribution.
     cmd.push("--git-sha".to_string());
-    cmd.push(build_info::MCTS_GIT_SHA.to_string());
+    cmd.push(build_info::GIT_SHA.to_string());
 
     cmd
 }

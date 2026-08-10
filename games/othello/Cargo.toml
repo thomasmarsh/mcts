@@ -1,0 +1,21 @@
+[package]
+name = "game-othello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_othello"
+
+[[bin]]
+name = "game-othello"
+path = "src/main.rs"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+game-host = { path = "../../game-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+rand = "0.8"

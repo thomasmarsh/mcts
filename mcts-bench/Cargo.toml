@@ -1,0 +1,19 @@
+[package]
+name = "mcts-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmark/tournament harness for MCTS games"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = ["duckdb"]
+duckdb = ["dep:duckdb"]
+
+[dependencies]
+mcts = { path = "../mcts" }
+game-host = { path = "../game-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indicatif = { version = "0.17.8", features = ["rayon"] }
+rayon = "1.8.1"
+duckdb = { version = "1.10505.0", optional = true }

@@ -1,0 +1,17 @@
+[package]
+name = "mcts-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mcts = { path = "../mcts" }
+game-othello = { path = "../games/othello" }
+game-breakthrough = { path = "../games/breakthrough" }
+game-knightthrough = { path = "../games/knightthrough" }
+game-druid = { path = "../games/druid" }
+game-ttt = { path = "../games/ttt" }
+rustc-hash = "1.1.0"
+rand = "0.8.5"
+rand_core = "0.6.4"
+rand_xorshift = "0.3.0"

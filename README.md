@@ -15,7 +15,7 @@ Current features:
 * Hyperparameter tuning with [SMAC3](https://automl.github.io/SMAC3/main/)
 * Arena allocation (just a `Vec`, inspired by [indextree](https://github.com/saschagrunert/indextree))
 * Preliminary benchmarking tools
-* A growing number of [game implementations](src/games)
+* A growing number of [game implementations](games)
 
 Some things I would like to explore:
 
@@ -46,27 +46,26 @@ Not sure if this will become a published library, but it is improving and PRs ar
 
 ## Game UI (`ui/`)
 
-A browser UI (SolidJS + Vite, [`ui/`](ui/)) for the games in `src/games/`,
+A browser UI (SolidJS + Vite, [`ui/`](ui/)) for the games in [`games/`](games),
 backed by the stateless API in `server/`.
 
 Quick start:
 
 ```
 (cd ui && pnpm install && pnpm build)
-cargo build --release --bin bench
-cargo run --release
+cargo build --release
+cargo run --release -p server
 ```
 
-Then open http://127.0.0.1:7878. (`server` is this repo's `default-run`
-binary, so a bare `cargo run` — release recommended, the AI presets are
-slow otherwise — always means the game server, not one of `demo/`'s
-research scratchpads.)
+Then open http://127.0.0.1:7878. (The game binaries are compiled
+as part of the workspace build — the server communicates with them
+as child processes over JSON-line stdin/stdout pipes.)
 
-The `bench` binary must be compiled separately (`cargo build --release --bin bench`)
+The `bench` binary must be compiled separately (`cargo build --release -p bench`)
 because it is a separate target — the server spawns it as a child process
 for round-robin benchmarking runs.
 
 For UI development with hot reload, run `pnpm dev` (from `ui/`) alongside
-`cargo run --release` instead of `pnpm build` — it serves the app on
-http://localhost:5173 with `/api/*` proxied to the Rust server. Other `ui/`
-commands: `pnpm typecheck`, `pnpm lint`, `pnpm test`.
+`cargo run --release -p server` instead of `pnpm build` — it serves the app
+on http://localhost:5173 with `/api/*` proxied to the Rust server. Other
+`ui/` commands: `pnpm typecheck`, `pnpm lint`, `pnpm test`.

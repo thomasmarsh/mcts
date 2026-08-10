@@ -1,0 +1,33 @@
+[package]
+name = "mcts"
+version = "0.1.0"
+edition = "2021"
+description = "Monte Carlo Tree Search framework"
+license = "MIT OR Apache-2.0"
+
+[lints.rust]
+warnings = "deny"
+
+[features]
+default = []
+
+[dependencies]
+nimlib = "0.1.1"
+rand = { version = "0.8.5", features = ["small_rng"] }
+rustc-hash = "1.1.0"
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+weighted_rand = "0.4.2"
+rand_distr = "0.4.3"
+rand_xorshift = "0.3.0"
+rand_core = "0.6.4"
+proptest = "1.4.0"
+
+[dev-dependencies]
+criterion = { version = "0.5.1", features = ["html_reports"] }
+tower = { version = "0.5", features = ["util"] }
+
+# Benchmarks moved to mcts-tests crate.
+# [[bench]]
+# name = "ttt"
+# harness = false

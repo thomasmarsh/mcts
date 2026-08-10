@@ -1,11 +1,29 @@
-[package]
-name = "mcts"
-version = "0.1.0"
-edition = "2021"
-default-run = "server"
-
-[lints.rust]
-warnings = "deny"
+[workspace]
+resolver = "2"
+members = [
+    "mcts",
+    "mcts-bench",
+    "game-host",
+    "games/breakthrough",
+    "games/knightthrough",
+    "games/othello",
+    "games/tanbo",
+    "games/traffic-lights",
+    "games/ttt",
+    "mcts-tests",
+    "games/atarigo",
+    "games/bid_ttt",
+    "games/count",
+    "games/gonnect",
+    "games/nim",
+    "games/null",
+    "games/shibumi",
+    "games/tak",
+    "games/unit",
+    "games/druid",
+    "server",
+    "bench",
+]
 
 [profile.dev]
 debug = 1
@@ -13,78 +31,13 @@ debug = 1
 [profile.profiling]
 inherits = "release"
 debug = true
-lto=true
-
-[lib]
-name = "mcts"
-path = "src/lib.rs"
-
-[[bin]]
-name = "playground"
-path = "demo/playground.rs"
-
-[[bin]]
-name = "druid"
-path = "demo/druid.rs"
-
-[[bin]]
-name = "human"
-path = "demo/human.rs"
-
-[[bin]]
-name = "hyper"
-path = "demo/hyper.rs"
-
-[[bin]]
-name = "book"
-path = "demo/book.rs"
-
-[[bin]]
-name = "bench"
-path = "bench/main.rs"
-
-[[bin]]
-name = "server"
-path = "server/main.rs"
-
-[dependencies]
-nimlib = "0.1.1"
-rand = { version = "0.8.5", features = ["small_rng"] }
-rayon = "1.8.1"
-color-backtrace = "0.6.1"
-log = "0.4.20"
-pretty_env_logger = "0.5.0"
-nonempty = "0.9.0"
-rand_xorshift = "0.3.0"
-rand_core = "0.6.4"
-rustc-hash = "1.1.0"
-serde = { version = "1.0.196", features = ["derive"] }
-serde_json = "1.0.113"
-backtrace = "0.3.69"
-indicatif = { version = "0.17.8", features = ["rayon"] }
-clap = { version = "4.5.1", features = ["derive"] }
-proptest = "1.4.0"
-weighted_rand = "0.4.2"
-rand_distr = "0.4.3"
-axum = "0.8.9"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tower-http = { version = "0.7.0", features = ["fs", "cors", "timeout"] }
-serde_yaml = "0.9"
-duckdb = "1.10505.0"
+lto = true
 
 [profile.release]
 # Line tables only — full debug info (debug=true) made release 7+ GB.
 # profiling/samply profiles below override with debug=true when needed.
 debug = 1
 lto = true
-
-[dev-dependencies]
-criterion = { version = "0.5.1", features = ["html_reports"] }
-tower = { version = "0.5", features = ["util"] }
-
-[[bench]]
-name = "ttt"
-harness = false
 
 [profile.samply]
 inherits = "release"
