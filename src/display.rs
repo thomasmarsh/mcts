@@ -21,7 +21,7 @@ where
     T: RectangularBoard,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const FILES: &[u8] = b"ABCDEFGH";
+        const FILES: &[u8] = b"ABCDEFGHIJKLMNOPQRST";
         write!(f, " ")?;
         for c in FILES.iter().take(T::NUM_DISPLAY_COLS) {
             write!(f, " {}", *c as char)?;
