@@ -1,4 +1,4 @@
-use super::node::{self, NodeStats, NodeState, Proven};
+use super::node::{self, NodeState, NodeStats, Proven};
 use super::stack::NodeStack;
 use super::*;
 use crate::game::Game;

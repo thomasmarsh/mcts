@@ -23,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
-use mcts_bench::StrategyInfo;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::tournament::wilson_interval;
+use mcts_bench::StrategyInfo;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -483,9 +483,7 @@ async fn get_leaderboard(
     // Build the SQL with optional WHERE clauses.  DuckDB's Rust bindings
     // use positional parameters ($1, $2, ...).  We chain filters and track
     // the parameter index.
-    let mut conditions = String::from(
-        "r.status IN ('completed', 'crashed', 'stopped')",
-    );
+    let mut conditions = String::from("r.status IN ('completed', 'crashed', 'stopped')");
 
     // Build filter clauses with 1-based parameter indices.  Hardcode
     // indices since there are at most 3 optional params.
@@ -496,7 +494,10 @@ async fn get_leaderboard(
         conditions.push_str(&format!(" AND r.git_sha = '{}'", sha.replace('\'', "''")));
     }
     if let Some(ref since) = params.since {
-        conditions.push_str(&format!(" AND r.started_at >= '{}'", since.replace('\'', "''")));
+        conditions.push_str(&format!(
+            " AND r.started_at >= '{}'",
+            since.replace('\'', "''")
+        ));
     }
 
     let sql = format!(
@@ -675,8 +676,7 @@ async fn launch_run(
 
     let launch_error: Option<String> = if !launch::is_alive(pid) {
         let stdout_path = log_dir.join("stdout.log");
-        let error_content =
-            std::fs::read_to_string(&stdout_path).unwrap_or_default();
+        let error_content = std::fs::read_to_string(&stdout_path).unwrap_or_default();
         let trimmed = error_content.trim().to_string();
 
         // Mark the run as crashed in the database.
@@ -711,7 +711,11 @@ async fn launch_run(
             let _ = file.write_all(line.as_bytes());
         }
 
-        if trimmed.is_empty() { None } else { Some(trimmed) }
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
     } else {
         None
     };
@@ -846,7 +850,11 @@ async fn stop_run(
 /// - `"round_robin"` — runs `bench round-robin --game ... --strategies ... --rounds ...`
 ///
 /// Unknown kinds produce an error.
-fn build_command(kind: &str, game: &str, config: &Option<Value>) -> Result<Vec<String>, BenchError> {
+fn build_command(
+    kind: &str,
+    game: &str,
+    config: &Option<Value>,
+) -> Result<Vec<String>, BenchError> {
     let bench_binary = find_bench_binary();
 
     match kind {
@@ -882,9 +890,7 @@ fn build_command(kind: &str, game: &str, config: &Option<Value>) -> Result<Vec<S
         }
         unknown => Err(BenchError {
             status: StatusCode::BAD_REQUEST,
-            message: format!(
-                "unknown run kind '{unknown}'; expected one of: round_robin"
-            ),
+            message: format!("unknown run kind '{unknown}'; expected one of: round_robin"),
         }),
     }
 }
@@ -975,22 +981,16 @@ mod tests {
 
     const DEFAULT_RUN_ID: &str = "rr-druid-20260101T000000-abc1234";
 
-    static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     /// Build a fully seeded test app: creates a temp dir with bench-runs/
     /// subdirectory, opens an in-memory DuckDB, seeds it, then moves the
     /// connection into the `BenchState`.  Returns the Router and the temp
     /// dir (kept alive for the test's duration).
-    fn seeded_app(
-        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    ) -> (Router, PathBuf) {
+    fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "mcts_bench_api_test_{}_{}",
-            std::process::id(),
-            n,
-        ));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
         let bench_runs_dir = tmp_dir.join("bench-runs");
@@ -1025,14 +1025,16 @@ mod tests {
              VALUES (?1, 1, '2026-01-01T00:00:10Z', 'strong', 'master', 'win_a', 'strong'),\
                     (?1, 2, '2026-01-01T00:00:20Z', 'master', 'strong', 'win_a', 'master')",
             duckdb::params![DEFAULT_RUN_ID],
-        ).unwrap();
+        )
+        .unwrap();
 
         // One trial for good measure.
         conn.execute(
             "INSERT INTO trials (run_id, trial_id, ts, config, cost) \
              VALUES (?1, 1, '2026-01-01T00:00:30Z', '{}', 0.375)",
             duckdb::params![DEFAULT_RUN_ID],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     /// Seed a run that is still `running` (no ended_at, no stop event).
@@ -1043,7 +1045,8 @@ mod tests {
              VALUES ('running-run', 'round_robin', 'druid', 'def5678', false, 'testhost', 12345, \
                      '2026-02-01T00:00:00Z', 'running', '/tmp/running/log.jsonl')",
             duckdb::params![],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     /// Seed with the default run plus a second run for multi-run queries.
@@ -1200,8 +1203,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_run_returns_detail() {
         let app = seeded_app(default_seed).0;
-        let (status, body) =
-            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
+        let (status, body) = http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
         assert_eq!(status, HttpStatusCode::OK);
         let run = body_json(&body);
 
@@ -1249,10 +1251,7 @@ mod tests {
             let log_path_str = log_path.to_string_lossy().to_string();
 
             // Write some lines.
-            std::fs::write(
-                &log_path,
-                "line1\nline2\nline3\n",
-            ).unwrap();
+            std::fs::write(&log_path, "line1\nline2\nline3\n").unwrap();
 
             conn.execute(
                 "INSERT INTO runs \
@@ -1260,7 +1259,8 @@ mod tests {
                  VALUES ('loggy-run', 'round_robin', 'druid', 'abc', false, 'h', NULL, \
                          '2026-01-01T00:00:00Z', 'running', ?1)",
                 duckdb::params![log_path_str],
-            ).unwrap();
+            )
+            .unwrap();
         })
         .0;
 
@@ -1298,7 +1298,10 @@ mod tests {
         let (status, body) = http_get(app, "/api/bench/leaderboard").await;
         assert_eq!(status, HttpStatusCode::OK);
         let entries = body_json(&body).as_array().unwrap().clone();
-        assert!(entries.is_empty(), "expected empty leaderboard, got {entries:?}");
+        assert!(
+            entries.is_empty(),
+            "expected empty leaderboard, got {entries:?}"
+        );
     }
 
     #[tokio::test]
@@ -1416,8 +1419,15 @@ mod tests {
         let (status, body) = http_get(app.clone(), "/api/bench/leaderboard?game=druid").await;
         assert_eq!(status, HttpStatusCode::OK);
         let entries = body_json(&body).as_array().unwrap().clone();
-        assert_eq!(entries.len(), 2, "expected 2 druid strategies, got {entries:?}");
-        let strategies: Vec<&str> = entries.iter().map(|e| e["strategy"].as_str().unwrap()).collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected 2 druid strategies, got {entries:?}"
+        );
+        let strategies: Vec<&str> = entries
+            .iter()
+            .map(|e| e["strategy"].as_str().unwrap())
+            .collect();
         assert!(strategies.contains(&"strong"));
         assert!(strategies.contains(&"master"));
 
@@ -1425,7 +1435,11 @@ mod tests {
         let (status, body) = http_get(app.clone(), "/api/bench/leaderboard?game=ttt").await;
         assert_eq!(status, HttpStatusCode::OK);
         let entries = body_json(&body).as_array().unwrap().clone();
-        assert_eq!(entries.len(), 2, "expected 2 ttt strategies, got {entries:?}");
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected 2 ttt strategies, got {entries:?}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -1506,7 +1520,8 @@ mod tests {
     #[tokio::test]
     async fn test_stop_returns_404_for_unknown_run() {
         let app = seeded_app(|_, _| {}).0;
-        let (status, body) = http_post_json(app, "/api/bench/runs/nonexistent/stop", json!({})).await;
+        let (status, body) =
+            http_post_json(app, "/api/bench/runs/nonexistent/stop", json!({})).await;
         assert_eq!(status, HttpStatusCode::NOT_FOUND);
         let body = body_json(&body);
         assert_eq!(body["code"], 404);
@@ -1545,21 +1560,21 @@ mod tests {
                  VALUES ('stoppable-run', 'round_robin', 'druid', 'abc', false, 'h', 999999999, \
                          '2026-03-01T00:00:00Z', 'running', ?1)",
                 duckdb::params![log_path_str],
-            ).unwrap();
+            )
+            .unwrap();
         })
         .0;
 
-        let (status, body) = http_post_json(
-            app.clone(),
-            "/api/bench/runs/stoppable-run/stop",
-            json!({}),
-        )
-        .await;
+        let (status, body) =
+            http_post_json(app.clone(), "/api/bench/runs/stoppable-run/stop", json!({})).await;
         assert_eq!(status, HttpStatusCode::OK);
         let body = body_json(&body);
         // No signal was sent (PID doesn't exist), but the run should still
         // be marked as stopped in the database.
-        assert_eq!(body["message"].as_str().unwrap_or(""), "run marked as stopped (PID was no longer alive or had no PID)");
+        assert_eq!(
+            body["message"].as_str().unwrap_or(""),
+            "run marked as stopped (PID was no longer alive or had no PID)"
+        );
 
         // Verify the DB was updated.
         let (_, check_body) = http_get(app, "/api/bench/runs/stoppable-run").await;

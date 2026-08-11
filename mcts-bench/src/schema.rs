@@ -78,10 +78,7 @@ mod tests {
             .collect();
 
         for want in &["runs", "match_results", "trials", "_ingest_cursor"] {
-            assert!(
-                tables.iter().any(|t| t == want),
-                "missing table: {want}"
-            );
+            assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }
     }
 

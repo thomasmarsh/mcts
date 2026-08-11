@@ -78,7 +78,9 @@ impl<G: Game> SelectStrategy<G> for ProgressiveHistory {
         idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let ucb = self.ucb.score_child(ctx, child_id, children, idx, parent_log);
+        let ucb = self
+            .ucb
+            .score_child(ctx, child_id, children, idx, parent_log);
 
         let action = children.action(idx);
         let player_actions = ctx.global.player_actions[ctx.player].read().unwrap();

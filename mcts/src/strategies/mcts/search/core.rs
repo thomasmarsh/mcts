@@ -1,15 +1,18 @@
+use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
-use crate::strategies::mcts::search::shared::{add_path_virtual_loss, backprop_step, last_tree_action, proven_win_child, select_step, simulate_step};
+use crate::strategies::mcts::search::shared::{
+    add_path_virtual_loss, backprop_step, last_tree_action, proven_win_child, select_step,
+    simulate_step,
+};
 use crate::strategies::mcts::search::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::select::SelectContext;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::{SimulateStrategy, Trial};
 use crate::strategies::mcts::stack::NodeStack;
-use crate::game::Game;
-use crate::game::PlayerIndex;
 use crate::util::pv_string;
 
 use rand::rngs::SmallRng;
@@ -83,9 +86,12 @@ where
     #[inline]
     pub fn select_final_action(&mut self, state: &G::S) -> G::A {
         let player = G::player_to_move(state).to_index();
-        if let Some(idx) =
-            proven_win_child::<G>(self.config.use_mcts_solver, self.index.get(self.root_id), &self.index, player)
-        {
+        if let Some(idx) = proven_win_child::<G>(
+            self.config.use_mcts_solver,
+            self.index.get(self.root_id),
+            &self.index,
+            player,
+        ) {
             return self.index.get(self.root_id).children().action(idx).clone();
         }
 
@@ -144,7 +150,14 @@ where
                     let prev_action = prev_action.clone();
                     scope.spawn(move || {
                         let mut rng = SmallRng::seed_from_u64(seed);
-                        simulate_step(max_playout_depth, stats, strategy, &state, prev_action, &mut rng)
+                        simulate_step(
+                            max_playout_depth,
+                            stats,
+                            strategy,
+                            &state,
+                            prev_action,
+                            &mut rng,
+                        )
                     })
                 })
                 .collect();
@@ -290,13 +303,15 @@ where
                 use_transpositions: self.config.use_transpositions,
             };
 
-            let best_idx = match proven_win_child::<G>(self.config.use_mcts_solver, node, &self.index, player) {
-                Some(idx) => idx,
-                None => self
-                    .config
-                    .final_action
-                    .best_child(&select_ctx, &mut self.config.rng),
-            };
+            let best_idx =
+                match proven_win_child::<G>(self.config.use_mcts_solver, node, &self.index, player)
+                {
+                    Some(idx) => idx,
+                    None => self
+                        .config
+                        .final_action
+                        .best_child(&select_ctx, &mut self.config.rng),
+                };
 
             let children = node.children();
             let Some(child_id) = children.node_id(best_idx) else {

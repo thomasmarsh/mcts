@@ -45,7 +45,11 @@ impl<P: PlayerIndex> TerminalStatus<P> {
             TerminalStatus::Draw => Some(vec![0.; num_players]),
             TerminalStatus::Winner(w) => {
                 let wi = w.to_index();
-                Some((0..num_players).map(|i| if i == wi { 1. } else { -1. }).collect())
+                Some(
+                    (0..num_players)
+                        .map(|i| if i == wi { 1. } else { -1. })
+                        .collect(),
+                )
             }
         }
     }

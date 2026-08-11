@@ -4,12 +4,14 @@
 //! Built by `cargo build -p game-ttt` and used by the server/bench crates
 //! via `game_host::SubprocessAdapter`.
 
-use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError};
+use game_host::{
+    run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use mcts::game::Game;
 use game_ttt::{HashedPosition, Move, Piece, Position, TicTacToe};
+use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
@@ -50,8 +52,8 @@ fn state_to_value(state: &HashedPosition) -> Value {
 }
 
 fn value_to_state(v: &Value) -> Result<HashedPosition, HostError> {
-    let wire: WireState =
-        serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(format!("invalid state: {e}")))?;
+    let wire: WireState = serde_json::from_value(v.clone())
+        .map_err(|e| HostError::bad_request(format!("invalid state: {e}")))?;
     let mut position = Position::new();
     position.turn = wire.turn;
     for (i, cell) in wire.cells.into_iter().enumerate() {
@@ -152,7 +154,9 @@ impl GameAdapter for TttAdapter {
 
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let idx = mv.as_u64().ok_or_else(|| HostError::bad_request("move must be a cell index"))?;
+        let idx = mv
+            .as_u64()
+            .ok_or_else(|| HostError::bad_request("move must be a cell index"))?;
         let action = Move(idx as u8);
 
         if TicTacToe::is_terminal(&s) {

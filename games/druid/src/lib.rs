@@ -95,7 +95,10 @@ mod tests {
             let hash = Druid::zobrist_hash(s);
             let state = s.state().clone();
             if let Some(prev) = seen.insert(hash, state.clone()) {
-                assert_eq!(prev, state, "hash collision: two distinct states shared one Zobrist hash");
+                assert_eq!(
+                    prev, state,
+                    "hash collision: two distinct states shared one Zobrist hash"
+                );
             }
         };
 
@@ -431,7 +434,9 @@ mod tests {
         state = place(state, Player::White, Pos(col - 1, mid));
         state = place(state, Player::White, Pos(col + 1, mid));
         state.0.player = Player::White;
-        state = apply_placed(state, PlacedPiece(
+        state = apply_placed(
+            state,
+            PlacedPiece(
                 Piece::Lintel(Orientation::Horizontal),
                 Pos(col - 1, mid).index(size.w) as u8,
             ),
@@ -582,7 +587,8 @@ mod tests {
         use rand::{Rng, SeedableRng};
 
         for size in [Size { w: 3, h: 3 }, DEFAULT_SIZE, Size { w: 7, h: 7 }] {
-            let mut rng = SmallRng::seed_from_u64(0xF20_5747E + size.w as u64 * 1000 + size.h as u64);
+            let mut rng =
+                SmallRng::seed_from_u64(0xF20_5747E + size.w as u64 * 1000 + size.h as u64);
 
             for game in 0..20 {
                 let mut incremental = HashedState::new(size);
@@ -949,8 +955,7 @@ mod tests {
             let mut available = Vec::new();
             Druid::generate_actions(&state, &mut available);
             let player = Druid::player_to_move(&state).to_index();
-            let chosen =
-                *heuristic.select_move(&state, &available, &stats, player, None, &mut rng);
+            let chosen = *heuristic.select_move(&state, &available, &stats, player, None, &mut rng);
             assert!(
                 available.contains(&chosen),
                 "select_move must return one of the available moves"
@@ -1017,7 +1022,10 @@ mod tests {
         );
 
         let chosen = ts.choose_action(&state);
-        let total_iters = ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        let total_iters = ts
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert!(
             total_iters < 2000,
             "solver should prove White's position lost and stop early, used {total_iters} iterations"

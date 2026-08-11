@@ -20,8 +20,7 @@ pub const ZOBRIST_TURN: usize = 128;
 pub const ZOBRIST_LAST_PASS: usize = 129;
 
 /// Random Zobrist table, lazily initialised.
-pub static HASHES: LazyZobristTable<ZOBRIST_ENTRIES> =
-    LazyZobristTable::new(0xA1B2C3D4E5F67890);
+pub static HASHES: LazyZobristTable<ZOBRIST_ENTRIES> = LazyZobristTable::new(0xA1B2C3D4E5F67890);
 
 /// Hash index for a piece at `pos` belonging to `player`.
 #[inline]
@@ -225,9 +224,14 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
 /// Uses only the BB API (`from_coord`, `intersects`, `get_at`, `|`, `&`, `!`)
 /// for clarity and correctness — no raw u64 arithmetic.
 pub const DIRS: [(i32, i32); 8] = [
-    (-1, -1), (-1, 0), (-1, 1),
-    (0, -1),           (0, 1),
-    (1, -1),  (1, 0),  (1, 1),
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
 ];
 
 pub fn naive_generate_moves(player: BB, opponent: BB) -> BB {
@@ -333,7 +337,6 @@ pub fn naive_apply(state: State, action: &Move) -> State {
         hashes: [0u64; 8],
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // State
@@ -1050,9 +1053,10 @@ mod tests {
     /// Replays the 24-move game from the 13:04:52 JSON, printing all states.
     #[test]
     fn test_130452_replay() {
-        let moves: [u8; 24] = [26, 20, 29, 18, 19, 22, 37, 45, 17, 25, 24,
-                                34, 44, 16, 33, 53, 42, 32, 30, 49, 56, 51,
-                                43, 41];
+        let moves: [u8; 24] = [
+            26, 20, 29, 18, 19, 22, 37, 45, 17, 25, 24, 34, 44, 16, 33, 53, 42, 32, 30, 49, 56, 51,
+            43, 41,
+        ];
         let mut state = State::default();
         // Play the first 23 moves (0-22).  The JSON is corrupted from n21
         // onward so move 23 (b6) is not necessarily legal in our correct replay.
@@ -1063,12 +1067,22 @@ mod tests {
             };
             let (b, w) = (state.black.bits(), state.white.bits());
             assert_eq!(b & w, 0, "ply {}: overlap", i);
-            assert!(generate_moves(player, opponent)
-                    .intersects(BB::from_index(mv as usize)),
-                    "ply {}: move {} not legal", i, mv);
+            assert!(
+                generate_moves(player, opponent).intersects(BB::from_index(mv as usize)),
+                "ply {}: move {} not legal",
+                i,
+                mv
+            );
             let pf = get_flips(player, opponent, BB::from_index(mv as usize));
             let nf = naive_get_flips(player, opponent, BB::from_index(mv as usize));
-            assert_eq!(pf, nf, "ply {}: flip mismatch: prod={:#x} naive={:#x}", i, pf.bits(), nf.bits());
+            assert_eq!(
+                pf,
+                nf,
+                "ply {}: flip mismatch: prod={:#x} naive={:#x}",
+                i,
+                pf.bits(),
+                nf.bits()
+            );
             state = Othello::apply(state, &Move(mv));
         }
         // The JSON was corrupted from n21 onward, so b6(41) at ply 23
@@ -1076,5 +1090,4 @@ mod tests {
         assert_eq!(state.occupied().count_ones(), 27, "23 moves = 27 discs");
         assert_eq!(state.black.bits() & state.white.bits(), 0, "no overlap");
     }
-
 }

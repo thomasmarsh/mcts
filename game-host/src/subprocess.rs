@@ -71,8 +71,8 @@ impl SubprocessAdapter {
         // Spawn the process and fetch metadata eagerly.  If this fails
         // there's no point continuing — the adapter can't function without
         // a working subprocess.
-        let mut proc = spawn(&binary_path)
-            .expect("failed to spawn game binary for SubprocessAdapter");
+        let mut proc =
+            spawn(&binary_path).expect("failed to spawn game binary for SubprocessAdapter");
 
         let kind = fetch_string(&mut proc, "kind");
         let label = fetch_string(&mut proc, "label");
@@ -99,9 +99,9 @@ impl SubprocessAdapter {
             params: &Value,
         ) -> Result<Value, HostError> {
             let mut guard = adapter.inner.lock().unwrap();
-            let proc = guard.as_mut().ok_or_else(|| {
-                HostError::internal("subprocess not available (restart needed)")
-            })?;
+            let proc = guard
+                .as_mut()
+                .ok_or_else(|| HostError::internal("subprocess not available (restart needed)"))?;
 
             let req = Request {
                 id: 1,
@@ -112,7 +112,8 @@ impl SubprocessAdapter {
                 .map_err(|e| HostError::internal(format!("serialize request: {e}")))?;
 
             // Write request.
-            proc.stdin.write_all(line.as_bytes())
+            proc.stdin
+                .write_all(line.as_bytes())
                 .and_then(|_| proc.stdin.write_all(b"\n"))
                 .and_then(|_| proc.stdin.flush())
                 .map_err(|e| HostError::internal(format!("write to subprocess: {e}")))?;
@@ -288,11 +289,15 @@ fn fetch_string(proc: &mut SubprocessProcess, method: &str) -> String {
 
     let resp: Response = serde_json::from_str(response.trim()).expect("parse metadata response");
     match resp {
-        Response::Success { result, .. } => {
-            result.as_str().expect("metadata field is a string").to_owned()
-        }
+        Response::Success { result, .. } => result
+            .as_str()
+            .expect("metadata field is a string")
+            .to_owned(),
         Response::Error { error, .. } => {
-            panic!("metadata request {method} failed: {} ({})", error.message, error.code);
+            panic!(
+                "metadata request {method} failed: {} ({})",
+                error.message, error.code
+            );
         }
     }
 }
@@ -320,7 +325,10 @@ fn fetch_value(proc: &mut SubprocessProcess, method: &str) -> Value {
     match resp {
         Response::Success { result, .. } => result,
         Response::Error { error, .. } => {
-            panic!("metadata request {method} failed: {} ({})", error.message, error.code);
+            panic!(
+                "metadata request {method} failed: {} ({})",
+                error.message, error.code
+            );
         }
     }
 }

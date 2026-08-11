@@ -179,7 +179,10 @@ impl HashedPosition {
     /// from scratch (no prior hash to XOR from). Mirrors
     /// `ttt::HashedPosition::from_position`.
     pub fn from_position(position: Position) -> Self {
-        let mut tmp = Self { position, hashes: [0; 8] };
+        let mut tmp = Self {
+            position,
+            hashes: [0; 8],
+        };
         // Walk every cell that is occupied and XOR its hash contribution
         // to rebuild the full hash from scratch.
         for i in 0..9 {
@@ -192,7 +195,6 @@ impl HashedPosition {
         }
         tmp
     }
-
 
     #[inline]
     fn apply(&mut self, m: Move) {

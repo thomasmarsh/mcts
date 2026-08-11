@@ -1,8 +1,8 @@
+use crate::game::Game;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::NodeState;
 use crate::strategies::mcts::search::TreeSearch;
-use crate::game::Game;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;

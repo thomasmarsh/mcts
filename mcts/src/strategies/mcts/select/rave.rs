@@ -216,7 +216,9 @@ impl<G: Game> SelectStrategy<G> for Rave {
         let snap = children.snapshot(idx, ctx.player);
         let n = snap.total_visits();
         let exploit = snap.exploitation_score();
-        let explore = self.ucb.score(parent_log, n, snap.sum_squared_score, exploit);
+        let explore = self
+            .ucb
+            .score(parent_log, n, snap.sum_squared_score, exploit);
 
         let b = self.schedule.beta(n, amaf_n);
         let mean_score = snap.expected_score();

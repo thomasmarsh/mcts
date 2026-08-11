@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use rustc_hash::FxHashSet as HashSet;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Hand, Orientation, Pending, Piece, Player, PlacedPiece, Pos, Size, Square};
+use crate::types::{Hand, Orientation, Pending, Piece, PlacedPiece, Player, Pos, Size, Square};
 
 /// A Druid position: whose turn, the stacked board, each player's remaining
 /// hand, and (move-split only) which sub-action of the current turn is in

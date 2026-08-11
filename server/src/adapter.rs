@@ -16,7 +16,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use game_host::subprocess::SubprocessAdapter;
-use game_host::GameAdapter as _;  // trait with methods SubprocessAdapter implements
+use game_host::GameAdapter as _; // trait with methods SubprocessAdapter implements
 use serde::Serialize;
 use serde_json::Value;
 
@@ -69,7 +69,14 @@ struct ErrorBody {
 impl IntoResponse for AdapterError {
     fn into_response(self) -> Response {
         let code = self.status.as_u16();
-        (self.status, Json(ErrorBody { error: self.message, code })).into_response()
+        (
+            self.status,
+            Json(ErrorBody {
+                error: self.message,
+                code,
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -305,8 +312,7 @@ pub fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
         .into_iter()
         .map(|(kind, pkg)| {
             let path = binary_path(pkg);
-            let adapter: Arc<dyn GameAdapter> =
-                Arc::new(SubprocessGameAdapter::new(path));
+            let adapter: Arc<dyn GameAdapter> = Arc::new(SubprocessGameAdapter::new(path));
             (kind, adapter)
         })
         .collect()

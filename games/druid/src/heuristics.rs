@@ -29,7 +29,7 @@ use crate::connectivity::Connectivity;
 use crate::game::{DruidGame, HashedState};
 use crate::moves::{MoveEncoding, Split};
 use crate::state::State;
-use crate::types::{Piece, Player, PlacedPiece, Pos};
+use crate::types::{Piece, PlacedPiece, Player, Pos};
 use mcts::game::PlayerIndex;
 
 /// Per-heuristic weights, combined as a weighted sum (a move can satisfy more
@@ -207,10 +207,7 @@ pub(crate) fn max_heuristic_for_cells(
     if cells.is_empty() {
         return 0.0;
     }
-    let placed: Vec<PlacedPiece> = cells
-        .iter()
-        .map(|&c| PlacedPiece(piece, c as u8))
-        .collect();
+    let placed: Vec<PlacedPiece> = cells.iter().map(|&c| PlacedPiece(piece, c as u8)).collect();
     let scores = heuristic_scores(state, mover, &placed, weights);
     scores.into_iter().fold(f64::NEG_INFINITY, f64::max)
 }
@@ -276,8 +273,10 @@ pub struct RaveDecisiveHeuristic<M: MoveEncoding = Split>(PhantomData<M>);
 
 impl<M: MoveEncoding> Strategy<DruidGame<M>> for RaveDecisiveHeuristic<M> {
     type Select = select::Rave;
-    type Simulate =
-        simulate::DecisiveMove<DruidGame<M>, simulate::EpsilonGreedy<DruidGame<M>, DruidHeuristic<M>>>;
+    type Simulate = simulate::DecisiveMove<
+        DruidGame<M>,
+        simulate::EpsilonGreedy<DruidGame<M>, DruidHeuristic<M>>,
+    >;
     type Backprop = backprop::Classic;
     type FinalAction = select::RobustChild;
 

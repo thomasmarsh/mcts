@@ -61,16 +61,12 @@ pub fn launch(
 
     let mut child_cmd = Command::new(&cmd[0]);
     child_cmd.args(&cmd[1..]);
-    child_cmd.stdout(
-        fs::File::create(&log_path)
-            .map(Stdio::from)
-            .map_err(|e| {
-                std::io::Error::new(
-                    e.kind(),
-                    format!("failed to create log file {}: {e}", log_path.display()),
-                )
-            })?,
-    );
+    child_cmd.stdout(fs::File::create(&log_path).map(Stdio::from).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("failed to create log file {}: {e}", log_path.display()),
+        )
+    })?);
     child_cmd.stderr(
         fs::File::create(&stdout_log_path)
             .map(Stdio::from)
@@ -88,12 +84,9 @@ pub fn launch(
     #[cfg(unix)]
     child_cmd.process_group(0);
 
-    let mut child = child_cmd.spawn().map_err(|e| {
-        std::io::Error::new(
-            e.kind(),
-            format!("failed to spawn {}: {e}", cmd[0]),
-        )
-    })?;
+    let mut child = child_cmd
+        .spawn()
+        .map_err(|e| std::io::Error::new(e.kind(), format!("failed to spawn {}: {e}", cmd[0])))?;
     let pid = child.id();
 
     std::thread::spawn(move || {
@@ -145,10 +138,7 @@ pub fn is_alive(pid: u32) -> bool {
 fn generate_run_id(kind: &str, game: &str) -> String {
     let sha = build_info::GIT_SHA;
     let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
-    format!(
-        "{kind}-{game}-{ts}-{short_sha}",
-        ts = compact_timestamp()
-    )
+    format!("{kind}-{game}-{ts}-{short_sha}", ts = compact_timestamp())
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +283,10 @@ mod tests {
         let pid = child.id();
         let status = child.wait().expect("failed to wait on true");
         assert!(status.success());
-        assert!(!is_alive(pid), "PID {pid} should not be alive after exiting");
+        assert!(
+            !is_alive(pid),
+            "PID {pid} should not be alive after exiting"
+        );
     }
 
     #[test]
@@ -305,7 +298,10 @@ mod tests {
     fn generate_run_id_uses_correct_format() {
         let id = generate_run_id("round_robin", "druid");
         let parts: Vec<&str> = id.split('-').collect();
-        assert!(parts.len() >= 4, "expected at least 4 dash-separated parts, got {id}");
+        assert!(
+            parts.len() >= 4,
+            "expected at least 4 dash-separated parts, got {id}"
+        );
         assert_eq!(parts[0], "round_robin");
         assert_eq!(parts[1], "druid");
         let ts = parts[2];
@@ -313,15 +309,16 @@ mod tests {
         assert_eq!(ts.as_bytes()[8], b'T');
         let sha = parts[3];
         assert!(sha.len() >= 7, "SHA part too short: {sha}");
-        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()), "SHA not hex: {sha}");
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "SHA not hex: {sha}"
+        );
     }
 
     #[test]
     fn registry_event_appends_to_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "mcts_bench_launch_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_launch_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let registry_path = dir.join("registry.log");
@@ -350,17 +347,17 @@ mod tests {
 
         let contents = fs::read_to_string(&registry_path).unwrap();
         let parsed: RegistryEvent = serde_json::from_str(contents.trim()).unwrap();
-        assert!(matches!(parsed, RegistryEvent::Start { ref run_id, .. } if run_id == "test-run-123"));
+        assert!(
+            matches!(parsed, RegistryEvent::Start { ref run_id, .. } if run_id == "test-run-123")
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn registry_event_appends_multiple_events() {
-        let dir = std::env::temp_dir().join(format!(
-            "mcts_bench_launch_test2_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_launch_test2_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let registry_path = dir.join("registry.log");
@@ -395,14 +392,22 @@ mod tests {
 
         let contents = fs::read_to_string(&registry_path).unwrap();
         let lines: Vec<&str> = contents.trim().lines().collect();
-        assert_eq!(lines.len(), 2, "expected 2 lines, got {}: {:?}", lines.len(), lines);
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 lines, got {}: {:?}",
+            lines.len(),
+            lines
+        );
 
-        let parsed_start: RegistryEvent = serde_json::from_str(lines[0])
-            .expect("failed to parse first line");
-        assert!(matches!(parsed_start, RegistryEvent::Start { ref run_id, .. } if run_id == "run-1"));
+        let parsed_start: RegistryEvent =
+            serde_json::from_str(lines[0]).expect("failed to parse first line");
+        assert!(
+            matches!(parsed_start, RegistryEvent::Start { ref run_id, .. } if run_id == "run-1")
+        );
 
-        let parsed_stop: RegistryEvent = serde_json::from_str(lines[1])
-            .expect("failed to parse second line");
+        let parsed_stop: RegistryEvent =
+            serde_json::from_str(lines[1]).expect("failed to parse second line");
         assert!(matches!(parsed_stop, RegistryEvent::Stop { ref run_id, .. } if run_id == "run-1"));
 
         let _ = fs::remove_dir_all(&dir);

@@ -260,4 +260,5 @@ impl<G: Game> Strategy<G> for QuasiBestFirst {
 /// non-Druid demo/test call site tunes hyperparameters around. Generic over
 /// `G` (unlike the other named strategies above) because its `Simulate` type
 /// embeds `G` itself.
-pub type RaveMastDm<G> = Compose<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;
+pub type RaveMastDm<G> =
+    Compose<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;

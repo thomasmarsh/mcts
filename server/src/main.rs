@@ -186,9 +186,10 @@ async fn post_ai_move(
 ) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let search_adapter = adapter.clone();
-    let result = tokio::task::spawn_blocking(move || search_adapter.ai_move(&req.state, &req.preset))
-        .await
-        .map_err(|e| AdapterError::internal(e.to_string()))??;
+    let result =
+        tokio::task::spawn_blocking(move || search_adapter.ai_move(&req.state, &req.preset))
+            .await
+            .map_err(|e| AdapterError::internal(e.to_string()))??;
     let view = adapter.view(&result.state)?;
     Ok(Json(
         json!({ "move": result.mv, "state": result.state, "view": view }),
@@ -266,15 +267,16 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 
 #[tokio::main]
 async fn main() {
-    let app_state = Arc::new(AppState { games: adapter::registry() });
+    let app_state = Arc::new(AppState {
+        games: adapter::registry(),
+    });
 
     // Open (or create) the benchmark database.  Only the server process ever
     // opens `bench.duckdb` read-write; `bin/bench` and the Python SMAC3
     // harness communicate via JSONL files and the registry log instead.
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
-    let bench_conn = schema::open(&bench_db_path)
-        .expect("failed to open benchmark database");
+    let bench_conn = schema::open(&bench_db_path).expect("failed to open benchmark database");
     let bench_state = Arc::new(bench::BenchState {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
@@ -332,7 +334,9 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_app() -> Router {
-        api_router(Arc::new(AppState { games: adapter::registry() }))
+        api_router(Arc::new(AppState {
+            games: adapter::registry(),
+        }))
     }
 
     async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
@@ -443,7 +447,18 @@ mod tests {
             .iter()
             .map(|g| g["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, vec!["breakthrough", "druid", "knightthrough", "othello", "tanbo", "traffic-lights", "ttt"]);
+        assert_eq!(
+            kinds,
+            vec![
+                "breakthrough",
+                "druid",
+                "knightthrough",
+                "othello",
+                "tanbo",
+                "traffic-lights",
+                "ttt"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -475,8 +490,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_malformed_json_body_is_400_not_500() {
-        let (status, _) =
-            http_post_raw(test_app(), "/api/games/druid/new", b"{not valid json".to_vec()).await;
+        let (status, _) = http_post_raw(
+            test_app(),
+            "/api/games/druid/new",
+            b"{not valid json".to_vec(),
+        )
+        .await;
         assert_eq!(status, HttpStatusCode::BAD_REQUEST);
     }
 
@@ -530,9 +549,12 @@ mod tests {
         let app = test_app();
         let state = new_druid_state(app.clone(), 5, 5).await;
 
-        let (status, body) =
-            http_post_json(app.clone(), "/api/games/druid/legal_moves", json!({ "state": state }))
-                .await;
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/druid/legal_moves",
+            json!({ "state": state }),
+        )
+        .await;
         assert_eq!(status, HttpStatusCode::OK);
         let moves = body_json(&body)["moves"].clone();
         let first_move = moves.as_array().unwrap()[0].clone();
@@ -557,9 +579,12 @@ mod tests {
         let app = test_app();
         let state = new_druid_state(app.clone(), 5, 5).await;
 
-        let (status, body) =
-            http_post_json(app.clone(), "/api/games/druid/legal_moves", json!({ "state": state }))
-                .await;
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/druid/legal_moves",
+            json!({ "state": state }),
+        )
+        .await;
         assert_eq!(status, HttpStatusCode::OK);
         let moves = body_json(&body)["moves"].as_array().unwrap().len();
         assert!(moves > 0, "new 5x5 game should have legal moves");
@@ -568,8 +593,6 @@ mod tests {
             http_post_json(app, "/api/games/druid/view", json!({ "state": state })).await;
         assert_eq!(status, HttpStatusCode::OK);
     }
-
-
 
     #[tokio::test]
     async fn test_ai_move_converts_forced_win() {
@@ -623,8 +646,6 @@ mod tests {
             "the forced win should be reported as proven: {analysis}"
         );
     }
-
-
 
     // The AI's thinking budget runs on a `spawn_blocking` thread with
     // `num_tree_threads` `thread::scope` workers underneath it. This
@@ -783,7 +804,10 @@ mod tests {
         .await;
         assert_eq!(status, HttpStatusCode::OK);
         let body = body_json(&body);
-        assert_eq!(body["move"], 7, "expected the forced block at cell 7: {body}");
+        assert_eq!(
+            body["move"], 7,
+            "expected the forced block at cell 7: {body}"
+        );
     }
 
     #[tokio::test]
@@ -823,8 +847,7 @@ mod tests {
     // every move look like a reset to the initial position).
 
     async fn new_tl_state(app: Router) -> Value {
-        let (status, body) =
-            http_post_json(app, "/api/games/traffic-lights/new", json!({})).await;
+        let (status, body) = http_post_json(app, "/api/games/traffic-lights/new", json!({})).await;
         assert_eq!(status, HttpStatusCode::OK);
         body_json(&body)["state"].clone()
     }
@@ -967,7 +990,10 @@ mod tests {
         let body = body_json(&body);
         let mv = body["move"].as_u64().unwrap() as u8;
         let index = (mv >> 2) as usize;
-        assert!(index < 9, "AI move index {index} should be within the board");
+        assert!(
+            index < 9,
+            "AI move index {index} should be within the board"
+        );
         // AI chose a legal move and returned a new state with that cell occupied.
         let cells = body["view"]["cells"].as_array().unwrap();
         assert_eq!(cells[index], "R", "AI-placed cell {index} should be R");
@@ -1005,7 +1031,10 @@ mod tests {
         let legal = body_json(&body);
         let pre_ai: Vec<u8> = serde_json::from_value(legal["moves"].clone()).unwrap();
         // Cell 4 is R → must advance to Y (move 17)
-        assert!(pre_ai.contains(&17), "advance cell 4 R->Y should be legal: {pre_ai:?}");
+        assert!(
+            pre_ai.contains(&17),
+            "advance cell 4 R->Y should be legal: {pre_ai:?}"
+        );
 
         // AI plays as B.
         let (status, body) = http_post_json(
@@ -1055,7 +1084,11 @@ mod tests {
             .copied()
             .filter(|m| (m >> 2) as usize == user_idx)
             .collect();
-        assert_eq!(user_moves.len(), 1, "cell {user_idx} must have one legal move");
+        assert_eq!(
+            user_moves.len(),
+            1,
+            "cell {user_idx} must have one legal move"
+        );
         let (status, _body) = http_post_json(
             app,
             "/api/games/traffic-lights/apply",

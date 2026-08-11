@@ -8,8 +8,8 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
 use std::io::Write;
-use std::sync::atomic::AtomicU32;
 use std::ops::{Add, AddAssign};
+use std::sync::atomic::AtomicU32;
 
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::Search;
@@ -146,10 +146,7 @@ fn write_match_result<W: Write>(
 ///
 /// Returns the aggregate `Result` for each strategy across all pairwise
 /// matches.
-fn round_robin<G>(
-    strategies: &mut [AnySearch<'_, G>],
-    verbose: Verbosity,
-) -> Vec<Result>
+fn round_robin<G>(strategies: &mut [AnySearch<'_, G>], verbose: Verbosity) -> Vec<Result>
 where
     G: Game + Clone,
     G::S: Sync,
@@ -332,7 +329,15 @@ fn play_one_match<W: Write>(
         Some(1) => ("win_b", Some(b_id.to_owned())),
         _ => ("draw", None),
     };
-    write_match_result(writer, seq, a_id, b_id, outcome_str, winner_str, outcome.extra);
+    write_match_result(
+        writer,
+        seq,
+        a_id,
+        b_id,
+        outcome_str,
+        winner_str,
+        outcome.extra,
+    );
     match outcome.winner {
         None => (0, 0),
         Some(0) => (1, 0),
@@ -380,7 +385,8 @@ pub fn round_robin_bench<W: Write>(
             if i == j {
                 continue;
             }
-            let (a_wins, b_wins) = play_one_match(game, &strategy_ids[i], &strategy_ids[j], *seq, writer);
+            let (a_wins, b_wins) =
+                play_one_match(game, &strategy_ids[i], &strategy_ids[j], *seq, writer);
             *seq += 1;
             results[i].wins += a_wins;
             results[i].losses += b_wins;
@@ -506,13 +512,25 @@ mod tests {
         fn play_match(&self, strategy_a: &str, strategy_b: &str) -> MatchOutcome {
             let winner = match (strategy_a, strategy_b) {
                 ("a", "b") | ("b", "a") => {
-                    if strategy_a == "a" { Some(0) } else { Some(1) }
+                    if strategy_a == "a" {
+                        Some(0)
+                    } else {
+                        Some(1)
+                    }
                 }
                 ("b", "c") | ("c", "b") => {
-                    if strategy_a == "b" { Some(0) } else { Some(1) }
+                    if strategy_a == "b" {
+                        Some(0)
+                    } else {
+                        Some(1)
+                    }
                 }
                 ("c", "a") | ("a", "c") => {
-                    if strategy_a == "c" { Some(0) } else { Some(1) }
+                    if strategy_a == "c" {
+                        Some(0)
+                    } else {
+                        Some(1)
+                    }
                 }
                 _ => None,
             };
@@ -537,7 +555,11 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect();
-        assert_eq!(records.len(), 6, "expected 6 match records for 3 strategies");
+        assert_eq!(
+            records.len(),
+            6,
+            "expected 6 match records for 3 strategies"
+        );
         for rec in &records {
             assert!(matches!(rec, LogRecord::MatchResult { .. }));
         }

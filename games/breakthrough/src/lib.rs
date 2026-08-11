@@ -76,13 +76,26 @@ impl<const N: usize, const M: usize> Default for State<N, M> {
 }
 
 impl<const N: usize, const M: usize> State<N, M> {
-    pub fn black(&self) -> BitBoard<N, M> { self.black }
-    pub fn white(&self) -> BitBoard<N, M> { self.white }
-    pub fn turn(&self) -> Player { self.turn }
-    pub fn has_winner(&self) -> bool { self.winner }
+    pub fn black(&self) -> BitBoard<N, M> {
+        self.black
+    }
+    pub fn white(&self) -> BitBoard<N, M> {
+        self.white
+    }
+    pub fn turn(&self) -> Player {
+        self.turn
+    }
+    pub fn has_winner(&self) -> bool {
+        self.winner
+    }
 
     pub fn new(black: BitBoard<N, M>, white: BitBoard<N, M>, turn: Player, winner: bool) -> Self {
-        Self { black, white, turn, winner }
+        Self {
+            black,
+            white,
+            turn,
+            winner,
+        }
     }
 
     #[inline(always)]

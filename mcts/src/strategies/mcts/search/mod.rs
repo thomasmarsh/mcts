@@ -7,9 +7,9 @@ pub mod shared;
 
 pub use core::MemoryStats;
 pub use shared::SearchContext;
+pub use shared::Shared;
 pub use shared::TreeIndex;
 pub use shared::TreeStats;
-pub use shared::Shared;
 
 use super::config::SearchConfig;
 use super::config::Strategy;

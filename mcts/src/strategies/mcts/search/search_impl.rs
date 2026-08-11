@@ -1,3 +1,5 @@
+use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
@@ -5,8 +7,6 @@ use crate::strategies::mcts::stack::NodeStack;
 use crate::strategies::ActionReport;
 use crate::strategies::RootReport;
 use crate::strategies::Search;
-use crate::game::Game;
-use crate::game::PlayerIndex;
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -62,8 +62,7 @@ where
             // the tree-/root-parallel loops need a shared/atomic stop
             // signal instead of this per-thread-local read, deliberately
             // deferred.
-            if self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven
-            {
+            if self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven {
                 break;
             }
             self.reset_iter();

@@ -15,8 +15,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use game_host::{
-    run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter,
-    HostError,
+    run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,9 +25,7 @@ use game_druid::{
     Size, Square, State,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{
-    node::QInit, select, simulate, strategy, SearchConfig, TreeSearch,
-};
+use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
 // ---------------------------------------------------------------------------
@@ -50,7 +47,9 @@ struct PresetConfig {
 
 /// Available CPU cores for the auto-thread-count presets.
 fn ai_thread_count() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 const PRESET_CONFIGS: [(&str, PresetConfig); 4] = [
@@ -107,7 +106,10 @@ const PRESET_CONFIGS: [(&str, PresetConfig); 4] = [
 ];
 
 fn preset_cfg(id: &str) -> Option<&'static PresetConfig> {
-    PRESET_CONFIGS.iter().find(|(name, _)| *name == id).map(|(_, c)| c)
+    PRESET_CONFIGS
+        .iter()
+        .find(|(name, _)| *name == id)
+        .map(|(_, c)| c)
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +125,11 @@ type Ucb1DmNst = strategy::Compose<
 
 /// Build a fresh `TreeSearch` for `preset` with the given time budget.
 fn build_ai(preset: &str, budget: Duration, cfg: &PresetConfig) -> Box<dyn Search<G = Druid>> {
-    let threads = if cfg.num_threads == 0 { ai_thread_count() } else { cfg.num_threads };
+    let threads = if cfg.num_threads == 0 {
+        ai_thread_count()
+    } else {
+        cfg.num_threads
+    };
     match preset {
         "easy" => Box::new(
             TreeSearch::<Druid, strategy::Ucb1>::new().config(
@@ -149,13 +155,19 @@ fn build_ai(preset: &str, budget: Duration, cfg: &PresetConfig) -> Box<dyn Searc
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .select(select::Ucb1::with_c(cfg.select_c.unwrap_or(1.625)))
-                    .simulate(simulate::EpsilonGreedy::with_epsilon(cfg.epsilon.unwrap_or(0.1))),
+                    .simulate(simulate::EpsilonGreedy::with_epsilon(
+                        cfg.epsilon.unwrap_or(0.1),
+                    )),
             ),
         ),
         "strong" | "master" => Box::new(
             TreeSearch::<Druid, Ucb1DmNst>::new().config(
                 SearchConfig::new()
-                    .name(if preset == "strong" { "ai/strong" } else { "ai/master" })
+                    .name(if preset == "strong" {
+                        "ai/strong"
+                    } else {
+                        "ai/master"
+                    })
                     .expand_threshold(1)
                     .use_transpositions(true)
                     .use_mcts_solver(true)
@@ -163,12 +175,16 @@ fn build_ai(preset: &str, budget: Duration, cfg: &PresetConfig) -> Box<dyn Searc
                     .q_init(QInit::Infinity)
                     .max_time(budget)
                     .num_tree_threads(threads)
-                    .simulate(simulate::DecisiveMove::new().inner(
-                        simulate::EpsilonGreedy::default()
-                            .epsilon(cfg.epsilon.unwrap_or(0.3))
-                            .inner(simulate::Nst::new()
-                                .backoff_threshold(cfg.backoff_threshold.unwrap_or(5))),
-                    )),
+                    .simulate(
+                        simulate::DecisiveMove::new().inner(
+                            simulate::EpsilonGreedy::default()
+                                .epsilon(cfg.epsilon.unwrap_or(0.3))
+                                .inner(
+                                    simulate::Nst::new()
+                                        .backoff_threshold(cfg.backoff_threshold.unwrap_or(5)),
+                                ),
+                        ),
+                    ),
             ),
         ),
         _ => unreachable!("validated preset id"),
@@ -192,19 +208,28 @@ struct EngineCache {
 
 impl EngineCache {
     fn new(capacity: usize) -> Self {
-        Self { capacity, entries: Mutex::new(Vec::with_capacity(capacity)) }
+        Self {
+            capacity,
+            entries: Mutex::new(Vec::with_capacity(capacity)),
+        }
     }
 
     fn take(&self, preset: &'static str, hash: u64) -> Option<Box<dyn Search<G = Druid>>> {
-        let mut entries =
-            self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pos = entries.iter().position(|(p, h, _)| *p == preset && *h == hash)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pos = entries
+            .iter()
+            .position(|(p, h, _)| *p == preset && *h == hash)?;
         Some(entries.remove(pos).2)
     }
 
     fn put(&self, preset: &'static str, hash: u64, engine: Box<dyn Search<G = Druid>>) {
-        let mut entries =
-            self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.retain(|(p, h, _)| !(*p == preset && *h == hash));
         entries.insert(0, (preset, hash, engine));
         entries.truncate(self.capacity);
@@ -253,7 +278,9 @@ fn value_to_state(state: &Value) -> Result<HashedState, HostError> {
         )));
     }
     if state.board.len() != (state.size.w as usize) * (state.size.h as usize) {
-        return Err(HostError::bad_request("state board length doesn't match its size"));
+        return Err(HostError::bad_request(
+            "state board length doesn't match its size",
+        ));
     }
     Ok(HashedState::from_state(state))
 }
@@ -279,7 +306,9 @@ struct DruidAdapter {
 
 impl Default for DruidAdapter {
     fn default() -> Self {
-        Self { cache: EngineCache::new(8) }
+        Self {
+            cache: EngineCache::new(8),
+        }
     }
 }
 
@@ -373,13 +402,19 @@ impl GameAdapter for DruidAdapter {
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
-        let static_preset: &'static str =
-            PRESET_CONFIGS.iter().find(|(id, _)| *id == preset).unwrap().0;
+        let static_preset: &'static str = PRESET_CONFIGS
+            .iter()
+            .find(|(id, _)| *id == preset)
+            .unwrap()
+            .0;
         let hash = Druid::zobrist_hash(&state);
-        let mut ai = self
-            .cache
-            .take(static_preset, hash)
-            .unwrap_or_else(|| build_ai(static_preset, Duration::from_millis(cfg.time_budget_ms), cfg));
+        let mut ai = self.cache.take(static_preset, hash).unwrap_or_else(|| {
+            build_ai(
+                static_preset,
+                Duration::from_millis(cfg.time_budget_ms),
+                cfg,
+            )
+        });
 
         let mut chosen_kind: Option<PieceKind> = None;
         let mut chosen_orientation: Option<Orientation> = None;
@@ -422,18 +457,26 @@ impl GameAdapter for DruidAdapter {
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
-        let static_preset: &'static str =
-            PRESET_CONFIGS.iter().find(|(id, _)| *id == preset).unwrap().0;
+        let static_preset: &'static str = PRESET_CONFIGS
+            .iter()
+            .find(|(id, _)| *id == preset)
+            .unwrap()
+            .0;
         let hash = Druid::zobrist_hash(&state);
 
         let mut ai = match budget_ms {
-            Some(ms) => build_ai(static_preset, Duration::from_millis(clamp_budget_ms(ms)), cfg),
-            None => self
-                .cache
-                .take(static_preset, hash)
-                .unwrap_or_else(|| {
-                    build_ai(static_preset, Duration::from_millis(cfg.time_budget_ms), cfg)
-                }),
+            Some(ms) => build_ai(
+                static_preset,
+                Duration::from_millis(clamp_budget_ms(ms)),
+                cfg,
+            ),
+            None => self.cache.take(static_preset, hash).unwrap_or_else(|| {
+                build_ai(
+                    static_preset,
+                    Duration::from_millis(cfg.time_budget_ms),
+                    cfg,
+                )
+            }),
         };
 
         let _ = ai.choose_action(&state);

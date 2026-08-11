@@ -1,3 +1,6 @@
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::TerminalStatus;
 use crate::strategies::mcts::backprop::BackpropStrategy;
 use crate::strategies::mcts::config::BackpropFlags;
 use crate::strategies::mcts::index;
@@ -14,9 +17,6 @@ use crate::strategies::mcts::simulate::SimulateStrategy;
 use crate::strategies::mcts::simulate::Trial;
 use crate::strategies::mcts::stack::NodeStack;
 use crate::strategies::mcts::table::TranspositionTable;
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::TerminalStatus;
 
 use rand::rngs::SmallRng;
 use rustc_hash::FxHashMap;
@@ -195,7 +195,12 @@ pub fn expand<'a, G: Game>(
 /// caller to arrive (see `Edge::get_or_create_child` and
 /// `TranspositionTable::get_or_insert` for how each half of the
 /// edge-creation/transposition race is handled).
-pub fn new_child<G: Game>(shared: &Shared<'_, G>, state: &G::S, best_idx: usize, current_id: Id) -> Id {
+pub fn new_child<G: Game>(
+    shared: &Shared<'_, G>,
+    state: &G::S,
+    best_idx: usize,
+    current_id: Id,
+) -> Id {
     let hash = G::zobrist_hash(state);
     let parent = shared.index.get(current_id);
     let children = parent.children();
@@ -293,25 +298,26 @@ pub fn select_step<G: Game>(
             }
         }
 
-        let best_idx = match proven_win_child::<G>(shared.use_mcts_solver, node, shared.index, player) {
-            Some(idx) => idx,
-            None => {
-                let select_ctx = SelectContext {
-                    q_init: shared.q_init,
-                    stack: &node_stack,
-                    root_stats: shared.root_stats,
-                    player,
-                    state: &ctx.state,
-                    index: shared.index,
-                    table: shared.table,
-                    grave: &grave,
-                    global: shared.global,
-                    use_transpositions: shared.use_transpositions,
-                };
+        let best_idx =
+            match proven_win_child::<G>(shared.use_mcts_solver, node, shared.index, player) {
+                Some(idx) => idx,
+                None => {
+                    let select_ctx = SelectContext {
+                        q_init: shared.q_init,
+                        stack: &node_stack,
+                        root_stats: shared.root_stats,
+                        player,
+                        state: &ctx.state,
+                        index: shared.index,
+                        table: shared.table,
+                        grave: &grave,
+                        global: shared.global,
+                        use_transpositions: shared.use_transpositions,
+                    };
 
-                select_strategy.best_child(&select_ctx, rng)
-            }
-        };
+                    select_strategy.best_child(&select_ctx, rng)
+                }
+            };
 
         let children = shared.index.get(ctx.current_id).children();
 

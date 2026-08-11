@@ -103,14 +103,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                      VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, 'running', ?9) \
                      ON CONFLICT (run_id) DO NOTHING",
                     params![
-                        run_id,
-                        kind,
-                        game,
-                        git_sha,
-                        git_dirty,
-                        host,
-                        pid as i64,
-                        started_at,
+                        run_id, kind, game, git_sha, git_dirty, host, pid as i64, started_at,
                         log_path,
                     ],
                 )?;
@@ -133,9 +126,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
 }
 
 fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare(
-        "SELECT run_id, log_path FROM runs WHERE status = 'running'",
-    )?;
+    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status = 'running'")?;
     let running_runs: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -189,13 +180,7 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                          ON CONFLICT (run_id, seq) DO NOTHING",
                         params![
-                            run_id,
-                            seq as i64,
-                            ts,
-                            strategy_a,
-                            strategy_b,
-                            outcome,
-                            winner,
+                            run_id, seq as i64, ts, strategy_a, strategy_b, outcome, winner,
                             extra_json,
                         ],
                     )?;
@@ -208,8 +193,7 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
                     extra,
                 } => {
                     let ts = iso_timestamp();
-                    let config_json =
-                        serde_json::to_string(&config).expect("Value -> String");
+                    let config_json = serde_json::to_string(&config).expect("Value -> String");
                     let extra_json = extra
                         .as_ref()
                         .map(|v| serde_json::to_string(v).expect("Value -> String"));
@@ -240,11 +224,12 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
 }
 
 fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare(
-        "SELECT run_id, pid FROM runs WHERE status = 'running' AND pid IS NOT NULL",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT run_id, pid FROM runs WHERE status = 'running' AND pid IS NOT NULL")?;
     let maybe_dead: Vec<(String, i64)> = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -335,23 +320,23 @@ mod tests {
             let db = duckdb::Connection::open_in_memory().unwrap();
             ensure_schema(&db).unwrap();
 
-            TestFixture { _dir: dir, bench_runs, db }
+            TestFixture {
+                _dir: dir,
+                bench_runs,
+                db,
+            }
         }
 
         fn count(&self, table: &str) -> i64 {
             self.db
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM {table}"),
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap()
         }
 
         fn query_string(&self, sql: &str) -> String {
-            self.db
-                .query_row(sql, [], |row| row.get(0))
-                .unwrap()
+            self.db.query_row(sql, [], |row| row.get(0)).unwrap()
         }
     }
 
@@ -385,7 +370,13 @@ mod tests {
 
     #[test]
     fn test_registry_start_creates_run_row() {
-        let ev = start_event("run-1", "round_robin", "druid", 99999, "/tmp/nope/log.jsonl");
+        let ev = start_event(
+            "run-1",
+            "round_robin",
+            "druid",
+            99999,
+            "/tmp/nope/log.jsonl",
+        );
         let fix = TestFixture::new(&[ev]);
 
         ingest_once(&fix.db, &fix.bench_runs).unwrap();
@@ -400,13 +391,22 @@ mod tests {
 
     #[test]
     fn test_registry_start_stop_marks_completed() {
-        let ev_start = start_event("run-2", "round_robin", "druid", 99998, "/tmp/nope2/log.jsonl");
+        let ev_start = start_event(
+            "run-2",
+            "round_robin",
+            "druid",
+            99998,
+            "/tmp/nope2/log.jsonl",
+        );
         let ev_stop = stop_event("run-2", Some(0));
         let fix = TestFixture::new(&[ev_start, ev_stop]);
 
         ingest_once(&fix.db, &fix.bench_runs).unwrap();
 
-        assert_eq!(fix.query_string("SELECT status FROM runs WHERE run_id = 'run-2'"), "completed");
+        assert_eq!(
+            fix.query_string("SELECT status FROM runs WHERE run_id = 'run-2'"),
+            "completed"
+        );
         let exit_code: i64 = fix
             .db
             .query_row(
@@ -430,10 +430,8 @@ mod tests {
     #[test]
     fn test_ingest_match_results() {
         let fix = {
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_ingest_mr_{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("mcts_bench_ingest_mr_{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
@@ -444,7 +442,13 @@ mod tests {
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "round_robin", "druid", 99997, &log_path_str)];
+            let reg_events = vec![start_event(
+                run_id,
+                "round_robin",
+                "druid",
+                99997,
+                &log_path_str,
+            )];
 
             let mut reg_content = String::new();
             for ev in &reg_events {
@@ -514,10 +518,7 @@ mod tests {
     #[test]
     fn test_ingest_idempotent() {
         let (bench_runs, db) = {
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_idemp_{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("mcts_bench_idemp_{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
@@ -528,7 +529,13 @@ mod tests {
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "round_robin", "druid", 99996, &log_path_str)];
+            let reg_events = vec![start_event(
+                run_id,
+                "round_robin",
+                "druid",
+                99996,
+                &log_path_str,
+            )];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());
@@ -574,8 +581,7 @@ mod tests {
             "second ingest should not duplicate match results"
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM runs", [], |row| row
-                .get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             1,
             "second ingest should not duplicate runs"
@@ -585,10 +591,8 @@ mod tests {
     #[test]
     fn test_ingest_skips_unparseable_log_lines() {
         let (bench_runs, db) = {
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_garbage_{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("mcts_bench_garbage_{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
@@ -599,7 +603,13 @@ mod tests {
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "round_robin", "druid", 99995, &log_path_str)];
+            let reg_events = vec![start_event(
+                run_id,
+                "round_robin",
+                "druid",
+                99995,
+                &log_path_str,
+            )];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());
@@ -661,10 +671,7 @@ mod tests {
     #[test]
     fn test_heartbeats_are_skipped() {
         let (bench_runs, db) = {
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_hb_{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("mcts_bench_hb_{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
@@ -675,7 +682,13 @@ mod tests {
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "round_robin", "druid", 99993, &log_path_str)];
+            let reg_events = vec![start_event(
+                run_id,
+                "round_robin",
+                "druid",
+                99993,
+                &log_path_str,
+            )];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());
@@ -727,10 +740,7 @@ mod tests {
     #[test]
     fn test_ingest_trials() {
         let (bench_runs, db) = {
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_trial_{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("mcts_bench_trial_{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
@@ -813,22 +823,25 @@ mod tests {
             )
             .unwrap();
         assert!(extra.is_some());
-        let parsed: serde_json::Value =
-            serde_json::from_str(&extra.unwrap()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&extra.unwrap()).unwrap();
         assert_eq!(parsed["note"], "second trial");
     }
 
     #[test]
     fn test_registry_garbage_lines_are_skipped() {
-        let dir = std::env::temp_dir().join(format!(
-            "mcts_bench_reg_garbage_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_reg_garbage_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let bench_runs = dir.join("bench-runs");
         fs::create_dir_all(&bench_runs).unwrap();
 
-        let ev = start_event("garb-run", "round_robin", "druid", 99991, "/tmp/nope/log.jsonl");
+        let ev = start_event(
+            "garb-run",
+            "round_robin",
+            "druid",
+            99991,
+            "/tmp/nope/log.jsonl",
+        );
         let mut content = String::new();
         content.push_str("totally not json\n");
         content.push_str(&ev.to_json_line());
@@ -842,8 +855,7 @@ mod tests {
         ingest_once(&db, &bench_runs).unwrap();
 
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM runs", [], |row| row
-                .get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             1,
         );

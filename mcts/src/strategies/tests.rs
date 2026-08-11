@@ -24,7 +24,10 @@ fn test_child_array_child_index_matches_creation_order() {
             idx,
             "child_index should invert get_or_create_child's id -> idx mapping"
         );
-        assert_eq!(children.get_or_create_child(idx, || panic!("should not re-create")), id);
+        assert_eq!(
+            children.get_or_create_child(idx, || panic!("should not re-create")),
+            id
+        );
         assert_eq!(children.child_index(id), idx);
     }
 }

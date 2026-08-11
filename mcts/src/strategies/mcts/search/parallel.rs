@@ -1,14 +1,16 @@
+use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
+use crate::strategies::mcts::search::shared::{
+    add_path_virtual_loss, backprop_step, last_tree_action, select_step, simulate_step,
+};
 use crate::strategies::mcts::search::shared::{ActionTotal, Shared};
-use crate::strategies::mcts::search::shared::{add_path_virtual_loss, backprop_step, last_tree_action, select_step, simulate_step};
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::SimulateStrategy;
 use crate::strategies::mcts::stack::NodeStack;
 use crate::strategies::Search;
-use crate::game::Game;
-use crate::game::PlayerIndex;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
@@ -131,8 +133,9 @@ where
         let backprop_strategy = &self.config.backprop;
 
         let seeds: Vec<u64> = (0..num_threads).map(|_| self.config.rng.gen()).collect();
-        let mut select_strategies: Vec<S::Select> =
-            (0..num_threads).map(|_| self.config.select.clone()).collect();
+        let mut select_strategies: Vec<S::Select> = (0..num_threads)
+            .map(|_| self.config.select.clone())
+            .collect();
         let mut simulate_strategies: Vec<S::Simulate> = (0..num_threads)
             .map(|_| self.config.simulate.clone())
             .collect();

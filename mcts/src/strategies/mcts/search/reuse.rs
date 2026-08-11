@@ -1,7 +1,7 @@
+use crate::game::Game;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::search::shared::MAX_REROOT_DEPTH;
 use crate::strategies::mcts::search::TreeSearch;
-use crate::game::Game;
 
 use std::sync::atomic::Ordering::Relaxed;
 

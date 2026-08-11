@@ -46,8 +46,8 @@ fn test_tree_parallel_transpositions_survive_many_real_time_games() {
     // further exposure across many distinct board positions. That
     // combination is exactly why this test takes several real seconds
     // and belongs here rather than in the unit-test suite.
-    use mcts::game::Game;
     use game_ttt::*;
+    use mcts::game::Game;
     use mcts::strategies::Search;
     type G = TicTacToe;
 
@@ -85,8 +85,8 @@ fn test_druid_hash_no_collision_across_many_random_games() {
     // margin). That example is kept separately for bigger ad-hoc runs (its
     // default is 200,000 games), since a run that size is too slow for even
     // this suite.
-    use mcts::game::Game;
     use game_druid::{Druid, HashedState, Size, State};
+    use mcts::game::Game;
     use rand::rngs::SmallRng;
     use rand::seq::SliceRandom;
     use rand::SeedableRng;
@@ -129,8 +129,8 @@ fn test_othello_many_random_games_complete() {
     // Verifies that many random Othello games always terminate without
     // panicking, and collects basic statistics (winner distribution, move
     // counts) as a sanity check on the game implementation.
-    use mcts::game::Game;
     use game_othello::*;
+    use mcts::game::Game;
     use rand::seq::SliceRandom;
 
     let mut rng = rand::thread_rng();
@@ -200,7 +200,10 @@ fn test_othello_many_random_games_complete() {
 
     // All games had at least some disc placements (can't all pass immediately
     // from the initial position, which has 4 legal moves).
-    assert!(avg_non_pass >= 4.0, "implausibly few non-pass moves: {avg_non_pass:.1}");
+    assert!(
+        avg_non_pass >= 4.0,
+        "implausibly few non-pass moves: {avg_non_pass:.1}"
+    );
 }
 
 /// Stress-test the Othello engine against the naive loop-based oracle for
@@ -213,11 +216,11 @@ fn test_othello_many_random_games_complete() {
 fn test_othello_oracle_symmetry_stress() {
     let _guard = stress_test_guard();
     type BB = game_core::bitboard::BitBoard<8, 8>;
-    use mcts::game::Game;
-    use game_othello::{self, Othello, State, Move, Player,
-        naive_generate_moves, naive_get_flips, naive_apply,
-    };
     use game_core::symmetry::D4Symmetry;
+    use game_othello::{
+        self, naive_apply, naive_generate_moves, naive_get_flips, Move, Othello, Player, State,
+    };
+    use mcts::game::Game;
 
     // Seeded RNG (xoroshiro-like for speed; just use a simple LCG for Rust).
     // Seed chosen arbitrarily: 0xdead_beef_cafe_babe
@@ -280,8 +283,10 @@ fn test_othello_oracle_symmetry_stress() {
                         "game={game} (seed={game_seed:#x}) ply={ply} sym={sym_idx}: \
                          generate_moves mismatch\n  player={:#018x}\n  opponent={:#018x}\n  \
                          prod={:#018x}\n  naive={:#018x}",
-                        p_sym.bits(), o_sym.bits(),
-                        prod.bits(), naive.bits(),
+                        p_sym.bits(),
+                        o_sym.bits(),
+                        prod.bits(),
+                        naive.bits(),
                     );
                 }
             }
@@ -300,8 +305,10 @@ fn test_othello_oracle_symmetry_stress() {
             if legal.is_empty() {
                 // No legal moves: try pass
                 // Check that naive also has no legal moves
-                assert!(naive_legal.is_empty(),
-                    "game={game} ply={ply}: naive has moves but prod doesn't");
+                assert!(
+                    naive_legal.is_empty(),
+                    "game={game} ply={ply}: naive has moves but prod doesn't"
+                );
 
                 let after_pass = game_othello::generate_moves(opponent, player);
                 let after_naive = naive_generate_moves(opponent, player);
@@ -361,7 +368,8 @@ fn test_othello_oracle_symmetry_stress() {
                     "game={game} (seed={game_seed:#x}) ply={ply} move={}: \
                      get_flips mismatch\n  prod={:#018x}\n  naive={:#018x}",
                     mv_idx,
-                    prod_flips.bits(), naive_flips.bits(),
+                    prod_flips.bits(),
+                    naive_flips.bits(),
                 );
             }
 
@@ -374,8 +382,10 @@ fn test_othello_oracle_symmetry_stress() {
                 || prod_state.last_pass != naive_state.last_pass
             {
                 // Debug: compare moves for both turns on the same bitboard
-                let black_moves_prod = game_othello::generate_moves(prod_state.black, prod_state.white);
-                let white_moves_prod = game_othello::generate_moves(prod_state.white, prod_state.black);
+                let black_moves_prod =
+                    game_othello::generate_moves(prod_state.black, prod_state.white);
+                let white_moves_prod =
+                    game_othello::generate_moves(prod_state.white, prod_state.black);
                 let black_moves_naive = naive_generate_moves(naive_state.black, naive_state.white);
                 let white_moves_naive = naive_generate_moves(naive_state.white, naive_state.black);
                 panic!(
@@ -385,12 +395,18 @@ fn test_othello_oracle_symmetry_stress() {
                      prod: Black_moves={:#018x} White_moves={:#018x}\n  \
                      naive: Black_moves={:#018x} White_moves={:#018x}",
                     mv_idx,
-                    prod_state.black.bits(), prod_state.white.bits(),
-                    prod_state.turn, prod_state.last_pass,
-                    naive_state.black.bits(), naive_state.white.bits(),
-                    naive_state.turn, naive_state.last_pass,
-                    black_moves_prod.bits(), white_moves_prod.bits(),
-                    black_moves_naive.bits(), white_moves_naive.bits(),
+                    prod_state.black.bits(),
+                    prod_state.white.bits(),
+                    prod_state.turn,
+                    prod_state.last_pass,
+                    naive_state.black.bits(),
+                    naive_state.white.bits(),
+                    naive_state.turn,
+                    naive_state.last_pass,
+                    black_moves_prod.bits(),
+                    white_moves_prod.bits(),
+                    black_moves_naive.bits(),
+                    white_moves_naive.bits(),
                 );
             }
 
@@ -407,10 +423,10 @@ fn test_othello_oracle_symmetry_stress() {
 // Breakthrough & Knightthrough oracle stress tests
 // ============================================================================
 
-use mcts::game::Game;
-use game_core::bitboard::BitBoard;
 use game_breakthrough as breakthrough;
+use game_core::bitboard::BitBoard;
 use game_knightthrough as knightthrough;
+use mcts::game::Game;
 
 // ---- Custom Player enum for the naive representation (matches both game
 // Player types structurally) ----
@@ -544,9 +560,7 @@ fn naive_knightthrough_moves(board: &NaiveBoard, turn: Player) -> Vec<knightthro
 fn naive_apply(board: &mut NaiveBoard, turn: &mut Player, src: u8, dst: u8) -> bool {
     let src = src as usize;
     let dst = dst as usize;
-    let piece = board[src]
-        .take()
-        .expect("src must contain a piece");
+    let piece = board[src].take().expect("src must contain a piece");
     board[dst] = Some(piece);
 
     // Check win: reached opponent's back rank
@@ -625,8 +639,14 @@ macro_rules! stress_oracle_test {
                     );
 
                     // -- Verify piece counts --
-                    let black_count = naive_board.iter().filter(|&&p| p == Some(Player::Black)).count();
-                    let white_count = naive_board.iter().filter(|&&p| p == Some(Player::White)).count();
+                    let black_count = naive_board
+                        .iter()
+                        .filter(|&&p| p == Some(Player::Black))
+                        .count();
+                    let white_count = naive_board
+                        .iter()
+                        .filter(|&&p| p == Some(Player::White))
+                        .count();
                     assert_eq!(
                         bb_state.black().count_ones() as usize,
                         black_count,
@@ -646,7 +666,8 @@ macro_rules! stress_oracle_test {
 
                     // -- Sort both for comparison (ordering may differ) --
                     let mut bb_sorted: Vec<_> = bb_actions.iter().map(|m| (m.0, m.1)).collect();
-                    let mut naive_sorted: Vec<_> = naive_actions.iter().map(|m| (m.0, m.1)).collect();
+                    let mut naive_sorted: Vec<_> =
+                        naive_actions.iter().map(|m| (m.0, m.1)).collect();
                     bb_sorted.sort();
                     naive_sorted.sort();
 
@@ -686,9 +707,11 @@ macro_rules! stress_oracle_test {
                     let game_ended = naive_apply(&mut naive_board, &mut naive_turn, mv.0, mv.1);
 
                     {
-                        let bb_next_board = naive_from_bitboards(&bb_next.black(), &bb_next.white());
+                        let bb_next_board =
+                            naive_from_bitboards(&bb_next.black(), &bb_next.white());
                         assert_eq!(
-                            bb_next_board, naive_board,
+                            bb_next_board,
+                            naive_board,
                             "{label} game={game} (seed={game_seed:#x}) ply={ply} \
                              move={}: state mismatch after apply",
                             coord_str(mv.0 as usize),
@@ -702,7 +725,8 @@ macro_rules! stress_oracle_test {
                              naive says game ended but bitboard doesn't have winner flag",
                         );
                         assert_eq!(
-                            bb_next.turn().to_index(), naive_turn as usize,
+                            bb_next.turn().to_index(),
+                            naive_turn as usize,
                             "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
                              turn mismatch after winning move",
                         );
@@ -710,7 +734,8 @@ macro_rules! stress_oracle_test {
                         break;
                     } else {
                         assert_eq!(
-                            bb_next.turn().to_index(), naive_turn as usize,
+                            bb_next.turn().to_index(),
+                            naive_turn as usize,
                             "{label} game={game} (seed={game_seed:#x}) ply={ply}: \
                              turn mismatch after non-winning move",
                         );
@@ -722,7 +747,8 @@ macro_rules! stress_oracle_test {
                 if game % 100 == 99 {
                     eprintln!(
                         "  {label} oracle stress ({games_label}): {}/{} games complete",
-                        game, num_games - 1,
+                        game,
+                        num_games - 1,
                     );
                 }
             }

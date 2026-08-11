@@ -116,7 +116,11 @@ fn play_match_inner(
         }
     };
 
-    if view.get("terminal").and_then(|t| t.as_bool()).unwrap_or(false) {
+    if view
+        .get("terminal")
+        .and_then(|t| t.as_bool())
+        .unwrap_or(false)
+    {
         return MatchOutcome {
             winner: view
                 .get("winner")

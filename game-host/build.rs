@@ -16,8 +16,7 @@ fn main() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     // --- git SHA ---
-    let sha = git(&["rev-parse", "HEAD"], manifest_dir)
-        .unwrap_or_else(|| "unknown".to_owned());
+    let sha = git(&["rev-parse", "HEAD"], manifest_dir).unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=GIT_SHA={sha}");
 
     // --- dirty-worktree flag ---
@@ -27,14 +26,16 @@ fn main() {
         .output()
         .map(|out| !out.stdout.is_empty())
         .unwrap_or(false);
-    println!("cargo:rustc-env=GIT_DIRTY={}", if dirty { "true" } else { "false" });
+    println!(
+        "cargo:rustc-env=GIT_DIRTY={}",
+        if dirty { "true" } else { "false" }
+    );
 
     // --- re-run on commit / ref move ---
     // Resolve the actual git dir so the rerun-if-changed paths below exist;
     // a missing path turns a build script permanently dirty and forces the
     // whole workspace to rebuild every time.
-    let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"], manifest_dir)
-        .map(PathBuf::from)
+    let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"], manifest_dir).map(PathBuf::from)
     else {
         return; // not a git checkout: keep the "unknown"/clean defaults
     };

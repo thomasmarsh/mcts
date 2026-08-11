@@ -89,7 +89,15 @@ impl<const N: usize> State<N> {
         can_swap: bool,
         winner: bool,
     ) -> Self {
-        Self { black, white, ko_black, ko_white, turn, can_swap, winner }
+        Self {
+            black,
+            white,
+            ko_black,
+            ko_white,
+            turn,
+            can_swap,
+            winner,
+        }
     }
 
     #[inline(always)]

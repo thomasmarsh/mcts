@@ -366,7 +366,10 @@ mod tests {
         );
         let state = HashedPosition::default();
         _ = ts.choose_action(&state);
-        println!("hits: {}", ts.table.hits.load(std::sync::atomic::Ordering::Relaxed));
+        println!(
+            "hits: {}",
+            ts.table.hits.load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         assert!(ts.table.hits.load(std::sync::atomic::Ordering::Relaxed) > 0);
         render::render_trans(&ts, &HashedPosition::default());

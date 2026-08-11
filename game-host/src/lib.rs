@@ -35,15 +35,9 @@ pub struct Request {
 #[serde(untagged)]
 pub enum Response {
     /// Successful method call.
-    Success {
-        id: u64,
-        result: Value,
-    },
+    Success { id: u64, result: Value },
     /// Failed method call.
-    Error {
-        id: u64,
-        error: ErrorBody,
-    },
+    Error { id: u64, error: ErrorBody },
 }
 
 /// Structured error body within an error response.
@@ -74,13 +68,22 @@ pub struct HostError {
 
 impl HostError {
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { code: 400, message: message.into() }
+        Self {
+            code: 400,
+            message: message.into(),
+        }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { code: 404, message: message.into() }
+        Self {
+            code: 404,
+            message: message.into(),
+        }
     }
     pub fn internal(message: impl Into<String>) -> Self {
-        Self { code: 500, message: message.into() }
+        Self {
+            code: 500,
+            message: message.into(),
+        }
     }
 }
 
@@ -214,10 +217,16 @@ pub fn run_host<R: Read, W: Write, A: GameAdapter>(reader: R, writer: W, adapter
 
         let result = dispatch(&adapter, &req);
         let resp = match result {
-            Ok(v) => Response::Success { id: req.id, result: v },
+            Ok(v) => Response::Success {
+                id: req.id,
+                result: v,
+            },
             Err(e) => Response::Error {
                 id: req.id,
-                error: ErrorBody { code: e.code, message: e.message },
+                error: ErrorBody {
+                    code: e.code,
+                    message: e.message,
+                },
             },
         };
         let json = serde_json::to_string(&resp).expect("Response always serializes");
@@ -337,11 +346,19 @@ mod tests {
     struct FakeAdapter;
 
     impl GameAdapter for FakeAdapter {
-        fn kind(&self) -> &'static str { "fake" }
-        fn label(&self) -> &'static str { "Fake Game" }
-        fn description(&self) -> &'static str { "A minimal fake adapter for testing" }
+        fn kind(&self) -> &'static str {
+            "fake"
+        }
+        fn label(&self) -> &'static str {
+            "Fake Game"
+        }
+        fn description(&self) -> &'static str {
+            "A minimal fake adapter for testing"
+        }
 
-        fn default_config(&self) -> Value { serde_json::json!({}) }
+        fn default_config(&self) -> Value {
+            serde_json::json!({})
+        }
 
         fn new_state(&self, _config: Value) -> Result<Value, HostError> {
             Ok(serde_json::json!({"board": [], "turn": "X"}))
@@ -352,10 +369,7 @@ mod tests {
         }
 
         fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
-            let turn = state
-                .get("turn")
-                .and_then(|t| t.as_str())
-                .unwrap_or("X");
+            let turn = state.get("turn").and_then(|t| t.as_str()).unwrap_or("X");
             let next_turn = if turn == "X" { "O" } else { "X" };
             Ok(serde_json::json!({
                 "board": [mv],
@@ -567,7 +581,10 @@ mod tests {
         match resp {
             Response::Success { id, result } => {
                 assert_eq!(id, 12);
-                assert_eq!(result.get("terminal").and_then(|t| t.as_bool()), Some(false));
+                assert_eq!(
+                    result.get("terminal").and_then(|t| t.as_bool()),
+                    Some(false)
+                );
                 assert_eq!(result.get("turn").and_then(|t| t.as_str()), Some("X"));
             }
             _ => panic!("expected success response"),
@@ -576,13 +593,18 @@ mod tests {
 
     #[test]
     fn test_terminal() {
-        let lines = send_requests(&[r#"{"id":13,"method":"terminal","params":{"state":{"board":[],"turn":"X"}}}"#]);
+        let lines = send_requests(&[
+            r#"{"id":13,"method":"terminal","params":{"state":{"board":[],"turn":"X"}}}"#,
+        ]);
         assert_eq!(lines.len(), 1);
         let resp = parse_response(&lines[0]);
         match resp {
             Response::Success { id, result } => {
                 assert_eq!(id, 13);
-                assert_eq!(result.get("terminal").and_then(|t| t.as_bool()), Some(false));
+                assert_eq!(
+                    result.get("terminal").and_then(|t| t.as_bool()),
+                    Some(false)
+                );
             }
             _ => panic!("expected success response"),
         }
@@ -598,7 +620,10 @@ mod tests {
                 assert_eq!(id, 14);
                 let presets = result.as_array().unwrap();
                 assert_eq!(presets.len(), 1);
-                assert_eq!(presets[0].get("id").and_then(|v| v.as_str()), Some("random"));
+                assert_eq!(
+                    presets[0].get("id").and_then(|v| v.as_str()),
+                    Some("random")
+                );
             }
             _ => panic!("expected success response"),
         }
@@ -652,10 +677,7 @@ mod tests {
                 assert_eq!(id, 20);
                 let actions = result.get("actions").and_then(|a| a.as_array()).unwrap();
                 assert_eq!(actions.len(), 1);
-                assert_eq!(
-                    actions[0].get("visits").and_then(|v| v.as_u64()),
-                    Some(10)
-                );
+                assert_eq!(actions[0].get("visits").and_then(|v| v.as_u64()), Some(10));
             }
             _ => panic!("expected success response"),
         }
@@ -711,7 +733,7 @@ mod tests {
     fn test_blank_lines_are_skipped() {
         let lines = send_requests(&[
             r#"{"id":1,"method":"kind","params":{}}"#,
-            "",  // blank line
+            "", // blank line
             r#"{"id":2,"method":"label","params":{}}"#,
         ]);
         // blank line produces no output, so we get 2 responses

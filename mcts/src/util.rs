@@ -195,8 +195,6 @@ where
     }
 }
 
-
-
 #[derive(Copy, Clone)]
 pub enum Verbosity {
     Silent,
@@ -233,7 +231,6 @@ where
 {
     self_play(Random::<G>::new())
 }
-
 
 pub(super) fn pv_string<G: Game>(path: &[G::A], state: &G::S) -> String {
     let mut state = state.clone();

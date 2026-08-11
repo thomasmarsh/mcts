@@ -15,13 +15,13 @@ use std::process::{Command as StdCommand, Stdio};
 
 use clap::{Parser, Subcommand};
 
-use mcts_bench::registry;
-use mcts_bench::ingest;
-use mcts_bench::launch::{self, LaunchedRun};
-use mcts_bench::schema;
-use mcts_bench::tournament::round_robin_bench_multiple;
 use game_host::build_info;
 use mcts::util::Verbosity;
+use mcts_bench::ingest;
+use mcts_bench::launch::{self, LaunchedRun};
+use mcts_bench::registry;
+use mcts_bench::schema;
+use mcts_bench::tournament::round_robin_bench_multiple;
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Benchmark, tournament, and SMAC3 harness")]
@@ -144,7 +144,13 @@ fn main() {
             game,
             label,
             background,
-        } => cmd_smac3(config.as_deref(), &overrides, &game, label.as_deref(), background),
+        } => cmd_smac3(
+            config.as_deref(),
+            &overrides,
+            &game,
+            label.as_deref(),
+            background,
+        ),
 
         Command::Ingest { db } => cmd_ingest_once(&db),
     }
@@ -154,7 +160,10 @@ fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verb
     let games = registry();
     let Some(bench_game) = games.get(game_kind) else {
         eprintln!("error: unknown game kind '{game_kind}'");
-        eprintln!("available games: {}", games.keys().cloned().collect::<Vec<_>>().join(", "));
+        eprintln!(
+            "available games: {}",
+            games.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
         std::process::exit(1);
     };
 
@@ -170,7 +179,11 @@ fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verb
                 eprintln!("error: unknown strategy '{sid}' for game '{game_kind}'");
                 eprintln!(
                     "available strategies: {}",
-                    available.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                    available
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 std::process::exit(1);
             }
@@ -185,13 +198,7 @@ fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verb
     };
 
     let mut writer = stdout().lock();
-    let results = round_robin_bench_multiple(
-        bench_game.as_ref(),
-        &ids,
-        rounds,
-        &mut writer,
-        verb,
-    );
+    let results = round_robin_bench_multiple(bench_game.as_ref(), &ids, rounds, &mut writer, verb);
 
     // Final summary to stderr.
     if verbose {

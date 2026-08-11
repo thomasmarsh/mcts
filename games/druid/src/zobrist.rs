@@ -4,8 +4,8 @@
 //! updates this incrementally (xor-out old, xor-in new) from a from-scratch
 //! `full_hash` that the property tests keep it pinned against.
 
-use mcts::zobrist::LazyZobristTable;
 use mcts::game::PlayerIndex;
+use mcts::zobrist::LazyZobristTable;
 
 use crate::state::State;
 use crate::types::{Orientation, Pending, PieceKind, Player, Size};
@@ -177,8 +177,28 @@ pub(crate) fn full_hash(state: &State, bits: usize) -> u64 {
     recompute_hash(state, bits)
         ^ pending_zobrist(state.pending)
         ^ player_zobrist(state.player)
-        ^ hand_zobrist(Player::Black, PieceKind::Sarsen, state.hand_black.sarsens, bits)
-        ^ hand_zobrist(Player::Black, PieceKind::Lintel, state.hand_black.lintels, bits)
-        ^ hand_zobrist(Player::White, PieceKind::Sarsen, state.hand_white.sarsens, bits)
-        ^ hand_zobrist(Player::White, PieceKind::Lintel, state.hand_white.lintels, bits)
+        ^ hand_zobrist(
+            Player::Black,
+            PieceKind::Sarsen,
+            state.hand_black.sarsens,
+            bits,
+        )
+        ^ hand_zobrist(
+            Player::Black,
+            PieceKind::Lintel,
+            state.hand_black.lintels,
+            bits,
+        )
+        ^ hand_zobrist(
+            Player::White,
+            PieceKind::Sarsen,
+            state.hand_white.sarsens,
+            bits,
+        )
+        ^ hand_zobrist(
+            Player::White,
+            PieceKind::Lintel,
+            state.hand_white.lintels,
+            bits,
+        )
 }

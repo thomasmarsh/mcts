@@ -37,9 +37,9 @@ impl GameAdapter for TestHost {
     }
 
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
-        let cells = state["cells"].as_array().ok_or_else(|| {
-            HostError::bad_request("state missing cells")
-        })?;
+        let cells = state["cells"]
+            .as_array()
+            .ok_or_else(|| HostError::bad_request("state missing cells"))?;
         let moves: Vec<Value> = cells
             .iter()
             .enumerate()
@@ -50,9 +50,10 @@ impl GameAdapter for TestHost {
     }
 
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
-        let idx = mv.as_u64().ok_or_else(|| {
-            HostError::bad_request("move must be a cell index")
-        })? as usize;
+        let idx = mv
+            .as_u64()
+            .ok_or_else(|| HostError::bad_request("move must be a cell index"))?
+            as usize;
 
         let mut cells: Vec<Value> = state["cells"]
             .as_array()

@@ -110,7 +110,6 @@ impl Connectivity {
         }
     }
 
-
     /// Union cell `i` (already `color` in `board`) with its same-color
     /// neighbors and, if it's on `color`'s edge, that edge's border node.
     fn union_into(&mut self, size: Size, board: &[Square], i: usize, color: Player) {

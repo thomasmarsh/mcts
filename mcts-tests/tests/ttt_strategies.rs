@@ -1,6 +1,6 @@
-use mcts::strategies::parallel_test_guard;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
+use mcts::strategies::parallel_test_guard;
 use mcts::strategies::Search;
 
 #[test]
@@ -117,8 +117,7 @@ fn test_num_rollouts_per_leaf_one_is_deterministic_given_a_seed() {
 
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
 
-    let mut a =
-        TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
+    let mut a = TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
     let mut b = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -273,7 +272,9 @@ fn test_tree_parallel_stress_many_threads_small_tree_high_iterations() {
 
     assert_eq!(
         ts.root_stats.num_visits() as usize,
-        ts.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed)
+        ts.stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     );
     assert_eq!(ts.root_stats.num_visits(), 2000);
 }
@@ -416,20 +417,15 @@ fn test_root_report_flags_the_proven_winning_move() {
     let init_state = HashedPosition {
         position: Position {
             turn: Piece::O,
-            board: [
-                (0, Piece::O),
-                (1, Piece::O),
-                (3, Piece::X),
-                (6, Piece::X),
-            ]
-            .iter()
-            .fold(0, |board, (i, piece)| {
-                let value = match piece {
-                    Piece::X => 0b01,
-                    Piece::O => 0b10,
-                };
-                board | (value << (i << 1))
-            }),
+            board: [(0, Piece::O), (1, Piece::O), (3, Piece::X), (6, Piece::X)]
+                .iter()
+                .fold(0, |board, (i, piece)| {
+                    let value = match piece {
+                        Piece::X => 0b01,
+                        Piece::O => 0b10,
+                    };
+                    board | (value << (i << 1))
+                }),
         },
         hashes: [0; 8],
     };
@@ -454,7 +450,10 @@ fn test_root_report_flags_the_proven_winning_move() {
         .iter()
         .find(|a| a.action == Move(2))
         .expect("winning move should be an explored root action");
-    assert!(winning.is_proven, "winning move should be reported as proven");
+    assert!(
+        winning.is_proven,
+        "winning move should be reported as proven"
+    );
     // Not asserting "most visits": MCTS-Solver stops the moment the root is
     // proven (see `choose_action`'s early-break on `Proven::Unproven`), which
     // can fire right after the winning move's *first* visit -- whichever
@@ -555,8 +554,8 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
 #[test]
 fn test_child_array_child_index_matches_creation_order() {
     use mcts::node::ChildArray;
-    use mcts::search::TreeIndex;
     use mcts::node::Node;
+    use mcts::search::TreeIndex;
 
     let index = TreeIndex::<u32>::new();
     let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
@@ -577,7 +576,10 @@ fn test_child_array_child_index_matches_creation_order() {
         );
         // Re-resolving an already-set slot must return the same id and not
         // disturb the reverse mapping.
-        assert_eq!(children.get_or_create_child(idx, || panic!("should not re-create")), id);
+        assert_eq!(
+            children.get_or_create_child(idx, || panic!("should not re-create")),
+            id
+        );
         assert_eq!(children.child_index(id), idx);
     }
 }
@@ -585,8 +587,8 @@ fn test_child_array_child_index_matches_creation_order() {
 #[test]
 fn test_child_array_child_index_survives_concurrent_resolution() {
     use mcts::node::ChildArray;
-    use mcts::search::TreeIndex;
     use mcts::node::Node;
+    use mcts::search::TreeIndex;
     use std::sync::Arc;
 
     // Regression test for a race introduced (and caught by
@@ -644,8 +646,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     let explored = 2usize;
     let expected = n * std::mem::size_of::<u32>()
         + n * std::mem::size_of::<std::sync::OnceLock<mcts::index::Id>>()
-        + explored
-            * (std::mem::size_of::<mcts::index::Id>() + std::mem::size_of::<usize>())
+        + explored * (std::mem::size_of::<mcts::index::Id>() + std::mem::size_of::<usize>())
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
         + n * std::mem::size_of::<u32>()
         + n * 2 * std::mem::size_of::<mcts::node::PlayerStats>();
@@ -709,7 +710,10 @@ fn test_memory_stats_matches_hand_walked_arena() {
         stats.explored_child_slots <= stats.total_child_slots,
         "can't explore more slots than exist"
     );
-    assert!(want_expanded > 0, "root should have expanded with expand_threshold(1)");
+    assert!(
+        want_expanded > 0,
+        "root should have expanded with expand_threshold(1)"
+    );
     assert_eq!(
         stats.node_bytes,
         stats.total_nodes * std::mem::size_of::<mcts::node::Node<Move>>()
@@ -1075,8 +1079,7 @@ fn test_reuse_tree_disabled_always_resets() {
     let init_state = HashedPosition::new();
 
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
-    let mut ts =
-        TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
+    let mut ts = TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
 
     let action = ts.choose_action(&init_state);
     let next_state = G::apply(init_state, &action);
@@ -1366,7 +1369,10 @@ fn test_compact_discards_unreachable_siblings_and_preserves_reachable_edges() {
     // different parents legitimately contributes two distinct edge entries
     // here, hence sorting the full triple (not just the hash) for a stable,
     // duplicate-safe comparison.
-    fn snapshot_edges(index: &mcts::search::TreeIndex<Move>, root: mcts::index::Id) -> Vec<(u64, u32, f64)> {
+    fn snapshot_edges(
+        index: &mcts::search::TreeIndex<Move>,
+        root: mcts::index::Id,
+    ) -> Vec<(u64, u32, f64)> {
         let mut out = Vec::new();
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -1672,7 +1678,10 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
 
     let root = ts.index.get(root_id);
     let children = root.children();
-    assert!(children.len() >= 2, "empty board should have several legal moves");
+    assert!(
+        children.len() >= 2,
+        "empty board should have several legal moves"
+    );
 
     let shared = Shared {
         index: &ts.index,
@@ -1687,13 +1696,23 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     };
 
     // Child 0: heavily visited, mediocre average score.
-    new_child(&shared, &G::apply(init_state, children.action(0)), 0, root_id);
+    new_child(
+        &shared,
+        &G::apply(init_state, children.action(0)),
+        0,
+        root_id,
+    );
     for _ in 0..20 {
         children.update(0, &[0.5, 0.5]);
     }
 
     // Child 1: barely visited, but a much higher average score.
-    new_child(&shared, &G::apply(init_state, children.action(1)), 1, root_id);
+    new_child(
+        &shared,
+        &G::apply(init_state, children.action(1)),
+        1,
+        root_id,
+    );
     children.update(1, &[1.0, 0.0]);
 
     let stack = NodeStack::new(vec![root_id]);

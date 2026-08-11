@@ -264,7 +264,10 @@ where
             WinLossDraw => {
                 for action in available {
                     let child_state = G::apply(state.clone(), action);
-                    if !matches!(G::terminal_status(&child_state), TerminalStatus::NotTerminal) {
+                    if !matches!(
+                        G::terminal_status(&child_state),
+                        TerminalStatus::NotTerminal
+                    ) {
                         return Some(action);
                     }
                 }

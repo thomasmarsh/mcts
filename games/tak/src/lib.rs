@@ -424,8 +424,15 @@ impl<const N: usize> State<N> {
     /// only) connecting either pair of opposite edges.
     pub fn has_road(&self, color: Player) -> bool {
         let mask = self.road_mask(color);
-        connects(mask, BitBoard::wall(Direction::North), BitBoard::wall(Direction::South))
-            || connects(mask, BitBoard::wall(Direction::East), BitBoard::wall(Direction::West))
+        connects(
+            mask,
+            BitBoard::wall(Direction::North),
+            BitBoard::wall(Direction::South),
+        ) || connects(
+            mask,
+            BitBoard::wall(Direction::East),
+            BitBoard::wall(Direction::West),
+        )
     }
 
     pub fn terminal_status(&self) -> TerminalStatus<Player> {
@@ -558,7 +565,18 @@ impl<const N: usize> State<N> {
             if dropped == take {
                 out.push(Move::spread(src, dir, take, mask));
             } else if steps_left > 1 {
-                self.gen_drops(out, src, dir, take, cap_top, col, row, steps_left - 1, dropped, mask);
+                self.gen_drops(
+                    out,
+                    src,
+                    dir,
+                    take,
+                    cap_top,
+                    col,
+                    row,
+                    steps_left - 1,
+                    dropped,
+                    mask,
+                );
             }
         }
     }
@@ -583,9 +601,16 @@ impl<const N: usize> State<N> {
 
     fn apply_place(&mut self, m: &Move) {
         let idx = m.square();
-        debug_assert!(idx < N * N && self.cells[idx] == 0, "placement on an occupied cell");
+        debug_assert!(
+            idx < N * N && self.cells[idx] == 0,
+            "placement on an occupied cell"
+        );
         // During the opening each player places an *opponent's* flat.
-        let color = if self.opening { self.turn.next() } else { self.turn };
+        let color = if self.opening {
+            self.turn.next()
+        } else {
+            self.turn
+        };
         let k = if self.opening { FLAT } else { m.kind() };
         let p = color as usize;
 
@@ -653,7 +678,11 @@ impl<const N: usize> State<N> {
                 base &= !3u64; // flatten: the wall becomes a flat stone
             }
             let dh = if base == 0 { 0 } else { cell_height(base) };
-            let dcolors = if base == 0 { 0 } else { (base >> 2) & ((1u64 << dh) - 1) };
+            let dcolors = if base == 0 {
+                0
+            } else {
+                (base >> 2) & ((1u64 << dh) - 1)
+            };
             debug_assert!(dh + gh <= 61, "stack height exceeds the cell encoding");
             let new = (1u64 << (2 + dh + gh)) | ((dcolors | (gcolors << dh)) << 2) | gkind as u64;
             self.hash ^= cell_hash(idx, old) ^ cell_hash(idx, new);
@@ -666,8 +695,8 @@ impl<const N: usize> State<N> {
     /// directly (only test code that hand-constructs positions should do
     /// this; `set_cell` keeps the hash in sync on its own).
     pub fn recompute_hash(&self) -> u64 {
-        let mut h =
-            reserve_hash(0, self.stones[0], self.caps[0]) ^ reserve_hash(1, self.stones[1], self.caps[1]);
+        let mut h = reserve_hash(0, self.stones[0], self.caps[0])
+            ^ reserve_hash(1, self.stones[1], self.caps[1]);
         if self.turn == Player::Black {
             h ^= HASHES.hash(HASH_TURN);
         }
@@ -1148,7 +1177,7 @@ mod tests {
         s.opening = false;
         s.stones[1] = 0;
         s.caps[1] = 0; // Black's reserve is empty.
-        // One white flat buried under two black flats: 1 point for Black.
+                       // One white flat buried under two black flats: 1 point for Black.
         s.set_cell(at(0, 0, 5), make_cell(0b110, 3, FLAT));
         // One white flat elsewhere: 1 point for White. Draw.
         s.set_cell(at(1, 0, 5), make_cell(0, 1, FLAT));

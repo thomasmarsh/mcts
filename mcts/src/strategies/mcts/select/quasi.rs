@@ -154,26 +154,22 @@ where
         let enumerated: Vec<(usize, G::A)> = (0..available.len())
             .map(|i| (i, available.action(i).clone()))
             .collect();
-        let best = random_best(
-            enumerated.as_slice(),
-            rng,
-            |(_, action): &(usize, G::A)| {
-                let mut key = key_init.clone();
-                key.push(action.clone());
+        let best = random_best(enumerated.as_slice(), rng, |(_, action): &(usize, G::A)| {
+            let mut key = key_init.clone();
+            key.push(action.clone());
 
-                let score = self
-                    .book
-                    .score(key.as_slice(), player_to_move)
-                    .unwrap_or(f64::NEG_INFINITY);
-                if score > k_score {
-                    score
-                } else {
-                    // NOTE: we depend on random_best using this value internally
-                    // as an equivalence for None types
-                    f64::NEG_INFINITY
-                }
-            },
-        );
+            let score = self
+                .book
+                .score(key.as_slice(), player_to_move)
+                .unwrap_or(f64::NEG_INFINITY);
+            if score > k_score {
+                score
+            } else {
+                // NOTE: we depend on random_best using this value internally
+                // as an equivalence for None types
+                f64::NEG_INFINITY
+            }
+        });
 
         if let Some((best_index, _)) = best {
             *best_index

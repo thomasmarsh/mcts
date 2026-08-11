@@ -242,7 +242,11 @@ impl NodeStats {
     pub fn expected_score(&self, player_index: usize) -> f64 {
         let data = self.data.read().unwrap();
         let virtual_loss = self.num_visits_virtual.load(Relaxed);
-        expected_score_from(data.num_visits, virtual_loss, data.player[player_index].score)
+        expected_score_from(
+            data.num_visits,
+            virtual_loss,
+            data.player[player_index].score,
+        )
     }
 
     // NOTE: needs to be overridden for score bounded search

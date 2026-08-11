@@ -84,8 +84,7 @@ pub trait Search: Sync + Send {
 }
 
 /// See `parallel_test_guard`.
-static PARALLEL_TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> =
-    std::sync::OnceLock::new();
+static PARALLEL_TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 /// Serialises tests that spawn their own thread pools, so cargo's
 /// default per-binary test concurrency never overlaps two

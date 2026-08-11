@@ -40,9 +40,7 @@ pub enum LogRecord {
         extra: Option<serde_json::Value>,
     },
     /// Periodic liveness heartbeat.
-    Heartbeat {
-        games_played: u64,
-    },
+    Heartbeat { games_played: u64 },
 }
 
 impl LogRecord {
@@ -149,7 +147,9 @@ mod tests {
         };
         let json = ev.to_json_line();
         let parsed: RegistryEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, RegistryEvent::Start { ref run_id, .. } if run_id == "rr-druid-20260808T120000-6fe2387"));
+        assert!(
+            matches!(parsed, RegistryEvent::Start { ref run_id, .. } if run_id == "rr-druid-20260808T120000-6fe2387")
+        );
     }
 
     #[test]
@@ -161,6 +161,12 @@ mod tests {
         };
         let json = ev.to_json_line();
         let parsed: RegistryEvent = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, RegistryEvent::Stop { exit_code: Some(0), .. }));
+        assert!(matches!(
+            parsed,
+            RegistryEvent::Stop {
+                exit_code: Some(0),
+                ..
+            }
+        ));
     }
 }

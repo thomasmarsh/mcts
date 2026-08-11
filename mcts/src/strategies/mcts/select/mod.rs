@@ -187,9 +187,9 @@ fn is_proven_loss<G: Game>(
     children: &ChildArray<G::A>,
     idx: usize,
 ) -> bool {
-    children.node_id(idx).is_some_and(|child_id| {
-        matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
-    })
+    children.node_id(idx).is_some_and(
+        |child_id| matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player),
+    )
 }
 
 // This function is adapted from from minimax-rs.

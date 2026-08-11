@@ -9,13 +9,11 @@ use std::marker::PhantomData;
 use mcts::game::{Game, PlayerIndex, TerminalStatus};
 
 use crate::connectivity::Connectivity;
-use crate::moves::{MoveEncoding, Move as SplitMove, Split};
 use crate::movecache::MoveCache;
+use crate::moves::{Move as SplitMove, MoveEncoding, Split};
 use crate::state::State;
-use crate::types::{Piece, PieceKind, Player, PlacedPiece, Square};
-use crate::zobrist::{
-    cell_zobrist, full_hash, hand_zobrist, player_zobrist, zobrist_height_bits,
-};
+use crate::types::{Piece, PieceKind, PlacedPiece, Player, Square};
+use crate::zobrist::{cell_zobrist, full_hash, hand_zobrist, player_zobrist, zobrist_height_bits};
 
 /// A board position plus the three incremental caches derived from it: the
 /// Zobrist hash, `Connectivity`, and `MoveCache`. Only `State` (`.0`)

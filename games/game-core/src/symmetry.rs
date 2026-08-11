@@ -80,9 +80,9 @@ impl<const S: usize> D4Symmetry<S> {
             1 => Self::h(i),
             2 => Self::v(i),
             3 => Self::d(i),
-            4 => Self::h(Self::v(i)),    // (V∘H)⁻¹ = H∘V
-            5 => Self::h(Self::d(i)),    // (D∘H)⁻¹ = H∘D
-            6 => Self::v(Self::d(i)),    // (D∘V)⁻¹ = V∘D
+            4 => Self::h(Self::v(i)),          // (V∘H)⁻¹ = H∘V
+            5 => Self::h(Self::d(i)),          // (D∘H)⁻¹ = H∘D
+            6 => Self::v(Self::d(i)),          // (D∘V)⁻¹ = V∘D
             7 => Self::h(Self::v(Self::d(i))), // (D∘V∘H)⁻¹ = H∘V∘D
             _ => unreachable!(),
         }

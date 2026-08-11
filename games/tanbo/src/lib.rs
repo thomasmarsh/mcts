@@ -165,20 +165,33 @@ impl<const N: usize> State<N> {
     }
 
     fn stone_count(&self, player: Player) -> usize {
-        self.board
-            .iter()
-            .filter(|&&c| c == Some(player))
-            .count()
+        self.board.iter().filter(|&&c| c == Some(player)).count()
     }
 
     /// List the four orthogonal neighbours of `index` that lie on the board.
     fn neighbours(index: usize) -> [Option<usize>; 4] {
         let (r, c) = Self::row_col(index);
         [
-            if r > 0 { Some(Self::index(r - 1, c)) } else { None },
-            if r + 1 < N { Some(Self::index(r + 1, c)) } else { None },
-            if c > 0 { Some(Self::index(r, c - 1)) } else { None },
-            if c + 1 < N { Some(Self::index(r, c + 1)) } else { None },
+            if r > 0 {
+                Some(Self::index(r - 1, c))
+            } else {
+                None
+            },
+            if r + 1 < N {
+                Some(Self::index(r + 1, c))
+            } else {
+                None
+            },
+            if c > 0 {
+                Some(Self::index(r, c - 1))
+            } else {
+                None
+            },
+            if c + 1 < N {
+                Some(Self::index(r, c + 1))
+            } else {
+                None
+            },
         ]
     }
 
@@ -374,13 +387,7 @@ impl<const N: usize> Game for Tanbo<N> {
             if visited[i] {
                 continue;
             }
-            State::<N>::trace_group(
-                state.turn,
-                i,
-                &state.board,
-                &mut visited,
-                actions,
-            );
+            State::<N>::trace_group(state.turn, i, &state.board, &mut visited, actions);
         }
     }
 
@@ -529,11 +536,7 @@ mod tests {
         State::<3>::remove_bounded(Player::Black, &mut b);
 
         // White at (1,0) has legal moves and must survive.
-        assert_eq!(
-            b[3],
-            Some(Player::White),
-            "White should not be bounded"
-        );
+        assert_eq!(b[3], Some(Player::White), "White should not be bounded");
     }
 
     #[test]
@@ -545,11 +548,11 @@ mod tests {
         // stones), so it should be removed after Black's move.
         let mut board = vec![None; 81];
         board[36] = Some(Player::White); // (4,0)
-        // Surround with Black
+                                         // Surround with Black
         board[27] = Some(Player::Black); // (3,0)
         board[37] = Some(Player::Black); // (4,1)
         board[45] = Some(Player::Black); // (5,0)
-        // (4,0) is on the left edge, so no neighbour to the west.
+                                         // (4,0) is on the left edge, so no neighbour to the west.
 
         let state = State::<9> {
             board,
