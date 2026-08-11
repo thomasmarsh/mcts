@@ -1,0 +1,18 @@
+[package]
+name = "mcts-tune"
+version = "0.1.0"
+edition = "2021"
+description = "Generic RAVE-family SMAC3 tuning harness shared across game crates"
+publish = false
+
+[dependencies]
+mcts = { path = "../mcts" }
+game-host = { path = "../game-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+game-nim = { path = "../games/nim" }
+
+[lints]
+workspace = true

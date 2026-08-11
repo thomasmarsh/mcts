@@ -10,7 +10,9 @@ use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 
-mod tuner;
+/// Number of self-play games one `tune_eval` call runs when the caller
+/// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
+const TUNE_EVAL_ROUNDS: u32 = 20;
 
 #[derive(Serialize, Deserialize)]
 struct WireState {
@@ -252,11 +254,14 @@ impl GameAdapter for TlAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(tuner::tuner_info())
+        Some(mcts_tune::rave_tuner_info("strong", TUNE_EVAL_ROUNDS))
     }
 
     fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
-        let outcome = tuner::tune_eval(&params, rounds, seed, build_strong)?;
+        // `use_transpositions: true` requires a real `Game::zobrist_hash`
+        // override -- TrafficLights has one (see `lib.rs`), so merging
+        // transposed nodes during the candidate's search is safe here.
+        let outcome = mcts_tune::rave_tune_eval(&params, rounds, seed, true, build_strong)?;
         Ok(serde_json::json!({
             "cost": outcome.cost,
             "wins": outcome.wins,

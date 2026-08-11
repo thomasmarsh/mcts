@@ -1,67 +1,55 @@
-//! SMAC3-tunable RAVE strategy for Traffic Lights, backing `TlAdapter::tuner`/
-//! `tune_eval` in `main.rs`. Ported from the former `examples/hyper.rs`,
-//! which embedded the game type and a `mcts-bench` tournament helper at
-//! compile time -- both incompatible with the subprocess-per-game
-//! architecture. The evaluation loop here is self-contained (no
-//! `mcts-bench` dependency) since it only ever plays one trial's `rounds`
-//! games sequentially in a single `tune eval` process invocation.
+//! Generic RAVE-family tuning harness shared by every game crate that opts
+//! into SMAC3-style hyperparameter search. Everything here is generic over
+//! `G: Game` -- picking a concrete game, a baseline preset, and whether that
+//! game has a real `zobrist_hash` (see `use_transpositions` below) is the
+//! only per-game glue. See `games/traffic-lights/src/main.rs` for the
+//! reference wiring.
+//!
+//! This crate deliberately depends on nothing but `mcts` (core search) and
+//! `game-host` (for `TunerInfo`/`HostError`) -- no game crate, and no
+//! `mcts-bench` (whose `rayon`/`indicatif`/`duckdb` dependencies the lean
+//! per-game subprocess binaries have no reason to pull in). `bench`/
+//! `mcts-bench` never depend on this crate either: they only ever talk to a
+//! game as an opaque subprocess, and building a candidate/baseline
+//! `Box<dyn Search<G>>` requires the concrete `G` in scope at compile time,
+//! so that code has to live inside each game's own crate/binary.
 
-use std::marker::PhantomData;
 use std::str::FromStr;
 
 use game_host::{HostError, TunerCondition, TunerInfo, TunerParameter};
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
+use mcts::strategies::mcts::strategy::Compose;
 use mcts::strategies::mcts::{backprop, node::QInit, simulate, SearchConfig, Strategy, TreeSearch};
 use mcts::strategies::Search;
 use serde_json::{json, Value};
-
-use game_traffic_lights::TrafficLights;
-
-type G = TrafficLights;
-
-/// Number of self-play games one `tune_eval` call runs when the caller
-/// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
-pub const EVAL_ROUNDS: u32 = 20;
 
 const PLAYOUT_DEPTH: usize = 200;
 const MAX_ITER: usize = 10_000;
 const EXPAND_THRESHOLD: u32 = 1;
 
-fn base_config<S: Strategy<G>>() -> SearchConfig<G, S> {
+/// The RAVE candidate family every opted-in game tunes: `select::Rave` +
+/// `DecisiveMove<EpsilonGreedy<Mast>>` simulate, generic over the final-move
+/// selection axis `FA` (see `make_candidate`) as well as `G`.
+type Candidate<G, FA> = Compose<
+    select::Rave,
+    simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>,
+    backprop::Classic,
+    FA,
+>;
+
+fn base_config<G: Game, S: Strategy<G>>() -> SearchConfig<G, S> {
     SearchConfig::new()
         .max_iterations(MAX_ITER)
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
 }
 
-// ---------------------------------------------------------------------------
-// Candidate strategy family
-// ---------------------------------------------------------------------------
-
-#[derive(Copy, Clone, Default)]
-struct CandidateStrategy<FinalAction: SelectStrategy<G>>(PhantomData<FinalAction>);
-
-impl<FinalAction: SelectStrategy<G>> Strategy<G> for CandidateStrategy<FinalAction> {
-    type Select = select::Rave;
-    type Simulate = simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>;
-    type Backprop = backprop::Classic;
-    type FinalAction = FinalAction;
-
-    fn friendly_name() -> String {
-        "candidate".into()
-    }
-
-    fn config() -> SearchConfig<G, Self> {
-        base_config()
-    }
-}
-
 /// One trial's candidate parameters, deserialized from the `params` JSON
-/// object `tune_eval` receives -- the merged active-parameter set
-/// `target.py` builds from `smac3/config/default.yaml`'s search space.
+/// object `rave_tune_eval` receives -- the merged active-parameter set a
+/// SMAC3 harness builds from its search-space YAML.
 #[derive(Debug, serde::Deserialize)]
-struct TrialParams {
+pub struct TrialParams {
     threshold: u32,
     c: Option<f64>,
     epsilon: f64,
@@ -75,70 +63,77 @@ struct TrialParams {
     rave_ucb: String,
 }
 
-impl<FinalAction: SelectStrategy<G>> CandidateStrategy<FinalAction> {
-    fn config_with_params(p: &TrialParams, seed: u64) -> Result<SearchConfig<G, Self>, HostError> {
-        let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
+fn config_with_params<G: Game, FA: SelectStrategy<G> + Default>(
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<SearchConfig<G, Candidate<G, FA>>, HostError> {
+    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
 
-        let schedule = match p.schedule.as_str() {
-            "hand_selected" => RaveSchedule::HandSelected {
-                k: p.k.ok_or_else(|| missing("k"))?,
-            },
-            "min_mse" => RaveSchedule::MinMSE {
-                bias: p.bias.ok_or_else(|| missing("bias"))?,
-            },
-            "threshold" => RaveSchedule::Threshold {
-                rave: p.rave.ok_or_else(|| missing("rave"))?,
-            },
-            other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
-        };
+    let schedule = match p.schedule.as_str() {
+        "hand_selected" => RaveSchedule::HandSelected {
+            k: p.k.ok_or_else(|| missing("k"))?,
+        },
+        "min_mse" => RaveSchedule::MinMSE {
+            bias: p.bias.ok_or_else(|| missing("bias"))?,
+        },
+        "threshold" => RaveSchedule::Threshold {
+            rave: p.rave.ok_or_else(|| missing("rave"))?,
+        },
+        other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
+    };
 
-        let ucb = match p.rave_ucb.as_str() {
-            "none" => RaveUcb::None,
-            "ucb1" => RaveUcb::Ucb1 {
-                exploration_constant: p.c.ok_or_else(|| missing("c"))?,
-            },
-            "tuned" => RaveUcb::Ucb1Tuned {
-                exploration_constant: p.c.ok_or_else(|| missing("c"))?,
-            },
-            other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
-        };
+    let ucb = match p.rave_ucb.as_str() {
+        "none" => RaveUcb::None,
+        "ucb1" => RaveUcb::Ucb1 {
+            exploration_constant: p.c.ok_or_else(|| missing("c"))?,
+        },
+        "tuned" => RaveUcb::Ucb1Tuned {
+            exploration_constant: p.c.ok_or_else(|| missing("c"))?,
+        },
+        other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
+    };
 
-        let q_init = QInit::from_str(&p.q_init)
-            .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
+    let q_init = QInit::from_str(&p.q_init)
+        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
 
-        Ok(Self::config()
-            .q_init(q_init)
-            .use_transpositions(true)
-            .select(select::Rave::new(p.threshold, schedule, ucb))
-            .simulate(
-                simulate::DecisiveMove::new()
-                    .mode(simulate::DecisiveMoveMode::WinLoss)
-                    .inner(simulate::EpsilonGreedy::with_epsilon(p.epsilon)),
-            )
-            .seed(seed))
-    }
+    Ok(base_config::<G, Candidate<G, FA>>()
+        .q_init(q_init)
+        .use_transpositions(use_transpositions)
+        .select(select::Rave::new(p.threshold, schedule, ucb))
+        .simulate(
+            simulate::DecisiveMove::new()
+                .mode(simulate::DecisiveMoveMode::WinLoss)
+                .inner(simulate::EpsilonGreedy::with_epsilon(p.epsilon)),
+        )
+        .seed(seed))
 }
 
-fn make_candidate(p: &TrialParams, seed: u64) -> Result<Box<dyn Search<G = G>>, HostError> {
+fn make_candidate<G: Game + 'static>(
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
     match p.final_action.as_str() {
         "max_avg" => {
-            let config = CandidateStrategy::<select::SecureChild>::config_with_params(p, seed)?;
+            let config = config_with_params::<G, select::SecureChild>(p, seed, use_transpositions)?;
             Ok(Box::new(
-                TreeSearch::<G, CandidateStrategy<select::SecureChild>>::new().config(config),
+                TreeSearch::<G, Candidate<G, select::SecureChild>>::new().config(config),
             ))
         }
         "secure_child" => {
-            let mut config = CandidateStrategy::<select::SecureChild>::config_with_params(p, seed)?;
+            let mut config =
+                config_with_params::<G, select::SecureChild>(p, seed, use_transpositions)?;
             config.final_action.a =
                 p.a.ok_or_else(|| HostError::bad_request("missing param: a"))?;
             Ok(Box::new(
-                TreeSearch::<G, CandidateStrategy<select::SecureChild>>::new().config(config),
+                TreeSearch::<G, Candidate<G, select::SecureChild>>::new().config(config),
             ))
         }
         "robust_child" => {
-            let config = CandidateStrategy::<select::RobustChild>::config_with_params(p, seed)?;
+            let config = config_with_params::<G, select::RobustChild>(p, seed, use_transpositions)?;
             Ok(Box::new(
-                TreeSearch::<G, CandidateStrategy<select::RobustChild>>::new().config(config),
+                TreeSearch::<G, Candidate<G, select::RobustChild>>::new().config(config),
             ))
         }
         other => Err(HostError::bad_request(format!(
@@ -151,7 +146,7 @@ fn make_candidate(p: &TrialParams, seed: u64) -> Result<Box<dyn Search<G = G>>, 
 // Evaluation
 // ---------------------------------------------------------------------------
 
-/// Result of one `tune_eval` call: `cost` is what SMAC3 minimizes (the
+/// Result of one `rave_tune_eval` call: `cost` is what SMAC3 minimizes (the
 /// candidate's loss rate against the baseline); `wins`/`losses`/`draws` are
 /// from the candidate's perspective, for display.
 #[derive(Debug)]
@@ -167,11 +162,18 @@ pub struct TuneEvalOutcome {
 /// return the aggregate outcome. `baseline_build` is a thunk rather than an
 /// already-built search so a fresh, un-treed instance is used for every
 /// single game, matching how each preset's `build_*` function is used
-/// elsewhere in this crate.
-pub fn tune_eval(
+/// elsewhere in a game's own crate.
+///
+/// `use_transpositions` should only be `true` for a game with a real
+/// `Game::zobrist_hash` override -- the default hash is a constant `0`, and
+/// enabling transpositions against it merges every node in the tree into
+/// one, silently corrupting the search rather than erroring. Pass `true`
+/// only for games that have actually implemented `zobrist_hash`.
+pub fn rave_tune_eval<G: Game + 'static>(
     params: &Value,
     rounds: u32,
     seed: Option<u64>,
+    use_transpositions: bool,
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
 ) -> Result<TuneEvalOutcome, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
@@ -180,7 +182,7 @@ pub fn tune_eval(
 
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     for _ in 0..rounds {
-        let mut candidate = make_candidate(&trial, seed)?;
+        let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
         let mut baseline = baseline_build();
 
         let (c, b, d) = play_one(candidate.as_mut(), baseline.as_mut());
@@ -189,7 +191,7 @@ pub fn tune_eval(
         draws += d;
 
         // Swap move order so the candidate plays second half the time.
-        let mut candidate = make_candidate(&trial, seed)?;
+        let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
         let mut baseline = baseline_build();
         let (b, c, d) = play_one(baseline.as_mut(), candidate.as_mut());
         wins += c;
@@ -222,7 +224,14 @@ fn cost_from_losses(losses: u32, rounds: u32) -> f64 {
 /// and `second` (index 1). Returns `(first_result, second_result, draws)`
 /// win/loss counts -- each pair is `(1,0)`/`(0,1)`/`(0,0)` with the third
 /// element set on a draw.
-fn play_one(first: &mut dyn Search<G = G>, second: &mut dyn Search<G = G>) -> (u32, u32, u32) {
+///
+/// Assumes a 2-player, win/loss/draw game (`G::winner() -> Option<P>` with
+/// indices 0/1) -- every current caller is, but a 3+-player game would need
+/// this generalized first.
+fn play_one<G: Game>(
+    first: &mut dyn Search<G = G>,
+    second: &mut dyn Search<G = G>,
+) -> (u32, u32, u32) {
     let mut state = <G as Game>::S::default();
     while !G::is_terminal(&state) {
         let mover = G::player_to_move(&state).to_index();
@@ -244,15 +253,15 @@ fn play_one(first: &mut dyn Search<G = G>, second: &mut dyn Search<G = G>) -> (u
 // Tuner metadata
 // ---------------------------------------------------------------------------
 
-/// Search-space metadata for the RAVE candidate family above, ported from
-/// `smac3/config/default.yaml`'s `parameters`/`conditions` sections (which
-/// remain the source of truth SMAC3 itself reads; this is what `tune
-/// describe` reports for display/introspection).
-pub fn tuner_info() -> TunerInfo {
+/// Search-space metadata for the RAVE candidate family above, for `tune
+/// describe` to report to a SMAC3 harness or launch-form UI. `baseline` is
+/// the preset id (e.g. `"strong"`) `rave_tune_eval`'s `baseline_build`
+/// argument is expected to build.
+pub fn rave_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
     TunerInfo {
         id: "rave".into(),
-        baseline: "strong".into(),
-        eval_rounds: EVAL_ROUNDS,
+        baseline: baseline.into(),
+        eval_rounds,
         parameters: vec![
             param(
                 "bias",
@@ -325,6 +334,7 @@ fn condition(if_: Value, then: &[&str]) -> TunerCondition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_nim::Nim;
     use mcts::strategies::mcts::strategy;
 
     #[test]
@@ -343,6 +353,10 @@ mod tests {
         assert_eq!(cost_from_losses(0, 0), 0.0);
     }
 
+    fn baseline() -> Box<dyn Search<G = Nim>> {
+        Box::new(TreeSearch::<Nim, strategy::Ucb1>::new())
+    }
+
     #[test]
     fn test_tune_eval_rejects_params_missing_required_field() {
         // "schedule": "threshold" requires "rave", which is absent -- this
@@ -357,10 +371,8 @@ mod tests {
             "schedule": "threshold",
             "rave_ucb": "tuned",
         });
-        let err = tune_eval(&params, 1, Some(0), || {
-            Box::new(TreeSearch::<G, strategy::Ucb1>::new())
-        })
-        .expect_err("missing `rave` must be rejected");
+        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+            .expect_err("missing `rave` must be rejected");
         assert!(err.message.contains("rave"));
     }
 
@@ -375,10 +387,25 @@ mod tests {
             "schedule": "not_a_real_schedule",
             "rave_ucb": "tuned",
         });
-        let err = tune_eval(&params, 1, Some(0), || {
-            Box::new(TreeSearch::<G, strategy::Ucb1>::new())
-        })
-        .expect_err("unknown schedule must be rejected");
+        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+            .expect_err("unknown schedule must be rejected");
         assert!(err.message.contains("schedule"));
+    }
+
+    #[test]
+    fn test_tune_eval_rejects_unknown_final_action() {
+        let params = json!({
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "not_a_real_final_action",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+            .expect_err("unknown final_action must be rejected");
+        assert!(err.message.contains("final_action"));
     }
 }

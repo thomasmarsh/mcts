@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "mcts",
     "mcts-bench",
+    "mcts-tune",
     "games/game-core",
     "game-host",
     "games/breakthrough",
