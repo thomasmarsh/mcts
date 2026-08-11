@@ -1,5 +1,5 @@
 use game_host::{
-    run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -232,5 +232,5 @@ impl GameAdapter for GonnectAdapter {
 }
 
 fn main() {
-    run_stdin_stdout(GonnectAdapter);
+    run_cli(GonnectAdapter);
 }

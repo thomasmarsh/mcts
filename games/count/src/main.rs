@@ -1,5 +1,5 @@
 use game_host::{
-    run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
 };
 use serde_json::Value;
 
@@ -168,5 +168,5 @@ impl GameAdapter for CountAdapter {
 }
 
 fn main() {
-    run_stdin_stdout(CountAdapter);
+    run_cli(CountAdapter);
 }

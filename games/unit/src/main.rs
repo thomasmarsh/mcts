@@ -1,4 +1,4 @@
-use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
 use serde_json::Value;
 
 struct UnitAdapter;
@@ -54,5 +54,5 @@ impl GameAdapter for UnitAdapter {
 }
 
 fn main() {
-    run_stdin_stdout(UnitAdapter);
+    run_cli(UnitAdapter);
 }

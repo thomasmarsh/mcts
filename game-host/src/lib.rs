@@ -241,6 +241,63 @@ pub fn run_stdin_stdout<A: GameAdapter>(adapter: A) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI entry point
+// ---------------------------------------------------------------------------
+
+/// Static description of a game, as reported by the `describe` subcommand.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct GameDescription {
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+    pub default_config: Value,
+    pub ai_presets: Vec<AiPresetInfo>,
+}
+
+impl GameDescription {
+    fn of<A: GameAdapter>(adapter: &A) -> Self {
+        Self {
+            kind: adapter.kind().to_owned(),
+            label: adapter.label().to_owned(),
+            description: adapter.description().to_owned(),
+            default_config: adapter.default_config(),
+            ai_presets: adapter.ai_presets(),
+        }
+    }
+}
+
+/// Entry point every game binary's `main()` should call instead of
+/// [`run_stdin_stdout`] directly.
+///
+/// Inspects `std::env::args()` for a `describe` subcommand, which prints one
+/// JSON line describing the game (kind/label/description/default_config/
+/// ai_presets) and exits — a one-shot query that doesn't require opening a
+/// JSONL session. Any other argument (including none) falls back to the
+/// existing stdin/stdout protocol loop unchanged, so `SubprocessAdapter`
+/// (which never passes args) is unaffected.
+pub fn run_cli<A: GameAdapter>(adapter: A) {
+    run_cli_with(std::env::args().skip(1), io::stdin(), io::stdout(), adapter);
+}
+
+/// Testable core of [`run_cli`]: takes the args iterator and reader/writer
+/// as parameters instead of reaching for the real process environment.
+fn run_cli_with<I, R, W, A>(mut args: I, reader: R, mut writer: W, adapter: A)
+where
+    I: Iterator<Item = String>,
+    R: Read,
+    W: Write,
+    A: GameAdapter,
+{
+    if let Some("describe") = args.next().as_deref() {
+        let description = GameDescription::of(&adapter);
+        let json = serde_json::to_string(&description).expect("GameDescription always serializes");
+        let _ = writeln!(writer, "{json}");
+        return;
+    }
+    run_host(reader, writer, adapter);
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -738,5 +795,62 @@ mod tests {
         ]);
         // blank line produces no output, so we get 2 responses
         assert_eq!(lines.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // run_cli tests
+    // -----------------------------------------------------------------------
+
+    fn run_cli_capture(args: &[&str], stdin: &str) -> String {
+        let args = args.iter().map(|s| s.to_string());
+        let input = Cursor::new(stdin.to_owned());
+        let mut output = Cursor::new(Vec::new());
+        run_cli_with(args, input, &mut output, FakeAdapter);
+        String::from_utf8(output.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn test_run_cli_no_args_drives_stdin_stdout_loop_unchanged() {
+        let out = run_cli_capture(&[], "{\"id\":1,\"method\":\"kind\",\"params\":{}}\n");
+        let resp = parse_response(out.lines().next().unwrap());
+        match resp {
+            Response::Success { id, result } => {
+                assert_eq!(id, 1);
+                assert_eq!(result, "fake");
+            }
+            _ => panic!("expected success response"),
+        }
+    }
+
+    #[test]
+    fn test_run_cli_describe_matches_adapter_fields() {
+        let out = run_cli_capture(&["describe"], "");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let description: GameDescription = serde_json::from_str(lines[0]).unwrap();
+
+        let adapter = FakeAdapter;
+        assert_eq!(description.kind, adapter.kind());
+        assert_eq!(description.label, adapter.label());
+        assert_eq!(description.description, adapter.description());
+        assert_eq!(description.default_config, adapter.default_config());
+        assert_eq!(description.ai_presets.len(), adapter.ai_presets().len());
+        assert_eq!(description.ai_presets[0].id, adapter.ai_presets()[0].id);
+    }
+
+    #[test]
+    fn test_run_cli_unknown_subcommand_falls_back_to_stdin_stdout_loop() {
+        let out = run_cli_capture(
+            &["some-unknown-flag"],
+            "{\"id\":7,\"method\":\"kind\",\"params\":{}}\n",
+        );
+        let resp = parse_response(out.lines().next().unwrap());
+        match resp {
+            Response::Success { id, result } => {
+                assert_eq!(id, 7);
+                assert_eq!(result, "fake");
+            }
+            _ => panic!("expected success response, describe-only args must not error"),
+        }
     }
 }

@@ -1,4 +1,4 @@
-use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
 use serde_json::Value;
 
 struct NullAdapter;
@@ -47,5 +47,5 @@ impl GameAdapter for NullAdapter {
 }
 
 fn main() {
-    run_stdin_stdout(NullAdapter);
+    run_cli(NullAdapter);
 }
