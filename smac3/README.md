@@ -1,29 +1,30 @@
-# hyper-cli — SMAC3 hyperparameter optimisation for MCTS
+# smac3 — SMAC3 hyperparameter optimisation for MCTS
 
 Uses [SMAC3](https://github.com/automl/SMAC3) (Bayesian optimisation + racing) to
-find strong hyperparameters for MCTS search strategies. Each trial compiles a
-configuration, invokes the Rust `hyper` binary to play a match between the
-candidate strategy and a fixed baseline, and reports the loss rate.
+find strong hyperparameters for MCTS search strategies. Each trial invokes the
+game binary's `tune eval` subcommand to play a match between the candidate
+strategy and a fixed baseline, and reports the loss rate.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Build the Rust binary (one-time)
-cargo build --bin hyper --release
+# 1. Build the game binary (one-time)
+cargo build --release -p game-traffic-lights
 
 # 2. Run from the project root (cwd must be where target/release/ lives)
-uv run --project scripts/ hyper-cli
+uv run --project smac3/ smac3
 ```
 
 This runs a 1000-trial optimisation using the default search space (RAVE/GRAVE
 knobs for the TrafficLights game). Results appear in `smac3_output/`.
 
-> **Why `--project scripts/`?** The Rust project is managed by Cargo in the root;
-> the Python/SMAC tooling lives in `scripts/` as its own uv project. The `hyper`
+> **Why `--project smac3/`?** The Rust project is managed by Cargo in the root;
+> the Python/SMAC tooling lives in `smac3/` as its own uv project. The game
 > binary path in the config is relative to the *current working directory*, so
-> running from the project root makes `target/release/hyper` resolve correctly.
+> running from the project root makes `target/release/game-traffic-lights`
+> resolve correctly.
 
 ---
 
@@ -34,7 +35,7 @@ knobs for the TrafficLights game). Results appear in `smac3_output/`.
 Use `--override` to shrink the budget for quick smoke tests:
 
 ```bash
-uv run --project scripts/ hyper-cli \
+uv run --project smac3/ smac3 \
     --override optimizer.n_trials=10 \
     --override optimizer.deterministic=True \
     --override optimizer.n_workers=1
@@ -48,14 +49,15 @@ uv run --project scripts/ hyper-cli \
 | `optimizer.deterministic` | bool | false | Use one seed per trial (vs. multiple) |
 | `optimizer.n_workers` | int | cpu//2 | Parallel workers |
 | `optimizer.seed` | int | 42 | Random seed |
-| `target.binary` | str | `target/release/hyper` | Path to Rust binary (relative to CWD) |
+| `target.binary` | str | `target/release/game-traffic-lights` | Path to the game binary (relative to CWD) |
+| `target.rounds` | int | 20 | Self-play rounds per trial, passed as `tune eval --rounds` |
 
 ### Full config file
 
-Edit `scripts/config/default.yaml` or create your own:
+Edit `smac3/config/default.yaml` or create your own:
 
 ```bash
-uv run --project scripts/ hyper-cli --config my-search.yaml --verbose
+uv run --project smac3/ smac3 --config my-search.yaml --verbose
 ```
 
 The config file defines:
@@ -64,7 +66,7 @@ The config file defines:
 - **`conditions`** — conditional activation (e.g. `c` is only active when
   `rave_ucb` is `ucb1` or `tuned`)
 - **`optimizer`** — SMAC settings (budget, parallelism, seed)
-- **`target`** — the Rust binary path (relative to CWD)
+- **`target`** — the game binary path (relative to CWD) and rounds per trial
 
 ---
 
@@ -73,8 +75,10 @@ The config file defines:
 1. Add an entry to `parameters:` in the YAML config.
 2. If it should only be active when another param has a specific value, add a
    `conditions:` entry.
-3. Make sure the Rust binary's `Args` struct has a matching `#[arg(long)]` field
-   (the CLI wrapper converts `snake_case` to kebab-case automatically).
+3. Make sure the game's `tuner()`/`tune_eval` (e.g.
+   `games/traffic-lights/src/tuner.rs`) has a matching field on its params
+   struct — active parameters are passed as keys in the `tune eval --config`
+   JSON object, named exactly as in the YAML.
 
 ---
 

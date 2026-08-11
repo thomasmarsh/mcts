@@ -1,5 +1,5 @@
 [project]
-name = "hyper-cli"
+name = "mcts-smac3"
 version = "0.1.0"
 description = "SMAC3 hyperparameter optimization for MCTS"
 requires-python = ">=3.10,<3.14"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hyper-cli = "hyper_cli.__main__:main"
+smac3 = "smac3_cli.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

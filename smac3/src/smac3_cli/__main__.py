@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-hyper-cli — command-line entry point.
+smac3 — command-line entry point.
 
 Run::
 
-    uv run --project scripts/ hyper-cli [--config path] [--override key=value] ...
+    uv run --project smac3/ smac3 [--config path] [--override key=value] ...
 
 Or with the installed entry-point::
 
-    hyper-cli --help
+    smac3 --help
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .target import make_target
 warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="invalid value encountered", category=RuntimeWarning)
 
-logger = logging.getLogger("hyper_cli")
+logger = logging.getLogger("smac3_cli")
 
 
 def _parse_overrides(raw: list[str]) -> dict[str, str]:
@@ -63,8 +63,8 @@ def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="hyper-cli",
-        description="SMAC3 hyperparameter optimisation for MCTS (Rust binary).",
+        prog="smac3",
+        description="SMAC3 hyperparameter optimisation for MCTS (game binary).",
     )
     p.add_argument(
         "--config",

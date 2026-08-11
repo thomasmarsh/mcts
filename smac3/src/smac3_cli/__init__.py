@@ -1,4 +1,4 @@
-"""hyper-cli — SMAC3-driven hyperparameter optimisation for MCTS."""
+"""smac3 — SMAC3-driven hyperparameter optimisation for MCTS."""
 
 from .config import ParamDef, SearchConfig
 from .space import build_space

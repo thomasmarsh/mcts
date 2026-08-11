@@ -80,18 +80,18 @@ enum Command {
     },
 
     /// Launch a SMAC3 hyperparameter-optimisation run.  Runs
-    /// ``uv run --project scripts/ hyper-cli ...`` in the foreground
+    /// ``uv run --project smac3/ smac3 ...`` in the foreground
     /// (streaming JSONL to stdout) or, with ``--background``, through the
     /// detached-process launcher so the run survives the launching
     /// process and appears in DuckDB/the UI.
     Smac3 {
         /// Path to the SMAC3 YAML config file (passed through to
-        /// ``hyper-cli --config``).
+        /// ``smac3 --config``).
         #[arg(long)]
         config: Option<String>,
 
         /// Config override (``key=value``, repeatable).  Passed through
-        /// as ``hyper-cli --override key=value``.
+        /// as ``smac3 --override key=value``.
         #[arg(long = "override", default_values_t = Vec::<String>::new())]
         overrides: Vec<String>,
 
@@ -274,15 +274,15 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
-/// Build the argv for a ``uv run --project scripts/ hyper-cli ...``
+/// Build the argv for a ``uv run --project smac3/ smac3 ...``
 /// invocation, incorporating the config file, overrides, and git SHA.
 fn build_smac3_command(config: Option<&str>, overrides: &[String]) -> Vec<String> {
     let mut cmd = vec![
         "uv".to_string(),
         "run".to_string(),
         "--project".to_string(),
-        "scripts/".to_string(),
-        "hyper-cli".to_string(),
+        "smac3/".to_string(),
+        "smac3".to_string(),
     ];
 
     if let Some(config_path) = config {

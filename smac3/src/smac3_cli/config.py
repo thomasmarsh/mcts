@@ -26,11 +26,8 @@ class OptimizerConfig:
 
 @dataclass
 class TargetConfig:
-    binary: Path = Path("../target/release/hyper")
+    binary: Path = Path("target/release/game-traffic-lights")
     rounds: int = 20
-    max_iter: int = 10_000
-    playout_depth: int = 200
-    expand_threshold: int = 1
 
 
 @dataclass
@@ -83,7 +80,7 @@ class SearchConfig:
         return cls.load(pkg_root / "config" / "default.yaml")
 
     def resolve_binary(self) -> Path:
-        """Return the absolute path to the Rust binary.
+        """Return the absolute path to the game binary.
 
         * Relative paths are resolved from the **current working directory**
           (not the config file), so the user can run from the project root.
@@ -131,11 +128,8 @@ class SearchConfig:
                 seed=opt.get("seed", 42),
             ),
             target=TargetConfig(
-                binary=Path(tgt.get("binary", "../target/release/hyper")),
+                binary=Path(tgt.get("binary", "target/release/game-traffic-lights")),
                 rounds=tgt.get("rounds", 20),
-                max_iter=tgt.get("max_iter", 10_000),
-                playout_depth=tgt.get("playout_depth", 200),
-                expand_threshold=tgt.get("expand_threshold", 1),
             ),
             parameters=params,
             conditions=conds,

@@ -1,5 +1,5 @@
 # Default hyperparameter search configuration for MCTS.
-# This file can be overridden with `hyper-cli --config my-config.yaml`.
+# This file can be overridden with `smac3 --config my-config.yaml`.
 # All keys can also be overridden on the command line via `--override key=value`.
 
 # ---------------------------------------------------------------------------
@@ -19,29 +19,26 @@ optimizer:
   seed: 42
 
 # ---------------------------------------------------------------------------
-# Target evaluation — the Rust binary SMAC invokes
+# Target evaluation — the game binary's `tune eval` subcommand SMAC invokes
 # ---------------------------------------------------------------------------
 target:
-  # Path (relative to current working directory or absolute) to the Rust binary
-  # Typical invocation: cd /path/to/mcts && uv run --project scripts/ hyper-cli
-  binary: target/release/hyper
+  # Path (relative to current working directory or absolute) to the game binary
+  # Typical invocation: cd /path/to/mcts && uv run --project smac3/ smac3
+  binary: target/release/game-traffic-lights
 
-  # Evaluation hyper-parameters baked into every invocation
+  # Number of self-play rounds (each round: candidate-first + baseline-first
+  # game) one `tune eval` call runs; passed as `--rounds`.
   rounds: 20
-  max_iter: 10_000
-  playout_depth: 200
-  expand_threshold: 1
 
 # ---------------------------------------------------------------------------
-# Search space — each entry becomes a hyperparameter on the binary CLI.
+# Search space — each entry becomes a key in the JSON object passed to the
+# binary's `tune eval --config` flag.
 #
 # Types:
 #   float       -> UniformFloat hyperparameter (continuous)
 #   int         -> UniformInteger
 #   categorical -> Categorical
 #   constant    -> Constant (fixed, excluded from search)
-#
-# The binary receives the parameter value as `--kebab-case-name=<value>`.
 # ---------------------------------------------------------------------------
 parameters:
   bias:
@@ -94,9 +91,9 @@ parameters:
     default: tuned
 
 # ---------------------------------------------------------------------------
-# Conditional parameter activation — an active parameter is always passed to
-# the binary; inactive parameters are omitted from the CLI invocation (they
-# are imputed with their default when training the surrogate model).
+# Conditional parameter activation — an active parameter is always included
+# in the `--config` JSON object; inactive parameters are omitted (they are
+# imputed with their default when training the surrogate model).
 #
 # Each entry: if <parent> == <value(s)>, then <children> become active.
 # ---------------------------------------------------------------------------

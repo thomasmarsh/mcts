@@ -7,7 +7,7 @@ smac3_output
 .DS_Store
 node_modules
 # Python virtual environment (uv project)
-scripts/.venv/
+smac3/.venv/
 # setuptools build metadata
 *.egg-info/
 # pnpm workspace (ui/)
