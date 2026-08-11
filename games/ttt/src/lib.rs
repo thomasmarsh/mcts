@@ -1,4 +1,4 @@
-use mcts::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
 use mcts::zobrist::LazyZobristTable;
 use serde::{Deserialize, Serialize};
@@ -108,63 +108,19 @@ impl Position {
 
 pub const NUM_SYMMETRIES: usize = 8;
 
-pub mod sym {
-    use super::NUM_SYMMETRIES;
+/// D4 symmetries of the 3×3 grid.
+pub type Sym = game_core::symmetry::D4Symmetry<3>;
 
-    const H: [usize; 9] = [6, 7, 8, 3, 4, 5, 0, 1, 2];
-    const V: [usize; 9] = [2, 1, 0, 5, 4, 3, 8, 7, 6];
-    const D: [usize; 9] = [8, 5, 2, 7, 4, 1, 6, 3, 0];
+/// Compute all 8 symmetric images of a packed-`u32` board (2 bits per cell).
+#[inline]
+pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
+    Sym::packed_board_symmetries(board, symmetries);
+}
 
-    #[inline]
-    pub fn index_symmetries(i: usize, symmetries: &mut [usize; NUM_SYMMETRIES]) {
-        symmetries[0] = i;
-        symmetries[1] = H[i];
-        symmetries[2] = V[i];
-        symmetries[3] = D[i];
-        symmetries[4] = V[H[i]];
-        symmetries[5] = D[H[i]];
-        symmetries[6] = D[V[i]];
-        symmetries[7] = D[V[H[i]]];
-    }
-
-    #[inline]
-    pub fn invert_symmetry(i: usize, symmetry_index: usize) -> usize {
-        match symmetry_index {
-            0 => i,
-            1 => H[i],
-            2 => V[i],
-            3 => D[i],
-            4 => H[V[i]],
-            5 => H[D[i]],
-            6 => V[D[i]],
-            7 => H[V[D[i]]],
-            _ => unreachable!("Invalid symmetry index"),
-        }
-    }
-
-    #[inline]
-    pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
-        debug_assert!(symmetries.iter().all(|x| *x == 0));
-
-        symmetries[0] = board;
-        (0..9).for_each(|i| {
-            let p = (board >> (i << 1)) & 0b11;
-            symmetries[1] |= p << (H[i] * 2);
-            symmetries[2] |= p << (V[i] * 2);
-            symmetries[3] |= p << (D[i] * 2);
-            symmetries[4] |= p << (V[H[i]] * 2);
-            symmetries[5] |= p << (D[H[i]] * 2);
-            symmetries[6] |= p << (D[V[i]] * 2);
-            symmetries[7] |= p << (D[V[H[i]]] * 2);
-        });
-    }
-
-    #[inline]
-    pub fn canonical_symmetry(board: u32) -> usize {
-        let mut sym = [0; 8];
-        board_symmetries(board, &mut sym);
-        sym.iter().enumerate().min_by_key(|(_, &v)| v).unwrap().0
-    }
+/// Index of the symmetry whose image of `board` is the minimal one.
+#[inline]
+pub fn canonical_symmetry(board: u32) -> usize {
+    Sym::packed_canonical_symmetry(board)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -212,11 +168,9 @@ impl HashedPosition {
             position,
             hashes: [0; 8],
         };
-        let mut symmetries = [0usize; NUM_SYMMETRIES];
         for i in 0..9 {
             if let Some(piece) = position.get(i) {
-                sym::index_symmetries(i, &mut symmetries);
-                for (s, index) in symmetries.iter().enumerate() {
+                for (s, index) in Sym::index_symmetries(i).iter().enumerate() {
                     hashed.hashes[s] ^= HASHES.hash((index << 1) | piece as usize);
                 }
             }
@@ -226,9 +180,7 @@ impl HashedPosition {
 
     #[inline]
     fn apply(&mut self, m: Move) {
-        let mut symmetries = [0; NUM_SYMMETRIES];
-        sym::index_symmetries(m.0 as usize, &mut symmetries);
-        for (i, index) in symmetries.iter().enumerate() {
+        for (i, index) in Sym::index_symmetries(m.0 as usize).iter().enumerate() {
             self.hashes[i] ^= HASHES.hash((index << 1) | self.position.turn as usize);
         }
         self.position.apply(m);
@@ -237,7 +189,7 @@ impl HashedPosition {
     #[inline(always)]
     fn hash(&self) -> u64 {
         if USE_SYMMETRY {
-            self.hashes[sym::canonical_symmetry(self.position.board)]
+            self.hashes[canonical_symmetry(self.position.board)]
         } else {
             self.hashes[0]
         }
@@ -378,25 +330,6 @@ mod tests {
 
     use proptest::prelude::*;
 
-    // #[inline]
-    // pub fn invert_symmetry(i: usize, symmetry_index: usize) -> usize {
-    //     match symmetry_index {
-    //         0 => i,
-    //         1 => H[i],
-    //         2 => V[i],
-    //         3 => D[i],
-    //         4 => V[H[i]],
-    //         5 => D[H[i]],
-    //         6 => D[V[i]],
-    //         7 => V[D[H[i]]],
-    //         _ => unreachable!("Invalid symmetry index"),
-    //     }
-    // }
-
-    // #[inline]
-    // pub fn board_symmetries(board: u32, symmetries: &mut [u32; NUM_SYMMETRIES]) {
-    //     debug_assert!(symmetries.iter().all(|x| *x == 0));
-
     // Define a property-based test for inversion
     use super::*;
     proptest! {
@@ -406,13 +339,12 @@ mod tests {
             // Apply the symmetry
             println!("index: {original_index}");
             println!("symmetry: {symmetry_used}");
-            let mut xs = [0; NUM_SYMMETRIES];
-            sym::index_symmetries(original_index, &mut xs);
+            let xs = Sym::index_symmetries(original_index);
             let transformed_index = xs[symmetry_used];
             println!("index': {transformed_index}");
 
             // Invert the symmetry
-            let inverted_index = sym::invert_symmetry(transformed_index, symmetry_used);
+            let inverted_index = Sym::invert_symmetry(transformed_index, symmetry_used);
             println!("index'-1: {inverted_index}");
 
             // Check if the inversion gives back the original index

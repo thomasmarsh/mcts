@@ -1,5 +1,6 @@
-use mcts::bitboard::{BitBoard, Direction};
-use mcts::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::bitboard::{BitBoard, Direction};
+use game_core::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::symmetry::D4Symmetry;
 use mcts::game::{Game, PlayerIndex};
 use mcts::zobrist::LazyZobristTable;
 use serde::Serialize;
@@ -31,177 +32,6 @@ pub fn zobrist_piece(pos: usize, player: Player) -> usize {
 // ---------------------------------------------------------------------------
 // Dihedral symmetries (D4) for 8×8 board
 // ---------------------------------------------------------------------------
-
-pub mod sym {
-    // Dead-code allowed because symmetry infrastructure will be used in
-    // production (canonicalization, hash reduction) once the game logic is
-    // further along.
-    #![allow(dead_code)]
-    /// H: horizontal mirror (reflect across vertical axis) — col → 7-col.
-    pub(crate) const H: [usize; 64] = build_h();
-    /// V: vertical mirror (reflect across horizontal axis) — row → 7-row.
-    pub(crate) const V: [usize; 64] = build_v();
-    /// D: transpose across main diagonal — (row, col) → (col, row).
-    pub(crate) const D: [usize; 64] = build_d();
-
-    const fn build_h() -> [usize; 64] {
-        let mut a = [0; 64];
-        let mut i = 0;
-        while i < 64 {
-            let row = i / 8;
-            let col = i % 8;
-            a[i] = row * 8 + (7 - col);
-            i += 1;
-        }
-        a
-    }
-
-    const fn build_v() -> [usize; 64] {
-        let mut a = [0; 64];
-        let mut i = 0;
-        while i < 64 {
-            let row = i / 8;
-            a[i] = (7 - row) * 8 + (i % 8);
-            i += 1;
-        }
-        a
-    }
-
-    const fn build_d() -> [usize; 64] {
-        let mut a = [0; 64];
-        let mut i = 0;
-        while i < 64 {
-            let row = i / 8;
-            let col = i % 8;
-            a[i] = col * 8 + row;
-            i += 1;
-        }
-        a
-    }
-
-    /// Produce all 8 symmetric images of an index.
-    /// Order: identity, H, V, D, VH, DH, DV, DVH
-    #[inline]
-    pub fn index_symmetries(i: usize) -> [usize; 8] {
-        [i, H[i], V[i], D[i], V[H[i]], D[H[i]], D[V[i]], D[V[H[i]]]]
-    }
-
-    /// Map an index back through the inverse of a symmetry.
-    /// For a permutation P, the inverse satisfies P[inverse] = original.
-    #[inline]
-    pub fn invert_symmetry(i: usize, sym_idx: usize) -> usize {
-        // The inverse is: apply the reverse composition.
-        // sym[0] = identity: inv = i
-        // sym[1] = H: inv = H
-        // sym[2] = V: inv = V
-        // sym[3] = D: inv = D
-        // sym[4] = V∘H: inv = H∘V (since involutions commute: VH = HV)
-        // sym[5] = D∘H: inv = H∘D
-        // sym[6] = D∘V: inv = V∘D
-        // sym[7] = D∘V∘H: inv = H∘V∘D
-        match sym_idx {
-            0 => i,
-            1 => H[i],
-            2 => V[i],
-            3 => D[i],
-            4 => H[V[i]],
-            5 => H[D[i]],
-            6 => V[D[i]],
-            7 => H[V[D[i]]],
-            _ => unreachable!(),
-        }
-    }
-
-    /// Apply a symmetry permutation to a raw u64 bitboard.
-    /// Iterates each set bit, maps through the permutation, and sets the
-    /// result bit in the output.
-    #[inline]
-    pub fn apply_to_bits(board: u64, sym_idx: usize) -> u64 {
-        let mut result = 0u64;
-        let mut bits = board;
-        while bits != 0 {
-            let lsb = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            let dst = index_symmetries(lsb)[sym_idx];
-            result |= 1u64 << dst;
-        }
-        result
-    }
-
-    #[cfg(test)]
-    /// Verify symmetry tables cover all 64 indices bijectively.
-    #[test]
-    fn test_symmetry_tables_are_permutations() {
-        for (name, table) in [("H", &H), ("V", &V), ("D", &D)] {
-            let mut seen = [false; 64];
-            for &v in table {
-                assert!(v < 64, "{}[?] = {} out of range", name, v);
-                assert!(!seen[v], "{} is not injective (dupe at {})", name, v);
-                seen[v] = true;
-            }
-            assert!(seen.iter().all(|&x| x), "{} is not surjective", name);
-        }
-    }
-
-    #[cfg(test)]
-    /// Verify index_symmetries produces valid images (within bounds and no
-    /// duplicates within a single symmetry's images for a given index).
-    /// Note: some indices (e.g. those on the main diagonal) are invariant
-    /// under D, so different symmetries can map to the same image.
-    #[test]
-    fn test_index_symmetries_all_distinct() {
-        for i in 0..64 {
-            let s = index_symmetries(i);
-            let mut seen = [false; 64];
-            for &v in &s {
-                assert!(v < 64, "index_symmetries({}) has out-of-range {}", i, v);
-                // Allow duplicates — different symmetries can map
-                // symmetric positions (e.g. corners) to the same target.
-                if !seen[v] {
-                    seen[v] = true;
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    /// Verify that invert_symmetry is the true inverse of index_symmetries.
-    #[test]
-    fn test_invert_symmetry_is_inverse() {
-        for i in 0..64 {
-            let s = index_symmetries(i);
-            for (sym_idx, &s_i) in s.iter().enumerate() {
-                let back = invert_symmetry(s_i, sym_idx);
-                assert_eq!(
-                    back, i,
-                    "invert_symmetry({}, {}) = {}, expected {}",
-                    s_i, sym_idx, back, i
-                );
-            }
-        }
-    }
-
-    #[cfg(test)]
-    /// Applying then inverting a symmetry should yield the original board.
-    #[test]
-    fn test_apply_to_bits_inverse() {
-        // Pre-computed inverse of each symmetry index.
-        // Computed by: find inv_sym such that for all i,
-        //   index_symmetries(index_symmetries(i)[sym])[inv_sym] = i.
-        const INV: [usize; 8] = [0, 1, 2, 3, 4, 6, 5, 7];
-
-        let board = (1 << 28) | (1 << 35);
-        for (sym_idx, &inv) in INV.iter().enumerate() {
-            let transformed = apply_to_bits(board, sym_idx);
-            let back = apply_to_bits(transformed, inv);
-            assert_eq!(
-                back, board,
-                "sym {} then inv {} on {:#x} gave {:#x}",
-                sym_idx, inv, board, back
-            );
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Player
@@ -545,7 +375,7 @@ impl Default for State {
 /// XOR the hash contribution for a single piece into all 8 symmetry hashes.
 #[inline]
 pub fn xor_piece(hashes: &mut [u64; 8], pos: usize, player: Player) {
-    let symmetries = sym::index_symmetries(pos);
+    let symmetries = D4Symmetry::<8>::index_symmetries(pos);
     for (s, &sym_pos) in symmetries.iter().enumerate() {
         hashes[s] ^= HASHES.hash(zobrist_piece(sym_pos, player));
     }
@@ -787,7 +617,7 @@ mod tests {
         // Wrap index transformation so it's easy to apply.
         let sym = |list: &[usize], sym_idx| -> Vec<usize> {
             list.iter()
-                .map(|&i| sym::index_symmetries(i)[sym_idx])
+                .map(|&i| D4Symmetry::<8>::index_symmetries(i)[sym_idx])
                 .collect()
         };
         for sym_idx in 0..8 {

@@ -1,5 +1,6 @@
+use game_core::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::symmetry::D4Symmetry;
 use mcts::{
-    display::{RectangularBoard, RectangularBoardDisplay},
     game::{Game, PlayerIndex},
     zobrist::LazyZobristTable,
 };
@@ -195,11 +196,8 @@ impl HashedPosition {
 
     #[inline]
     fn apply(&mut self, m: Move) {
-        use mcts::symmetry::sym;
-        use mcts::symmetry::NUM_SYMMETRIES;
         if USE_SYMMETRY {
-            let mut symmetries = [0; NUM_SYMMETRIES];
-            sym::index_symmetries(m.index(), &mut symmetries);
+            let symmetries = D4Symmetry::<3>::index_symmetries(m.index());
             // TODO: self.hashes[0] is producing bad values. The `else` branch below is working.
             for (i, index) in symmetries.iter().enumerate() {
                 let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
@@ -218,8 +216,7 @@ impl HashedPosition {
     #[inline(always)]
     fn hash(&self) -> u64 {
         if USE_SYMMETRY {
-            use mcts::symmetry::sym;
-            self.hashes[sym::canonical_symmetry(self.position.board)]
+            self.hashes[D4Symmetry::<3>::packed_canonical_symmetry(self.position.board)]
         } else {
             self.hashes[0]
         }

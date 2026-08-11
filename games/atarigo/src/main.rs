@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use game_atarigo::{AtariGo, Move, Player, State};
-use mcts::bitboard::BitBoard;
+use game_core::bitboard::BitBoard;
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;

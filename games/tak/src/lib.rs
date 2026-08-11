@@ -86,8 +86,8 @@
 // plies, forcing constant rebuilds -- per-ply bitboard floods over <= 36
 // cells are cheap and always correct.
 
-use mcts::bitboard::{BitBoard, Direction};
-use mcts::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::bitboard::{BitBoard, Direction};
+use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex, TerminalStatus};
 use mcts::zobrist::LazyZobristTable;
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,7 @@ pub const FLAT: u8 = 0;
 pub const WALL: u8 = 1;
 pub const CAP: u8 = 2;
 
-// Direction deltas, indexed to match `mcts::bitboard::Direction`.
+// Direction deltas, indexed to match `game_core::bitboard::Direction`.
 const DIRS: [(i32, i32); 4] = [(0, 1), (1, 0), (0, -1), (-1, 0)];
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq, Hash)]

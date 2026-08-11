@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 mcts = { path = "../mcts" }
+game-core = { path = "../games/game-core" }
 game-othello = { path = "../games/othello" }
 game-breakthrough = { path = "../games/breakthrough" }
 game-knightthrough = { path = "../games/knightthrough" }

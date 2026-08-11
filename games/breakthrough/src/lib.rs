@@ -1,9 +1,9 @@
 #![allow(unused)]
 
-use mcts::bitboard;
-use mcts::bitboard::BitBoard;
-use mcts::display::RectangularBoard;
-use mcts::display::RectangularBoardDisplay;
+use game_core::bitboard;
+use game_core::bitboard::BitBoard;
+use game_core::display::RectangularBoard;
+use game_core::display::RectangularBoardDisplay;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
 

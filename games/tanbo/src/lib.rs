@@ -1,7 +1,7 @@
 #![allow(unused)]
 
-use mcts::display::RectangularBoard;
-use mcts::display::RectangularBoardDisplay;
+use game_core::display::RectangularBoard;
+use game_core::display::RectangularBoardDisplay;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
 

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use mcts::game::Game;
-use mcts::bitboard::BitBoard;
+use game_core::bitboard::BitBoard;
 use game_breakthrough::{Breakthrough, Move, Player, State};
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;

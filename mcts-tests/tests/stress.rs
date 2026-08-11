@@ -212,12 +212,12 @@ fn test_othello_many_random_games_complete() {
 #[test]
 fn test_othello_oracle_symmetry_stress() {
     let _guard = stress_test_guard();
-    type BB = mcts::bitboard::BitBoard<8, 8>;
+    type BB = game_core::bitboard::BitBoard<8, 8>;
     use mcts::game::Game;
     use game_othello::{self, Othello, State, Move, Player,
         naive_generate_moves, naive_get_flips, naive_apply,
     };
-    use game_othello::sym;
+    use game_core::symmetry::D4Symmetry;
 
     // Seeded RNG (xoroshiro-like for speed; just use a simple LCG for Rust).
     // Seed chosen arbitrarily: 0xdead_beef_cafe_babe
@@ -258,7 +258,7 @@ fn test_othello_oracle_symmetry_stress() {
                 let mut black_sym = BB::EMPTY;
                 let mut white_sym = BB::EMPTY;
                 for i in 0..64 {
-                    let si = sym::index_symmetries(i)[sym_idx];
+                    let si = D4Symmetry::<8>::index_symmetries(i)[sym_idx];
                     if state.black.get_at(i / 8, i % 8) {
                         black_sym |= BB::from_index(si);
                     }
@@ -408,7 +408,7 @@ fn test_othello_oracle_symmetry_stress() {
 // ============================================================================
 
 use mcts::game::Game;
-use mcts::bitboard::BitBoard;
+use game_core::bitboard::BitBoard;
 use game_breakthrough as breakthrough;
 use game_knightthrough as knightthrough;
 
