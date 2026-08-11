@@ -276,7 +276,16 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
 
 /// Build the argv for a ``uv run --project smac3/ smac3 ...``
 /// invocation, incorporating the config file, overrides, and git SHA.
-fn build_smac3_command(config: Option<&str>, overrides: &[String]) -> Vec<String> {
+///
+/// `game` is translated into a `target.binary=target/release/game-<game>`
+/// override so the launched run actually tunes the selected game --
+/// `smac3/config/default.yaml`'s `target.binary` is just a fallback default
+/// (currently `game-traffic-lights`, the reference wiring's game), not
+/// something any caller of `bench smac3 --game ...` should rely on. This is
+/// pushed before `overrides` so an explicit `target.binary=...` override
+/// from the caller still wins (the Python side's `_apply_overrides` keeps
+/// the last value for a repeated key).
+fn build_smac3_command(config: Option<&str>, overrides: &[String], game: &str) -> Vec<String> {
     let mut cmd = vec![
         "uv".to_string(),
         "run".to_string(),
@@ -289,6 +298,16 @@ fn build_smac3_command(config: Option<&str>, overrides: &[String]) -> Vec<String
         cmd.push("--config".to_string());
         cmd.push(config_path.to_string());
     }
+
+    let binary_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    cmd.push("--override".to_string());
+    cmd.push(format!(
+        "target.binary=target/release/game-{game}{binary_suffix}"
+    ));
 
     for ov in overrides {
         cmd.push("--override".to_string());
@@ -310,7 +329,7 @@ fn cmd_smac3(
     label: Option<&str>,
     background: bool,
 ) {
-    let cmd = build_smac3_command(config, overrides);
+    let cmd = build_smac3_command(config, overrides, game);
 
     if background {
         // Launch via the detached-process launcher.
@@ -394,5 +413,39 @@ fn cmd_ingest_once(db_path: &str) {
             eprintln!("error: ingest failed: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_smac3_command_overrides_target_binary_from_game() {
+        let cmd = build_smac3_command(None, &[], "breakthrough");
+        let idx = cmd
+            .iter()
+            .position(|a| a == "target.binary=target/release/game-breakthrough")
+            .expect("target.binary override for the selected game");
+        // Must be a value for the `--override` flag immediately before it.
+        assert_eq!(cmd[idx - 1], "--override");
+    }
+
+    #[test]
+    fn test_build_smac3_command_game_override_precedes_caller_overrides() {
+        // The Python side's `_apply_overrides` keeps the last value for a
+        // repeated key, so an explicit caller override for the same key
+        // must come after (and thus win over) the game-derived one.
+        let overrides = vec!["target.binary=custom/path".to_string()];
+        let cmd = build_smac3_command(None, &overrides, "druid");
+        let game_idx = cmd
+            .iter()
+            .position(|a| a == "target.binary=target/release/game-druid")
+            .expect("game-derived target.binary override");
+        let caller_idx = cmd
+            .iter()
+            .position(|a| a == "target.binary=custom/path")
+            .expect("caller-supplied target.binary override");
+        assert!(game_idx < caller_idx);
     }
 }

@@ -53,11 +53,17 @@ def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
         obj: Any = cfg
         for p in parts[:-1]:
             obj = getattr(obj, p)
-        # Try to parse as Python literal first (int, float, bool, None)
-        try:
-            val = ast.literal_eval(raw_val)
-        except (ValueError, SyntaxError):
-            val = raw_val  # fallback to string
+        # A `Path`-typed field (e.g. `target.binary`) must stay a `Path` --
+        # `resolve_binary()` calls `.is_absolute()` on it, which a plain
+        # `str` doesn't have.
+        if isinstance(getattr(obj, parts[-1]), Path):
+            val = Path(raw_val)
+        else:
+            # Try to parse as Python literal first (int, float, bool, None)
+            try:
+                val = ast.literal_eval(raw_val)
+            except (ValueError, SyntaxError):
+                val = raw_val  # fallback to string
         setattr(obj, parts[-1], val)
 
 
