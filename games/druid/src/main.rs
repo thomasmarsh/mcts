@@ -16,9 +16,14 @@ use std::time::Duration;
 
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    TunerInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Number of self-play games one `tune_eval` call runs when the caller
+/// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
+const TUNE_EVAL_ROUNDS: u32 = 20;
 
 use game_druid::{
     apply_placed, Druid, HashedState, Move, Orientation, Piece, PieceKind, PlacedPiece, Player,
@@ -511,8 +516,51 @@ impl GameAdapter for DruidAdapter {
             suggested_move,
         })
     }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        Some(mcts_tune::rave_tuner_info("strong", TUNE_EVAL_ROUNDS))
+    }
+
+    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+        let cfg = preset_cfg("strong").expect("strong preset is always registered");
+        // `use_transpositions: true` requires a real `Game::zobrist_hash`
+        // override -- Druid has one, so merging transposed nodes during the
+        // candidate's search is safe here.
+        let outcome = mcts_tune::rave_tune_eval(&params, rounds, seed, true, || {
+            build_ai("strong", Duration::from_millis(cfg.time_budget_ms), cfg)
+        })?;
+        Ok(serde_json::json!({
+            "cost": outcome.cost,
+            "wins": outcome.wins,
+            "losses": outcome.losses,
+            "draws": outcome.draws,
+        }))
+    }
 }
 
 fn main() {
     run_cli(DruidAdapter::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tune_eval_round_trips() {
+        let params = serde_json::json!({
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let result = DruidAdapter::default()
+            .tune_eval(params, 1, Some(0))
+            .expect("tune_eval should round-trip with a minimal RAVE config");
+        assert!(result["cost"].as_f64().is_some());
+    }
 }

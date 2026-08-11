@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 mcts = { path = "../../mcts" }
+mcts-tune = { path = "../../mcts-tune" }
 game-host = { path = "../../game-host" }
 rustc-hash = "1.1.0"
 rand = { version = "0.8.5", features = ["small_rng"] }

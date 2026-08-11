@@ -1,5 +1,6 @@
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    TunerInfo,
 };
 use serde_json::Value;
 
@@ -7,6 +8,10 @@ use game_count::{Count, CountingGame, Move as CountMove};
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
+
+/// Number of self-play games one `tune_eval` call runs when the caller
+/// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
+const TUNE_EVAL_ROUNDS: u32 = 20;
 
 fn state_to_value(s: &Count) -> Value {
     serde_json::json!({"value": s.0})
@@ -165,8 +170,48 @@ impl GameAdapter for CountAdapter {
             suggested_move: suggested,
         })
     }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        Some(mcts_tune::rave_tuner_info("strong", TUNE_EVAL_ROUNDS))
+    }
+
+    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+        // CountingGame's `Game::zobrist_hash` is the default constant `0`,
+        // so transpositions must stay off -- see `mcts-tune`'s
+        // `rave_tune_eval` doc comment.
+        let outcome = mcts_tune::rave_tune_eval(&params, rounds, seed, false, build_strong)?;
+        Ok(serde_json::json!({
+            "cost": outcome.cost,
+            "wins": outcome.wins,
+            "losses": outcome.losses,
+            "draws": outcome.draws,
+        }))
+    }
 }
 
 fn main() {
     run_cli(CountAdapter);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tune_eval_round_trips() {
+        let params = serde_json::json!({
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let result = CountAdapter
+            .tune_eval(params, 1, Some(0))
+            .expect("tune_eval should round-trip with a minimal RAVE config");
+        assert!(result["cost"].as_f64().is_some());
+    }
 }
