@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
-import { createStore } from "@mcts/core";
+import { createStore, Effect } from "@mcts/core";
 import {
   benchReducer,
   initialBenchState,
@@ -16,7 +16,12 @@ import {
   LaunchForm,
   RunDetailPanel,
 } from "@mcts/bench";
-import { createMockBenchEnv, FAKE_SMAC3_RUN_ID, fakeKinds } from "./fixtures/fake-bench.js";
+import {
+  createMockBenchEnv,
+  FAKE_SMAC3_RUN_ID,
+  fakeKinds,
+  fakeTrialRowsWithRepeats,
+} from "./fixtures/fake-bench.js";
 
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
   const env = createMockBenchEnv(envOverrides);
@@ -155,5 +160,40 @@ describe("RunDetailPanel / smac3", () => {
     )!;
     expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
     expect(familyRow.textContent).toContain("rave"); // the default, shown in the Default column
+  });
+
+  it("pools trials with an identical config into one confidence-band group", async () => {
+    const { store } = createTestStore({
+      getRunTrials: () => Effect.send(fakeTrialRowsWithRepeats),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+
+    await screen.findByText("Best cost (loss rate)");
+
+    // fakeTrialRowsWithRepeats adds two more evaluations (#4, #5) of trial
+    // #2's exact config (cost 0.25/0.35 vs #2's 0.3) -- #4 is now the
+    // lowest single cost, but all three share one group.
+    expect(screen.getByText("#4", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("3", { selector: ".smac3-stat-value" })).toBeInTheDocument(); // Evaluations
+
+    expect(screen.getByText("Evaluations", { selector: ".smac3-stat-label" })).toBeInTheDocument();
+    expect(screen.getByText("95% CI", { selector: ".smac3-stat-label" })).toBeInTheDocument();
+
+    // The pooled interval must actually straddle the group's mean cost
+    // (30.0%, i.e. (0.25 + 0.3 + 0.35) / 3) -- not be a degenerate
+    // single-point estimate.
+    const ciStat = Array.from(document.querySelectorAll(".smac3-stat")).find(
+      (el) => el.querySelector(".smac3-stat-label")?.textContent === "95% CI",
+    )!;
+    const ciText = ciStat.querySelector(".smac3-stat-value")!.textContent!;
+    const [lo, hi] = ciText.split("–").map((s) => parseFloat(s));
+    expect(lo).toBeLessThan(30.0);
+    expect(hi).toBeGreaterThan(30.0);
+
+    // Every point sharing that config renders a (non-degenerate) whisker.
+    const whiskers = document.querySelectorAll(".smac3-ci-whisker");
+    expect(whiskers.length).toBe(5); // one per scored trial (#1, #2, #3, #4, #5)
   });
 });

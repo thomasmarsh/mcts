@@ -143,7 +143,11 @@ export const RunDetailPanel: Component<{
         </Show>
 
         <Show when={isSmac3()}>
-          <Smac3RunDetail trials={openRun()?.trials ?? []} tuner={smac3Tuner()} />
+          <Smac3RunDetail
+            trials={openRun()?.trials ?? []}
+            tuner={smac3Tuner()}
+            launchConfig={detail()?.config ?? null}
+          />
         </Show>
 
         <div id="log-panel">

@@ -1155,6 +1155,11 @@ body.bench-active #analysis-panel {
   background: #4caf7a;
 }
 
+.legend-swatch-ci {
+  border-radius: 1px;
+  background: rgba(91, 127, 214, 0.6);
+}
+
 #smac3-diff-table {
   width: 100%;
   border-collapse: collapse;

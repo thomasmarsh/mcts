@@ -90,18 +90,25 @@ describe("TrafficLights GameShell integration", () => {
 
     render(() => <GameShell store={store} />);
 
-    // Wait for the initial position to load (GameShell's onMount fires newGame)
-    await vi.waitFor(() => {
-      expect(store.state.position).not.toBeNull();
-      expect(store.state.position!.view).toMatchObject({ turn: "A" });
-    });
-
     // Get the 9 board buttons (filter out HUD/nav buttons by class)
     function boardButtons(): HTMLButtonElement[] {
       return screen.getAllByRole("button").filter(
         (b) => b.classList.contains("tl-cell"),
       ) as HTMLButtonElement[];
     }
+
+    // Wait for the initial position to load (GameShell's onMount fires
+    // newGame) *and* for the board to actually be in the DOM. The game-kind
+    // module itself loads via a separate `createResource` in GameShell
+    // (independent of `store.state.position`, which the mocked env resolves
+    // synchronously) -- querying `boardButtons()` right after only the
+    // position settles races that resource and can hit "Loading game…"
+    // before it flips over, especially on a cold module-transform cache.
+    await vi.waitFor(() => {
+      expect(store.state.position).not.toBeNull();
+      expect(store.state.position!.view).toMatchObject({ turn: "A" });
+      expect(document.querySelectorAll(".tl-cell").length).toBe(9);
+    });
 
     // --- Click 1: place R on cell 4 (center) ---
     fireEvent.click(boardButtons()[4]);
@@ -174,12 +181,15 @@ describe("TrafficLights GameShell integration", () => {
 
     render(() => <GameShell store={store} />);
 
-    await vi.waitFor(() => {
-      expect(store.state.position).not.toBeNull();
-    });
-
     const boardButtons = () =>
       screen.getAllByRole("button").filter((b) => b.classList.contains("tl-cell")) as HTMLButtonElement[];
+
+    // See the first test's comment: wait for the board to actually be in
+    // the DOM, not just for the store's position to settle.
+    await vi.waitFor(() => {
+      expect(store.state.position).not.toBeNull();
+      expect(document.querySelectorAll(".tl-cell").length).toBe(9);
+    });
 
     // Click cell 0 while not busy — should work
     fireEvent.click(boardButtons()[0]);

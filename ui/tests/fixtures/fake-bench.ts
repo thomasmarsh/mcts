@@ -155,6 +155,30 @@ export const fakeTrialRows: TrialRow[] = [
   },
 ];
 
+// A variant trial set where trial #2's exact config is re-evaluated twice
+// more (trials #4/#5, different seeds/costs) -- exercises the confidence
+// band: those three rows must pool into one group with a tighter CI than
+// any single evaluation, rather than rendering as three independent points.
+export const fakeTrialRowsWithRepeats: TrialRow[] = [
+  ...fakeTrialRows,
+  {
+    trial_id: 4,
+    ts: "2026-03-01T00:03:00Z",
+    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
+    seed: 1,
+    cost: 0.25,
+    extra: null,
+  },
+  {
+    trial_id: 5,
+    ts: "2026-03-01T00:04:00Z",
+    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
+    seed: 2,
+    cost: 0.35,
+    extra: null,
+  },
+];
+
 export const fakeKinds: BenchKindInfo[] = [
   {
     kind: "round_robin",

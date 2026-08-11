@@ -2,15 +2,63 @@
 // stats, a cost-over-trials chart (per-trial cost + running best-so-far),
 // and a best-trial-vs-default parameter table.
 //
-// Pure presentational component: `trials`/`tuner` are read from BenchState
-// by RunDetailPanel.tsx (which owns the tail loop that keeps `trials`
-// current — see reducer.ts's `tailTick`) and passed down, same convention
-// as WinRateChart/LeaderboardTable reading their slice of BenchState
-// directly, except this one takes props since it's nested inside another
-// store-reading component rather than mounted as its own tab.
+// Pure presentational component: `trials`/`tuner`/`launchConfig` are read
+// from BenchState by RunDetailPanel.tsx (which owns the tail loop that
+// keeps `trials` current — see reducer.ts's `tailTick`) and passed down,
+// same convention as WinRateChart/LeaderboardTable reading their slice of
+// BenchState directly, except this one takes props since it's nested
+// inside another store-reading component rather than mounted as its own
+// tab.
+//
+// Confidence: `cost` is itself already an aggregate win-rate estimate
+// (`losses / (2 * rounds)`) over one trial's `rounds` self-play games, not
+// a single observation — the intensifier re-evaluating the *same* config
+// on a later seed (visible as two trial rows with identical `config`) is
+// SMAC building more confidence in that estimate, not noise to ignore. So
+// trials are grouped by identical `config`, each group's mean cost is
+// treated as a pooled proportion over `n = evaluations * 2 * rounds`
+// Bernoulli trials, and a Wilson score interval on that is rendered as a
+// whisker per chart point plus a headline stat for the best trial's group.
 
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { TrialRow, TunerInfo } from "./index.js";
+
+/** 95% Wilson score interval for a proportion `phat` observed over `n`
+ * Bernoulli trials — better-behaved than a normal approximation near 0/1,
+ * which is exactly where a saturating cost estimate tends to sit. */
+function wilsonInterval(phat: number, n: number, z = 1.96): { lower: number; upper: number } {
+  if (n <= 0) return { lower: phat, upper: phat };
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (phat + z2 / (2 * n)) / denom;
+  const margin = (z * Math.sqrt((phat * (1 - phat)) / n + z2 / (4 * n * n))) / denom;
+  return { lower: Math.max(0, center - margin), upper: Math.min(1, center + margin) };
+}
+
+/** The `rounds` actually used for this run's trials — an operator can
+ * `--override target.rounds=N` away from the tuner's declared
+ * `eval_rounds` default at launch time, and only the run's own launch
+ * config (not the tuner metadata) reflects that. Falls back to the
+ * tuner's default when the run didn't override it. */
+function resolveRounds(launchConfig: unknown, tuner: TunerInfo | null): number {
+  const overrides = (launchConfig as { overrides?: unknown } | null)?.overrides;
+  if (Array.isArray(overrides)) {
+    for (const o of overrides) {
+      if (typeof o === "string" && o.startsWith("target.rounds=")) {
+        const n = Number(o.slice("target.rounds=".length));
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    }
+  }
+  return tuner?.eval_rounds ?? 20;
+}
+
+interface TrialGroup {
+  trials: TrialRow[];
+  meanCost: number;
+  n: number;
+  ci: { lower: number; upper: number };
+}
 
 const CHART_W = 480;
 const CHART_H = 160;
@@ -34,12 +82,16 @@ interface ChartPoint {
 export const Smac3RunDetail: Component<{
   trials: TrialRow[];
   tuner: TunerInfo | null;
+  /** `RunDetail.config` (the launch request body) — only consulted for a
+   * `target.rounds=N` override; see `resolveRounds`. */
+  launchConfig?: unknown;
 }> = (props) => {
   // Trials arrive in trial_id order already (the `trials` route's
   // `ORDER BY trial_id ASC`), but sort defensively -- nothing here assumes
   // the caller preserved that.
   const sorted = createMemo(() => [...props.trials].sort((a, b) => a.trial_id - b.trial_id));
   const scored = createMemo(() => sorted().filter((t) => t.cost !== null));
+  const rounds = createMemo(() => resolveRounds(props.launchConfig, props.tuner));
 
   const bestTrial = createMemo((): TrialRow | null => {
     let best: TrialRow | null = null;
@@ -47,6 +99,34 @@ export const Smac3RunDetail: Component<{
       if (best === null || (t.cost as number) < (best.cost as number)) best = t;
     }
     return best;
+  });
+
+  // A repeated `config` across trials (the intensifier re-evaluating the
+  // same candidate on a later seed) is pooled into one group so its cost
+  // estimate gets a tighter interval than any single evaluation.
+  const groups = createMemo((): Map<string, TrialGroup> => {
+    const byKey = new Map<string, TrialRow[]>();
+    for (const t of scored()) {
+      const key = JSON.stringify(t.config);
+      const list = byKey.get(key);
+      if (list) list.push(t);
+      else byKey.set(key, [t]);
+    }
+    const r = rounds();
+    const result = new Map<string, TrialGroup>();
+    for (const [key, trials] of byKey) {
+      const meanCost = trials.reduce((sum, t) => sum + (t.cost as number), 0) / trials.length;
+      const n = trials.length * 2 * r;
+      result.set(key, { trials, meanCost, n, ci: wilsonInterval(meanCost, n) });
+    }
+    return result;
+  });
+
+  const groupFor = (t: TrialRow): TrialGroup => groups().get(JSON.stringify(t.config))!;
+
+  const bestGroup = createMemo((): TrialGroup | null => {
+    const best = bestTrial();
+    return best ? (groups().get(JSON.stringify(best.config)) ?? null) : null;
   });
 
   const chartPoints = createMemo((): ChartPoint[] => {
@@ -63,7 +143,10 @@ export const Smac3RunDetail: Component<{
   const yMax = createMemo(() => {
     const pts = chartPoints();
     if (pts.length === 0) return 1;
-    const max = Math.max(...pts.map((p) => p.trial.cost as number));
+    // Include each point's CI upper bound -- a low-n group's interval can
+    // reach above every observed cost in the run, and clipping it would
+    // hide exactly the uncertainty this chart exists to show.
+    const max = Math.max(...pts.map((p) => Math.max(p.trial.cost as number, groupFor(p.trial).ci.upper)));
     return Math.max(0.05, max * 1.1);
   });
 
@@ -121,6 +204,22 @@ export const Smac3RunDetail: Component<{
             <span class="smac3-stat-value">#{bestTrial()?.trial_id ?? "—"}</span>
             <span class="smac3-stat-label">Best trial</span>
           </div>
+          <Show when={bestGroup()}>
+            {(group) => (
+              <>
+                <div class="smac3-stat">
+                  <span class="smac3-stat-value">{group().trials.length}</span>
+                  <span class="smac3-stat-label">Evaluations</span>
+                </div>
+                <div class="smac3-stat">
+                  <span class="smac3-stat-value">
+                    {fmtCost(group().ci.lower)} – {fmtCost(group().ci.upper)}
+                  </span>
+                  <span class="smac3-stat-label">95% CI</span>
+                </div>
+              </>
+            )}
+          </Show>
         </div>
 
         <div id="smac3-chart-wrapper">
@@ -142,6 +241,27 @@ export const Smac3RunDetail: Component<{
             {/* Running best-so-far step line */}
             <path d={bestPathD()} fill="none" stroke="#4caf7a" stroke-width="2" stroke-linejoin="round" />
 
+            {/* Per-point confidence whisker -- the Wilson interval of the
+                point's config group, shared across every point in that
+                group (they're the same pooled estimate). Drawn under the
+                dots so a tight interval doesn't get visually lost. */}
+            <For each={chartPoints()}>
+              {(p) => {
+                const ci = () => groupFor(p.trial).ci;
+                return (
+                  <line
+                    x1={p.x}
+                    x2={p.x}
+                    y1={yScale()(ci().lower)}
+                    y2={yScale()(ci().upper)}
+                    stroke="rgba(91,127,214,0.35)"
+                    stroke-width="2"
+                    class="smac3-ci-whisker"
+                  />
+                );
+              }}
+            </For>
+
             {/* Per-trial cost dots */}
             <For each={chartPoints()}>
               {(p) => (
@@ -152,7 +272,10 @@ export const Smac3RunDetail: Component<{
                   fill={p.trial.trial_id === bestTrial()?.trial_id ? "#4caf7a" : "#5b7fd6"}
                 >
                   <title>
-                    Trial #{p.trial.trial_id}: cost {fmtCost(p.trial.cost)}
+                    Trial #{p.trial.trial_id}: cost {fmtCost(p.trial.cost)} (group of{" "}
+                    {groupFor(p.trial).trials.length}, 95% CI {fmtCost(groupFor(p.trial).ci.lower)}
+                    {" – "}
+                    {fmtCost(groupFor(p.trial).ci.upper)})
                   </title>
                 </circle>
               )}
@@ -161,6 +284,7 @@ export const Smac3RunDetail: Component<{
           <div class="smac3-chart-legend">
             <span><i class="legend-swatch legend-swatch-trial" /> trial cost</span>
             <span><i class="legend-swatch legend-swatch-best" /> best so far</span>
+            <span><i class="legend-swatch legend-swatch-ci" /> 95% CI</span>
           </div>
         </div>
 
