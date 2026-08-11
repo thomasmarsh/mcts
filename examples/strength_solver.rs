@@ -11,7 +11,7 @@
 // Usage: cargo run --release --example strength_solver
 use std::time::Duration;
 
-use mcts::games::druid::Druid;
+use game_druid::Druid;
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch, strategy};
 use mcts::strategies::Search;
 use mcts::bench::tournament::{Result as GameResult, round_robin_multiple};

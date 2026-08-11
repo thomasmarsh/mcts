@@ -28,7 +28,7 @@
 // Usage: cargo run --release --example strength_recalibration
 use std::time::Duration;
 
-use mcts::games::druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
+use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::bench::tournament::wilson_interval;
 use mcts::util::battle_royale;

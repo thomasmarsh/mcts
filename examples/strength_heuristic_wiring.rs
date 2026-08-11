@@ -17,7 +17,7 @@
 // Usage: cargo run --release --example strength_heuristic_wiring
 use std::time::Duration;
 
-use mcts::games::druid::{
+use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic,
 };
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};

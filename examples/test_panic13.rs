@@ -1,4 +1,4 @@
-use mcts::games::druid::{Druid, HashedState, Size};
+use game_druid::{Druid, HashedState, Size};
 use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 

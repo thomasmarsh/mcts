@@ -1,26 +1,26 @@
-// Playouts/sec benchmark for the linearized (move-splitting) Druid
-// representation. Measures iterations/sec at 5x5 and 9x9, comparing against
-// the previous commit (flat `Move(Piece, u8)` before the linearization).
+// Playouts/sec benchmark for the move-split (Piece/Orientation/Cell) Druid
+// representation. Measures iterations/sec at 5x5 and 9x9.
 //
 // Methodology:
-//   - Build the benchmark from the parent commit (flat moves)
-//   - Build the same benchmark from this commit (linearized moves)
+//   - Build the benchmark from the current commit
+//   - Build the same benchmark from the parent commit (flat moves, pre-generic)
 //   - Run each on 5x5 and 9x9, 3 runs of 5s each, report avg iters/s
 //
 // Usage: cargo run --release --example bench_move_splitting
 use std::time::{Duration, Instant};
 
 use mcts::game::Game;
-use mcts::games::druid::{Druid, HashedState, Size};
 use mcts::strategies::mcts::{
     node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
 };
 use mcts::strategies::Search;
 
+use game_druid::{Druid, HashedState, Size};
+
 /// Shipped Strong preset strategy shape: Ucb1 select + DecisiveMove wrapping
-/// EpsilonGreedy wrapping NST. The struct lives in server/adapters/druid.rs
-/// (not the lib crate), so we define a local equivalent.
-type Ucb1DmNstLocal = strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
+/// EpsilonGreedy wrapping NST.
+type Ucb1DmNstLocal =
+    strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
 
 /// Shipped Strong config with the given time budget and tree thread count.
 fn strong_config(budget: Duration, tree_threads: usize) -> TreeSearch<Druid, Ucb1DmNstLocal> {
@@ -75,7 +75,10 @@ where
         let t0 = Instant::now();
         let _action = search.choose_action(&state_clone);
         let elapsed = t0.elapsed();
-        let iters = search.stats.iter_count.load(std::sync::atomic::Ordering::Relaxed);
+        let iters = search
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
         total_iters += iters;
         total_time += elapsed;
         println!(
@@ -96,7 +99,7 @@ where
 }
 
 fn main() {
-    println!("=== bench_move_splitting: playouts/sec with linearized move representation ===");
+    println!("=== bench_move_splitting: playouts/sec with move-split Druid ===");
     println!();
     println!("Configs tested:");
     println!("  ucb1:       Ucb1 select only, 5s budget");

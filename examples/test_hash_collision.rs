@@ -23,7 +23,7 @@
 
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
-use mcts::games::druid::{Druid, HashedState, Size};
+use game_druid::{Druid, HashedState, Size};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;

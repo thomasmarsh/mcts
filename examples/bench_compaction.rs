@@ -17,7 +17,7 @@
 // Usage: cargo run --release --example bench_compaction
 use std::time::{Duration, Instant};
 
-use mcts::games::druid::{
+use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};

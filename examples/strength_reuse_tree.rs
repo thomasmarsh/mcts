@@ -21,7 +21,7 @@
 // Usage: cargo run --release --example strength_reuse_tree
 use std::time::Duration;
 
-use mcts::games::druid::{
+use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic,
 };
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};

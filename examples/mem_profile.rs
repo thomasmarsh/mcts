@@ -17,7 +17,7 @@
 // Usage: cargo run --release --example mem_profile
 use std::time::Duration;
 
-use mcts::games::druid::{
+use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
 use mcts::strategies::mcts::{node::QInit, select, simulate, MemoryStats, SearchConfig, TreeSearch};
