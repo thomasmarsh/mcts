@@ -17,3 +17,6 @@ duckdb = "1.10505.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

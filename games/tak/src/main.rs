@@ -2,7 +2,7 @@ use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, Analysis
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_tak::{Move, Player, State, Tak, FLAT, MAX_SIZE};
+use game_tak::{Move, Player, State, Tak};
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;

@@ -1,16 +1,21 @@
 use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
 use serde_json::Value;
 
-use game_null::NullGame;
-use mcts::game::Game;
-
 struct NullAdapter;
 
 impl GameAdapter for NullAdapter {
-    fn kind(&self) -> &'static str { "null" }
-    fn label(&self) -> &'static str { "Null" }
-    fn description(&self) -> &'static str { "A trivial game with no moves — always terminal" }
-    fn default_config(&self) -> Value { serde_json::json!({}) }
+    fn kind(&self) -> &'static str {
+        "null"
+    }
+    fn label(&self) -> &'static str {
+        "Null"
+    }
+    fn description(&self) -> &'static str {
+        "A trivial game with no moves — always terminal"
+    }
+    fn default_config(&self) -> Value {
+        serde_json::json!({})
+    }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
         Ok(serde_json::json!({}))
     }
@@ -25,13 +30,22 @@ impl GameAdapter for NullAdapter {
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         Ok(state.clone())
     }
-    fn ai_presets(&self) -> Vec<AiPresetInfo> { vec![] }
+    fn ai_presets(&self) -> Vec<AiPresetInfo> {
+        vec![]
+    }
     fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
         Err(HostError::not_found("no ai presets"))
     }
-    fn analyze(&self, _state: &Value, _preset: &str, _budget_ms: Option<u64>) -> Result<Analysis, HostError> {
+    fn analyze(
+        &self,
+        _state: &Value,
+        _preset: &str,
+        _budget_ms: Option<u64>,
+    ) -> Result<Analysis, HostError> {
         Err(HostError::not_found("no ai presets"))
     }
 }
 
-fn main() { run_stdin_stdout(NullAdapter); }
+fn main() {
+    run_stdin_stdout(NullAdapter);
+}

@@ -43,3 +43,6 @@ lto = true
 [profile.samply]
 inherits = "release"
 debug = true
+
+[workspace.lints.rust]
+warnings = "deny"

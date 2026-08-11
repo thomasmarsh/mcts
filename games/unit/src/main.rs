@@ -1,9 +1,6 @@
 use game_host::{run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError};
 use serde_json::Value;
 
-use game_unit::{Player, Unit, UnitGame};
-use mcts::game::Game;
-
 struct UnitAdapter;
 
 impl GameAdapter for UnitAdapter {

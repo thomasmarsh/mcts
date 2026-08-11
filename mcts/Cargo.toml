@@ -5,8 +5,8 @@ edition = "2021"
 description = "Monte Carlo Tree Search framework"
 license = "MIT OR Apache-2.0"
 
-[lints.rust]
-warnings = "deny"
+[lints]
+workspace = true
 
 [features]
 default = []
