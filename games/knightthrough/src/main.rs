@@ -124,8 +124,8 @@ impl GameAdapter for KtAdapter {
     }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
         Ok(state_to_value(&State::new(
-            BitBoard::new(0x000000000000ffff),
             BitBoard::new(0xffff000000000000),
+            BitBoard::new(0x000000000000ffff),
             Player::Black,
             false,
         )))
