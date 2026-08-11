@@ -194,6 +194,7 @@ export const Smac3RunDetail: Component<{
           <thead>
             <tr>
               <th>#</th>
+              <th>Family</th>
               <th>Cost</th>
               <th>Seed</th>
               <th>Time</th>
@@ -204,6 +205,7 @@ export const Smac3RunDetail: Component<{
               {(t) => (
                 <tr classList={{ "smac3-trial-best": t.trial_id === bestTrial()?.trial_id }} title={JSON.stringify(t.config)}>
                   <td>{t.trial_id}</td>
+                  <td class="smac3-trial-family">{typeof t.config.family === "string" ? t.config.family : "—"}</td>
                   <td>{fmtCost(t.cost)}</td>
                   <td>{t.seed ?? "—"}</td>
                   <td>{t.ts}</td>

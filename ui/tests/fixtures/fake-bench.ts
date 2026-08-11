@@ -90,21 +90,33 @@ export const fakeSmac3RunDetail: RunDetail = {
   trial_count: 3,
 };
 
+// Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `family` is a
+// top-level categorical gating other parameters via two levels of
+// `TunerCondition`s (family -> schedule -> rave, family -> rave_ucb -> c),
+// not a single fixed family's flat schema. Trimmed to a handful of
+// families/params rather than the full ~14-family catalog -- enough to
+// exercise multi-level conditions and a non-RAVE best trial (see
+// fakeTrialRows below).
 export const fakeSmac3Kinds: Smac3GameInfo[] = [
   {
     game: "traffic-lights",
     tuner: {
-      id: "rave",
+      id: "strategy",
       baseline: "strong",
       eval_rounds: 20,
       parameters: [
-        { name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 },
+        { name: "family", type: "categorical", choices: ["ucb1", "ucb1_tuned", "rave"], default: "rave" },
+        { name: "final_action", type: "categorical", choices: ["max_avg", "secure_child", "robust_child"], default: "robust_child" },
         { name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 },
+        { name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 },
         { name: "rave", type: "int", bounds: [0, 2000], default: 700 },
         { name: "schedule", type: "categorical", choices: ["hand_selected", "min_mse", "threshold"], default: "threshold" },
-        { name: "final_action", type: "constant", value: "robust_child" },
+        { name: "rave_ucb", type: "categorical", choices: ["none", "ucb1", "tuned"], default: "tuned" },
       ],
       conditions: [
+        { if: { family: ["ucb1", "ucb1_tuned", "rave"] }, then: ["final_action"] },
+        { if: { family: ["ucb1_tuned", "rave"] }, then: ["epsilon"] },
+        { if: { family: "rave" }, then: ["schedule", "rave_ucb"] },
         { if: { schedule: "threshold" }, then: ["rave"] },
         { if: { rave_ucb: ["ucb1", "tuned"] }, then: ["c"] },
       ],
@@ -112,17 +124,35 @@ export const fakeSmac3Kinds: Smac3GameInfo[] = [
   },
 ];
 
+// Best trial (#2, cost 0.3) is deliberately `family: "ucb1_tuned"`, not the
+// search space's default `family: "rave"` -- proves the run-detail
+// best-vs-default diff table (and the trial table's Family column) work
+// across two different families' configs, not just two RAVE configs.
 export const fakeTrialRows: TrialRow[] = [
-  { trial_id: 1, ts: "2026-03-01T00:00:01Z", config: { c: 1.4, epsilon: 0.1, rave: 700, schedule: "threshold" }, seed: 0, cost: 0.55, extra: null },
+  {
+    trial_id: 1,
+    ts: "2026-03-01T00:00:01Z",
+    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    seed: 0,
+    cost: 0.55,
+    extra: null,
+  },
   {
     trial_id: 2,
     ts: "2026-03-01T00:01:00Z",
-    config: { c: 0.9, epsilon: 0.2, rave: 500, schedule: "threshold" },
+    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
     seed: 0,
     cost: 0.3,
     extra: null,
   },
-  { trial_id: 3, ts: "2026-03-01T00:02:00Z", config: { c: 2.1, epsilon: 0.05, rave: 900, schedule: "threshold" }, seed: 0, cost: 0.4, extra: null },
+  {
+    trial_id: 3,
+    ts: "2026-03-01T00:02:00Z",
+    config: { family: "ucb1", final_action: "robust_child" },
+    seed: 0,
+    cost: 0.4,
+    extra: null,
+  },
 ];
 
 export const fakeKinds: BenchKindInfo[] = [

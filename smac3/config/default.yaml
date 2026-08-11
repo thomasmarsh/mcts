@@ -198,7 +198,10 @@ conditions:
         ]
     then: [c]
   - if:
-      family: [ucb1_mast, ucb1_nst, amaf_mast, ucb1_tuned_dm_mast]
+      # rave's own simulate step wraps epsilon-greedy MAST too (see
+      # mcts-tune's EPSILON_FAMILIES), so it needs `epsilon` unconditionally,
+      # same as ucb1_tuned_dm_mast's.
+      family: [ucb1_mast, ucb1_nst, amaf_mast, ucb1_tuned_dm_mast, rave]
     then: [epsilon]
   - if: { family: [amaf, amaf_mast] }
     then: [amaf_alpha]

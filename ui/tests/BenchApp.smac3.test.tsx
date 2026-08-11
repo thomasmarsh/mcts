@@ -138,5 +138,22 @@ describe("RunDetailPanel / smac3", () => {
     for (const pct of ["55.0%", "30.0%", "40.0%"]) {
       expect(screen.getAllByText(pct).length).toBeGreaterThanOrEqual(1);
     }
+
+    // The trial table's Family column shows each trial's family, not just
+    // RAVE's -- fixture spans rave/ucb1_tuned/ucb1.
+    const familyCells = document.querySelectorAll(".smac3-trial-family");
+    expect(Array.from(familyCells).map((c) => c.textContent)).toEqual(["ucb1", "ucb1_tuned", "rave"]);
+
+    // Best trial (#2) is `family: "ucb1_tuned"`, not the search space's
+    // default `family: "rave"` -- the best-vs-default diff table must
+    // compare across two different families' configs, not two RAVE
+    // configs, and flag every param that differs from its own default.
+    const diffTable = document.querySelector("#smac3-diff-table")!;
+    expect(diffTable.textContent).toContain("ucb1_tuned");
+    const familyRow = Array.from(diffTable.querySelectorAll("tbody tr")).find(
+      (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
+    )!;
+    expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(familyRow.textContent).toContain("rave"); // the default, shown in the Default column
   });
 });

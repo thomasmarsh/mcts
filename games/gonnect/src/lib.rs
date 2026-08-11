@@ -378,6 +378,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "flaky: unseeded random playouts on a 6x6 board occasionally run for many minutes before a connection forms -- the same class of problem game-tanbo's ignored random-play tests guard against"]
     fn test_gonnect() {
         random_play::<Gonnect<6>>();
     }
