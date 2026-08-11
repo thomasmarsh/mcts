@@ -1,5 +1,6 @@
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    TunerInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,6 +9,8 @@ use game_traffic_lights::{HashedPosition, Move, Piece, Player, Position, Traffic
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
+
+mod tuner;
 
 #[derive(Serialize, Deserialize)]
 struct WireState {
@@ -246,6 +249,20 @@ impl GameAdapter for TlAdapter {
             total_visits: report.total_visits,
             suggested_move: suggested,
         })
+    }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        Some(tuner::tuner_info())
+    }
+
+    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+        let outcome = tuner::tune_eval(&params, rounds, seed, build_strong)?;
+        Ok(serde_json::json!({
+            "cost": outcome.cost,
+            "wins": outcome.wins,
+            "losses": outcome.losses,
+            "draws": outcome.draws,
+        }))
     }
 }
 

@@ -134,6 +134,47 @@ pub struct Analysis {
 }
 
 // ---------------------------------------------------------------------------
+// Tuner metadata (SMAC3-style hyperparameter search)
+// ---------------------------------------------------------------------------
+
+/// One parameter in a tuner's search space (mirrors the shape of the SMAC3
+/// harness's YAML search space), reported by `tuner()` so a launch form or
+/// CLI consumer can render/validate fields without a per-game hardcoded
+/// schema. `spec` carries the type-specific keys verbatim (`type`/`bounds`/
+/// `default` for `float`/`int`, `type`/`choices`/`default` for
+/// `categorical`, `type`/`value` for `constant`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TunerParameter {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: Value,
+}
+
+/// A conditional activation rule: when `if` matches the trial's active
+/// config, every name in `then` also becomes active. `if` is a single-entry
+/// object mapping a parent parameter name to either one value or a list of
+/// values (mirrors the YAML `if:`/`then:` shape).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TunerCondition {
+    #[serde(rename = "if")]
+    pub if_: Value,
+    pub then: Vec<String>,
+}
+
+/// Metadata describing a game's tunable strategy search space, as reported
+/// by the `tune describe` subcommand -- the parameter space and baseline a
+/// SMAC3-style harness needs to run trials, without embedding the actual
+/// search/eval logic (that stays behind `tune_eval`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TunerInfo {
+    pub id: String,
+    pub baseline: String,
+    pub eval_rounds: u32,
+    pub parameters: Vec<TunerParameter>,
+    pub conditions: Vec<TunerCondition>,
+}
+
+// ---------------------------------------------------------------------------
 // GameAdapter trait
 // ---------------------------------------------------------------------------
 
@@ -167,6 +208,24 @@ pub trait GameAdapter: Send + Sync {
         preset: &str,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError>;
+
+    /// Tunable strategy search-space metadata, for games that support
+    /// SMAC3-style hyperparameter tuning via `tune_eval`. `None` (the
+    /// default) for every game that doesn't -- tuning support is opt-in per
+    /// game, not a universal requirement.
+    fn tuner(&self) -> Option<TunerInfo> {
+        None
+    }
+
+    /// Play `rounds` games of a `params`-built candidate strategy against
+    /// this game's tuning baseline and return a cost (lower is better) plus
+    /// win/loss/draw counts, as a JSON object. CLI-only (`tune eval`) --
+    /// never dispatched over the JSONL loop, since a full multi-game match
+    /// is a batch job, not a per-move request.
+    #[allow(unused_variables)]
+    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+        Err(HostError::not_found("tuning not supported"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +311,7 @@ pub struct GameDescription {
     pub description: String,
     pub default_config: Value,
     pub ai_presets: Vec<AiPresetInfo>,
+    pub tuning: Option<TunerInfo>,
 }
 
 impl GameDescription {
@@ -262,6 +322,7 @@ impl GameDescription {
             description: adapter.description().to_owned(),
             default_config: adapter.default_config(),
             ai_presets: adapter.ai_presets(),
+            tuning: adapter.tuner(),
         }
     }
 }
@@ -276,25 +337,98 @@ impl GameDescription {
 /// existing stdin/stdout protocol loop unchanged, so `SubprocessAdapter`
 /// (which never passes args) is unaffected.
 pub fn run_cli<A: GameAdapter>(adapter: A) {
-    run_cli_with(std::env::args().skip(1), io::stdin(), io::stdout(), adapter);
+    let code = run_cli_with(std::env::args().skip(1), io::stdin(), io::stdout(), adapter);
+    std::process::exit(code);
 }
 
 /// Testable core of [`run_cli`]: takes the args iterator and reader/writer
 /// as parameters instead of reaching for the real process environment.
-fn run_cli_with<I, R, W, A>(mut args: I, reader: R, mut writer: W, adapter: A)
+/// Returns the process exit code the caller should use.
+fn run_cli_with<I, R, W, A>(mut args: I, reader: R, mut writer: W, adapter: A) -> i32
 where
     I: Iterator<Item = String>,
     R: Read,
     W: Write,
     A: GameAdapter,
 {
-    if let Some("describe") = args.next().as_deref() {
-        let description = GameDescription::of(&adapter);
-        let json = serde_json::to_string(&description).expect("GameDescription always serializes");
-        let _ = writeln!(writer, "{json}");
-        return;
+    match args.next().as_deref() {
+        Some("describe") => {
+            let description = GameDescription::of(&adapter);
+            let json =
+                serde_json::to_string(&description).expect("GameDescription always serializes");
+            let _ = writeln!(writer, "{json}");
+            0
+        }
+        Some("tune") => match args.next().as_deref() {
+            Some("describe") => match adapter.tuner() {
+                Some(info) => {
+                    let json = serde_json::to_string(&info).expect("TunerInfo always serializes");
+                    let _ = writeln!(writer, "{json}");
+                    0
+                }
+                None => {
+                    eprintln!("tuning not supported");
+                    1
+                }
+            },
+            Some("eval") => run_tune_eval(args, &mut writer, &adapter),
+            // Any other (or missing) `tune` argument falls back to the
+            // stdin/stdout loop rather than erroring, same as an unknown
+            // top-level subcommand -- a future flag addition can't
+            // accidentally break `SubprocessAdapter`.
+            _ => {
+                run_host(reader, writer, adapter);
+                0
+            }
+        },
+        _ => {
+            run_host(reader, writer, adapter);
+            0
+        }
     }
-    run_host(reader, writer, adapter);
+}
+
+/// Parses `--config <json> --rounds <n> [--seed <n>]` from the remaining CLI
+/// args, calls [`GameAdapter::tune_eval`], and prints its JSON result
+/// verbatim to `writer`. Returns the process exit code.
+fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
+where
+    I: Iterator<Item = String>,
+    W: Write,
+    A: GameAdapter,
+{
+    let mut args = args;
+    let mut config: Option<String> = None;
+    let mut rounds: Option<u32> = None;
+    let mut seed: Option<u64> = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--config" => config = args.next(),
+            "--rounds" => rounds = args.next().and_then(|s| s.parse().ok()),
+            "--seed" => seed = args.next().and_then(|s| s.parse().ok()),
+            _ => {}
+        }
+    }
+
+    let result = (|| -> Result<Value, HostError> {
+        let config = config.ok_or_else(|| HostError::bad_request("missing --config"))?;
+        let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
+        let params: Value = serde_json::from_str(&config)
+            .map_err(|e| HostError::bad_request(format!("invalid --config JSON: {e}")))?;
+        adapter.tune_eval(params, rounds, seed)
+    })();
+
+    match result {
+        Ok(v) => {
+            let json = serde_json::to_string(&v).expect("tune_eval result always serializes");
+            let _ = writeln!(writer, "{json}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +469,7 @@ fn dispatch<A: GameAdapter>(adapter: &A, req: &Request) -> Result<Value, HostErr
 
         // --- AI methods ---
         "ai_presets" => ok_value(adapter.ai_presets()),
+        "tuner" => ok_value(adapter.tuner()),
 
         "ai_move" => {
             let state = param(&req.params, "state")?;
@@ -801,17 +936,99 @@ mod tests {
     // run_cli tests
     // -----------------------------------------------------------------------
 
-    fn run_cli_capture(args: &[&str], stdin: &str) -> String {
+    /// A second fake adapter that also implements `tuner`/`tune_eval`, for
+    /// testing the `tune` subcommand family without polluting `FakeAdapter`
+    /// (used bare across dozens of protocol tests above) with tuning state.
+    struct TunableFakeAdapter;
+
+    impl GameAdapter for TunableFakeAdapter {
+        fn kind(&self) -> &'static str {
+            "tunable-fake"
+        }
+        fn label(&self) -> &'static str {
+            "Tunable Fake Game"
+        }
+        fn description(&self) -> &'static str {
+            "A fake adapter that supports tuning, for testing `tune` subcommands"
+        }
+        fn default_config(&self) -> Value {
+            serde_json::json!({})
+        }
+        fn new_state(&self, _config: Value) -> Result<Value, HostError> {
+            Ok(serde_json::json!({}))
+        }
+        fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, HostError> {
+            Ok(vec![])
+        }
+        fn apply(&self, state: &Value, _mv: &Value) -> Result<Value, HostError> {
+            Ok(state.clone())
+        }
+        fn view(&self, _state: &Value) -> Result<Value, HostError> {
+            Ok(serde_json::json!({"terminal": true}))
+        }
+        fn ai_presets(&self) -> Vec<AiPresetInfo> {
+            vec![]
+        }
+        fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
+            Err(HostError::not_found("not implemented in test fake"))
+        }
+        fn analyze(
+            &self,
+            _state: &Value,
+            _preset: &str,
+            _budget_ms: Option<u64>,
+        ) -> Result<Analysis, HostError> {
+            Err(HostError::not_found("not implemented in test fake"))
+        }
+
+        fn tuner(&self) -> Option<TunerInfo> {
+            Some(TunerInfo {
+                id: "test".into(),
+                baseline: "baseline".into(),
+                eval_rounds: 5,
+                parameters: vec![TunerParameter {
+                    name: "c".into(),
+                    spec: serde_json::json!({"type": "float", "bounds": [0, 3], "default": 1.4}),
+                }],
+                conditions: vec![],
+            })
+        }
+
+        fn tune_eval(
+            &self,
+            params: Value,
+            rounds: u32,
+            seed: Option<u64>,
+        ) -> Result<Value, HostError> {
+            Ok(serde_json::json!({
+                "cost": 0.25,
+                "params": params,
+                "rounds": rounds,
+                "seed": seed,
+            }))
+        }
+    }
+
+    fn run_cli_capture_with<A: GameAdapter>(
+        adapter: A,
+        args: &[&str],
+        stdin: &str,
+    ) -> (String, i32) {
         let args = args.iter().map(|s| s.to_string());
         let input = Cursor::new(stdin.to_owned());
         let mut output = Cursor::new(Vec::new());
-        run_cli_with(args, input, &mut output, FakeAdapter);
-        String::from_utf8(output.into_inner()).unwrap()
+        let code = run_cli_with(args, input, &mut output, adapter);
+        (String::from_utf8(output.into_inner()).unwrap(), code)
+    }
+
+    fn run_cli_capture(args: &[&str], stdin: &str) -> (String, i32) {
+        run_cli_capture_with(FakeAdapter, args, stdin)
     }
 
     #[test]
     fn test_run_cli_no_args_drives_stdin_stdout_loop_unchanged() {
-        let out = run_cli_capture(&[], "{\"id\":1,\"method\":\"kind\",\"params\":{}}\n");
+        let (out, code) = run_cli_capture(&[], "{\"id\":1,\"method\":\"kind\",\"params\":{}}\n");
+        assert_eq!(code, 0);
         let resp = parse_response(out.lines().next().unwrap());
         match resp {
             Response::Success { id, result } => {
@@ -824,7 +1041,8 @@ mod tests {
 
     #[test]
     fn test_run_cli_describe_matches_adapter_fields() {
-        let out = run_cli_capture(&["describe"], "");
+        let (out, code) = run_cli_capture(&["describe"], "");
+        assert_eq!(code, 0);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 1);
         let description: GameDescription = serde_json::from_str(lines[0]).unwrap();
@@ -836,14 +1054,27 @@ mod tests {
         assert_eq!(description.default_config, adapter.default_config());
         assert_eq!(description.ai_presets.len(), adapter.ai_presets().len());
         assert_eq!(description.ai_presets[0].id, adapter.ai_presets()[0].id);
+        assert!(description.tuning.is_none());
+    }
+
+    #[test]
+    fn test_run_cli_describe_folds_in_tuning_when_present() {
+        let (out, code) = run_cli_capture_with(TunableFakeAdapter, &["describe"], "");
+        assert_eq!(code, 0);
+        let description: GameDescription =
+            serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        let tuning = description.tuning.expect("expected tuning metadata");
+        assert_eq!(tuning.id, "test");
+        assert_eq!(tuning.eval_rounds, 5);
     }
 
     #[test]
     fn test_run_cli_unknown_subcommand_falls_back_to_stdin_stdout_loop() {
-        let out = run_cli_capture(
+        let (out, code) = run_cli_capture(
             &["some-unknown-flag"],
             "{\"id\":7,\"method\":\"kind\",\"params\":{}}\n",
         );
+        assert_eq!(code, 0);
         let resp = parse_response(out.lines().next().unwrap());
         match resp {
             Response::Success { id, result } => {
@@ -851,6 +1082,72 @@ mod tests {
                 assert_eq!(result, "fake");
             }
             _ => panic!("expected success response, describe-only args must not error"),
+        }
+    }
+
+    #[test]
+    fn test_run_cli_tune_describe_unsupported_when_tuner_none() {
+        let (out, code) = run_cli_capture(&["tune", "describe"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_tune_describe_prints_tuner_info() {
+        let (out, code) = run_cli_capture_with(TunableFakeAdapter, &["tune", "describe"], "");
+        assert_eq!(code, 0);
+        let info: TunerInfo = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(info.id, "test");
+        assert_eq!(info.baseline, "baseline");
+        assert_eq!(info.eval_rounds, 5);
+        assert_eq!(info.parameters.len(), 1);
+        assert_eq!(info.parameters[0].name, "c");
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_prints_result_verbatim() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "tune",
+                "eval",
+                "--config",
+                r#"{"rave":700,"c":0.3}"#,
+                "--rounds",
+                "3",
+                "--seed",
+                "42",
+            ],
+            "",
+        );
+        assert_eq!(code, 0);
+        let result: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(result["cost"], 0.25);
+        assert_eq!(result["params"]["rave"], 700);
+        assert_eq!(result["rounds"], 3);
+        assert_eq!(result["seed"], 42);
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_missing_rounds_errors() {
+        let (out, code) =
+            run_cli_capture_with(TunableFakeAdapter, &["tune", "eval", "--config", "{}"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_tune_with_no_further_args_falls_back_to_stdin_stdout_loop() {
+        let (out, code) =
+            run_cli_capture(&["tune"], "{\"id\":9,\"method\":\"kind\",\"params\":{}}\n");
+        assert_eq!(code, 0);
+        let resp = parse_response(out.lines().next().unwrap());
+        match resp {
+            Response::Success { id, result } => {
+                assert_eq!(id, 9);
+                assert_eq!(result, "fake");
+            }
+            _ => panic!("expected success response"),
         }
     }
 }
