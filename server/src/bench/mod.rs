@@ -650,7 +650,9 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
 /// ones the gameplay routes use) rather than spawning a one-shot `tune
 /// describe` process per request.  Only games that implement `tuner()`
 /// (return `Some`) appear -- tuning support is opt-in per game.
-async fn list_smac3_kinds(AxumState(state): AxumState<Arc<BenchState>>) -> Json<Vec<Smac3GameInfo>> {
+async fn list_smac3_kinds(
+    AxumState(state): AxumState<Arc<BenchState>>,
+) -> Json<Vec<Smac3GameInfo>> {
     let mut games: Vec<Smac3GameInfo> = state
         .games
         .iter()
@@ -1724,7 +1726,11 @@ mod tests {
         fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, crate::adapter::AdapterError> {
             unimplemented!()
         }
-        fn apply(&self, _state: &Value, _mv: &Value) -> Result<Value, crate::adapter::AdapterError> {
+        fn apply(
+            &self,
+            _state: &Value,
+            _mv: &Value,
+        ) -> Result<Value, crate::adapter::AdapterError> {
             unimplemented!()
         }
         fn view(&self, _state: &Value) -> Result<Value, crate::adapter::AdapterError> {
@@ -1755,8 +1761,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_smac3_kinds_only_lists_tunable_games() {
-        let mut games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>> =
-            HashMap::new();
+        let mut games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>> = HashMap::new();
         games.insert(
             "traffic-lights",
             Arc::new(FakeTunableAdapter {
@@ -2067,12 +2072,8 @@ mod tests {
         })
         .0;
 
-        let (status, _) = http_post_json(
-            app,
-            "/api/bench/runs/group-stoppable-run/stop",
-            json!({}),
-        )
-        .await;
+        let (status, _) =
+            http_post_json(app, "/api/bench/runs/group-stoppable-run/stop", json!({})).await;
         assert_eq!(status, HttpStatusCode::OK);
 
         let _ = leader.wait();
