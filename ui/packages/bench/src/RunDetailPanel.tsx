@@ -8,6 +8,7 @@ import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
+import { Smac3RunDetail } from "./Smac3RunDetail.js";
 
 const MAX_VISIBLE_LINES = 500;
 
@@ -21,6 +22,14 @@ export const RunDetailPanel: Component<{
   const detail = createMemo(() => openRun()?.detail ?? null);
   const tail = createMemo(() => openRun()?.tail ?? null);
   const stopError = createMemo(() => state().stopError);
+
+  const isSmac3 = createMemo(() => detail()?.kind === "smac3");
+  const smac3Tuner = createMemo(() => {
+    const d = detail();
+    const kinds = state().smac3Kinds;
+    if (!d || kinds.status !== "done") return null;
+    return kinds.result?.find((g) => g.game === d.game)?.tuner ?? null;
+  });
 
   // One-shot fetch for the raw stdout.log (stderr output).  Not part of
   // the reducer — this is a debug view fetched on demand.
@@ -131,6 +140,10 @@ export const RunDetailPanel: Component<{
               </div>
             </Show>
           </div>
+        </Show>
+
+        <Show when={isSmac3()}>
+          <Smac3RunDetail trials={openRun()?.trials ?? []} tuner={smac3Tuner()} />
         </Show>
 
         <div id="log-panel">

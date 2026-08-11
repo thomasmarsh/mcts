@@ -148,3 +148,57 @@ export interface StrategyInfo {
   label: string;
   description: string;
 }
+
+/** One entry in a tuner's parameter space (`game_host::TunerParameter`).
+ * `spec` is `#[serde(flatten)]`ed on the Rust side, so `type`/`bounds`/
+ * `choices`/`value`/`default` land as top-level sibling fields of `name`
+ * rather than nested — this type mirrors the wire shape directly. Only
+ * `type` is guaranteed; which other fields are present depends on it
+ * (`float`/`int` -> `bounds`+`default`, `categorical` -> `choices`+
+ * `default`, `constant` -> `value`). */
+export interface TunerParameter {
+  name: string;
+  type: "float" | "int" | "categorical" | "constant" | (string & {});
+  bounds?: [number, number];
+  choices?: string[];
+  default?: unknown;
+  value?: unknown;
+}
+
+/** A conditional activation rule (`game_host::TunerCondition`): when the
+ * trial's config matches every `if` entry, every parameter named in `then`
+ * is also active (and therefore present in a trial's `config`). `if`'s
+ * values are either a single value or a list of values (any-of). */
+export interface TunerCondition {
+  if: Record<string, unknown>;
+  then: string[];
+}
+
+/** A game's tunable search space, as reported by `tune describe`
+ * (`game_host::TunerInfo`) and surfaced through `GET
+ * /api/bench/smac3/kinds`. */
+export interface TunerInfo {
+  id: string;
+  baseline: string;
+  eval_rounds: number;
+  parameters: TunerParameter[];
+  conditions: TunerCondition[];
+}
+
+/** `GET /api/bench/smac3/kinds` element — one tunable game. */
+export interface Smac3GameInfo {
+  game: string;
+  tuner: TunerInfo;
+}
+
+/** One row from the `trials` table, as reported by `GET
+ * /api/bench/runs/{run_id}/trials`. `config` holds only the trial's
+ * *active* parameters (inactive ones, per `TunerCondition`, are omitted). */
+export interface TrialRow {
+  trial_id: number;
+  ts: string;
+  config: Record<string, unknown>;
+  seed: number | null;
+  cost: number | null;
+  extra: unknown | null;
+}

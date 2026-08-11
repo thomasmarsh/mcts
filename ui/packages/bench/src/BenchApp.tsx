@@ -39,6 +39,7 @@ export const BenchApp: Component = () => {
   // Fetch kinds metadata and the run list on mount.
   onMount(() => {
     store.dispatch({ tag: "kinds", action: { tag: "request" } });
+    store.dispatch({ tag: "smac3Kinds", action: { tag: "request" } });
     store.dispatch({ tag: "runs", action: { tag: "request" } });
     store.dispatch({ tag: "leaderboard", action: { tag: "request" } });
   });

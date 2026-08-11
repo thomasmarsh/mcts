@@ -111,7 +111,7 @@ export const ChessVariantRenderer: Component<
   // player's turn). Otherwise a stale selection would show destinations
   // from a previous state.
   createEffect(() => {
-    props.legalMoves; // track this dependency
+    void props.legalMoves; // track this dependency
     setSelectedSource(null);
   });
 

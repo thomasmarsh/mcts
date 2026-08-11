@@ -37,7 +37,9 @@ import {
   type RunFilters,
   type RunLogResponse,
   type RunSummary,
+  type Smac3GameInfo,
   type StopResponse,
+  type TrialRow,
 } from "./types.js";
 
 /** Every network operation the bench reducer may perform, lifted to
@@ -58,6 +60,10 @@ export interface BenchEnv {
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
+  /** Per-game tuner metadata for every SMAC3-tunable game. */
+  getSmac3Kinds(): Effect<Smac3GameInfo[]>;
+  /** Trial rows for one run, oldest first. */
+  getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
 }
 
 export const TAIL_BACKOFF_START_MS = 1000;
@@ -92,7 +98,16 @@ export type BenchAction =
   | { tag: "closeRun" }
   /** Internal, dispatched by the tail loop itself. */
   | { tag: "tailTick"; generation: number }
-  | { tag: "tailed"; generation: number; lines: string[]; nextOffset: number; detail: RunDetail }
+  | {
+      tag: "tailed";
+      generation: number;
+      lines: string[];
+      nextOffset: number;
+      detail: RunDetail;
+      /** Every tick's trial rows (see `tailTick` below for why this isn't
+       * gated on run kind). Empty for every non-`"smac3"` run. */
+      trials: TrialRow[];
+    }
   | { tag: "tailFailed"; generation: number; error: string }
   | { tag: "leaderboard"; action: LeaderboardAction }
   /** Replace the leaderboard filters and refetch with them. */
@@ -106,11 +121,17 @@ export type BenchAction =
   | { tag: "stopFinished"; runId: string }
   | { tag: "stopFailed"; runId: string; error: string }
   /** Load all available bench kinds/games/strategies for the launch form. */
-  | { tag: "kinds"; action: KindsAction };
+  | { tag: "kinds"; action: KindsAction }
+  /** Load per-game SMAC3 tuner metadata for the launch form + run detail. */
+  | { tag: "smac3Kinds"; action: Smac3KindsAction };
 
 export type KindsAction =
   | { tag: "request" }
   | { tag: "job"; action: JobPollAction<BenchKindInfo[]> };
+
+export type Smac3KindsAction =
+  | { tag: "request" }
+  | { tag: "job"; action: JobPollAction<Smac3GameInfo[]> };
 
 /** Runs an `Effect` for its single value, as a `Promise` — lets the tick
  * branch combine `getRunLog` + `getRun` with `Promise.all` while still
@@ -197,6 +218,7 @@ export function benchReducer(
       runId: action.runId,
       detail: null,
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
+      trials: [],
     };
     // The first tick doubles as the detail fetch — no separate request.
     return Effect.send<BenchAction>({ tag: "tailTick", generation: draft.openGeneration });
@@ -215,12 +237,20 @@ export function benchReducer(
     const { runId } = open;
     const since = open.tail.offset;
     const { generation } = action;
+    // Trials have no incremental cursor (unlike the log), so this refetches
+    // the full list every tick -- fine at SMAC3's trial-count scale. Fetched
+    // unconditionally rather than gated on `detail.kind === "smac3"":
+    // opening an *already-completed* run goes terminal on this very first
+    // tick (before any prior tick could have told us the kind), which would
+    // otherwise mean its trials are never fetched at all. The cost for
+    // every other run kind is one query returning an empty row set.
     return Effect.fromPromise(async () => {
-      const [log, detail] = await Promise.all([
+      const [log, detail, trials] = await Promise.all([
         toPromise(env.getRunLog(runId, since)),
         toPromise(env.getRun(runId)),
+        toPromise(env.getRunTrials(runId, 5000)),
       ]);
-      return { log, detail };
+      return { log, detail, trials };
     })
       .map((r): BenchAction => ({
         tag: "tailed",
@@ -228,6 +258,7 @@ export function benchReducer(
         lines: r.log.lines,
         nextOffset: r.log.next_offset,
         detail: r.detail,
+        trials: r.trials,
       }))
       .catch((e): BenchAction => ({ tag: "tailFailed", generation, error: String(e) }));
   }
@@ -240,6 +271,7 @@ export function benchReducer(
     open.tail.error = null;
     open.tail.failures = 0;
     open.detail = action.detail;
+    open.trials = action.trials;
     if (isTerminalStatus(action.detail.status)) {
       // The run's log file is complete once the process is done — one last
       // append (this tick's lines) and the loop stops. The runs list just
@@ -399,6 +431,47 @@ export function benchReducer(
       ? eff.map(
           (a): BenchAction => ({
             tag: "kinds",
+            action: { tag: "job", action: a },
+          }),
+        )
+      : null;
+  }
+
+  if (action.tag === "smac3Kinds") {
+    const ka = action.action;
+    if (ka.tag === "request") {
+      const jobEnv: JobPollEnv<Smac3GameInfo[]> = {
+        submitJob: () =>
+          env.getSmac3Kinds().map(
+            (result): JobSubmitResult<Smac3GameInfo[]> => ({
+              status: "done",
+              result,
+            }),
+          ),
+        pollJob: () => {
+          throw new Error(
+            "unreachable: smac3Kinds resolves synchronously (see submitJob above)",
+          );
+        },
+      };
+      const eff = jobPollReduce(draft.smac3Kinds, { tag: "start" }, jobEnv);
+      return eff
+        ? eff.map(
+            (a): BenchAction => ({ tag: "smac3Kinds", action: { tag: "job", action: a } }),
+          )
+        : null;
+    }
+    const eff = jobPollReduce(
+      draft.smac3Kinds,
+      ka.action,
+      unreachableJobEnv(
+        "unreachable: a forwarded smac3Kinds/job action never re-submits or polls",
+      ),
+    );
+    return eff
+      ? eff.map(
+          (a): BenchAction => ({
+            tag: "smac3Kinds",
             action: { tag: "job", action: a },
           }),
         )

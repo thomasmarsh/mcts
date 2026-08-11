@@ -88,6 +88,26 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.init?.method).toBe("POST");
   });
 
+  it("getSmac3Kinds hits the smac3/kinds route", async () => {
+    const calls = stubFetch([]);
+    const client = createBenchApiClient();
+
+    await client.getSmac3Kinds();
+    expect(calls[0]!.url).toBe("/api/bench/smac3/kinds");
+  });
+
+  it("getRunTrials passes an optional limit", async () => {
+    const calls = stubFetch([]);
+    const client = createBenchApiClient();
+
+    await client.getRunTrials("rr-1", 50);
+    expect(calls[0]!.url).toBe("/api/bench/runs/rr-1/trials?limit=50");
+
+    calls.length = 0;
+    await client.getRunTrials("rr-1");
+    expect(calls[0]!.url).toBe("/api/bench/runs/rr-1/trials");
+  });
+
   it("surfaces the server's structured {error} body as the rejection message", async () => {
     stubFetch({ error: "run 'nope' not found", code: 404 }, { ok: false, status: 404 });
     const client = createBenchApiClient();

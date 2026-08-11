@@ -22,7 +22,9 @@ import type {
   RunFilters,
   RunLogResponse,
   RunSummary,
+  Smac3GameInfo,
   StopResponse,
+  TrialRow,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -39,6 +41,10 @@ export interface BenchApiClient {
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
+  /** Per-game tuner metadata for every game that supports SMAC3 tuning. */
+  getSmac3Kinds(): Promise<Smac3GameInfo[]>;
+  /** Trial rows for one run, oldest first. */
+  getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
 }
 
 /** The server (`BenchError`'s `IntoResponse` impl, server/bench/mod.rs)
@@ -139,6 +145,12 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getBenchKinds(): Promise<BenchKindInfo[]> {
       return fetchJson(url("/api/bench/kinds"));
     },
+    async getSmac3Kinds(): Promise<Smac3GameInfo[]> {
+      return fetchJson(url("/api/bench/smac3/kinds"));
+    },
+    async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
+    },
   };
 }
 
@@ -154,5 +166,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
+    getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
+    getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
   };
 }

@@ -16,6 +16,8 @@ import type {
   RunDetail,
   RunFilters,
   RunSummary,
+  Smac3GameInfo,
+  TrialRow,
 } from "./types.js";
 
 /** Live tail of one open run's `log.jsonl`, fed by the reducer's
@@ -47,6 +49,11 @@ export interface OpenRunState {
    * to wait on, and the status/match counts stay live for free. */
   detail: RunDetail | null;
   tail: LogTailState;
+  /** Trial rows for a `kind: "smac3"` run, refetched in full (the trials
+   * route has no incremental cursor, unlike the log) on every tail tick
+   * once `detail.kind` is known to be `"smac3"` — see reducer.ts. Empty for
+   * every other run kind. */
+  trials: TrialRow[];
 }
 
 /** Win-rate-over-commits trend data: one leaderboard snapshot per git SHA. */
@@ -76,6 +83,10 @@ export interface BenchState {
   stopError: string | null;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
+  /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
+   * — populates the SMAC3 launch fields' game picker and the run-detail
+   * best-vs-default parameter diff. */
+  smac3Kinds: JobPollState<Smac3GameInfo[]>;
 }
 
 export function initialBenchState(): BenchState {
@@ -90,5 +101,6 @@ export function initialBenchState(): BenchState {
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
+    smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
   };
 }
