@@ -1,9 +1,17 @@
 # smac3 — SMAC3 hyperparameter optimisation for MCTS
 
 Uses [SMAC3](https://github.com/automl/SMAC3) (Bayesian optimisation + racing) to
-find strong hyperparameters for MCTS search strategies. Each trial invokes the
-game binary's `tune eval` subcommand to play a match between the candidate
-strategy and a fixed baseline, and reports the loss rate.
+find strong MCTS search strategies. Each trial invokes the game binary's
+`tune eval` subcommand to play a match between a candidate and a fixed
+baseline, and reports the loss rate. The search space has two levels: a
+top-level `family` choice (which `Strategy<G>` -- select/simulate/backprop/
+final-action composition -- to run, e.g. `ucb1`, `ucb1_tuned`, `amaf_mast`,
+`rave`, ...; see `mcts-tune`'s crate doc comment for the full 14-entry
+catalog) and, within the chosen family, that family's own hyperparameters
+(RAVE's schedule/`c`/epsilon, the UCB families' exploration constant, etc).
+12 of the workspace's 16 games support this out of the box via the shared
+`mcts-tune` crate (the other 4 -- `null`, `unit`, `shibumi`, `count` -- have
+no real 2-player search to tune).
 
 ---
 
@@ -17,8 +25,11 @@ cargo build --release -p game-traffic-lights
 uv run --project smac3/ smac3
 ```
 
-This runs a 1000-trial optimisation using the default search space (RAVE/GRAVE
-knobs for the TrafficLights game). Results appear in `smac3_output/`.
+This runs a 1000-trial optimisation over the full multi-family search space
+(default `target.binary` is `game-traffic-lights`; point it at any of the
+other 11 supported games' binaries with `--override target.binary=...`, or
+use `bench smac3 --game <name>` from the Rust side, which sets it for you).
+Results appear in `smac3_output/`.
 
 > **Why `--project smac3/`?** The Rust project is managed by Cargo in the root;
 > the Python/SMAC tooling lives in `smac3/` as its own uv project. The game
@@ -84,27 +95,42 @@ The config file defines:
 
 ## Adding SMAC3 to another game
 
-`traffic-lights` is the only game with a tunable strategy today. `tuner()`
-and `tune_eval()` on `GameAdapter` default to "unsupported", so a game only
-gains SMAC3 support by implementing them itself — there's no shared strategy-
-injection mechanism across games. To add another:
+12 games (atarigo, bid_ttt, breakthrough, druid, gonnect, knightthrough, nim,
+othello, tak, tanbo, traffic-lights, ttt) already support this via the shared
+`mcts-tune` crate, which does the actual candidate-building/self-play work
+generically over `G: Game` -- a game's `GameAdapter` impl only needs a few
+lines forwarding to it:
 
-1. Implement `tuner()` and `tune_eval()` on that game's `GameAdapter` impl
-   (both default to "unsupported" otherwise — see `games/traffic-lights/src/
-   tuner.rs` and its use from `TlAdapter` for the reference shape). `tuner()`
-   returns the parameter space, conditions, baseline preset id, and default
-   `eval_rounds` as a `TunerInfo`; `tune_eval()` builds a candidate strategy
-   from the params JSON and plays it against the baseline for `rounds` games,
-   returning `{"cost", "wins", "losses", "draws"}`.
-2. Verify it from the CLI directly: `target/release/game-<name> tune describe`
-   and `tune eval --config '<json>' --rounds N`.
-3. Point `target.binary` in a config (or `--override target.binary=...`) at
-   the new game's binary and adjust `parameters:`/`conditions:` in the YAML
-   to match the new `tuner()` output — the YAML is still the hand-maintained
-   source of truth for the search space; `tuner()` only powers the CLI/UI
-   display of it.
-4. `bench smac3 --game <name> ...` and the Bench UI's SMAC3 launch form work
-   unchanged once `/api/bench/smac3/kinds` reflects the new game's metadata.
+```rust
+fn tuner(&self) -> Option<TunerInfo> {
+    Some(mcts_tune::strategy_tuner_info("strong", TUNE_EVAL_ROUNDS))
+}
+
+fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+    let outcome = mcts_tune::strategy_tune_eval(&params, rounds, seed, use_transpositions, build_strong)?;
+    Ok(serde_json::json!({"cost": outcome.cost, "wins": outcome.wins, "losses": outcome.losses, "draws": outcome.draws}))
+}
+```
+
+(`use_transpositions` should only be `true` for a game with a real
+`Game::zobrist_hash` override -- see `mcts-tune`'s doc comment on
+`strategy_tune_eval`.) `null`/`unit`/`shibumi` have no real search to tune at
+all; `count` has a real search but is a 1-player puzzle
+(`num_players() == 1`) wearing a `GameAdapter`, so a "candidate vs baseline"
+self-play comparison doesn't make sense for it either -- see the note on
+`CountAdapter` in `games/count/src/main.rs`. For a genuinely new game (a
+17th game crate, or one
+whose baseline preset doesn't fit the `impl Fn() -> Box<dyn Search<G>>`
+shape `strategy_tune_eval`'s `baseline_build` parameter wants), see
+`games/nim/src/main.rs` for the smallest reference wiring; `tuner()` and
+`tune_eval()` on `GameAdapter` default to "unsupported" otherwise.
+
+The YAML search space (`parameters:`/`conditions:`) is shared across every
+game, not per-game -- it doesn't need editing to add a new game, only when
+the family catalog or a family's own parameters change (see "Adding a new
+parameter" above). `bench smac3 --game <name> ...` and the Bench UI's SMAC3
+launch form work unchanged once `/api/bench/smac3/kinds` reflects the new
+game's metadata.
 
 ## Output
 

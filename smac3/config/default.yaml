@@ -41,34 +41,91 @@ target:
 #   constant    -> Constant (fixed, excluded from search)
 # ---------------------------------------------------------------------------
 parameters:
-  bias:
-    type: float
-    bounds: [0, 10]
-    default: 0.00001
-
-  c:
-    type: float
-    bounds: [0, 3]
-    default: 1.4142135623730951
-
-  epsilon:
-    type: float
-    bounds: [0, 1]
-    default: 0.1
-
-  final_action:
-    type: constant
-    value: robust_child
-
-  k:
-    type: int
-    bounds: [0, 2000]
-    default: 1000
+  # Top-level strategy-family choice: which `Strategy<G>` (select/simulate/
+  # backprop/final-action composition) `tune eval` builds. This is the
+  # multi-family axis mcts-tune::strategy_tuner_info exposes -- see its doc
+  # comment for the catalog these ids map onto in `mcts::strategies::mcts::
+  # strategy`.
+  family:
+    type: categorical
+    choices:
+      [
+        ucb1,
+        ucb1_dm,
+        ucb1_mast,
+        ucb1_nst,
+        ucb1_progressive_history,
+        ucb1_max_robust,
+        amaf,
+        amaf_mast,
+        ucb1_tuned,
+        ucb1_tuned_mast,
+        ucb1_tuned_dm,
+        ucb1_tuned_dm_mast,
+        meta_mcts,
+        rave,
+      ]
+    default: rave
 
   q_init:
     type: categorical
     choices: [Draw, Infinity, Loss, Parent, Win]
     default: Infinity
+
+  # final_action is configurable for every family except the two whose own
+  # named type already fixes a different one (ucb1_max_robust, meta_mcts).
+  # `strategy.rs`'s QuasiBestFirst is deliberately not in the family catalog
+  # at all -- see mcts-tune's crate doc comment for why (its fallback path
+  # runs an unbounded nested search on every tree-descent step, not just
+  # once per leaf, and hangs under this harness's shared iteration budget).
+  final_action:
+    type: categorical
+    choices: [max_avg, secure_child, robust_child]
+    default: robust_child
+
+  a:
+    type: float
+    bounds: [0, 10]
+    default: 4.0
+
+  # Exploration constant, shared by every UCB1/UCB1-Tuned/AMAF/Progressive-
+  # History family plus RAVE's own UCB1/UCB1-Tuned schedule.
+  c:
+    type: float
+    bounds: [0, 3]
+    default: 1.4142135623730951
+
+  # Epsilon-greedy mixing weight, shared by every family whose simulate step
+  # is (or wraps) epsilon-greedy MAST/NST.
+  epsilon:
+    type: float
+    bounds: [0, 1]
+    default: 0.1
+
+  amaf_alpha:
+    type: float
+    bounds: [0, 1]
+    default: 1.0
+
+  ph_weight:
+    type: float
+    bounds: [0, 5]
+    default: 1.0
+
+  nst_backoff_threshold:
+    type: int
+    bounds: [0, 100]
+    default: 5
+
+  bias:
+    type: float
+    bounds: [0, 10]
+    default: 0.00001
+
+  k:
+    type: int
+    bounds: [0, 2000]
+    default: 1000
 
   rave:
     type: int
@@ -95,9 +152,62 @@ parameters:
 # in the `--config` JSON object; inactive parameters are omitted (they are
 # imputed with their default when training the surrogate model).
 #
-# Each entry: if <parent> == <value(s)>, then <children> become active.
+# Each entry: if <parent> == <value(s)>, then <children> become active. A
+# child can appear in more than one entry (e.g. "c" below, active either for
+# a plain UCB-family or for RAVE's own UCB-flavored schedule) -- `space.py`
+# combines every entry targeting the same child into a single ConfigSpace OR
+# condition, since ConfigSpace itself only accepts one condition object per
+# child.
 # ---------------------------------------------------------------------------
 conditions:
+  - if:
+      family:
+        [
+          ucb1,
+          ucb1_dm,
+          ucb1_mast,
+          ucb1_nst,
+          ucb1_progressive_history,
+          amaf,
+          amaf_mast,
+          ucb1_tuned,
+          ucb1_tuned_mast,
+          ucb1_tuned_dm,
+          ucb1_tuned_dm_mast,
+          rave,
+        ]
+    then: [final_action]
+  - if: { final_action: secure_child }
+    then: [a]
+  - if:
+      family:
+        [
+          ucb1,
+          ucb1_dm,
+          ucb1_mast,
+          ucb1_nst,
+          ucb1_progressive_history,
+          amaf,
+          amaf_mast,
+          ucb1_tuned,
+          ucb1_tuned_mast,
+          ucb1_tuned_dm,
+          ucb1_tuned_dm_mast,
+          ucb1_max_robust,
+          meta_mcts,
+        ]
+    then: [c]
+  - if:
+      family: [ucb1_mast, ucb1_nst, amaf_mast, ucb1_tuned_dm_mast]
+    then: [epsilon]
+  - if: { family: [amaf, amaf_mast] }
+    then: [amaf_alpha]
+  - if: { family: ucb1_progressive_history }
+    then: [ph_weight]
+  - if: { family: ucb1_nst }
+    then: [nst_backoff_threshold]
+  - if: { family: rave }
+    then: [threshold, schedule, rave_ucb]
   - if: { schedule: hand_selected }
     then: [k]
   - if: { schedule: min_mse }

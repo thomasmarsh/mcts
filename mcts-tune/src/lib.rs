@@ -1,9 +1,32 @@
-//! Generic RAVE-family tuning harness shared by every game crate that opts
-//! into SMAC3-style hyperparameter search. Everything here is generic over
-//! `G: Game` -- picking a concrete game, a baseline preset, and whether that
-//! game has a real `zobrist_hash` (see `use_transpositions` below) is the
-//! only per-game glue. See `games/traffic-lights/src/main.rs` for the
-//! reference wiring.
+//! Generic multi-family MCTS strategy tuning harness shared by every game
+//! crate that opts into SMAC3-style hyperparameter search. Everything here
+//! is generic over `G: Game` -- picking a concrete game, a baseline preset,
+//! and whether that game has a real `zobrist_hash` (see `use_transpositions`
+//! below) is the only per-game glue. See `games/traffic-lights/src/main.rs`
+//! for the reference wiring.
+//!
+//! The tunable search space has two levels: a top-level categorical
+//! `family` axis choosing *which* `Strategy<G>` (select/simulate/backprop/
+//! final-action composition) to run -- the same catalog of named types
+//! declared in `mcts::strategies::mcts::strategy` -- and, within the chosen
+//! family, that family's own hyperparameters (RAVE's schedule/`c`/epsilon,
+//! the UCB families' exploration constant, etc). `q_init` is a `SearchConfig`
+//! setting orthogonal to the strategy and applies to every family; the
+//! `final_action` axis (`max_avg`/`secure_child`/`robust_child`) applies to
+//! every family whose own named type doesn't already fix a different final
+//! action (`ucb1_max_robust` and `meta_mcts` each fix their own, matching
+//! their `strategy.rs` definitions).
+//!
+//! `strategy.rs`'s `QuasiBestFirst` is deliberately **not** in the catalog:
+//! its `best_child` falls back to a full nested `TreeSearch::choose_action`
+//! call whenever its opening book has no entry for the current line, which
+//! is unconditionally true here (this harness never populates a book) --
+//! and that fallback fires on every tree-descent step of the *outer* search,
+//! not once per leaf like `meta_mcts`'s nested search. Its own doc comment
+//! says as much: it's designed to pair with an outer `max_iterations: 1`,
+//! not the shared many-iteration budget every other family in this harness
+//! runs under. Confirmed by hand: wiring it in the same way as the other
+//! families hung indefinitely on a two-move `Nim` game.
 //!
 //! This crate deliberately depends on nothing but `mcts` (core search) and
 //! `game-host` (for `TunerInfo`/`HostError`) -- no game crate, and no
@@ -19,7 +42,8 @@ use std::str::FromStr;
 use game_host::{HostError, TunerCondition, TunerInfo, TunerParameter};
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
-use mcts::strategies::mcts::strategy::Compose;
+use mcts::strategies::mcts::simulate::SimulateStrategy;
+use mcts::strategies::mcts::strategy::{self, Compose};
 use mcts::strategies::mcts::{backprop, node::QInit, simulate, SearchConfig, Strategy, TreeSearch};
 use mcts::strategies::Search;
 use serde_json::{json, Value};
@@ -28,112 +52,166 @@ const PLAYOUT_DEPTH: usize = 200;
 const MAX_ITER: usize = 10_000;
 const EXPAND_THRESHOLD: u32 = 1;
 
-/// The RAVE candidate family every opted-in game tunes: `select::Rave` +
-/// `DecisiveMove<EpsilonGreedy<Mast>>` simulate, generic over the final-move
-/// selection axis `FA` (see `make_candidate`) as well as `G`.
-type Candidate<G, FA> = Compose<
-    select::Rave,
-    simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>,
-    backprop::Classic,
-    FA,
->;
+/// Iteration cap for `meta_mcts`'s inner nested search -- see the comment at
+/// its `make_candidate` arm for why this can't just be `TreeSearch::default()`.
+/// Deliberately small (not `MAX_ITER`-sized): the outer search's own
+/// `MAX_ITER` simulate steps each run a full inner search of this size, so
+/// `meta_mcts`'s total per-move cost is already `MAX_ITER *
+/// META_MCTS_INNER_ITERATIONS` -- a few dozen iterations is enough for the
+/// inner search to be more informed than a uniform rollout without making
+/// every `meta_mcts` trial two orders of magnitude more expensive than every
+/// other family's. Still real work, though -- see `tests/stress.rs` for why
+/// its round-trip test doesn't live in this file's fast suite.
+const META_MCTS_INNER_ITERATIONS: usize = 50;
 
-fn base_config<G: Game, S: Strategy<G>>() -> SearchConfig<G, S> {
-    SearchConfig::new()
+/// Families whose own named `strategy.rs` type leaves `final_action`
+/// configurable (the common `RobustChild`/`SecureChild` slot) rather than
+/// fixing something else -- these are the ones `tune eval`'s `final_action`
+/// param applies to.
+const FINAL_ACTION_FAMILIES: &[&str] = &[
+    "ucb1",
+    "ucb1_dm",
+    "ucb1_mast",
+    "ucb1_nst",
+    "ucb1_progressive_history",
+    "amaf",
+    "amaf_mast",
+    "ucb1_tuned",
+    "ucb1_tuned_mast",
+    "ucb1_tuned_dm",
+    "ucb1_tuned_dm_mast",
+    "rave",
+];
+
+/// Families that share the plain exploration-constant `c` parameter (every
+/// family whose `Select` is `select::Ucb1`, `select::Ucb1Tuned`, or
+/// `select::Amaf`/`select::ProgressiveHistory`, all of which wrap one).
+/// `rave`'s own `c` is gated separately, by `rave_ucb`, since it's only
+/// meaningful for two of `rave`'s three UCB modes.
+const C_FAMILIES: &[&str] = &[
+    "ucb1",
+    "ucb1_dm",
+    "ucb1_mast",
+    "ucb1_nst",
+    "ucb1_progressive_history",
+    "amaf",
+    "amaf_mast",
+    "ucb1_tuned",
+    "ucb1_tuned_mast",
+    "ucb1_tuned_dm",
+    "ucb1_tuned_dm_mast",
+    "ucb1_max_robust",
+    "meta_mcts",
+];
+
+/// Families whose simulate step is (or wraps) an epsilon-greedy policy.
+const EPSILON_FAMILIES: &[&str] = &["ucb1_mast", "ucb1_nst", "amaf_mast", "ucb1_tuned_dm_mast"];
+
+fn base_config<G: Game, S: Strategy<G> + Default>(
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<SearchConfig<G, S>, HostError> {
+    let q_init = QInit::from_str(&p.q_init)
+        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
+    Ok(SearchConfig::new()
         .max_iterations(MAX_ITER)
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
-}
-
-/// One trial's candidate parameters, deserialized from the `params` JSON
-/// object `rave_tune_eval` receives -- the merged active-parameter set a
-/// SMAC3 harness builds from its search-space YAML.
-#[derive(Debug, serde::Deserialize)]
-pub struct TrialParams {
-    threshold: u32,
-    c: Option<f64>,
-    epsilon: f64,
-    q_init: String,
-    final_action: String,
-    a: Option<f64>,
-    bias: Option<f64>,
-    schedule: String,
-    k: Option<u32>,
-    rave: Option<u32>,
-    rave_ucb: String,
-}
-
-fn config_with_params<G: Game, FA: SelectStrategy<G> + Default>(
-    p: &TrialParams,
-    seed: u64,
-    use_transpositions: bool,
-) -> Result<SearchConfig<G, Candidate<G, FA>>, HostError> {
-    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
-
-    let schedule = match p.schedule.as_str() {
-        "hand_selected" => RaveSchedule::HandSelected {
-            k: p.k.ok_or_else(|| missing("k"))?,
-        },
-        "min_mse" => RaveSchedule::MinMSE {
-            bias: p.bias.ok_or_else(|| missing("bias"))?,
-        },
-        "threshold" => RaveSchedule::Threshold {
-            rave: p.rave.ok_or_else(|| missing("rave"))?,
-        },
-        other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
-    };
-
-    let ucb = match p.rave_ucb.as_str() {
-        "none" => RaveUcb::None,
-        "ucb1" => RaveUcb::Ucb1 {
-            exploration_constant: p.c.ok_or_else(|| missing("c"))?,
-        },
-        "tuned" => RaveUcb::Ucb1Tuned {
-            exploration_constant: p.c.ok_or_else(|| missing("c"))?,
-        },
-        other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
-    };
-
-    let q_init = QInit::from_str(&p.q_init)
-        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
-
-    Ok(base_config::<G, Candidate<G, FA>>()
         .q_init(q_init)
         .use_transpositions(use_transpositions)
-        .select(select::Rave::new(p.threshold, schedule, ucb))
-        .simulate(
-            simulate::DecisiveMove::new()
-                .mode(simulate::DecisiveMoveMode::WinLoss)
-                .inner(simulate::EpsilonGreedy::with_epsilon(p.epsilon)),
-        )
         .seed(seed))
 }
 
-fn make_candidate<G: Game + 'static>(
+/// One trial's candidate parameters, deserialized from the `params` JSON
+/// object `strategy_tune_eval` receives -- the merged active-parameter set a
+/// SMAC3 harness builds from its search-space YAML. `family` selects which
+/// of the fields below are actually required; everything except `family`/
+/// `q_init` is `Option` because it's only meaningful for a subset of
+/// families (validated per-family in `make_candidate`, the same way missing
+/// required fields were already rejected before `family` existed).
+#[derive(Debug, serde::Deserialize)]
+pub struct TrialParams {
+    family: String,
+    q_init: String,
+    final_action: Option<String>,
+    a: Option<f64>,
+    c: Option<f64>,
+    epsilon: Option<f64>,
+    amaf_alpha: Option<f64>,
+    ph_weight: Option<f64>,
+    nst_backoff_threshold: Option<u32>,
+    threshold: Option<u32>,
+    bias: Option<f64>,
+    schedule: Option<String>,
+    k: Option<u32>,
+    rave: Option<u32>,
+    rave_ucb: Option<String>,
+}
+
+/// Builds a candidate for any family whose `strategy.rs` counterpart leaves
+/// `final_action` configurable: dispatches on `p.final_action` and
+/// monomorphizes `Compose<Sel, Sim, backprop::Classic, FA>` for whichever of
+/// `SecureChild`/`RobustChild` was chosen, mirroring the three-arm dispatch
+/// `rave`'s own `make_candidate` used before other families existed.
+fn build_with_final_action<G, Sel, Sim>(
+    sel: Sel,
+    sim: Sim,
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
-) -> Result<Box<dyn Search<G = G>>, HostError> {
-    match p.final_action.as_str() {
+) -> Result<Box<dyn Search<G = G>>, HostError>
+where
+    G: Game + 'static,
+    Sel: SelectStrategy<G> + 'static,
+    Sim: SimulateStrategy<G> + 'static,
+{
+    let fa = p
+        .final_action
+        .as_deref()
+        .ok_or_else(|| HostError::bad_request("missing param: final_action"))?;
+    match fa {
         "max_avg" => {
-            let config = config_with_params::<G, select::SecureChild>(p, seed, use_transpositions)?;
+            let config =
+                base_config::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>(
+                    p,
+                    seed,
+                    use_transpositions,
+                )?
+                .select(sel)
+                .simulate(sim);
             Ok(Box::new(
-                TreeSearch::<G, Candidate<G, select::SecureChild>>::new().config(config),
+                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>::new()
+                    .config(config),
             ))
         }
         "secure_child" => {
-            let mut config =
-                config_with_params::<G, select::SecureChild>(p, seed, use_transpositions)?;
-            config.final_action.a =
+            let a =
                 p.a.ok_or_else(|| HostError::bad_request("missing param: a"))?;
+            let mut config = base_config::<
+                G,
+                Compose<Sel, Sim, backprop::Classic, select::SecureChild>,
+            >(p, seed, use_transpositions)?
+            .select(sel)
+            .simulate(sim);
+            config.final_action.a = a;
             Ok(Box::new(
-                TreeSearch::<G, Candidate<G, select::SecureChild>>::new().config(config),
+                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>::new()
+                    .config(config),
             ))
         }
         "robust_child" => {
-            let config = config_with_params::<G, select::RobustChild>(p, seed, use_transpositions)?;
+            let config =
+                base_config::<G, Compose<Sel, Sim, backprop::Classic, select::RobustChild>>(
+                    p,
+                    seed,
+                    use_transpositions,
+                )?
+                .select(sel)
+                .simulate(sim);
             Ok(Box::new(
-                TreeSearch::<G, Candidate<G, select::RobustChild>>::new().config(config),
+                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::RobustChild>>::new()
+                    .config(config),
             ))
         }
         other => Err(HostError::bad_request(format!(
@@ -142,13 +220,213 @@ fn make_candidate<G: Game + 'static>(
     }
 }
 
+/// Builds a candidate for a family whose `strategy.rs` counterpart fixes its
+/// own `final_action` (`ucb1_max_robust`, `meta_mcts`) -- `p.final_action` is
+/// ignored (the search-space YAML never activates it for these families, per
+/// `strategy_tuner_info`'s conditions).
+fn build_fixed<G, Sel, Sim, FA>(
+    sel: Sel,
+    sim: Sim,
+    fa: FA,
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<Box<dyn Search<G = G>>, HostError>
+where
+    G: Game + 'static,
+    Sel: SelectStrategy<G> + 'static,
+    Sim: SimulateStrategy<G> + 'static,
+    FA: SelectStrategy<G> + 'static,
+{
+    let config =
+        base_config::<G, Compose<Sel, Sim, backprop::Classic, FA>>(p, seed, use_transpositions)?
+            .select(sel)
+            .simulate(sim)
+            .final_action(fa);
+    Ok(Box::new(
+        TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, FA>>::new().config(config),
+    ))
+}
+
+fn make_candidate<G: Game + 'static>(
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
+    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
+    let c = || p.c.ok_or_else(|| missing("c"));
+    let epsilon = || p.epsilon.ok_or_else(|| missing("epsilon"));
+
+    match p.family.as_str() {
+        "ucb1" => build_with_final_action(
+            select::Ucb1::with_c(c()?),
+            simulate::Uniform,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_dm" => build_with_final_action(
+            select::Ucb1::with_c(c()?),
+            simulate::DecisiveMove::<G>::new(),
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_mast" => build_with_final_action(
+            select::Ucb1::with_c(c()?),
+            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_nst" => {
+            let nst = simulate::Nst::new().backoff_threshold(
+                p.nst_backoff_threshold
+                    .ok_or_else(|| missing("nst_backoff_threshold"))?,
+            );
+            build_with_final_action(
+                select::Ucb1::with_c(c()?),
+                simulate::EpsilonGreedy::<G, simulate::Nst>::with_epsilon(epsilon()?).inner(nst),
+                p,
+                seed,
+                use_transpositions,
+            )
+        }
+        "ucb1_progressive_history" => build_with_final_action(
+            select::ProgressiveHistory::new(
+                select::Ucb1::with_c(c()?),
+                p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
+            ),
+            simulate::Uniform,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "amaf" => build_with_final_action(
+            select::Amaf::new()
+                .alpha(p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?)
+                .exploration_constant(c()?),
+            simulate::Uniform,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "amaf_mast" => build_with_final_action(
+            select::Amaf::new()
+                .alpha(p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?)
+                .exploration_constant(c()?),
+            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_tuned" => build_with_final_action(
+            select::Ucb1Tuned::with_c(c()?),
+            simulate::Uniform,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_tuned_mast" => build_with_final_action(
+            select::Ucb1Tuned::with_c(c()?),
+            simulate::Mast,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_tuned_dm" => build_with_final_action(
+            select::Ucb1Tuned::with_c(c()?),
+            simulate::DecisiveMove::<G>::new(),
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "ucb1_tuned_dm_mast" => build_with_final_action(
+            select::Ucb1Tuned::with_c(c()?),
+            simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Mast>>::new().inner(
+                simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
+            ),
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "rave" => {
+            let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
+                "hand_selected" => RaveSchedule::HandSelected {
+                    k: p.k.ok_or_else(|| missing("k"))?,
+                },
+                "min_mse" => RaveSchedule::MinMSE {
+                    bias: p.bias.ok_or_else(|| missing("bias"))?,
+                },
+                "threshold" => RaveSchedule::Threshold {
+                    rave: p.rave.ok_or_else(|| missing("rave"))?,
+                },
+                other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
+            };
+            let ucb = match p.rave_ucb.as_deref().ok_or_else(|| missing("rave_ucb"))? {
+                "none" => RaveUcb::None,
+                "ucb1" => RaveUcb::Ucb1 {
+                    exploration_constant: c()?,
+                },
+                "tuned" => RaveUcb::Ucb1Tuned {
+                    exploration_constant: c()?,
+                },
+                other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
+            };
+            build_with_final_action(
+                select::Rave::new(
+                    p.threshold.ok_or_else(|| missing("threshold"))?,
+                    schedule,
+                    ucb,
+                ),
+                simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Mast>>::new()
+                    .mode(simulate::DecisiveMoveMode::WinLoss)
+                    .inner(simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(
+                        epsilon()?,
+                    )),
+                p,
+                seed,
+                use_transpositions,
+            )
+        }
+        "ucb1_max_robust" => build_fixed(
+            select::Ucb1::with_c(c()?),
+            simulate::Uniform,
+            select::MaxRobustChild,
+            p,
+            seed,
+            use_transpositions,
+        ),
+        "meta_mcts" => {
+            // `simulate::MetaMcts`'s inner search has no default iteration
+            // cap of its own (`TreeSearch::default()`'s `max_iterations` is
+            // `usize::MAX`, meant to be paired with a time budget this
+            // harness doesn't set) -- every simulate step would otherwise
+            // run an effectively unbounded nested search. Cap it explicitly
+            // instead of relying on `Default`.
+            let inner = TreeSearch::<G, strategy::Ucb1>::new().config(
+                SearchConfig::<G, strategy::Ucb1>::new().max_iterations(META_MCTS_INNER_ITERATIONS),
+            );
+            build_fixed(
+                select::Ucb1::with_c(c()?),
+                simulate::MetaMcts { inner },
+                select::MaxAvgScore,
+                p,
+                seed,
+                use_transpositions,
+            )
+        }
+        other => Err(HostError::bad_request(format!("unknown family: {other}"))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Evaluation
 // ---------------------------------------------------------------------------
 
-/// Result of one `rave_tune_eval` call: `cost` is what SMAC3 minimizes (the
-/// candidate's loss rate against the baseline); `wins`/`losses`/`draws` are
-/// from the candidate's perspective, for display.
+/// Result of one `strategy_tune_eval` call: `cost` is what SMAC3 minimizes
+/// (the candidate's loss rate against the baseline); `wins`/`losses`/`draws`
+/// are from the candidate's perspective, for display.
 #[derive(Debug)]
 pub struct TuneEvalOutcome {
     pub cost: f64,
@@ -169,7 +447,7 @@ pub struct TuneEvalOutcome {
 /// enabling transpositions against it merges every node in the tree into
 /// one, silently corrupting the search rather than erroring. Pass `true`
 /// only for games that have actually implemented `zobrist_hash`.
-pub fn rave_tune_eval<G: Game + 'static>(
+pub fn strategy_tune_eval<G: Game + 'static>(
     params: &Value,
     rounds: u32,
     seed: Option<u64>,
@@ -253,19 +531,37 @@ fn play_one<G: Game>(
 // Tuner metadata
 // ---------------------------------------------------------------------------
 
-/// Search-space metadata for the RAVE candidate family above, for `tune
+/// Search-space metadata for the full multi-family catalog above, for `tune
 /// describe` to report to a SMAC3 harness or launch-form UI. `baseline` is
-/// the preset id (e.g. `"strong"`) `rave_tune_eval`'s `baseline_build`
+/// the preset id (e.g. `"strong"`) `strategy_tune_eval`'s `baseline_build`
 /// argument is expected to build.
-pub fn rave_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
+pub fn strategy_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
     TunerInfo {
-        id: "rave".into(),
+        id: "strategy".into(),
         baseline: baseline.into(),
         eval_rounds,
         parameters: vec![
             param(
-                "bias",
-                json!({"type": "float", "bounds": [0, 10], "default": 0.00001}),
+                "family",
+                json!({"type": "categorical", "choices": [
+                    "ucb1", "ucb1_dm", "ucb1_mast", "ucb1_nst",
+                    "ucb1_progressive_history", "ucb1_max_robust",
+                    "amaf", "amaf_mast",
+                    "ucb1_tuned", "ucb1_tuned_mast", "ucb1_tuned_dm", "ucb1_tuned_dm_mast",
+                    "meta_mcts", "rave",
+                ], "default": "rave"}),
+            ),
+            param(
+                "q_init",
+                json!({"type": "categorical", "choices": ["Draw", "Infinity", "Loss", "Parent", "Win"], "default": "Infinity"}),
+            ),
+            param(
+                "final_action",
+                json!({"type": "categorical", "choices": ["max_avg", "secure_child", "robust_child"], "default": "robust_child"}),
+            ),
+            param(
+                "a",
+                json!({"type": "float", "bounds": [0, 10], "default": 4.0}),
             ),
             param(
                 "c",
@@ -276,16 +572,24 @@ pub fn rave_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
                 json!({"type": "float", "bounds": [0, 1], "default": 0.1}),
             ),
             param(
-                "final_action",
-                json!({"type": "constant", "value": "robust_child"}),
+                "amaf_alpha",
+                json!({"type": "float", "bounds": [0, 1], "default": 1.0}),
+            ),
+            param(
+                "ph_weight",
+                json!({"type": "float", "bounds": [0, 5], "default": 1.0}),
+            ),
+            param(
+                "nst_backoff_threshold",
+                json!({"type": "int", "bounds": [0, 100], "default": 5}),
+            ),
+            param(
+                "bias",
+                json!({"type": "float", "bounds": [0, 10], "default": 0.00001}),
             ),
             param(
                 "k",
                 json!({"type": "int", "bounds": [0, 2000], "default": 1000}),
-            ),
-            param(
-                "q_init",
-                json!({"type": "categorical", "choices": ["Draw", "Infinity", "Loss", "Parent", "Win"], "default": "Infinity"}),
             ),
             param(
                 "rave",
@@ -305,6 +609,20 @@ pub fn rave_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
             ),
         ],
         conditions: vec![
+            condition(json!({"family": FINAL_ACTION_FAMILIES}), &["final_action"]),
+            condition(json!({"final_action": "secure_child"}), &["a"]),
+            condition(json!({"family": C_FAMILIES}), &["c"]),
+            condition(json!({"family": EPSILON_FAMILIES}), &["epsilon"]),
+            condition(json!({"family": ["amaf", "amaf_mast"]}), &["amaf_alpha"]),
+            condition(
+                json!({"family": "ucb1_progressive_history"}),
+                &["ph_weight"],
+            ),
+            condition(json!({"family": "ucb1_nst"}), &["nst_backoff_threshold"]),
+            condition(
+                json!({"family": "rave"}),
+                &["threshold", "schedule", "rave_ucb"],
+            ),
             condition(json!({"schedule": "hand_selected"}), &["k"]),
             condition(json!({"schedule": "min_mse"}), &["bias"]),
             condition(json!({"schedule": "threshold"}), &["rave"]),
@@ -335,7 +653,6 @@ fn condition(if_: Value, then: &[&str]) -> TunerCondition {
 mod tests {
     use super::*;
     use game_nim::Nim;
-    use mcts::strategies::mcts::strategy;
 
     #[test]
     fn test_cost_from_losses_hand_verified() {
@@ -353,8 +670,28 @@ mod tests {
         assert_eq!(cost_from_losses(0, 0), 0.0);
     }
 
+    // Bounded, unlike production `baseline_build` callers (which always pass
+    // a real budgeted preset): the missing-field/unknown-value rejection
+    // tests below never reach real play, but the family round-trip tests do,
+    // and `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
     fn baseline() -> Box<dyn Search<G = Nim>> {
-        Box::new(TreeSearch::<Nim, strategy::Ucb1>::new())
+        Box::new(
+            TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(50)),
+        )
+    }
+
+    fn rave_params() -> Value {
+        json!({
+            "family": "rave",
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        })
     }
 
     #[test]
@@ -362,50 +699,152 @@ mod tests {
         // "schedule": "threshold" requires "rave", which is absent -- this
         // must fail fast during config construction, before any game is
         // played (no real MCTS search runs in this test).
-        let params = json!({
-            "threshold": 700,
-            "c": 0.3,
-            "epsilon": 0.1,
-            "q_init": "Infinity",
-            "final_action": "robust_child",
-            "schedule": "threshold",
-            "rave_ucb": "tuned",
-        });
-        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+        let mut params = rave_params();
+        params.as_object_mut().unwrap().remove("rave");
+        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
             .expect_err("missing `rave` must be rejected");
         assert!(err.message.contains("rave"));
     }
 
     #[test]
     fn test_tune_eval_rejects_unknown_schedule() {
-        let params = json!({
-            "threshold": 700,
-            "c": 0.3,
-            "epsilon": 0.1,
-            "q_init": "Infinity",
-            "final_action": "robust_child",
-            "schedule": "not_a_real_schedule",
-            "rave_ucb": "tuned",
-        });
-        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+        let mut params = rave_params();
+        params["schedule"] = json!("not_a_real_schedule");
+        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
             .expect_err("unknown schedule must be rejected");
         assert!(err.message.contains("schedule"));
     }
 
     #[test]
     fn test_tune_eval_rejects_unknown_final_action() {
-        let params = json!({
-            "threshold": 700,
-            "c": 0.3,
-            "epsilon": 0.1,
-            "q_init": "Infinity",
-            "final_action": "not_a_real_final_action",
-            "schedule": "threshold",
-            "rave": 700,
-            "rave_ucb": "tuned",
-        });
-        let err = rave_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+        let mut params = rave_params();
+        params["final_action"] = json!("not_a_real_final_action");
+        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
             .expect_err("unknown final_action must be rejected");
         assert!(err.message.contains("final_action"));
+    }
+
+    #[test]
+    fn test_tune_eval_rejects_unknown_family() {
+        let mut params = rave_params();
+        params["family"] = json!("not_a_real_family");
+        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+            .expect_err("unknown family must be rejected");
+        assert!(err.message.contains("family"));
+    }
+
+    /// One hand-verified construction+round-trip test per new family arm,
+    /// each playing a single round of `Nim` (fast, deterministic) to prove
+    /// the concrete type actually builds and the declared params round-trip
+    /// through `make_candidate` without error. `cost_from_losses` itself is
+    /// already covered above -- this only exercises dispatch.
+    fn assert_family_round_trips(mut params: Value) {
+        params["q_init"] = json!("Infinity");
+        let outcome = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "family {:?} should round-trip: {}",
+                    params["family"], e.message
+                )
+            });
+        assert!(outcome.wins + outcome.losses + outcome.draws == 2);
+    }
+
+    #[test]
+    fn test_family_ucb1_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1", "c": 1.4, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_dm_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_dm", "c": 1.4, "final_action": "max_avg",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_nst_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_nst", "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_progressive_history_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_progressive_history", "c": 1.4, "ph_weight": 0.5,
+            "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_max_robust_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_max_robust", "c": 1.4,
+        }));
+    }
+
+    #[test]
+    fn test_family_amaf_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "amaf", "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
+        }));
+    }
+
+    #[test]
+    fn test_family_amaf_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "amaf_mast", "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
+            "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_tuned_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_tuned_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_tuned_dm_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_tuned_dm", "c": 1.4, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_tuned_dm_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }));
+    }
+
+    // `meta_mcts`'s round trip is proven in `tests/stress.rs` instead of here:
+    // its inner nested search makes even one candidate-vs-baseline game
+    // noticeably slower than every other family's (multi-second, not the
+    // sub-second every sibling test above runs in), so it belongs in the
+    // slow/stress suite `cargo test --lib` never compiles, not this fast one.
+
+    #[test]
+    fn test_family_rave_round_trips() {
+        assert_family_round_trips(rave_params());
     }
 }
