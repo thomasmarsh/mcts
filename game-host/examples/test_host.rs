@@ -6,6 +6,7 @@
 
 use game_host::{
     run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    TunerInfo, TunerParameter,
 };
 use serde_json::Value;
 
@@ -150,6 +151,19 @@ impl GameAdapter for TestHost {
             actions,
             principal_variation: suggested.clone().into_iter().collect(),
             suggested_move: suggested,
+        })
+    }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        Some(TunerInfo {
+            id: "test".into(),
+            baseline: "strong".into(),
+            eval_rounds: 5,
+            parameters: vec![TunerParameter {
+                name: "c".into(),
+                spec: serde_json::json!({"type": "float", "bounds": [0, 3], "default": 1.4}),
+            }],
+            conditions: vec![],
         })
     }
 }

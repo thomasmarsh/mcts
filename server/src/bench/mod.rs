@@ -7,6 +7,7 @@
 //!
 //! Mounted in `server/main.rs` alongside the game-play routes.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
+use game_host::TunerInfo;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::tournament::wilson_interval;
@@ -38,6 +40,11 @@ use mcts_bench::StrategyInfo;
 pub struct BenchState {
     pub db: Mutex<duckdb::Connection>,
     pub bench_runs_dir: PathBuf,
+    /// Live per-game-kind subprocess sessions, shared with the main
+    /// gameplay `AppState` -- reused here (rather than spawning a second
+    /// set of subprocesses) so `/api/bench/smac3/kinds` can query each
+    /// game's `tuner()` over its already-open session.
+    pub games: Arc<HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +61,11 @@ pub struct ListRunsParams {
 #[derive(Deserialize)]
 pub struct RunLogParams {
     pub since: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct TrialsParams {
+    pub limit: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -158,6 +170,27 @@ pub struct BenchGameInfo {
     pub strategies: Vec<StrategyInfo>,
 }
 
+/// A game's tunable strategy search-space metadata, as reported by
+/// `GET /api/bench/smac3/kinds` -- the SMAC3 launch form's data-driven
+/// counterpart to `BenchGameInfo`.
+#[derive(Serialize)]
+pub struct Smac3GameInfo {
+    pub game: String,
+    pub tuner: TunerInfo,
+}
+
+/// One row from the `trials` table, as reported by
+/// `GET /api/bench/runs/{run_id}/trials`.
+#[derive(Serialize)]
+pub struct TrialRow {
+    pub trial_id: i64,
+    pub ts: String,
+    pub config: Value,
+    pub seed: Option<i64>,
+    pub cost: Option<f64>,
+    pub extra: Option<Value>,
+}
+
 /// Structured error for bench routes — mirrors `adapters::AdapterError`'s
 /// pattern with `{error, code}` JSON body.
 #[derive(Debug)]
@@ -230,10 +263,12 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 
     Router::new()
         .route("/api/bench/kinds", get(list_kinds))
+        .route("/api/bench/smac3/kinds", get(list_smac3_kinds))
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
         .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
+        .route("/api/bench/runs/{run_id}/trials", get(get_run_trials))
         .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
@@ -588,17 +623,101 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
         .collect();
     games.sort_by(|a, b| a.game.cmp(&b.game));
 
-    // Currently only one run kind: round_robin.  Add more kinds here as
-    // they're implemented.
-    let kinds = vec![BenchKindInfo {
-        kind: "round_robin".to_string(),
-        label: "Round Robin".to_string(),
-        description: "Every strategy plays every other strategy an equal number of times, both as first and second player.  Results are streamed as match_result JSONL lines, aggregated into a win-rate leaderboard with Wilson confidence intervals."
-            .to_string(),
-        games,
-    }];
+    let kinds = vec![
+        BenchKindInfo {
+            kind: "round_robin".to_string(),
+            label: "Round Robin".to_string(),
+            description: "Every strategy plays every other strategy an equal number of times, both as first and second player.  Results are streamed as match_result JSONL lines, aggregated into a win-rate leaderboard with Wilson confidence intervals."
+                .to_string(),
+            games,
+        },
+        BenchKindInfo {
+            kind: "smac3".to_string(),
+            label: "SMAC3 Tuning".to_string(),
+            description: "Runs a SMAC3 hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against a fixed baseline per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/smac3/kinds for per-game tuner metadata (search space, baseline, eval rounds) instead of a strategies list."
+                .to_string(),
+            games: vec![],
+        },
+    ];
 
     Json(kinds)
+}
+
+/// `GET /api/bench/smac3/kinds`
+///
+/// Per-game tuner metadata (search space, baseline, eval rounds), queried
+/// through each game's already-open `SubprocessAdapter` session (the same
+/// ones the gameplay routes use) rather than spawning a one-shot `tune
+/// describe` process per request.  Only games that implement `tuner()`
+/// (return `Some`) appear -- tuning support is opt-in per game.
+async fn list_smac3_kinds(AxumState(state): AxumState<Arc<BenchState>>) -> Json<Vec<Smac3GameInfo>> {
+    let mut games: Vec<Smac3GameInfo> = state
+        .games
+        .iter()
+        .filter_map(|(kind, adapter)| {
+            adapter.tuner().map(|tuner| Smac3GameInfo {
+                game: kind.to_string(),
+                tuner,
+            })
+        })
+        .collect();
+    games.sort_by(|a, b| a.game.cmp(&b.game));
+    Json(games)
+}
+
+/// `GET /api/bench/runs/{run_id}/trials?limit=`
+///
+/// Rows from the `trials` table for one run, ordered by `trial_id`.
+async fn get_run_trials(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+    Query(params): Query<TrialsParams>,
+) -> Result<Json<Vec<TrialRow>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    match db.query_row(
+        "SELECT run_id FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(_) => {}
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    }
+
+    let mut sql = String::from(
+        "SELECT trial_id, CAST(ts AS TEXT), CAST(config AS TEXT), seed, cost, CAST(extra AS TEXT) \
+         FROM trials WHERE run_id = ?1 ORDER BY trial_id ASC",
+    );
+    if let Some(limit) = params.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+
+    let mut stmt = db.prepare(&sql)?;
+    let rows: Vec<TrialRow> = stmt
+        .query_map(duckdb::params![&run_id], |row| {
+            let config_str: String = row.get(2)?;
+            let config: Value = serde_json::from_str(&config_str).unwrap_or(Value::Null);
+            let extra_str: Option<String> = row.get(5)?;
+            let extra = extra_str.and_then(|s| serde_json::from_str(&s).ok());
+            Ok(TrialRow {
+                trial_id: row.get(0)?,
+                ts: row.get(1)?,
+                config,
+                seed: row.get(3)?,
+                cost: row.get(4)?,
+                extra,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(rows))
 }
 
 /// `POST /api/bench/launch` — `{kind, game, config}`
@@ -730,9 +849,14 @@ async fn launch_run(
 
 /// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
 ///
-/// Sends SIGTERM to the recorded PID and marks the run as `stopped` in the
-/// database.  If the PID is no longer alive, updates the status anyway
-/// (the process exited on its own between the list and the stop request).
+/// Sends SIGTERM to the recorded PID's whole process group (`kill -TERM
+/// -<pid>`) and marks the run as `stopped` in the database.  `launch::launch`
+/// puts every run in its own process group (`process_group(0)`), so the
+/// recorded PID is that group's leader -- signalling just that one PID would
+/// leave descendants (e.g. the `uv`/python child under `bench smac3`)
+/// orphaned instead of terminated.  If the PID is no longer alive, updates
+/// the status anyway (the process exited on its own between the list and the
+/// stop request).
 async fn stop_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
@@ -768,9 +892,11 @@ async fn stop_run(
     if let Some(pid_val) = pid {
         #[cfg(unix)]
         {
+            // Negative PID = signal the whole process group, not just its
+            // leader (see doc comment above).
             match std::process::Command::new("kill")
                 .arg("-TERM")
-                .arg(pid_val.to_string())
+                .arg(format!("-{pid_val}"))
                 .status()
             {
                 Ok(status_result) if status_result.success() => {
@@ -848,6 +974,10 @@ async fn stop_run(
 ///
 /// Supported kinds:
 /// - `"round_robin"` — runs `bench round-robin --game ... --strategies ... --rounds ...`
+/// - `"smac3"` — runs `bench smac3 --game ... [--config ...] [--override k=v ...]`
+///   in the foreground; the server's own `launch::launch` (not `bench smac3`'s
+///   own `--background` flag) is what detaches and captures its JSONL output,
+///   same as every other launch kind.
 ///
 /// Unknown kinds produce an error.
 fn build_command(
@@ -858,6 +988,32 @@ fn build_command(
     let bench_binary = find_bench_binary();
 
     match kind {
+        "smac3" => {
+            let mut cmd = vec![
+                bench_binary.to_string_lossy().to_string(),
+                "smac3".into(),
+                "--game".into(),
+                game.to_owned(),
+            ];
+
+            if let Some(ref config) = config {
+                if let Some(config_path) = config.get("config").and_then(|v| v.as_str()) {
+                    cmd.push("--config".into());
+                    cmd.push(config_path.to_owned());
+                }
+
+                if let Some(overrides) = config.get("overrides").and_then(|v| v.as_array()) {
+                    for o in overrides {
+                        if let Some(ov) = o.as_str() {
+                            cmd.push("--override".into());
+                            cmd.push(ov.to_owned());
+                        }
+                    }
+                }
+            }
+
+            Ok(cmd)
+        }
         "round_robin" => {
             let mut cmd = vec![
                 bench_binary.to_string_lossy().to_string(),
@@ -890,7 +1046,7 @@ fn build_command(
         }
         unknown => Err(BenchError {
             status: StatusCode::BAD_REQUEST,
-            message: format!("unknown run kind '{unknown}'; expected one of: round_robin"),
+            message: format!("unknown run kind '{unknown}'; expected one of: round_robin, smac3"),
         }),
     }
 }
@@ -988,6 +1144,17 @@ mod tests {
     /// connection into the `BenchState`.  Returns the Router and the temp
     /// dir (kept alive for the test's duration).
     fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
+        seeded_app_with_games(seed_fn, HashMap::new())
+    }
+
+    /// Like `seeded_app`, but with a caller-supplied `games` map -- for
+    /// tests that need `/api/bench/smac3/kinds` to see specific fake
+    /// per-game tuner metadata instead of the real (subprocess-backed)
+    /// registry.
+    fn seeded_app_with_games(
+        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+        games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>>,
+    ) -> (Router, PathBuf) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_dir =
             std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -1004,6 +1171,7 @@ mod tests {
         let state = Arc::new(BenchState {
             db: Mutex::new(conn),
             bench_runs_dir,
+            games: Arc::new(games),
         });
 
         (bench_router(state), tmp_dir)
@@ -1289,6 +1457,74 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}/trials
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_run_trials_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nonexistent/trials").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        let body = body_json(&body);
+        assert_eq!(body["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_trials_returns_rows_in_trial_id_order() {
+        let app = seeded_app(|conn, dir| {
+            default_seed(conn, dir); // seeds trial_id 1 with cost 0.375
+            conn.execute(
+                "INSERT INTO trials (run_id, trial_id, ts, config, seed, cost, extra) \
+                 VALUES (?1, 2, '2026-01-01T00:00:40Z', '{\"c\":1.5}', 42, 0.2, '{\"wins\":8}')",
+                duckdb::params![DEFAULT_RUN_ID],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, body) =
+            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}/trials")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let rows = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(rows.len(), 2, "expected 2 trials, got {rows:?}");
+
+        assert_eq!(rows[0]["trial_id"], 1);
+        assert_eq!(rows[0]["config"], json!({}));
+        assert_eq!(rows[0]["cost"], 0.375);
+        assert_eq!(rows[0]["seed"], Value::Null);
+
+        assert_eq!(rows[1]["trial_id"], 2);
+        assert_eq!(rows[1]["config"], json!({"c": 1.5}));
+        assert_eq!(rows[1]["seed"], 42);
+        assert_eq!(rows[1]["cost"], 0.2);
+        assert_eq!(rows[1]["extra"], json!({"wins": 8}));
+    }
+
+    #[tokio::test]
+    async fn test_get_run_trials_respects_limit() {
+        let app = seeded_app(|conn, dir| {
+            default_seed(conn, dir);
+            conn.execute(
+                "INSERT INTO trials (run_id, trial_id, ts, config, cost) \
+                 VALUES (?1, 2, '2026-01-01T00:00:40Z', '{}', 0.2)",
+                duckdb::params![DEFAULT_RUN_ID],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, body) = http_get(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/trials?limit=1"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let rows = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(rows.len(), 1, "expected 1 trial with limit=1");
+        assert_eq!(rows[0]["trial_id"], 1);
+    }
+
+    // -------------------------------------------------------------------
     // GET /api/bench/leaderboard
     // -------------------------------------------------------------------
 
@@ -1443,6 +1679,166 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // GET /api/bench/kinds
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_list_kinds_includes_round_robin_and_smac3() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_get(app, "/api/bench/kinds").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let kinds = body_json(&body).as_array().unwrap().clone();
+        let kind_names: Vec<&str> = kinds.iter().map(|k| k["kind"].as_str().unwrap()).collect();
+        assert!(kind_names.contains(&"round_robin"));
+        assert!(kind_names.contains(&"smac3"));
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/smac3/kinds
+    // -------------------------------------------------------------------
+
+    /// A minimal `crate::adapter::GameAdapter` fake -- only `kind`/`tuner`
+    /// are exercised by the `smac3/kinds` route, everything else panics if
+    /// called so a test that accidentally reaches it fails loudly.
+    struct FakeTunableAdapter {
+        kind: &'static str,
+        tuner: Option<TunerInfo>,
+    }
+
+    impl crate::adapter::GameAdapter for FakeTunableAdapter {
+        fn kind(&self) -> &'static str {
+            self.kind
+        }
+        fn label(&self) -> &'static str {
+            "Fake"
+        }
+        fn description(&self) -> &'static str {
+            "fake adapter for smac3/kinds tests"
+        }
+        fn default_config(&self) -> Value {
+            json!({})
+        }
+        fn new_state(&self, _config: Value) -> Result<Value, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn apply(&self, _state: &Value, _mv: &Value) -> Result<Value, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn view(&self, _state: &Value) -> Result<Value, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn ai_presets(&self) -> Vec<crate::adapter::AiPresetInfo> {
+            vec![]
+        }
+        fn ai_move(
+            &self,
+            _state: &Value,
+            _preset: &str,
+        ) -> Result<crate::adapter::AiMoveResult, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn analyze(
+            &self,
+            _state: &Value,
+            _preset: &str,
+            _budget_ms: Option<u64>,
+        ) -> Result<crate::adapter::Analysis, crate::adapter::AdapterError> {
+            unimplemented!()
+        }
+        fn tuner(&self) -> Option<TunerInfo> {
+            self.tuner.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_smac3_kinds_only_lists_tunable_games() {
+        let mut games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>> =
+            HashMap::new();
+        games.insert(
+            "traffic-lights",
+            Arc::new(FakeTunableAdapter {
+                kind: "traffic-lights",
+                tuner: Some(TunerInfo {
+                    id: "rave".into(),
+                    baseline: "strong".into(),
+                    eval_rounds: 20,
+                    parameters: vec![],
+                    conditions: vec![],
+                }),
+            }),
+        );
+        games.insert(
+            "druid",
+            Arc::new(FakeTunableAdapter {
+                kind: "druid",
+                tuner: None,
+            }),
+        );
+
+        let app = seeded_app_with_games(|_, _| {}, games).0;
+        let (status, body) = http_get(app, "/api/bench/smac3/kinds").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let kinds = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(
+            kinds.len(),
+            1,
+            "expected only traffic-lights to be tunable, got {kinds:?}"
+        );
+        assert_eq!(kinds[0]["game"], "traffic-lights");
+        assert_eq!(kinds[0]["tuner"]["id"], "rave");
+        assert_eq!(kinds[0]["tuner"]["eval_rounds"], 20);
+    }
+
+    // -------------------------------------------------------------------
+    // Command construction (build_command)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_build_command_smac3_includes_config_and_overrides() {
+        let cmd = build_command(
+            "smac3",
+            "traffic-lights",
+            &Some(json!({
+                "config": "smac3/config/default.yaml",
+                "overrides": ["optimizer.n_trials=10", "optimizer.n_workers=2"],
+            })),
+        )
+        .unwrap();
+
+        // First element is the (unresolved-in-test) bench binary path --
+        // everything after it is the argv this test actually cares about.
+        assert_eq!(
+            cmd[1..],
+            vec![
+                "smac3",
+                "--game",
+                "traffic-lights",
+                "--config",
+                "smac3/config/default.yaml",
+                "--override",
+                "optimizer.n_trials=10",
+                "--override",
+                "optimizer.n_workers=2",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_command_smac3_with_no_config_is_just_game() {
+        let cmd = build_command("smac3", "druid", &None).unwrap();
+        assert_eq!(cmd[1..], vec!["smac3", "--game", "druid"]);
+    }
+
+    #[test]
+    fn test_build_command_unknown_kind_lists_smac3_as_supported() {
+        let err = build_command("nope", "druid", &None).unwrap_err();
+        assert!(err.message.contains("smac3"));
+    }
+
+    // -------------------------------------------------------------------
     // POST /api/bench/launch
     // -------------------------------------------------------------------
 
@@ -1509,6 +1905,39 @@ mod tests {
         assert!(
             status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
             "launch returned unexpected status {status}: body={}",
+            String::from_utf8_lossy(&body),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_launch_smac3_reaches_the_launcher() {
+        // Same shape as test_launch_spawns_bench_and_returns_run_id above,
+        // for the "smac3" kind -- proves build_command's smac3 arm produces
+        // a request the handler accepts and forwards to launch::launch
+        // (a 400 here would mean it was rejected as an unknown kind before
+        // ever reaching the launcher).
+        let app = seeded_app(|_conn, dir| {
+            std::fs::create_dir_all(dir).ok();
+        })
+        .0;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/launch",
+            json!({
+                "kind": "smac3",
+                "game": "traffic-lights",
+                "config": {
+                    "config": "smac3/config/default.yaml",
+                    "overrides": ["optimizer.n_trials=1"]
+                }
+            }),
+        )
+        .await;
+
+        assert!(
+            status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
+            "smac3 launch returned unexpected status {status}: body={}",
             String::from_utf8_lossy(&body),
         );
     }
@@ -1581,6 +2010,88 @@ mod tests {
         let detail = body_json(&check_body);
         assert_eq!(detail["status"], "stopped");
         assert!(detail["ended_at"].as_str().unwrap_or("").len() >= 10);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_stop_kills_the_whole_process_group_not_just_the_leader() {
+        use std::io::BufRead as _;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        // Mirror `launch::launch`'s isolation (`process_group(0)`): spawn a
+        // shell that backgrounds a long-lived `sleep` child and waits on it.
+        // The child inherits the shell's (new) process group since this is
+        // a non-interactive shell with no job control. Recording only the
+        // shell's PID and single-PID `kill`ing it (the pre-fix behavior)
+        // would leave `sleep` running as an orphan.
+        let mut leader = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60 & echo $!; wait")
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .expect("failed to spawn test process group leader");
+        let leader_pid = leader.id() as i64;
+
+        let mut reader = std::io::BufReader::new(leader.stdout.take().unwrap());
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("failed to read child sleep PID");
+        let sleep_pid: i64 = line.trim().parse().expect("child PID should be numeric");
+
+        let is_alive = |pid: i64| {
+            std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        assert!(is_alive(sleep_pid), "sleep child should start out alive");
+
+        let app = seeded_app(|conn, bench_runs_dir| {
+            let run_dir = bench_runs_dir.join("group-stoppable-run");
+            std::fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            std::fs::write(&log_path, "").unwrap();
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
+                 VALUES ('group-stoppable-run', 'smac3', 'traffic-lights', 'abc', false, 'h', ?1, \
+                         '2026-03-01T00:00:00Z', 'running', ?2)",
+                duckdb::params![leader_pid, log_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, _) = http_post_json(
+            app,
+            "/api/bench/runs/group-stoppable-run/stop",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let _ = leader.wait();
+
+        // SIGTERM's default action is immediate termination, but poll
+        // briefly rather than asserting instantaneously to absorb
+        // scheduling jitter.
+        let mut still_alive = is_alive(sleep_pid);
+        for _ in 0..20 {
+            if !still_alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            still_alive = is_alive(sleep_pid);
+        }
+        assert!(
+            !still_alive,
+            "sleep child (PID {sleep_pid}) should have been killed along with its process group leader"
+        );
     }
 
     // -------------------------------------------------------------------

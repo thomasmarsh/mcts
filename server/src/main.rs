@@ -45,7 +45,7 @@ const AI_ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 struct AppState {
-    games: HashMap<&'static str, Arc<dyn GameAdapter>>,
+    games: Arc<HashMap<&'static str, Arc<dyn GameAdapter>>>,
 }
 
 fn find_adapter(app: &AppState, kind: &str) -> Result<Arc<dyn GameAdapter>, AdapterError> {
@@ -267,8 +267,9 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 
 #[tokio::main]
 async fn main() {
+    let games = Arc::new(adapter::registry());
     let app_state = Arc::new(AppState {
-        games: adapter::registry(),
+        games: games.clone(),
     });
 
     // Open (or create) the benchmark database.  Only the server process ever
@@ -280,6 +281,7 @@ async fn main() {
     let bench_state = Arc::new(bench::BenchState {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
+        games,
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads
@@ -335,7 +337,7 @@ mod tests {
 
     fn test_app() -> Router {
         api_router(Arc::new(AppState {
-            games: adapter::registry(),
+            games: Arc::new(adapter::registry()),
         }))
     }
 

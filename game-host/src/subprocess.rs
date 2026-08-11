@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::{AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, Request, Response};
+use crate::{
+    AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, Request, Response, TunerInfo,
+};
 
 // ---------------------------------------------------------------------------
 // SubprocessProcess
@@ -226,6 +228,15 @@ impl GameAdapter for SubprocessAdapter {
         let result = self.request("analyze", params)?;
         serde_json::from_value(result)
             .map_err(|e| HostError::internal(format!("parse analyze: {e}")))
+    }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        // Unlike `ai_presets`, a game not supporting tuning is the normal
+        // case (only traffic-lights does today) -- any failure, including a
+        // clean "tuning not supported" error response, just means `None`.
+        self.request("tuner", serde_json::json!({}))
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
     }
 }
 
@@ -460,6 +471,17 @@ mod tests {
         let state = adapter.new_state(serde_json::json!({})).unwrap();
         let err = adapter.analyze(&state, "nonexistent", None).unwrap_err();
         assert_eq!(err.code, 404);
+    }
+
+    #[test]
+    fn test_tuner_round_trips_over_jsonl() {
+        let adapter = SubprocessAdapter::new(test_host_binary());
+        let info = adapter.tuner().expect("test host declares a tuner");
+        assert_eq!(info.id, "test");
+        assert_eq!(info.baseline, "strong");
+        assert_eq!(info.eval_rounds, 5);
+        assert_eq!(info.parameters.len(), 1);
+        assert_eq!(info.parameters[0].name, "c");
     }
 
     #[test]
