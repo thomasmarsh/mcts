@@ -109,6 +109,12 @@ enum Command {
         background: bool,
     },
 
+    /// One-shot listing of registered game kinds and their AI presets.
+    /// Spawns each game binary once with its `describe` CLI subcommand
+    /// and exits -- unlike `round-robin`, this never opens a persistent
+    /// subprocess session.
+    Games,
+
     /// One-shot ingest for debugging / validation.  Reads registry.log
     /// and all active runs' log.jsonl files, upserts into DuckDB at the
     /// given path, then exits.  **Not for concurrent use with `server`**
@@ -151,6 +157,8 @@ fn main() {
             label.as_deref(),
             background,
         ),
+
+        Command::Games => cmd_games(),
 
         Command::Ingest { db } => cmd_ingest_once(&db),
     }
@@ -222,6 +230,21 @@ fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verb
                 ids[i], r.wins, r.losses, r.draws, win_pct,
             );
         }
+    }
+}
+
+fn cmd_games() {
+    let descriptions = mcts_bench::games::describe_games();
+
+    println!("{:<16} {:<28} PRESETS", "KIND", "LABEL");
+    for d in &descriptions {
+        let presets = d
+            .ai_presets
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("{:<16} {:<28} {presets}", d.kind, d.label);
     }
 }
 

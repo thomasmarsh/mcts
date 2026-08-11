@@ -7,9 +7,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use game_host::subprocess::SubprocessAdapter;
-use game_host::{AiPresetInfo, GameAdapter};
+use game_host::{AiPresetInfo, GameAdapter, GameDescription};
 use serde_json::Value;
 
 use crate::{BenchGame, MatchOutcome, StrategyInfo};
@@ -33,9 +34,50 @@ pub fn registry() -> HashMap<&'static str, Box<dyn BenchGame>> {
     m
 }
 
+/// Describe every registered game kind by spawning its binary once with
+/// `describe` and exiting, rather than opening a persistent
+/// [`SubprocessAdapter`] session as [`registry`] does for match play.  A
+/// game whose binary is missing or fails to describe itself is skipped
+/// with a warning on stderr, same as `registry`.
+pub fn describe_games() -> Vec<GameDescription> {
+    let mut descriptions = Vec::new();
+
+    for &(kind, pkg_name) in GAME_KINDS {
+        let Some(path) = find_game_binary(pkg_name) else {
+            eprintln!(
+                "warning: bench game '{kind}' not available \
+                 (binary '{pkg_name}' not found)"
+            );
+            continue;
+        };
+
+        match describe_one(&path) {
+            Ok(desc) => descriptions.push(desc),
+            Err(e) => eprintln!("warning: bench game '{kind}' describe failed: {e}"),
+        }
+    }
+
+    descriptions
+}
+
+/// Spawn `binary_path describe`, wait for it to exit, and parse its single
+/// JSON line of output as a [`GameDescription`].
+fn describe_one(binary_path: &Path) -> Result<GameDescription, String> {
+    let output = Command::new(binary_path)
+        .arg("describe")
+        .output()
+        .map_err(|e| format!("failed to spawn: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("exited with {}", output.status));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("failed to parse output: {e}"))
+}
+
 const GAME_KINDS: &[(&str, &str)] = &[
     ("atarigo", "game-atarigo"),
-    ("bid_ttt", "game-bid_ttt"),
+    ("bid-ttt", "game-bid-ttt"),
     ("breakthrough", "game-breakthrough"),
     ("count", "game-count"),
     ("druid", "game-druid"),
