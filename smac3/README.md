@@ -82,6 +82,30 @@ The config file defines:
 
 ---
 
+## Adding SMAC3 to another game
+
+`traffic-lights` is the only game with a tunable strategy today. `tuner()`
+and `tune_eval()` on `GameAdapter` default to "unsupported", so a game only
+gains SMAC3 support by implementing them itself — there's no shared strategy-
+injection mechanism across games. To add another:
+
+1. Implement `tuner()` and `tune_eval()` on that game's `GameAdapter` impl
+   (both default to "unsupported" otherwise — see `games/traffic-lights/src/
+   tuner.rs` and its use from `TlAdapter` for the reference shape). `tuner()`
+   returns the parameter space, conditions, baseline preset id, and default
+   `eval_rounds` as a `TunerInfo`; `tune_eval()` builds a candidate strategy
+   from the params JSON and plays it against the baseline for `rounds` games,
+   returning `{"cost", "wins", "losses", "draws"}`.
+2. Verify it from the CLI directly: `target/release/game-<name> tune describe`
+   and `tune eval --config '<json>' --rounds N`.
+3. Point `target.binary` in a config (or `--override target.binary=...`) at
+   the new game's binary and adjust `parameters:`/`conditions:` in the YAML
+   to match the new `tuner()` output — the YAML is still the hand-maintained
+   source of truth for the search space; `tuner()` only powers the CLI/UI
+   display of it.
+4. `bench smac3 --game <name> ...` and the Bench UI's SMAC3 launch form work
+   unchanged once `/api/bench/smac3/kinds` reflects the new game's metadata.
+
 ## Output
 
 SMAC writes results to `smac3_output/<run-name>/<seed>/`. The final incumbent
