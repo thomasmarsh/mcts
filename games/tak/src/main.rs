@@ -55,11 +55,13 @@ fn value_to_state(v: &Value) -> Result<State<5>, HostError> {
     let parse_hex = |s: &str| {
         u64::from_str_radix(s, 16).map_err(|e| HostError::bad_request(format!("invalid hex: {e}")))
     };
-    let mut s = State::<5>::default();
-    s.opening = w.opening;
-    s.turn = parse_player(&w.turn);
-    s.stones = w.stones;
-    s.caps = w.caps;
+    let mut s = State::<5> {
+        opening: w.opening,
+        turn: parse_player(&w.turn),
+        stones: w.stones,
+        caps: w.caps,
+        ..Default::default()
+    };
     for (i, hex) in w.cells.iter().enumerate() {
         if i < 5 * 5 {
             s.set_cell(i, parse_hex(hex)?);
@@ -177,7 +179,7 @@ impl GameAdapter for TakAdapter {
         let action = ai.choose_action(&s);
         let next = Tak::<5>::apply(s, &action);
         Ok(AiMoveResult {
-            mv: serde_json::to_value(&action).unwrap(),
+            mv: serde_json::to_value(action).unwrap(),
             state: state_to_value(&next),
         })
     }
@@ -202,7 +204,7 @@ impl GameAdapter for TakAdapter {
                 .actions
                 .into_iter()
                 .map(|a| AnalysisAction {
-                    action: serde_json::to_value(&a.action).unwrap(),
+                    action: serde_json::to_value(a.action).unwrap(),
                     visits: a.visits,
                     mean_value: a.mean_value,
                     is_proven: a.is_proven,

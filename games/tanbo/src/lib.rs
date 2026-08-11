@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "OOM on 13×13 — see plan/test-memory.md"]
+    #[ignore = "13×13 random playouts exhaust memory before terminating"]
     fn test_tanbo_13_dense() {
         random_play::<Tanbo<13>>();
     }

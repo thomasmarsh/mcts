@@ -452,11 +452,11 @@ type NaiveBoard = [Option<Player>; 64];
 
 fn naive_from_bitboards(black: &BitBoard<8, 8>, white: &BitBoard<8, 8>) -> NaiveBoard {
     let mut board = [None; 64];
-    for i in 0..64 {
+    for (i, cell) in board.iter_mut().enumerate() {
         if black.get(i) {
-            board[i] = Some(Player::Black);
+            *cell = Some(Player::Black);
         } else if white.get(i) {
-            board[i] = Some(Player::White);
+            *cell = Some(Player::White);
         }
     }
     board
@@ -542,7 +542,7 @@ fn naive_knightthrough_moves(board: &NaiveBoard, turn: Player) -> Vec<knightthro
         for (dr, dc) in &KNIGHT_OFFSETS {
             let r = row as isize + dr;
             let c = col as isize + dc;
-            if r >= 0 && r < 8 && c >= 0 && c < 8 {
+            if (0..8).contains(&r) && (0..8).contains(&c) {
                 let dst = (r as usize) * 8 + (c as usize);
                 if board[dst] != Some(turn) {
                     moves.push(knightthrough::Move(src as u8, dst as u8));
@@ -577,7 +577,7 @@ fn naive_apply(board: &mut NaiveBoard, turn: &mut Player, src: u8, dst: u8) -> b
         Player::Black => Player::White,
         Player::White => Player::Black,
     };
-    if !board.iter().any(|&p| p == Some(opponent)) {
+    if !board.contains(&Some(opponent)) {
         return true;
     }
 

@@ -181,7 +181,7 @@ impl GameAdapter for AtarigoAdapter {
         let action = ai.choose_action(&s);
         let next = AtariGo::<8>::apply(s, &action);
         Ok(AiMoveResult {
-            mv: serde_json::to_value(&action).unwrap(),
+            mv: serde_json::to_value(action).unwrap(),
             state: state_to_value(&next),
         })
     }
@@ -206,7 +206,7 @@ impl GameAdapter for AtarigoAdapter {
                 .actions
                 .into_iter()
                 .map(|a| AnalysisAction {
-                    action: serde_json::to_value(&a.action).unwrap(),
+                    action: serde_json::to_value(a.action).unwrap(),
                     visits: a.visits,
                     mean_value: a.mean_value,
                     is_proven: a.is_proven,

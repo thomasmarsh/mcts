@@ -65,8 +65,8 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2);
     assert_eq!(children.explored_len(), 0, "nothing resolved yet");
 
-    children.get_or_create_child(1, || Id::invalid_id());
-    children.get_or_create_child(3, || Id::invalid_id());
+    children.get_or_create_child(1, Id::invalid_id);
+    children.get_or_create_child(3, Id::invalid_id);
     assert_eq!(
         children.explored_len(),
         2,

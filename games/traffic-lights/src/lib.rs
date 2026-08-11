@@ -363,6 +363,5 @@ mod tests {
     // MCTS-integration tests (render, transposition-table hits, grave stats)
     // that access the `mcts` crate's private fields (`ts.table`, `ts.stats`)
     // are not movable to this crate.  They belong in a separate test crate
-    // (`mcts-tests/`) that depends on both `mcts` and `game-traffic-lights`
-    // -- see `plan/decouple-games.md` Step 7.
+    // (`mcts-tests/`) that depends on both `mcts` and `game-traffic-lights`.
 }

@@ -130,7 +130,11 @@ fn play_match_inner(
         };
     }
 
-    let preset = if turn % 2 == 0 { preset_a } else { preset_b };
+    let preset = if turn.is_multiple_of(2) {
+        preset_a
+    } else {
+        preset_b
+    };
 
     let result = match adapter.ai_move(&state, preset) {
         Ok(r) => r,

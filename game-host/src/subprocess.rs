@@ -253,12 +253,14 @@ fn spawn(binary_path: &Path) -> io::Result<SubprocessProcess> {
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let stdin = child.stdin.take().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "failed to capture subprocess stdin")
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "failed to capture subprocess stdout")
-    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture subprocess stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture subprocess stdout"))?;
 
     Ok(SubprocessProcess {
         stdin: BufWriter::new(stdin),

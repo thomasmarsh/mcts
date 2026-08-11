@@ -191,7 +191,7 @@ impl GameAdapter for BttAdapter {
         let action = ai.choose_action(&s);
         let next = apply_move(s, &action);
         Ok(AiMoveResult {
-            mv: serde_json::to_value(&action).unwrap(),
+            mv: serde_json::to_value(action).unwrap(),
             state: state_to_value(&next),
         })
     }
@@ -216,7 +216,7 @@ impl GameAdapter for BttAdapter {
                 .actions
                 .into_iter()
                 .map(|a| AnalysisAction {
-                    action: serde_json::to_value(&a.action).unwrap(),
+                    action: serde_json::to_value(a.action).unwrap(),
                     visits: a.visits,
                     mean_value: a.mean_value,
                     is_proven: a.is_proven,
