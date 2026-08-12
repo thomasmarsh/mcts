@@ -7,15 +7,15 @@
 //     (`GET /api/bench/smac3/kinds` — only games with a `tuner()` impl
 //     appear at all, so there's nothing to disable/grey out here);
 //   - a read-only summary of that game's search space (parameters,
-//     conditions, baseline, eval rounds) so the operator can see what a
-//     trial actually varies before committing a budget to it;
-//   - the actual editable fields: n_trials/n_workers/deterministic/seed,
-//     the SMAC3 optimizer's own knobs (`smac3/config/default.yaml`'s
-//     `optimizer:` section). The parameter *values* themselves aren't
-//     editable here — `smac3`'s CLI `--override` only reaches dotted
-//     dataclass attributes (`optimizer.*`/`target.*`), not the
-//     list-shaped `parameters:` search space, so there is nothing for a
-//     form field to write to.
+//     conditions, baseline, the tuner's *default* eval rounds/trial) so the
+//     operator can see what a trial actually varies before committing a
+//     budget to it;
+//   - the actual editable fields: n_trials/n_workers/deterministic/seed and
+//     rounds/trial (`optimizer.*`/`target.rounds` overrides). The parameter
+//     *values* themselves aren't editable here — `smac3`'s CLI `--override`
+//     only reaches dotted dataclass attributes, not the list-shaped
+//     `parameters:` search space, so there is nothing for a form field to
+//     write to.
 //
 // LaunchForm owns all of this component's state (same lifted-state
 // convention as the strategy picker) and builds the `--override` argv from
@@ -65,6 +65,8 @@ export const Smac3LaunchFields: Component<{
   onDeterministicChange: (v: boolean) => void;
   seed: number;
   onSeedChange: (n: number) => void;
+  rounds: number;
+  onRoundsChange: (n: number) => void;
   disabled: boolean;
 }> = (props) => {
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
@@ -169,6 +171,17 @@ export const Smac3LaunchFields: Component<{
                 type="number"
                 value={props.seed}
                 onInput={(e) => props.onSeedChange(parseInt(e.currentTarget.value) || 0)}
+                disabled={props.disabled}
+              />
+            </label>
+
+            <label>
+              Rounds/trial
+              <input
+                type="number"
+                min={1}
+                value={props.rounds}
+                onInput={(e) => props.onRoundsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
                 disabled={props.disabled}
               />
             </label>

@@ -17,12 +17,17 @@ const DEFAULT_SMAC3_SEED = 42;
 /** Build the `--override key=value` argv (as `config.overrides`, per
  * `build_command`'s `"smac3"` arm in `server/src/bench/mod.rs`) from the
  * budget fields. `n_workers` is omitted entirely when left blank ("auto"),
- * matching `smac3/config/default.yaml`'s `null -> cpu_count // 2` default. */
+ * matching `smac3/config/default.yaml`'s `null -> cpu_count // 2` default.
+ * `rounds` is likewise omitted when it matches the tuner's own
+ * `eval_rounds` default, so a run launched without touching the field
+ * produces the same argv as before this field existed. */
 function buildSmac3Overrides(opts: {
   nTrials: number;
   nWorkers: string;
   deterministic: boolean;
   seed: number;
+  rounds: number;
+  defaultRounds: number | null;
 }): string[] {
   const overrides = [
     `optimizer.n_trials=${opts.nTrials}`,
@@ -31,6 +36,9 @@ function buildSmac3Overrides(opts: {
   ];
   const workers = opts.nWorkers.trim();
   if (workers !== "") overrides.push(`optimizer.n_workers=${workers}`);
+  if (opts.defaultRounds !== null && opts.rounds !== opts.defaultRounds) {
+    overrides.push(`target.rounds=${opts.rounds}`);
+  }
   return overrides;
 }
 
@@ -61,11 +69,13 @@ export const LaunchForm: Component<{
   const [smac3NWorkers, setSmac3NWorkers] = createSignal("");
   const [smac3Deterministic, setSmac3Deterministic] = createSignal(false);
   const [smac3Seed, setSmac3Seed] = createSignal(DEFAULT_SMAC3_SEED);
+  const [smac3Rounds, setSmac3Rounds] = createSignal(1);
 
   // Derived from kinds metadata.
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
   const currentGame = createMemo(() => currentKind()?.games.find((g) => g.game === selectedGame()));
   const isSmac3 = createMemo(() => selectedKind() === SMAC3_KIND);
+  const currentSmac3Tuner = createMemo(() => smac3Games().find((g) => g.game === selectedGame())?.tuner ?? null);
 
   const launchStatus = createMemo(() => state().launch.status);
   const launchError = createMemo(() => (state().launch.status === "error" ? state().launch.error : null));
@@ -84,8 +94,13 @@ export const LaunchForm: Component<{
     setSelectedGame("");
     setSelectedStrategies(new Set<string>());
     if (kind === SMAC3_KIND) {
-      // Pre-select the first tunable game, if the metadata has loaded.
-      if (smac3Games().length > 0) setSelectedGame(smac3Games()[0]!.game);
+      // Pre-select the first tunable game, if the metadata has loaded, and
+      // default rounds/trial to that game's tuner-declared eval_rounds.
+      if (smac3Games().length > 0) {
+        const first = smac3Games()[0]!;
+        setSelectedGame(first.game);
+        setSmac3Rounds(first.tuner.eval_rounds);
+      }
       return;
     }
     // Pre-select first game if available.
@@ -99,6 +114,13 @@ export const LaunchForm: Component<{
   function onGameChange(game: string): void {
     setSelectedGame(game);
     setSelectedStrategies(new Set<string>());
+  }
+
+  // Reset rounds/trial to the newly selected game's tuner default.
+  function onSmac3GameChange(game: string): void {
+    setSelectedGame(game);
+    const tuner = smac3Games().find((g) => g.game === game)?.tuner;
+    if (tuner) setSmac3Rounds(tuner.eval_rounds);
   }
 
   function toggleStrategy(id: string): void {
@@ -126,6 +148,8 @@ export const LaunchForm: Component<{
             nWorkers: smac3NWorkers(),
             deterministic: smac3Deterministic(),
             seed: smac3Seed(),
+            rounds: smac3Rounds(),
+            defaultRounds: currentSmac3Tuner()?.eval_rounds ?? null,
           }),
         }
       : {
@@ -234,7 +258,7 @@ export const LaunchForm: Component<{
             games={smac3Games()}
             gamesLoading={smac3GamesLoading()}
             game={selectedGame()}
-            onGameChange={setSelectedGame}
+            onGameChange={onSmac3GameChange}
             nTrials={smac3NTrials()}
             onNTrialsChange={setSmac3NTrials}
             nWorkers={smac3NWorkers()}
@@ -243,6 +267,8 @@ export const LaunchForm: Component<{
             onDeterministicChange={setSmac3Deterministic}
             seed={smac3Seed()}
             onSeedChange={setSmac3Seed}
+            rounds={smac3Rounds()}
+            onRoundsChange={setSmac3Rounds}
             disabled={busy()}
           />
         </Show>

@@ -58,6 +58,33 @@ describe("LaunchForm / smac3", () => {
     // Budget fields are present with their documented defaults.
     expect(screen.getByLabelText("Trials")).toBeInTheDocument();
     expect(screen.getByLabelText("Seed")).toBeInTheDocument();
+
+    // Rounds/trial defaults from the tuner's own eval_rounds (20, per the
+    // traffic-lights fixture), not a hardcoded form default.
+    expect((screen.getByLabelText("Rounds/trial") as HTMLInputElement).value).toBe("20");
+  });
+
+  it("omits target.rounds when unchanged, includes it when the field is edited", () => {
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      launchRun: (_kind, _game, config) => {
+        seen.push(config);
+        return createMockBenchEnv().launchRun(_kind, _game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    const overrides = (seen[0] as { overrides: string[] }).overrides;
+    expect(overrides.some((o) => o.startsWith("target.rounds"))).toBe(false);
+
+    seen.length = 0;
+    fireEvent.input(screen.getByLabelText("Rounds/trial"), { target: { value: "5" } });
+    fireEvent.click(screen.getByText("Launch"));
+    const overridesWithRounds = (seen[0] as { overrides: string[] }).overrides;
+    expect(overridesWithRounds).toContain("target.rounds=5");
   });
 
   it("submitting builds --override argv from the budget fields, not a strategies list", () => {
