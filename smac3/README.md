@@ -73,23 +73,26 @@ uv run --project smac3/ smac3 --config my-search.yaml --verbose
 
 The config file defines:
 
-- **`parameters`** — the search space (float, int, categorical, constant)
-- **`conditions`** — conditional activation (e.g. `c` is only active when
-  `rave_ucb` is `ucb1` or `tuned`)
 - **`optimizer`** — SMAC settings (budget, parallelism, seed)
 - **`target`** — the game binary path (relative to CWD) and rounds per trial
+
+The search space itself (`parameters`/`conditions` — float, int, categorical,
+constant; conditional activation like `c` only being active when `rave_ucb`
+is `ucb1` or `tuned`) is **not** in the YAML. It's queried at launch time from
+`target.binary`'s own `tune describe` subcommand (`SearchConfig.
+parameters_from_binary`), so it can never drift out of sync with what the
+binary actually accepts.
 
 ---
 
 ## Adding a new parameter
 
-1. Add an entry to `parameters:` in the YAML config.
-2. If it should only be active when another param has a specific value, add a
-   `conditions:` entry.
-3. Make sure the game's `tuner()`/`tune_eval` (e.g.
-   `games/traffic-lights/src/tuner.rs`) has a matching field on its params
-   struct — active parameters are passed as keys in the `tune eval --config`
-   JSON object, named exactly as in the YAML.
+1. Add the field to the game's `tuner()`/`tune_eval` (e.g.
+   `games/traffic-lights/src/tuner.rs`) — this is the only place the search
+   space is declared. If it should only be active when another param has a
+   specific value, add it to the `TunerInfo.conditions` that same `tuner()`
+   builds.
+2. `<binary> tune describe` picks it up automatically; no YAML edit needed.
 
 ---
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -88,6 +90,38 @@ class SearchConfig:
         """
         p = self.target.binary
         return p if p.is_absolute() else (Path.cwd() / p).resolve()
+
+    @classmethod
+    def parameters_from_binary(cls, binary: Path) -> tuple[list[ParamDef], list[CondDef]]:
+        """Query ``<binary> tune describe`` for its search-space schema.
+
+        The binary is the single source of truth for the search space (what
+        `mcts-tune`'s `strategy_tuner_info` actually builds), not the YAML
+        config -- the two drifted apart once already (a family missing from
+        a hand-maintained YAML list). `tune describe`'s JSON reports the
+        same `type`/`bounds`/`choices`/`default`/`value` shape as the YAML
+        `parameters:`/`conditions:` blocks, just as an array of
+        ``{"name": ..., ...}`` objects instead of a name-keyed mapping, so
+        it's reshaped into that mapping and run back through `_from_dict`
+        rather than duplicating its field-extraction logic.
+        """
+        result = subprocess.run(
+            [str(binary), "tune", "describe"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        info = json.loads(result.stdout)
+        raw = {
+            "parameters": {
+                p["name"]: {k: v for k, v in p.items() if k != "name"}
+                for p in info["parameters"]
+            },
+            "conditions": info["conditions"],
+        }
+        parsed = cls._from_dict(raw)
+        return parsed.parameters, parsed.conditions
 
     # ------------------------------------------------------------------
     # Internal

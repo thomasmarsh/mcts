@@ -13,6 +13,9 @@ dependencies = [
 [project.scripts]
 smac3 = "smac3_cli.__main__:main"
 
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

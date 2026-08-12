@@ -117,6 +117,19 @@ def main() -> None:
     if overrides:
         logger.info("Applied overrides: %s", overrides)
 
+    # -- search space, sourced from the binary itself -----------------------
+    # The game binary is the single source of truth for the search space
+    # (`tune describe`), not hand-maintained YAML -- see
+    # `SearchConfig.parameters_from_binary`'s docstring.
+    binary = cfg.resolve_binary()
+    cfg.parameters, cfg.conditions = SearchConfig.parameters_from_binary(binary)
+    logger.info(
+        "Search space from %s: %d parameters, %d conditions",
+        binary,
+        len(cfg.parameters),
+        len(cfg.conditions),
+    )
+
     # -- build configuration space -----------------------------------------
     cs = build_space(cfg)
     logger.info("ConfigSpace: %d parameters, %d conditions", len(cs), len(cs.conditions))
