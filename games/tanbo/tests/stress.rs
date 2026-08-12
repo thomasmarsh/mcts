@@ -17,7 +17,10 @@ struct Rng(u64);
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Self(seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407))
+        Self(
+            seed.wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407),
+        )
     }
 
     fn next(&mut self) -> u64 {
@@ -33,20 +36,24 @@ impl Rng {
 /// non-terminal state always has one) and that the game terminates within
 /// `max_steps`. Also asserts the final state has a winner: Tanbo has no
 /// draws or ties.
-fn play_random_game<const N: usize>(state: &mut State<N>, seed: u64, max_steps: usize) {
+fn play_random_game<const N: usize, const WORDS: usize>(
+    state: &mut State<N, WORDS>,
+    seed: u64,
+    max_steps: usize,
+) {
     let mut rng = Rng::new(seed);
 
     for step in 0..max_steps {
-        if Tanbo::<N>::is_terminal(state) {
+        if Tanbo::<N, WORDS>::is_terminal(state) {
             assert!(
-                Tanbo::<N>::winner(state).is_some(),
+                Tanbo::<N, WORDS>::winner(state).is_some(),
                 "seed {seed}: terminal state has no winner -- Tanbo has no draws or ties"
             );
             return;
         }
 
         let mut actions = Vec::new();
-        Tanbo::<N>::generate_actions(state, &mut actions);
+        Tanbo::<N, WORDS>::generate_actions(state, &mut actions);
         assert!(
             !actions.is_empty(),
             "seed {seed} step {step}: non-terminal state with no legal actions \
@@ -55,7 +62,7 @@ fn play_random_game<const N: usize>(state: &mut State<N>, seed: u64, max_steps: 
         );
 
         let idx = (rng.next() as usize) % actions.len();
-        *state = Tanbo::<N>::apply(state.clone(), &actions[idx]);
+        *state = Tanbo::<N, WORDS>::apply(*state, &actions[idx]);
     }
 
     panic!("seed {seed}: did not terminate within {max_steps} random-play steps");
@@ -64,7 +71,7 @@ fn play_random_game<const N: usize>(state: &mut State<N>, seed: u64, max_steps: 
 #[test]
 fn stress_tanbo_9_dense() {
     for seed in 0u64..2000 {
-        let mut state = State::<9>::new_dense();
+        let mut state = State::<9, 2>::new_dense();
         play_random_game(&mut state, seed, 20_000);
     }
 }
@@ -72,7 +79,7 @@ fn stress_tanbo_9_dense() {
 #[test]
 fn stress_tanbo_11_sparse() {
     for seed in 0u64..2000 {
-        let mut state = State::<11>::new_sparse();
+        let mut state = State::<11, 2>::new_sparse();
         play_random_game(&mut state, seed, 20_000);
     }
 }
@@ -80,7 +87,7 @@ fn stress_tanbo_11_sparse() {
 #[test]
 fn stress_tanbo_13_dense() {
     for seed in 0u64..500 {
-        let mut state = State::<13>::new_dense();
+        let mut state = State::<13, 3>::new_dense();
         play_random_game(&mut state, seed, 40_000);
     }
 }
@@ -88,7 +95,7 @@ fn stress_tanbo_13_dense() {
 #[test]
 fn stress_tanbo_19_dense() {
     for seed in 0u64..50 {
-        let mut state = State::<19>::new_dense();
+        let mut state = State::<19, 6>::new_dense();
         play_random_game(&mut state, seed, 100_000);
     }
 }

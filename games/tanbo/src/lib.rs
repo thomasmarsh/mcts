@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use game_core::bigbitboard::BigBitBoard;
 use game_core::display::RectangularBoard;
 use game_core::display::RectangularBoardDisplay;
 use mcts::game::Game;
@@ -40,23 +41,29 @@ pub struct Move(pub u16);
 /// Board cell: none (empty), Some(Black), or Some(White).
 pub type Cell = Option<Player>;
 
-/// Tanbo state.  Board data lives in a flat `Vec` indexed as `row * N + col`.
-#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
-pub struct State<const N: usize> {
-    /// Flat array of cells, length N*N.
-    pub board: Vec<Cell>,
+/// Tanbo state. Board data lives in two `BigBitBoard<N, N, WORDS>`s (one per
+/// colour) rather than a `Vec<Cell>`, so `State` is `Copy` and applying a
+/// move never allocates.
+///
+/// `WORDS` must be `(N * N).div_ceil(64)` -- see [`BigBitBoard`]'s doc
+/// comment for why this can't be derived automatically on stable Rust. A
+/// wrong value fails to compile rather than silently truncating the board.
+#[derive(Clone, Copy, Serialize, Debug, PartialEq, Eq)]
+pub struct State<const N: usize, const WORDS: usize> {
+    pub black: BigBitBoard<N, N, WORDS>,
+    pub white: BigBitBoard<N, N, WORDS>,
     pub turn: Player,
     pub winner: Option<Player>,
 }
 
-impl<const N: usize> Default for State<N> {
+impl<const N: usize, const WORDS: usize> Default for State<N, WORDS> {
     fn default() -> Self {
         // 2025 rules: denser starting position.
         Self::new_dense()
     }
 }
 
-impl<const N: usize> State<N> {
+impl<const N: usize, const WORDS: usize> State<N, WORDS> {
     /// 1993-style sparse initial position (as implemented in the original C++).
     ///
     /// Stones are placed on a grid with `step` spacing between them,
@@ -64,17 +71,18 @@ impl<const N: usize> State<N> {
     /// `step` depends on board size: (N-1)/3 for general N, with special
     /// cases for 9 (4-stone corners), 13 (step=4), and 19 (step=6).
     pub fn new_sparse() -> Self {
-        let area = N * N;
-        let mut board = vec![None; area];
+        let mut black: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
+        let mut white: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
 
         // N = 9 uses a specific 4-stone setup.
         if N == 9 {
-            board[Self::index(1, 1)] = Some(Player::White);
-            board[Self::index(7, 1)] = Some(Player::Black);
-            board[Self::index(1, 7)] = Some(Player::Black);
-            board[Self::index(7, 7)] = Some(Player::White);
+            white.set(Self::index(1, 1));
+            black.set(Self::index(7, 1));
+            black.set(Self::index(1, 7));
+            white.set(Self::index(7, 7));
             return Self {
-                board,
+                black,
+                white,
                 turn: Player::Black,
                 winner: None,
             };
@@ -91,7 +99,10 @@ impl<const N: usize> State<N> {
         while y < N {
             let mut x = 0;
             while x < N {
-                board[Self::index(y, x)] = Some(c);
+                match c {
+                    Player::Black => black.set(Self::index(y, x)),
+                    Player::White => white.set(Self::index(y, x)),
+                }
                 c = c.next();
                 x += step;
             }
@@ -100,7 +111,8 @@ impl<const N: usize> State<N> {
         }
 
         Self {
-            board,
+            black,
+            white,
             turn: Player::Black,
             winner: None,
         }
@@ -120,24 +132,23 @@ impl<const N: usize> State<N> {
     /// ...
     /// ```
     pub fn new_dense() -> Self {
-        let area = N * N;
-        let mut board = vec![None; area];
+        let mut black: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
+        let mut white: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
 
         for y in (0..N).step_by(2) {
             for x in (0..N).step_by(2) {
                 // Checkerboard over the 2×2 blocks: each block gets one stone,
                 // alternating White/Black diagonally.
-                let c = if ((y / 2) + (x / 2)) % 2 == 0 {
-                    Player::White
-                } else {
-                    Player::Black
-                };
-                board[Self::index(y, x)] = Some(c);
+                match ((y / 2) + (x / 2)) % 2 == 0 {
+                    true => white.set(Self::index(y, x)),
+                    false => black.set(Self::index(y, x)),
+                }
             }
         }
 
         Self {
-            board,
+            black,
+            white,
             turn: Player::Black,
             winner: None,
         }
@@ -153,19 +164,31 @@ impl<const N: usize> State<N> {
         (index / N, index % N)
     }
 
-    fn occupied(&self) -> impl Iterator<Item = usize> + '_ {
-        self.board
-            .iter()
-            .enumerate()
-            .filter_map(|(i, cell)| cell.map(|_| i))
+    /// Every occupied cell, of either colour.
+    fn occupied(&self) -> BigBitBoard<N, N, WORDS> {
+        self.black | self.white
     }
 
-    fn color(&self, index: usize) -> Option<Player> {
-        self.board[index]
+    /// This colour's board.
+    fn of(&self, player: Player) -> BigBitBoard<N, N, WORDS> {
+        match player {
+            Player::Black => self.black,
+            Player::White => self.white,
+        }
+    }
+
+    pub fn color(&self, index: usize) -> Cell {
+        if self.black.get(index) {
+            Some(Player::Black)
+        } else if self.white.get(index) {
+            Some(Player::White)
+        } else {
+            None
+        }
     }
 
     fn stone_count(&self, player: Player) -> usize {
-        self.board.iter().filter(|&&c| c == Some(player)).count()
+        self.of(player).count_ones() as usize
     }
 
     /// List the four orthogonal neighbours of `index` that lie on the board.
@@ -195,28 +218,18 @@ impl<const N: usize> State<N> {
         ]
     }
 
-    /// All orthogonal neighbours that contain a stone of `player`.
-    fn neighbour_colors(index: usize, player: Player, board: &[Cell]) -> Vec<usize> {
-        let mut out = Vec::with_capacity(4);
-        for nb in Self::neighbours(index).into_iter().flatten() {
-            if board[nb] == Some(player) {
-                out.push(nb);
-            }
-        }
-        out
-    }
-
     // ------------------------------------------------------------------
     // Move generation helpers
     // ------------------------------------------------------------------
 
-    /// Is `candidate` a legal placement for `player` when extending from the
-    /// stone at `stone_index`?  The empty point must be orthogonal-adjacent to
-    /// *exactly one* stone of `player` (which is `stone_index`), and not
-    /// adjacent to any other stone of the same color.
-    fn valid_move(candidate: usize, player: Player, stone_index: usize, board: &[Cell]) -> bool {
+    /// Is `candidate` a legal placement for a stone extending from
+    /// `stone_index`, given `own` (that colour's board)? The empty point
+    /// must be orthogonal-adjacent to *exactly one* stone of that colour
+    /// (which is `stone_index`), and not adjacent to any other stone of the
+    /// same color.
+    fn valid_move(candidate: usize, own: BigBitBoard<N, N, WORDS>, stone_index: usize) -> bool {
         for nb in Self::neighbours(candidate).into_iter().flatten() {
-            if nb != stone_index && board[nb] == Some(player) {
+            if nb != stone_index && own.get(nb) {
                 return false;
             }
         }
@@ -224,43 +237,46 @@ impl<const N: usize> State<N> {
     }
 
     /// Trace a monochrome group starting at `start`, collecting all legal
-    /// extension moves into `moves`.  `visited` tracks which stones have been
-    /// processed (shared across groups).  A local `group_moves` array prevents
-    /// the same empty point being claimed twice within a single group.
+    /// extension moves into `moves`. `own` is that colour's board and
+    /// `occupied` is both colours' combined board. `visited` tracks which
+    /// stones have been processed (shared across groups, when called from a
+    /// loop over many groups). A local `group_moves` board prevents the same
+    /// empty point being claimed twice within a single group.
     fn trace_group(
         player: Player,
         start: usize,
-        board: &[Cell],
-        visited: &mut [bool],
+        own: BigBitBoard<N, N, WORDS>,
+        occupied: BigBitBoard<N, N, WORDS>,
+        visited: &mut BigBitBoard<N, N, WORDS>,
         moves: &mut Vec<Move>,
     ) {
         let mut stack = vec![start];
-        let mut group_moves = vec![false; board.len()];
+        let mut group_moves: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
 
         while let Some(idx) = stack.pop() {
-            if visited[idx] {
+            if visited.get(idx) {
                 continue;
             }
-            visited[idx] = true;
+            visited.set(idx);
 
             // Empty neighbours of this stone are candidate placements.
             for nb in Self::neighbours(idx).into_iter().flatten() {
-                if board[nb].is_some() {
+                if occupied.get(nb) {
                     continue; // occupied
                 }
-                if group_moves[nb] {
+                if group_moves.get(nb) {
                     continue; // already found for this group
                 }
-                if !Self::valid_move(nb, player, idx, board) {
+                if !Self::valid_move(nb, own, idx) {
                     continue;
                 }
-                group_moves[nb] = true;
+                group_moves.set(nb);
                 moves.push(Move(nb as u16));
             }
 
             // Recurse to same-colour neighbours.
             for nb in Self::neighbours(idx).into_iter().flatten() {
-                if board[nb] == Some(player) && !visited[nb] {
+                if own.get(nb) && !visited.get(nb) {
                     stack.push(nb);
                 }
             }
@@ -276,17 +292,32 @@ impl<const N: usize> State<N> {
     /// Cells already set in `visited` are skipped, so callers can exclude
     /// roots (such as the current root) that have already been accounted
     /// for.
-    fn find_bounded_roots(board: &[Cell], visited: &mut [bool]) -> Vec<(Player, usize)> {
+    fn find_bounded_roots(
+        black: BigBitBoard<N, N, WORDS>,
+        white: BigBitBoard<N, N, WORDS>,
+        visited: &mut BigBitBoard<N, N, WORDS>,
+    ) -> Vec<(Player, usize)> {
+        let occupied = black | white;
         let mut bounded = Vec::new();
 
-        for i in 0..board.len() {
-            if visited[i] {
+        for i in 0..N * N {
+            if visited.get(i) {
                 continue;
             }
-            let Some(player) = board[i] else { continue };
+            let player = if black.get(i) {
+                Player::Black
+            } else if white.get(i) {
+                Player::White
+            } else {
+                continue;
+            };
+            let own = match player {
+                Player::Black => black,
+                Player::White => white,
+            };
 
             let mut group_moves = Vec::new();
-            Self::trace_group(player, i, board, visited, &mut group_moves);
+            Self::trace_group(player, i, own, occupied, visited, &mut group_moves);
 
             if group_moves.is_empty() {
                 bounded.push((player, i));
@@ -303,41 +334,64 @@ impl<const N: usize> State<N> {
     /// other roots that happen to also be bounded survive. Only when the
     /// current root is *not* bounded do other bounded roots, of either
     /// colour, get swept away.
-    fn resolve_captures(current_root_stone: usize, board: &mut [Cell]) {
-        let current_player =
-            board[current_root_stone].expect("current root stone must be occupied");
-        let mut visited = vec![false; board.len()];
+    fn resolve_captures(
+        current_root_stone: usize,
+        black: &mut BigBitBoard<N, N, WORDS>,
+        white: &mut BigBitBoard<N, N, WORDS>,
+    ) {
+        let current_player = if black.get(current_root_stone) {
+            Player::Black
+        } else {
+            debug_assert!(white.get(current_root_stone));
+            Player::White
+        };
+        let own = match current_player {
+            Player::Black => *black,
+            Player::White => *white,
+        };
+        let occupied = *black | *white;
+
+        let mut visited: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
         let mut current_root_moves = Vec::new();
         Self::trace_group(
             current_player,
             current_root_stone,
-            board,
+            own,
+            occupied,
             &mut visited,
             &mut current_root_moves,
         );
 
         if current_root_moves.is_empty() {
-            Self::remove_group(current_player, current_root_stone, board);
+            Self::remove_group(current_player, current_root_stone, black, white);
             return;
         }
 
-        for (player, start) in Self::find_bounded_roots(board, &mut visited) {
-            Self::remove_group(player, start, board);
+        for (player, start) in Self::find_bounded_roots(*black, *white, &mut visited) {
+            Self::remove_group(player, start, black, white);
         }
     }
 
     /// Flood-fill a monochrome group and clear all of its cells.
-    fn remove_group(player: Player, start: usize, board: &mut [Cell]) {
+    fn remove_group(
+        player: Player,
+        start: usize,
+        black: &mut BigBitBoard<N, N, WORDS>,
+        white: &mut BigBitBoard<N, N, WORDS>,
+    ) {
+        let own = match player {
+            Player::Black => &mut *black,
+            Player::White => &mut *white,
+        };
+
         let mut stack = vec![start];
-        let mut removed = vec![false; board.len()];
         while let Some(idx) = stack.pop() {
-            if removed[idx] {
-                continue;
+            if !own.get(idx) {
+                continue; // already removed (duplicate stack entry)
             }
-            removed[idx] = true;
-            board[idx] = None;
+            own.clear(idx);
             for nb in Self::neighbours(idx).into_iter().flatten() {
-                if board[nb] == Some(player) && !removed[nb] {
+                if own.get(nb) {
                     stack.push(nb);
                 }
             }
@@ -350,13 +404,16 @@ impl<const N: usize> State<N> {
 
     fn apply(&mut self, action: &Move) -> Self {
         let index = action.0 as usize;
-        debug_assert!(self.board[index].is_none());
+        debug_assert!(self.color(index).is_none());
 
         // Place the stone.
-        self.board[index] = Some(self.turn);
+        match self.turn {
+            Player::Black => self.black.set(index),
+            Player::White => self.white.set(index),
+        }
 
         // Resolve captures per the current/non-current root distinction.
-        Self::resolve_captures(index, &mut self.board);
+        Self::resolve_captures(index, &mut self.black, &mut self.white);
 
         // Check for game over: one colour eliminated.
         let black_count = self.stone_count(Player::Black);
@@ -376,7 +433,7 @@ impl<const N: usize> State<N> {
             self.turn = self.turn.next();
         }
 
-        self.clone()
+        *self
     }
 }
 
@@ -385,50 +442,52 @@ impl<const N: usize> State<N> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct Tanbo<const N: usize>;
+pub struct Tanbo<const N: usize, const WORDS: usize>;
 
-impl<const N: usize> Game for Tanbo<N> {
-    type S = State<N>;
+impl<const N: usize, const WORDS: usize> Game for Tanbo<N, WORDS> {
+    type S = State<N, WORDS>;
     type A = Move;
     type P = Player;
 
-    fn apply(mut state: State<N>, action: &Move) -> State<N> {
+    fn apply(mut state: State<N, WORDS>, action: &Move) -> State<N, WORDS> {
         state.apply(action)
     }
 
-    fn generate_actions(state: &State<N>, actions: &mut Vec<Move>) {
+    fn generate_actions(state: &State<N, WORDS>, actions: &mut Vec<Move>) {
         if state.winner.is_some() {
             return;
         }
 
-        let mut visited = vec![false; N * N];
+        let occupied = state.occupied();
+        let own = state.of(state.turn);
+        let mut visited: BigBitBoard<N, N, WORDS> = BigBitBoard::EMPTY;
 
-        for i in 0..state.board.len() {
-            if state.board[i] != Some(state.turn) {
+        for i in 0..N * N {
+            if !own.get(i) {
                 continue;
             }
-            if visited[i] {
+            if visited.get(i) {
                 continue;
             }
-            State::<N>::trace_group(state.turn, i, &state.board, &mut visited, actions);
+            State::<N, WORDS>::trace_group(state.turn, i, own, occupied, &mut visited, actions);
         }
     }
 
-    fn is_terminal(state: &State<N>) -> bool {
+    fn is_terminal(state: &State<N, WORDS>) -> bool {
         state.winner.is_some()
     }
 
-    fn player_to_move(state: &State<N>) -> Player {
+    fn player_to_move(state: &State<N, WORDS>) -> Player {
         state.turn
     }
 
-    fn winner(state: &State<N>) -> Option<Player> {
+    fn winner(state: &State<N, WORDS>) -> Option<Player> {
         state.winner
     }
 
     fn notation(_state: &Self::S, action: &Self::A) -> String {
         const COL_NAMES: &[u8] = b"ABCDEFGHIJKLMNOPQRST";
-        let (row, col) = State::<N>::row_col(action.0 as usize);
+        let (row, col) = State::<N, WORDS>::row_col(action.0 as usize);
         format!("{}{}", COL_NAMES[col] as char, row + 1)
     }
 
@@ -444,8 +503,8 @@ impl<const N: usize> Game for Tanbo<N> {
                     .map(|x| x - 1)
                 {
                     if row < N {
-                        let index = State::<N>::index(row, col);
-                        if state.board[index].is_none() {
+                        let index = State::<N, WORDS>::index(row, col);
+                        if state.color(index).is_none() {
                             return Some(Move(index as u16));
                         } else {
                             eprintln!("occupied: {index}");
@@ -470,12 +529,12 @@ impl<const N: usize> Game for Tanbo<N> {
 // Display
 // ---------------------------------------------------------------------------
 
-impl<const N: usize> RectangularBoard for State<N> {
+impl<const N: usize, const WORDS: usize> RectangularBoard for State<N, WORDS> {
     const NUM_DISPLAY_ROWS: usize = N;
     const NUM_DISPLAY_COLS: usize = N;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {
-        match self.board[Self::index(row, col)] {
+        match self.color(Self::index(row, col)) {
             Some(Player::Black) => 'X',
             Some(Player::White) => 'O',
             None => '.',
@@ -483,7 +542,7 @@ impl<const N: usize> RectangularBoard for State<N> {
     }
 }
 
-impl<const N: usize> fmt::Display for State<N> {
+impl<const N: usize, const WORDS: usize> fmt::Display for State<N, WORDS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         RectangularBoardDisplay(self).fmt(f)
     }
@@ -500,22 +559,22 @@ mod tests {
     #[test]
     fn test_tanbo_sparse_moves() {
         // Sparse init should produce valid moves.
-        let state = State::<11>::new_sparse();
+        let state = State::<11, 2>::new_sparse();
         let mut actions = Vec::new();
-        Tanbo::<11>::generate_actions(&state, &mut actions);
+        Tanbo::<11, 2>::generate_actions(&state, &mut actions);
         assert!(!actions.is_empty(), "sparse 11x11 should have moves");
     }
 
     #[test]
     fn test_tanbo_stone_counts() {
         // Dense: roughly N*N/4 stones total (every other row/col).
-        let s13 = State::<13>::new_dense();
+        let s13 = State::<13, 3>::new_dense();
         let total_dense = s13.stone_count(Player::Black) + s13.stone_count(Player::White);
         // 13x13: ceil(13/2)^2 = 7*7 = 49
         assert_eq!(total_dense, 49);
 
         // Sparse: much fewer stones (4 per dimension = 16 total for most sizes).
-        let s13s = State::<13>::new_sparse();
+        let s13s = State::<13, 3>::new_sparse();
         let total_sparse = s13s.stone_count(Player::Black) + s13s.stone_count(Player::White);
         assert_eq!(total_sparse, 16);
         assert!(total_sparse < total_dense);
@@ -533,20 +592,14 @@ mod tests {
         //   . B .
         //   W . .
         //   B . .
-        let b = vec![
-            None,
-            Some(Player::Black), // (0,1)
-            None,
-            Some(Player::White), // (1,0)
-            None,
-            None,
-            Some(Player::Black), // (2,0)
-            None,
-            None,
-        ];
+        let mut black: BigBitBoard<3, 3, 1> = BigBitBoard::EMPTY;
+        let mut white: BigBitBoard<3, 3, 1> = BigBitBoard::EMPTY;
+        black.set(1); // (0,1)
+        white.set(3); // (1,0)
+        black.set(6); // (2,0)
 
-        let mut visited = vec![false; b.len()];
-        let bounded = State::<3>::find_bounded_roots(&b, &mut visited);
+        let mut visited: BigBitBoard<3, 3, 1> = BigBitBoard::EMPTY;
+        let bounded = State::<3, 1>::find_bounded_roots(black, white, &mut visited);
 
         // White at (1,0) has legal moves and must survive.
         assert!(
@@ -564,16 +617,18 @@ mod tests {
         // isolated White group has no legal extension (every empty
         // neighbour is adjacent to 0 or 2+ White stones), so it should be
         // removed once Black's current root survives its own move.
-        let mut board = vec![None; 81];
-        board[36] = Some(Player::White); // (4,0)
-                                         // Surround with Black
-        board[27] = Some(Player::Black); // (3,0)
-        board[37] = Some(Player::Black); // (4,1)
-        board[45] = Some(Player::Black); // (5,0)
-                                         // (4,0) is on the left edge, so no neighbour to the west.
+        let mut black: BigBitBoard<9, 9, 2> = BigBitBoard::EMPTY;
+        let mut white: BigBitBoard<9, 9, 2> = BigBitBoard::EMPTY;
+        white.set(36); // (4,0)
+                       // Surround with Black
+        black.set(27); // (3,0)
+        black.set(37); // (4,1)
+        black.set(45); // (5,0)
+                       // (4,0) is on the left edge, so no neighbour to the west.
 
-        let state = State::<9> {
-            board,
+        let state = State::<9, 2> {
+            black,
+            white,
             turn: Player::Black,
             winner: None,
         };
@@ -581,18 +636,18 @@ mod tests {
         // Extend the black root at (3,0) northward to (2,0): far from the
         // White-enclosing cluster, so this current root is not bounded by
         // its own move and the non-current-root-capture path triggers.
-        let action = Move(State::<9>::index(2, 0) as u16);
+        let action = Move(State::<9, 2>::index(2, 0) as u16);
         let mut actions = Vec::new();
-        Tanbo::<9>::generate_actions(&state, &mut actions);
+        Tanbo::<9, 2>::generate_actions(&state, &mut actions);
         assert!(actions.contains(&action), "expected move to be legal");
 
-        let s1 = Tanbo::<9>::apply(state, &action);
+        let s1 = Tanbo::<9, 2>::apply(state, &action);
         assert!(
-            Tanbo::<9>::is_terminal(&s1),
+            Tanbo::<9, 2>::is_terminal(&s1),
             "White should be eliminated after Black's move"
         );
         assert_eq!(
-            Tanbo::<9>::winner(&s1),
+            Tanbo::<9, 2>::winner(&s1),
             Some(Player::Black),
             "Black should win"
         );
@@ -608,17 +663,19 @@ mod tests {
         //   B . W
         //   W W B
         //   . B W
-        let mut board = vec![None; 9]; // 3x3
-        board[0] = Some(Player::Black); // (0,0) -- Black's current root (A)
-        board[3] = Some(Player::White); // (1,0) -- walls off A's only other exit
-        board[2] = Some(Player::White); // (0,2) -- walls off B's right exit
-        board[4] = Some(Player::White); // (1,1) -- walls off B's down exit
-        board[5] = Some(Player::Black); // (1,2) -- unrelated Black stone, fences White's root
-        board[7] = Some(Player::Black); // (2,1) -- unrelated Black stone, fences White's root
-        board[8] = Some(Player::White); // (2,2) -- separate, already-bounded White root
+        let mut black: BigBitBoard<3, 3, 1> = BigBitBoard::EMPTY;
+        let mut white: BigBitBoard<3, 3, 1> = BigBitBoard::EMPTY;
+        black.set(0); // (0,0) -- Black's current root (A)
+        white.set(3); // (1,0) -- walls off A's only other exit
+        white.set(2); // (0,2) -- walls off B's right exit
+        white.set(4); // (1,1) -- walls off B's down exit
+        black.set(5); // (1,2) -- unrelated Black stone, fences White's root
+        black.set(7); // (2,1) -- unrelated Black stone, fences White's root
+        white.set(8); // (2,2) -- separate, already-bounded White root
 
-        let state = State::<3> {
-            board,
+        let state = State::<3, 1> {
+            black,
+            white,
             turn: Player::Black,
             winner: None,
         };
@@ -627,10 +684,10 @@ mod tests {
         // (1,0), is already occupied.
         let action = Move(1);
         let mut actions = Vec::new();
-        Tanbo::<3>::generate_actions(&state, &mut actions);
+        Tanbo::<3, 1>::generate_actions(&state, &mut actions);
         assert!(actions.contains(&action), "expected move to be legal");
 
-        let s1 = Tanbo::<3>::apply(state, &action);
+        let s1 = Tanbo::<3, 1>::apply(state, &action);
 
         // After playing (0,1), root A = {(0,0),(0,1)} is walled in on every
         // side, so it alone is removed as a current-root capture.
@@ -641,6 +698,6 @@ mod tests {
             Some(Player::White),
             "White's unrelated bounded root must survive current-root-only capture"
         );
-        assert!(!Tanbo::<3>::is_terminal(&s1));
+        assert!(!Tanbo::<3, 1>::is_terminal(&s1));
     }
 }

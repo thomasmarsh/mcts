@@ -5,6 +5,7 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use game_core::bigbitboard::BigBitBoard;
 use game_tanbo::{Move, Player, State, Tanbo};
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
@@ -41,38 +42,38 @@ fn parse_player(name: &str) -> Player {
     }
 }
 
-fn state_to_value(s: &State<9>) -> Value {
+fn state_to_value(s: &State<9, 2>) -> Value {
     serde_json::to_value(WireState {
         turn: player_name(s.turn).into(),
-        cells: s
-            .board
-            .iter()
-            .map(|c| c.map(|p| player_name(p).to_string()))
+        cells: (0..81)
+            .map(|i| s.color(i).map(|p| player_name(p).to_string()))
             .collect(),
     })
     .expect("")
 }
-fn value_to_state(v: &Value) -> Result<State<9>, HostError> {
+fn value_to_state(v: &Value) -> Result<State<9, 2>, HostError> {
     let w: WireState =
         serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
-    let mut board = Vec::with_capacity(81);
-    for cell in &w.cells {
-        board.push(match cell.as_deref() {
-            Some("Black") => Some(Player::Black),
-            Some("White") => Some(Player::White),
-            _ => None,
-        });
+    let mut black = BigBitBoard::EMPTY;
+    let mut white = BigBitBoard::EMPTY;
+    for (i, cell) in w.cells.iter().enumerate() {
+        match cell.as_deref() {
+            Some("Black") => black.set(i),
+            Some("White") => white.set(i),
+            _ => {}
+        }
     }
     Ok(State {
-        board,
+        black,
+        white,
         turn: parse_player(&w.turn),
         winner: None,
     })
 }
 
-fn build_easy() -> Box<dyn Search<G = Tanbo<9>>> {
+fn build_easy() -> Box<dyn Search<G = Tanbo<9, 2>>> {
     Box::new(
-        TreeSearch::<Tanbo<9>, strategy::Ucb1>::new().config(
+        TreeSearch::<Tanbo<9, 2>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .name("tanbo/easy")
                 .expand_threshold(1)
@@ -81,9 +82,9 @@ fn build_easy() -> Box<dyn Search<G = Tanbo<9>>> {
         ),
     )
 }
-fn build_strong() -> Box<dyn Search<G = Tanbo<9>>> {
+fn build_strong() -> Box<dyn Search<G = Tanbo<9, 2>>> {
     Box::new(
-        TreeSearch::<Tanbo<9>, strategy::Ucb1>::new().config(
+        TreeSearch::<Tanbo<9, 2>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .name("tanbo/strong")
                 .expand_threshold(0)
@@ -112,7 +113,7 @@ struct PresetEntry {
     id: &'static str,
     label: &'static str,
     description: &'static str,
-    build: fn() -> Box<dyn Search<G = Tanbo<9>>>,
+    build: fn() -> Box<dyn Search<G = Tanbo<9, 2>>>,
 }
 
 struct TanAdapter;
@@ -131,7 +132,8 @@ impl GameAdapter for TanAdapter {
     }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
         Ok(state_to_value(&State {
-            board: vec![None; 81],
+            black: BigBitBoard::EMPTY,
+            white: BigBitBoard::EMPTY,
             turn: Player::Black,
             winner: None,
         }))
@@ -139,8 +141,8 @@ impl GameAdapter for TanAdapter {
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let s = value_to_state(state)?;
         let mut mv = Vec::new();
-        if !Tanbo::<9>::is_terminal(&s) {
-            Tanbo::<9>::generate_actions(&s, &mut mv);
+        if !Tanbo::<9, 2>::is_terminal(&s) {
+            Tanbo::<9, 2>::generate_actions(&s, &mut mv);
         }
         Ok(mv.into_iter().map(|m| Value::from(m.0 as u64)).collect())
     }
@@ -151,28 +153,26 @@ impl GameAdapter for TanAdapter {
             .ok_or_else(|| HostError::bad_request("move must be a cell index"))?
             as u16;
         let action = Move(idx);
-        if Tanbo::<9>::is_terminal(&s) {
+        if Tanbo::<9, 2>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut legal = Vec::new();
-        Tanbo::<9>::generate_actions(&s, &mut legal);
+        Tanbo::<9, 2>::generate_actions(&s, &mut legal);
         if !legal.contains(&action) {
             return Err(HostError::bad_request("illegal move"));
         }
-        Ok(state_to_value(&Tanbo::<9>::apply(s, &action)))
+        Ok(state_to_value(&Tanbo::<9, 2>::apply(s, &action)))
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let winner = Tanbo::<9>::winner(&s);
+        let winner = Tanbo::<9, 2>::winner(&s);
         serde_json::to_value(GameView {
             turn: player_name(s.turn).into(),
-            cells: s
-                .board
-                .iter()
-                .map(|c| c.map(|p| player_name(p).to_string()))
+            cells: (0..81)
+                .map(|i| s.color(i).map(|p| player_name(p).to_string()))
                 .collect(),
             winner: winner.map(|p| player_name(p).to_string()),
-            terminal: Tanbo::<9>::is_terminal(&s),
+            terminal: Tanbo::<9, 2>::is_terminal(&s),
         })
         .map_err(|e| HostError::internal(e.to_string()))
     }
@@ -192,12 +192,12 @@ impl GameAdapter for TanAdapter {
             .iter()
             .find(|p| p.id == preset)
             .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if Tanbo::<9>::is_terminal(&s) {
+        if Tanbo::<9, 2>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut ai = (spec.build)();
         let action = ai.choose_action(&s);
-        let next = Tanbo::<9>::apply(s, &action);
+        let next = Tanbo::<9, 2>::apply(s, &action);
         Ok(AiMoveResult {
             mv: Value::from(action.0 as u64),
             state: state_to_value(&next),
@@ -209,7 +209,7 @@ impl GameAdapter for TanAdapter {
             .iter()
             .find(|p| p.id == preset)
             .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if Tanbo::<9>::is_terminal(&s) {
+        if Tanbo::<9, 2>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut ai = (spec.build)();
@@ -265,14 +265,14 @@ impl GameAdapter for TanAdapter {
             // played -- mirrors how a bad candidate `params` is already
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<Tanbo<9>>(&cfg, baseline_seed, false)?;
+            mcts_tune::build_search::<Tanbo<9, 2>>(&cfg, baseline_seed, false)?;
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 false,
                 move || {
-                    mcts_tune::build_search::<Tanbo<9>>(&cfg, baseline_seed, false)
+                    mcts_tune::build_search::<Tanbo<9, 2>>(&cfg, baseline_seed, false)
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),

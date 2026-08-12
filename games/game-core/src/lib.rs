@@ -1,3 +1,4 @@
+pub mod bigbitboard;
 pub mod bitboard;
 pub mod display;
 pub mod symmetry;
