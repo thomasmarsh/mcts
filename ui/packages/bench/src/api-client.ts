@@ -40,6 +40,9 @@ export interface BenchApiClient {
   fetchCommitTrends(game: string | null): Promise<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
+  /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
+   * seeded from its saved state (`POST /api/bench/runs/{run_id}/resume`). */
+  resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
   /** Per-game tuner metadata for every game that supports SMAC3 tuning. */
   getSmac3Kinds(): Promise<Smac3GameInfo[]>;
@@ -142,6 +145,12 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async stopRun(runId: string): Promise<StopResponse> {
       return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/stop`));
     },
+    async resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse> {
+      return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/resume`), {
+        n_trials: nTrials,
+        n_workers: nWorkers,
+      });
+    },
     async getBenchKinds(): Promise<BenchKindInfo[]> {
       return fetchJson(url("/api/bench/kinds"));
     },
@@ -165,6 +174,8 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
+    resumeRun: (runId: string, nTrials: number, nWorkers?: number) =>
+      lift(() => api.resumeRun(runId, nTrials, nWorkers)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
     getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),

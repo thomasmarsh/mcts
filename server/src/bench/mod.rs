@@ -83,6 +83,13 @@ pub struct LaunchBody {
     pub config: Option<Value>,
 }
 
+#[derive(Deserialize)]
+pub struct ResumeBody {
+    pub n_trials: i64,
+    #[serde(default)]
+    pub n_workers: Option<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -272,6 +279,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
+        .route(
+            "/api/bench/runs/{run_id}/resume",
+            post(resume_run).layer(launch_timeout),
+        )
         .layer(cors)
         .with_state(state)
 }
@@ -730,18 +741,119 @@ async fn launch_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     Json(body): Json<LaunchBody>,
 ) -> Result<Json<LaunchResponse>, BenchError> {
-    let cmd = build_command(&body.kind, &body.game, &body.config)?;
     let label = body
         .config
         .as_ref()
-        .and_then(|c| c.get("label").and_then(|v| v.as_str()));
+        .and_then(|c| c.get("label").and_then(|v| v.as_str()))
+        .map(str::to_owned);
+    let resp = launch_and_record(
+        &state,
+        &body.kind,
+        &body.game,
+        body.config,
+        label.as_deref(),
+        None,
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+/// `POST /api/bench/runs/{run_id}/resume` — `{n_trials, n_workers?}`
+///
+/// Relaunches a finished/stopped SMAC3 run with a bigger trial budget,
+/// picking up where it left off rather than starting over: the new process
+/// is launched with `--resume <old run_id>` (see `smac3_cli/resume.py`),
+/// which seeds its runhistory from the old run's saved state before
+/// optimizing, so already-evaluated configs aren't re-evaluated. This is
+/// also the only way to change worker count "mid-run" -- SMAC3 has no live
+/// API for either, only stop-and-relaunch.
+///
+/// The old run's stored `config` (its `--config` path and any `--override`
+/// list) is carried forward, with `optimizer.n_trials`/`optimizer.n_workers`
+/// overrides appended (and so taking precedence -- the Python side's
+/// `_apply_overrides` keeps the last value for a repeated key).
+async fn resume_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(body): Json<ResumeBody>,
+) -> Result<Json<LaunchResponse>, BenchError> {
+    let (kind, game, config_str): (String, String, Option<String>) = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT kind, game, CAST(config AS TEXT) FROM runs WHERE run_id = ?1",
+            duckdb::params![&run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ) {
+            Ok(row) => row,
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                return Err(BenchError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("run '{run_id}' not found"),
+                });
+            }
+            Err(e) => return Err(BenchError::from(e)),
+        }
+    };
+
+    if kind != "smac3" {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!(
+                "run '{run_id}' is a '{kind}' run, not 'smac3' -- only SMAC3 runs support resume"
+            ),
+        });
+    }
+
+    let old_config: Option<Value> = config_str.and_then(|s| serde_json::from_str(&s).ok());
+    let new_config = build_resume_config(&old_config, body.n_trials, body.n_workers);
+    let label = format!("resume of {run_id}");
+    let resp = launch_and_record(
+        &state,
+        "smac3",
+        &game,
+        Some(new_config),
+        Some(&label),
+        Some(&run_id),
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+/// Shared by `launch_run` and `resume_run`: builds the command, pins a
+/// fresh `run_id` (baked into a SMAC3 launch's own `--run-id`/`--resume`
+/// argv, not just the outer bench-runs bookkeeping -- see
+/// `launch::launch_with_run_id`'s doc comment for why they must match),
+/// spawns it, and inserts the `runs` row so it appears immediately in the
+/// runs list without waiting on the ingest loop.
+async fn launch_and_record(
+    state: &Arc<BenchState>,
+    kind: &str,
+    game: &str,
+    config: Option<Value>,
+    label: Option<&str>,
+    resume_from: Option<&str>,
+) -> Result<LaunchResponse, BenchError> {
+    let mut cmd = build_command(kind, game, &config)?;
+    let run_id = launch::generate_run_id(kind, game);
+
+    // `--run-id`/`--resume` are SMAC3-specific flags (see `smac3_cli`'s
+    // `--run-id`/`--resume`); other kinds (round_robin) have no concept of
+    // a resumable optimizer run to pin.
+    if kind == "smac3" {
+        cmd.push("--run-id".into());
+        cmd.push(run_id.clone());
+        if let Some(resume_id) = resume_from {
+            cmd.push("--resume".into());
+            cmd.push(resume_id.to_owned());
+        }
+    }
 
     let LaunchedRun {
         run_id,
         pid,
         log_path,
         log_dir,
-    } = launch::launch(cmd, &body.kind, &body.game, label).map_err(|e| BenchError {
+    } = launch::launch_with_run_id(run_id, cmd, kind, game, label).map_err(|e| BenchError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("failed to launch run: {e}"),
     })?;
@@ -752,8 +864,7 @@ async fn launch_run(
     // the runs list (no ingest loop dependency).
     {
         let db = state.db.lock().unwrap();
-        let config_str = body
-            .config
+        let config_str = config
             .as_ref()
             .map(|c| serde_json::to_string(c).unwrap_or_default());
         let hostname = hostname();
@@ -764,8 +875,8 @@ async fn launch_run(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', ?11)",
             duckdb::params![
                 &run_id,
-                &body.kind,
-                &body.game,
+                kind,
+                game,
                 label,
                 config_str,
                 game_host::build_info::GIT_SHA,
@@ -781,7 +892,7 @@ async fn launch_run(
     // Store config in the runs table so it survives server restarts.
     // (Separate UPDATE for the rare case the row was created by the
     // ingest loop between the INSERT above and here.)
-    if let Some(ref config) = body.config {
+    if let Some(ref config) = config {
         let db = state.db.lock().unwrap();
         let config_str = serde_json::to_string(config)?;
         let _ = db.execute(
@@ -841,12 +952,12 @@ async fn launch_run(
         None
     };
 
-    Ok(Json(LaunchResponse {
+    Ok(LaunchResponse {
         run_id,
         pid,
         log_path: log_path.to_string_lossy().to_string(),
         launch_error,
-    }))
+    })
 }
 
 /// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
@@ -971,6 +1082,30 @@ async fn stop_run(
 // ---------------------------------------------------------------------------
 // Command construction
 // ---------------------------------------------------------------------------
+
+/// Build the launch `config` JSON for a resumed SMAC3 run: carries forward
+/// the old run's `--config` path and `--override` list (if any), appending
+/// `optimizer.n_trials`/`optimizer.n_workers` overrides so they win (the
+/// Python side's `_apply_overrides` keeps the last value for a repeated
+/// key). Same shape `build_command`'s smac3 arm already reads.
+fn build_resume_config(old_config: &Option<Value>, n_trials: i64, n_workers: Option<i64>) -> Value {
+    let mut overrides: Vec<Value> = old_config
+        .as_ref()
+        .and_then(|c| c.get("overrides"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    overrides.push(json!(format!("optimizer.n_trials={n_trials}")));
+    if let Some(n_workers) = n_workers {
+        overrides.push(json!(format!("optimizer.n_workers={n_workers}")));
+    }
+
+    let mut new_config = json!({ "overrides": overrides });
+    if let Some(config_path) = old_config.as_ref().and_then(|c| c.get("config")) {
+        new_config["config"] = config_path.clone();
+    }
+    new_config
+}
 
 /// Build the command vector from the launch request's kind/game/config.
 ///
@@ -1943,6 +2078,114 @@ mod tests {
         assert!(
             status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
             "smac3 launch returned unexpected status {status}: body={}",
+            String::from_utf8_lossy(&body),
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // build_resume_config
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_build_resume_config_appends_n_trials_override() {
+        let config = build_resume_config(&None, 500, None);
+        let overrides = config["overrides"].as_array().unwrap();
+        assert_eq!(overrides, &[json!("optimizer.n_trials=500")]);
+        assert!(config.get("config").is_none());
+    }
+
+    #[test]
+    fn test_build_resume_config_appends_n_workers_when_given() {
+        let config = build_resume_config(&None, 500, Some(4));
+        let overrides = config["overrides"].as_array().unwrap();
+        assert_eq!(
+            overrides,
+            &[
+                json!("optimizer.n_trials=500"),
+                json!("optimizer.n_workers=4")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_resume_config_carries_forward_old_config_and_overrides() {
+        let old = Some(json!({
+            "config": "smac3/config/default.yaml",
+            "overrides": ["target.rounds=30"],
+        }));
+        let config = build_resume_config(&old, 500, None);
+        assert_eq!(config["config"], json!("smac3/config/default.yaml"));
+        assert_eq!(
+            config["overrides"].as_array().unwrap(),
+            &[json!("target.rounds=30"), json!("optimizer.n_trials=500")]
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // POST /api/bench/runs/{run_id}/resume
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_resume_returns_404_for_unknown_run() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/nonexistent/resume",
+            json!({ "n_trials": 500 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert_eq!(body_json(&body)["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_resume_rejects_non_smac3_run() {
+        // DEFAULT_RUN_ID is seeded as a 'round_robin' run.
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_post_json(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/resume"),
+            json!({ "n_trials": 500 }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        let body = body_json(&body);
+        assert!(body["error"].as_str().unwrap().contains("round_robin"));
+    }
+
+    #[tokio::test]
+    async fn test_resume_smac3_reaches_the_launcher() {
+        // Same "reaches the launcher, doesn't get rejected as a bad
+        // request" shape as test_launch_smac3_reaches_the_launcher: proves
+        // the old run's kind/config are read back out of the DB and turned
+        // into a launch the handler forwards, rather than being rejected
+        // before ever reaching launch::launch_with_run_id.
+        let app = seeded_app(|conn, dir| {
+            std::fs::create_dir_all(dir).ok();
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
+                  started_at, ended_at, status, log_path) \
+                 VALUES ('smac3-resume-src', 'smac3', 'traffic-lights', \
+                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                         'abc1234', false, 'testhost', NULL, \
+                         '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
+                duckdb::params![],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/smac3-resume-src/resume",
+            json!({ "n_trials": 500 }),
+        )
+        .await;
+
+        assert!(
+            status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
+            "resume returned unexpected status {status}: body={}",
             String::from_utf8_lossy(&body),
         );
     }

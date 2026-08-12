@@ -244,6 +244,8 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       Effect.send({ run_id: "new-run-123", pid: 99999, log_path: "/tmp/new/log.jsonl" }),
     stopRun: (_runId: string): Effect<StopResponse> =>
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
+    resumeRun: (_runId: string, _nTrials: number, _nWorkers?: number): Effect<LaunchResponse> =>
+      Effect.send({ run_id: "resumed-run-123", pid: 99998, log_path: "/tmp/resumed/log.jsonl" }),
     getBenchKinds: () => Effect.send(fakeKinds),
     getSmac3Kinds: () => Effect.send(fakeSmac3Kinds),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),

@@ -22,8 +22,17 @@ export const RunDetailPanel: Component<{
   const detail = createMemo(() => openRun()?.detail ?? null);
   const tail = createMemo(() => openRun()?.tail ?? null);
   const stopError = createMemo(() => state().stopError);
+  const resumeError = createMemo(() => state().resumeError);
 
   const isSmac3 = createMemo(() => detail()?.kind === "smac3");
+  // A run can only be resumed once it's stopped producing new trials --
+  // resuming a still-running one would launch a second process racing the
+  // first over the same prior state.
+  const canResume = createMemo(() => isSmac3() && detail() !== null && detail()!.status !== "running");
+  // A reasonable starting point for "how many more trials" -- the operator
+  // can always change it before clicking Resume.
+  const resumeDefaultTrials = createMemo(() => (detail()?.trial_count ?? 0) + 200);
+  const [resumeTrials, setResumeTrials] = createSignal<number | null>(null);
   const smac3Tuner = createMemo(() => {
     const d = detail();
     const kinds = state().smac3Kinds;
@@ -99,6 +108,34 @@ export const RunDetailPanel: Component<{
 
         <Show when={stopError()}>
           <div class="launch-error">{stopError()}</div>
+        </Show>
+
+        <Show when={canResume()}>
+          <div id="resume-run-row">
+            <label for="resume-n-trials">Resume with n_trials</label>
+            <input
+              id="resume-n-trials"
+              type="number"
+              min="1"
+              value={resumeTrials() ?? resumeDefaultTrials()}
+              onInput={(e) => setResumeTrials(Number(e.currentTarget.value))}
+            />
+            <button
+              id="resume-run-btn"
+              onClick={() =>
+                dispatch({
+                  tag: "resumeRun",
+                  runId: openRun()!.runId,
+                  nTrials: resumeTrials() ?? resumeDefaultTrials(),
+                })
+              }
+            >
+              Resume
+            </button>
+          </div>
+          <Show when={resumeError()}>
+            <div class="launch-error">{resumeError()}</div>
+          </Show>
         </Show>
 
         <Show when={detail()}>

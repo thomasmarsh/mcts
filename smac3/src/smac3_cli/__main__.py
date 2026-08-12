@@ -25,6 +25,7 @@ from smac.facade import HyperparameterOptimizationFacade
 
 from .callback import IncumbentTracker, TrialTracker
 from .config import SearchConfig
+from .resume import load_prior_runhistory
 from .space import build_space
 from .target import make_target
 
@@ -96,27 +97,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Git SHA for attribution (auto-detected if omitted)",
     )
+    p.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help=(
+            "Pin Scenario.name to this id (default: SMAC3 auto-hashes a name "
+            "from the scenario contents). Makes this run's output directory "
+            "(smac3_output/<run-id>/<seed>/) discoverable for a later --resume."
+        ),
+    )
+    p.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help=(
+            "Seed this run's runhistory from a prior run's saved state "
+            "(that prior run's own --run-id), so already-evaluated configs "
+            "aren't re-evaluated. See resume.py for why this is done "
+            "manually rather than via SMAC3's own continue path."
+        ),
+    )
     return p
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def build_optimizer(
+    cfg: SearchConfig,
+    *,
+    run_id: str | None = None,
+    resume: str | None = None,
+    git_sha: str | None = None,
+    verbose: bool = False,
+) -> HyperparameterOptimizationFacade:
+    """Build a ready-to-`.optimize()` SMAC3 facade from *cfg*.
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    # -- load config -------------------------------------------------------
-    cfg = SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
-    logger.info("Config: %s", cfg._source or "defaults")
-
-    overrides = _parse_overrides(args.override)
-    _apply_overrides(cfg, overrides)
-    if overrides:
-        logger.info("Applied overrides: %s", overrides)
-
+    Factored out of `main()` so tests can drive the resume path (build,
+    inspect/optimize, build again with `resume=`) without going through
+    `argparse`/a subprocess -- see `tests/test_resume.py`.
+    """
     # -- search space, sourced from the binary itself -----------------------
     # The game binary is the single source of truth for the search space
     # (`tune describe`), not hand-maintained YAML -- see
@@ -154,6 +173,7 @@ def main() -> None:
     # with a genuine second, harder preset ("master") in that list.
     scenario = Scenario(
         cs,
+        name=run_id,
         deterministic=cfg.optimizer.deterministic,
         n_trials=cfg.optimizer.n_trials,
         n_workers=n_workers,
@@ -161,15 +181,59 @@ def main() -> None:
         instances=cfg.target.baselines,
     )
 
-    # -- run optimisation --------------------------------------------------
     smac = HyperparameterOptimizationFacade(
         scenario,
         train,
-        callbacks=[IncumbentTracker(), TrialTracker(git_sha=args.git_sha)],
-        logging_level=logging.INFO if not args.verbose else logging.DEBUG,
-        overwrite=True,
+        callbacks=[IncumbentTracker(), TrialTracker(git_sha=git_sha)],
+        logging_level=logging.INFO if not verbose else logging.DEBUG,
+        # `False` so that an accidental relaunch into the same (name-pinned)
+        # output directory with an *identical* scenario auto-continues
+        # rather than silently erasing prior runhistory. A relaunch with a
+        # genuinely different scenario (e.g. a bumped `n_trials`) is not
+        # routed through this gate at all -- see `--resume` below.
+        overwrite=False,
     )
 
+    if resume:
+        prior = load_prior_runhistory(resume, cs)
+        logger.info(
+            "Resuming from run %s: merging %d prior trial(s) into runhistory",
+            resume,
+            len(prior),
+        )
+        smac.runhistory.update(prior)
+
+    return smac
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # -- load config -------------------------------------------------------
+    cfg = SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
+    logger.info("Config: %s", cfg._source or "defaults")
+
+    overrides = _parse_overrides(args.override)
+    _apply_overrides(cfg, overrides)
+    if overrides:
+        logger.info("Applied overrides: %s", overrides)
+
+    smac = build_optimizer(
+        cfg,
+        run_id=args.run_id,
+        resume=args.resume,
+        git_sha=args.git_sha,
+        verbose=args.verbose,
+    )
+    cs = smac.scenario.configspace
+
+    # -- run optimisation --------------------------------------------------
     incumbent = smac.optimize()
 
     # -- report ------------------------------------------------------------

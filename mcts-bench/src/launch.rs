@@ -50,9 +50,25 @@ pub fn launch(
     cmd: Vec<String>,
     kind: &str,
     game: &str,
+    label: Option<&str>,
+) -> std::io::Result<LaunchedRun> {
+    launch_with_run_id(generate_run_id(kind, game), cmd, kind, game, label)
+}
+
+/// Like [`launch`], but with a caller-supplied `run_id` instead of one
+/// generated internally.  Needed when the caller has to know the run_id
+/// *before* spawning -- e.g. SMAC3 launches thread the run_id into the
+/// child's own argv (`smac3 --run-id <id>`) so its `Scenario.name` (and
+/// therefore its on-disk output directory) is pinned to the same id the
+/// bench-runs registry/DB use, making a later `--resume <id>` able to find
+/// it without any extra bookkeeping.
+pub fn launch_with_run_id(
+    run_id: String,
+    cmd: Vec<String>,
+    kind: &str,
+    game: &str,
     _label: Option<&str>,
 ) -> std::io::Result<LaunchedRun> {
-    let run_id = generate_run_id(kind, game);
     let log_dir = Path::new(BENCH_RUNS_DIR).join(&run_id);
     fs::create_dir_all(&log_dir)?;
 
@@ -135,7 +151,7 @@ pub fn is_alive(pid: u32) -> bool {
 
 /// Generate a run_id following the convention:
 /// `{kind}-{game}-{yyyymmddThhmmss}-{short_git_sha}`
-fn generate_run_id(kind: &str, game: &str) -> String {
+pub fn generate_run_id(kind: &str, game: &str) -> String {
     let sha = build_info::GIT_SHA;
     let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
     format!("{kind}-{game}-{ts}-{short_sha}", ts = compact_timestamp())

@@ -59,6 +59,9 @@ export interface BenchEnv {
   fetchCommitTrends(game: string | null): Effect<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
+  /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
+   * seeded from its saved state. */
+  resumeRun(runId: string, nTrials: number, nWorkers?: number): Effect<LaunchResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game. */
   getSmac3Kinds(): Effect<Smac3GameInfo[]>;
@@ -120,6 +123,9 @@ export type BenchAction =
   | { tag: "stopRun"; runId: string }
   | { tag: "stopFinished"; runId: string }
   | { tag: "stopFailed"; runId: string; error: string }
+  | { tag: "resumeRun"; runId: string; nTrials: number; nWorkers?: number }
+  | { tag: "resumeFinished"; runId: string }
+  | { tag: "resumeFailed"; runId: string; error: string }
   /** Load all available bench kinds/games/strategies for the launch form. */
   | { tag: "kinds"; action: KindsAction }
   /** Load per-game SMAC3 tuner metadata for the launch form + run detail. */
@@ -393,6 +399,26 @@ export function benchReducer(
 
   if (action.tag === "stopFailed") {
     draft.stopError = action.error;
+    return null;
+  }
+
+  if (action.tag === "resumeRun") {
+    draft.resumeError = null;
+    const { runId, nTrials, nWorkers } = action;
+    return env
+      .resumeRun(runId, nTrials, nWorkers)
+      .map((): BenchAction => ({ tag: "resumeFinished", runId }))
+      .catch((e): BenchAction => ({ tag: "resumeFailed", runId, error: String(e) }));
+  }
+
+  if (action.tag === "resumeFinished") {
+    // The resumed run is a brand-new row (its own run_id) -- refresh the
+    // list so it shows up without a manual reload, same as a fresh launch.
+    return startRunsFetch(draft, env);
+  }
+
+  if (action.tag === "resumeFailed") {
+    draft.resumeError = action.error;
     return null;
   }
 

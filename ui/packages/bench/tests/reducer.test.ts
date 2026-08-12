@@ -82,6 +82,7 @@ const mockEnv: BenchEnv = {
   fetchCommitTrends: () => Effect.none(),
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
+  resumeRun: () => Effect.none(),
   getBenchKinds: () => Effect.none(),
   getSmac3Kinds: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
@@ -698,6 +699,48 @@ describe("benchReducer / stopRun", () => {
     await ts.drain();
     ts.receive({ tag: "stopFailed", runId: summary.run_id, error: "Error: nope" }, (s) => {
       s.stopError = "Error: nope";
+    });
+  });
+});
+
+describe("benchReducer / resumeRun", () => {
+  it("resumeRun -> resumeFinished refreshes the runs list", () => {
+    let seen: unknown[] = [];
+    const env: BenchEnv = {
+      ...mockEnv,
+      resumeRun: (runId, nTrials, nWorkers) => {
+        seen = [runId, nTrials, nWorkers];
+        return Effect.send({ run_id: "smac3-run-2", pid: 999, log_path: "/x/log.jsonl" });
+      },
+      listRuns: () => Effect.send([summary]),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "resumeRun", runId: "smac3-run-1", nTrials: 500 });
+    expect(seen).toEqual(["smac3-run-1", 500, undefined]);
+    ts.receive({ tag: "resumeFinished", runId: "smac3-run-1" }, (s) => {
+      s.runs.status = "pending";
+    });
+    ts.receive(
+      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      (s) => {
+        s.runs.status = "done";
+        s.runs.result = [summary];
+      },
+    );
+  });
+
+  it("a rejected resume lands in resumeError", async () => {
+    const env: BenchEnv = {
+      ...mockEnv,
+      resumeRun: () => Effect.fromPromise(() => Promise.reject(new Error("nope"))),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "resumeRun", runId: "smac3-run-1", nTrials: 500 });
+    await ts.drain();
+    ts.receive({ tag: "resumeFailed", runId: "smac3-run-1", error: "Error: nope" }, (s) => {
+      s.resumeError = "Error: nope";
     });
   });
 });

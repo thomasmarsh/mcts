@@ -81,6 +81,8 @@ export interface BenchState {
   launch: JobPollState<LaunchResponse>;
   /** Last failed stop attempt's message; cleared by the next `stopRun`. */
   stopError: string | null;
+  /** Last failed resume attempt's message; cleared by the next `resumeRun`. */
+  resumeError: string | null;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
@@ -100,6 +102,7 @@ export function initialBenchState(): BenchState {
     commitTrends: { data: {}, shas: [], status: "idle", error: null },
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
+    resumeError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
     smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
   };

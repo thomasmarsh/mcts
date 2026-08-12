@@ -103,6 +103,17 @@ enum Command {
         #[arg(long)]
         label: Option<String>,
 
+        /// Pin the launched run's `Scenario.name` to this id (passed
+        /// through as `smac3 --run-id`), so its output directory is
+        /// discoverable later for `--resume`.
+        #[arg(long = "run-id")]
+        run_id: Option<String>,
+
+        /// Resume a prior run by its `--run-id` (passed through as
+        /// `smac3 --resume`).
+        #[arg(long)]
+        resume: Option<String>,
+
         /// Launch in the background (detached process) instead of
         /// running in the foreground.
         #[arg(long)]
@@ -149,12 +160,16 @@ fn main() {
             overrides,
             game,
             label,
+            run_id,
+            resume,
             background,
         } => cmd_smac3(
             config.as_deref(),
             &overrides,
             &game,
             label.as_deref(),
+            run_id.as_deref(),
+            resume.as_deref(),
             background,
         ),
 
@@ -285,7 +300,13 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
 /// pushed before `overrides` so an explicit `target.binary=...` override
 /// from the caller still wins (the Python side's `_apply_overrides` keeps
 /// the last value for a repeated key).
-fn build_smac3_command(config: Option<&str>, overrides: &[String], game: &str) -> Vec<String> {
+fn build_smac3_command(
+    config: Option<&str>,
+    overrides: &[String],
+    game: &str,
+    run_id: Option<&str>,
+    resume: Option<&str>,
+) -> Vec<String> {
     let mut cmd = vec![
         "uv".to_string(),
         "run".to_string(),
@@ -319,6 +340,16 @@ fn build_smac3_command(config: Option<&str>, overrides: &[String], game: &str) -
     cmd.push("--git-sha".to_string());
     cmd.push(build_info::GIT_SHA.to_string());
 
+    if let Some(id) = run_id {
+        cmd.push("--run-id".to_string());
+        cmd.push(id.to_string());
+    }
+
+    if let Some(id) = resume {
+        cmd.push("--resume".to_string());
+        cmd.push(id.to_string());
+    }
+
     cmd
 }
 
@@ -327,18 +358,29 @@ fn cmd_smac3(
     overrides: &[String],
     game: &str,
     label: Option<&str>,
+    run_id: Option<&str>,
+    resume: Option<&str>,
     background: bool,
 ) {
-    let cmd = build_smac3_command(config, overrides, game);
-
     if background {
+        // Pin the run_id up front (rather than letting `launch::launch`
+        // generate one internally) so the same id both names the
+        // bench-runs directory/registry entry *and* is baked into the
+        // child's own `--run-id` argv -- otherwise the two would disagree
+        // and a later `--resume <bench-run-id>` couldn't find the SMAC3
+        // output directory it actually needs.
+        let run_id = run_id
+            .map(str::to_string)
+            .unwrap_or_else(|| launch::generate_run_id("smac3", game));
+        let cmd = build_smac3_command(config, overrides, game, Some(&run_id), resume);
+
         // Launch via the detached-process launcher.
         let LaunchedRun {
             run_id,
             pid,
             log_path,
             ..
-        } = match launch::launch(cmd, "smac3", game, label) {
+        } = match launch::launch_with_run_id(run_id, cmd, "smac3", game, label) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("error: failed to launch SMAC3 run: {e}");
@@ -357,7 +399,13 @@ fn cmd_smac3(
     } else {
         // Run in the foreground — inherit stdout/stderr so the Python
         // JSONL stream goes directly to the terminal or whoever is
-        // piping stdout.
+        // piping stdout. Unlike the background branch, `run_id`/`resume`
+        // are forwarded as given rather than auto-generated: this path has
+        // no bench-runs registry entry of its own to keep in sync (a
+        // caller that wraps this in its *own* launcher, e.g. the server,
+        // is responsible for passing a `--run-id` that matches whatever it
+        // used for that outer entry).
+        let cmd = build_smac3_command(config, overrides, game, run_id, resume);
         let mut child = match StdCommand::new(&cmd[0])
             .args(&cmd[1..])
             .stdin(Stdio::inherit())
@@ -422,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_overrides_target_binary_from_game() {
-        let cmd = build_smac3_command(None, &[], "breakthrough");
+        let cmd = build_smac3_command(None, &[], "breakthrough", None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-breakthrough")
@@ -437,7 +485,7 @@ mod tests {
         // repeated key, so an explicit caller override for the same key
         // must come after (and thus win over) the game-derived one.
         let overrides = vec!["target.binary=custom/path".to_string()];
-        let cmd = build_smac3_command(None, &overrides, "druid");
+        let cmd = build_smac3_command(None, &overrides, "druid", None, None);
         let game_idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-druid")
@@ -447,5 +495,34 @@ mod tests {
             .position(|a| a == "target.binary=custom/path")
             .expect("caller-supplied target.binary override");
         assert!(game_idx < caller_idx);
+    }
+
+    #[test]
+    fn test_build_smac3_command_forwards_run_id_and_resume() {
+        let cmd = build_smac3_command(
+            None,
+            &[],
+            "druid",
+            Some("smac3-druid-run-1"),
+            Some("smac3-druid-run-0"),
+        );
+        let run_id_idx = cmd
+            .iter()
+            .position(|a| a == "--run-id")
+            .expect("--run-id flag present");
+        assert_eq!(cmd[run_id_idx + 1], "smac3-druid-run-1");
+
+        let resume_idx = cmd
+            .iter()
+            .position(|a| a == "--resume")
+            .expect("--resume flag present");
+        assert_eq!(cmd[resume_idx + 1], "smac3-druid-run-0");
+    }
+
+    #[test]
+    fn test_build_smac3_command_omits_run_id_and_resume_when_absent() {
+        let cmd = build_smac3_command(None, &[], "druid", None, None);
+        assert!(!cmd.iter().any(|a| a == "--run-id"));
+        assert!(!cmd.iter().any(|a| a == "--resume"));
     }
 }

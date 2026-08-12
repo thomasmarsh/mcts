@@ -20,6 +20,7 @@ import {
   createMockBenchEnv,
   FAKE_SMAC3_RUN_ID,
   fakeKinds,
+  fakeSmac3RunDetail,
   fakeTrialRowsWithRepeats,
   fakeTrialRowsMultiInstance,
 } from "./fixtures/fake-bench.js";
@@ -248,5 +249,41 @@ describe("RunDetailPanel / smac3", () => {
     // Two distinct (single-evaluation) whiskers, not one pooled group.
     const whiskers = document.querySelectorAll(".smac3-ci-whisker");
     expect(whiskers.length).toBe(2);
+  });
+
+  it("shows a Resume control for a finished smac3 run and dispatches resumeRun with the entered trial count", async () => {
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      resumeRun: (runId, nTrials, nWorkers) => {
+        seen.push([runId, nTrials, nWorkers]);
+        return createMockBenchEnv().resumeRun(runId, nTrials, nWorkers);
+      },
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    // fakeSmac3RunDetail's trial_count is 3, so the default is 203.
+    const input = screen.getByLabelText("Resume with n_trials") as HTMLInputElement;
+    expect(input.value).toBe("203");
+
+    fireEvent.input(input, { target: { value: "500" } });
+    fireEvent.click(screen.getByText("Resume"));
+
+    expect(seen).toEqual([[FAKE_SMAC3_RUN_ID, 500, undefined]]);
+  });
+
+  it("hides the Resume control while the run is still running", async () => {
+    const runningSmac3Detail = { ...fakeSmac3RunDetail, status: "running", ended_at: null };
+    const { store } = createTestStore({
+      getRun: () => Effect.send(runningSmac3Detail),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Status");
+
+    expect(screen.queryByLabelText("Resume with n_trials")).not.toBeInTheDocument();
   });
 });
