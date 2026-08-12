@@ -226,13 +226,18 @@ pub trait GameAdapter: Send + Sync {
         None
     }
 
-    /// Play `rounds` games of a `params`-built candidate strategy against
-    /// one of this game's tuning baselines and return a cost (lower is
-    /// better) plus win/loss/draw counts, as a JSON object. `baseline`
-    /// selects which entry of `tuner()`'s `baselines` list to play against;
-    /// `None` means the first (default) entry. CLI-only (`tune eval`) --
-    /// never dispatched over the JSONL loop, since a full multi-game match
-    /// is a batch job, not a per-move request.
+    /// Play `rounds` games of a `params`-built candidate strategy against an
+    /// opponent and return a cost (lower is better) plus win/loss/draw
+    /// counts, as a JSON object. The opponent comes from exactly one of:
+    /// `baseline`, a named entry of `tuner()`'s `baselines` list (`None`
+    /// means the first/default entry), or `baseline_config`, a raw params
+    /// JSON object (same schema as `params`) built the same way the
+    /// candidate is -- e.g. a previously discovered config used as the next
+    /// run's opponent instead of a hand-authored preset. The only real
+    /// caller (`run_tune_eval`) guarantees at most one of the two is
+    /// `Some` before invoking this method. CLI-only (`tune eval`) -- never
+    /// dispatched over the JSONL loop, since a full multi-game match is a
+    /// batch job, not a per-move request.
     #[allow(unused_variables)]
     fn tune_eval(
         &self,
@@ -240,6 +245,7 @@ pub trait GameAdapter: Send + Sync {
         rounds: u32,
         seed: Option<u64>,
         baseline: Option<String>,
+        baseline_config: Option<Value>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
@@ -405,9 +411,12 @@ where
     }
 }
 
-/// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id>]` from
-/// the remaining CLI args, calls [`GameAdapter::tune_eval`], and prints its
-/// JSON result verbatim to `writer`. Returns the process exit code.
+/// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id> |
+/// --baseline-config <json>]` from the remaining CLI args, calls
+/// [`GameAdapter::tune_eval`], and prints its JSON result verbatim to
+/// `writer`. Returns the process exit code. `--baseline` and
+/// `--baseline-config` are mutually exclusive -- supplying both is rejected
+/// before the adapter is ever called.
 fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
 where
     I: Iterator<Item = String>,
@@ -419,12 +428,14 @@ where
     let mut rounds: Option<u32> = None;
     let mut seed: Option<u64> = None;
     let mut baseline: Option<String> = None;
+    let mut baseline_config: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--config" => config = args.next(),
             "--rounds" => rounds = args.next().and_then(|s| s.parse().ok()),
             "--seed" => seed = args.next().and_then(|s| s.parse().ok()),
             "--baseline" => baseline = args.next(),
+            "--baseline-config" => baseline_config = args.next(),
             _ => {}
         }
     }
@@ -434,7 +445,19 @@ where
         let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
         let params: Value = serde_json::from_str(&config)
             .map_err(|e| HostError::bad_request(format!("invalid --config JSON: {e}")))?;
-        adapter.tune_eval(params, rounds, seed, baseline)
+        if baseline.is_some() && baseline_config.is_some() {
+            return Err(HostError::bad_request(
+                "--baseline and --baseline-config are mutually exclusive",
+            ));
+        }
+        let baseline_config = baseline_config
+            .map(|s| {
+                serde_json::from_str(&s).map_err(|e| {
+                    HostError::bad_request(format!("invalid --baseline-config JSON: {e}"))
+                })
+            })
+            .transpose()?;
+        adapter.tune_eval(params, rounds, seed, baseline, baseline_config)
     })();
 
     match result {
@@ -1019,6 +1042,7 @@ mod tests {
             rounds: u32,
             seed: Option<u64>,
             baseline: Option<String>,
+            baseline_config: Option<Value>,
         ) -> Result<Value, HostError> {
             Ok(serde_json::json!({
                 "cost": 0.25,
@@ -1026,6 +1050,7 @@ mod tests {
                 "rounds": rounds,
                 "seed": seed,
                 "baseline": baseline,
+                "baseline_config": baseline_config,
             }))
         }
     }
@@ -1153,6 +1178,71 @@ mod tests {
     fn test_run_cli_tune_eval_missing_rounds_errors() {
         let (out, code) =
             run_cli_capture_with(TunableFakeAdapter, &["tune", "eval", "--config", "{}"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_baseline_config_threads_through() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "tune",
+                "eval",
+                "--config",
+                "{}",
+                "--rounds",
+                "1",
+                "--baseline-config",
+                r#"{"family":"ucb1","c":1.4}"#,
+            ],
+            "",
+        );
+        assert_eq!(code, 0);
+        let result: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert!(result["baseline"].is_null());
+        assert_eq!(result["baseline_config"]["family"], "ucb1");
+        assert_eq!(result["baseline_config"]["c"], 1.4);
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_rejects_both_baseline_and_baseline_config() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "tune",
+                "eval",
+                "--config",
+                "{}",
+                "--rounds",
+                "1",
+                "--baseline",
+                "strong",
+                "--baseline-config",
+                "{}",
+            ],
+            "",
+        );
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_rejects_invalid_baseline_config_json() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "tune",
+                "eval",
+                "--config",
+                "{}",
+                "--rounds",
+                "1",
+                "--baseline-config",
+                "not json",
+            ],
+            "",
+        );
         assert_eq!(code, 1);
         assert!(out.is_empty());
     }

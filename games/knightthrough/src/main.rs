@@ -260,11 +260,25 @@ impl GameAdapter for KtAdapter {
         rounds: u32,
         seed: Option<u64>,
         _baseline: Option<String>,
+        baseline_config: Option<Value>,
     ) -> Result<Value, HostError> {
         // Knightthrough's `Game::zobrist_hash` is the default constant `0`,
         // so transpositions must stay off -- see `mcts-tune`'s
         // `strategy_tune_eval` doc comment.
-        let outcome = mcts_tune::strategy_tune_eval(&params, rounds, seed, false, build_strong)?;
+        let outcome = if let Some(cfg) = baseline_config {
+            let baseline_seed = seed.unwrap_or(0);
+            // Fail fast on an invalid baseline config, before any games are
+            // played -- mirrors how a bad candidate `params` is already
+            // rejected during `TrialParams` deserialization inside
+            // `strategy_tune_eval` itself.
+            mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)?;
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, false, move || {
+                mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)
+                    .expect("baseline_config already validated above")
+            })?
+        } else {
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, false, build_strong)?
+        };
         Ok(serde_json::json!({
             "cost": outcome.cost,
             "wins": outcome.wins,
@@ -297,7 +311,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = KtAdapter
-            .tune_eval(params, 1, Some(0), None)
+            .tune_eval(params, 1, Some(0), None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

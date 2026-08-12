@@ -266,11 +266,25 @@ impl GameAdapter for TlAdapter {
         rounds: u32,
         seed: Option<u64>,
         _baseline: Option<String>,
+        baseline_config: Option<Value>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- TrafficLights has one (see `lib.rs`), so merging
         // transposed nodes during the candidate's search is safe here.
-        let outcome = mcts_tune::strategy_tune_eval(&params, rounds, seed, true, build_strong)?;
+        let outcome = if let Some(cfg) = baseline_config {
+            let baseline_seed = seed.unwrap_or(0);
+            // Fail fast on an invalid baseline config, before any games are
+            // played -- mirrors how a bad candidate `params` is already
+            // rejected during `TrialParams` deserialization inside
+            // `strategy_tune_eval` itself.
+            mcts_tune::build_search::<TrafficLights>(&cfg, baseline_seed, true)?;
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, move || {
+                mcts_tune::build_search::<TrafficLights>(&cfg, baseline_seed, true)
+                    .expect("baseline_config already validated above")
+            })?
+        } else {
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, build_strong)?
+        };
         Ok(serde_json::json!({
             "cost": outcome.cost,
             "wins": outcome.wins,

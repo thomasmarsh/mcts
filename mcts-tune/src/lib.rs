@@ -259,6 +259,21 @@ where
     ))
 }
 
+/// Builds a `Box<dyn Search<G>>` from a raw params JSON object, the same
+/// deserialize-then-dispatch path `strategy_tune_eval` uses for the
+/// candidate side -- exposed so a caller can also build an *opponent* from
+/// an arbitrary discovered config, not just a named preset. See
+/// `game_host::GameAdapter::tune_eval`'s `baseline_config` parameter.
+pub fn build_search<G: Game + 'static>(
+    params: &Value,
+    seed: u64,
+    use_transpositions: bool,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
+    let trial: TrialParams = serde_json::from_value(params.clone())
+        .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
+    make_candidate(&trial, seed, use_transpositions)
+}
+
 fn make_candidate<G: Game + 'static>(
     p: &TrialParams,
     seed: u64,
@@ -859,6 +874,37 @@ mod tests {
     #[test]
     fn test_family_rave_round_trips() {
         assert_family_round_trips(rave_params());
+    }
+
+    /// Proves `build_search` (the public entry point `GameAdapter::
+    /// tune_eval`'s `baseline_config` path uses) works as a
+    /// `strategy_tune_eval` `baseline_build` source, not just as a
+    /// standalone constructor -- a UCB1-built opponent played against a RAVE
+    /// candidate for one round.
+    #[test]
+    fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
+        let baseline_params = json!({
+            "family": "ucb1", "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
+        });
+        let outcome = strategy_tune_eval::<Nim>(&rave_params(), 1, Some(0), false, || {
+            build_search::<Nim>(&baseline_params, 0, false)
+                .expect("baseline_params is a valid ucb1 config")
+        })
+        .expect("candidate vs config-built baseline should round-trip");
+        assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
+    }
+
+    #[test]
+    fn test_build_search_rejects_unknown_family() {
+        let mut params = rave_params();
+        params["family"] = json!("not_a_real_family");
+        // `Box<dyn Search<G>>` isn't `Debug`, so `Result::expect_err` doesn't
+        // apply here -- match instead.
+        let err = match build_search::<Nim>(&params, 0, false) {
+            Err(e) => e,
+            Ok(_) => panic!("unknown family must be rejected"),
+        };
+        assert!(err.message.contains("family"));
     }
 
     /// The parameter set each family's `make_candidate` arm actually

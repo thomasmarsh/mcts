@@ -534,16 +534,30 @@ impl GameAdapter for DruidAdapter {
         rounds: u32,
         seed: Option<u64>,
         baseline: Option<String>,
+        baseline_config: Option<Value>,
     ) -> Result<Value, HostError> {
-        let baseline = baseline.as_deref().unwrap_or("strong");
-        let cfg = preset_cfg(baseline)
-            .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
         // candidate's search is safe here.
-        let outcome = mcts_tune::strategy_tune_eval(&params, rounds, seed, true, || {
-            build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg)
-        })?;
+        let outcome = if let Some(cfg) = baseline_config {
+            let baseline_seed = seed.unwrap_or(0);
+            // Fail fast on an invalid baseline config, before any games are
+            // played -- mirrors how a bad candidate `params` is already
+            // rejected during `TrialParams` deserialization inside
+            // `strategy_tune_eval` itself.
+            mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)?;
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, move || {
+                mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)
+                    .expect("baseline_config already validated above")
+            })?
+        } else {
+            let baseline = baseline.as_deref().unwrap_or("strong");
+            let cfg = preset_cfg(baseline)
+                .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
+            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, || {
+                build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg)
+            })?
+        };
         Ok(serde_json::json!({
             "cost": outcome.cost,
             "wins": outcome.wins,
@@ -576,8 +590,34 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None)
+            .tune_eval(params, 1, Some(0), None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
+        assert!(result["cost"].as_f64().is_some());
+    }
+
+    #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts -- see tune_eval_round_trips above for why this isn't in the fast suite."]
+    #[test]
+    fn tune_eval_with_baseline_config_round_trips() {
+        let params = serde_json::json!({
+            "family": "rave",
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let baseline_config = serde_json::json!({
+            "family": "ucb1",
+            "c": 1.4,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+        });
+        let result = DruidAdapter::default()
+            .tune_eval(params, 1, Some(0), None, Some(baseline_config))
+            .expect("tune_eval should round-trip against a config-built opponent");
         assert!(result["cost"].as_f64().is_some());
     }
 
@@ -589,6 +629,7 @@ mod tests {
                 1,
                 Some(0),
                 Some("nonexistent".into()),
+                None,
             )
             .expect_err("an unrecognized baseline id should error before any games are played");
         assert_eq!(err.code, 400);
