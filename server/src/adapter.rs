@@ -301,6 +301,7 @@ pub fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     let entries: Vec<(&str, &str)> = vec![
         ("atarigo", "game-atarigo"),
         ("breakthrough", "game-breakthrough"),
+        ("congo", "game-congo"),
         ("druid", "game-druid"),
         ("gonnect", "game-gonnect"),
         ("knightthrough", "game-knightthrough"),

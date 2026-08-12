@@ -23,6 +23,7 @@ members = [
     "games/tak",
     "games/unit",
     "games/druid",
+    "games/congo",
     "server",
     "bench",
 ]
