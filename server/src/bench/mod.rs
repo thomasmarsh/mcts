@@ -40,11 +40,6 @@ use mcts_bench::StrategyInfo;
 pub struct BenchState {
     pub db: Mutex<duckdb::Connection>,
     pub bench_runs_dir: PathBuf,
-    /// Live per-game-kind subprocess sessions, shared with the main
-    /// gameplay `AppState` -- reused here (rather than spawning a second
-    /// set of subprocesses) so `/api/bench/smac3/kinds` can query each
-    /// game's `tuner()` over its already-open session.
-    pub games: Arc<HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -685,21 +680,21 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
 /// `GET /api/bench/smac3/kinds`
 ///
 /// Per-game tuner metadata (search space, baselines, eval rounds), queried
-/// through each game's already-open `SubprocessAdapter` session (the same
-/// ones the gameplay routes use) rather than spawning a one-shot `tune
-/// describe` process per request.  Only games that implement `tuner()`
-/// (return `Some`) appear -- tuning support is opt-in per game.
-async fn list_smac3_kinds(
-    AxumState(state): AxumState<Arc<BenchState>>,
-) -> Json<Vec<Smac3GameInfo>> {
-    let mut games: Vec<Smac3GameInfo> = state
-        .games
-        .iter()
-        .filter_map(|(kind, adapter)| {
-            adapter.tuner().map(|tuner| Smac3GameInfo {
-                game: kind.to_string(),
-                tuner,
-            })
+/// by spawning each of `mcts_bench`'s registered game binaries once with
+/// `tune describe` (see `mcts_bench::games::describe_tuners`) rather than
+/// through `server::adapter::registry()`'s live gameplay sessions -- that
+/// registry only covers the games with a UI renderer, which used to leave
+/// tunable-but-UI-less games (e.g. `nim`) unable to appear here even though
+/// `POST /api/bench/launch` never needed a live session for them either
+/// (the smac3 CLI subprocess it spawns locates the game binary itself).
+/// Only games that implement `tuner()` appear -- tuning support is opt-in
+/// per game.
+async fn list_smac3_kinds() -> Json<Vec<Smac3GameInfo>> {
+    let mut games: Vec<Smac3GameInfo> = mcts_bench::games::describe_tuners()
+        .into_iter()
+        .map(|(kind, tuner)| Smac3GameInfo {
+            game: kind.to_string(),
+            tuner,
         })
         .collect();
     games.sort_by(|a, b| a.game.cmp(&b.game));
@@ -1635,17 +1630,6 @@ mod tests {
     /// connection into the `BenchState`.  Returns the Router and the temp
     /// dir (kept alive for the test's duration).
     fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
-        seeded_app_with_games(seed_fn, HashMap::new())
-    }
-
-    /// Like `seeded_app`, but with a caller-supplied `games` map -- for
-    /// tests that need `/api/bench/smac3/kinds` to see specific fake
-    /// per-game tuner metadata instead of the real (subprocess-backed)
-    /// registry.
-    fn seeded_app_with_games(
-        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-        games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>>,
-    ) -> (Router, PathBuf) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_dir =
             std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -1662,7 +1646,6 @@ mod tests {
         let state = Arc::new(BenchState {
             db: Mutex::new(conn),
             bench_runs_dir,
-            games: Arc::new(games),
         });
 
         (bench_router(state), tmp_dir)
@@ -2209,103 +2192,16 @@ mod tests {
     // GET /api/bench/smac3/kinds
     // -------------------------------------------------------------------
 
-    /// A minimal `crate::adapter::GameAdapter` fake -- only `kind`/`tuner`
-    /// are exercised by the `smac3/kinds` route, everything else panics if
-    /// called so a test that accidentally reaches it fails loudly.
-    struct FakeTunableAdapter {
-        kind: &'static str,
-        tuner: Option<TunerInfo>,
-    }
-
-    impl crate::adapter::GameAdapter for FakeTunableAdapter {
-        fn kind(&self) -> &'static str {
-            self.kind
-        }
-        fn label(&self) -> &'static str {
-            "Fake"
-        }
-        fn description(&self) -> &'static str {
-            "fake adapter for smac3/kinds tests"
-        }
-        fn default_config(&self) -> Value {
-            json!({})
-        }
-        fn new_state(&self, _config: Value) -> Result<Value, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn apply(
-            &self,
-            _state: &Value,
-            _mv: &Value,
-        ) -> Result<Value, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn view(&self, _state: &Value) -> Result<Value, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn ai_presets(&self) -> Vec<crate::adapter::AiPresetInfo> {
-            vec![]
-        }
-        fn ai_move(
-            &self,
-            _state: &Value,
-            _preset: &str,
-        ) -> Result<crate::adapter::AiMoveResult, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn analyze(
-            &self,
-            _state: &Value,
-            _preset: &str,
-            _budget_ms: Option<u64>,
-        ) -> Result<crate::adapter::Analysis, crate::adapter::AdapterError> {
-            unimplemented!()
-        }
-        fn tuner(&self) -> Option<TunerInfo> {
-            self.tuner.clone()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_smac3_kinds_only_lists_tunable_games() {
-        let mut games: HashMap<&'static str, Arc<dyn crate::adapter::GameAdapter>> = HashMap::new();
-        games.insert(
-            "traffic-lights",
-            Arc::new(FakeTunableAdapter {
-                kind: "traffic-lights",
-                tuner: Some(TunerInfo {
-                    id: "rave".into(),
-                    baselines: vec!["strong".into()],
-                    eval_rounds: 20,
-                    parameters: vec![],
-                    conditions: vec![],
-                }),
-            }),
-        );
-        games.insert(
-            "druid",
-            Arc::new(FakeTunableAdapter {
-                kind: "druid",
-                tuner: None,
-            }),
-        );
-
-        let app = seeded_app_with_games(|_, _| {}, games).0;
-        let (status, body) = http_get(app, "/api/bench/smac3/kinds").await;
-        assert_eq!(status, HttpStatusCode::OK);
-        let kinds = body_json(&body).as_array().unwrap().clone();
-        assert_eq!(
-            kinds.len(),
-            1,
-            "expected only traffic-lights to be tunable, got {kinds:?}"
-        );
-        assert_eq!(kinds[0]["game"], "traffic-lights");
-        assert_eq!(kinds[0]["tuner"]["id"], "rave");
-        assert_eq!(kinds[0]["tuner"]["eval_rounds"], 20);
-    }
+    /// `/api/bench/smac3/kinds` itself now just forwards
+    /// `mcts_bench::games::describe_tuners()` -- see that function's own
+    /// tests in `mcts-bench/src/games/mod.rs` for the exit-code/JSON
+    /// dispatch this route depends on (`Some(TunerInfo)` vs `None` vs a
+    /// missing binary). Spawning real `game-*` binaries from this crate's
+    /// tests isn't practical here, so there's no fake-adapter-based
+    /// HTTP-level test of the *contents* of this route the way earlier
+    /// commits had -- `test_list_kinds_includes_round_robin_and_smac3`
+    /// above only checks that the `smac3` kind name is present, same
+    /// shallow level this route gets today.
 
     // -------------------------------------------------------------------
     // Command construction (build_command)

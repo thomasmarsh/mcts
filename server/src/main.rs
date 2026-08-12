@@ -267,9 +267,8 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 
 #[tokio::main]
 async fn main() {
-    let games = Arc::new(adapter::registry());
     let app_state = Arc::new(AppState {
-        games: games.clone(),
+        games: Arc::new(adapter::registry()),
     });
 
     // Open (or create) the benchmark database.  Only the server process ever
@@ -281,7 +280,6 @@ async fn main() {
     let bench_state = Arc::new(bench::BenchState {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
-        games,
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

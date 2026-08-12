@@ -17,7 +17,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use game_host::subprocess::SubprocessAdapter;
 use game_host::GameAdapter as _; // trait with methods SubprocessAdapter implements
-use game_host::TunerInfo;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -160,16 +159,6 @@ pub trait GameAdapter: Send + Sync {
         preset: &str,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, AdapterError>;
-
-    /// Tunable strategy search-space metadata, for the `bench smac3`
-    /// launch form -- `None` (the default) for every game that doesn't
-    /// support SMAC3-style tuning.  Reuses `game_host::TunerInfo` directly
-    /// rather than mirroring it, since it's opaque JSON metadata passed
-    /// straight through to the UI, not something this trait's callers
-    /// otherwise touch.
-    fn tuner(&self) -> Option<TunerInfo> {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +256,6 @@ impl GameAdapter for SubprocessGameAdapter {
                 suggested_move: r.suggested_move,
             })
             .map_err(host_to_adapter)
-    }
-
-    fn tuner(&self) -> Option<TunerInfo> {
-        self.inner.tuner()
     }
 }
 
