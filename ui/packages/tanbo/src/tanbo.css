@@ -1,5 +1,6 @@
-/* tanbo.css — Tanbo board renderer: a 9×9 grid with group-connection
-   indicators between orthogonally adjacent stones of the same colour. */
+/* tanbo.css — Tanbo board renderer: a 9×9 Go-style board where stones sit on
+   line intersections, linked by connector bars between orthogonally adjacent
+   same-colour stones. */
 
 .tanbo-board {
   display: flex;
@@ -11,114 +12,121 @@
 }
 
 .tanbo-grid {
-  display: grid;
-  grid-template-columns: repeat(9, 64px);
-  grid-template-rows: repeat(9, 64px);
-  gap: 0;
-  background: #d4a454;
-  padding: 6px;
+  position: relative;
+  background: linear-gradient(135deg, #dfb36c, #c99a4f);
   border-radius: 6px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
 }
 
-.tanbo-cell {
-  --heat: 0;
-  position: relative;
-  width: 64px;
-  height: 64px;
-  background: #d4a454;
-  border: none;
-  cursor: default;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Stone — centered 44px circle */
-.tanbo-stone {
+/* Grid lines + star points */
+.tanbo-lines {
   position: absolute;
-  top: 10px;
-  left: 10px;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  z-index: 2;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  inset: 0;
   pointer-events: none;
 }
 
-/* Connector bars — fill the gap between orthogonally adjacent same-colour
-   stones.  Stone is 44px, cell is 64px → 10px margin each side.  Gap
-   between two adjacent stone edges = 20px.  Connector sits at z-index 1
-   (under the stones at z-index 2) so it cleanly joins them visually. */
+.tanbo-lines line {
+  stroke: #3a2a12;
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
 
+.tanbo-star {
+  fill: #3a2a12;
+  opacity: 0.7;
+}
+
+/* Connector bars — span center-to-center between two adjacent same-colour
+   stones, so both ends land fully inside the stone circles at either end and
+   the seam is always hidden underneath them. */
 .tanbo-connector {
   position: absolute;
   z-index: 1;
   pointer-events: none;
 }
 
-.tanbo-connector.right {
-  left: 54px;      /* stone right edge */
-  top: 50%;
-  transform: translateY(-50%);
-  width: 20px;     /* fills the 20px gap to the neighbour stone's left edge */
-  height: 8px;
-  border-radius: 0 4px 4px 0;
+.conn-black {
+  background: linear-gradient(#3a3a3a, #0a0a0a);
 }
 
-.tanbo-connector.down {
-  top: 54px;       /* stone bottom edge */
-  left: 50%;
-  transform: translateX(-50%);
-  height: 20px;    /* fills the 20px gap to the neighbour stone's top edge */
-  width: 8px;
-  border-radius: 0 0 4px 4px;
+.conn-white {
+  background: linear-gradient(#fbfbfb, #d8d8d8);
+}
+
+/* One intersection: a transparent, centered hit-box holding the stone (or
+   ghost preview) for this point. */
+.tanbo-point {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tanbo-stone {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.stone-black {
+  background: radial-gradient(circle at 35% 30%, #5a5a5a, #0a0a0a 70%);
+}
+
+.stone-white {
+  background: radial-gradient(circle at 35% 30%, #ffffff, #c9c9c9 70%);
 }
 
 /* Ghost preview for legal moves on hover */
 .tanbo-ghost {
   position: absolute;
-  top: 10px;
-  left: 10px;
-  width: 44px;
-  height: 44px;
+  width: 50px;
+  height: 50px;
   border-radius: 50%;
   opacity: 0.35;
-  z-index: 2;
   pointer-events: none;
 }
 
 /* Legal-move clickability */
-.tanbo-cell.legal {
+.tanbo-point.legal {
   cursor: pointer;
 }
 
-.tanbo-cell.legal:hover {
-  background: #dbb45c;
+.tanbo-point.legal:hover::before,
+.tanbo-point.hovered::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  z-index: -1;
 }
 
-.tanbo-cell.hovered {
-  background: #dbb45c;
-}
-
-/* Analysis heatmap overlay */
-.tanbo-cell.heat::after {
+/* Analysis heatmap overlay — a soft glow centered on the point */
+.tanbo-point.heat::after {
   content: "";
   position: absolute;
   inset: 4px;
-  border-radius: 4px;
+  border-radius: 50%;
   background: rgba(255, 169, 77, calc(0.10 + var(--heat) * 0.50));
   pointer-events: none;
-  z-index: 0;
+  z-index: -1;
 }
 
-.tanbo-cell.proven::after {
+.tanbo-point.proven::after {
   background: rgba(76, 175, 122, calc(0.10 + var(--heat) * 0.50));
 }
 
-.tanbo-cell.suggested {
+.tanbo-point.suggested {
   outline: 3px solid #ffe066;
-  outline-offset: -3px;
+  outline-offset: -8px;
+  border-radius: 50%;
 }

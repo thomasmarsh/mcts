@@ -131,12 +131,7 @@ impl GameAdapter for TanAdapter {
         serde_json::json!({})
     }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
-        Ok(state_to_value(&State {
-            black: BigBitBoard::EMPTY,
-            white: BigBitBoard::EMPTY,
-            turn: Player::Black,
-            winner: None,
-        }))
+        Ok(state_to_value(&State::default()))
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let s = value_to_state(state)?;
