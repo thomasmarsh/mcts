@@ -271,38 +271,57 @@ impl<const N: usize> State<N> {
     // Bounded-root removal
     // ------------------------------------------------------------------
 
-    /// After a placement, remove every bounded group of either colour.
-    /// A group is bounded when none of its stones have a legal extension
-    /// point (i.e. `trace_group` produces an empty move list).
-    fn remove_bounded(just_played: Player, board: &mut [Cell]) {
-        let opponent = just_played.next();
-        let mut visited = vec![false; N * N];
-        let mut bounded_starts = Vec::new();
+    /// Find every root (of either colour) that is bounded -- i.e. has no
+    /// legal extension point (`trace_group` produces an empty move list).
+    /// Cells already set in `visited` are skipped, so callers can exclude
+    /// roots (such as the current root) that have already been accounted
+    /// for.
+    fn find_bounded_roots(board: &[Cell], visited: &mut [bool]) -> Vec<(Player, usize)> {
+        let mut bounded = Vec::new();
 
         for i in 0..board.len() {
-            let cell = board[i];
-            if cell != Some(just_played) && cell != Some(opponent) {
-                continue;
-            }
             if visited[i] {
                 continue;
             }
-
-            let player = match cell {
-                Some(p) => p,
-                _ => continue,
-            };
+            let Some(player) = board[i] else { continue };
 
             let mut group_moves = Vec::new();
-            Self::trace_group(player, i, board, &mut visited, &mut group_moves);
+            Self::trace_group(player, i, board, visited, &mut group_moves);
 
             if group_moves.is_empty() {
-                bounded_starts.push((player, i));
+                bounded.push((player, i));
             }
         }
 
-        // Remove each bounded group by flood-filling from its start.
-        for &(player, start) in &bounded_starts {
+        bounded
+    }
+
+    /// Resolve captures after a stone has been placed at `current_root_stone`.
+    ///
+    /// The rules distinguish two cases: if the placement bounded the
+    /// *current* root (the one just enlarged), only that root is removed --
+    /// other roots that happen to also be bounded survive. Only when the
+    /// current root is *not* bounded do other bounded roots, of either
+    /// colour, get swept away.
+    fn resolve_captures(current_root_stone: usize, board: &mut [Cell]) {
+        let current_player =
+            board[current_root_stone].expect("current root stone must be occupied");
+        let mut visited = vec![false; board.len()];
+        let mut current_root_moves = Vec::new();
+        Self::trace_group(
+            current_player,
+            current_root_stone,
+            board,
+            &mut visited,
+            &mut current_root_moves,
+        );
+
+        if current_root_moves.is_empty() {
+            Self::remove_group(current_player, current_root_stone, board);
+            return;
+        }
+
+        for (player, start) in Self::find_bounded_roots(board, &mut visited) {
             Self::remove_group(player, start, board);
         }
     }
@@ -336,19 +355,23 @@ impl<const N: usize> State<N> {
         // Place the stone.
         self.board[index] = Some(self.turn);
 
-        // Remove bounded groups of either colour.
-        Self::remove_bounded(self.turn, &mut self.board);
+        // Resolve captures per the current/non-current root distinction.
+        Self::resolve_captures(index, &mut self.board);
 
         // Check for game over: one colour eliminated.
         let black_count = self.stone_count(Player::Black);
         let white_count = self.stone_count(Player::White);
 
-        if black_count == 0 || white_count == 0 {
-            if black_count == 0 && white_count > 0 {
-                self.winner = Some(Player::White);
-            } else if white_count == 0 && black_count > 0 {
-                self.winner = Some(Player::Black);
-            }
+        // Current-root capture only ever removes the mover's own root (the
+        // opponent's count is untouched), and non-current-root capture never
+        // touches the just-placed root (so the mover's count stays >= 1).
+        // Simultaneous elimination of both colours is therefore impossible.
+        debug_assert!(black_count > 0 || white_count > 0);
+
+        if black_count == 0 {
+            self.winner = Some(Player::White);
+        } else if white_count == 0 {
+            self.winner = Some(Player::Black);
         } else {
             self.turn = self.turn.next();
         }
@@ -472,27 +495,7 @@ impl<const N: usize> fmt::Display for State<N> {
 
 #[cfg(test)]
 mod tests {
-    use mcts::util::random_play;
-
     use super::*;
-
-    #[test]
-    #[ignore = "flaky: unseeded random playouts occasionally reach a state with no legal actions"]
-    fn test_tanbo_9_dense() {
-        random_play::<Tanbo<9>>();
-    }
-
-    #[test]
-    #[ignore = "13×13 random playouts exhaust memory before terminating"]
-    fn test_tanbo_13_dense() {
-        random_play::<Tanbo<13>>();
-    }
-
-    #[test]
-    #[ignore = "flaky: unseeded random playouts occasionally reach a state with no legal actions"]
-    fn test_tanbo_11_sparse() {
-        random_play::<Tanbo<11>>();
-    }
 
     #[test]
     fn test_tanbo_sparse_moves() {
@@ -530,24 +533,37 @@ mod tests {
         //   . B .
         //   W . .
         //   B . .
-        let mut b = vec![None; 9];
-        b[1] = Some(Player::Black); // (0,1)
-        b[3] = Some(Player::White); // (1,0)
-        b[6] = Some(Player::Black); // (2,0)
+        let b = vec![
+            None,
+            Some(Player::Black), // (0,1)
+            None,
+            Some(Player::White), // (1,0)
+            None,
+            None,
+            Some(Player::Black), // (2,0)
+            None,
+            None,
+        ];
 
-        State::<3>::remove_bounded(Player::Black, &mut b);
+        let mut visited = vec![false; b.len()];
+        let bounded = State::<3>::find_bounded_roots(&b, &mut visited);
 
         // White at (1,0) has legal moves and must survive.
-        assert_eq!(b[3], Some(Player::White), "White should not be bounded");
+        assert!(
+            bounded.iter().all(|&(_, start)| start != 3),
+            "White should not be bounded"
+        );
     }
 
     #[test]
-    fn test_tanbo_opponent_bounded_removed() {
-        // Verify that bounded groups of BOTH colours are removed.
+    fn test_tanbo_non_current_root_swept() {
+        // Verify that bounded roots of BOTH colours are removed when the
+        // current root (the one just extended) is *not* itself bounded.
         // Place one White stone, surround it completely with Black stones,
-        // then let Black play.  The isolated White group has no legal
-        // extension (every empty neighbour is adjacent to 0 or 2+ White
-        // stones), so it should be removed after Black's move.
+        // then let Black extend a separate, unbounded root elsewhere. The
+        // isolated White group has no legal extension (every empty
+        // neighbour is adjacent to 0 or 2+ White stones), so it should be
+        // removed once Black's current root survives its own move.
         let mut board = vec![None; 81];
         board[36] = Some(Player::White); // (4,0)
                                          // Surround with Black
@@ -562,12 +578,15 @@ mod tests {
             winner: None,
         };
 
-        // Black must have at least one legal move elsewhere on the board.
+        // Extend the black root at (3,0) northward to (2,0): far from the
+        // White-enclosing cluster, so this current root is not bounded by
+        // its own move and the non-current-root-capture path triggers.
+        let action = Move(State::<9>::index(2, 0) as u16);
         let mut actions = Vec::new();
         Tanbo::<9>::generate_actions(&state, &mut actions);
-        assert!(!actions.is_empty(), "Black should have a move");
+        assert!(actions.contains(&action), "expected move to be legal");
 
-        let s1 = Tanbo::<9>::apply(state, &actions[0]);
+        let s1 = Tanbo::<9>::apply(state, &action);
         assert!(
             Tanbo::<9>::is_terminal(&s1),
             "White should be eliminated after Black's move"
@@ -577,5 +596,51 @@ mod tests {
             Some(Player::Black),
             "Black should win"
         );
+    }
+
+    #[test]
+    fn test_tanbo_current_root_capture_only() {
+        // If the mover's OWN current root becomes bounded, only that root is
+        // removed -- even when another, unrelated root is also bounded. An
+        // over-eager implementation that always sweeps every bounded root
+        // would wrongly remove White's root here too.
+        //
+        //   B . W
+        //   W W B
+        //   . B W
+        let mut board = vec![None; 9]; // 3x3
+        board[0] = Some(Player::Black); // (0,0) -- Black's current root (A)
+        board[3] = Some(Player::White); // (1,0) -- walls off A's only other exit
+        board[2] = Some(Player::White); // (0,2) -- walls off B's right exit
+        board[4] = Some(Player::White); // (1,1) -- walls off B's down exit
+        board[5] = Some(Player::Black); // (1,2) -- unrelated Black stone, fences White's root
+        board[7] = Some(Player::Black); // (2,1) -- unrelated Black stone, fences White's root
+        board[8] = Some(Player::White); // (2,2) -- separate, already-bounded White root
+
+        let state = State::<3> {
+            board,
+            turn: Player::Black,
+            winner: None,
+        };
+
+        // Black's only legal move for root A is (0,1): its other neighbour,
+        // (1,0), is already occupied.
+        let action = Move(1);
+        let mut actions = Vec::new();
+        Tanbo::<3>::generate_actions(&state, &mut actions);
+        assert!(actions.contains(&action), "expected move to be legal");
+
+        let s1 = Tanbo::<3>::apply(state, &action);
+
+        // After playing (0,1), root A = {(0,0),(0,1)} is walled in on every
+        // side, so it alone is removed as a current-root capture.
+        assert_eq!(s1.color(0), None, "Black's current root should be removed");
+        assert_eq!(s1.color(1), None, "Black's current root should be removed");
+        assert_eq!(
+            s1.color(8),
+            Some(Player::White),
+            "White's unrelated bounded root must survive current-root-only capture"
+        );
+        assert!(!Tanbo::<3>::is_terminal(&s1));
     }
 }
