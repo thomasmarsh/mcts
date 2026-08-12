@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use game_atarigo::{AtariGo, Move, Player, State};
-use game_core::bitboard::BitBoard;
+use game_core::bigbitboard::BigBitBoard;
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
@@ -15,18 +15,23 @@ use mcts::strategies::Search;
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
 
+/// Board size served by this binary. AtariGo's `Game` impl supports any N
+/// (see `game_atarigo`'s tests, which also cover 9x9), but each concrete
+/// size is a distinct monomorphization, so the CLI/host adapter -- like
+/// Tanbo's -- serves one fixed size rather than a runtime-selectable one.
+const N: usize = 9;
+const WORDS: usize = 2;
+
 #[derive(Serialize, Deserialize)]
 struct WireState {
-    black: String,
-    white: String,
+    cells: Vec<Option<String>>,
     turn: String,
     winner: bool,
 }
 
 #[derive(Serialize)]
 struct GameView {
-    black: String,
-    white: String,
+    cells: Vec<Option<String>>,
     turn: String,
     winner: Option<String>,
     terminal: bool,
@@ -46,32 +51,49 @@ fn parse_player(name: &str) -> Player {
     }
 }
 
-fn state_to_value(s: &State<8>) -> Value {
+fn color_at(s: &State<N, WORDS>, index: usize) -> Option<Player> {
+    if s.black().get(index) {
+        Some(Player::Black)
+    } else if s.white().get(index) {
+        Some(Player::White)
+    } else {
+        None
+    }
+}
+
+fn state_to_value(s: &State<N, WORDS>) -> Value {
     serde_json::to_value(WireState {
-        black: format!("{:016x}", s.black().bits()),
-        white: format!("{:016x}", s.white().bits()),
         turn: player_name(s.turn()).into(),
         winner: s.has_winner(),
+        cells: (0..N * N)
+            .map(|i| color_at(s, i).map(|p| player_name(p).to_string()))
+            .collect(),
     })
     .expect("")
 }
-fn value_to_state(v: &Value) -> Result<State<8>, HostError> {
+fn value_to_state(v: &Value) -> Result<State<N, WORDS>, HostError> {
     let w: WireState =
         serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
-    let parse_hex = |s: &str| {
-        u64::from_str_radix(s, 16).map_err(|e| HostError::bad_request(format!("invalid hex: {e}")))
-    };
+    let mut black = BigBitBoard::EMPTY;
+    let mut white = BigBitBoard::EMPTY;
+    for (i, cell) in w.cells.iter().enumerate() {
+        match cell.as_deref() {
+            Some("Black") => black.set(i),
+            Some("White") => white.set(i),
+            _ => {}
+        }
+    }
     Ok(State {
-        black: BitBoard::new(parse_hex(&w.black)?),
-        white: BitBoard::new(parse_hex(&w.white)?),
+        black,
+        white,
         turn: parse_player(&w.turn),
         winner: w.winner,
     })
 }
 
-fn build_easy() -> Box<dyn Search<G = AtariGo<8>>> {
+fn build_easy() -> Box<dyn Search<G = AtariGo<N, WORDS>>> {
     Box::new(
-        TreeSearch::<AtariGo<8>, strategy::Ucb1>::new().config(
+        TreeSearch::<AtariGo<N, WORDS>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .name("atarigo/easy")
                 .expand_threshold(1)
@@ -80,9 +102,9 @@ fn build_easy() -> Box<dyn Search<G = AtariGo<8>>> {
         ),
     )
 }
-fn build_strong() -> Box<dyn Search<G = AtariGo<8>>> {
+fn build_strong() -> Box<dyn Search<G = AtariGo<N, WORDS>>> {
     Box::new(
-        TreeSearch::<AtariGo<8>, strategy::Ucb1>::new().config(
+        TreeSearch::<AtariGo<N, WORDS>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .name("atarigo/strong")
                 .expand_threshold(0)
@@ -105,7 +127,7 @@ const PRESETS: &[PresetEntry] = &[
 ];
 struct PresetEntry {
     id: &'static str,
-    build: fn() -> Box<dyn Search<G = AtariGo<8>>>,
+    build: fn() -> Box<dyn Search<G = AtariGo<N, WORDS>>>,
 }
 
 struct AtarigoAdapter;
@@ -129,8 +151,8 @@ impl GameAdapter for AtarigoAdapter {
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let s = value_to_state(state)?;
         let mut mv = Vec::new();
-        if !AtariGo::<8>::is_terminal(&s) {
-            AtariGo::<8>::generate_actions(&s, &mut mv);
+        if !AtariGo::<N, WORDS>::is_terminal(&s) {
+            AtariGo::<N, WORDS>::generate_actions(&s, &mut mv);
         }
         Ok(mv
             .into_iter()
@@ -139,27 +161,28 @@ impl GameAdapter for AtarigoAdapter {
     }
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let m: Move = serde_json::from_value(mv.clone())
+        let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
             .map_err(|e| HostError::bad_request(e.to_string()))?;
-        if AtariGo::<8>::is_terminal(&s) {
+        if AtariGo::<N, WORDS>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut legal = Vec::new();
-        AtariGo::<8>::generate_actions(&s, &mut legal);
+        AtariGo::<N, WORDS>::generate_actions(&s, &mut legal);
         if !legal.contains(&m) {
             return Err(HostError::bad_request("illegal move"));
         }
-        Ok(state_to_value(&AtariGo::<8>::apply(s, &m)))
+        Ok(state_to_value(&AtariGo::<N, WORDS>::apply(s, &m)))
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let winner = AtariGo::<8>::winner(&s);
+        let winner = AtariGo::<N, WORDS>::winner(&s);
         serde_json::to_value(GameView {
-            black: format!("{:016x}", s.black().bits()),
-            white: format!("{:016x}", s.white().bits()),
             turn: player_name(s.turn()).into(),
+            cells: (0..N * N)
+                .map(|i| color_at(&s, i).map(|p| player_name(p).to_string()))
+                .collect(),
             winner: winner.map(|p| player_name(p).to_string()),
-            terminal: AtariGo::<8>::is_terminal(&s),
+            terminal: AtariGo::<N, WORDS>::is_terminal(&s),
         })
         .map_err(|e| HostError::internal(e.to_string()))
     }
@@ -179,12 +202,12 @@ impl GameAdapter for AtarigoAdapter {
             .iter()
             .find(|p| p.id == preset)
             .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if AtariGo::<8>::is_terminal(&s) {
+        if AtariGo::<N, WORDS>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut ai = (spec.build)();
         let action = ai.choose_action(&s);
-        let next = AtariGo::<8>::apply(s, &action);
+        let next = AtariGo::<N, WORDS>::apply(s, &action);
         Ok(AiMoveResult {
             mv: serde_json::to_value(action).unwrap(),
             state: state_to_value(&next),
@@ -196,7 +219,7 @@ impl GameAdapter for AtarigoAdapter {
             .iter()
             .find(|p| p.id == preset)
             .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if AtariGo::<8>::is_terminal(&s) {
+        if AtariGo::<N, WORDS>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut ai = (spec.build)();
@@ -252,14 +275,14 @@ impl GameAdapter for AtarigoAdapter {
             // played -- mirrors how a bad candidate `params` is already
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<AtariGo<8>>(&cfg, baseline_seed, false)?;
+            mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false)?;
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 false,
                 move || {
-                    mcts_tune::build_search::<AtariGo<8>>(&cfg, baseline_seed, false)
+                    mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false)
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
