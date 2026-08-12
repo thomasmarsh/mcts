@@ -118,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--game-config",
+        type=str,
+        default=None,
+        metavar="JSON",
+        help=(
+            "Game-setup config (e.g. Druid's board size) pinning every "
+            "trial in this run to a non-default game config instead of "
+            "the game binary's own default. Forwarded verbatim as `tune "
+            "eval --game-config <json>` on every trial."
+        ),
+    )
+    p.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -266,6 +278,10 @@ def main() -> None:
     cfg.target.baseline_configs.update(baseline_configs)
     if baseline_configs:
         logger.info("Extra baseline instances: %s", list(baseline_configs))
+
+    if args.game_config:
+        cfg.target.game_config = json.loads(args.game_config)
+        logger.info("Game config: %s", cfg.target.game_config)
 
     smac = build_optimizer(
         cfg,

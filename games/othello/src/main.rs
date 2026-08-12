@@ -264,10 +264,10 @@ impl GameAdapter for OthAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info(
-            &["strong"],
-            TUNE_EVAL_ROUNDS,
-        ))
+        Some(TunerInfo {
+            game_config: self.default_config(),
+            ..mcts_tune::strategy_tuner_info(&["strong"], TUNE_EVAL_ROUNDS)
+        })
     }
 
     fn tune_eval(
@@ -277,6 +277,7 @@ impl GameAdapter for OthAdapter {
         seed: Option<u64>,
         _baseline: Option<String>,
         baseline_config: Option<Value>,
+        _game_config: Option<Value>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Othello has one, so merging transposed nodes during
@@ -288,12 +289,26 @@ impl GameAdapter for OthAdapter {
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
             mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true)?;
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, move || {
-                mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true)
-                    .expect("baseline_config already validated above")
-            })?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                true,
+                move || {
+                    mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true)
+                        .expect("baseline_config already validated above")
+                },
+                Default::default(),
+            )?
         } else {
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, build_strong)?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                true,
+                build_strong,
+                Default::default(),
+            )?
         };
         Ok(serde_json::json!({
             "cost": outcome.cost,
@@ -327,7 +342,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = OthAdapter
-            .tune_eval(params, 1, Some(0), None, None)
+            .tune_eval(params, 1, Some(0), None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

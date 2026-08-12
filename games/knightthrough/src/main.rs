@@ -248,10 +248,10 @@ impl GameAdapter for KtAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info(
-            &["strong"],
-            TUNE_EVAL_ROUNDS,
-        ))
+        Some(TunerInfo {
+            game_config: self.default_config(),
+            ..mcts_tune::strategy_tuner_info(&["strong"], TUNE_EVAL_ROUNDS)
+        })
     }
 
     fn tune_eval(
@@ -261,6 +261,7 @@ impl GameAdapter for KtAdapter {
         seed: Option<u64>,
         _baseline: Option<String>,
         baseline_config: Option<Value>,
+        _game_config: Option<Value>,
     ) -> Result<Value, HostError> {
         // Knightthrough's `Game::zobrist_hash` is the default constant `0`,
         // so transpositions must stay off -- see `mcts-tune`'s
@@ -272,12 +273,26 @@ impl GameAdapter for KtAdapter {
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
             mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)?;
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, false, move || {
-                mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)
-                    .expect("baseline_config already validated above")
-            })?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                false,
+                move || {
+                    mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)
+                        .expect("baseline_config already validated above")
+                },
+                Default::default(),
+            )?
         } else {
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, false, build_strong)?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                false,
+                build_strong,
+                Default::default(),
+            )?
         };
         Ok(serde_json::json!({
             "cost": outcome.cost,
@@ -311,7 +326,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = KtAdapter
-            .tune_eval(params, 1, Some(0), None, None)
+            .tune_eval(params, 1, Some(0), None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

@@ -473,12 +473,21 @@ pub struct TuneEvalOutcome {
 /// enabling transpositions against it merges every node in the tree into
 /// one, silently corrupting the search rather than erroring. Pass `true`
 /// only for games that have actually implemented `zobrist_hash`.
+///
+/// `initial_state` is the board every game in this call starts from --
+/// almost every caller passes `G::S::default()` (`Game::S` requires
+/// `Default`), matching this function's behavior before `initial_state`
+/// existed. A game with a real runtime-configurable setup (e.g. Druid's
+/// board size) builds one from its own `tune_eval`'s `game_config` argument
+/// instead; every other game ignores that argument entirely, since its
+/// board is fixed at compile time regardless.
 pub fn strategy_tune_eval<G: Game + 'static>(
     params: &Value,
     rounds: u32,
     seed: Option<u64>,
     use_transpositions: bool,
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
+    initial_state: G::S,
 ) -> Result<TuneEvalOutcome, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
@@ -489,7 +498,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
         let mut baseline = baseline_build();
 
-        let (c, b, d) = play_one(candidate.as_mut(), baseline.as_mut());
+        let (c, b, d) = play_one(candidate.as_mut(), baseline.as_mut(), initial_state.clone());
         wins += c;
         losses += b;
         draws += d;
@@ -497,7 +506,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         // Swap move order so the candidate plays second half the time.
         let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
         let mut baseline = baseline_build();
-        let (b, c, d) = play_one(baseline.as_mut(), candidate.as_mut());
+        let (b, c, d) = play_one(baseline.as_mut(), candidate.as_mut(), initial_state.clone());
         wins += c;
         losses += b;
         draws += d;
@@ -535,8 +544,9 @@ fn cost_from_losses(losses: u32, rounds: u32) -> f64 {
 fn play_one<G: Game>(
     first: &mut dyn Search<G = G>,
     second: &mut dyn Search<G = G>,
+    initial_state: G::S,
 ) -> (u32, u32, u32) {
-    let mut state = <G as Game>::S::default();
+    let mut state = initial_state;
     while !G::is_terminal(&state) {
         let mover = G::player_to_move(&state).to_index();
         let action = if mover == 0 {
@@ -563,10 +573,17 @@ fn play_one<G: Game>(
 /// `strategy_tune_eval` `baseline_build` argument for -- most games report
 /// exactly one entry; a game with a genuine second, harder preset can list
 /// it as a second instance for SMAC3's multi-instance evaluation.
+///
+/// `game_config` always comes back `{}` here -- this function only knows
+/// the strategy search space, not any per-game setup axis (that's
+/// `GameAdapter::default_config()`'s job). A game with a real one overrides
+/// the field on the returned value via struct-update syntax; see
+/// `GameAdapter::tuner()` on e.g. `games/druid/src/main.rs`.
 pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
     TunerInfo {
         id: "strategy".into(),
         baselines: baselines.iter().map(|s| s.to_string()).collect(),
+        game_config: json!({}),
         eval_rounds,
         parameters: vec![
             param(
@@ -729,8 +746,15 @@ mod tests {
         // played (no real MCTS search runs in this test).
         let mut params = rave_params();
         params.as_object_mut().unwrap().remove("rave");
-        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-            .expect_err("missing `rave` must be rejected");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("missing `rave` must be rejected");
         assert!(err.message.contains("rave"));
     }
 
@@ -738,8 +762,15 @@ mod tests {
     fn test_tune_eval_rejects_unknown_schedule() {
         let mut params = rave_params();
         params["schedule"] = json!("not_a_real_schedule");
-        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-            .expect_err("unknown schedule must be rejected");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("unknown schedule must be rejected");
         assert!(err.message.contains("schedule"));
     }
 
@@ -747,8 +778,15 @@ mod tests {
     fn test_tune_eval_rejects_unknown_final_action() {
         let mut params = rave_params();
         params["final_action"] = json!("not_a_real_final_action");
-        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-            .expect_err("unknown final_action must be rejected");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("unknown final_action must be rejected");
         assert!(err.message.contains("final_action"));
     }
 
@@ -756,8 +794,15 @@ mod tests {
     fn test_tune_eval_rejects_unknown_family() {
         let mut params = rave_params();
         params["family"] = json!("not_a_real_family");
-        let err = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-            .expect_err("unknown family must be rejected");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("unknown family must be rejected");
         assert!(err.message.contains("family"));
     }
 
@@ -768,13 +813,20 @@ mod tests {
     /// already covered above -- this only exercises dispatch.
     fn assert_family_round_trips(mut params: Value) {
         params["q_init"] = json!("Infinity");
-        let outcome = strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "family {:?} should round-trip: {}",
-                    params["family"], e.message
-                )
-            });
+        let outcome = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "family {:?} should round-trip: {}",
+                params["family"], e.message
+            )
+        });
         assert!(outcome.wins + outcome.losses + outcome.draws == 2);
     }
 
@@ -886,10 +938,17 @@ mod tests {
         let baseline_params = json!({
             "family": "ucb1", "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
         });
-        let outcome = strategy_tune_eval::<Nim>(&rave_params(), 1, Some(0), false, || {
-            build_search::<Nim>(&baseline_params, 0, false)
-                .expect("baseline_params is a valid ucb1 config")
-        })
+        let outcome = strategy_tune_eval::<Nim>(
+            &rave_params(),
+            1,
+            Some(0),
+            false,
+            || {
+                build_search::<Nim>(&baseline_params, 0, false)
+                    .expect("baseline_params is a valid ucb1 config")
+            },
+            <Nim as Game>::S::default(),
+        )
         .expect("candidate vs config-built baseline should round-trip");
         assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
     }

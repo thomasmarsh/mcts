@@ -1496,6 +1496,19 @@ fn build_command(
                         cmd.push(format!("{id}={raw_config}"));
                     }
                 }
+
+                // Game-setup config (e.g. Druid's board size) pinning every
+                // trial in this run to a non-default `GameAdapter::
+                // default_config()` -- see `game_host::GameAdapter::
+                // tune_eval`'s `game_config` parameter. Absent or explicit
+                // `null` both mean "use the game's own default", so only a
+                // real object is forwarded.
+                if let Some(game_config) = config.get("game_config") {
+                    if !game_config.is_null() {
+                        cmd.push("--game-config".into());
+                        cmd.push(game_config.to_string());
+                    }
+                }
             }
 
             Ok(cmd)
@@ -2241,6 +2254,37 @@ mod tests {
     fn test_build_command_smac3_with_no_config_is_just_game() {
         let cmd = build_command("smac3", "druid", &None).unwrap();
         assert_eq!(cmd[1..], vec!["smac3", "--game", "druid"]);
+    }
+
+    #[test]
+    fn test_build_command_smac3_includes_game_config() {
+        let cmd = build_command(
+            "smac3",
+            "druid",
+            &Some(json!({
+                "game_config": {"size": {"w": 9, "h": 9}},
+            })),
+        )
+        .unwrap();
+
+        let idx = cmd
+            .iter()
+            .position(|a| a == "--game-config")
+            .expect("--game-config flag present");
+        assert_eq!(cmd[idx + 1], r#"{"size":{"h":9,"w":9}}"#);
+    }
+
+    #[test]
+    fn test_build_command_smac3_omits_null_game_config() {
+        let cmd = build_command(
+            "smac3",
+            "druid",
+            &Some(json!({
+                "game_config": null,
+            })),
+        )
+        .unwrap();
+        assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
 
     #[test]

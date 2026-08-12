@@ -199,6 +199,11 @@ export interface TunerInfo {
   eval_rounds: number;
   parameters: TunerParameter[];
   conditions: TunerCondition[];
+  /** The game's own `default_config()` -- a game-setup axis (e.g. Druid's
+   * board size) SMAC3 never searches over, unlike `parameters`. `{}` means
+   * the game's board is fixed at compile time and there's nothing to
+   * configure here. */
+  game_config: unknown;
 }
 
 /** `GET /api/bench/smac3/kinds` element — one tunable game. */

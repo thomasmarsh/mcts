@@ -78,6 +78,9 @@ def make_target(cfg: SearchConfig):
             else:
                 cmd += ["--baseline", instance]
 
+        if cfg.target.game_config is not None:
+            cmd += ["--game-config", json.dumps(cfg.target.game_config)]
+
         logger.debug("Running: %s", " ".join(cmd))
 
         try:

@@ -140,6 +140,54 @@ describe("LaunchForm / smac3", () => {
     expect(overridesWithWorkers).toContain("optimizer.n_workers=4");
   });
 
+  it("hides the Game config field for a game with an empty game_config", () => {
+    const { store } = createTestStore();
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    // Auto-selected game is traffic-lights (game_config: {}).
+    expect(screen.queryByLabelText("Game config")).not.toBeInTheDocument();
+  });
+
+  it("shows a pre-filled Game config field for a game with a real game_config, and includes it at launch", () => {
+    const seen: { kind: string; game: string; config?: unknown }[] = [];
+    const { store } = createTestStore({
+      launchRun: (kind, game, config) => {
+        seen.push({ kind, game, config });
+        return createMockBenchEnv().launchRun(kind, game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
+
+    const field = screen.getByLabelText("Game config") as HTMLTextAreaElement;
+    expect(JSON.parse(field.value)).toEqual({ size: { w: 5, h: 5 } });
+
+    fireEvent.input(field, { target: { value: '{"size":{"w":9,"h":9}}' } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    expect(seen).toHaveLength(1);
+    expect((seen[0]!.config as { game_config: unknown }).game_config).toEqual({
+      size: { w: 9, h: 9 },
+    });
+  });
+
+  it("disables Launch and shows an error when Game config contains invalid JSON", () => {
+    const { store } = createTestStore();
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
+
+    const field = screen.getByLabelText("Game config") as HTMLTextAreaElement;
+    fireEvent.input(field, { target: { value: "not json" } });
+
+    const launchBtn = screen.getByText("Launch") as HTMLButtonElement;
+    expect(launchBtn.disabled).toBe(true);
+  });
+
   it("falls back to the round_robin games list for other kinds, unaffected by smac3Kinds", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);

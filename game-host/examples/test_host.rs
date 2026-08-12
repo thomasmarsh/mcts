@@ -164,6 +164,7 @@ impl GameAdapter for TestHost {
                 spec: serde_json::json!({"type": "float", "bounds": [0, 3], "default": 1.4}),
             }],
             conditions: vec![],
+            game_config: serde_json::json!({}),
         })
     }
 }

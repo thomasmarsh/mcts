@@ -181,6 +181,14 @@ pub struct TunerInfo {
     pub eval_rounds: u32,
     pub parameters: Vec<TunerParameter>,
     pub conditions: Vec<TunerCondition>,
+    /// The game's own `default_config()` -- a game-setup axis (e.g. Druid's
+    /// board size) that's separate from `parameters` (the strategy search
+    /// space) entirely: SMAC3 never searches over it, `tune_eval`'s
+    /// `game_config` argument just pins every trial in a run to it. `{}` for
+    /// every game whose board is fixed at compile time (everything but
+    /// Druid today) -- a caller should treat that as "nothing to configure",
+    /// same as `default_config()` itself already means for `new_state`.
+    pub game_config: Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +246,12 @@ pub trait GameAdapter: Send + Sync {
     /// `Some` before invoking this method. CLI-only (`tune eval`) -- never
     /// dispatched over the JSONL loop, since a full multi-game match is a
     /// batch job, not a per-move request.
+    ///
+    /// `game_config` pins every game in this call to a non-default game
+    /// setup (same schema as `new_state`'s `config` argument, e.g. Druid's
+    /// `{"size": {...}}`), falling back to `default_config()`'s value when
+    /// `None`. A game whose board is fixed at compile time (`default_config`
+    /// returns `{}`) has nothing to vary here and ignores this argument.
     #[allow(unused_variables)]
     fn tune_eval(
         &self,
@@ -246,6 +260,7 @@ pub trait GameAdapter: Send + Sync {
         seed: Option<u64>,
         baseline: Option<String>,
         baseline_config: Option<Value>,
+        game_config: Option<Value>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
@@ -412,9 +427,9 @@ where
 }
 
 /// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id> |
-/// --baseline-config <json>]` from the remaining CLI args, calls
-/// [`GameAdapter::tune_eval`], and prints its JSON result verbatim to
-/// `writer`. Returns the process exit code. `--baseline` and
+/// --baseline-config <json>] [--game-config <json>]` from the remaining CLI
+/// args, calls [`GameAdapter::tune_eval`], and prints its JSON result
+/// verbatim to `writer`. Returns the process exit code. `--baseline` and
 /// `--baseline-config` are mutually exclusive -- supplying both is rejected
 /// before the adapter is ever called.
 fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
@@ -429,6 +444,7 @@ where
     let mut seed: Option<u64> = None;
     let mut baseline: Option<String> = None;
     let mut baseline_config: Option<String> = None;
+    let mut game_config: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--config" => config = args.next(),
@@ -436,6 +452,7 @@ where
             "--seed" => seed = args.next().and_then(|s| s.parse().ok()),
             "--baseline" => baseline = args.next(),
             "--baseline-config" => baseline_config = args.next(),
+            "--game-config" => game_config = args.next(),
             _ => {}
         }
     }
@@ -457,7 +474,13 @@ where
                 })
             })
             .transpose()?;
-        adapter.tune_eval(params, rounds, seed, baseline, baseline_config)
+        let game_config = game_config
+            .map(|s| {
+                serde_json::from_str(&s)
+                    .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
+            })
+            .transpose()?;
+        adapter.tune_eval(params, rounds, seed, baseline, baseline_config, game_config)
     })();
 
     match result {
@@ -1033,6 +1056,7 @@ mod tests {
                     spec: serde_json::json!({"type": "float", "bounds": [0, 3], "default": 1.4}),
                 }],
                 conditions: vec![],
+                game_config: serde_json::json!({}),
             })
         }
 
@@ -1043,6 +1067,7 @@ mod tests {
             seed: Option<u64>,
             baseline: Option<String>,
             baseline_config: Option<Value>,
+            game_config: Option<Value>,
         ) -> Result<Value, HostError> {
             Ok(serde_json::json!({
                 "cost": 0.25,
@@ -1051,6 +1076,7 @@ mod tests {
                 "seed": seed,
                 "baseline": baseline,
                 "baseline_config": baseline_config,
+                "game_config": game_config,
             }))
         }
     }

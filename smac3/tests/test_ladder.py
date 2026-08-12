@@ -104,6 +104,51 @@ def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(
     assert "--baseline" not in captured["cmd"]
 
 
+def test_train_forwards_game_config_when_set(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    game_config = {"size": {"w": 9, "h": 9}}
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(),
+        target=TargetConfig(binary=binary, rounds=4, game_config=game_config),
+    )
+    train = make_target(cfg)
+    cost = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(0.5)
+    assert "--game-config" in captured["cmd"]
+    sent = json.loads(captured["cmd"][captured["cmd"].index("--game-config") + 1])
+    assert sent == game_config
+
+
+def test_train_omits_game_config_when_unset(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    train({"family": "ucb1"}, seed=0)
+
+    assert "--game-config" not in captured["cmd"]
+
+
 def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
     import math
 
@@ -112,3 +157,12 @@ def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
 
 def test_target_config_baseline_configs_defaults_empty():
     assert TargetConfig().baseline_configs == {}
+
+
+def test_target_config_game_config_defaults_none():
+    assert TargetConfig().game_config is None
+
+
+def test_search_config_from_dict_reads_game_config_from_yaml():
+    cfg = SearchConfig._from_dict({"target": {"game_config": {"size": {"w": 7, "h": 7}}}})
+    assert cfg.target.game_config == {"size": {"w": 7, "h": 7}}

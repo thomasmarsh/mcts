@@ -8,7 +8,7 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
-import { Smac3LaunchFields } from "./Smac3LaunchFields.js";
+import { isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
 
 const SMAC3_KIND = "smac3";
 const DEFAULT_SMAC3_N_TRIALS = 100;
@@ -70,6 +70,10 @@ export const LaunchForm: Component<{
   const [smac3Deterministic, setSmac3Deterministic] = createSignal(false);
   const [smac3Seed, setSmac3Seed] = createSignal(DEFAULT_SMAC3_SEED);
   const [smac3Rounds, setSmac3Rounds] = createSignal(1);
+  // Raw JSON text for the "Game config" field -- only meaningful (and only
+  // rendered by Smac3LaunchFields) when the selected game's tuner reports a
+  // non-empty `game_config`.
+  const [smac3GameConfig, setSmac3GameConfig] = createSignal("");
 
   // Derived from kinds metadata.
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
@@ -88,6 +92,13 @@ export const LaunchForm: Component<{
 
   const busy = createMemo(() => launchStatus() === "pending");
 
+  // Pre-filled "Game config" textarea text for a tuner -- "" when the game
+  // has nothing configurable, matching how the field itself is hidden then.
+  function gameConfigTextFor(tuner: { game_config: unknown } | undefined): string {
+    if (!tuner || isEmptyGameConfig(tuner.game_config)) return "";
+    return JSON.stringify(tuner.game_config, null, 2);
+  }
+
   // Reset game and strategies when kind changes.
   function onKindChange(kind: string): void {
     setSelectedKind(kind);
@@ -100,6 +111,7 @@ export const LaunchForm: Component<{
         const first = smac3Games()[0]!;
         setSelectedGame(first.game);
         setSmac3Rounds(first.tuner.eval_rounds);
+        setSmac3GameConfig(gameConfigTextFor(first.tuner));
       }
       return;
     }
@@ -116,11 +128,13 @@ export const LaunchForm: Component<{
     setSelectedStrategies(new Set<string>());
   }
 
-  // Reset rounds/trial to the newly selected game's tuner default.
+  // Reset rounds/trial and the game-config field to the newly selected
+  // game's tuner defaults.
   function onSmac3GameChange(game: string): void {
     setSelectedGame(game);
     const tuner = smac3Games().find((g) => g.game === game)?.tuner;
     if (tuner) setSmac3Rounds(tuner.eval_rounds);
+    setSmac3GameConfig(gameConfigTextFor(tuner));
   }
 
   function toggleStrategy(id: string): void {
@@ -132,15 +146,29 @@ export const LaunchForm: Component<{
     });
   }
 
+  // `null` when the field is hidden (nothing to configure) or valid; an
+  // error message when shown and its contents don't parse as JSON.
+  const smac3GameConfigError = createMemo(() => {
+    const tuner = currentSmac3Tuner();
+    if (!tuner || isEmptyGameConfig(tuner.game_config)) return null;
+    try {
+      JSON.parse(smac3GameConfig());
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : "invalid JSON";
+    }
+  });
+
   function canLaunch(): boolean {
     if (busy() || selectedKind() === "" || selectedGame() === "") return false;
-    if (isSmac3()) return smac3NTrials() >= 1;
+    if (isSmac3()) return smac3NTrials() >= 1 && smac3GameConfigError() === null;
     return selectedStrategies().size >= 2 && rounds() >= 1;
   }
 
   function onSubmit(e: Event): void {
     e.preventDefault();
     if (!canLaunch()) return;
+    const tuner = currentSmac3Tuner();
     const config = isSmac3()
       ? {
           overrides: buildSmac3Overrides({
@@ -149,8 +177,11 @@ export const LaunchForm: Component<{
             deterministic: smac3Deterministic(),
             seed: smac3Seed(),
             rounds: smac3Rounds(),
-            defaultRounds: currentSmac3Tuner()?.eval_rounds ?? null,
+            defaultRounds: tuner?.eval_rounds ?? null,
           }),
+          ...(tuner && !isEmptyGameConfig(tuner.game_config)
+            ? { game_config: JSON.parse(smac3GameConfig()) }
+            : {}),
         }
       : {
           strategies: Array.from(selectedStrategies()),
@@ -269,6 +300,9 @@ export const LaunchForm: Component<{
             onSeedChange={setSmac3Seed}
             rounds={smac3Rounds()}
             onRoundsChange={setSmac3Rounds}
+            gameConfig={smac3GameConfig()}
+            onGameConfigChange={setSmac3GameConfig}
+            gameConfigError={smac3GameConfigError()}
             disabled={busy()}
           />
         </Show>

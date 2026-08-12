@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn tune_describe_one_parses_tuner_info_on_success() {
-        let json = r#"{"id":"rave","baselines":["strong"],"eval_rounds":20,"parameters":[],"conditions":[]}"#;
+        let json = r#"{"id":"rave","baselines":["strong"],"eval_rounds":20,"parameters":[],"conditions":[],"game_config":{}}"#;
         let path = fake_binary(&format!("echo '{json}'; exit 0"));
 
         let info = tune_describe_one(&path).unwrap().unwrap();

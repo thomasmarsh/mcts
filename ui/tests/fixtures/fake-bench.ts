@@ -122,6 +122,24 @@ export const fakeSmac3Kinds: Smac3GameInfo[] = [
         { if: { schedule: "threshold" }, then: ["rave"] },
         { if: { rave_ucb: ["ucb1", "tuned"] }, then: ["c"] },
       ],
+      // No game-setup config -- traffic-lights' board is fixed at compile
+      // time, so the "Game config" field must stay hidden for this game.
+      game_config: {},
+    },
+  },
+  // A minimal second entry standing in for Druid: a genuinely non-empty
+  // `game_config` is what makes the "Game config" field render at all.
+  {
+    game: "druid",
+    tuner: {
+      id: "strategy",
+      baselines: ["strong", "master"],
+      eval_rounds: 20,
+      parameters: [
+        { name: "family", type: "categorical", choices: ["ucb1", "rave"], default: "rave" },
+      ],
+      conditions: [],
+      game_config: { size: { w: 5, h: 5 } },
     },
   },
 ];

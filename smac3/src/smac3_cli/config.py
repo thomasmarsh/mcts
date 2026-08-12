@@ -54,6 +54,13 @@ class TargetConfig:
     # `--baseline-config <json>` instead of `--baseline <id>`. Empty unless
     # a caller opts in.
     baseline_configs: dict[str, dict] = field(default_factory=dict)
+    # Game-setup config (e.g. Druid's board size) pinning every trial in
+    # this run to a non-default `GameAdapter::default_config()` -- an axis
+    # SMAC3 never searches over, unlike `parameters`/`conditions` (the
+    # strategy search space). `None` means "use the game binary's own
+    # default"; `train()` only forwards `--game-config` when this is set.
+    # Settable via `--game-config <json>` or this same key in YAML.
+    game_config: dict | None = None
 
 
 @dataclass
@@ -195,6 +202,7 @@ class SearchConfig:
                 binary=Path(tgt.get("binary", "target/release/game-traffic-lights")),
                 rounds=tgt.get("rounds", 20),
                 baselines=list(tgt.get("baselines", [])),
+                game_config=tgt.get("game_config"),
             ),
             parameters=params,
             conditions=conds,

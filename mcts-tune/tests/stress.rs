@@ -5,6 +5,7 @@
 //! -p mcts-tune --test stress`.
 
 use game_nim::Nim;
+use mcts::game::Game;
 use mcts::strategies::mcts::{strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
 use serde_json::json;
@@ -28,7 +29,14 @@ fn test_family_meta_mcts_round_trips() {
     let params = json!({
         "family": "meta_mcts", "c": 1.4, "q_init": "Infinity",
     });
-    let outcome = mcts_tune::strategy_tune_eval::<Nim>(&params, 1, Some(0), false, baseline)
-        .expect("meta_mcts should round-trip with a minimal config");
+    let outcome = mcts_tune::strategy_tune_eval::<Nim>(
+        &params,
+        1,
+        Some(0),
+        false,
+        baseline,
+        <Nim as Game>::S::default(),
+    )
+    .expect("meta_mcts should round-trip with a minimal config");
     assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
 }

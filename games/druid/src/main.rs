@@ -250,6 +250,30 @@ struct NewGameConfig {
     size: Size,
 }
 
+/// Builds a fresh board from a `new_state`/`tune_eval`-shaped config value,
+/// falling back to `game_druid::DEFAULT_SIZE` when `config` is `None` --
+/// shared by `new_state` (a human starting a game) and `tune_eval` (a SMAC3
+/// trial's game_config axis pinning every self-play game in the run to a
+/// non-default board), so the two paths can never validate a size
+/// differently.
+fn initial_state_from_config(config: Option<Value>) -> Result<HashedState, HostError> {
+    let size = match config {
+        Some(config) => {
+            let config: NewGameConfig = serde_json::from_value(config)
+                .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
+            config.size
+        }
+        None => game_druid::DEFAULT_SIZE,
+    };
+    if !size.is_supported() {
+        return Err(HostError::bad_request(format!(
+            "unsupported board size {}x{}",
+            size.w, size.h
+        )));
+    }
+    Ok(HashedState::new(size))
+}
+
 #[derive(Serialize)]
 struct GameView<'a> {
     size: Size,
@@ -335,15 +359,7 @@ impl GameAdapter for DruidAdapter {
     }
 
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
-        let config: NewGameConfig = serde_json::from_value(config)
-            .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
-        if !config.size.is_supported() {
-            return Err(HostError::bad_request(format!(
-                "unsupported board size {}x{}",
-                config.size.w, config.size.h
-            )));
-        }
-        Ok(state_to_value(&HashedState::new(config.size)))
+        Ok(state_to_value(&initial_state_from_config(Some(config))?))
     }
 
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
@@ -522,10 +538,10 @@ impl GameAdapter for DruidAdapter {
         // longer thinking budget -- a genuine second, harder instance a
         // candidate can still be ranked against once it's saturated 100%
         // win rate against "strong" alone.
-        Some(mcts_tune::strategy_tuner_info(
-            &["strong", "master"],
-            TUNE_EVAL_ROUNDS,
-        ))
+        Some(TunerInfo {
+            game_config: self.default_config(),
+            ..mcts_tune::strategy_tuner_info(&["strong", "master"], TUNE_EVAL_ROUNDS)
+        })
     }
 
     fn tune_eval(
@@ -535,10 +551,12 @@ impl GameAdapter for DruidAdapter {
         seed: Option<u64>,
         baseline: Option<String>,
         baseline_config: Option<Value>,
+        game_config: Option<Value>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
         // candidate's search is safe here.
+        let initial_state = initial_state_from_config(game_config)?;
         let outcome = if let Some(cfg) = baseline_config {
             let baseline_seed = seed.unwrap_or(0);
             // Fail fast on an invalid baseline config, before any games are
@@ -546,17 +564,29 @@ impl GameAdapter for DruidAdapter {
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
             mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)?;
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, move || {
-                mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)
-                    .expect("baseline_config already validated above")
-            })?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                true,
+                move || {
+                    mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)
+                        .expect("baseline_config already validated above")
+                },
+                initial_state,
+            )?
         } else {
             let baseline = baseline.as_deref().unwrap_or("strong");
             let cfg = preset_cfg(baseline)
                 .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
-            mcts_tune::strategy_tune_eval(&params, rounds, seed, true, || {
-                build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg)
-            })?
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                true,
+                || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg),
+                initial_state,
+            )?
         };
         Ok(serde_json::json!({
             "cost": outcome.cost,
@@ -590,7 +620,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None)
+            .tune_eval(params, 1, Some(0), None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -616,9 +646,56 @@ mod tests {
             "final_action": "robust_child",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, Some(baseline_config))
+            .tune_eval(params, 1, Some(0), None, Some(baseline_config), None)
             .expect("tune_eval should round-trip against a config-built opponent");
         assert!(result["cost"].as_f64().is_some());
+    }
+
+    #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts -- see tune_eval_round_trips above for why this isn't in the fast suite."]
+    #[test]
+    fn tune_eval_with_game_config_round_trips() {
+        // A non-default board size (3x3, smaller than DEFAULT_SIZE so this
+        // stays fast) must reach the self-play games `strategy_tune_eval`
+        // actually plays, not just get validated and discarded -- proven
+        // here the same way `new_state`'s own size handling is proven
+        // elsewhere in this crate (`games/druid/src/lib.rs`'s `for size in
+        // [Size { w: 3, h: 3 }, ...]` tests).
+        let params = serde_json::json!({
+            "family": "rave",
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let game_config = serde_json::json!({ "size": { "w": 3, "h": 3 } });
+        let result = DruidAdapter::default()
+            .tune_eval(params, 1, Some(0), None, None, Some(game_config))
+            .expect("tune_eval should round-trip on a non-default board size");
+        assert!(result["cost"].as_f64().is_some());
+    }
+
+    #[test]
+    fn tune_eval_rejects_unsupported_game_config_size() {
+        let params = serde_json::json!({
+            "family": "rave",
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        });
+        let game_config = serde_json::json!({ "size": { "w": 1, "h": 1 } });
+        let err = DruidAdapter::default()
+            .tune_eval(params, 1, Some(0), None, None, Some(game_config))
+            .expect_err("an unsupported board size should error before any games are played");
+        assert_eq!(err.code, 400);
     }
 
     #[test]
@@ -629,6 +706,7 @@ mod tests {
                 1,
                 Some(0),
                 Some("nonexistent".into()),
+                None,
                 None,
             )
             .expect_err("an unrecognized baseline id should error before any games are played");

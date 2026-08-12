@@ -15,7 +15,14 @@
 //     *values* themselves aren't editable here — `smac3`'s CLI `--override`
 //     only reaches dotted dataclass attributes, not the list-shaped
 //     `parameters:` search space, so there is nothing for a form field to
-//     write to.
+//     write to;
+//   - a raw-JSON "Game config" textarea, only for a game whose `tuner().
+//     game_config` isn't `{}` (today, only Druid) — a game-setup axis (e.g.
+//     board size) separate from the strategy search space above: SMAC3
+//     never searches over it, it just pins every trial in the run to it.
+//     Deliberately a generic JSON field rather than a typed per-game picker
+//     (e.g. a board-size dropdown) so a future game with its own config
+//     needs no new UI code here.
 //
 // LaunchForm owns all of this component's state (same lifted-state
 // convention as the strategy picker) and builds the `--override` argv from
@@ -23,6 +30,17 @@
 
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { Smac3GameInfo, TunerParameter } from "./index.js";
+
+/** Whether a `tuner().game_config` value means "nothing to configure" --
+ * every game but Druid reports `{}` here. */
+export function isEmptyGameConfig(gameConfig: unknown): boolean {
+  return (
+    !!gameConfig &&
+    typeof gameConfig === "object" &&
+    !Array.isArray(gameConfig) &&
+    Object.keys(gameConfig).length === 0
+  );
+}
 
 /** Render one parameter's range/choices/value as a compact string. */
 function paramRange(p: TunerParameter): string {
@@ -67,6 +85,12 @@ export const Smac3LaunchFields: Component<{
   onSeedChange: (n: number) => void;
   rounds: number;
   onRoundsChange: (n: number) => void;
+  /** Raw JSON text for the "Game config" field -- only rendered when the
+   * selected game's `tuner().game_config` isn't `{}`. */
+  gameConfig: string;
+  onGameConfigChange: (v: string) => void;
+  /** Parse error for `gameConfig`, or `null` when it's valid JSON. */
+  gameConfigError: string | null;
   disabled: boolean;
 }> = (props) => {
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
@@ -135,6 +159,22 @@ export const Smac3LaunchFields: Component<{
                 <ul id="smac3-conditions">
                   <For each={tuner().conditions}>{(c) => <li>{conditionLabel(c)}</li>}</For>
                 </ul>
+              </Show>
+
+              <Show when={!isEmptyGameConfig(tuner().game_config)}>
+                <label>
+                  Game config
+                  <textarea
+                    id="smac3-game-config"
+                    rows={4}
+                    value={props.gameConfig}
+                    onInput={(e) => props.onGameConfigChange(e.currentTarget.value)}
+                    disabled={props.disabled}
+                  />
+                </label>
+                <Show when={props.gameConfigError}>
+                  <div class="launch-error">{props.gameConfigError}</div>
+                </Show>
               </Show>
             </div>
           )}

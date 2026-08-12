@@ -500,6 +500,7 @@ describe("benchReducer / smac3Kinds", () => {
       eval_rounds: 20,
       parameters: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4 }],
       conditions: [],
+      game_config: {},
     },
   };
 
