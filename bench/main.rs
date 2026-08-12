@@ -452,9 +452,12 @@ fn cmd_ingest_once(db_path: &str) {
             let trial_count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM trials", [], |row| row.get(0))
                 .unwrap_or(0);
+            let incumbent_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM incumbents", [], |row| row.get(0))
+                .unwrap_or(0);
             println!(
-                "ingest complete: {} runs, {} match_results, {} trials",
-                run_count, mr_count, trial_count,
+                "ingest complete: {} runs, {} match_results, {} trials, {} incumbents",
+                run_count, mr_count, trial_count, incumbent_count,
             );
         }
         Err(e) => {

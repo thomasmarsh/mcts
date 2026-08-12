@@ -213,6 +213,25 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
                         ],
                     )?;
                 }
+                LogRecord::Incumbent {
+                    config,
+                    cost,
+                    extra,
+                } => {
+                    let ts = iso_timestamp();
+                    let config_json = serde_json::to_string(&config).expect("Value -> String");
+                    let extra_json = extra
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).expect("Value -> String"));
+                    conn.execute(
+                        "INSERT INTO incumbents (run_id, ts, config, cost, extra) \
+                         VALUES (?1, ?2, ?3, ?4, ?5) \
+                         ON CONFLICT (run_id) DO UPDATE SET \
+                             ts = excluded.ts, config = excluded.config, \
+                             cost = excluded.cost, extra = excluded.extra",
+                        params![run_id, ts, config_json, cost, extra_json],
+                    )?;
+                }
                 LogRecord::Heartbeat { .. } => {}
             }
         }
@@ -825,6 +844,82 @@ mod tests {
         assert!(extra.is_some());
         let parsed: serde_json::Value = serde_json::from_str(&extra.unwrap()).unwrap();
         assert_eq!(parsed["note"], "second trial");
+    }
+
+    #[test]
+    fn test_ingest_incumbent_upserts_latest() {
+        let (bench_runs, db) = {
+            let dir =
+                std::env::temp_dir().join(format!("mcts_bench_incumbent_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let bench_runs = dir.join("bench-runs");
+            fs::create_dir_all(&bench_runs).unwrap();
+
+            let run_id = "smac3-run";
+            let run_dir = bench_runs.join(run_id);
+            fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            let log_path_str = log_path.to_string_lossy().to_string();
+
+            let reg_events = vec![start_event(run_id, "smac3", "druid", 99993, &log_path_str)];
+            let mut reg_content = String::new();
+            for ev in &reg_events {
+                reg_content.push_str(&ev.to_json_line());
+                reg_content.push('\n');
+            }
+            fs::write(bench_runs.join("registry.log"), &reg_content).unwrap();
+
+            // Two incumbent records for the same run -- the intensifier
+            // found a better config partway through, so the second should
+            // overwrite the first rather than both landing as separate rows.
+            let records = vec![
+                LogRecord::Incumbent {
+                    config: serde_json::json!({"family": "ucb1", "c": 1.0}),
+                    cost: 0.5,
+                    extra: None,
+                },
+                LogRecord::Incumbent {
+                    config: serde_json::json!({"family": "rave", "c": 0.7}),
+                    cost: 0.2,
+                    extra: Some(serde_json::json!({"hash": "abc123"})),
+                },
+            ];
+            let mut log_content = String::new();
+            for rec in &records {
+                log_content.push_str(&rec.to_json_line());
+                log_content.push('\n');
+            }
+            fs::write(&log_path, &log_content).unwrap();
+
+            let db = duckdb::Connection::open_in_memory().unwrap();
+            ensure_schema(&db).unwrap();
+
+            (bench_runs, db)
+        };
+
+        ingest_once(&db, &bench_runs).unwrap();
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM incumbents", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "a run's incumbent should overwrite in place, not accumulate rows"
+        );
+
+        let (cost, config_str, extra_str): (f64, String, Option<String>) = db
+            .query_row(
+                "SELECT cost, CAST(config AS TEXT), CAST(extra AS TEXT) \
+                 FROM incumbents WHERE run_id = 'smac3-run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!((cost - 0.2).abs() < 1e-9);
+        let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
+        assert_eq!(config["family"], "rave");
+        let extra: serde_json::Value = serde_json::from_str(&extra_str.unwrap()).unwrap();
+        assert_eq!(extra["hash"], "abc123");
     }
 
     #[test]

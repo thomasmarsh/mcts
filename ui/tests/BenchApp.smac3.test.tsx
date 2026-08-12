@@ -4,7 +4,7 @@
 // against a mocked `BenchEnv` from `fixtures/fake-bench.js`, no live
 // server or browser.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
 import { createStore, Effect } from "@mcts/core";
 import {
@@ -189,6 +189,25 @@ describe("RunDetailPanel / smac3", () => {
     )!;
     expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
     expect(familyRow.textContent).toContain("rave"); // the default, shown in the Default column
+  });
+
+  it("shows the SMAC-tracked incumbent and copies its config on click", async () => {
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+
+    const { store } = createTestStore();
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+
+    // fakeSmac3RunDetail's incumbent is {config: {family: "rave", c: 0.7}, cost: 0.2}
+    // -- distinct from the "Best trial" stat, which is derived from the
+    // trial fixture rows, not this field.
+    await screen.findByText("Incumbent");
+    expect(screen.getByText("20.0%", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Copy as baseline config"));
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify({ family: "rave", c: 0.7 }));
+    await screen.findByText("Copied!");
   });
 
   it("pools trials with an identical config into one confidence-band group", async () => {

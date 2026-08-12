@@ -43,7 +43,20 @@ def _resolve_git_sha() -> str:
 
 
 class IncumbentTracker(Callback):
-    """Print each new incumbent configuration and its cost as it's found."""
+    """Emit a JSONL record each time SMAC3's tracked incumbent changes.
+
+    Sourced from ``smbo.intensifier.get_incumbent()`` rather than
+    reconstructed as ``MIN(cost)`` over completed trials -- when a run's
+    `Scenario` uses multiple baseline instances, per-trial costs aren't
+    directly comparable across instances, and only the intensifier itself
+    aggregates them into a single ranking. Each line is a
+    ``{"type": "incumbent", "config": ..., "cost": ...}`` record matching the
+    Rust ``LogRecord::Incumbent`` variant, which the ingest loop upserts into
+    the `incumbents` table (latest wins, one row per run) rather than
+    appending -- only the current incumbent is durably useful, not its
+    history. ``config`` is already in the exact shape `tune eval
+    --baseline-config` expects, so a later run can reuse it directly.
+    """
 
     def __init__(self) -> None:
         self._last_hash: str | None = None
@@ -58,7 +71,7 @@ class IncumbentTracker(Callback):
         info: TrialInfo,
         value: TrialValue,
     ) -> bool | None:
-        """Check whether the incumbent changed and print it if so."""
+        """Emit an incumbent JSONL record when the tracked incumbent changes."""
         incumbent = smbo.intensifier.get_incumbent()
         if incumbent is None:
             return None
@@ -71,6 +84,10 @@ class IncumbentTracker(Callback):
                 h,
                 cost,
                 dict(incumbent),
+            )
+            print(
+                json.dumps({"type": "incumbent", "config": dict(incumbent), "cost": cost}),
+                flush=True,
             )
             self._last_hash = h
         return None

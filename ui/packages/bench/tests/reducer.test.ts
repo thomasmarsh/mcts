@@ -59,6 +59,7 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
     exit_code: null,
     match_count: 4,
     trial_count: 0,
+    incumbent: null,
     ...overrides,
   };
 }

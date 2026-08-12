@@ -40,6 +40,13 @@ pub const CREATE_TABLES: &[&str] = &[
         extra       JSON,
         PRIMARY KEY (run_id, trial_id)
     )",
+    "CREATE TABLE IF NOT EXISTS incumbents (
+        run_id      TEXT PRIMARY KEY REFERENCES runs(run_id),
+        ts          TIMESTAMP NOT NULL,
+        config      JSON NOT NULL,
+        cost        DOUBLE NOT NULL,
+        extra       JSON
+    )",
     "CREATE TABLE IF NOT EXISTS _ingest_cursor (
         log_path    TEXT PRIMARY KEY,
         byte_offset BIGINT NOT NULL DEFAULT 0,
@@ -77,7 +84,13 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
-        for want in &["runs", "match_results", "trials", "_ingest_cursor"] {
+        for want in &[
+            "runs",
+            "match_results",
+            "trials",
+            "incumbents",
+            "_ingest_cursor",
+        ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }
     }

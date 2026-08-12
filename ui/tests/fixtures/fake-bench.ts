@@ -68,6 +68,7 @@ export const fakeRunDetail: RunDetail = {
   exit_code: 0,
   match_count: 10,
   trial_count: 0,
+  incumbent: null,
 };
 
 export const fakeRunningDetail: RunDetail = {
@@ -88,6 +89,7 @@ export const fakeSmac3RunDetail: RunDetail = {
   game: "traffic-lights",
   config: { overrides: ["optimizer.n_trials=50"] },
   trial_count: 3,
+  incumbent: { config: { family: "rave", c: 0.7 }, cost: 0.2 },
 };
 
 // Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `family` is a

@@ -17,6 +17,7 @@ export type {
   TunerInfo,
   Smac3GameInfo,
   TrialRow,
+  IncumbentInfo,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 

@@ -184,6 +184,7 @@ export const RunDetailPanel: Component<{
             trials={openRun()?.trials ?? []}
             tuner={smac3Tuner()}
             launchConfig={detail()?.config ?? null}
+            incumbent={detail()?.incumbent ?? null}
           />
         </Show>
 

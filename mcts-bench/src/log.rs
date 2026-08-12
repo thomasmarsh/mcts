@@ -39,6 +39,21 @@ pub enum LogRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         extra: Option<serde_json::Value>,
     },
+    /// The current incumbent (SMAC3's own best-so-far config, as tracked by
+    /// its intensifier) of a hyperparameter-optimization run. Emitted once
+    /// per *change* of incumbent, not once per trial -- unlike `Trial`,
+    /// only the latest one matters, so ingest overwrites rather than
+    /// appends. Deliberately sourced from the optimizer's own incumbent
+    /// tracking rather than reconstructed as `MIN(cost)` over `trials`: once
+    /// a run uses multiple baseline instances, per-trial costs aren't
+    /// directly comparable across instances, and only the intensifier
+    /// itself aggregates them correctly.
+    Incumbent {
+        config: serde_json::Value,
+        cost: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra: Option<serde_json::Value>,
+    },
     /// Periodic liveness heartbeat.
     Heartbeat { games_played: u64 },
 }

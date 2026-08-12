@@ -55,6 +55,18 @@ export interface RunDetail {
   exit_code: number | null;
   match_count: number;
   trial_count: number;
+  incumbent: IncumbentInfo | null;
+}
+
+/** A SMAC3 run's current incumbent (its own intensifier's tracked best
+ * config, not a naive lowest-cost trial -- see `LogRecord::Incumbent`'s doc
+ * comment on the Rust side for why that distinction matters once a run uses
+ * multiple baseline instances). `config` is already in the exact shape
+ * `tune eval --baseline-config` expects. `null` on `RunDetail` for a
+ * non-SMAC3 run, or one that hasn't reported an incumbent yet. */
+export interface IncumbentInfo {
+  config: Record<string, unknown>;
+  cost: number;
 }
 
 /** `GET /api/bench/runs/{run_id}/log?since=` response. `next_offset` is the

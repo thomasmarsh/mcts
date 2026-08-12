@@ -129,6 +129,21 @@ pub struct RunDetail {
     pub exit_code: Option<i64>,
     pub match_count: i64,
     pub trial_count: i64,
+    /// SMAC3's own current best config for this run (from its intensifier,
+    /// not a naive `MIN(cost)` over `trials` -- see `LogRecord::Incumbent`'s
+    /// doc comment for why that distinction matters once multiple baseline
+    /// instances are in play). `None` for a non-SMAC3 run, or a SMAC3 run
+    /// that hasn't reported one yet.
+    pub incumbent: Option<IncumbentInfo>,
+}
+
+/// A run's current incumbent, as reported by `GET /api/bench/runs/{run_id}`
+/// -- `config` is already in the exact shape `tune eval --baseline-config`
+/// expects, so an operator can copy it straight into a later run's launch.
+#[derive(Serialize)]
+pub struct IncumbentInfo {
+    pub config: Value,
+    pub cost: f64,
 }
 
 #[derive(Serialize)]
@@ -372,17 +387,29 @@ async fn get_run(
                 CAST(r.started_at AS TEXT), \
                 CAST(r.ended_at AS TEXT), \
                 r.status, r.log_path, r.exit_code, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
+                CAST(i.config AS TEXT), i.cost \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
          LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
            ON r.run_id = t.run_id \
+         LEFT JOIN incumbents i ON r.run_id = i.run_id \
          WHERE r.run_id = ?1",
         duckdb::params![&run_id],
         |row| {
             let config_str: Option<String> = row.get::<_, Option<String>>(4).ok().flatten();
             let config = config_str.and_then(|s| serde_json::from_str(&s).ok());
+            let incumbent_config_str: Option<String> =
+                row.get::<_, Option<String>>(16).ok().flatten();
+            let incumbent_cost: Option<f64> = row.get(17)?;
+            let incumbent =
+                incumbent_config_str
+                    .zip(incumbent_cost)
+                    .map(|(s, cost)| IncumbentInfo {
+                        config: serde_json::from_str(&s).unwrap_or(Value::Null),
+                        cost,
+                    });
             Ok(RunDetail {
                 run_id: row.get(0)?,
                 kind: row.get(1)?,
@@ -400,6 +427,7 @@ async fn get_run(
                 exit_code: row.get(13)?,
                 match_count: row.get(14)?,
                 trial_count: row.get(15)?,
+                incumbent,
             })
         },
     );
@@ -1521,6 +1549,27 @@ mod tests {
         assert!(run.get("config").and_then(|v| v.as_str()).is_none());
         assert!(run.get("log_path").and_then(|v| v.as_str()).is_some());
         assert_eq!(run["exit_code"], Value::Null);
+        assert_eq!(run["incumbent"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_includes_incumbent_when_present() {
+        let app = seeded_app(|conn, dir| {
+            default_seed(conn, dir);
+            conn.execute(
+                "INSERT INTO incumbents (run_id, ts, config, cost) \
+                 VALUES (?1, '2026-01-01T00:00:40Z', '{\"family\":\"rave\",\"c\":0.7}', 0.2)",
+                duckdb::params![DEFAULT_RUN_ID],
+            )
+            .unwrap();
+        })
+        .0;
+        let (status, body) = http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let run = body_json(&body);
+
+        assert_eq!(run["incumbent"]["cost"], 0.2);
+        assert_eq!(run["incumbent"]["config"]["family"], "rave");
     }
 
     #[tokio::test]

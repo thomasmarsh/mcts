@@ -23,8 +23,8 @@
 // interval on that is rendered as a whisker per chart point plus a
 // headline stat for the best trial's group.
 
-import { createMemo, For, Show, type Component } from "solid-js";
-import type { TrialRow, TunerInfo } from "./index.js";
+import { createMemo, createSignal, For, Show, type Component } from "solid-js";
+import type { IncumbentInfo, TrialRow, TunerInfo } from "./index.js";
 
 /** 95% Wilson score interval for a proportion `phat` observed over `n`
  * Bernoulli trials — better-behaved than a normal approximation near 0/1,
@@ -108,6 +108,11 @@ export const Smac3RunDetail: Component<{
   /** `RunDetail.config` (the launch request body) — only consulted for a
    * `target.rounds=N` override; see `resolveRounds`. */
   launchConfig?: unknown;
+  /** `RunDetail.incumbent` -- SMAC3's own tracked best config, distinct
+   * from the "Best trial" stat below (which is just the lowest raw `cost`
+   * among this run's trials, not aggregated across baseline instances).
+   * `null`/absent before the run reports its first incumbent. */
+  incumbent?: IncumbentInfo | null;
 }> = (props) => {
   // Trials arrive in trial_id order already (the `trials` route's
   // `ORDER BY trial_id ASC`), but sort defensively -- nothing here assumes
@@ -209,8 +214,33 @@ export const Smac3RunDetail: Component<{
     });
   });
 
+  const [copied, setCopied] = createSignal(false);
+  async function copyIncumbentConfig(): Promise<void> {
+    const incumbent = props.incumbent;
+    if (!incumbent) return;
+    await navigator.clipboard.writeText(JSON.stringify(incumbent.config));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
   return (
     <div id="smac3-run-detail">
+      <Show when={props.incumbent}>
+        {(incumbent) => (
+          <div id="smac3-incumbent-row">
+            <span class="smac3-stat-label">Incumbent</span>
+            <span class="smac3-stat-value">{fmtCost(incumbent().cost)}</span>
+            <button
+              id="smac3-copy-incumbent-btn"
+              onClick={copyIncumbentConfig}
+              title="Copy this config for a later run's --baseline-config"
+            >
+              {copied() ? "Copied!" : "Copy as baseline config"}
+            </button>
+          </div>
+        )}
+      </Show>
+
       <Show
         when={scored().length > 0}
         fallback={<div class="log-empty">No scored trials yet.</div>}
