@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -24,6 +25,15 @@ class OptimizerConfig:
     deterministic: bool = False
     n_workers: int | None = None  # None → cpu_count // 2
     seed: int = 42
+    # `Scenario(termination_cost_threshold=...)` -- ends `optimize()` early
+    # once a config's cost drops at/below this. Only safe to set below
+    # `math.inf` when the scenario has exactly one active instance: SMAC3
+    # checks it via `RunHistory.average_cost(config, instance_seed_budget_
+    # keys=None)`, which averages over whatever instance-seed pairs have
+    # been recorded *so far* for that config, not necessarily every active
+    # instance -- with more than one instance, a config could trip this
+    # after being evaluated against only the easiest one.
+    termination_cost_threshold: float = math.inf
 
 
 @dataclass
@@ -36,6 +46,14 @@ class TargetConfig:
     # `SearchConfig.parameters_from_binary`'s docstring for why the binary,
     # not this dataclass's default, is the source of truth.
     baselines: list[str] = field(default_factory=list)
+    # Extra instances backed by a raw discovered config rather than a named
+    # preset -- id -> the exact JSON `tune eval --baseline-config` expects
+    # (see `game_host::GameAdapter::tune_eval`'s `baseline_config`
+    # parameter). Populated from repeated `--baseline-config <id>=<json>`
+    # CLI flags; `train()` forwards a matching instance id as
+    # `--baseline-config <json>` instead of `--baseline <id>`. Empty unless
+    # a caller opts in.
+    baseline_configs: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass

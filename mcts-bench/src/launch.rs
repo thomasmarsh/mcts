@@ -105,8 +105,25 @@ pub fn launch_with_run_id(
         .map_err(|e| std::io::Error::new(e.kind(), format!("failed to spawn {}: {e}", cmd[0])))?;
     let pid = child.id();
 
+    // Wait on the child so it doesn't become a zombie, and record its real
+    // exit status as a `Stop` registry event when it finishes normally --
+    // without this, a naturally-completed run was only ever caught by the
+    // ingest loop's `reconcile_liveness` fallback (PID no longer alive, no
+    // `Stop` event ever seen), which marks *every* dead PID `'crashed'`
+    // regardless of how it actually exited. That fallback exists for a
+    // narrower case (the reaper thread itself was cut short by the
+    // launching process exiting/restarting before `wait()` returned, per
+    // this module's own doc comment above) and was never a substitute for
+    // this thread reporting a normal exit.
+    let reaper_run_id = run_id.clone();
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let status = child.wait();
+        let stop = RegistryEvent::Stop {
+            run_id: reaper_run_id,
+            exit_code: status.ok().and_then(|s| s.code()),
+            ended_at: iso_timestamp(),
+        };
+        let _ = append_registry_event(&stop);
     });
 
     let git_sha = build_info::GIT_SHA;

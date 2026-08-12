@@ -310,6 +310,23 @@ async fn main() {
         });
     }
 
+    // Start the background ladder driver.  Same cadence and shape as the
+    // ingest loop above -- every 5 seconds it scans completed SMAC3 runs
+    // for a saturated, ladder-enabled rung with budget left and, if found,
+    // launches the next one.  A no-op for every run that never opted into
+    // `config.ladder`.
+    {
+        let ladder_state = bench_state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                bench::advance_ladders_once(&ladder_state).await;
+            }
+        });
+    }
+
     // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
     // development -- see ui/README.md) is the only frontend now; the old
     // hand-rolled `server/static/app.js` was retired once it stopped

@@ -14,6 +14,7 @@ Or with the installed entry-point::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import warnings
@@ -44,6 +45,23 @@ def _parse_overrides(raw: list[str]) -> dict[str, str]:
         k, v = item.split("=", 1)
         overrides[k] = v
     return overrides
+
+
+def _parse_baseline_configs(raw: list[str]) -> dict[str, dict]:
+    """Parse ``id=json`` strings from repeated ``--baseline-config`` flags.
+
+    Not routed through ``_parse_overrides``/``_apply_overrides`` -- that
+    mechanism mutates a single scalar dotted field per flag, and this is a
+    dict keyed by ids only known at launch time (an automated-ladder rung's
+    own discovered baseline ids), not a fixed field name.
+    """
+    parsed: dict[str, dict] = {}
+    for item in raw:
+        if "=" not in item:
+            raise ValueError(f"--baseline-config must be id=json, got {item!r}")
+        instance_id, raw_json = item.split("=", 1)
+        parsed[instance_id] = json.loads(raw_json)
+    return parsed
 
 
 def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
@@ -84,6 +102,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Override a config value (e.g. optimizer.n_trials=500)",
+    )
+    p.add_argument(
+        "--baseline-config",
+        action="append",
+        default=[],
+        metavar="ID=JSON",
+        help=(
+            "Add an extra baseline instance backed by a raw discovered "
+            "config rather than a named preset (e.g. an automated-ladder "
+            "rung's own incumbent). Repeatable. The id becomes a member of "
+            "Scenario(instances=...); train() forwards it to the game "
+            "binary as `tune eval --baseline-config <json>` instead of "
+            "`--baseline <id>`."
+        ),
     )
     p.add_argument(
         "--verbose",
@@ -171,6 +203,11 @@ def build_optimizer(
     # rank them further. Most games report a single-entry `baselines` list
     # (an unchanged, single-instance scenario); druid today is the one game
     # with a genuine second, harder preset ("master") in that list.
+    # `baseline_configs` adds further instances backed by a raw discovered
+    # config rather than a named preset -- `target.py`'s `train()` is what
+    # actually distinguishes the two kinds of instance id when dispatching
+    # to the game binary.
+    instances = [*cfg.target.baselines, *cfg.target.baseline_configs]
     scenario = Scenario(
         cs,
         name=run_id,
@@ -178,7 +215,8 @@ def build_optimizer(
         n_trials=cfg.optimizer.n_trials,
         n_workers=n_workers,
         seed=cfg.optimizer.seed,
-        instances=cfg.target.baselines,
+        instances=instances,
+        termination_cost_threshold=cfg.optimizer.termination_cost_threshold,
     )
 
     smac = HyperparameterOptimizationFacade(
@@ -223,6 +261,11 @@ def main() -> None:
     _apply_overrides(cfg, overrides)
     if overrides:
         logger.info("Applied overrides: %s", overrides)
+
+    baseline_configs = _parse_baseline_configs(args.baseline_config)
+    cfg.target.baseline_configs.update(baseline_configs)
+    if baseline_configs:
+        logger.info("Extra baseline instances: %s", list(baseline_configs))
 
     smac = build_optimizer(
         cfg,

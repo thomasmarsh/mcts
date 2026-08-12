@@ -833,7 +833,7 @@ async fn resume_run(
     }
 
     let old_config: Option<Value> = config_str.and_then(|s| serde_json::from_str(&s).ok());
-    let new_config = build_resume_config(&old_config, body.n_trials, body.n_workers);
+    let new_config = build_resume_config(&run_id, &old_config, body.n_trials, body.n_workers);
     let label = format!("resume of {run_id}");
     let resp = launch_and_record(
         &state,
@@ -853,6 +853,27 @@ async fn resume_run(
 /// `launch::launch_with_run_id`'s doc comment for why they must match),
 /// spawns it, and inserts the `runs` row so it appears immediately in the
 /// runs list without waiting on the ingest loop.
+/// If `config.ladder` is present but `config.ladder_root` isn't, injects
+/// `ladder_root = run_id` -- this launch is the first rung of a new ladder.
+/// Every other config (no `ladder` key, or one that already carries
+/// `ladder_root` forward from a resume) passes through unchanged.
+///
+/// A ladder-enabled launch needs `ladder_root` set to its *own* run_id when
+/// it's the first rung -- the caller (an operator hitting `POST
+/// /api/bench/launch`) can't supply that itself, since the id doesn't exist
+/// until `launch::generate_run_id` runs. A resumed/widened rung already
+/// carries `ladder_root` forward via `build_resume_config`, so this only
+/// ever fires once per ladder, at its root.
+fn inject_ladder_root_if_new_ladder(config: Option<Value>, run_id: &str) -> Option<Value> {
+    let mut config = config;
+    if let Some(Value::Object(ref mut map)) = config {
+        if map.contains_key("ladder") && !map.contains_key("ladder_root") {
+            map.insert("ladder_root".to_string(), json!(run_id));
+        }
+    }
+    config
+}
+
 async fn launch_and_record(
     state: &Arc<BenchState>,
     kind: &str,
@@ -863,6 +884,7 @@ async fn launch_and_record(
 ) -> Result<LaunchResponse, BenchError> {
     let mut cmd = build_command(kind, game, &config)?;
     let run_id = launch::generate_run_id(kind, game);
+    let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
     // `--run-id`/`--resume` are SMAC3-specific flags (see `smac3_cli`'s
     // `--run-id`/`--resume`); other kinds (round_robin) have no concept of
@@ -988,6 +1010,275 @@ async fn launch_and_record(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Automated ladder driver
+// ---------------------------------------------------------------------------
+
+/// Snapshot of one `smac3` run's bookkeeping, as read from `runs`.
+struct LadderRunRow {
+    run_id: String,
+    game: String,
+    status: String,
+    exit_code: Option<i64>,
+    config: Option<Value>,
+}
+
+/// One decision `plan_ladder_advances` made: widen this rung's baseline set
+/// and relaunch as its child. Carrying the decision as data (rather than
+/// calling `launch_and_record` inline) is what lets the decision logic --
+/// which run to widen, what its next config looks like -- be unit-tested
+/// without spawning a real subprocess, the same separation `build_command`/
+/// `build_resume_config` already have from the handlers that call them.
+struct LadderAdvance {
+    parent_run_id: String,
+    game: String,
+    widened_config: Value,
+    label: String,
+}
+
+fn ladder_root_of(r: &LadderRunRow) -> Option<&str> {
+    r.config
+        .as_ref()
+        .and_then(|c| c.get("ladder_root"))
+        .and_then(|v| v.as_str())
+}
+
+fn resumed_from_of(r: &LadderRunRow) -> Option<&str> {
+    r.config
+        .as_ref()
+        .and_then(|c| c.get("resumed_from"))
+        .and_then(|v| v.as_str())
+}
+
+/// Scans every SMAC3 run for a completed, ladder-enabled rung that hasn't
+/// been widened yet and decides whether it saturated its current baseline
+/// set -- the decision half of an automated stop -> extract incumbent ->
+/// widen instances -> resume cycle (`incumbents` is keyed by `run_id`,
+/// config already parsed JSON).
+///
+/// A run opts in by carrying `ladder: {"max_rungs", "saturation_threshold"}`
+/// and `ladder_root` (the chain's first rung's own id) in its stored
+/// `config` -- see `build_resume_config`'s doc comment for why this rides
+/// in the existing free-form `config` JSON rather than a new table or
+/// column. A run with no `ladder` key is left alone entirely, so this is a
+/// no-op for every pre-existing/non-ladder SMAC3 run.
+fn plan_ladder_advances(
+    runs: &[LadderRunRow],
+    trial_counts: &HashMap<String, i64>,
+    incumbents: &HashMap<String, (Value, f64)>,
+) -> Vec<LadderAdvance> {
+    let has_child = |run_id: &str| runs.iter().any(|r| resumed_from_of(r) == Some(run_id));
+    let mut advances = Vec::new();
+
+    for run in runs {
+        // Only a naturally-completed rung is eligible -- an operator's
+        // explicit `stop` or a crash must not be silently overridden by
+        // the driver reviving the chain.
+        if run.status != "completed" || run.exit_code.is_some_and(|c| c != 0) {
+            continue;
+        }
+        let Some(config) = &run.config else {
+            continue;
+        };
+        let Some(ladder) = config.get("ladder") else {
+            continue; // not a ladder-enabled run at all
+        };
+        let (Some(max_rungs), Some(saturation_threshold)) = (
+            ladder.get("max_rungs").and_then(|v| v.as_i64()),
+            ladder.get("saturation_threshold").and_then(|v| v.as_f64()),
+        ) else {
+            continue; // malformed `ladder` block -- ignore rather than error
+        };
+        let Some(ladder_root) = ladder_root_of(run) else {
+            continue;
+        };
+
+        if has_child(&run.run_id) {
+            continue; // already advanced (or already judged done)
+        }
+
+        let rung_count = runs
+            .iter()
+            .filter(|r| ladder_root_of(r) == Some(ladder_root))
+            .count() as i64;
+        if rung_count >= max_rungs {
+            continue; // budget exhausted -- ladder is done
+        }
+
+        // Saturation is judged from the durable per-run incumbent (the
+        // `incumbents` table, SMAC3's own tracked best config aggregated
+        // across every active instance) after this rung's *full*
+        // configured trial budget completed -- not `Scenario.
+        // termination_cost_threshold`, which only averages the
+        // instance-seed pairs recorded so far for a config and so is
+        // unsafe to rely on once more than one baseline instance is
+        // active: a config could look saturated after being evaluated
+        // against only the easiest instance.
+        let Some((incumbent_config, incumbent_cost)) = incumbents.get(&run.run_id) else {
+            continue; // no incumbent ever reported -- nothing to widen from
+        };
+        if *incumbent_cost > saturation_threshold {
+            continue; // not saturated -- ladder is done here
+        }
+
+        // Per-rung trial budget: bump by however many trials the *root*
+        // rung of this ladder actually completed, rather than a second,
+        // separately-configured "trials per rung" knob. `optimizer.n_trials`
+        // is cumulative once a runhistory is seeded via `--resume` -- a
+        // resumed run only performs `n_trials` minus however many trials
+        // are already in the seeded runhistory -- so reusing the same
+        // value the previous rung was launched with would give the next
+        // rung zero new budget.
+        let root_trial_count = *trial_counts.get(ladder_root).unwrap_or(&0);
+        let cumulative_trials: i64 = runs
+            .iter()
+            .filter(|r| ladder_root_of(r) == Some(ladder_root))
+            .map(|r| *trial_counts.get(&r.run_id).unwrap_or(&0))
+            .sum();
+        let next_n_trials = cumulative_trials + root_trial_count;
+
+        let next_rung = rung_count + 1;
+        let next_id = format!("ladder{next_rung}");
+
+        let mut widened = build_resume_config(&run.run_id, &run.config, next_n_trials, None);
+        let mut baseline_configs = widened
+            .get("baseline_configs")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        baseline_configs.insert(next_id, incumbent_config.clone());
+        widened["baseline_configs"] = Value::Object(baseline_configs);
+
+        advances.push(LadderAdvance {
+            parent_run_id: run.run_id.clone(),
+            game: run.game.clone(),
+            widened_config: widened,
+            label: format!("ladder rung {next_rung} of {ladder_root}"),
+        });
+    }
+
+    advances
+}
+
+/// IO wrapper around `plan_ladder_advances`: reads `runs`/`trials`/
+/// `incumbents` for every SMAC3 run, then calls `launch_and_record` for
+/// each decided widen. Called once per tick from a background poll loop in
+/// `main.rs`, the same shape as the existing ingest loop.
+pub async fn advance_ladders_once(state: &Arc<BenchState>) {
+    let runs: Vec<LadderRunRow> = {
+        let db = state.db.lock().unwrap();
+        let mut stmt = match db.prepare(
+            "SELECT run_id, game, status, exit_code, CAST(config AS TEXT) FROM runs \
+             WHERE kind = 'smac3'",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ladder driver: query error: {e}");
+                return;
+            }
+        };
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        });
+        match mapped {
+            Ok(iter) => iter
+                .filter_map(Result::ok)
+                .map(
+                    |(run_id, game, status, exit_code, config_str)| LadderRunRow {
+                        run_id,
+                        game,
+                        status,
+                        exit_code,
+                        config: config_str.and_then(|s| serde_json::from_str(&s).ok()),
+                    },
+                )
+                .collect(),
+            Err(e) => {
+                eprintln!("ladder driver: query error: {e}");
+                return;
+            }
+        }
+    };
+
+    let trial_counts: HashMap<String, i64> = {
+        let db = state.db.lock().unwrap();
+        let mut stmt = match db.prepare("SELECT run_id, COUNT(*) FROM trials GROUP BY run_id") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ladder driver: trial-count query error: {e}");
+                return;
+            }
+        };
+        match stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            Ok(iter) => iter.filter_map(Result::ok).collect(),
+            Err(e) => {
+                eprintln!("ladder driver: trial-count query error: {e}");
+                return;
+            }
+        }
+    };
+
+    let incumbents: HashMap<String, (Value, f64)> = {
+        let db = state.db.lock().unwrap();
+        let mut stmt = match db.prepare("SELECT run_id, CAST(config AS TEXT), cost FROM incumbents")
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ladder driver: incumbents query error: {e}");
+                return;
+            }
+        };
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        });
+        match mapped {
+            Ok(iter) => iter
+                .filter_map(Result::ok)
+                .filter_map(|(run_id, config_str, cost)| {
+                    serde_json::from_str::<Value>(&config_str)
+                        .ok()
+                        .map(|config| (run_id, (config, cost)))
+                })
+                .collect(),
+            Err(e) => {
+                eprintln!("ladder driver: incumbents query error: {e}");
+                return;
+            }
+        }
+    };
+
+    let advances = plan_ladder_advances(&runs, &trial_counts, &incumbents);
+    for advance in advances {
+        if let Err(e) = launch_and_record(
+            state,
+            "smac3",
+            &advance.game,
+            Some(advance.widened_config),
+            Some(&advance.label),
+            Some(&advance.parent_run_id),
+        )
+        .await
+        {
+            eprintln!(
+                "ladder driver: failed to widen run {}: {}",
+                advance.parent_run_id, e.message
+            );
+        }
+    }
+}
+
 /// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
 ///
 /// Sends SIGTERM to the recorded PID's whole process group (`kill -TERM
@@ -1111,15 +1402,37 @@ async fn stop_run(
 // Command construction
 // ---------------------------------------------------------------------------
 
-/// Build the launch `config` JSON for a resumed SMAC3 run: carries forward
-/// the old run's `--config` path and `--override` list (if any), appending
-/// `optimizer.n_trials`/`optimizer.n_workers` overrides so they win (the
+/// Build the launch `config` JSON for a resumed SMAC3 run: clones the old
+/// run's config *wholesale* and patches only `overrides` (old entries plus
+/// `optimizer.n_trials`/`optimizer.n_workers`, appended so they win -- the
 /// Python side's `_apply_overrides` keeps the last value for a repeated
-/// key). Same shape `build_command`'s smac3 arm already reads.
-fn build_resume_config(old_config: &Option<Value>, n_trials: i64, n_workers: Option<i64>) -> Value {
-    let mut overrides: Vec<Value> = old_config
-        .as_ref()
-        .and_then(|c| c.get("overrides"))
+/// key) and `resumed_from` (this resume's source run id). Any other key the
+/// old config carried (`config`, `baseline_configs`, `ladder`,
+/// `ladder_root`, ...) survives untouched.
+///
+/// Cloning wholesale rather than reconstructing from just `overrides`/
+/// `config` (the only two keys `LaunchBody.config` needs for a plain
+/// resume) is what lets the automated ladder driver's own bookkeeping
+/// (`ladder`, `ladder_root`, `baseline_configs`) survive a resume --
+/// including a human clicking the existing UI Resume button on a ladder
+/// rung, not just the driver's own calls. `resumed_from` itself closes a
+/// separate, pre-existing gap: before this, nothing durable recorded which
+/// run a resumed run came from (only a human-readable `label = "resume of
+/// {run_id}"` string) -- the ladder driver needs to query this
+/// programmatically to tell whether a rung already has a child.
+fn build_resume_config(
+    old_run_id: &str,
+    old_config: &Option<Value>,
+    n_trials: i64,
+    n_workers: Option<i64>,
+) -> Value {
+    let mut new_config = match old_config.clone() {
+        Some(Value::Object(map)) => Value::Object(map),
+        _ => json!({}),
+    };
+
+    let mut overrides: Vec<Value> = new_config
+        .get("overrides")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
@@ -1127,11 +1440,9 @@ fn build_resume_config(old_config: &Option<Value>, n_trials: i64, n_workers: Opt
     if let Some(n_workers) = n_workers {
         overrides.push(json!(format!("optimizer.n_workers={n_workers}")));
     }
+    new_config["overrides"] = json!(overrides);
+    new_config["resumed_from"] = json!(old_run_id);
 
-    let mut new_config = json!({ "overrides": overrides });
-    if let Some(config_path) = old_config.as_ref().and_then(|c| c.get("config")) {
-        new_config["config"] = config_path.clone();
-    }
     new_config
 }
 
@@ -1173,6 +1484,21 @@ fn build_command(
                             cmd.push("--override".into());
                             cmd.push(ov.to_owned());
                         }
+                    }
+                }
+
+                // Extra baseline instances backed by a raw discovered
+                // config rather than a named preset -- how the automated
+                // ladder widens a rung's opponent set. `id` (the object
+                // key) becomes the `Scenario` instance id; its value is
+                // passed through verbatim as the `<json>`
+                // half of `--baseline-config <id>=<json>`.
+                if let Some(baseline_configs) =
+                    config.get("baseline_configs").and_then(|v| v.as_object())
+                {
+                    for (id, raw_config) in baseline_configs {
+                        cmd.push("--baseline-config".into());
+                        cmd.push(format!("{id}={raw_config}"));
                     }
                 }
             }
@@ -2022,6 +2348,34 @@ mod tests {
     }
 
     #[test]
+    fn test_build_command_smac3_includes_baseline_configs() {
+        let cmd = build_command(
+            "smac3",
+            "nim",
+            &Some(json!({
+                "overrides": ["optimizer.n_trials=10"],
+                "baseline_configs": {
+                    "ladder1": {"family": "ucb1", "c": 1.5},
+                },
+            })),
+        )
+        .unwrap();
+
+        assert_eq!(
+            cmd[1..],
+            vec![
+                "smac3",
+                "--game",
+                "nim",
+                "--override",
+                "optimizer.n_trials=10",
+                "--baseline-config",
+                r#"ladder1={"c":1.5,"family":"ucb1"}"#,
+            ]
+        );
+    }
+
+    #[test]
     fn test_build_command_unknown_kind_lists_smac3_as_supported() {
         let err = build_command("nope", "druid", &None).unwrap_err();
         assert!(err.message.contains("smac3"));
@@ -2137,7 +2491,7 @@ mod tests {
 
     #[test]
     fn test_build_resume_config_appends_n_trials_override() {
-        let config = build_resume_config(&None, 500, None);
+        let config = build_resume_config("old-run-1", &None, 500, None);
         let overrides = config["overrides"].as_array().unwrap();
         assert_eq!(overrides, &[json!("optimizer.n_trials=500")]);
         assert!(config.get("config").is_none());
@@ -2145,7 +2499,7 @@ mod tests {
 
     #[test]
     fn test_build_resume_config_appends_n_workers_when_given() {
-        let config = build_resume_config(&None, 500, Some(4));
+        let config = build_resume_config("old-run-1", &None, 500, Some(4));
         let overrides = config["overrides"].as_array().unwrap();
         assert_eq!(
             overrides,
@@ -2162,12 +2516,220 @@ mod tests {
             "config": "smac3/config/default.yaml",
             "overrides": ["target.rounds=30"],
         }));
-        let config = build_resume_config(&old, 500, None);
+        let config = build_resume_config("old-run-1", &old, 500, None);
         assert_eq!(config["config"], json!("smac3/config/default.yaml"));
         assert_eq!(
             config["overrides"].as_array().unwrap(),
             &[json!("target.rounds=30"), json!("optimizer.n_trials=500")]
         );
+    }
+
+    #[test]
+    fn test_build_resume_config_records_resumed_from() {
+        let config = build_resume_config("old-run-1", &None, 500, None);
+        assert_eq!(config["resumed_from"], json!("old-run-1"));
+    }
+
+    #[test]
+    fn test_build_resume_config_preserves_unknown_keys() {
+        // Ladder bookkeeping (`ladder`, `ladder_root`, `baseline_configs`)
+        // must survive a resume untouched -- both the driver's own resume
+        // calls and a human clicking the existing UI Resume button on a
+        // ladder rung go through this same function.
+        let old = Some(json!({
+            "overrides": ["target.rounds=30"],
+            "ladder": {"max_rungs": 5, "saturation_threshold": 0.0},
+            "ladder_root": "root-run-1",
+            "baseline_configs": {"ladder1": {"family": "ucb1"}},
+        }));
+        let config = build_resume_config("rung-1-run", &old, 500, None);
+        assert_eq!(config["ladder"]["max_rungs"], json!(5));
+        assert_eq!(config["ladder_root"], json!("root-run-1"));
+        assert_eq!(
+            config["baseline_configs"]["ladder1"],
+            json!({"family": "ucb1"})
+        );
+        assert_eq!(config["resumed_from"], json!("rung-1-run"));
+    }
+
+    // -------------------------------------------------------------------
+    // inject_ladder_root_if_new_ladder
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_inject_ladder_root_sets_self_reference_on_a_new_ladder_launch() {
+        let config = Some(json!({
+            "overrides": ["optimizer.n_trials=10"],
+            "ladder": {"max_rungs": 3, "saturation_threshold": 0.0},
+        }));
+        let config = inject_ladder_root_if_new_ladder(config, "root-run-1").unwrap();
+        assert_eq!(config["ladder_root"], json!("root-run-1"));
+    }
+
+    #[test]
+    fn test_inject_ladder_root_leaves_non_ladder_config_untouched() {
+        let config = Some(json!({ "overrides": ["optimizer.n_trials=10"] }));
+        let config = inject_ladder_root_if_new_ladder(config, "some-run").unwrap();
+        assert!(config.get("ladder_root").is_none());
+    }
+
+    #[test]
+    fn test_inject_ladder_root_does_not_override_a_carried_forward_root() {
+        // A resumed rung's config already has `ladder_root` pointing at the
+        // *original* root (via `build_resume_config`) -- this must not be
+        // clobbered with the resumed rung's own id.
+        let config = Some(json!({
+            "ladder": {"max_rungs": 3, "saturation_threshold": 0.0},
+            "ladder_root": "original-root",
+        }));
+        let config = inject_ladder_root_if_new_ladder(config, "rung-2-run").unwrap();
+        assert_eq!(config["ladder_root"], json!("original-root"));
+    }
+
+    #[test]
+    fn test_inject_ladder_root_handles_none_config() {
+        assert_eq!(inject_ladder_root_if_new_ladder(None, "some-run"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // plan_ladder_advances
+    // -------------------------------------------------------------------
+
+    fn ladder_root_run(run_id: &str, max_rungs: i64, saturation_threshold: f64) -> LadderRunRow {
+        LadderRunRow {
+            run_id: run_id.to_string(),
+            game: "nim".to_string(),
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            config: Some(json!({
+                "overrides": ["optimizer.n_trials=10"],
+                "ladder": {"max_rungs": max_rungs, "saturation_threshold": saturation_threshold},
+                "ladder_root": run_id,
+            })),
+        }
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_widens_a_saturated_root_with_budget_left() {
+        let runs = vec![ladder_root_run("root-1", 3, 0.0)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([(
+            "root-1".to_string(),
+            (json!({"family": "ucb1", "c": 1.4}), 0.0),
+        )]);
+
+        let advances = plan_ladder_advances(&runs, &trial_counts, &incumbents);
+        assert_eq!(advances.len(), 1);
+        let advance = &advances[0];
+        assert_eq!(advance.parent_run_id, "root-1");
+        assert_eq!(advance.game, "nim");
+        assert_eq!(advance.label, "ladder rung 2 of root-1");
+        assert_eq!(advance.widened_config["resumed_from"], json!("root-1"));
+        assert_eq!(advance.widened_config["ladder_root"], json!("root-1"));
+        // Cumulative budget: root's own 10 trials + another 10 for the new rung.
+        assert_eq!(
+            advance.widened_config["overrides"],
+            json!(["optimizer.n_trials=10", "optimizer.n_trials=20"])
+        );
+        // rung_count is 1 (the root itself) before this widen, so the new
+        // rung being created is rung 2 -- its baseline id is "ladder2".
+        assert_eq!(
+            advance.widened_config["baseline_configs"]["ladder2"],
+            json!({"family": "ucb1", "c": 1.4})
+        );
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_does_not_widen_when_not_saturated() {
+        let runs = vec![ladder_root_run("root-1", 3, 0.0)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([(
+            "root-1".to_string(),
+            (json!({"family": "ucb1"}), 0.2), // above the 0.0 threshold
+        )]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_does_not_widen_without_an_incumbent() {
+        let runs = vec![ladder_root_run("root-1", 3, 0.0)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::new();
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_stops_at_max_rungs() {
+        // Two rungs already exist for this ladder and max_rungs is 2 --
+        // no third rung should be proposed even though the second is
+        // saturated with budget nominally available.
+        let mut rung2 = ladder_root_run("root-1", 2, 0.0);
+        rung2.run_id = "root-1-rung2".to_string();
+        rung2.config.as_mut().unwrap()["resumed_from"] = json!("root-1");
+        let root = ladder_root_run("root-1", 2, 0.0);
+        // root already has a child (rung2), so it wouldn't be reconsidered
+        // either -- but the rung-count check is what should stop rung2.
+        let runs = vec![root, rung2];
+        let trial_counts =
+            HashMap::from([("root-1".to_string(), 10), ("root-1-rung2".to_string(), 10)]);
+        let incumbents =
+            HashMap::from([("root-1-rung2".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_skips_a_rung_that_already_has_a_child() {
+        let root = ladder_root_run("root-1", 5, 0.0);
+        let mut child = ladder_root_run("root-1", 5, 0.0);
+        child.run_id = "root-1-rung2".to_string();
+        child.config.as_mut().unwrap()["resumed_from"] = json!("root-1");
+        let runs = vec![root, child];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_ignores_stopped_run() {
+        let mut run = ladder_root_run("root-1", 3, 0.0);
+        run.status = "stopped".to_string();
+        let runs = vec![run];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_ignores_crashed_exit_code() {
+        let mut run = ladder_root_run("root-1", 3, 0.0);
+        run.exit_code = Some(1);
+        let runs = vec![run];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_ignores_non_ladder_run() {
+        let run = LadderRunRow {
+            run_id: "plain-run".to_string(),
+            game: "nim".to_string(),
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            config: Some(json!({"overrides": ["optimizer.n_trials=10"]})),
+        };
+        let runs = vec![run];
+        let trial_counts = HashMap::from([("plain-run".to_string(), 10)]);
+        let incumbents =
+            HashMap::from([("plain-run".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
     }
 
     // -------------------------------------------------------------------

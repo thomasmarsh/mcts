@@ -113,9 +113,18 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                 exit_code,
                 ended_at,
             } => {
+                // Guard on `status = 'running'` so this can't clobber an
+                // already-terminal status set by another path -- e.g.
+                // `launch_and_record`'s own synchronous early-crash check
+                // (a process that died within its 500ms post-spawn window
+                // is marked `'crashed'` directly, before this event's
+                // launcher-side reaper thread has necessarily even
+                // observed the exit yet). Whichever path reaches a given
+                // run first wins; the other becomes a no-op, matching
+                // `reconcile_liveness`'s identical guard below.
                 conn.execute(
                     "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = 'completed' \
-                     WHERE run_id = ?3",
+                     WHERE run_id = ?3 AND status = 'running'",
                     params![ended_at, exit_code, run_id],
                 )?;
             }
@@ -435,6 +444,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn test_registry_stop_does_not_clobber_an_already_terminal_status() {
+        // A run already marked 'stopped' (e.g. by the explicit stop_run
+        // handler) must stay 'stopped' when a Stop registry event for it
+        // is later ingested -- the launcher's own reaper thread writes one
+        // for every exit, including a process that was SIGTERM'd, and it
+        // races against (may land before or after) whatever else already
+        // set the terminal status. See the `AND status = 'running'` guard
+        // this test exercises.
+        let ev_start = start_event("run-3", "smac3", "nim", 99997, "/tmp/nope3/log.jsonl");
+        let fix = TestFixture::new(&[ev_start]);
+        ingest_once(&fix.db, &fix.bench_runs).unwrap();
+        fix.db
+            .execute(
+                "UPDATE runs SET status = 'stopped' WHERE run_id = 'run-3'",
+                [],
+            )
+            .unwrap();
+
+        // Now a Stop event for the same run arrives on a later ingest pass.
+        fs::write(
+            fix.bench_runs.join("registry.log"),
+            format!(
+                "{}\n{}\n",
+                start_event("run-3", "smac3", "nim", 99997, "/tmp/nope3/log.jsonl").to_json_line(),
+                stop_event("run-3", Some(0)).to_json_line(),
+            ),
+        )
+        .unwrap();
+        ingest_once(&fix.db, &fix.bench_runs).unwrap();
+
+        assert_eq!(
+            fix.query_string("SELECT status FROM runs WHERE run_id = 'run-3'"),
+            "stopped",
+        );
     }
 
     #[test]

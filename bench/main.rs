@@ -95,6 +95,13 @@ enum Command {
         #[arg(long = "override", default_values_t = Vec::<String>::new())]
         overrides: Vec<String>,
 
+        /// Extra baseline instance backed by a raw discovered config
+        /// (``id=json``, repeatable), for evaluating a candidate against an
+        /// opponent that isn't one of the game's named presets.  Passed
+        /// through as ``smac3 --baseline-config id=json``.
+        #[arg(long = "baseline-config", default_values_t = Vec::<String>::new())]
+        baseline_configs: Vec<String>,
+
         /// Game kind for registry attribution (e.g. "druid").
         #[arg(long)]
         game: String,
@@ -158,6 +165,7 @@ fn main() {
         Command::Smac3 {
             config,
             overrides,
+            baseline_configs,
             game,
             label,
             run_id,
@@ -166,6 +174,7 @@ fn main() {
         } => cmd_smac3(
             config.as_deref(),
             &overrides,
+            &baseline_configs,
             &game,
             label.as_deref(),
             run_id.as_deref(),
@@ -303,6 +312,7 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
 fn build_smac3_command(
     config: Option<&str>,
     overrides: &[String],
+    baseline_configs: &[String],
     game: &str,
     run_id: Option<&str>,
     resume: Option<&str>,
@@ -335,6 +345,11 @@ fn build_smac3_command(
         cmd.push(ov.clone());
     }
 
+    for bc in baseline_configs {
+        cmd.push("--baseline-config".to_string());
+        cmd.push(bc.clone());
+    }
+
     // Pass the compile-time git SHA so the Python side can include it
     // in its JSONL output for attribution.
     cmd.push("--git-sha".to_string());
@@ -353,9 +368,11 @@ fn build_smac3_command(
     cmd
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_smac3(
     config: Option<&str>,
     overrides: &[String],
+    baseline_configs: &[String],
     game: &str,
     label: Option<&str>,
     run_id: Option<&str>,
@@ -372,7 +389,14 @@ fn cmd_smac3(
         let run_id = run_id
             .map(str::to_string)
             .unwrap_or_else(|| launch::generate_run_id("smac3", game));
-        let cmd = build_smac3_command(config, overrides, game, Some(&run_id), resume);
+        let cmd = build_smac3_command(
+            config,
+            overrides,
+            baseline_configs,
+            game,
+            Some(&run_id),
+            resume,
+        );
 
         // Launch via the detached-process launcher.
         let LaunchedRun {
@@ -405,7 +429,7 @@ fn cmd_smac3(
         // caller that wraps this in its *own* launcher, e.g. the server,
         // is responsible for passing a `--run-id` that matches whatever it
         // used for that outer entry).
-        let cmd = build_smac3_command(config, overrides, game, run_id, resume);
+        let cmd = build_smac3_command(config, overrides, baseline_configs, game, run_id, resume);
         let mut child = match StdCommand::new(&cmd[0])
             .args(&cmd[1..])
             .stdin(Stdio::inherit())
@@ -473,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_overrides_target_binary_from_game() {
-        let cmd = build_smac3_command(None, &[], "breakthrough", None, None);
+        let cmd = build_smac3_command(None, &[], &[], "breakthrough", None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-breakthrough")
@@ -488,7 +512,7 @@ mod tests {
         // repeated key, so an explicit caller override for the same key
         // must come after (and thus win over) the game-derived one.
         let overrides = vec!["target.binary=custom/path".to_string()];
-        let cmd = build_smac3_command(None, &overrides, "druid", None, None);
+        let cmd = build_smac3_command(None, &overrides, &[], "druid", None, None);
         let game_idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-druid")
@@ -504,6 +528,7 @@ mod tests {
     fn test_build_smac3_command_forwards_run_id_and_resume() {
         let cmd = build_smac3_command(
             None,
+            &[],
             &[],
             "druid",
             Some("smac3-druid-run-1"),
@@ -524,8 +549,19 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_omits_run_id_and_resume_when_absent() {
-        let cmd = build_smac3_command(None, &[], "druid", None, None);
+        let cmd = build_smac3_command(None, &[], &[], "druid", None, None);
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
+    }
+
+    #[test]
+    fn test_build_smac3_command_forwards_baseline_configs() {
+        let baseline_configs = vec![r#"ladder1={"family":"ucb1"}"#.to_string()];
+        let cmd = build_smac3_command(None, &[], &baseline_configs, "nim", None, None);
+        let idx = cmd
+            .iter()
+            .position(|a| a == "--baseline-config")
+            .expect("--baseline-config flag present");
+        assert_eq!(cmd[idx + 1], r#"ladder1={"family":"ucb1"}"#);
     }
 }

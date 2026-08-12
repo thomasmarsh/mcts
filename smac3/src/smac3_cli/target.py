@@ -47,8 +47,12 @@ def make_target(cfg: SearchConfig):
             (those whose parent conditions are satisfied) are included.
         instance:
             The baseline instance id to evaluate against (from
-            ``Scenario(instances=...)``), forwarded as ``--baseline``.
-            ``None`` when the scenario wasn't given an instance list.
+            ``Scenario(instances=...)``). A named preset (member of
+            ``cfg.target.baselines``) is forwarded as ``--baseline``; an id
+            backed by a raw discovered config instead (member of
+            ``cfg.target.baseline_configs``) is forwarded as
+            ``--baseline-config`` with its raw config JSON instead. ``None``
+            when the scenario wasn't given an instance list.
         seed:
             Random seed forwarded by SMAC (from the scenario).
 
@@ -69,7 +73,10 @@ def make_target(cfg: SearchConfig):
             str(seed),
         ]
         if instance is not None:
-            cmd += ["--baseline", instance]
+            if instance in cfg.target.baseline_configs:
+                cmd += ["--baseline-config", json.dumps(cfg.target.baseline_configs[instance])]
+            else:
+                cmd += ["--baseline", instance]
 
         logger.debug("Running: %s", " ".join(cmd))
 
