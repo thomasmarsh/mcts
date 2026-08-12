@@ -634,7 +634,7 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
         BenchKindInfo {
             kind: "smac3".to_string(),
             label: "SMAC3 Tuning".to_string(),
-            description: "Runs a SMAC3 hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against a fixed baseline per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/smac3/kinds for per-game tuner metadata (search space, baseline, eval rounds) instead of a strategies list."
+            description: "Runs a SMAC3 hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against one or more baseline instances per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/smac3/kinds for per-game tuner metadata (search space, baselines, eval rounds) instead of a strategies list."
                 .to_string(),
             games: vec![],
         },
@@ -645,7 +645,7 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
 
 /// `GET /api/bench/smac3/kinds`
 ///
-/// Per-game tuner metadata (search space, baseline, eval rounds), queried
+/// Per-game tuner metadata (search space, baselines, eval rounds), queried
 /// through each game's already-open `SubprocessAdapter` session (the same
 /// ones the gameplay routes use) rather than spawning a one-shot `tune
 /// describe` process per request.  Only games that implement `tuner()`
@@ -1768,7 +1768,7 @@ mod tests {
                 kind: "traffic-lights",
                 tuner: Some(TunerInfo {
                     id: "rave".into(),
-                    baseline: "strong".into(),
+                    baselines: vec!["strong".into()],
                     eval_rounds: 20,
                     parameters: vec![],
                     conditions: vec![],

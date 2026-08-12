@@ -110,7 +110,13 @@ const C_FAMILIES: &[&str] = &[
 /// it belongs here: `make_candidate`'s `rave` arm requires `epsilon`
 /// unconditionally, and this list is what makes that requirement visible to
 /// callers (SMAC3's ConfigSpace, the launch-form UI) as an active parameter.
-const EPSILON_FAMILIES: &[&str] = &["ucb1_mast", "ucb1_nst", "amaf_mast", "ucb1_tuned_dm_mast", "rave"];
+const EPSILON_FAMILIES: &[&str] = &[
+    "ucb1_mast",
+    "ucb1_nst",
+    "amaf_mast",
+    "ucb1_tuned_dm_mast",
+    "rave",
+];
 
 fn base_config<G: Game, S: Strategy<G> + Default>(
     p: &TrialParams,
@@ -537,13 +543,15 @@ fn play_one<G: Game>(
 // ---------------------------------------------------------------------------
 
 /// Search-space metadata for the full multi-family catalog above, for `tune
-/// describe` to report to a SMAC3 harness or launch-form UI. `baseline` is
-/// the preset id (e.g. `"strong"`) `strategy_tune_eval`'s `baseline_build`
-/// argument is expected to build.
-pub fn strategy_tuner_info(baseline: &str, eval_rounds: u32) -> TunerInfo {
+/// describe` to report to a SMAC3 harness or launch-form UI. `baselines` is
+/// the list of preset ids a caller's `tune_eval` can build a
+/// `strategy_tune_eval` `baseline_build` argument for -- most games report
+/// exactly one entry; a game with a genuine second, harder preset can list
+/// it as a second instance for SMAC3's multi-instance evaluation.
+pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
     TunerInfo {
         id: "strategy".into(),
-        baseline: baseline.into(),
+        baselines: baselines.iter().map(|s| s.to_string()).collect(),
         eval_rounds,
         parameters: vec![
             param(
@@ -861,8 +869,14 @@ mod tests {
     /// here too).
     fn family_required_params() -> Vec<(&'static str, Value)> {
         vec![
-            ("ucb1", json!({"family": "ucb1", "c": 1.4, "final_action": "robust_child"})),
-            ("ucb1_dm", json!({"family": "ucb1_dm", "c": 1.4, "final_action": "max_avg"})),
+            (
+                "ucb1",
+                json!({"family": "ucb1", "c": 1.4, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_dm",
+                json!({"family": "ucb1_dm", "c": 1.4, "final_action": "max_avg"}),
+            ),
             (
                 "ucb1_mast",
                 json!({"family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
@@ -875,7 +889,10 @@ mod tests {
                 "ucb1_progressive_history",
                 json!({"family": "ucb1_progressive_history", "c": 1.4, "ph_weight": 0.5, "final_action": "robust_child"}),
             ),
-            ("ucb1_max_robust", json!({"family": "ucb1_max_robust", "c": 1.4})),
+            (
+                "ucb1_max_robust",
+                json!({"family": "ucb1_max_robust", "c": 1.4}),
+            ),
             (
                 "amaf",
                 json!({"family": "amaf", "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0}),
@@ -884,9 +901,18 @@ mod tests {
                 "amaf_mast",
                 json!({"family": "amaf_mast", "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2, "final_action": "robust_child"}),
             ),
-            ("ucb1_tuned", json!({"family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child"})),
-            ("ucb1_tuned_mast", json!({"family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child"})),
-            ("ucb1_tuned_dm", json!({"family": "ucb1_tuned_dm", "c": 1.4, "final_action": "robust_child"})),
+            (
+                "ucb1_tuned",
+                json!({"family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_tuned_mast",
+                json!({"family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_tuned_dm",
+                json!({"family": "ucb1_tuned_dm", "c": 1.4, "final_action": "robust_child"}),
+            ),
             (
                 "ucb1_tuned_dm_mast",
                 json!({"family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
@@ -951,7 +977,7 @@ mod tests {
         // declared conditions given that exact assignment, catching any
         // future family where a hand-written fixture and the declared
         // schema's activation drift apart the same way.
-        let tuner = strategy_tuner_info("strong", 1);
+        let tuner = strategy_tuner_info(&["strong"], 1);
         for (family, params) in family_required_params() {
             let active = active_params(&tuner, &params);
             for key in params.as_object().unwrap().keys() {

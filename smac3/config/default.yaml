@@ -8,7 +8,9 @@
 # metadata `mcts-tune::strategy_tuner_info` builds. A hand-maintained copy of
 # that space in this file drifted out of sync with the binary once already
 # (a family silently missing from a YAML list), so the binary is now the
-# only place it's declared.
+# only place it's declared. `target.baselines` (the opponent instance ids
+# each trial config is evaluated against) is sourced from the same `tune
+# describe` call and isn't a key in this file either.
 
 # ---------------------------------------------------------------------------
 # SMAC3 optimisation engine settings

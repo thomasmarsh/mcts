@@ -162,13 +162,22 @@ pub struct TunerCondition {
 }
 
 /// Metadata describing a game's tunable strategy search space, as reported
-/// by the `tune describe` subcommand -- the parameter space and baseline a
-/// SMAC3-style harness needs to run trials, without embedding the actual
-/// search/eval logic (that stays behind `tune_eval`).
+/// by the `tune describe` subcommand -- the parameter space and baseline
+/// instances a SMAC3-style harness needs to run trials, without embedding
+/// the actual search/eval logic (that stays behind `tune_eval`).
+///
+/// `baselines` is a list rather than a single id so a harness can evaluate
+/// each trial config against multiple opponent strengths (SMAC3's
+/// `Scenario(instances=...)` mechanism) instead of one fixed baseline --
+/// once a config saturates 100% win rate against an easy baseline, cost
+/// floors at `0.0` and a harder second instance is the only way to keep
+/// ranking top candidates against each other. Most games report exactly one
+/// entry here (a single preset stands in for "the" baseline); a game with a
+/// genuine second preset can list it as a second instance.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TunerInfo {
     pub id: String,
-    pub baseline: String,
+    pub baselines: Vec<String>,
     pub eval_rounds: u32,
     pub parameters: Vec<TunerParameter>,
     pub conditions: Vec<TunerCondition>,
@@ -218,12 +227,20 @@ pub trait GameAdapter: Send + Sync {
     }
 
     /// Play `rounds` games of a `params`-built candidate strategy against
-    /// this game's tuning baseline and return a cost (lower is better) plus
-    /// win/loss/draw counts, as a JSON object. CLI-only (`tune eval`) --
+    /// one of this game's tuning baselines and return a cost (lower is
+    /// better) plus win/loss/draw counts, as a JSON object. `baseline`
+    /// selects which entry of `tuner()`'s `baselines` list to play against;
+    /// `None` means the first (default) entry. CLI-only (`tune eval`) --
     /// never dispatched over the JSONL loop, since a full multi-game match
     /// is a batch job, not a per-move request.
     #[allow(unused_variables)]
-    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+    fn tune_eval(
+        &self,
+        params: Value,
+        rounds: u32,
+        seed: Option<u64>,
+        baseline: Option<String>,
+    ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
 }
@@ -388,9 +405,9 @@ where
     }
 }
 
-/// Parses `--config <json> --rounds <n> [--seed <n>]` from the remaining CLI
-/// args, calls [`GameAdapter::tune_eval`], and prints its JSON result
-/// verbatim to `writer`. Returns the process exit code.
+/// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id>]` from
+/// the remaining CLI args, calls [`GameAdapter::tune_eval`], and prints its
+/// JSON result verbatim to `writer`. Returns the process exit code.
 fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
 where
     I: Iterator<Item = String>,
@@ -401,11 +418,13 @@ where
     let mut config: Option<String> = None;
     let mut rounds: Option<u32> = None;
     let mut seed: Option<u64> = None;
+    let mut baseline: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--config" => config = args.next(),
             "--rounds" => rounds = args.next().and_then(|s| s.parse().ok()),
             "--seed" => seed = args.next().and_then(|s| s.parse().ok()),
+            "--baseline" => baseline = args.next(),
             _ => {}
         }
     }
@@ -415,7 +434,7 @@ where
         let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
         let params: Value = serde_json::from_str(&config)
             .map_err(|e| HostError::bad_request(format!("invalid --config JSON: {e}")))?;
-        adapter.tune_eval(params, rounds, seed)
+        adapter.tune_eval(params, rounds, seed, baseline)
     })();
 
     match result {
@@ -984,7 +1003,7 @@ mod tests {
         fn tuner(&self) -> Option<TunerInfo> {
             Some(TunerInfo {
                 id: "test".into(),
-                baseline: "baseline".into(),
+                baselines: vec!["baseline".into()],
                 eval_rounds: 5,
                 parameters: vec![TunerParameter {
                     name: "c".into(),
@@ -999,12 +1018,14 @@ mod tests {
             params: Value,
             rounds: u32,
             seed: Option<u64>,
+            baseline: Option<String>,
         ) -> Result<Value, HostError> {
             Ok(serde_json::json!({
                 "cost": 0.25,
                 "params": params,
                 "rounds": rounds,
                 "seed": seed,
+                "baseline": baseline,
             }))
         }
     }
@@ -1098,7 +1119,7 @@ mod tests {
         assert_eq!(code, 0);
         let info: TunerInfo = serde_json::from_str(out.lines().next().unwrap()).unwrap();
         assert_eq!(info.id, "test");
-        assert_eq!(info.baseline, "baseline");
+        assert_eq!(info.baselines, vec!["baseline".to_string()]);
         assert_eq!(info.eval_rounds, 5);
         assert_eq!(info.parameters.len(), 1);
         assert_eq!(info.parameters[0].name, "c");

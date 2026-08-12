@@ -21,6 +21,7 @@ import {
   FAKE_SMAC3_RUN_ID,
   fakeKinds,
   fakeTrialRowsWithRepeats,
+  fakeTrialRowsMultiInstance,
 } from "./fixtures/fake-bench.js";
 
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
@@ -222,5 +223,30 @@ describe("RunDetailPanel / smac3", () => {
     // Every point sharing that config renders a (non-degenerate) whisker.
     const whiskers = document.querySelectorAll(".smac3-ci-whisker");
     expect(whiskers.length).toBe(5); // one per scored trial (#1, #2, #3, #4, #5)
+  });
+
+  it("keeps trials with the same config but different baseline instances in separate confidence-band groups", async () => {
+    const { store } = createTestStore({
+      getRunTrials: () => Effect.send(fakeTrialRowsMultiInstance),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+
+    await screen.findByText("Best cost (loss rate)");
+
+    // The trial table's Baseline column distinguishes the two instances.
+    const baselineCells = document.querySelectorAll(".smac3-trial-baseline");
+    expect(Array.from(baselineCells).map((c) => c.textContent).sort()).toEqual(["master", "strong"]);
+
+    // #1 (cost 0.1 vs "strong") is the best trial -- if the two same-config
+    // trials had been pooled across instances, the group's mean/CI would be
+    // (0.1 + 0.6) / 2 instead of a single-evaluation estimate per instance.
+    expect(screen.getByText("#1", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: ".smac3-stat-value" })).toBeInTheDocument(); // Evaluations: not pooled with #2
+
+    // Two distinct (single-evaluation) whiskers, not one pooled group.
+    const whiskers = document.querySelectorAll(".smac3-ci-whisker");
+    expect(whiskers.length).toBe(2);
   });
 });

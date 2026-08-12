@@ -241,10 +241,19 @@ impl GameAdapter for TanAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info("strong", TUNE_EVAL_ROUNDS))
+        Some(mcts_tune::strategy_tuner_info(
+            &["strong"],
+            TUNE_EVAL_ROUNDS,
+        ))
     }
 
-    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+    fn tune_eval(
+        &self,
+        params: Value,
+        rounds: u32,
+        seed: Option<u64>,
+        _baseline: Option<String>,
+    ) -> Result<Value, HostError> {
         // Tanbo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
         // `strategy_tune_eval` doc comment.
@@ -281,7 +290,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = TanAdapter
-            .tune_eval(params, 1, Some(0))
+            .tune_eval(params, 1, Some(0), None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

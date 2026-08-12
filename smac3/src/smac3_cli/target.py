@@ -1,8 +1,9 @@
 """Target function — runs the game binary's ``tune eval`` subcommand.
 
-SMAC calls ``train(config, seed=...)`` and expects a ``float`` cost back
-(lower is better).  This module maps the SMAC ``Configuration`` to the
-``--config`` JSON object the binary's ``tune eval`` subcommand expects.
+SMAC calls ``train(config, instance=..., seed=...)`` and expects a ``float``
+cost back (lower is better).  This module maps the SMAC ``Configuration`` to
+the ``--config`` JSON object the binary's ``tune eval`` subcommand expects,
+and ``instance`` (when the scenario has one) to a ``--baseline`` flag.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def make_target(cfg: SearchConfig):
             f"cargo build --release -p game-traffic-lights"
         )
 
-    def train(config: Configuration, seed: int = 0) -> float:
+    def train(config: Configuration, instance: str | None = None, seed: int = 0) -> float:
         """Evaluate one hyperparameter configuration.
 
         Parameters
@@ -44,6 +45,10 @@ def make_target(cfg: SearchConfig):
         config:
             The configuration sampled by SMAC.  Only *active* parameters
             (those whose parent conditions are satisfied) are included.
+        instance:
+            The baseline instance id to evaluate against (from
+            ``Scenario(instances=...)``), forwarded as ``--baseline``.
+            ``None`` when the scenario wasn't given an instance list.
         seed:
             Random seed forwarded by SMAC (from the scenario).
 
@@ -63,6 +68,8 @@ def make_target(cfg: SearchConfig):
             "--seed",
             str(seed),
         ]
+        if instance is not None:
+            cmd += ["--baseline", instance]
 
         logger.debug("Running: %s", " ".join(cmd))
 

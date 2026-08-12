@@ -30,6 +30,12 @@ class OptimizerConfig:
 class TargetConfig:
     binary: Path = Path("target/release/game-traffic-lights")
     rounds: int = 20
+    # Baseline instance ids to evaluate each trial config against (SMAC3's
+    # `Scenario(instances=...)`). Sourced from the binary's own `tune
+    # describe` at launch time, same as `parameters`/`conditions` --  see
+    # `SearchConfig.parameters_from_binary`'s docstring for why the binary,
+    # not this dataclass's default, is the source of truth.
+    baselines: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,7 +98,9 @@ class SearchConfig:
         return p if p.is_absolute() else (Path.cwd() / p).resolve()
 
     @classmethod
-    def parameters_from_binary(cls, binary: Path) -> tuple[list[ParamDef], list[CondDef]]:
+    def parameters_from_binary(
+        cls, binary: Path
+    ) -> tuple[list[ParamDef], list[CondDef], list[str]]:
         """Query ``<binary> tune describe`` for its search-space schema.
 
         The binary is the single source of truth for the search space (what
@@ -103,7 +111,11 @@ class SearchConfig:
         `parameters:`/`conditions:` blocks, just as an array of
         ``{"name": ..., ...}`` objects instead of a name-keyed mapping, so
         it's reshaped into that mapping and run back through `_from_dict`
-        rather than duplicating its field-extraction logic.
+        rather than duplicating its field-extraction logic. ``baselines``
+        (the list of opponent-instance ids, e.g. ``["strong", "master"]``)
+        is reported alongside `parameters`/`conditions` for the same reason
+        -- it's part of the binary's tuner metadata, not something to
+        hand-maintain here.
         """
         result = subprocess.run(
             [str(binary), "tune", "describe"],
@@ -121,7 +133,7 @@ class SearchConfig:
             "conditions": info["conditions"],
         }
         parsed = cls._from_dict(raw)
-        return parsed.parameters, parsed.conditions
+        return parsed.parameters, parsed.conditions, list(info["baselines"])
 
     # ------------------------------------------------------------------
     # Internal
@@ -164,6 +176,7 @@ class SearchConfig:
             target=TargetConfig(
                 binary=Path(tgt.get("binary", "target/release/game-traffic-lights")),
                 rounds=tgt.get("rounds", 20),
+                baselines=list(tgt.get("baselines", [])),
             ),
             parameters=params,
             conditions=conds,

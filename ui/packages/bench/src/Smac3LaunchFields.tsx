@@ -7,7 +7,7 @@
 //     (`GET /api/bench/smac3/kinds` — only games with a `tuner()` impl
 //     appear at all, so there's nothing to disable/grey out here);
 //   - a read-only summary of that game's search space (parameters,
-//     conditions, baseline, the tuner's *default* eval rounds/trial) so the
+//     conditions, baselines, the tuner's *default* eval rounds/trial) so the
 //     operator can see what a trial actually varies before committing a
 //     budget to it;
 //   - the actual editable fields: n_trials/n_workers/deterministic/seed and
@@ -102,8 +102,8 @@ export const Smac3LaunchFields: Component<{
               <div class="smac3-tuner-meta">
                 <span class="meta-label">Tuner</span>
                 <span class="meta-value"><code>{tuner().id}</code></span>
-                <span class="meta-label">Baseline</span>
-                <span class="meta-value">{tuner().baseline}</span>
+                <span class="meta-label">{tuner().baselines.length > 1 ? "Baselines" : "Baseline"}</span>
+                <span class="meta-value">{tuner().baselines.join(", ")}</span>
                 <span class="meta-label">Eval rounds/trial</span>
                 <span class="meta-value">{tuner().eval_rounds}</span>
               </div>

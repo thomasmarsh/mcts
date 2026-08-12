@@ -15,10 +15,13 @@
 // a single observation — the intensifier re-evaluating the *same* config
 // on a later seed (visible as two trial rows with identical `config`) is
 // SMAC building more confidence in that estimate, not noise to ignore. So
-// trials are grouped by identical `config`, each group's mean cost is
-// treated as a pooled proportion over `n = evaluations * 2 * rounds`
-// Bernoulli trials, and a Wilson score interval on that is rendered as a
-// whisker per chart point plus a headline stat for the best trial's group.
+// trials are grouped by identical `config` *and* baseline instance (a run
+// using SMAC3's multi-instance mechanism scores the same config separately
+// against each baseline, and those costs shouldn't be pooled together —
+// see `groupKey`), each group's mean cost is treated as a pooled proportion
+// over `n = evaluations * 2 * rounds` Bernoulli trials, and a Wilson score
+// interval on that is rendered as a whisker per chart point plus a
+// headline stat for the best trial's group.
 
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { TrialRow, TunerInfo } from "./index.js";
@@ -73,6 +76,26 @@ function fmtCost(cost: number | null): string {
   return cost === null ? "—" : (cost * 100).toFixed(1) + "%";
 }
 
+/** The baseline instance a trial's cost was measured against, when the run
+ * used SMAC3's multi-instance mechanism (`Scenario(instances=...)`) --
+ * `TrialTracker` (Python) stuffs it into the existing `extra` JSON column
+ * as `{"instance": "master"}` rather than a new top-level DB column. `null`
+ * for a single-instance run (nothing to disambiguate) or an older trial
+ * recorded before this existed. */
+function instanceOf(t: TrialRow): string | null {
+  const extra = t.extra as { instance?: unknown } | null;
+  return typeof extra?.instance === "string" ? extra.instance : null;
+}
+
+/** Grouping key for the CI-band pooling below: same `config` *and* same
+ * baseline instance. Pooling across different instances would hide exactly
+ * the signal multi-instance evaluation exists to expose -- a config that's
+ * saturated against one baseline can still have a very different win rate
+ * against another. */
+function groupKey(t: TrialRow): string {
+  return JSON.stringify(t.config) + "::" + (instanceOf(t) ?? "");
+}
+
 interface ChartPoint {
   x: number;
   trial: TrialRow;
@@ -103,11 +126,12 @@ export const Smac3RunDetail: Component<{
 
   // A repeated `config` across trials (the intensifier re-evaluating the
   // same candidate on a later seed) is pooled into one group so its cost
-  // estimate gets a tighter interval than any single evaluation.
+  // estimate gets a tighter interval than any single evaluation -- but only
+  // within the same baseline instance (see `groupKey`'s doc comment).
   const groups = createMemo((): Map<string, TrialGroup> => {
     const byKey = new Map<string, TrialRow[]>();
     for (const t of scored()) {
-      const key = JSON.stringify(t.config);
+      const key = groupKey(t);
       const list = byKey.get(key);
       if (list) list.push(t);
       else byKey.set(key, [t]);
@@ -122,11 +146,11 @@ export const Smac3RunDetail: Component<{
     return result;
   });
 
-  const groupFor = (t: TrialRow): TrialGroup => groups().get(JSON.stringify(t.config))!;
+  const groupFor = (t: TrialRow): TrialGroup => groups().get(groupKey(t))!;
 
   const bestGroup = createMemo((): TrialGroup | null => {
     const best = bestTrial();
-    return best ? (groups().get(JSON.stringify(best.config)) ?? null) : null;
+    return best ? (groups().get(groupKey(best)) ?? null) : null;
   });
 
   const chartPoints = createMemo((): ChartPoint[] => {
@@ -319,6 +343,7 @@ export const Smac3RunDetail: Component<{
             <tr>
               <th>#</th>
               <th>Family</th>
+              <th>Baseline</th>
               <th>Cost</th>
               <th>Seed</th>
               <th>Time</th>
@@ -330,6 +355,7 @@ export const Smac3RunDetail: Component<{
                 <tr classList={{ "smac3-trial-best": t.trial_id === bestTrial()?.trial_id }} title={JSON.stringify(t.config)}>
                   <td>{t.trial_id}</td>
                   <td class="smac3-trial-family">{typeof t.config.family === "string" ? t.config.family : "—"}</td>
+                  <td class="smac3-trial-baseline">{instanceOf(t) ?? "—"}</td>
                   <td>{fmtCost(t.cost)}</td>
                   <td>{t.seed ?? "—"}</td>
                   <td>{t.ts}</td>

@@ -518,16 +518,31 @@ impl GameAdapter for DruidAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info("strong", TUNE_EVAL_ROUNDS))
+        // "master" is the same strategy shape as "strong", just with a
+        // longer thinking budget -- a genuine second, harder instance a
+        // candidate can still be ranked against once it's saturated 100%
+        // win rate against "strong" alone.
+        Some(mcts_tune::strategy_tuner_info(
+            &["strong", "master"],
+            TUNE_EVAL_ROUNDS,
+        ))
     }
 
-    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
-        let cfg = preset_cfg("strong").expect("strong preset is always registered");
+    fn tune_eval(
+        &self,
+        params: Value,
+        rounds: u32,
+        seed: Option<u64>,
+        baseline: Option<String>,
+    ) -> Result<Value, HostError> {
+        let baseline = baseline.as_deref().unwrap_or("strong");
+        let cfg = preset_cfg(baseline)
+            .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
         // candidate's search is safe here.
         let outcome = mcts_tune::strategy_tune_eval(&params, rounds, seed, true, || {
-            build_ai("strong", Duration::from_millis(cfg.time_budget_ms), cfg)
+            build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg)
         })?;
         Ok(serde_json::json!({
             "cost": outcome.cost,
@@ -561,8 +576,32 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0))
+            .tune_eval(params, 1, Some(0), None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
+    }
+
+    #[test]
+    fn tune_eval_rejects_unknown_baseline() {
+        let err = DruidAdapter::default()
+            .tune_eval(
+                serde_json::json!({}),
+                1,
+                Some(0),
+                Some("nonexistent".into()),
+            )
+            .expect_err("an unrecognized baseline id should error before any games are played");
+        assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn tuner_lists_strong_and_master_as_baselines() {
+        let info = DruidAdapter::default()
+            .tuner()
+            .expect("druid supports tuning");
+        assert_eq!(
+            info.baselines,
+            vec!["strong".to_string(), "master".to_string()]
+        );
     }
 }

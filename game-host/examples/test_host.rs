@@ -157,7 +157,7 @@ impl GameAdapter for TestHost {
     fn tuner(&self) -> Option<TunerInfo> {
         Some(TunerInfo {
             id: "test".into(),
-            baseline: "strong".into(),
+            baselines: vec!["strong".into()],
             eval_rounds: 5,
             parameters: vec![TunerParameter {
                 name: "c".into(),

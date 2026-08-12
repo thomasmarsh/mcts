@@ -254,10 +254,19 @@ impl GameAdapter for TlAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info("strong", TUNE_EVAL_ROUNDS))
+        Some(mcts_tune::strategy_tuner_info(
+            &["strong"],
+            TUNE_EVAL_ROUNDS,
+        ))
     }
 
-    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+    fn tune_eval(
+        &self,
+        params: Value,
+        rounds: u32,
+        seed: Option<u64>,
+        _baseline: Option<String>,
+    ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- TrafficLights has one (see `lib.rs`), so merging
         // transposed nodes during the candidate's search is safe here.

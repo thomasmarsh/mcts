@@ -102,7 +102,7 @@ export const fakeSmac3Kinds: Smac3GameInfo[] = [
     game: "traffic-lights",
     tuner: {
       id: "strategy",
-      baseline: "strong",
+      baselines: ["strong"],
       eval_rounds: 20,
       parameters: [
         { name: "family", type: "categorical", choices: ["ucb1", "ucb1_tuned", "rave"], default: "rave" },
@@ -176,6 +176,31 @@ export const fakeTrialRowsWithRepeats: TrialRow[] = [
     seed: 2,
     cost: 0.35,
     extra: null,
+  },
+];
+
+// Same `config` evaluated against two different baseline instances (SMAC3's
+// `Scenario(instances=...)`, e.g. druid's "strong"/"master") -- unlike
+// fakeTrialRowsWithRepeats' same-instance re-evaluation, these must render
+// as two *separate* confidence-band groups, not pool together, since a
+// config's win rate against one baseline says nothing about its win rate
+// against another.
+export const fakeTrialRowsMultiInstance: TrialRow[] = [
+  {
+    trial_id: 1,
+    ts: "2026-03-01T00:00:01Z",
+    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    seed: 0,
+    cost: 0.1,
+    extra: { instance: "strong" },
+  },
+  {
+    trial_id: 2,
+    ts: "2026-03-01T00:01:00Z",
+    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    seed: 0,
+    cost: 0.6,
+    extra: { instance: "master" },
   },
 ];
 

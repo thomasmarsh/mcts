@@ -140,12 +140,20 @@ def legacy_space() -> ConfigurationSpace:
 
 @pytest.fixture(scope="module")
 def binary_space(game_nim_binary: Path) -> ConfigurationSpace:
-    parameters, conditions = SearchConfig.parameters_from_binary(game_nim_binary)
+    parameters, conditions, _baselines = SearchConfig.parameters_from_binary(game_nim_binary)
     return build_space(_cfg(parameters, conditions))
 
 
 def test_binary_sourced_space_matches_legacy_yaml_space(legacy_space, binary_space):
     assert binary_space == legacy_space
+
+
+def test_parameters_from_binary_reports_baselines(game_nim_binary: Path):
+    """`baselines` rides along with `parameters`/`conditions` in the same
+    `tune describe` call -- nim has a single "strong" baseline preset, same
+    as every tunable game except druid (which lists a second, "master")."""
+    _parameters, _conditions, baselines = SearchConfig.parameters_from_binary(game_nim_binary)
+    assert baselines == ["strong"]
 
 
 def test_binary_sourced_space_round_trips_through_legacy_space(legacy_space, binary_space):

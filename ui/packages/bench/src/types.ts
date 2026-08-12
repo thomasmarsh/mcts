@@ -176,10 +176,14 @@ export interface TunerCondition {
 
 /** A game's tunable search space, as reported by `tune describe`
  * (`game_host::TunerInfo`) and surfaced through `GET
- * /api/bench/smac3/kinds`. */
+ * /api/bench/smac3/kinds`. `baselines` is a list rather than a single id so
+ * SMAC3 can evaluate each trial against multiple opponent strengths
+ * (`Scenario(instances=...)`) -- most games report one entry; a game with a
+ * genuine second, harder preset (e.g. druid's "master") can list it as a
+ * second instance. */
 export interface TunerInfo {
   id: string;
-  baseline: string;
+  baselines: string[];
   eval_rounds: number;
   parameters: TunerParameter[];
   conditions: TunerCondition[];

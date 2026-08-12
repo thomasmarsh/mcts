@@ -85,8 +85,13 @@ class TrialTracker(Callback):
     """Emit one structured JSONL line per completed trial to stdout.
 
     Each line is a ``{"type": "trial", "trial_id": ..., "config": ...,
-    "seed": ..., "cost": ...}`` record matching the Rust
-    ``LogRecord::Trial`` variant so the ingest loop can read it directly.
+    "seed": ..., "cost": ..., "extra": {"instance": ...}}`` record matching
+    the Rust ``LogRecord::Trial`` variant so the ingest loop can read it
+    directly. ``extra.instance`` is only present when the run's `Scenario`
+    was given a baseline-instances list -- it's the id of which baseline
+    this particular trial's cost was measured against, needed to make sense
+    of per-trial cost once multiple instances are in play (see
+    `target.py`'s `instance` parameter).
 
     Accepts an optional ``git_sha`` for attribution.  If omitted, it
     resolves the current HEAD via ``git rev-parse`` on first call.
@@ -117,5 +122,7 @@ class TrialTracker(Callback):
             "seed": info.seed,
             "cost": value.cost,
         }
+        if info.instance is not None:
+            trial_record["extra"] = {"instance": info.instance}
         print(json.dumps(trial_record), flush=True)
         return None

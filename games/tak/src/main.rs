@@ -226,10 +226,19 @@ impl GameAdapter for TakAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        Some(mcts_tune::strategy_tuner_info("strong", TUNE_EVAL_ROUNDS))
+        Some(mcts_tune::strategy_tuner_info(
+            &["strong"],
+            TUNE_EVAL_ROUNDS,
+        ))
     }
 
-    fn tune_eval(&self, params: Value, rounds: u32, seed: Option<u64>) -> Result<Value, HostError> {
+    fn tune_eval(
+        &self,
+        params: Value,
+        rounds: u32,
+        seed: Option<u64>,
+        _baseline: Option<String>,
+    ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Tak has one, so merging transposed nodes during the
         // candidate's search is safe here.
@@ -266,7 +275,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = TakAdapter
-            .tune_eval(params, 1, Some(0))
+            .tune_eval(params, 1, Some(0), None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

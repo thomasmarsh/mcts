@@ -122,12 +122,15 @@ def main() -> None:
     # (`tune describe`), not hand-maintained YAML -- see
     # `SearchConfig.parameters_from_binary`'s docstring.
     binary = cfg.resolve_binary()
-    cfg.parameters, cfg.conditions = SearchConfig.parameters_from_binary(binary)
+    cfg.parameters, cfg.conditions, cfg.target.baselines = SearchConfig.parameters_from_binary(
+        binary
+    )
     logger.info(
-        "Search space from %s: %d parameters, %d conditions",
+        "Search space from %s: %d parameters, %d conditions, baselines=%s",
         binary,
         len(cfg.parameters),
         len(cfg.conditions),
+        cfg.target.baselines,
     )
 
     # -- build configuration space -----------------------------------------
@@ -142,12 +145,20 @@ def main() -> None:
     if n_workers is None:
         n_workers = max(1, os.cpu_count() // 2)
 
+    # `instances` lets SMAC evaluate each trial config against multiple
+    # baseline opponents and aggregate cost across them -- without it, a
+    # config that reaches 100% win rate against the one fixed baseline
+    # floors `cost` at 0.0 and every top candidate ties, with no way to
+    # rank them further. Most games report a single-entry `baselines` list
+    # (an unchanged, single-instance scenario); druid today is the one game
+    # with a genuine second, harder preset ("master") in that list.
     scenario = Scenario(
         cs,
         deterministic=cfg.optimizer.deterministic,
         n_trials=cfg.optimizer.n_trials,
         n_workers=n_workers,
         seed=cfg.optimizer.seed,
+        instances=cfg.target.baselines,
     )
 
     # -- run optimisation --------------------------------------------------

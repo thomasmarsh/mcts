@@ -478,7 +478,7 @@ mod tests {
         let adapter = SubprocessAdapter::new(test_host_binary());
         let info = adapter.tuner().expect("test host declares a tuner");
         assert_eq!(info.id, "test");
-        assert_eq!(info.baseline, "strong");
+        assert_eq!(info.baselines, vec!["strong".to_string()]);
         assert_eq!(info.eval_rounds, 5);
         assert_eq!(info.parameters.len(), 1);
         assert_eq!(info.parameters[0].name, "c");
