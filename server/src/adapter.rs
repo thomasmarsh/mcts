@@ -299,8 +299,10 @@ fn host_to_adapter(e: game_host::HostError) -> AdapterError {
 /// unusable without them).
 pub fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
     let entries: Vec<(&str, &str)> = vec![
+        ("atarigo", "game-atarigo"),
         ("breakthrough", "game-breakthrough"),
         ("druid", "game-druid"),
+        ("gonnect", "game-gonnect"),
         ("knightthrough", "game-knightthrough"),
         ("othello", "game-othello"),
         ("tanbo", "game-tanbo"),

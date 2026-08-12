@@ -15,13 +15,46 @@ use mcts::strategies::Search;
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
 
-/// Board size served by this binary. Gonnect's `Game` impl supports any N
-/// (see `game_gonnect`'s tests, which also cover 9x9), but each concrete
-/// size is a distinct monomorphization, so the CLI/host adapter -- like
-/// Tanbo's -- serves one fixed size rather than a runtime-selectable one.
-/// 13x13 is Gonnect's traditional board size.
-const N: usize = 13;
-const WORDS: usize = 3;
+/// `(N, WORDS)` pairs this binary serves. Each is a distinct
+/// `State<N, WORDS>` monomorphization -- see `dispatch_size!` below -- so
+/// board size is chosen at request time (via `new_state`'s `{"size": N}`
+/// config, or inferred from an existing state's cell count) rather than
+/// fixed at compile time. 13x13 is Gonnect's traditional board size and
+/// stays the default.
+const SUPPORTED_SIZES: &[(usize, usize)] = &[(9, 2), (13, 3), (19, 6)];
+const DEFAULT_SIZE: usize = 13;
+
+/// Runs `$body` with `$n`/`$words` bound as the matching `usize` consts for
+/// board size `$size` (a runtime value). The match arms double as
+/// validation: `$size` must be one of `SUPPORTED_SIZES` or the default arm
+/// returns a `HostError::bad_request` -- so every caller of this macro
+/// implicitly rejects an unsupported size before touching a `State`.
+macro_rules! dispatch_size {
+    ($size:expr, $n:ident, $words:ident, $body:block) => {
+        match $size {
+            9 => {
+                const $n: usize = 9;
+                const $words: usize = 2;
+                $body
+            }
+            13 => {
+                const $n: usize = 13;
+                const $words: usize = 3;
+                $body
+            }
+            19 => {
+                const $n: usize = 19;
+                const $words: usize = 6;
+                $body
+            }
+            other => {
+                return Err(HostError::bad_request(format!(
+                    "unsupported board size {other} (supported: 9, 13, 19)"
+                )))
+            }
+        }
+    };
+}
 
 #[derive(Serialize, Deserialize)]
 struct WireState {
@@ -40,6 +73,11 @@ struct GameView {
     terminal: bool,
 }
 
+#[derive(Deserialize)]
+struct NewGameConfig {
+    size: usize,
+}
+
 fn player_name(p: Player) -> &'static str {
     match p {
         Player::Black => "Black",
@@ -54,7 +92,7 @@ fn parse_player(name: &str) -> Player {
     }
 }
 
-fn color_at(
+fn color_at<const N: usize, const WORDS: usize>(
     black: BigBitBoard<N, N, WORDS>,
     white: BigBitBoard<N, N, WORDS>,
     index: usize,
@@ -68,7 +106,7 @@ fn color_at(
     }
 }
 
-fn state_to_value(s: &State<N, WORDS>) -> Value {
+fn state_to_value<const N: usize, const WORDS: usize>(s: &State<N, WORDS>) -> Value {
     serde_json::to_value(WireState {
         turn: player_name(s.turn()).into(),
         can_swap: true,
@@ -78,16 +116,31 @@ fn state_to_value(s: &State<N, WORDS>) -> Value {
             .collect(),
         // The ko boards aren't exposed on `State`, so the wire format keeps
         // its historical shape (mirroring `black`/`white`) without actually
-        // round-tripping ko state -- see the comment in `value_to_state`.
+        // round-tripping ko state -- see the comment in `state_from_wire`.
         ko_cells: (0..N * N)
             .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
             .collect(),
     })
     .expect("")
 }
-fn value_to_state(v: &Value) -> Result<State<N, WORDS>, HostError> {
-    let w: WireState =
-        serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
+
+fn parse_wire_state(v: &Value) -> Result<WireState, HostError> {
+    serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))
+}
+
+/// Recovers `N` from a wire state's cell count by matching it against
+/// `SUPPORTED_SIZES` -- no separate `size` field is needed on the state
+/// wire format because `cells.len() == N * N` already determines `N`
+/// uniquely.
+fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
+    SUPPORTED_SIZES
+        .iter()
+        .map(|&(n, _)| n)
+        .find(|&n| n * n == len)
+        .ok_or_else(|| HostError::bad_request(format!("unexpected cell count {len}")))
+}
+
+fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N, WORDS> {
     let mut black = BigBitBoard::EMPTY;
     let mut white = BigBitBoard::EMPTY;
     for (i, cell) in w.cells.iter().enumerate() {
@@ -101,9 +154,9 @@ fn value_to_state(v: &Value) -> Result<State<N, WORDS>, HostError> {
     // state round-tripped through the host adapter always looks
     // "just captured nothing" to the ko rule -- ko violations a move earlier
     // in the same client session won't be caught after a round trip. This
-    // matches the previous (BitBoard-backed) adapter's behaviour, which had
-    // the same gap.
-    Ok(State::from_parts(
+    // matches the previous (fixed-size) adapter's behaviour, which had the
+    // same gap.
+    State::from_parts(
         black,
         white,
         BigBitBoard::ONES,
@@ -111,10 +164,10 @@ fn value_to_state(v: &Value) -> Result<State<N, WORDS>, HostError> {
         parse_player(&w.turn),
         w.can_swap,
         w.winner,
-    ))
+    )
 }
 
-fn build_easy() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
+fn build_easy<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
     Box::new(
         TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1>::new().config(
             SearchConfig::new()
@@ -125,7 +178,7 @@ fn build_easy() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
         ),
     )
 }
-fn build_strong() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
+fn build_strong<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
     Box::new(
         TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1>::new().config(
             SearchConfig::new()
@@ -137,21 +190,17 @@ fn build_strong() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
         ),
     )
 }
-
-const PRESETS: &[PresetEntry] = &[
-    PresetEntry {
-        id: "easy",
-        build: build_easy,
-    },
-    PresetEntry {
-        id: "strong",
-        build: build_strong,
-    },
-];
-struct PresetEntry {
-    id: &'static str,
-    build: fn() -> Box<dyn Search<G = Gonnect<N, WORDS>>>,
+fn build_preset<const N: usize, const WORDS: usize>(
+    id: &str,
+) -> Result<Box<dyn Search<G = Gonnect<N, WORDS>>>, HostError> {
+    match id {
+        "easy" => Ok(build_easy::<N, WORDS>()),
+        "strong" => Ok(build_strong::<N, WORDS>()),
+        _ => Err(HostError::not_found("unknown preset")),
+    }
 }
+
+const PRESET_IDS: &[&str] = &["easy", "strong"];
 
 struct GonnectAdapter;
 
@@ -166,110 +215,126 @@ impl GameAdapter for GonnectAdapter {
         "A Go-like connection game where connecting opposite edges wins."
     }
     fn default_config(&self) -> Value {
-        serde_json::json!({})
+        serde_json::json!({ "size": DEFAULT_SIZE })
     }
-    fn new_state(&self, _: Value) -> Result<Value, HostError> {
-        Ok(state_to_value(&State::default()))
+    fn new_state(&self, config: Value) -> Result<Value, HostError> {
+        let config: NewGameConfig = serde_json::from_value(config)
+            .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
+        dispatch_size!(config.size, N, WORDS, {
+            Ok(state_to_value(&State::<N, WORDS>::default()))
+        })
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
-        let s = value_to_state(state)?;
-        let mut mv = Vec::new();
-        if !Gonnect::<N, WORDS>::is_terminal(&s) {
-            Gonnect::<N, WORDS>::generate_actions(&s, &mut mv);
-        }
-        Ok(mv
-            .into_iter()
-            .map(|m| serde_json::to_value(m).unwrap())
-            .collect())
+        let w = parse_wire_state(state)?;
+        let size = size_from_cell_count(w.cells.len())?;
+        dispatch_size!(size, N, WORDS, {
+            let s: State<N, WORDS> = state_from_wire(&w);
+            let mut mv = Vec::new();
+            if !Gonnect::<N, WORDS>::is_terminal(&s) {
+                Gonnect::<N, WORDS>::generate_actions(&s, &mut mv);
+            }
+            Ok(mv
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap())
+                .collect())
+        })
     }
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
-        let s = value_to_state(state)?;
-        let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
-            .map_err(|e| HostError::bad_request(e.to_string()))?;
-        if Gonnect::<N, WORDS>::is_terminal(&s) {
-            return Err(HostError::bad_request("game is over"));
-        }
-        let mut legal = Vec::new();
-        Gonnect::<N, WORDS>::generate_actions(&s, &mut legal);
-        if !legal.contains(&m) {
-            return Err(HostError::bad_request("illegal move"));
-        }
-        Ok(state_to_value(&Gonnect::<N, WORDS>::apply(s, &m)))
+        let w = parse_wire_state(state)?;
+        let size = size_from_cell_count(w.cells.len())?;
+        dispatch_size!(size, N, WORDS, {
+            let s: State<N, WORDS> = state_from_wire(&w);
+            let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
+                .map_err(|e| HostError::bad_request(e.to_string()))?;
+            if Gonnect::<N, WORDS>::is_terminal(&s) {
+                return Err(HostError::bad_request("game is over"));
+            }
+            let mut legal = Vec::new();
+            Gonnect::<N, WORDS>::generate_actions(&s, &mut legal);
+            if !legal.contains(&m) {
+                return Err(HostError::bad_request("illegal move"));
+            }
+            Ok(state_to_value(&Gonnect::<N, WORDS>::apply(s, &m)))
+        })
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
-        let s = value_to_state(state)?;
-        let winner = Gonnect::<N, WORDS>::winner(&s);
-        serde_json::to_value(GameView {
-            turn: player_name(s.turn()).into(),
-            cells: (0..N * N)
-                .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
-                .collect(),
-            winner: winner.map(|p| player_name(p).to_string()),
-            terminal: Gonnect::<N, WORDS>::is_terminal(&s),
+        let w = parse_wire_state(state)?;
+        let size = size_from_cell_count(w.cells.len())?;
+        dispatch_size!(size, N, WORDS, {
+            let s: State<N, WORDS> = state_from_wire(&w);
+            let winner = Gonnect::<N, WORDS>::winner(&s);
+            serde_json::to_value(GameView {
+                turn: player_name(s.turn()).into(),
+                cells: (0..N * N)
+                    .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
+                    .collect(),
+                winner: winner.map(|p| player_name(p).to_string()),
+                terminal: Gonnect::<N, WORDS>::is_terminal(&s),
+            })
+            .map_err(|e| HostError::internal(e.to_string()))
         })
-        .map_err(|e| HostError::internal(e.to_string()))
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESETS
+        PRESET_IDS
             .iter()
-            .map(|p| AiPresetInfo {
-                id: p.id.into(),
-                label: p.id.into(),
+            .map(|id| AiPresetInfo {
+                id: (*id).into(),
+                label: (*id).into(),
                 description: "".into(),
             })
             .collect()
     }
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
-        let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if Gonnect::<N, WORDS>::is_terminal(&s) {
-            return Err(HostError::bad_request("game is over"));
-        }
-        let mut ai = (spec.build)();
-        let action = ai.choose_action(&s);
-        let next = Gonnect::<N, WORDS>::apply(s, &action);
-        Ok(AiMoveResult {
-            mv: serde_json::to_value(action).unwrap(),
-            state: state_to_value(&next),
+        let w = parse_wire_state(state)?;
+        let size = size_from_cell_count(w.cells.len())?;
+        dispatch_size!(size, N, WORDS, {
+            let s: State<N, WORDS> = state_from_wire(&w);
+            if Gonnect::<N, WORDS>::is_terminal(&s) {
+                return Err(HostError::bad_request("game is over"));
+            }
+            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let action = ai.choose_action(&s);
+            let next = Gonnect::<N, WORDS>::apply(s, &action);
+            Ok(AiMoveResult {
+                mv: serde_json::to_value(action).unwrap(),
+                state: state_to_value(&next),
+            })
         })
     }
     fn analyze(&self, state: &Value, preset: &str, _: Option<u64>) -> Result<Analysis, HostError> {
-        let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
-        if Gonnect::<N, WORDS>::is_terminal(&s) {
-            return Err(HostError::bad_request("game is over"));
-        }
-        let mut ai = (spec.build)();
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-        let suggested = report
-            .principal_variation
-            .first()
-            .map(|a| serde_json::to_value(a).unwrap());
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: serde_json::to_value(a.action).unwrap(),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
+        let w = parse_wire_state(state)?;
+        let size = size_from_cell_count(w.cells.len())?;
+        dispatch_size!(size, N, WORDS, {
+            let s: State<N, WORDS> = state_from_wire(&w);
+            if Gonnect::<N, WORDS>::is_terminal(&s) {
+                return Err(HostError::bad_request("game is over"));
+            }
+            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let _ = ai.choose_action(&s);
+            let report = ai.root_report(&s);
+            let suggested = report
                 .principal_variation
-                .into_iter()
-                .map(|a| serde_json::to_value(a).unwrap())
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move: suggested,
+                .first()
+                .map(|a| serde_json::to_value(a).unwrap());
+            Ok(Analysis {
+                actions: report
+                    .actions
+                    .into_iter()
+                    .map(|a| AnalysisAction {
+                        action: serde_json::to_value(a.action).unwrap(),
+                        visits: a.visits,
+                        mean_value: a.mean_value,
+                        is_proven: a.is_proven,
+                    })
+                    .collect(),
+                principal_variation: report
+                    .principal_variation
+                    .into_iter()
+                    .map(|a| serde_json::to_value(a).unwrap())
+                    .collect(),
+                total_visits: report.total_visits,
+                suggested_move: suggested,
+            })
         })
     }
 
@@ -287,45 +352,55 @@ impl GameAdapter for GonnectAdapter {
         seed: Option<u64>,
         _baseline: Option<String>,
         baseline_config: Option<Value>,
-        _game_config: Option<Value>,
+        game_config: Option<Value>,
     ) -> Result<Value, HostError> {
+        let size = match game_config {
+            Some(cfg) => {
+                let cfg: NewGameConfig = serde_json::from_value(cfg)
+                    .map_err(|e| HostError::bad_request(format!("invalid game_config: {e}")))?;
+                cfg.size
+            }
+            None => DEFAULT_SIZE,
+        };
         // Gonnect's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
         // `strategy_tune_eval` doc comment.
-        let outcome = if let Some(cfg) = baseline_config {
-            let baseline_seed = seed.unwrap_or(0);
-            // Fail fast on an invalid baseline config, before any games are
-            // played -- mirrors how a bad candidate `params` is already
-            // rejected during `TrialParams` deserialization inside
-            // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false)?;
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                false,
-                move || {
-                    mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false)
-                        .expect("baseline_config already validated above")
-                },
-                Default::default(),
-            )?
-        } else {
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                false,
-                build_strong,
-                Default::default(),
-            )?
-        };
-        Ok(serde_json::json!({
-            "cost": outcome.cost,
-            "wins": outcome.wins,
-            "losses": outcome.losses,
-            "draws": outcome.draws,
-        }))
+        dispatch_size!(size, N, WORDS, {
+            let outcome = if let Some(cfg) = baseline_config {
+                let baseline_seed = seed.unwrap_or(0);
+                // Fail fast on an invalid baseline config, before any games are
+                // played -- mirrors how a bad candidate `params` is already
+                // rejected during `TrialParams` deserialization inside
+                // `strategy_tune_eval` itself.
+                mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false)?;
+                mcts_tune::strategy_tune_eval(
+                    &params,
+                    rounds,
+                    seed,
+                    false,
+                    move || {
+                        mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false)
+                            .expect("baseline_config already validated above")
+                    },
+                    Default::default(),
+                )?
+            } else {
+                mcts_tune::strategy_tune_eval(
+                    &params,
+                    rounds,
+                    seed,
+                    false,
+                    build_strong::<N, WORDS>,
+                    Default::default(),
+                )?
+            };
+            Ok(serde_json::json!({
+                "cost": outcome.cost,
+                "wins": outcome.wins,
+                "losses": outcome.losses,
+                "draws": outcome.draws,
+            }))
+        })
     }
 }
 
@@ -355,5 +430,38 @@ mod tests {
             .tune_eval(params, 1, Some(0), None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
+    }
+
+    #[test]
+    fn new_state_supports_every_advertised_size() {
+        for &(n, _) in SUPPORTED_SIZES {
+            let v = GonnectAdapter
+                .new_state(serde_json::json!({ "size": n }))
+                .unwrap_or_else(|e| panic!("new_state({n}) failed: {e}"));
+            assert_eq!(v["cells"].as_array().unwrap().len(), n * n);
+        }
+    }
+
+    #[test]
+    fn new_state_rejects_unsupported_size() {
+        assert!(GonnectAdapter
+            .new_state(serde_json::json!({ "size": 7 }))
+            .is_err());
+    }
+
+    #[test]
+    fn legal_moves_and_apply_round_trip_at_every_size() {
+        for &(n, _) in SUPPORTED_SIZES {
+            let state = GonnectAdapter
+                .new_state(serde_json::json!({ "size": n }))
+                .unwrap();
+            let moves = GonnectAdapter.legal_moves(&state).unwrap();
+            assert!(
+                !moves.is_empty(),
+                "size {n} should have legal moves from the empty board"
+            );
+            let next = GonnectAdapter.apply(&state, &moves[0]).unwrap();
+            assert_eq!(next["cells"].as_array().unwrap().len(), n * n);
+        }
     }
 }

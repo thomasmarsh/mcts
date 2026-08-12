@@ -34,8 +34,41 @@ impl PlayerIndex for Player {
 
 /// A placement at cell `.0`, capturing every stone set in `.1` (computed up
 /// front by [`State::valid`] so `apply` never has to recompute it).
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct Move<const N: usize, const WORDS: usize>(pub u16, pub BigBitBoard<N, N, WORDS>);
+
+/// Hand-written wire format: `.1`'s words as hex strings, not raw `u64`s.
+/// A captured group can span most of a 64-cell word, and a `u64` with
+/// several scattered bits set can exceed JS's 2^53 safe-integer range --
+/// `serde`'s derived numeric encoding would silently lose precision through
+/// `JSON.parse` on the client, corrupting the capture set the server later
+/// validates a client-submitted move against. Mirrors the hex-string
+/// convention `games/breakthrough`/`games/knightthrough` use for their own
+/// 64-bit bitboard wire fields.
+impl<const N: usize, const WORDS: usize> Serialize for Move<N, WORDS> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut tup = serializer.serialize_tuple(2)?;
+        tup.serialize_element(&self.0)?;
+        let hex: Vec<String> = self.1.words().iter().map(|w| format!("{w:016x}")).collect();
+        tup.serialize_element(&hex)?;
+        tup.end()
+    }
+}
+
+impl<'de, const N: usize, const WORDS: usize> Deserialize<'de> for Move<N, WORDS> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (cell, hex): (u16, Vec<String>) = Deserialize::deserialize(deserializer)?;
+        let mut words = [0u64; WORDS];
+        for (i, w) in words.iter_mut().enumerate() {
+            let s = hex
+                .get(i)
+                .ok_or_else(|| serde::de::Error::invalid_length(hex.len(), &"WORDS hex words"))?;
+            *w = u64::from_str_radix(s, 16).map_err(serde::de::Error::custom)?;
+        }
+        Ok(Move(cell, BigBitBoard::new(words)))
+    }
+}
 
 impl<const N: usize, const WORDS: usize> Move<N, WORDS> {
     /// Sentinel for "the player to move has no legal (non-suicide)

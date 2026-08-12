@@ -24,8 +24,10 @@ import type { GameKindModule } from "@mcts/game";
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const GAME_MODULES: Record<string, () => Promise<GameKindModule<any, any, any>>> = {
+  atarigo: () => import("@mcts/atarigo").then((m) => m.atarigoModule),
   breakthrough: () => import("@mcts/breakthrough").then((m) => m.breakthroughModule),
   druid: () => import("@mcts/druid").then((m) => m.druidModule),
+  gonnect: () => import("@mcts/gonnect").then((m) => m.gonnectModule),
   knightthrough: () => import("@mcts/knightthrough").then((m) => m.knightthroughModule),
   othello: () => import("@mcts/othello").then((m) => m.othelloModule),
   tanbo: () => import("@mcts/tanbo").then((m) => m.tanboModule),
@@ -39,8 +41,10 @@ export const GAME_MODULES: Record<string, () => Promise<GameKindModule<any, any,
  * new-game dialog to build seat-picker defaults before the module has loaded.
  */
 export const GAME_META: Record<string, { players: string[] }> = {
+  atarigo: { players: ["Black", "White"] },
   breakthrough: { players: ["Black", "White"] },
   druid: { players: ["Black", "White"] },
+  gonnect: { players: ["Black", "White"] },
   knightthrough: { players: ["Black", "White"] },
   othello: { players: ["Black", "White"] },
   tanbo: { players: ["Black", "White"] },

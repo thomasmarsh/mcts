@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mcts/atarigo": "workspace:*",
     "@mcts/breakthrough": "workspace:*",
     "@mcts/core": "workspace:*",
     "@mcts/druid": "workspace:*",
+    "@mcts/gonnect": "workspace:*",
     "@mcts/knightthrough": "workspace:*",
     "@mcts/othello": "workspace:*",
     "@mcts/tanbo": "workspace:*",
