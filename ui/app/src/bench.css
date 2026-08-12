@@ -8,6 +8,12 @@
   height: 100%;
   overflow: hidden;
   position: relative;
+  /* Solid base so the leaderboard's translucent panels (`#leaderboard-left`/
+     `#leaderboard-right` have no background of their own) don't show the
+     page's light `body` background through them -- that mismatch was the
+     leaderboard's low-contrast bug: gray text tuned for a near-black
+     backdrop rendered against a washed-out light one instead. */
+  background: #14151a;
 }
 
 #bench-sidebar {
@@ -16,9 +22,12 @@
   gap: 0;
   width: 380px;
   min-width: 320px;
+  max-width: 720px;
   background: rgba(20, 21, 26, 0.9);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   overflow-y: auto;
+  overflow-x: hidden;
+  resize: horizontal;
 }
 
 /* ── Launch Form ─────────────────────────────────────────────────────── */
@@ -29,11 +38,36 @@
   font-size: 13px;
 }
 
-#launch-form h3 {
+#launch-form-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   margin: 0 0 10px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #e8e8ec;
   font-size: 14px;
   font-weight: 600;
-  color: #e8e8ec;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#launch-form-toggle:hover {
+  color: #fff;
+}
+
+.launch-form-chevron {
+  display: inline-block;
+  font-size: 11px;
+  color: #8a8b96;
+  transition: transform 0.15s ease;
+}
+
+.launch-form-chevron-collapsed {
+  transform: rotate(-90deg);
 }
 
 #launch-form label {
@@ -333,6 +367,20 @@
   flex-direction: column;
   background: rgba(20, 21, 26, 0.75);
   min-width: 0;
+  min-height: 0;
+}
+
+/* Wraps the meta row + (for a SMAC3 run) the chart/param/trial tables --
+   everything between the header and the log tail. Its own scrollbar keeps
+   a tall summary (many trials, a wide param diff table) from squeezing
+   `#log-panel` down to nothing: previously that content had no bound of
+   its own, so on a long run the log tail -- itself flex:1 with no floor --
+   would get crushed to a sliver of empty-looking gray space with the
+   polled lines scrolled out of view instead of visibly capped. */
+#run-detail-summary {
+  overflow-y: auto;
+  min-height: 0;
+  flex-shrink: 1;
 }
 
 #run-detail-header {
@@ -450,10 +498,10 @@
 /* ── Log Tail ────────────────────────────────────────────────────────── */
 
 #log-panel {
-  flex: 1;
+  flex: 1 1 200px;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  min-height: 200px; /* never let the summary section above crush this to nothing */
 }
 
 #log-header {
@@ -486,6 +534,8 @@
 #log-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
+  resize: vertical;
   padding: 4px 16px;
   font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
   font-size: 11px;
@@ -511,14 +561,32 @@
 }
 
 /* ── App-level tabs ──────────────────────────────────────────────────── */
+/* A full-width bar (not a floating pill cluster) so it never overlaps
+   game-specific fixed overlays like Druid's minimap (`.druid-minimap`,
+   also fixed top-right) -- those are offset below it via `--topbar-h`
+   instead of guessing at the tab buttons' own footprint. */
+
+:root {
+  --topbar-h: 44px;
+  --subtabbar-h: 40px;
+}
 
 #app-tabs {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--topbar-h);
   z-index: 100;
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 4px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  background: rgba(20, 21, 26, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(4px);
 }
 
 .tab-btn {
@@ -553,14 +621,24 @@ body.bench-active #analysis-panel {
 }
 
 /* ── Bench sub-tabs ─────────────────────────────────────────────────── */
+/* A second full-width bar stacked directly under `#app-tabs`, same reason:
+   a floating pill here used to sit on top of the sidebar's "Launch New
+   Run" heading and, on the leaderboard, push the runs list off-screen. */
 
 #bench-sub-tabs {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 100;
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0;
+  right: 0;
+  height: var(--subtabbar-h);
+  z-index: 90;
   display: flex;
+  align-items: center;
   gap: 4px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  background: rgba(16, 17, 21, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .sub-tab-btn {
@@ -594,6 +672,8 @@ body.bench-active #analysis-panel {
   height: 100%;
   overflow: hidden;
   flex: 1;
+  box-sizing: border-box;
+  padding-top: calc(var(--topbar-h) + var(--subtabbar-h));
 }
 
 /* ── Bench leaderboard layout (two-column) ──────────────────────────── */
@@ -603,14 +683,18 @@ body.bench-active #analysis-panel {
   height: 100%;
   overflow: hidden;
   flex: 1;
-  padding-top: 44px; /* space for sub-tabs */
+  box-sizing: border-box;
+  padding-top: calc(var(--topbar-h) + var(--subtabbar-h));
 }
 
 #leaderboard-left {
   flex: 0 0 auto;
   width: 440px;
   min-width: 340px;
+  max-width: 720px;
   overflow-y: auto;
+  overflow-x: hidden;
+  resize: horizontal;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -1054,6 +1138,7 @@ body.bench-active #analysis-panel {
 }
 
 #smac3-param-table {
+  table-layout: fixed;
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
@@ -1077,21 +1162,73 @@ body.bench-active #analysis-panel {
   color: #c7c9cf;
 }
 
+/* Fixed column widths that sum within the sidebar's minimum width, plus
+   ellipsis truncation on every cell -- a categorical param's choices (or a
+   long condition) can far exceed any of these; the `title` attribute set
+   in Smac3LaunchFields.tsx surfaces the full text as a hover tooltip. */
+#smac3-param-table th,
+#smac3-param-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#smac3-param-table th:nth-child(1),
+#smac3-param-table td:nth-child(1) {
+  width: 30%;
+}
+
+#smac3-param-table th:nth-child(2),
+#smac3-param-table td:nth-child(2) {
+  width: 16%;
+}
+
+#smac3-param-table th:nth-child(3),
+#smac3-param-table td:nth-child(3) {
+  width: 36%;
+}
+
+#smac3-param-table th:nth-child(4),
+#smac3-param-table td:nth-child(4) {
+  width: 18%;
+}
+
 .smac3-param-name {
   font-weight: 600;
   color: #e8e8ec;
   font-family: monospace;
+  cursor: default;
 }
 
 .smac3-param-type {
   color: #8aaff0;
 }
 
+.smac3-param-range,
+.smac3-param-default {
+  cursor: default;
+}
+
 #smac3-conditions {
   margin: 6px 0 0;
-  padding-left: 16px;
   font-size: 10px;
   color: #8a8b96;
+}
+
+#smac3-conditions summary {
+  cursor: pointer;
+  color: #b7b8c2;
+  font-weight: 600;
+  user-select: none;
+}
+
+#smac3-conditions summary:hover {
+  color: #e8e8ec;
+}
+
+#smac3-conditions ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
 }
 
 #smac3-conditions li {
@@ -1257,8 +1394,12 @@ body.bench-active #analysis-panel {
 }
 
 #smac3-trials-scroll {
-  max-height: 260px;
+  height: 260px;
+  min-height: 120px;
+  max-height: 70vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  resize: vertical;
   padding: 8px 0 0;
 }
 

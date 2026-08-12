@@ -138,55 +138,57 @@ export const RunDetailPanel: Component<{
           </Show>
         </Show>
 
-        <Show when={detail()}>
-          <div id="run-detail-meta">
-            <div class="meta-row">
-              <span class="meta-label">Run ID</span>
-              <span class="meta-value"><code>{detail()!.run_id}</code></span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Status</span>
-              <span class="meta-value">{detail()!.status}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Game</span>
-              <span class="meta-value">{detail()!.game}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Matches</span>
-              <span class="meta-value">{detail()!.match_count}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Trials</span>
-              <span class="meta-value">{detail()!.trial_count}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Git SHA</span>
-              <span class="meta-value"><code>{detail()!.git_sha.slice(0, 12)}</code></span>
-            </div>
-            <Show when={detail()!.pid}>
+        <div id="run-detail-summary">
+          <Show when={detail()}>
+            <div id="run-detail-meta">
               <div class="meta-row">
-                <span class="meta-label">PID</span>
-                <span class="meta-value">{detail()!.pid}</span>
+                <span class="meta-label">Run ID</span>
+                <span class="meta-value"><code>{detail()!.run_id}</code></span>
               </div>
-            </Show>
-            <Show when={detail()!.ended_at}>
               <div class="meta-row">
-                <span class="meta-label">Ended</span>
-                <span class="meta-value">{detail()!.ended_at}</span>
+                <span class="meta-label">Status</span>
+                <span class="meta-value">{detail()!.status}</span>
               </div>
-            </Show>
-          </div>
-        </Show>
+              <div class="meta-row">
+                <span class="meta-label">Game</span>
+                <span class="meta-value">{detail()!.game}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Matches</span>
+                <span class="meta-value">{detail()!.match_count}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Trials</span>
+                <span class="meta-value">{detail()!.trial_count}</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Git SHA</span>
+                <span class="meta-value"><code>{detail()!.git_sha.slice(0, 12)}</code></span>
+              </div>
+              <Show when={detail()!.pid}>
+                <div class="meta-row">
+                  <span class="meta-label">PID</span>
+                  <span class="meta-value">{detail()!.pid}</span>
+                </div>
+              </Show>
+              <Show when={detail()!.ended_at}>
+                <div class="meta-row">
+                  <span class="meta-label">Ended</span>
+                  <span class="meta-value">{detail()!.ended_at}</span>
+                </div>
+              </Show>
+            </div>
+          </Show>
 
-        <Show when={isSmac3()}>
-          <Smac3RunDetail
-            trials={openRun()?.trials ?? []}
-            tuner={smac3Tuner()}
-            launchConfig={detail()?.config ?? null}
-            incumbent={detail()?.incumbent ?? null}
-          />
-        </Show>
+          <Show when={isSmac3()}>
+            <Smac3RunDetail
+              trials={openRun()?.trials ?? []}
+              tuner={smac3Tuner()}
+              launchConfig={detail()?.config ?? null}
+              incumbent={detail()?.incumbent ?? null}
+            />
+          </Show>
+        </div>
 
         <div id="log-panel">
           <div id="log-header">

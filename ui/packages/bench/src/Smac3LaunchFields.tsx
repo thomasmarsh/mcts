@@ -42,7 +42,9 @@ export function isEmptyGameConfig(gameConfig: unknown): boolean {
   );
 }
 
-/** Render one parameter's range/choices/value as a compact string. */
+/** Render one parameter's range/choices/value as a compact string. Full
+ * text (not truncated) -- callers that display this in a narrow column
+ * truncate it themselves and rely on this being the `title` tooltip. */
 function paramRange(p: TunerParameter): string {
   switch (p.type) {
     case "float":
@@ -128,8 +130,6 @@ export const Smac3LaunchFields: Component<{
                 <span class="meta-value"><code>{tuner().id}</code></span>
                 <span class="meta-label">{tuner().baselines.length > 1 ? "Baselines" : "Baseline"}</span>
                 <span class="meta-value">{tuner().baselines.join(", ")}</span>
-                <span class="meta-label">Eval rounds/trial</span>
-                <span class="meta-value">{tuner().eval_rounds}</span>
               </div>
 
               <table id="smac3-param-table">
@@ -145,20 +145,29 @@ export const Smac3LaunchFields: Component<{
                   <For each={tuner().parameters}>
                     {(p) => (
                       <tr>
-                        <td class="smac3-param-name">{p.name}</td>
+                        <td class="smac3-param-name" title={p.name}>{p.name}</td>
                         <td class="smac3-param-type">{p.type}</td>
-                        <td class="smac3-param-range">{paramRange(p)}</td>
-                        <td class="smac3-param-default">{paramDefault(p)}</td>
+                        <td class="smac3-param-range" title={paramRange(p)}>{paramRange(p)}</td>
+                        <td class="smac3-param-default" title={paramDefault(p)}>{paramDefault(p)}</td>
                       </tr>
                     )}
                   </For>
                 </tbody>
               </table>
 
+              {/* Collapsible (open by default) rather than an always-expanded
+                  list -- a family parameter's condition can read like
+                  "family = ucb1 / ucb1_dm / ucb1_mast / ... → final_action"
+                  and a handful of those eat a lot of vertical space in a
+                  ~380px-wide sidebar for something most launches don't need
+                  to re-check every time. */}
               <Show when={tuner().conditions.length > 0}>
-                <ul id="smac3-conditions">
-                  <For each={tuner().conditions}>{(c) => <li>{conditionLabel(c)}</li>}</For>
-                </ul>
+                <details id="smac3-conditions">
+                  <summary>Parameter conditions ({tuner().conditions.length})</summary>
+                  <ul>
+                    <For each={tuner().conditions}>{(c) => <li>{conditionLabel(c)}</li>}</For>
+                  </ul>
+                </details>
               </Show>
 
               <Show when={!isEmptyGameConfig(tuner().game_config)}>

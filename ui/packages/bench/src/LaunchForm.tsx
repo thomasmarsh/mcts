@@ -58,6 +58,13 @@ export const LaunchForm: Component<{
   });
   const smac3GamesLoading = createMemo(() => state().smac3Kinds.status === "pending");
 
+  // Starts collapsed if a run is already open when this mounts (e.g. after
+  // a page reload) -- the detail panel is usually what the operator wants
+  // the vertical space for at that point. Only an initial heuristic: it
+  // doesn't auto-collapse on a later `openRun` since the operator may be
+  // mid-edit on a new launch; the toggle is one click either way.
+  const [expanded, setExpanded] = createSignal(state().openRun === null);
+
   // Form state.
   const [selectedKind, setSelectedKind] = createSignal("");
   const [selectedGame, setSelectedGame] = createSignal("");
@@ -200,116 +207,126 @@ export const LaunchForm: Component<{
 
   return (
     <form id="launch-form" onSubmit={onSubmit}>
-      <h3>Launch New Run</h3>
+      <button
+        type="button"
+        id="launch-form-toggle"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded()}
+      >
+        <span classList={{ "launch-form-chevron": true, "launch-form-chevron-collapsed": !expanded() }}>▾</span>
+        Launch New Run
+      </button>
 
-      <Show when={launchStatus() === "done" && !launchResponseError()}>
-        <div class="launch-success">
-          Run launched: <code>{state().launch.result?.run_id}</code>
-        </div>
-        <Show when={launchResponseError()}>
-          <div class="launch-error launch-error-response">
-            <strong>Launch error:</strong>
-            <pre>{launchResponseError()}</pre>
+      <Show when={expanded()}>
+        <Show when={launchStatus() === "done" && !launchResponseError()}>
+          <div class="launch-success">
+            Run launched: <code>{state().launch.result?.run_id}</code>
           </div>
+          <Show when={launchResponseError()}>
+            <div class="launch-error launch-error-response">
+              <strong>Launch error:</strong>
+              <pre>{launchResponseError()}</pre>
+            </div>
+          </Show>
         </Show>
-      </Show>
 
-      <Show when={launchError()}>
-        <div class="launch-error">{launchError()}</div>
-      </Show>
+        <Show when={launchError()}>
+          <div class="launch-error">{launchError()}</div>
+        </Show>
 
-      <Show when={state().kinds.status === "done" && kinds().length === 0}>
-        <div class="launch-empty">No run kinds available.</div>
-      </Show>
+        <Show when={state().kinds.status === "done" && kinds().length === 0}>
+          <div class="launch-empty">No run kinds available.</div>
+        </Show>
 
-      <Show when={state().kinds.status === "error"}>
-        <div class="launch-error">{state().kinds.error}</div>
-      </Show>
+        <Show when={state().kinds.status === "error"}>
+          <div class="launch-error">{state().kinds.error}</div>
+        </Show>
 
-      <Show when={kinds().length > 0} fallback={<div class="loading-bench">Loading run kinds…</div>}>
-        <label>
-          Run Kind
-          <select value={selectedKind()} onChange={(e) => onKindChange(e.currentTarget.value)} disabled={busy()}>
-            <option value="">— Select —</option>
-            <For each={kinds()}>
-              {(k) => <option value={k.kind}>{k.label}</option>}
-            </For>
-          </select>
-        </label>
+        <Show when={kinds().length > 0} fallback={<div class="loading-bench">Loading run kinds…</div>}>
+          <label>
+            Run Kind
+            <select value={selectedKind()} onChange={(e) => onKindChange(e.currentTarget.value)} disabled={busy()}>
+              <option value="">— Select —</option>
+              <For each={kinds()}>
+                {(k) => <option value={k.kind}>{k.label}</option>}
+              </For>
+            </select>
+          </label>
 
-        <Show when={isSmac3()} fallback={
-          <>
-            <Show when={currentKind()}>
-              <label>
-                Game
-                <select value={selectedGame()} onChange={(e) => onGameChange(e.currentTarget.value)} disabled={busy()}>
-                  <option value="">— Select —</option>
-                  <For each={currentKind()!.games}>
-                    {(g) => <option value={g.game}>{g.game}</option>}
+          <Show when={isSmac3()} fallback={
+            <>
+              <Show when={currentKind()}>
+                <label>
+                  Game
+                  <select value={selectedGame()} onChange={(e) => onGameChange(e.currentTarget.value)} disabled={busy()}>
+                    <option value="">— Select —</option>
+                    <For each={currentKind()!.games}>
+                      {(g) => <option value={g.game}>{g.game}</option>}
+                    </For>
+                  </select>
+                </label>
+              </Show>
+
+              <Show when={currentGame()}>
+                <fieldset id="strategy-picker">
+                  <legend>Strategies (select at least 2)</legend>
+                  <For each={currentGame()!.strategies}>
+                    {(s) => (
+                      <label class="strategy-option">
+                        <input
+                          type="checkbox"
+                          checked={selectedStrategies().has(s.id)}
+                          onChange={() => toggleStrategy(s.id)}
+                          disabled={busy()}
+                        />
+                        <span class="strategy-label">{s.label}</span>
+                        <span class="strategy-desc">{s.description}</span>
+                      </label>
+                    )}
                   </For>
-                </select>
-              </label>
-            </Show>
+                </fieldset>
+              </Show>
 
-            <Show when={currentGame()}>
-              <fieldset id="strategy-picker">
-                <legend>Strategies (select at least 2)</legend>
-                <For each={currentGame()!.strategies}>
-                  {(s) => (
-                    <label class="strategy-option">
-                      <input
-                        type="checkbox"
-                        checked={selectedStrategies().has(s.id)}
-                        onChange={() => toggleStrategy(s.id)}
-                        disabled={busy()}
-                      />
-                      <span class="strategy-label">{s.label}</span>
-                      <span class="strategy-desc">{s.description}</span>
-                    </label>
-                  )}
-                </For>
-              </fieldset>
-            </Show>
+              <Show when={selectedGame()}>
+                <label>
+                  Rounds
+                  <input
+                    type="number"
+                    min={1}
+                    value={rounds()}
+                    onInput={(e) => setRounds(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                    disabled={busy()}
+                  />
+                </label>
+              </Show>
+            </>
+          }>
+            <Smac3LaunchFields
+              games={smac3Games()}
+              gamesLoading={smac3GamesLoading()}
+              game={selectedGame()}
+              onGameChange={onSmac3GameChange}
+              nTrials={smac3NTrials()}
+              onNTrialsChange={setSmac3NTrials}
+              nWorkers={smac3NWorkers()}
+              onNWorkersChange={setSmac3NWorkers}
+              deterministic={smac3Deterministic()}
+              onDeterministicChange={setSmac3Deterministic}
+              seed={smac3Seed()}
+              onSeedChange={setSmac3Seed}
+              rounds={smac3Rounds()}
+              onRoundsChange={setSmac3Rounds}
+              gameConfig={smac3GameConfig()}
+              onGameConfigChange={setSmac3GameConfig}
+              gameConfigError={smac3GameConfigError()}
+              disabled={busy()}
+            />
+          </Show>
 
-            <Show when={selectedGame()}>
-              <label>
-                Rounds
-                <input
-                  type="number"
-                  min={1}
-                  value={rounds()}
-                  onInput={(e) => setRounds(Math.max(1, parseInt(e.currentTarget.value) || 1))}
-                  disabled={busy()}
-                />
-              </label>
-            </Show>
-          </>
-        }>
-          <Smac3LaunchFields
-            games={smac3Games()}
-            gamesLoading={smac3GamesLoading()}
-            game={selectedGame()}
-            onGameChange={onSmac3GameChange}
-            nTrials={smac3NTrials()}
-            onNTrialsChange={setSmac3NTrials}
-            nWorkers={smac3NWorkers()}
-            onNWorkersChange={setSmac3NWorkers}
-            deterministic={smac3Deterministic()}
-            onDeterministicChange={setSmac3Deterministic}
-            seed={smac3Seed()}
-            onSeedChange={setSmac3Seed}
-            rounds={smac3Rounds()}
-            onRoundsChange={setSmac3Rounds}
-            gameConfig={smac3GameConfig()}
-            onGameConfigChange={setSmac3GameConfig}
-            gameConfigError={smac3GameConfigError()}
-            disabled={busy()}
-          />
+          <button type="submit" id="launch-button" disabled={!canLaunch()}>
+            {busy() ? "Launching…" : "Launch"}
+          </button>
         </Show>
-
-        <button type="submit" id="launch-button" disabled={!canLaunch()}>
-          {busy() ? "Launching…" : "Launch"}
-        </button>
       </Show>
     </form>
   );
