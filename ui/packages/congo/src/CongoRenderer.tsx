@@ -1,23 +1,31 @@
 // CongoRenderer.tsx — 7×7 board renderer for Congo.
 //
-// Uses two-click interaction (click source piece, then click destination),
-// same protocol as ChessVariantRenderer, because multiple pieces can reach
-// the same destination square. Unlike ChessVariantRenderer's `[src, dst]`
-// tuple, a Congo `Move` already carries its own `captures`, which matters
-// here: a Monkey's jump-chain move can capture pieces on squares far from
-// its destination, so "is this a capture" and "which squares light up as
-// captured" both come from `move.captures`, never from occupancy of `to`.
+// Two-click interaction (click source piece, then click destination) for
+// every piece but a Monkey mid-capture-chain, same protocol as
+// ChessVariantRenderer. A Monkey's jump-chain is different: several distinct
+// legal moves can share a (from, to) pair while capturing different pieces
+// along the way (the chain can revisit squares and fork), so naming just a
+// final destination is ambiguous -- which piece the player keeps alive is a
+// real strategic choice, not something a heuristic (e.g. "prefer more
+// captures") should make for them. So once a click lands on a square that's
+// only reachable through such a fork, the renderer switches into
+// click-through-the-chain mode: each click either extends the chain by one
+// hop (if there's more than one legal way to continue, or a real choice
+// between stopping and continuing) or re-clicking the Monkey's current
+// square confirms stopping there. Whenever a click leaves only one possible
+// full move, it's submitted immediately without waiting for a redundant
+// confirmation click -- this degrades to a plain two-click move for every
+// piece that has no forks, which is every piece except a Monkey with
+// multiple capture options.
+//
+// This needs `Move.hops`, the chain's *ordered* landing-square sequence
+// (`games/congo/src/lib.rs`'s `Move.captures` is deliberately a sorted set,
+// order-independent, so it alone can't tell two forking paths apart).
 //
 // Board orientation: the engine's mailbox has row 0 = Black's home rank
 // (see `games/congo/src/lib.rs`'s module doc comment) and row 6 = White's,
 // so the display grid maps 1:1 onto the engine index (row-major, no flip)
 // with Black's castle at the top of the screen.
-//
-// Known simplification: Congo's rules allow a Monkey jump-chain to revisit
-// squares, so in rare geometries two distinct legal moves can share the same
-// (from, to) pair with different capture sets. The two-click UI can only
-// name a destination square, not a capture path, so `moveLookup` below just
-// keeps the first match for a given (from, to) key.
 
 import { type Component, createEffect, createMemo, createSignal, For } from "solid-js";
 import type { GameRendererProps } from "@mcts/game";
@@ -54,9 +62,34 @@ function zoneOf(row: number, col: number): "river" | "castle" | "grass" {
   return "grass";
 }
 
+/** Does `hops` start with exactly `prefix` (element-wise)? */
+function hasPrefix(hops: number[], prefix: number[]): boolean {
+  if (hops.length < prefix.length) return false;
+  return prefix.every((sq, i) => hops[i] === sq);
+}
+
+/** The captured square between two board indices exactly one jump apart
+ * (differing by 0 or ±2 in each of row/col) -- the midpoint. */
+function hopMidpoint(a: number, b: number): number {
+  const ar = Math.floor(a / SIZE);
+  const ac = a % SIZE;
+  const br = Math.floor(b / SIZE);
+  const bc = b % SIZE;
+  return ((ar + br) / 2) * SIZE + (ac + bc) / 2;
+}
+
 export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameView>> = (props) => {
   /** Engine index of the currently selected source piece, or null. */
   const [selectedSource, setSelectedSource] = createSignal<number | null>(null);
+  /** Landing squares confirmed so far in an in-progress Monkey chain, oldest
+   * first. Empty whenever nothing beyond the source has been confirmed yet. */
+  const [chainPath, setChainPath] = createSignal<number[]>([]);
+  /** Purely visual hover tracking, decoupled from `props.hoveredMove` (which
+   * can't represent a still-ambiguous partial chain -- see `onMouseEnter`). */
+  const [hoveredSquare, setHoveredSquare] = createSignal<number | null>(null);
+  /** Set when hovering a legal next-hop square whose eventual move is still
+   * ambiguous, so at least the immediate capture can be previewed. */
+  const [hoverExtraCapture, setHoverExtraCapture] = createSignal<number | null>(null);
 
   const movesBySrc = createMemo(() => {
     const map = new Map<number, Move[]>();
@@ -70,23 +103,62 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
 
   const movablePieceSet = createMemo(() => new Set(movesBySrc().keys()));
 
-  const legalDstForSelected = createMemo(() => {
+  /** Legal moves from the selected source whose `hops` still match the
+   * confirmed `chainPath` prefix -- i.e. still-reachable outcomes from here. */
+  const candidates = createMemo(() => {
     const src = selectedSource();
-    if (src === null) return new Set<number>();
-    const moves = movesBySrc().get(src);
-    if (!moves) return new Set<number>();
-    return new Set(moves.map((mv) => mv.to));
+    if (src === null) return [];
+    const prefix = chainPath();
+    return (movesBySrc().get(src) ?? []).filter((mv) => hasPrefix(mv.hops, prefix));
   });
 
-  /** (src,dst) → move. See the module doc comment for the rare-ambiguity
-   * caveat this collapses. */
-  const moveLookup = createMemo(() => {
-    const map = new Map<string, Move>();
-    for (const mv of props.legalMoves) {
-      const key = `${mv.from},${mv.to}`;
-      if (!map.has(key)) map.set(key, mv);
+  /** The Monkey's (or any piece's) current virtual position: the last
+   * confirmed hop, or the source square if none confirmed yet. */
+  const currentPos = createMemo(() => {
+    const path = chainPath();
+    if (path.length === 0) return selectedSource();
+    return path[path.length - 1] ?? selectedSource();
+  });
+
+  /** True if stopping right here (without extending further) is itself a
+   * legal move. */
+  const canStopHere = createMemo(() => {
+    const prefix = chainPath();
+    return prefix.length > 0 && candidates().some((mv) => mv.hops.length === prefix.length);
+  });
+
+  /** Squares one further hop away that some candidate still reaches. */
+  const nextHopSquares = createMemo(() => {
+    const prefix = chainPath();
+    const set = new Set<number>();
+    for (const mv of candidates()) {
+      const next = mv.hops[prefix.length];
+      if (mv.hops.length > prefix.length && next !== undefined) set.add(next);
     }
-    return map;
+    return set;
+  });
+
+  const legalDstForSelected = createMemo(() => {
+    const set = new Set(nextHopSquares());
+    if (canStopHere()) {
+      const cur = currentPos();
+      if (cur !== null) set.add(cur);
+    }
+    return set;
+  });
+
+  /** Squares already captured by the confirmed part of an in-progress chain. */
+  const confirmedCaptures = createMemo(() => {
+    const src = selectedSource();
+    const path = chainPath();
+    const caps = new Set<number>();
+    if (src === null) return caps;
+    let prev = src;
+    for (const step of path) {
+      caps.add(hopMidpoint(prev, step));
+      prev = step;
+    }
+    return caps;
   });
 
   const overlayByDst = createMemo(() => {
@@ -95,16 +167,36 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
     return map;
   });
 
-  /** Squares captured by the currently hovered move, for a preview ring. */
-  const hoveredCaptures = createMemo(() => new Set(props.hoveredMove?.captures ?? []));
+  /** Squares captured by the currently hovered/resolved move, for a preview
+   * ring -- merged with the chain's already-confirmed captures and (when the
+   * hovered move is still ambiguous) the immediate hop's own capture. */
+  const hoveredCaptures = createMemo(() => {
+    const set = new Set(props.hoveredMove?.captures ?? []);
+    for (const sq of confirmedCaptures()) set.add(sq);
+    const extra = hoverExtraCapture();
+    if (extra !== null) set.add(extra);
+    return set;
+  });
 
   createEffect(() => {
     void props.legalMoves; // track this dependency
     setSelectedSource(null);
+    setChainPath([]);
   });
 
   function cellAt(idx: number): Cell | null {
     return props.state.squares[idx] ?? null;
+  }
+
+  /** Clears selection state, including hover-preview state left over from
+   * the click that just submitted a move -- a plain `onMouseLeave` never
+   * fires for that click, so without this a capture-preview ring can be
+   * left pointing at a now-empty square until the mouse actually moves. */
+  function resetSelection(): void {
+    setSelectedSource(null);
+    setChainPath([]);
+    setHoverExtraCapture(null);
+    props.onHover(null);
   }
 
   function onCellClick(idx: number): void {
@@ -116,23 +208,44 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
       return;
     }
 
-    if (legalDstForSelected().has(idx)) {
-      const mv = moveLookup().get(`${src},${idx}`);
+    const prefix = chainPath();
+    const cur = currentPos();
+
+    // Re-clicking the Monkey's current square confirms stopping the chain
+    // here, when that's itself a legal move.
+    if (prefix.length > 0 && idx === cur && canStopHere()) {
+      const mv = candidates().find((m) => m.hops.length === prefix.length);
       if (mv) {
-        setSelectedSource(null);
         props.onMove(mv);
+        resetSelection();
         return;
       }
     }
-    if (src === idx) {
-      setSelectedSource(null);
+
+    // Clicking a legal next-hop square extends the chain -- or, if that
+    // leaves only one possible full move, submits it immediately.
+    if (nextHopSquares().has(idx)) {
+      const newPrefix = [...prefix, idx];
+      const newCandidates = candidates().filter((mv) => hasPrefix(mv.hops, newPrefix));
+      if (newCandidates.length === 1 && newCandidates[0]) {
+        props.onMove(newCandidates[0]);
+        resetSelection();
+      } else {
+        setChainPath(newPrefix);
+      }
+      return;
+    }
+
+    if (idx === src && prefix.length === 0) {
+      resetSelection();
       return;
     }
     if (movablePieceSet().has(idx)) {
       setSelectedSource(idx);
+      setChainPath([]);
       return;
     }
-    setSelectedSource(null);
+    resetSelection();
   }
 
   function isLegalDst(idx: number): boolean {
@@ -153,15 +266,21 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
             const legal = () => isLegalDst(idx);
             const overlay = () => overlayByDst().get(idx);
             const heat = () => overlay()?.visitShare ?? 0;
-            const hovered = () =>
-              !props.busy && selectedSource() !== null && props.hoveredMove != null &&
-              props.hoveredMove.from === selectedSource() && props.hoveredMove.to === idx && legal();
+            const hovered = () => !props.busy && hoveredSquare() === idx;
             const captureTarget = () => hoveredCaptures().has(idx);
+            const isCurrentPos = () => selectedSource() !== null && currentPos() === idx;
             const isGhost = () => !cell() && legal() && hovered();
+            const isVirtualPiece = () => chainPath().length > 0 && isCurrentPos() && !cell();
             const atRisk = () => (props.state.river_since[idx] ?? 0) > 0 && cell() !== null;
-            const previewMove = () =>
-              selectedSource() !== null ? moveLookup().get(`${selectedSource()},${idx}`) : undefined;
-            const isCapture = () => (previewMove()?.captures.length ?? 0) > 0;
+            const isCapture = () => {
+              const prefix = chainPath();
+              return candidates().some(
+                (mv) =>
+                  mv.hops.length > prefix.length &&
+                  mv.hops[prefix.length] === idx &&
+                  mv.captures.length > prefix.length,
+              );
+            };
 
             return (
               <button
@@ -171,7 +290,7 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
                   [`cg-${zone}`]: true,
                   "cg-checker": zone === "grass" && (row + col) % 2 === 0,
                   "cg-movable": !props.busy && selectedSource() === null && isMovable(),
-                  "cg-selected-source": selectedSource() === idx,
+                  "cg-selected-source": isCurrentPos(),
                   legal: legal(),
                   hovered: hovered(),
                   "capture-legal": legal() && isCapture(),
@@ -185,16 +304,43 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
                   props.busy ||
                   (selectedSource() === null
                     ? !isMovable()
-                    : !legal() && idx !== selectedSource() && !isMovable())
+                    : !legal() && idx !== selectedSource() && !isCurrentPos() && !isMovable())
                 }
                 onClick={() => onCellClick(idx)}
                 onMouseEnter={() => {
-                  if (selectedSource() !== null && !props.busy && legal()) {
-                    const mv = moveLookup().get(`${selectedSource()},${idx}`);
-                    if (mv) props.onHover(mv);
+                  if (props.busy) return;
+                  setHoveredSquare(idx);
+                  const src = selectedSource();
+                  if (src === null) return;
+                  const prefix = chainPath();
+                  const cur = currentPos();
+                  if (idx === cur && canStopHere()) {
+                    const mv = candidates().find((m) => m.hops.length === prefix.length);
+                    props.onHover(mv ?? null);
+                    setHoverExtraCapture(null);
+                    return;
                   }
+                  if (nextHopSquares().has(idx)) {
+                    const matching = candidates().filter(
+                      (mv) => mv.hops.length > prefix.length && mv.hops[prefix.length] === idx,
+                    );
+                    if (matching.length === 1 && matching[0]) {
+                      props.onHover(matching[0]);
+                      setHoverExtraCapture(null);
+                    } else {
+                      props.onHover(null);
+                      setHoverExtraCapture(cur !== null ? hopMidpoint(cur, idx) : null);
+                    }
+                    return;
+                  }
+                  props.onHover(null);
+                  setHoverExtraCapture(null);
                 }}
-                onMouseLeave={() => props.onHover(null)}
+                onMouseLeave={() => {
+                  setHoveredSquare(null);
+                  setHoverExtraCapture(null);
+                  props.onHover(null);
+                }}
               >
                 {(() => {
                   const c = cell();
@@ -207,7 +353,7 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
                       </span>
                     );
                   }
-                  if (isGhost() && selectedSource() !== null) {
+                  if (isVirtualPiece() || (isGhost() && selectedSource() !== null)) {
                     const srcCell = cellAt(selectedSource() as number);
                     if (srcCell) {
                       return (

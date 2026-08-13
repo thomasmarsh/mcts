@@ -192,12 +192,25 @@ const KNIGHT8: [(i32, i32); 8] = [
 // Move
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// `captures` is the *set* of captured squares, sorted ascending so two
+/// distinct jump orders that capture the same pieces and land on the same
+/// square compare equal for game-logic purposes (see the module doc
+/// comment). `hops` is the *ordered* sequence of landing squares -- for
+/// every move but a Monkey jump-chain this is just `[to]`, but for a chain
+/// it is each intermediate landing square in the order the chain actually
+/// visited them, ending at `to`. It exists purely so a client (e.g. the UI)
+/// can let a player choose *which* piece to capture and which to leave when
+/// several different jump orders land on the same square -- something the
+/// sorted `captures` set can't distinguish, since it was deliberately
+/// order-independent. `apply` only ever needs `captures` and `to`.
 #[derive(Copy, Clone, Serialize, Debug, PartialEq, Eq, Hash)]
 pub struct Move {
     pub from: u8,
     pub to: u8,
     pub num_captures: u8,
     pub captures: [u8; MAX_CAPTURES],
+    pub num_hops: u8,
+    pub hops: [u8; MAX_CAPTURES],
 }
 
 impl Move {
@@ -209,29 +222,41 @@ impl Move {
         } else {
             0
         };
+        let mut hops = [0u8; MAX_CAPTURES];
+        hops[0] = to as u8;
         Move {
             from: from as u8,
             to: to as u8,
             num_captures,
             captures,
+            num_hops: 1,
+            hops,
         }
     }
 
-    fn chain(from: usize, to: usize, jumped: &[u8]) -> Move {
+    fn chain(from: usize, to: usize, jumped: &[u8], landings: &[u8]) -> Move {
         let mut sorted = jumped.to_vec();
         sorted.sort_unstable();
         let mut captures = [0u8; MAX_CAPTURES];
         captures[..sorted.len()].copy_from_slice(&sorted);
+        let mut hops = [0u8; MAX_CAPTURES];
+        hops[..landings.len()].copy_from_slice(landings);
         Move {
             from: from as u8,
             to: to as u8,
             num_captures: sorted.len() as u8,
             captures,
+            num_hops: landings.len() as u8,
+            hops,
         }
     }
 
     pub fn captures(&self) -> &[u8] {
         &self.captures[..self.num_captures as usize]
+    }
+
+    pub fn hops(&self) -> &[u8] {
+        &self.hops[..self.num_hops as usize]
     }
 
     pub fn is_capture(&self) -> bool {
@@ -425,7 +450,7 @@ impl State {
             }
         }
 
-        s.update_river(mover, mv.to as usize);
+        s.update_river(mover, mv.from as usize, mv.to as usize);
         s.turn = mover.next();
         s
     }
@@ -434,9 +459,15 @@ impl State {
     /// removes any that have now sat through a second consecutive turn.
     /// `destination` is this move's final landing square (for a Monkey chain,
     /// that means intermediate jump squares never touch the counter -- see
-    /// the module doc comment).
-    fn update_river(&mut self, mover: Player, destination: usize) {
+    /// the module doc comment). `origin` is where the moved piece started
+    /// this turn: moving from one river square to another still counts as
+    /// staying in the river (the rule is "leave the river", not "change
+    /// squares within it"), so that continues the piece's existing counter
+    /// instead of resetting it back to a fresh arrival.
+    fn update_river(&mut self, mover: Player, origin: usize, destination: usize) {
         let river_squares: Vec<usize> = (0..SIZE as i32).map(|c| idx(RIVER_ROW, c)).collect();
+        let origin_in_river = rc(origin).0 == RIVER_ROW;
+        let origin_river_since = self.river_since[origin];
 
         for &sq in &river_squares {
             if let Some((color, piece)) = self.squares[sq] {
@@ -444,7 +475,11 @@ impl State {
                     if piece == Piece::Crocodile {
                         self.river_since[sq] = 0;
                     } else if sq == destination {
-                        self.river_since[sq] = 1;
+                        self.river_since[sq] = if origin_in_river {
+                            origin_river_since + 1
+                        } else {
+                            1
+                        };
                     } else {
                         self.river_since[sq] += 1;
                     }
@@ -688,17 +723,31 @@ impl State {
         // nothing else moves during a chain, so this snapshot never changes.
         let occ_without_from = (self.black_occ | self.white_occ) & !Board::from_index(i);
         let enemy_occ = self.occ(mover.next());
-        let mut path = Vec::new();
-        self.monkey_jump_dfs(i, i, occ_without_from, enemy_occ, &mut path, actions);
+        let mut captured = Vec::new();
+        let mut landings = Vec::new();
+        self.monkey_jump_dfs(
+            i,
+            i,
+            occ_without_from,
+            enemy_occ,
+            &mut captured,
+            &mut landings,
+            actions,
+        );
     }
 
+    /// `captured` accumulates jumped-over squares in jump order (sorted into
+    /// `Move::captures` only when a `Move` is built); `landings` accumulates
+    /// this chain's actual landing squares in order, becoming `Move::hops`.
+    #[allow(clippy::too_many_arguments)]
     fn monkey_jump_dfs(
         &self,
         from: usize,
         pos: usize,
         occ_without_from: Board,
         enemy_occ: Board,
-        path: &mut Vec<u8>,
+        captured: &mut Vec<u8>,
+        landings: &mut Vec<u8>,
         actions: &mut Vec<Move>,
     ) {
         let (r, c) = rc(pos);
@@ -711,11 +760,22 @@ impl State {
             };
             let mid = idx(mid_rc.0, mid_rc.1);
             let land = idx(land_rc.0, land_rc.1);
-            if enemy_occ.get(mid) && !path.contains(&(mid as u8)) && !occ_without_from.get(land) {
-                path.push(mid as u8);
-                actions.push(Move::chain(from, land, path));
-                self.monkey_jump_dfs(from, land, occ_without_from, enemy_occ, path, actions);
-                path.pop();
+            if enemy_occ.get(mid) && !captured.contains(&(mid as u8)) && !occ_without_from.get(land)
+            {
+                captured.push(mid as u8);
+                landings.push(land as u8);
+                actions.push(Move::chain(from, land, captured, landings));
+                self.monkey_jump_dfs(
+                    from,
+                    land,
+                    occ_without_from,
+                    enemy_occ,
+                    captured,
+                    landings,
+                    actions,
+                );
+                captured.pop();
+                landings.pop();
             }
         }
     }
@@ -1082,6 +1142,65 @@ mod tests {
         assert!(moves
             .iter()
             .any(|mv| mv.to as usize == end && mv.captures() == expected_full));
+        // `hops` records the actual landing-square order (unsorted, unlike
+        // `captures`), ending at `to`.
+        assert!(moves
+            .iter()
+            .any(|mv| mv.to as usize == end && mv.hops() == [mid as u8, end as u8]));
+    }
+
+    #[test]
+    fn test_monkey_converging_chains_have_distinct_hops() {
+        // Four enemies form a loop around the Monkey's starting square. One
+        // path around the loop (right, down, left) captures three of them
+        // and lands back on the fourth's square; a completely separate,
+        // one-hop path (straight down over the fourth piece) lands on that
+        // *same* square while capturing only it. `to` and even `captures`
+        // can't always tell two such moves apart (see the module doc
+        // comment's "known simplification" discussion), but `hops` -- the
+        // actual landing-square sequence -- always does, which is what lets
+        // a client offer the player a real choice between them instead of
+        // arbitrarily picking one.
+        let m = idx(0, 3);
+        let e_right = idx(0, 4);
+        let e_down_right = idx(1, 5);
+        let e_down = idx(2, 4);
+        let e_below = idx(1, 3);
+        let s = custom(
+            &[
+                (m, Player::Black, Piece::Monkey),
+                (e_right, Player::White, Piece::Pawn),
+                (e_down_right, Player::White, Piece::Pawn),
+                (e_down, Player::White, Piece::Pawn),
+                (e_below, Player::White, Piece::Pawn),
+            ],
+            Player::Black,
+        );
+        let moves = moves_from(&s, m);
+
+        let converge = idx(2, 3);
+        assert_eq!(rc(converge).0, 2);
+
+        let long_way = moves
+            .iter()
+            .find(|mv| mv.to as usize == converge && mv.num_captures == 3)
+            .expect("three-capture loop move exists");
+        let short_way = moves
+            .iter()
+            .find(|mv| mv.to as usize == converge && mv.num_captures == 1)
+            .expect("one-capture straight move exists");
+
+        assert_eq!(
+            long_way.hops(),
+            [idx(0, 5) as u8, idx(2, 5) as u8, converge as u8],
+            "the long way around visits three distinct landing squares"
+        );
+        assert_eq!(
+            short_way.hops(),
+            [converge as u8],
+            "the short way is a single hop straight to the same square"
+        );
+        assert_ne!(long_way.hops(), short_way.hops());
     }
 
     #[test]
@@ -1301,6 +1420,31 @@ mod tests {
         let mv = Move::simple(lion, idx(1, 2), None);
         let next = s.apply(&mv);
         assert_eq!(next.get(stuck), Some((Player::Black, Piece::Crocodile)));
+    }
+
+    #[test]
+    fn test_piece_drowns_when_shuffled_to_another_river_square() {
+        // A pawn already one turn deep in the river (river_since = 1) moves
+        // to a *different* river square instead of leaving the river. It
+        // never actually left, so this must drown it immediately rather
+        // than resetting its counter as if it had just arrived.
+        let stuck = idx(3, 3);
+        let moved_to = idx(3, 4);
+        let mut cells = [None; NUM_SQUARES];
+        cells[stuck] = Some((Player::Black, Piece::Pawn));
+        cells[idx(0, 0)] = Some((Player::Black, Piece::Lion));
+        cells[idx(6, 0)] = Some((Player::White, Piece::Lion));
+        let mut river_since = [0u8; NUM_SQUARES];
+        river_since[stuck] = 1;
+        let s = State::from_parts(cells, river_since, Player::Black);
+
+        let mv = Move::simple(stuck, moved_to, None);
+        let next = s.apply(&mv);
+        assert_eq!(
+            next.get(moved_to),
+            None,
+            "pawn should have drowned instead of surviving by shuffling within the river"
+        );
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////

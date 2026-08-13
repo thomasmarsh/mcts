@@ -154,12 +154,29 @@ const TRAPEZOID_FLAT_GEO = buildFlatGeometry(trapezoidProfile());
 const TRAPEZOID_WALL_GEO = buildWallGeometry(TRAPEZOID_FLAT_GEO);
 const CAP_GEO = buildCapGeometry();
 
+// Rim outlines for each piece shape, derived once from the shared
+// geometries above (see `edgesFor`): stacked pieces of the same color are
+// otherwise indistinguishable from a single tall piece from most camera
+// angles, since a flat's top face exactly matches the next flat's bottom
+// face with nothing to break up the silhouette. A thin rim at each level's
+// boundary is what lets a stack's height actually be read at a glance.
+const CANE_FLAT_EDGES = new THREE.EdgesGeometry(CANE_FLAT_GEO, 15);
+const CANE_WALL_EDGES = new THREE.EdgesGeometry(CANE_WALL_GEO, 15);
+const TRAPEZOID_FLAT_EDGES = new THREE.EdgesGeometry(TRAPEZOID_FLAT_GEO, 15);
+const TRAPEZOID_WALL_EDGES = new THREE.EdgesGeometry(TRAPEZOID_WALL_GEO, 15);
+const CAP_EDGES = new THREE.EdgesGeometry(CAP_GEO, 15);
+
 const SHARED_GEOMETRIES: ReadonlySet<THREE.BufferGeometry> = new Set([
   CANE_FLAT_GEO,
   CANE_WALL_GEO,
   TRAPEZOID_FLAT_GEO,
   TRAPEZOID_WALL_GEO,
   CAP_GEO,
+  CANE_FLAT_EDGES,
+  CANE_WALL_EDGES,
+  TRAPEZOID_FLAT_EDGES,
+  TRAPEZOID_WALL_EDGES,
+  CAP_EDGES,
 ]);
 
 /** Black gets the round cane shape, White the trapezoid (see the dimension
@@ -171,6 +188,22 @@ function geometryFor(color: Player, topKind: Stack["top_kind"]): THREE.BufferGeo
   const flat = color === "Black" ? CANE_FLAT_GEO : TRAPEZOID_FLAT_GEO;
   return topKind === "Wall" ? wall : flat;
 }
+
+/** The rim-outline counterpart to `geometryFor`, for the same piece shape. */
+function edgesFor(color: Player, topKind: Stack["top_kind"]): THREE.BufferGeometry {
+  if (topKind === "Cap") return CAP_EDGES;
+  const wall = color === "Black" ? CANE_WALL_EDGES : TRAPEZOID_WALL_EDGES;
+  const flat = color === "Black" ? CANE_FLAT_EDGES : TRAPEZOID_FLAT_EDGES;
+  return topKind === "Wall" ? wall : flat;
+}
+
+const PIECE_EDGE_MATERIAL = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+
+/** A gap left between stacked pieces' Y positions, on top of
+ * `PIECE_THICKNESS` -- purely cosmetic (there's no gameplay meaning to the
+ * spacing), just enough to catch a sliver of ambient shadow between levels
+ * so a stack doesn't read as one solid block from the side. */
+const STACK_GAP = 0.014;
 
 function pieceMaterial(color: Player): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
@@ -229,7 +262,12 @@ function clearGroup(group: THREE.Group): void {
   }
 }
 
-function makeLabelSprite(text: string): THREE.Sprite {
+/** A coordinate-letter/number label baked flush into the bezel -- a flat
+ * plane textured with the glyph and laid down with the same rotation as the
+ * cell tiles (rather than a `Sprite`, which always faces the camera and so
+ * would read as a decal floating above the board instead of inlaid into
+ * it), so it stays flush with the wood surface as the camera orbits. */
+function makeLabelPlane(text: string): THREE.Mesh {
   const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -238,16 +276,13 @@ function makeLabelSprite(text: string): THREE.Sprite {
   ctx.font = "bold 88px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.lineWidth = 6;
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
-  ctx.strokeText(text, size / 2, size / 2 + 4);
-  ctx.fillStyle = "#2a2b32";
+  ctx.fillStyle = "#e9d9b8";
   ctx.fillText(text, size / 2, size / 2 + 4);
   const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.6, 0.6, 1);
-  return sprite;
+  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), material);
+  mesh.rotation.x = -Math.PI / 2;
+  return mesh;
 }
 
 // --- Client-side winning-road lookup (display only -- the server's `view`
@@ -361,8 +396,12 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     const darkMat = new THREE.MeshStandardMaterial({ map: woodTexture(WOOD_DARK, WOOD_GRAIN_DARK), roughness: 0.55 });
     const cellGeo = new THREE.PlaneGeometry(1, 1);
 
+    // The bezel extends `BEZEL_MARGIN` past the outermost cell edge on every
+    // side -- wide enough that the coordinate labels below (inset less than
+    // that) land on the wood border itself instead of floating past it.
+    const BEZEL_MARGIN = 0.6;
     const bezel = new THREE.Mesh(
-      new THREE.PlaneGeometry(size + 0.7, size + 0.7),
+      new THREE.PlaneGeometry(size + BEZEL_MARGIN * 2, size + BEZEL_MARGIN * 2),
       new THREE.MeshStandardMaterial({ color: WOOD_DARK, roughness: 0.8 }),
     );
     bezel.rotation.x = -Math.PI / 2;
@@ -378,21 +417,21 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
       }
     }
 
-    const margin = 0.85;
+    const labelInset = BEZEL_MARGIN * 0.55;
     for (let i = 0; i < size; i++) {
       const letter = String.fromCharCode(97 + i);
-      [-0.5 - margin, size - 0.5 + margin].forEach((z) => {
-        const sprite = makeLabelSprite(letter);
-        sprite.position.set(i, 0.02, z);
-        boardGroup.add(sprite);
+      [-0.5 - labelInset, size - 0.5 + labelInset].forEach((z) => {
+        const label = makeLabelPlane(letter);
+        label.position.set(i, -0.02, z);
+        boardGroup.add(label);
       });
     }
     for (let j = 0; j < size; j++) {
       const number = String(j + 1);
-      [-0.5 - margin, size - 0.5 + margin].forEach((x) => {
-        const sprite = makeLabelSprite(number);
-        sprite.position.set(x, 0.02, j);
-        boardGroup.add(sprite);
+      [-0.5 - labelInset, size - 0.5 + labelInset].forEach((x) => {
+        const label = makeLabelPlane(number);
+        label.position.set(x, -0.02, j);
+        boardGroup.add(label);
       });
     }
 
@@ -400,6 +439,18 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     controls.target.copy(center);
     camera.position.set(center.x - size * 0.3, Math.max(size, 4) * 1.3, center.z + size * 0.9);
     camera.lookAt(center);
+  }
+
+  function addPiece(x: number, y: number, z: number, color: Player, kind: Stack["top_kind"]): void {
+    const mesh = new THREE.Mesh(geometryFor(color, kind), pieceMaterial(color));
+    mesh.position.set(x, y, z);
+    piecesGroup.add(mesh);
+    // A separate top-level sibling (not a child of `mesh`) so `clearGroup`'s
+    // flat child scan disposes its geometry every rebuild same as any other
+    // piece -- a child of `mesh` would otherwise never get disposed there.
+    const outline = new THREE.LineSegments(edgesFor(color, kind), PIECE_EDGE_MATERIAL);
+    outline.position.set(x, y, z);
+    piecesGroup.add(outline);
   }
 
   function buildPieces(size: number): void {
@@ -411,18 +462,15 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
       let y = 0;
       // Every piece below the top is always flat (walls/capstones can never
       // be covered), so only the top gets its own kind's geometry/height.
+      // `STACK_GAP` (on top of each piece's real thickness) is what keeps a
+      // same-color stack from reading as one solid block -- see its own
+      // comment -- with a rim outline on every level as the second cue.
       for (let level = 0; level < stack.colors.length - 1; level++) {
-        const owner = stack.colors[level]!;
-        const mesh = new THREE.Mesh(geometryFor(owner, "Flat"), pieceMaterial(owner));
-        mesh.position.set(x, y, z);
-        piecesGroup.add(mesh);
-        y += PIECE_THICKNESS;
+        addPiece(x, y, z, stack.colors[level]!, "Flat");
+        y += PIECE_THICKNESS + STACK_GAP;
       }
       const top = stack.colors[stack.colors.length - 1]!;
-      const geo = geometryFor(top, stack.top_kind);
-      const mesh = new THREE.Mesh(geo, pieceMaterial(top));
-      mesh.position.set(x, y, z);
-      piecesGroup.add(mesh);
+      addPiece(x, y, z, top, stack.top_kind);
     });
   }
 
@@ -462,7 +510,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
   function stackTopY(idx: number): number {
     const stack = props.state.cells[idx];
     if (!stack) return 0;
-    return (stack.colors.length - 1) * PIECE_THICKNESS;
+    return (stack.colors.length - 1) * (PIECE_THICKNESS + STACK_GAP);
   }
 
   function highlightPlane(color: number, opacity: number): THREE.Mesh {
@@ -612,6 +660,11 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     });
   }
 
+  /** A `LineBasicMaterial` line renders at a hairline 1px regardless of
+   * `linewidth` on most platforms (a long-standing WebGL limitation three.js
+   * can't work around), which made the winning road nearly invisible. A
+   * `TubeGeometry` ribbon through the path's cell centers, plus a sphere at
+   * each joint to round the corners, gives it real on-screen thickness. */
   function rebuildWinnerGlow(): void {
     clearGroup(winnerGroup);
     if (!props.view.terminal || !props.view.winner) return;
@@ -619,10 +672,20 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     if (!path) return;
     const size = n();
     const glowColor = props.view.winner === "Black" ? WINNER_GLOW_BLACK : WINNER_GLOW_WHITE;
-    const points = path.map((i) => new THREE.Vector3(i % size, stackTopY(i) + 0.05, Math.floor(i / size)));
-    const geo = new THREE.BufferGeometry().setFromPoints(points);
-    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: glowColor, linewidth: 3 }));
-    winnerGroup.add(line);
+    const points = path.map((i) => new THREE.Vector3(i % size, stackTopY(i) + 0.08, Math.floor(i / size)));
+    const mat = new THREE.MeshBasicMaterial({ color: glowColor, transparent: true, opacity: 0.92 });
+
+    if (points.length > 1) {
+      const curve = new THREE.CatmullRomCurve3(points, false, "catmullrom", 0);
+      const tubeGeo = new THREE.TubeGeometry(curve, Math.max(points.length * 6, 8), 0.09, 12, false);
+      winnerGroup.add(new THREE.Mesh(tubeGeo, mat));
+    }
+    const jointGeo = new THREE.SphereGeometry(0.12, 12, 12);
+    points.forEach((p) => {
+      const joint = new THREE.Mesh(jointGeo, mat);
+      joint.position.copy(p);
+      winnerGroup.add(joint);
+    });
   }
 
   function pickAt(clientX: number, clientY: number): Pickable["target"] | null {

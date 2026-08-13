@@ -122,16 +122,23 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     return modeDef ? p.legalMoves.filter(modeDef.filter) : p.legalMoves;
   });
 
-  // Default to the first mode once the module resolves. Only ever fires
-  // once (guarded on `activeMode() === null`): of the two registered kinds,
-  // only Druid has `modes` at all, so a mode picked once stays valid across
-  // a session-8 kind switch either way (ttt's `legalMoves` memo below simply
-  // ignores `activeMode` when the active module has no `modes` to look it up
-  // in) — a future third kind with its own distinct `modes` would need this
-  // revisited to re-fire per `gameKind`, not just once.
+  // Default to the first mode whenever the current module's `modes` don't
+  // include whatever `activeMode` is currently set to -- both the initial
+  // `null` case and a kind switch where the outgoing kind's mode id (e.g.
+  // Druid's "sarsen") doesn't exist in the incoming kind's own `modes` (e.g.
+  // Tak's "flat"/"wall"/"cap"/"move"). Re-deriving on every `mod()` change
+  // (not just once, guarded on `activeMode() === null`) is what makes this
+  // self-healing across kind switches: with a once-only guard, switching
+  // from Druid to Tak left `activeMode` stuck on Druid's mode id, which
+  // matched none of Tak's -- `legalMoves` below then fell through to its
+  // unfiltered branch, silently handing `TakRenderer` a mix of Place *and*
+  // Spread moves that its own placement/spread-mode split can't represent
+  // (see that component's `isSpreadMode` check), making placement moves
+  // vanish entirely as soon as any spread became legal.
   createEffect(() => {
-    const m = mod();
-    if (activeMode() === null && m?.modes && m.modes.length > 0) setActiveMode(m.modes[0]!.id);
+    const modes = mod()?.modes;
+    if (!modes || modes.length === 0) return;
+    if (!modes.some((md) => md.id === activeMode())) setActiveMode(modes[0]!.id);
   });
 
   // Bootstrap: fetch this kind's AI presets once, and start the very first

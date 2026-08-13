@@ -37,8 +37,16 @@ export interface GameView extends GameState {
   terminal: boolean;
 }
 
+/** `hops` is the ordered sequence of landing squares this move actually
+ * visits, ending at `to` -- `[to]` for every move but a Monkey jump-chain.
+ * Unlike `captures` (a sorted set, order-independent by design -- see
+ * `games/congo/src/lib.rs`'s `Move` doc comment), `hops` is what a UI needs
+ * to let a player click through a chain's specific jump order, since two
+ * different orders can land on the same square while capturing different
+ * pieces. */
 export interface Move {
   from: number;
   to: number;
   captures: number[];
+  hops: number[];
 }

@@ -74,6 +74,10 @@ struct WireMove {
     from: u8,
     to: u8,
     captures: Vec<u8>,
+    /// Ordered landing squares (see `Move::hops`'s doc comment): lets a
+    /// client disambiguate which specific jump order it's choosing when
+    /// several land on the same square via different capture sets.
+    hops: Vec<u8>,
 }
 
 fn move_to_value(m: &Move) -> Value {
@@ -81,6 +85,7 @@ fn move_to_value(m: &Move) -> Value {
         from: m.from,
         to: m.to,
         captures: m.captures().to_vec(),
+        hops: m.hops().to_vec(),
     })
     .expect("WireMove serializes")
 }
@@ -88,16 +93,20 @@ fn move_to_value(m: &Move) -> Value {
 fn value_to_move(v: &Value) -> Result<Move, HostError> {
     let w: WireMove = serde_json::from_value(v.clone())
         .map_err(|e| HostError::bad_request(format!("invalid move: {e}")))?;
-    if w.captures.len() > MAX_CAPTURES {
+    if w.captures.len() > MAX_CAPTURES || w.hops.len() > MAX_CAPTURES {
         return Err(HostError::bad_request("too many captures in move"));
     }
     let mut captures = [0u8; MAX_CAPTURES];
     captures[..w.captures.len()].copy_from_slice(&w.captures);
+    let mut hops = [0u8; MAX_CAPTURES];
+    hops[..w.hops.len()].copy_from_slice(&w.hops);
     Ok(Move {
         from: w.from,
         to: w.to,
         num_captures: w.captures.len() as u8,
         captures,
+        num_hops: w.hops.len() as u8,
+        hops,
     })
 }
 
@@ -365,4 +374,41 @@ impl GameAdapter for CongoAdapter {
 
 fn main() {
     run_cli(CongoAdapter);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use game_congo::{Piece, Player};
+
+    /// `Move::hops` is what lets the UI disambiguate two different Monkey
+    /// jump-chains that happen to converge on the same square (see
+    /// `Move`'s doc comment in `lib.rs`) -- this only helps if the wire
+    /// format actually carries it through `move_to_value`/`value_to_move`
+    /// intact, since a client only ever sees a move via this JSON shape.
+    #[test]
+    fn wire_move_round_trips_hops() {
+        let mut cells = [None; game_congo::NUM_SQUARES];
+        let idx = |r: i32, c: i32| (r * 7 + c) as usize;
+        let m = idx(0, 3);
+        cells[m] = Some((Player::Black, Piece::Monkey));
+        cells[idx(0, 4)] = Some((Player::White, Piece::Pawn));
+        cells[idx(1, 5)] = Some((Player::White, Piece::Pawn));
+        let s = game_congo::State::from_parts(cells, [0; game_congo::NUM_SQUARES], Player::Black);
+
+        let mut actions = Vec::new();
+        s.generate_moves(&mut actions);
+        let chain = actions
+            .iter()
+            .find(|a| a.from as usize == m && a.num_captures == 2)
+            .expect("two-capture chain exists");
+        assert!(
+            chain.hops().len() > 1,
+            "test move should exercise a real chain"
+        );
+
+        let round_tripped = value_to_move(&move_to_value(chain)).expect("round-trips");
+        assert_eq!(round_tripped, *chain);
+        assert_eq!(round_tripped.hops(), chain.hops());
+    }
 }
