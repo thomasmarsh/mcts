@@ -13,7 +13,27 @@
 //! `--out` defaults to `books/gonnect-{size}.json` -- the path
 //! `game_gonnect::book::BookIndex::load` (consulted by `main.rs`'s
 //! `ai_move`/`analyze`) looks for at that size, so a run without `--out`
-//! is immediately picked up by live play.
+//! is immediately picked up by live play. Run from the repo root: nothing
+//! sets a `current_dir` for `game-host`/`server`'s subprocess, so this
+//! relative path and live play's need to agree on where they're invoked
+//! from.
+//!
+//! Each run starts from an empty book and overwrites `--out` outright --
+//! `book::build` never loads the existing file first, so back-to-back runs
+//! are not additive (two 60-round runs do not add up to 120 rounds of
+//! data, the second just replaces the first). `books/` is gitignored, so
+//! there's no git history to fall back on if an accidental low-round rerun
+//! clobbers a book you cared about.
+//!
+//! `--rounds` (default 60, mainly a smoke-test value) has no fixed "right"
+//! number: QBF's greedy reinforcement converges the *root* reply fast (150
+//! rounds was enough for a 40%-of-games opening cell on a 9x9 board), but
+//! a book node only gets consulted live once it independently clears
+//! `book::MIN_BOOK_VISITS`, and deeper plies see a shrinking share of
+//! total games as the tree branches -- so depth costs more rounds than the
+//! opening move does. Watch the printed top-moves report's visit counts
+//! and raise `--rounds` until what you care about clears that bar, rather
+//! than picking a number up front.
 use std::time::Instant;
 
 use game_gonnect::book::{self, BookBuildConfig};

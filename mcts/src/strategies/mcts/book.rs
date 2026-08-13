@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(book.score_at(after_1_2_id, 0), book.score(&[1, 2], 0));
 
         // A state the book never reached (action 9 is unexplored).
-        assert!(index.get(&FakeState(vec![9])).is_none());
+        assert!(!index.contains_key(&FakeState(vec![9])));
 
         // Sanity check that FakeGame::player_to_move at least type-checks
         // against PlayerIndex as a real Game's would.
