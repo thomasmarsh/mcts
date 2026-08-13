@@ -500,7 +500,7 @@ impl GameAdapter for GonnectAdapter {
             ..Default::default()
         };
         dispatch_size!(size, N, WORDS, {
-            let built = book::build::<N, WORDS>(&config, |_round, _plies, _utilities| {});
+            let built = book::build::<N, WORDS>(&config, None, |_round, _plies, _utilities| {});
             serde_json::to_value(built).map_err(|e| HostError::internal(e.to_string()))
         })
     }

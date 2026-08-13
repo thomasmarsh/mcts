@@ -39,6 +39,11 @@ pub struct BookBuildConfig {
     /// under-confident book score.
     pub top_epsilon: f64,
     pub seed: u64,
+    /// Number of self-play workers `build` runs concurrently, splitting
+    /// `rounds` as evenly as possible across them (see `build`'s doc
+    /// comment). `1` (the default) runs everything on the calling thread,
+    /// identical to `build`'s behavior before this field existed.
+    pub num_workers: usize,
 }
 
 impl Default for BookBuildConfig {
@@ -48,53 +53,116 @@ impl Default for BookBuildConfig {
             inner_iterations: 400,
             top_epsilon: 0.1,
             seed: 0,
+            num_workers: 1,
         }
     }
 }
 
 /// Runs `config.rounds` self-play games for board size `(N, WORDS)`,
-/// calling `on_game(round, plies, utilities)` after each one, and returns
-/// the finished book. `round` is 0-based; `plies` is the finished game's
+/// split as evenly as possible across `config.num_workers` worker threads,
+/// and returns the combined book.
+///
+/// `seed`, if given, is folded in as each worker's starting point: every
+/// worker plays its own share of games against a private clone of `seed`
+/// (so QBF's action selection benefits from `seed`'s existing stats exactly
+/// as it would benefit from earlier rounds within a single-worker run), but
+/// only records its *own* new games into a private delta book, so combining
+/// every worker's delta with one copy of `seed` (via `OpeningBook::merge`)
+/// never double-counts `seed`'s own history. Passing `None` starts from an
+/// empty book, as every build did before this parameter existed. This is
+/// what lets a caller amend a previously built book -- load it, pass it as
+/// `seed`, and the returned book is `seed` plus `rounds` additional games,
+/// rather than `rounds` games starting over from scratch.
+///
+/// Calls `on_game(round, plies, utilities)` once per finished game as it
+/// completes; `round` is a 0-based slot in `0..config.rounds` unique to
+/// that game, but with `num_workers > 1` calls arrive in completion order
+/// across workers, not strictly increasing. `plies` is the finished game's
 /// length; `utilities` is that game's per-player outcome.
 pub fn build<const N: usize, const WORDS: usize>(
     config: &BookBuildConfig,
+    seed: Option<&OpeningBook<<Gonnect<N, WORDS> as Game>::A>>,
     mut on_game: impl FnMut(u32, usize, &[f64]),
 ) -> OpeningBook<<Gonnect<N, WORDS> as Game>::A> {
-    let inner_search = TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1Mast>::new().config(
-        SearchConfig::new()
-            .name("gonnect/book-inner")
-            .expand_threshold(1)
-            .max_iterations(config.inner_iterations)
-            .q_init(QInit::Infinity),
-    );
-
-    let qbf =
-        select::QuasiBestFirst::<Gonnect<N, WORDS>, strategy::Ucb1Mast>::new().search(inner_search);
-
-    let top_select = select::EpsilonGreedy::<Gonnect<N, WORDS>, _>::new()
-        .epsilon(config.top_epsilon)
-        .inner(qbf);
-
-    let mut search = TreeSearch::<Gonnect<N, WORDS>, strategy::QuasiBestFirst>::new().config(
-        SearchConfig::new()
-            .name("gonnect/book-build")
-            .select(top_select)
-            .expand_threshold(0)
-            .max_iterations(1)
-            .seed(config.seed),
-    );
-
+    let num_players = Gonnect::<N, WORDS>::num_players();
+    let num_workers = config.num_workers.max(1);
+    let base_rounds = config.rounds / num_workers as u32;
+    let extra_rounds = config.rounds % num_workers as u32;
     let initial = State::<N, WORDS>::default();
-    for round in 0..config.rounds {
-        let (actions, utilities) = search.make_book_entry(&initial);
-        let plies = actions.len();
-        if !actions.is_empty() {
-            search.config.select.inner.book.add(&actions, &utilities);
-        }
-        on_game(round, plies, &utilities);
-    }
 
-    search.config.select.inner.book.clone()
+    let (tx, rx) = std::sync::mpsc::channel::<(u32, usize, Vec<f64>)>();
+    let deltas: Vec<OpeningBook<<Gonnect<N, WORDS> as Game>::A>> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(num_workers);
+        let mut round_start = 0u32;
+        for worker in 0..num_workers {
+            let worker_rounds = base_rounds + u32::from((worker as u32) < extra_rounds);
+            let round_base = round_start;
+            round_start += worker_rounds;
+            let tx = tx.clone();
+            // Distinct, well-separated per-worker RNG seeds so parallel
+            // workers don't just replay the same games -- see `select::
+            // quasi`'s epsilon-greedy fallback for where randomness enters.
+            let worker_seed = config
+                .seed
+                .wrapping_add((worker as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+
+            handles.push(scope.spawn(move || {
+                let inner_search = TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1Mast>::new()
+                    .config(
+                        SearchConfig::new()
+                            .name("gonnect/book-inner")
+                            .expand_threshold(1)
+                            .max_iterations(config.inner_iterations)
+                            .q_init(QInit::Infinity),
+                    );
+
+                let qbf = select::QuasiBestFirst::<Gonnect<N, WORDS>, strategy::Ucb1Mast>::new()
+                    .search(inner_search);
+
+                let mut top_select = select::EpsilonGreedy::<Gonnect<N, WORDS>, _>::new()
+                    .epsilon(config.top_epsilon)
+                    .inner(qbf);
+                if let Some(seed_book) = seed {
+                    top_select.inner.book = seed_book.clone();
+                }
+
+                let mut search = TreeSearch::<Gonnect<N, WORDS>, strategy::QuasiBestFirst>::new()
+                    .config(
+                        SearchConfig::new()
+                            .name("gonnect/book-build")
+                            .select(top_select)
+                            .expand_threshold(0)
+                            .max_iterations(1)
+                            .seed(worker_seed),
+                    );
+
+                let mut delta = OpeningBook::new(num_players);
+                for local_round in 0..worker_rounds {
+                    let (actions, utilities) = search.make_book_entry(&initial);
+                    let plies = actions.len();
+                    if !actions.is_empty() {
+                        search.config.select.inner.book.add(&actions, &utilities);
+                        delta.add(&actions, &utilities);
+                    }
+                    let _ = tx.send((round_base + local_round, plies, utilities));
+                }
+                delta
+            }));
+        }
+        drop(tx);
+        for (round, plies, utilities) in rx.iter() {
+            on_game(round, plies, &utilities);
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let mut book = seed
+        .cloned()
+        .unwrap_or_else(|| OpeningBook::new(num_players));
+    for delta in deltas {
+        book.merge(&delta);
+    }
+    book
 }
 
 /// A loaded opening book plus a state -> book-node index (see

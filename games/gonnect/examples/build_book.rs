@@ -8,7 +8,8 @@
 //! Usage:
 //!   cargo run --release --example build_book -p game-gonnect -- \
 //!     [--size 9|13|19] [--rounds N] [--inner-iterations N] \
-//!     [--top-epsilon F] [--seed N] [--top N] [--out PATH]
+//!     [--top-epsilon F] [--seed N] [--workers N] [--top N] \
+//!     [--out PATH] [--fresh]
 //!
 //! `--out` defaults to `books/gonnect-{size}.json` -- the path
 //! `game_gonnect::book::BookIndex::load` (consulted by `main.rs`'s
@@ -18,12 +19,16 @@
 //! relative path and live play's need to agree on where they're invoked
 //! from.
 //!
-//! Each run starts from an empty book and overwrites `--out` outright --
-//! `book::build` never loads the existing file first, so back-to-back runs
-//! are not additive (two 60-round runs do not add up to 120 rounds of
-//! data, the second just replaces the first). `books/` is gitignored, so
-//! there's no git history to fall back on if an accidental low-round rerun
-//! clobbers a book you cared about.
+//! If `--out` already exists, it's loaded first and passed to `book::build`
+//! as a seed, so back-to-back runs are additive: two 60-round runs add up
+//! to 120 rounds of data in the same book, rather than the second replacing
+//! the first. Pass `--fresh` to discard the existing file instead and start
+//! over from an empty book.
+//!
+//! `--workers` (default 1) splits `--rounds` across that many self-play
+//! threads (see `book::build`'s doc comment) -- each worker's games still
+//! fold into one combined book, so raising it only affects wall-clock time,
+//! not the result's shape.
 //!
 //! `--rounds` (default 60, mainly a smoke-test value) has no fixed "right"
 //! number: QBF's greedy reinforcement converges the *root* reply fast (150
@@ -51,6 +56,9 @@ struct Args {
     /// without `--out` lands at the path `game_gonnect::book::BookIndex`
     /// (the live-play consultation side) actually looks for.
     out: Option<String>,
+    /// Skip loading `--out` as a seed even if it already exists, so `--out`
+    /// is fully overwritten instead of amended.
+    fresh: bool,
 }
 
 impl Default for Args {
@@ -60,6 +68,7 @@ impl Default for Args {
             book: BookBuildConfig::default(),
             top: 8,
             out: None,
+            fresh: false,
         }
     }
 }
@@ -82,8 +91,10 @@ fn parse_args() -> Args {
             "--inner-iterations" => args.book.inner_iterations = next!(),
             "--top-epsilon" => args.book.top_epsilon = next!(),
             "--seed" => args.book.seed = next!(),
+            "--workers" => args.book.num_workers = next!(),
             "--top" => args.top = next!(),
             "--out" => args.out = Some(it.next().expect("missing value")),
+            "--fresh" => args.fresh = true,
             other => panic!("unknown flag: {other}"),
         }
     }
@@ -100,9 +111,33 @@ fn run<const N: usize, const WORDS: usize>(args: &Args) {
         .out
         .clone()
         .unwrap_or_else(|| format!("books/gonnect-{}.json", args.size));
+
+    // Load `out` as a seed unless `--fresh` was passed -- a missing or
+    // unparseable file (the common case for a first run at this size) just
+    // means "start from an empty book", same as `BookIndex::load`'s own
+    // fallback.
+    let seed: Option<OpeningBook<<Gonnect<N, WORDS> as Game>::A>> = if args.fresh {
+        None
+    } else {
+        std::fs::read_to_string(&out)
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+    };
+    match &seed {
+        Some(book) => println!(
+            "amending {out} ({} existing root visits) with {} more games",
+            book.num_visits_at(book.root_id),
+            args.book.rounds,
+        ),
+        None => println!(
+            "building {out} from scratch with {} games",
+            args.book.rounds
+        ),
+    }
+
     let start = Instant::now();
     let book: OpeningBook<<Gonnect<N, WORDS> as Game>::A> =
-        book::build::<N, WORDS>(&args.book, |round, plies, utilities| {
+        book::build::<N, WORDS>(&args.book, seed.as_ref(), |round, plies, utilities| {
             println!(
                 "game {:>4}/{}: {:>3} plies, utilities {:?}",
                 round + 1,

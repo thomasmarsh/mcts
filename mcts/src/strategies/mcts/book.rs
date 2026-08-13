@@ -229,6 +229,36 @@ impl<A: Action> OpeningBook<A> {
         }
         out
     }
+
+    /// Folds `other`'s statistics into `self`, matching nodes by the
+    /// sequence of actions from each book's root -- `Id`s are arena-local
+    /// and meaningless across two independently-built books, so nodes are
+    /// found (or created) via `get_child` exactly as `add` does, rather
+    /// than compared directly. Used to combine books built by independent
+    /// self-play workers that all started from the same seed: each
+    /// worker's own book only records its own new games (see
+    /// `game_gonnect::book::build`), so summing them together, plus one
+    /// copy of the shared seed, reproduces what a single sequential run
+    /// covering every worker's games would have produced.
+    pub fn merge(&mut self, other: &OpeningBook<A>) {
+        assert_eq!(
+            self.num_players, other.num_players,
+            "cannot merge opening books built for different player counts"
+        );
+        self.merge_at(self.root_id, other, other.root_id);
+    }
+
+    fn merge_at(&mut self, self_id: index::Id, other: &OpeningBook<A>, other_id: index::Id) {
+        let other_entry = other.get(other_id);
+        self.get_mut(self_id).num_visits += other_entry.num_visits;
+        for (i, u) in other_entry.utilities.iter().enumerate() {
+            self.get_mut(self_id).utilities[i] += u;
+        }
+        for (action, &other_child_id) in &other_entry.children {
+            let self_child_id = self.get_child(self_id, action);
+            self.merge_at(self_child_id, other, other_child_id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +352,36 @@ mod tests {
         via_sequence.sort_by_key(|(a, _, _)| *a);
         assert_eq!(via_id, via_sequence);
         assert_eq!(book.num_visits_at(id), 2);
+    }
+
+    #[test]
+    fn merge_combines_disjoint_and_shared_paths() {
+        let mut a = OpeningBook::<u8>::new(2);
+        a.add(&[1, 2], &[1.0, -1.0]);
+        let mut b = OpeningBook::<u8>::new(2);
+        b.add(&[1, 3], &[-1.0, 1.0]); // shares the [1] prefix with `a`
+        b.add(&[5], &[1.0, -1.0]); // a path `a` never reached at all
+
+        a.merge(&b);
+
+        // The root sees all three games (`a`'s one, `b`'s two): two wins,
+        // one loss for player 0.
+        assert_eq!(a.score(&[], 0), Some(2.0 / 3.0));
+        // [1] sees only the two games that passed through it -- one win,
+        // one loss.
+        assert_eq!(a.score(&[1], 0), Some(0.5));
+        assert_eq!(a.score(&[1, 2], 0), Some(1.0));
+        assert_eq!(a.score(&[1, 3], 0), Some(0.0));
+        assert_eq!(a.score(&[5], 0), Some(1.0));
+        assert_eq!(a.num_visits_at(a.root_id), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "different player counts")]
+    fn merge_rejects_mismatched_player_counts() {
+        let mut a = OpeningBook::<u8>::new(2);
+        let b = OpeningBook::<u8>::new(3);
+        a.merge(&b);
     }
 
     /// A minimal `Game` whose state *is* the sequence of actions played so
