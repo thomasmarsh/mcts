@@ -203,7 +203,75 @@ fn build_preset<const N: usize, const WORDS: usize>(
 
 const PRESET_IDS: &[&str] = &["easy", "strong"];
 
-struct GonnectAdapter;
+/// Path convention for a size-`N` opening book, matching what `book build`
+/// (`examples/build_book.rs`'s default `--out`) writes.
+fn book_path(n: usize) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("books/gonnect-{n}.json"))
+}
+
+/// Holds each supported board size's opening book (if one has been built --
+/// see `book_path`), loaded once at process startup rather than per
+/// request. `run_host`'s JSONL loop reuses a single `GameAdapter` instance
+/// for the life of the subprocess, so this is exactly one load per game
+/// session, not one per move.
+struct GonnectAdapter {
+    book_9: Option<book::BookIndex<9, 2>>,
+    book_13: Option<book::BookIndex<13, 3>>,
+    book_19: Option<book::BookIndex<19, 6>>,
+}
+
+impl GonnectAdapter {
+    fn load() -> Self {
+        Self {
+            book_9: book::BookIndex::load(&book_path(9)),
+            book_13: book::BookIndex::load(&book_path(13)),
+            book_19: book::BookIndex::load(&book_path(19)),
+        }
+    }
+
+    /// `build_preset`, wrapped with a `book::BookAugmented` layer when this
+    /// size has a loaded opening book -- only for `"strong"`: the book was
+    /// self-play-generated at production strength, so it's a fit for
+    /// strengthening the strong preset, not for the easy one's purpose of
+    /// being beatable.
+    fn augmented_preset<const N: usize, const WORDS: usize>(
+        &self,
+        preset: &str,
+    ) -> Result<Box<dyn Search<G = Gonnect<N, WORDS>> + '_>, HostError>
+    where
+        Self: BookFor<N, WORDS>,
+    {
+        let inner = build_preset::<N, WORDS>(preset)?;
+        Ok(match (preset, self.book_index()) {
+            ("strong", Some(book)) => Box::new(book::BookAugmented::new(inner, book)),
+            _ => inner,
+        })
+    }
+}
+
+/// Selects `GonnectAdapter`'s size-specific book field generically, so
+/// `dispatch_size!`'s shared body (macro-expanded once per size, with `N`/
+/// `WORDS` bound as literal consts per arm) can look up the right one via
+/// `<GonnectAdapter as BookFor<N, WORDS>>::book_index(self)` without needing a
+/// separate hand-written match at each call site.
+trait BookFor<const N: usize, const WORDS: usize> {
+    fn book_index(&self) -> Option<&book::BookIndex<N, WORDS>>;
+}
+impl BookFor<9, 2> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<9, 2>> {
+        self.book_9.as_ref()
+    }
+}
+impl BookFor<13, 3> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<13, 3>> {
+        self.book_13.as_ref()
+    }
+}
+impl BookFor<19, 6> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<19, 6>> {
+        self.book_19.as_ref()
+    }
+}
 
 impl GameAdapter for GonnectAdapter {
     fn kind(&self) -> &'static str {
@@ -293,7 +361,7 @@ impl GameAdapter for GonnectAdapter {
             if Gonnect::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = self.augmented_preset::<N, WORDS>(preset)?;
             let action = ai.choose_action(&s);
             let next = Gonnect::<N, WORDS>::apply(s, &action);
             Ok(AiMoveResult {
@@ -310,7 +378,7 @@ impl GameAdapter for GonnectAdapter {
             if Gonnect::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = self.augmented_preset::<N, WORDS>(preset)?;
             let _ = ai.choose_action(&s);
             let report = ai.root_report(&s);
             let suggested = report
@@ -439,7 +507,7 @@ impl GameAdapter for GonnectAdapter {
 }
 
 fn main() {
-    run_cli(GonnectAdapter);
+    run_cli(GonnectAdapter::load());
 }
 
 #[cfg(test)]
@@ -460,7 +528,7 @@ mod tests {
             "rave": 700,
             "rave_ucb": "tuned",
         });
-        let result = GonnectAdapter
+        let result = GonnectAdapter::load()
             .tune_eval(params, 1, Some(0), None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
@@ -469,7 +537,7 @@ mod tests {
     #[test]
     fn new_state_supports_every_advertised_size() {
         for &(n, _) in SUPPORTED_SIZES {
-            let v = GonnectAdapter
+            let v = GonnectAdapter::load()
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap_or_else(|e| panic!("new_state({n}) failed: {e}"));
             assert_eq!(v["cells"].as_array().unwrap().len(), n * n);
@@ -478,7 +546,7 @@ mod tests {
 
     #[test]
     fn new_state_rejects_unsupported_size() {
-        assert!(GonnectAdapter
+        assert!(GonnectAdapter::load()
             .new_state(serde_json::json!({ "size": 7 }))
             .is_err());
     }
@@ -486,15 +554,15 @@ mod tests {
     #[test]
     fn legal_moves_and_apply_round_trip_at_every_size() {
         for &(n, _) in SUPPORTED_SIZES {
-            let state = GonnectAdapter
+            let state = GonnectAdapter::load()
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap();
-            let moves = GonnectAdapter.legal_moves(&state).unwrap();
+            let moves = GonnectAdapter::load().legal_moves(&state).unwrap();
             assert!(
                 !moves.is_empty(),
                 "size {n} should have legal moves from the empty board"
             );
-            let next = GonnectAdapter.apply(&state, &moves[0]).unwrap();
+            let next = GonnectAdapter::load().apply(&state, &moves[0]).unwrap();
             assert_eq!(next["cells"].as_array().unwrap().len(), n * n);
         }
     }

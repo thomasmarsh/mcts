@@ -9,6 +9,11 @@
 //!   cargo run --release --example build_book -p game-gonnect -- \
 //!     [--size 9|13|19] [--rounds N] [--inner-iterations N] \
 //!     [--top-epsilon F] [--seed N] [--top N] [--out PATH]
+//!
+//! `--out` defaults to `books/gonnect-{size}.json` -- the path
+//! `game_gonnect::book::BookIndex::load` (consulted by `main.rs`'s
+//! `ai_move`/`analyze`) looks for at that size, so a run without `--out`
+//! is immediately picked up by live play.
 use std::time::Instant;
 
 use game_gonnect::book::{self, BookBuildConfig};
@@ -21,7 +26,11 @@ struct Args {
     size: usize,
     book: BookBuildConfig,
     top: usize,
-    out: String,
+    /// `None` means "derive from `size`" -- resolved after parsing, so
+    /// `--size` can come after `--out` on the command line, and so a run
+    /// without `--out` lands at the path `game_gonnect::book::BookIndex`
+    /// (the live-play consultation side) actually looks for.
+    out: Option<String>,
 }
 
 impl Default for Args {
@@ -30,7 +39,7 @@ impl Default for Args {
             size: 9,
             book: BookBuildConfig::default(),
             top: 8,
-            out: "books/gonnect.json".into(),
+            out: None,
         }
     }
 }
@@ -54,7 +63,7 @@ fn parse_args() -> Args {
             "--top-epsilon" => args.book.top_epsilon = next!(),
             "--seed" => args.book.seed = next!(),
             "--top" => args.top = next!(),
-            "--out" => args.out = it.next().expect("missing value"),
+            "--out" => args.out = Some(it.next().expect("missing value")),
             other => panic!("unknown flag: {other}"),
         }
     }
@@ -67,6 +76,10 @@ fn parse_args() -> Args {
 /// `dispatch_size!` in `main.rs`) since Gonnect's board size is a const
 /// generic, not a runtime value.
 fn run<const N: usize, const WORDS: usize>(args: &Args) {
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| format!("books/gonnect-{}.json", args.size));
     let start = Instant::now();
     let book: OpeningBook<<Gonnect<N, WORDS> as Game>::A> =
         book::build::<N, WORDS>(&args.book, |round, plies, utilities| {
@@ -87,16 +100,12 @@ fn run<const N: usize, const WORDS: usize>(args: &Args) {
     let initial = State::<N, WORDS>::default();
     report_top_moves(&book, &initial, args.top);
 
-    if let Some(parent) = std::path::Path::new(&args.out).parent() {
+    if let Some(parent) = std::path::Path::new(&out).parent() {
         std::fs::create_dir_all(parent).expect("failed to create output directory");
     }
     let json = serde_json::to_string_pretty(&book).expect("book always serializes");
-    std::fs::write(&args.out, &json).expect("failed to write book file");
-    println!(
-        "\nwrote {} ({} bytes) for size {N}x{N}",
-        args.out,
-        json.len()
-    );
+    std::fs::write(&out, &json).expect("failed to write book file");
+    println!("\nwrote {out} ({} bytes) for size {N}x{N}", json.len());
 
     // Round-trip check: reload what was just written and confirm the root's
     // top reply for `player` still scores identically, so a corrupted or
