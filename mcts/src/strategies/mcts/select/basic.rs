@@ -1,21 +1,11 @@
 use super::super::index::Id;
 use super::super::node::ChildArray;
-use super::super::node::Proven;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
+use super::is_proven_loss;
 use crate::game::Game;
 
 use rand::rngs::SmallRng;
-
-fn is_proven_loss<G: Game>(
-    ctx: &SelectContext<'_, G>,
-    children: &ChildArray<G::A>,
-    idx: usize,
-) -> bool {
-    children.node_id(idx).is_some_and(
-        |child_id| matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player),
-    )
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 

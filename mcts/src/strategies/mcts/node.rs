@@ -648,6 +648,12 @@ pub struct Node<A: Action> {
     // once `proven` itself resolves.
     pn: AtomicU32,
     dpn: AtomicU32,
+    // Second-layer proof/disproof numbers (Kowalski et al. 2023, Section VII
+    // "Double-Layer PN-MCTS"), tracking "not lost" (won or drawn) instead of
+    // `pn`/`dpn`'s "won" -- see `pn2()`/`dpn2()`'s doc comments. Otherwise
+    // identical bookkeeping to `pn`/`dpn` above.
+    pn2: AtomicU32,
+    dpn2: AtomicU32,
 }
 
 // Manual impl: `AtomicU8`/`AtomicU32` aren't `Clone`, so this can no longer
@@ -662,6 +668,8 @@ impl<A: Action> Clone for Node<A> {
             proven: AtomicU8::new(self.proven.load(Relaxed)),
             pn: AtomicU32::new(self.pn.load(Relaxed)),
             dpn: AtomicU32::new(self.dpn.load(Relaxed)),
+            pn2: AtomicU32::new(self.pn2.load(Relaxed)),
+            dpn2: AtomicU32::new(self.dpn2.load(Relaxed)),
         }
     }
 }
@@ -679,6 +687,8 @@ where
             proven: AtomicU8::new(Proven::UNPROVEN_U8),
             pn: AtomicU32::new(1),
             dpn: AtomicU32::new(1),
+            pn2: AtomicU32::new(1),
+            dpn2: AtomicU32::new(1),
         }
     }
 
@@ -739,6 +749,48 @@ where
     pub fn set_pn_dpn(&self, pn: u32, dpn: u32) {
         self.pn.store(pn, Relaxed);
         self.dpn.store(dpn, Relaxed);
+    }
+
+    /// Second-layer proof number (Kowalski et al. 2023, Section VII): the
+    /// same PNS magnitude as `pn()`, but for the goal "not lost" (won or
+    /// drawn) instead of "won". This is what lets PN-MCTS distinguish a
+    /// drawn subtree from a lost one in games with draws -- `pn()`/`dpn()`
+    /// alone can't, since `Proven::Win(_)` (the opponent's win) and
+    /// `Proven::Draw` both collapse to the same "disproven" magnitude there
+    /// (see `pn()`'s doc comment and the paper's Table II). `0` once
+    /// `proven()` is `Win(player_idx)` *or* `Draw` (both satisfy "not
+    /// lost"); saturated once it's the opponent's win (the only way to
+    /// actually lose); otherwise the live count `derive_pn_dpn2`
+    /// (backprop.rs) maintains, seeded at `1` like `pn()`. Only meaningful
+    /// when `use_mcts_solver` is on, same caveat as `pn()`.
+    #[inline]
+    pub fn pn2(&self) -> u32 {
+        match self.proven() {
+            Proven::Win(w) if w == self.player_idx => 0,
+            Proven::Draw => 0,
+            Proven::Win(_) => u32::MAX,
+            Proven::Unproven => self.pn2.load(Relaxed),
+        }
+    }
+
+    /// Second-layer disproof number -- the mirror image of `pn2()`, i.e. the
+    /// PNS magnitude for "lost" (the negation of "not lost").
+    #[inline]
+    pub fn dpn2(&self) -> u32 {
+        match self.proven() {
+            Proven::Win(w) if w == self.player_idx => u32::MAX,
+            Proven::Draw => u32::MAX,
+            Proven::Win(_) => 0,
+            Proven::Unproven => self.dpn2.load(Relaxed),
+        }
+    }
+
+    /// Overwrites the live second-layer proof/disproof counts. Called only
+    /// from `derive_pn_dpn2` (backprop.rs); mirrors `set_pn_dpn`.
+    #[inline]
+    pub fn set_pn_dpn2(&self, pn2: u32, dpn2: u32) {
+        self.pn2.store(pn2, Relaxed);
+        self.dpn2.store(dpn2, Relaxed);
     }
 
     #[inline]

@@ -14,10 +14,10 @@
 use std::time::Duration;
 
 use game_druid::Druid;
-use mcts::strategies::mcts::{select, simulate, strategy, node::QInit, SearchConfig, TreeSearch};
+use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::bench::tournament::{round_robin_multiple, Result as GameResult};
 use mcts::util::{AnySearch, Verbosity};
+use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -91,7 +91,11 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in results.iter().enumerate() {
-        println!("[Strong] {} : {}", strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Strong] {} : {}",
+            strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
 
     println!();

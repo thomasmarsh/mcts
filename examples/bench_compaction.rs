@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
+use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::game::Game;
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -56,15 +56,17 @@ fn strong_config(max_arena_len: usize) -> TreeSearch<Druid, RaveDecisiveHeuristi
                     .threshold(204)
                     .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
             )
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default().epsilon(0.5).inner(
-                    DruidHeuristic::new(DruidHeuristicWeights {
-                        block_threat: 1.0,
-                        defend_fork: 1.0,
-                        threaten_connection: 1.0,
-                    }),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.5)
+                        .inner(DruidHeuristic::new(DruidHeuristicWeights {
+                            block_threat: 1.0,
+                            defend_fork: 1.0,
+                            threaten_connection: 1.0,
+                        })),
                 ),
-            )),
+            ),
     )
 }
 
@@ -118,5 +120,8 @@ fn main() {
         state = Druid::apply(state, &action);
     }
 
-    println!("=== final ({ply} plies), arena_len(): {} ===", search.arena_len());
+    println!(
+        "=== final ({ply} plies), arena_len(): {} ===",
+        search.arena_len()
+    );
 }

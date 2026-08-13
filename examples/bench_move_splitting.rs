@@ -19,8 +19,10 @@ use game_druid::{Druid, HashedState, Size};
 
 /// Shipped Strong preset strategy shape: Ucb1 select + DecisiveMove wrapping
 /// EpsilonGreedy wrapping NST.
-type Ucb1DmNstLocal =
-    strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
+type Ucb1DmNstLocal = strategy::Compose<
+    select::Ucb1,
+    simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
+>;
 
 /// Shipped Strong config with the given time budget and tree thread count.
 fn strong_config(budget: Duration, tree_threads: usize) -> TreeSearch<Druid, Ucb1DmNstLocal> {
@@ -35,11 +37,13 @@ fn strong_config(budget: Duration, tree_threads: usize) -> TreeSearch<Druid, Ucb
             .max_time(budget)
             .num_tree_threads(tree_threads)
             .select(select::Ucb1::with_c(1.414))
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default()
-                    .epsilon(0.3)
-                    .inner(simulate::Nst::new().backoff_threshold(5)),
-            )),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.3)
+                        .inner(simulate::Nst::new().backoff_threshold(5)),
+                ),
+            ),
     )
 }
 

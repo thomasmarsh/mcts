@@ -132,6 +132,38 @@ pub(crate) fn derive_pn_dpn<A: crate::game::Action>(node: &node::Node<A>, index:
     node.set_pn_dpn(pn, dpn);
 }
 
+/// Second-layer counterpart to `derive_pn_dpn` above (Kowalski et al. 2023,
+/// Section VII "Double-Layer PN-MCTS"): the identical negamax recurrence,
+/// but reading/writing `pn2`/`dpn2` (goal "not lost") instead of `pn`/`dpn`
+/// (goal "won"). Kept as a separate pass rather than folded into
+/// `derive_pn_dpn` so the two magnitudes -- which diverge exactly when a
+/// `Proven::Draw` leaf is reachable -- stay independently correct and
+/// independently testable. Always safe to run alongside the first layer,
+/// even for a game that never draws: with no `Proven::Draw` node ever
+/// produced, `pn2()`/`dpn2()` collapse to the same values as `pn()`/`dpn()`
+/// (see their doc comments), so this is a no-op in cost only, not a
+/// conditional feature.
+pub(crate) fn derive_pn_dpn2<A: crate::game::Action>(node: &node::Node<A>, index: &TreeIndex<A>) {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+
+    let mut pn2: u32 = u32::MAX;
+    let mut dpn2: u32 = 0;
+    for i in 0..children.len() {
+        let (child_pn2, child_dpn2) = match children.node_id(i) {
+            Some(child_id) => {
+                let child = index.get(child_id);
+                (child.pn2(), child.dpn2())
+            }
+            None => (1, 1),
+        };
+        pn2 = pn2.min(child_dpn2);
+        dpn2 = dpn2.saturating_add(child_pn2);
+    }
+    node.set_pn_dpn2(pn2, dpn2);
+}
+
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
@@ -276,6 +308,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 }
                 derive_proven::<G>(node, index);
                 derive_pn_dpn(node, index);
+                derive_pn_dpn2(node, index);
             }
             is_leaf = false;
 

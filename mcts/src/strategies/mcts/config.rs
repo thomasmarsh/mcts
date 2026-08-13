@@ -89,6 +89,34 @@ where
     /// `debug_assert!`s at the call sites that derive `Proven` values.
     pub use_mcts_solver: bool,
 
+    /// Final-move-selection "contempt factor" (Kowalski et al. 2023, Section
+    /// VII.C): when the root's own expected score for the player to move
+    /// falls below this threshold, `select_final_action` prefers any root
+    /// child already proven a draw over whatever `final_action` would
+    /// otherwise pick -- accepting a known draw rather than gambling on an
+    /// unresolved line that looks promising in the averages but might
+    /// secretly be a loss. Checked only after the proven-win short-circuit
+    /// finds no win, and only when `use_mcts_solver` is on (draws are only
+    /// ever provably known with the solver enabled). `None` (the default)
+    /// disables this -- the paper's own baseline, a contempt factor below
+    /// every possible outcome (`< -1`), "behaves exactly as a single-layer
+    /// PN-MCTS final move selection".
+    pub contempt_factor: Option<f64>,
+
+    /// MCTS-Solver's proven-loss selection threshold `T` (Kowalski et al.
+    /// 2023, Section III.B): a child already proven a loss for the mover is
+    /// only excluded from selection once its own visit count exceeds this,
+    /// rather than the instant it's proven. Guards against the "narrow
+    /// paths" bias the paper describes -- hard-excluding a proven-loss
+    /// sibling immediately can over-concentrate search onto whatever
+    /// children remain before their own stats are trustworthy. The paper
+    /// uses `T = 5` throughout its experiments. `0` (the default) means
+    /// every proven-loss child is already excluded on its very first visit
+    /// (see `select::is_proven_loss`'s doc comment for why that's exactly
+    /// the prior unconditional-exclusion behavior, not merely close to it) --
+    /// i.e. this knob is additive, not a behavior change by default.
+    pub solver_loss_threshold: u32,
+
     pub rng: SmallRng,
     pub verbose: bool,
     pub name: String,
@@ -172,6 +200,8 @@ where
             max_time: Default::default(),
             use_transpositions: false,
             use_mcts_solver: false,
+            contempt_factor: None,
+            solver_loss_threshold: 0,
             rng: SmallRng::from_entropy(),
             verbose: false,
             name: format!("mcts[{}]", S::friendly_name()),
@@ -250,6 +280,16 @@ where
 
     pub fn use_mcts_solver(mut self, use_mcts_solver: bool) -> Self {
         self.use_mcts_solver = use_mcts_solver;
+        self
+    }
+
+    pub fn contempt_factor(mut self, contempt_factor: Option<f64>) -> Self {
+        self.contempt_factor = contempt_factor;
+        self
+    }
+
+    pub fn solver_loss_threshold(mut self, solver_loss_threshold: u32) -> Self {
+        self.solver_loss_threshold = solver_loss_threshold;
         self
     }
 

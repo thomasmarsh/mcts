@@ -24,7 +24,11 @@ use mcts::strategies::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-fn easy_config(c_pn: Option<f64>, budget: Duration, name: &str) -> TreeSearch<Druid, strategy::Ucb1Pn> {
+fn easy_config(
+    c_pn: Option<f64>,
+    budget: Duration,
+    name: &str,
+) -> TreeSearch<Druid, strategy::Ucb1Pn> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -85,7 +89,11 @@ fn main() {
     );
     let mut easy_strategies: Vec<AnySearch<Druid>> = vec![
         AnySearch::new(easy_config(None, Duration::from_secs(1), "easy/c_pn=0")),
-        AnySearch::new(easy_config(Some(1.0), Duration::from_secs(1), "easy/c_pn=1")),
+        AnySearch::new(easy_config(
+            Some(1.0),
+            Duration::from_secs(1),
+            "easy/c_pn=1",
+        )),
     ];
     let easy_results = round_robin_multiple::<Druid, _>(
         &mut easy_strategies,
@@ -94,7 +102,11 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in easy_results.iter().enumerate() {
-        println!("[Easy] {} : {}", easy_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Easy] {} : {}",
+            easy_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!();
 
@@ -107,7 +119,11 @@ fn main() {
     );
     let mut medium_strategies: Vec<AnySearch<Druid>> = vec![
         AnySearch::new(medium_config(None, Duration::from_secs(2), "medium/c_pn=0")),
-        AnySearch::new(medium_config(Some(1.0), Duration::from_secs(2), "medium/c_pn=1")),
+        AnySearch::new(medium_config(
+            Some(1.0),
+            Duration::from_secs(2),
+            "medium/c_pn=1",
+        )),
     ];
     let medium_results = round_robin_multiple::<Druid, _>(
         &mut medium_strategies,
@@ -116,18 +132,30 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in medium_results.iter().enumerate() {
-        println!("[Medium] {} : {}", medium_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Medium] {} : {}",
+            medium_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
 
     println!();
     println!("=== Summary ===");
     println!("Easy comparison (1s):");
     for (i, r) in easy_results.iter().enumerate() {
-        println!("  {} : {}", easy_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "  {} : {}",
+            easy_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!("Medium comparison (2s):");
     for (i, r) in medium_results.iter().enumerate() {
-        println!("  {} : {}", medium_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "  {} : {}",
+            medium_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!();
     println!("Interpretation: c_pn=0.0 degenerates UctPn's rank bonus to a no-op, so this");

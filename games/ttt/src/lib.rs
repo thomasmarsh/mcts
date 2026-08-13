@@ -511,6 +511,49 @@ mod tests {
         assert_eq!(action, Move(7));
     }
 
+    // Double-layer PN-MCTS's "Final Move Selection Contempt Factor"
+    // (Kowalski et al. 2023, Section VII.C): reached via moves 0, 1, 7, 6
+    // (X: 0, 7; O: 1, 6), X to move with 2, 3, 4, 5, 8 still empty and no
+    // forced win available to X (`proven_win_child` never fires here for
+    // either config below -- if it did, both would pick the same move
+    // regardless of contempt).
+    //
+    // At a 150-iteration budget, Move(8) is the *only* root child the
+    // solver manages to fully resolve in time, and it resolves to a proven
+    // draw (not a win -- confirmed by `without` below not picking it via
+    // the unconditional win short-circuit). Every other legal move is still
+    // unresolved, and among those, plain `RobustChild` final-move selection
+    // (`without`) prefers Move(4) on visits/average score -- despite it
+    // being no more *known* to be good than any alternative, since its
+    // subtree hasn't been solved either. With a contempt factor of 0.9 (so
+    // permissive it fires unless the root already looks like a near-certain
+    // win, which it doesn't here), `select_final_action` instead takes the
+    // proven draw at Move(8): a known, guaranteed-safe outcome over an
+    // unresolved gamble.
+    #[test]
+    fn test_contempt_factor_prefers_a_proven_draw_over_an_unresolved_gamble() {
+        let mut state = HashedPosition::new();
+        for m in [0u8, 1, 7, 6] {
+            state = TicTacToe::apply(state, &Move(m));
+        }
+
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        let base_config = || {
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(150)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .seed(1)
+        };
+
+        let mut without_contempt = TS::default().config(base_config());
+        assert_eq!(without_contempt.choose_action(&state), Move(4));
+
+        let mut with_contempt = TS::default().config(base_config().contempt_factor(Some(0.9)));
+        assert_eq!(with_contempt.choose_action(&state), Move(8));
+    }
+
     #[test]
     fn test_mcts_solver_tree_parallel_finds_forced_block_and_terminates_early() {
         let _guard = parallel_test_guard();

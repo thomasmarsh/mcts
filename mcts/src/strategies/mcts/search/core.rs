@@ -4,8 +4,8 @@ use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{
-    add_path_virtual_loss, backprop_step, last_tree_action, proven_win_child, select_step,
-    simulate_step,
+    add_path_virtual_loss, backprop_step, last_tree_action, proven_draw_child, proven_win_child,
+    select_step, simulate_step,
 };
 use crate::strategies::mcts::search::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
@@ -75,6 +75,7 @@ where
                 use_transpositions: self.config.use_transpositions,
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
+                solver_loss_threshold: self.config.solver_loss_threshold,
             },
             ctx,
             &mut self.stack,
@@ -95,6 +96,22 @@ where
             return self.index.get(self.root_id).children().action(idx).clone();
         }
 
+        // Contempt factor (Kowalski et al. 2023, Section VII.C): no forced
+        // win exists, and the root's own running average for `player` reads
+        // worse than the configured threshold -- take a known draw over
+        // gambling on whatever `final_action` would otherwise pick.
+        if let Some(cf) = self.config.contempt_factor {
+            if self.root_stats.expected_score(player) < cf {
+                if let Some(idx) = proven_draw_child::<G>(
+                    self.config.use_mcts_solver,
+                    self.index.get(self.root_id),
+                    &self.index,
+                ) {
+                    return self.index.get(self.root_id).children().action(idx).clone();
+                }
+            }
+        }
+
         let stack = crate::strategies::mcts::stack::NodeStack::new(vec![self.root_id]);
         let grave = self.stats.grave.read().unwrap();
         let idx = self.config.final_action.best_child(
@@ -109,6 +126,7 @@ where
                 grave: &grave,
                 global: &self.stats,
                 use_transpositions: self.config.use_transpositions,
+                solver_loss_threshold: self.config.solver_loss_threshold,
             },
             &mut self.config.rng,
         );
@@ -185,6 +203,7 @@ where
                 use_transpositions: self.config.use_transpositions,
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
+                solver_loss_threshold: self.config.solver_loss_threshold,
             },
             &self.stack,
             &self.config.backprop,
@@ -301,6 +320,7 @@ where
                 grave: &grave,
                 global: &self.stats,
                 use_transpositions: self.config.use_transpositions,
+                solver_loss_threshold: self.config.solver_loss_threshold,
             };
 
             let best_idx =

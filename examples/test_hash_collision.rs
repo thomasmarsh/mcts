@@ -21,9 +21,9 @@
 // not) state reached, and reports the first pair of visited states that
 // share a hash but disagree on player-to-move or action count.
 
+use game_druid::{Druid, HashedState, Size};
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
-use game_druid::{Druid, HashedState, Size};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -65,9 +65,13 @@ fn main() {
                 }
                 Some((prev_player, prev_actions, prev_state_dbg)) => {
                     if *prev_player != player || *prev_actions != action_strs {
-                        println!("COLLISION FOUND after {games} games, {states_visited} states visited");
+                        println!(
+                            "COLLISION FOUND after {games} games, {states_visited} states visited"
+                        );
                         println!("hash = {hash:016x}");
-                        println!("\n--- first-seen state (player={prev_player}) ---\n{prev_state_dbg}");
+                        println!(
+                            "\n--- first-seen state (player={prev_player}) ---\n{prev_state_dbg}"
+                        );
                         println!("actions ({}): {:?}", prev_actions.len(), prev_actions);
                         println!("\n--- new state (player={player}) ---\n{state_dbg}");
                         println!("actions ({}): {:?}", action_strs.len(), action_strs);

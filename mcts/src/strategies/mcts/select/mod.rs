@@ -44,6 +44,11 @@ pub struct SelectContext<'a, G: Game> {
     pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub global: &'a TreeStats<G>,
     pub use_transpositions: bool,
+    /// MCTS-Solver's proven-loss selection threshold `T` -- see
+    /// `SearchConfig::solver_loss_threshold`'s doc comment. `0` when the
+    /// solver is off, same as everywhere else `Proven` never leaves
+    /// `Unproven` in that case (see `is_proven_loss`'s doc comment).
+    pub solver_loss_threshold: u32,
 }
 
 impl<'a, G: Game> SelectContext<'a, G> {
@@ -178,20 +183,32 @@ const PRIMES: [usize; 16] = [
     81647, 92581, 94693,
 ];
 
-/// Whether `children[idx]` is a proven loss for `ctx.player` -- a resolved
-/// child proven `Win` for the *other* player under the `<= 2`-player
-/// scoping the solver is built for (see node.rs's `Proven` doc comment).
-/// Always `false` when the solver is off, since backprop never writes
-/// anything but `Unproven` in that case.
+/// Whether `children[idx]` is a proven loss for `ctx.player`, and should be
+/// excluded from selection as one -- a resolved child proven `Win` for the
+/// *other* player under the `<= 2`-player scoping the solver is built for
+/// (see node.rs's `Proven` doc comment), whose own visit count has already
+/// passed `ctx.solver_loss_threshold` (Kowalski et al. 2023, Section III.B's
+/// solver parameter `T` -- see `SearchConfig::solver_loss_threshold`'s doc
+/// comment). Always `false` when the solver is off, since backprop never
+/// writes anything but `Unproven` in that case; `solver_loss_threshold`
+/// itself is also always `0` in that case, so the visit check alone
+/// wouldn't be enough to guarantee that on its own.
+///
+/// `pub(super)` (rather than `mod.rs`-private) so `basic.rs`'s
+/// `ThompsonSampling` can reuse this instead of keeping its own,
+/// independently-drifting copy of the same rule -- unlike every other
+/// `SelectStrategy`, which reaches it indirectly through
+/// `random_best_index_by` below.
 #[inline]
-fn is_proven_loss<G: Game>(
+pub(super) fn is_proven_loss<G: Game>(
     ctx: &SelectContext<'_, G>,
     children: &ChildArray<G::A>,
     idx: usize,
 ) -> bool {
-    children.node_id(idx).is_some_and(
-        |child_id| matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player),
-    )
+    children.node_id(idx).is_some_and(|child_id| {
+        matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
+            && children.num_visits(idx) > ctx.solver_loss_threshold
+    })
 }
 
 // This function is adapted from from minimax-rs.

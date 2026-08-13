@@ -74,16 +74,15 @@ type Ucb1DmNst<G> = strategy::Compose<
 >;
 
 fn ai_thread_count() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 /// Byte-for-byte the shipped Strong/Master config shape from
 /// `server/adapters/druid.rs::build_ai`, generic over `G` so it searches
 /// either `DruidGame<Split>` or `DruidGame<Flat>`.
-fn strong_config<G: Game>(budget: Duration) -> TreeSearch<G, Ucb1DmNst<G>>
-where
-    G: Game,
-{
+fn strong_config<G: Game>(budget: Duration) -> TreeSearch<G, Ucb1DmNst<G>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("strength/strong")
@@ -95,11 +94,13 @@ where
             .max_time(budget)
             .num_tree_threads(ai_thread_count())
             .select(select::Ucb1::with_c(1.414))
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default()
-                    .epsilon(0.3)
-                    .inner(simulate::Nst::new().backoff_threshold(5)),
-            )),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.3)
+                        .inner(simulate::Nst::new().backoff_threshold(5)),
+                ),
+            ),
     )
 }
 
@@ -162,8 +163,13 @@ fn main() {
 
     println!("=== move-splitting strength comparison (background job) ===");
     println!("Board: 5x5. Shipped Strong preset (Ucb1DmNst), 3s/sub-decision, tree-parallel across {} cores.", ai_thread_count());
-    println!("new = move-split (currently shipped, `DruidGame<Split>`), old = flat `DruidGame<Flat>`.");
-    println!("Sequential games, {rounds} rounds x 2 (alternating first mover) = {} games.", rounds * 2);
+    println!(
+        "new = move-split (currently shipped, `DruidGame<Split>`), old = flat `DruidGame<Flat>`."
+    );
+    println!(
+        "Sequential games, {rounds} rounds x 2 (alternating first mover) = {} games.",
+        rounds * 2
+    );
     println!();
 
     let mut split_engine = strong_config::<DruidSplit>(budget);
@@ -183,7 +189,9 @@ fn main() {
                 TerminalStatus::Winner(w) if w == split_color => result.wins += 1,
                 TerminalStatus::Winner(_) => result.losses += 1,
                 TerminalStatus::Draw => result.draws += 1,
-                TerminalStatus::NotTerminal => unreachable!("play_one_game only returns on terminal"),
+                TerminalStatus::NotTerminal => {
+                    unreachable!("play_one_game only returns on terminal")
+                }
             }
             println!(
                 "round {round} (split {}): {status:?} in {:.1}s -- running: {}",
@@ -196,7 +204,10 @@ fn main() {
 
     println!();
     println!("=== Summary ===");
-    println!("new (move-split, currently shipped): {}", fmt_result(&result));
+    println!(
+        "new (move-split, currently shipped): {}",
+        fmt_result(&result)
+    );
     println!();
     println!("Interpretation: `new`'s win rate is from `new`'s perspective (wins/losses/draws");
     println!("against `old`, not a total game count for either side alone). A 95% Wilson CI");

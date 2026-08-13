@@ -17,13 +17,11 @@
 // Usage: cargo run --release --example strength_heuristic_wiring
 use std::time::Duration;
 
-use game_druid::{
-    Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic,
-};
+use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::bench::tournament::{round_robin_multiple, Result as GameResult};
 use mcts::util::{AnySearch, Verbosity};
+use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -72,15 +70,17 @@ fn new_config(name: &str) -> TreeSearch<Druid, RaveDecisiveHeuristic> {
             .max_time(Duration::from_secs(3))
             .num_tree_threads(ai_thread_count())
             .select(tuned_select())
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default().epsilon(0.5).inner(
-                    DruidHeuristic::new(DruidHeuristicWeights {
-                        block_threat: 1.0,
-                        defend_fork: 1.0,
-                        threaten_connection: 1.0,
-                    }),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.5)
+                        .inner(DruidHeuristic::new(DruidHeuristicWeights {
+                            block_threat: 1.0,
+                            defend_fork: 1.0,
+                            threaten_connection: 1.0,
+                        })),
                 ),
-            )),
+            ),
     )
 }
 
@@ -99,7 +99,6 @@ fn fmt_result(r: &GameResult) -> String {
 }
 
 fn main() {
-    
     println!("=== Strong preset: newly-wired DruidHeuristic config vs. previously-shipped Mast config ===");
     println!("Board: 5x5 default (same as server fresh state)");
     println!(
@@ -126,7 +125,11 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in results.iter().enumerate() {
-        println!("[Strong] {} : {}", strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Strong] {} : {}",
+            strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
 
     println!();
@@ -136,6 +139,8 @@ fn main() {
     }
     println!();
     println!("Interpretation: expect the new config to be >= the old one, per the grid");
-    println!("sweep finding that DruidHeuristic-guided playouts beat a uniform baseline decisively");
+    println!(
+        "sweep finding that DruidHeuristic-guided playouts beat a uniform baseline decisively"
+    );
     println!("at this epsilon/weights combo. Small n still gives wide CI; larger n is just more wall-clock.");
 }

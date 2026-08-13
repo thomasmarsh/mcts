@@ -153,6 +153,7 @@ pub struct Shared<'a, G: Game> {
     pub use_transpositions: bool,
     pub use_mcts_solver: bool,
     pub max_playout_depth: usize,
+    pub solver_loss_threshold: u32,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
@@ -247,6 +248,33 @@ pub fn proven_win_child<G: Game>(
     })
 }
 
+/// A child of `node` already proven a draw, if one exists -- the
+/// contempt-factor counterpart to `proven_win_child` above (Kowalski et al.
+/// 2023, Section VII.C's "Final Move Selection Contempt Factor"). `None`
+/// when the solver is off, or none of `node`'s *explored* children happen to
+/// be a proven draw (yet). Unlike `proven_win_child`, doesn't need the
+/// second-layer `pn2`/`dpn2` machinery: `Proven::Draw` is already an exact,
+/// unambiguous terminal category on this codebase's `Proven` (see its doc
+/// comment) -- the paper's own binary PNS bookkeeping is what conflates draw
+/// and loss, and only the live-ranking `pn`/`dpn` (and hence `UctPn`) ever
+/// inherits that ambiguity.
+#[inline]
+pub fn proven_draw_child<G: Game>(
+    use_mcts_solver: bool,
+    node: &Node<G::A>,
+    index: &TreeIndex<G::A>,
+) -> Option<usize> {
+    if !use_mcts_solver {
+        return None;
+    }
+    let children = node.children();
+    (0..children.len()).find(|&i| {
+        children
+            .node_id(i)
+            .is_some_and(|child_id| index.get(child_id).proven() == Proven::Draw)
+    })
+}
+
 /// Descend from `ctx.current_id` to a leaf, expanding/creating nodes as
 /// needed, leaving the root->leaf path in `stack`. Shared by the
 /// single-threaded path and every tree-parallel worker.
@@ -313,6 +341,7 @@ pub fn select_step<G: Game>(
                         grave: &grave,
                         global: shared.global,
                         use_transpositions: shared.use_transpositions,
+                        solver_loss_threshold: shared.solver_loss_threshold,
                     };
 
                     select_strategy.best_child(&select_ctx, rng)

@@ -1156,6 +1156,62 @@ fn test_mcts_solver_proof_survives_rerooting() {
     );
 }
 
+// MCTS-Solver's proven-loss visit threshold `T` (Kowalski et al. 2023,
+// Section III.B): at the `must_block_position` (X to move; every legal
+// move except Move(7) is a proven loss for X -- see
+// `test_mcts_solver_proof_survives_rerooting`'s doc comment above), Move(6)
+// is one such proven-loss child. `solver_loss_threshold(0)` (the default)
+// excludes it from selection the instant it's proven -- its own visit
+// count is frozen from then on. `solver_loss_threshold(5)` instead lets it
+// keep accumulating visits past that point, up to (and including) its 5th,
+// before exclusion kicks in -- so at a fixed iteration budget it ends up
+// with strictly *more* visits than under the default, not fewer or equal.
+#[test]
+fn test_solver_loss_threshold_lets_a_proven_loss_child_keep_accumulating_visits() {
+    use game_ttt::*;
+    type G = TicTacToe;
+
+    let mut state = HashedPosition::new();
+    for m in [0u8, 4, 8, 1] {
+        state = G::apply(state, &Move(m));
+    }
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let base_config = || {
+        mcts::SearchConfig::default()
+            .expand_threshold(0)
+            .max_iterations(60)
+            .q_init(mcts::node::QInit::Loss)
+            .use_mcts_solver(true)
+            .seed(9)
+    };
+
+    let mut without_grace = TS::default().config(base_config());
+    without_grace.choose_action(&state);
+    let visits_without = without_grace
+        .root_report(&state)
+        .actions
+        .into_iter()
+        .find(|a| a.action == Move(6))
+        .expect("Move(6) should be an explored root action");
+    assert!(visits_without.is_proven, "Move(6) should be a proven loss");
+    assert_eq!(visits_without.visits, 4);
+
+    let mut with_grace = TS::default().config(base_config().solver_loss_threshold(5));
+    with_grace.choose_action(&state);
+    let visits_with = with_grace
+        .root_report(&state)
+        .actions
+        .into_iter()
+        .find(|a| a.action == Move(6))
+        .expect("Move(6) should be an explored root action");
+    assert!(
+        visits_with.is_proven,
+        "Move(6) should still be a proven loss"
+    );
+    assert_eq!(visits_with.visits, 6);
+}
+
 #[test]
 fn test_reuse_tree_self_play_many_moves_no_panic() {
     // Integration-level smoke test: a full self-play game with reuse
@@ -1597,6 +1653,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         use_transpositions: false,
         use_mcts_solver: false,
         max_playout_depth: 0,
+        solver_loss_threshold: 0,
     };
 
     // Children 0 and 1: identical local visit/score stats -- a tie on raw
@@ -1643,6 +1700,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         grave: &grave,
         global: &ts.stats,
         use_transpositions: false,
+        solver_loss_threshold: 0,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
@@ -1693,6 +1751,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         use_transpositions: false,
         use_mcts_solver: false,
         max_playout_depth: 0,
+        solver_loss_threshold: 0,
     };
 
     // Child 0: heavily visited, mediocre average score.
@@ -1728,6 +1787,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         grave: &grave,
         global: &ts.stats,
         use_transpositions: false,
+        solver_loss_threshold: 0,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);

@@ -12,12 +12,16 @@
 use std::time::Duration;
 
 use game_druid::Druid;
-use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch, strategy};
+use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::bench::tournament::{Result as GameResult, round_robin_multiple};
 use mcts::util::{AnySearch, Verbosity};
+use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-fn easy_config(use_solver: bool, budget: Duration, name: &str) -> TreeSearch<Druid, strategy::Ucb1> {
+fn easy_config(
+    use_solver: bool,
+    budget: Duration,
+    name: &str,
+) -> TreeSearch<Druid, strategy::Ucb1> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -30,7 +34,11 @@ fn easy_config(use_solver: bool, budget: Duration, name: &str) -> TreeSearch<Dru
     )
 }
 
-fn medium_config(use_solver: bool, budget: Duration, name: &str) -> TreeSearch<Druid, strategy::Ucb1Mast> {
+fn medium_config(
+    use_solver: bool,
+    budget: Duration,
+    name: &str,
+) -> TreeSearch<Druid, strategy::Ucb1Mast> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -70,7 +78,11 @@ fn main() {
     // Target: n=30 games per pairing (15 rounds of round_robin_multiple which alternates
     // who moves first each game, giving 2 games/round).
     let easy_rounds = 15; // 30 games total, sequential
-    println!("--- Easy (1s) : without solver vs with solver, {} rounds ({} games) ---", easy_rounds, easy_rounds * 2);
+    println!(
+        "--- Easy (1s) : without solver vs with solver, {} rounds ({} games) ---",
+        easy_rounds,
+        easy_rounds * 2
+    );
     let mut easy_strategies: Vec<AnySearch<Druid>> = vec![
         AnySearch::new(easy_config(false, Duration::from_secs(1), "easy/no-solver")),
         AnySearch::new(easy_config(true, Duration::from_secs(1), "easy/solver")),
@@ -82,15 +94,27 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in easy_results.iter().enumerate() {
-        println!("[Easy] {} : {}", easy_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Easy] {} : {}",
+            easy_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!();
 
     // Medium: 2s budget, Ucb1Mast
     let medium_rounds = 10; // 20 games, each 2s/move => ~hours, still meaningful
-    println!("--- Medium (2s) : without solver vs with solver, {} rounds ({} games) ---", medium_rounds, medium_rounds * 2);
+    println!(
+        "--- Medium (2s) : without solver vs with solver, {} rounds ({} games) ---",
+        medium_rounds,
+        medium_rounds * 2
+    );
     let mut medium_strategies: Vec<AnySearch<Druid>> = vec![
-        AnySearch::new(medium_config(false, Duration::from_secs(2), "medium/no-solver")),
+        AnySearch::new(medium_config(
+            false,
+            Duration::from_secs(2),
+            "medium/no-solver",
+        )),
         AnySearch::new(medium_config(true, Duration::from_secs(2), "medium/solver")),
     ];
     let medium_results = round_robin_multiple::<Druid, _>(
@@ -100,18 +124,30 @@ fn main() {
         Verbosity::Verbose,
     );
     for (i, r) in medium_results.iter().enumerate() {
-        println!("[Medium] {} : {}", medium_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "[Medium] {} : {}",
+            medium_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
 
     println!();
     println!("=== Summary ===");
     println!("Easy comparison (1s):");
     for (i, r) in easy_results.iter().enumerate() {
-        println!("  {} : {}", easy_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "  {} : {}",
+            easy_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!("Medium comparison (2s):");
     for (i, r) in medium_results.iter().enumerate() {
-        println!("  {} : {}", medium_strategies[i].friendly_name(), fmt_result(r));
+        println!(
+            "  {} : {}",
+            medium_strategies[i].friendly_name(),
+            fmt_result(r)
+        );
     }
     println!();
     println!("Interpretation: expect solver to be >= baseline, especially on tactical");

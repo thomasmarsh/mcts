@@ -220,3 +220,71 @@ fn test_derive_pn_dpn_negamax_recurrence_hand_verified() {
     assert_eq!(root.pn(), 1, "pn(root) = min(dpn) over children");
     assert_eq!(root.dpn(), 2, "dpn(root) = sum(pn) over children");
 }
+
+// Double-layer PN-MCTS (Kowalski et al. 2023, Section VII): `derive_pn_dpn2`
+// runs the identical negamax recurrence as `derive_pn_dpn` above, but for
+// the "not lost" goal instead of "won" -- this is the divergence that lets
+// PN-MCTS handle games with draws. Same 3-child shape as the test above,
+// with idx 1 a proven *Draw* instead of a proven Win, to demonstrate exactly
+// where the two layers disagree:
+//
+//   - First layer (goal "won"): a Draw is just as much a non-win as a loss,
+//     so it counts as a *disproof* -- `pn=MAX, dpn=0` -- collapsing "the
+//     opponent forced a draw" and "the opponent forced a loss" into the same
+//     bookkeeping.
+//   - Second layer (goal "not lost"): a Draw satisfies the goal, so it
+//     counts as a *proof* -- `pn2=0, dpn2=MAX` -- the opposite magnitudes.
+//
+// Expected: pn(root) = min(dpn_0=1, dpn_1=0, dpn_2=1) = 0.
+//           dpn(root) = pn_0=1 + pn_1=MAX + pn_2=1, saturating to MAX.
+//           pn2(root) = min(dpn2_0=1, dpn2_1=MAX, dpn2_2=1) = 1.
+//           dpn2(root) = pn2_0=1 + pn2_1=0 + pn2_2=1 = 2.
+//
+// The first layer alone reads root as "already disproven" (pn=0, as cheap to
+// disprove as an outright loss); the second layer correctly reads it as
+// still wide open (pn2=1, dpn2=2, same as the fully-unresolved baseline
+// case) -- precisely the ambiguity Section VII exists to resolve.
+#[test]
+fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
+    use crate::strategies::mcts::backprop::{derive_pn_dpn, derive_pn_dpn2};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let proven_draw_child = Node::new(1, 0);
+    proven_draw_child.try_prove(Proven::Draw);
+    let proven_draw_id = index.insert(proven_draw_child);
+
+    let unvisited_child = Node::new(1, 0);
+    let unvisited_id = index.insert(unvisited_child);
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2);
+    children.get_or_create_child(1, || proven_draw_id);
+    children.get_or_create_child(2, || unvisited_id);
+    // idx 0 deliberately left unresolved (no `get_or_create_child` call).
+
+    assert_eq!(index.get(proven_draw_id).pn(), u32::MAX);
+    assert_eq!(index.get(proven_draw_id).dpn(), 0);
+    assert_eq!(index.get(proven_draw_id).pn2(), 0);
+    assert_eq!(index.get(proven_draw_id).dpn2(), u32::MAX);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_pn_dpn(&root, &index);
+    derive_pn_dpn2(&root, &index);
+
+    assert_eq!(
+        root.pn(),
+        0,
+        "first layer: a drawn child already disproves the win goal"
+    );
+    assert_eq!(root.dpn(), u32::MAX);
+    assert_eq!(
+        root.pn2(),
+        1,
+        "second layer: still wide open, unlike the first layer's pn=0"
+    );
+    assert_eq!(root.dpn2(), 2);
+}

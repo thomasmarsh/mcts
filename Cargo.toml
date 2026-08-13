@@ -1,6 +1,69 @@
+[package]
+# Owns the top-level `examples/` directory (AGENTS.md's "examples/*.rs:
+# default to keeping them" convention) -- background strength comparisons,
+# benchmarks, and instrumentation scripts that don't belong to any single
+# game/strategy crate. This was a plain virtual-manifest workspace (no
+# `[package]`) after the "Decouple executables from library" refactor, which
+# left `examples/*.rs` with nowhere to be auto-discovered from -- `cargo run
+# --example foo` silently had no target to find. A combined manifest like
+# this one (both `[package]` and `[workspace]` in the same file) makes this
+# package an implicit workspace member without adding it to `members` below.
+name = "mcts-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mcts = { path = "mcts" }
+mcts-bench = { path = "mcts-bench" }
+game-druid = { path = "games/druid" }
+game-knightthrough = { path = "games/knightthrough" }
+rand = { version = "0.8.5", features = ["small_rng"] }
+rustc-hash = "1.1.0"
+
+[lints]
+workspace = true
+
 [workspace]
 resolver = "2"
 members = [
+    "mcts",
+    "mcts-bench",
+    "mcts-tune",
+    "games/game-core",
+    "game-host",
+    "games/breakthrough",
+    "games/knightthrough",
+    "games/othello",
+    "games/tanbo",
+    "games/traffic-lights",
+    "games/ttt",
+    "mcts-tests",
+    "games/atarigo",
+    "games/bid_ttt",
+    "games/count",
+    "games/gonnect",
+    "games/nim",
+    "games/null",
+    "games/shibumi",
+    "games/tak",
+    "games/unit",
+    "games/druid",
+    "games/congo",
+    "server",
+    "bench",
+]
+# Bare `cargo check`/`clippy`/`test` from the workspace root (no `-p`/
+# `--workspace`) build only the *default* members, and adding a real
+# `[package]` above made that default "just this package" instead of "every
+# member" (a virtual-manifest workspace's implicit default) -- without this,
+# `mcts-examples` silently became the only thing those commands touched,
+# breaking `cargo test --lib` outright (this package has no lib target) and
+# hiding every other member from `cargo check`/`clippy`. Repeating the
+# original `members` list here restores that prior default; `mcts-examples`
+# is still a full member, just reachable only via `--workspace` or `-p
+# mcts-examples --example foo`, matching how it's actually invoked.
+default-members = [
     "mcts",
     "mcts-bench",
     "mcts-tune",

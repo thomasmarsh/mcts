@@ -21,13 +21,11 @@
 // Usage: cargo run --release --example strength_reuse_tree
 use std::time::Duration;
 
-use game_druid::{
-    Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic,
-};
+use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
 use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
-use mcts::bench::tournament::{round_robin_multiple, Result as GameResult};
 use mcts::util::{AnySearch, Verbosity};
+use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()
@@ -56,15 +54,17 @@ fn strong_config(reuse_tree: bool, name: &str) -> TreeSearch<Druid, RaveDecisive
                     .threshold(204)
                     .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 }),
             )
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default().epsilon(0.5).inner(
-                    DruidHeuristic::new(DruidHeuristicWeights {
-                        block_threat: 1.0,
-                        defend_fork: 1.0,
-                        threaten_connection: 1.0,
-                    }),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.5)
+                        .inner(DruidHeuristic::new(DruidHeuristicWeights {
+                            block_threat: 1.0,
+                            defend_fork: 1.0,
+                            threaten_connection: 1.0,
+                        })),
                 ),
-            )),
+            ),
     )
 }
 

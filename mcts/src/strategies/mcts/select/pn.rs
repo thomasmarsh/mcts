@@ -91,24 +91,22 @@ impl<G: Game> SelectStrategy<G> for UctPn {
         // `pn(parent) = min` over children of the child's `dpn` (see
         // `derive_pn_dpn`'s doc comment) -- so the child achieving that
         // minimum is the one PNS itself would descend into next to prove
-        // `ctx.player`'s win here. Rank children by ascending `dpn`, tying
-        // equal values to the same rank, exactly as PNS's own child
-        // ordering would.
-        let dpn_of = |idx: usize| match children.node_id(idx) {
-            Some(child_id) => ctx.index.get(child_id).dpn(),
-            None => 1,
-        };
-        let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by_key(|&idx| dpn_of(idx));
-
-        let mut ranks = vec![0u32; n];
-        let mut rank = 1u32;
-        for (pos, &idx) in order.iter().enumerate() {
-            if pos > 0 && dpn_of(idx) != dpn_of(order[pos - 1]) {
-                rank = pos as u32 + 1;
+        // `ctx.player`'s win here. Rank children by ascending `(dpn, dpn2)`,
+        // tying equal values to the same rank, exactly as PNS's own child
+        // ordering would. `dpn2` (Kowalski et al. 2023, Section VII) only
+        // ever acts as a tiebreaker for `dpn`, per the paper's "UCT-PN Rank
+        // Sorting" enhancement: it's cheaper than a second ranked bonus term
+        // (no extra parameter to tune, no separate sort), and it's a no-op
+        // in games that never draw, since `dpn2` then always equals `dpn`
+        // (see `Node::pn2`'s doc comment) and never actually breaks a tie.
+        let dpns_of = |idx: usize| match children.node_id(idx) {
+            Some(child_id) => {
+                let child = ctx.index.get(child_id);
+                (child.dpn(), child.dpn2())
             }
-            ranks[idx] = rank;
-        }
+            None => (1, 1),
+        };
+        let ranks = rank_by_dpn(n, dpns_of);
         // Always >= 1: `n >= 1` (a node with zero legal actions is never
         // expanded -- see `expand`'s `debug_assert!(!actions.is_empty())`),
         // so `ranks` always has at least one entry.
@@ -127,5 +125,55 @@ impl<G: Game> SelectStrategy<G> for UctPn {
             };
             ucb1_score + c_pn * (1.0 - ranks[idx] as f64 / max_rank)
         })
+    }
+}
+
+/// PNS-style "competition ranking" (1, 2, 2, 4, ...) over `n` children by
+/// ascending `dpn_of(idx)`, the child order `UctPn::best_child` normalizes
+/// into its rank bonus. Factored out as a pure function, independent of
+/// `SelectContext`/`ChildArray`, so the ranking arithmetic (in particular,
+/// that `(dpn, dpn2)` tuples tiebreak correctly and ties share a rank) can be
+/// unit tested directly against hand-picked inputs instead of only through a
+/// full tree search.
+fn rank_by_dpn(n: usize, dpn_of: impl Fn(usize) -> (u32, u32)) -> Vec<u32> {
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&idx| dpn_of(idx));
+
+    let mut ranks = vec![0u32; n];
+    let mut rank = 1u32;
+    for (pos, &idx) in order.iter().enumerate() {
+        if pos > 0 && dpn_of(idx) != dpn_of(order[pos - 1]) {
+            rank = pos as u32 + 1;
+        }
+        ranks[idx] = rank;
+    }
+    ranks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rank_by_dpn;
+
+    // Children 0 and 1 tie on first-layer `dpn` (both 5), which without a
+    // tiebreaker would rank them equally -- but child 0's `dpn2` of 2 means
+    // its subtree is closer to being provably "not lost", so it should
+    // outrank child 1 (`dpn2` 9). Child 2, with a strictly worse `dpn` of 8,
+    // must rank last regardless of its `dpn2`.
+    #[test]
+    fn test_rank_by_dpn_uses_dpn2_as_tiebreaker() {
+        let dpns = [(5, 2), (5, 9), (8, 0)];
+        let ranks = rank_by_dpn(3, |idx| dpns[idx]);
+        assert_eq!(ranks, vec![1, 2, 3]);
+    }
+
+    // Two children with identical `(dpn, dpn2)` pairs must share a rank
+    // (PNS's "ties are awarded the same rank"), and the next distinct value
+    // must skip ahead to its sorted position, not the next integer --
+    // "competition ranking" (1, 1, 3), not dense ranking (1, 1, 2).
+    #[test]
+    fn test_rank_by_dpn_ties_share_rank_and_skip() {
+        let dpns = [(3, 1), (3, 1), (7, 0)];
+        let ranks = rank_by_dpn(3, |idx| dpns[idx]);
+        assert_eq!(ranks, vec![1, 1, 3]);
     }
 }

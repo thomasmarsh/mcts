@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
 use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
-use mcts::bench::tournament::wilson_interval;
 use mcts::util::battle_royale;
+use mcts_bench::tournament::wilson_interval;
 
 const ROUNDS: usize = 8; // 16 games, alternating who moves first
 const BUDGET_SECS: u64 = 3;
@@ -42,7 +42,10 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-type Ucb1DmNst = strategy::Compose<select::Ucb1, simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>>;
+type Ucb1DmNst = strategy::Compose<
+    select::Ucb1,
+    simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
+>;
 
 fn new_config() -> TreeSearch<Druid, Ucb1DmNst> {
     TreeSearch::new().config(
@@ -55,11 +58,13 @@ fn new_config() -> TreeSearch<Druid, Ucb1DmNst> {
             .q_init(QInit::Infinity)
             .max_time(Duration::from_secs(BUDGET_SECS))
             .num_tree_threads(ai_thread_count())
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default()
-                    .epsilon(0.3)
-                    .inner(simulate::Nst::new().backoff_threshold(5)),
-            )),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.3)
+                        .inner(simulate::Nst::new().backoff_threshold(5)),
+                ),
+            ),
     )
 }
 
@@ -85,15 +90,17 @@ fn shipped_config() -> TreeSearch<Druid, RaveDecisiveHeuristic> {
             .max_time(Duration::from_secs(BUDGET_SECS))
             .num_tree_threads(ai_thread_count())
             .select(tuned_select())
-            .simulate(simulate::DecisiveMove::new().inner(
-                simulate::EpsilonGreedy::default().epsilon(0.5).inner(
-                    DruidHeuristic::new(DruidHeuristicWeights {
-                        block_threat: 1.0,
-                        defend_fork: 1.0,
-                        threaten_connection: 1.0,
-                    }),
+            .simulate(
+                simulate::DecisiveMove::new().inner(
+                    simulate::EpsilonGreedy::default()
+                        .epsilon(0.5)
+                        .inner(DruidHeuristic::new(DruidHeuristicWeights {
+                            block_threat: 1.0,
+                            defend_fork: 1.0,
+                            threaten_connection: 1.0,
+                        })),
                 ),
-            )),
+            ),
     )
 }
 
