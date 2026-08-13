@@ -1350,6 +1350,102 @@ body.bench-active #analysis-panel {
   margin-bottom: 10px;
 }
 
+#smac3-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+#smac3-chart-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #8a8b96;
+}
+
+#smac3-chart-help {
+  position: relative;
+}
+
+#smac3-chart-help-btn {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: transparent;
+  color: #8a8b96;
+  font-size: 10px;
+  font-style: italic;
+  font-family: Georgia, serif;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#smac3-chart-help-btn:hover,
+#smac3-chart-help-btn[aria-expanded="true"] {
+  border-color: #8aaff0;
+  color: #8aaff0;
+}
+
+#smac3-chart-help-popover {
+  position: absolute;
+  top: 22px;
+  right: 0;
+  z-index: 5;
+  width: 300px;
+  background: rgba(20, 21, 26, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+#smac3-chart-help-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: #8a8b96;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px;
+}
+
+#smac3-chart-help-close:hover {
+  color: #e8e8ec;
+}
+
+#smac3-chart-help-popover dl {
+  margin: 0;
+}
+
+#smac3-chart-help-popover dt {
+  display: flex;
+  align-items: center;
+  color: #e8e8ec;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+#smac3-chart-help-popover dt:first-child {
+  margin-top: 0;
+}
+
+#smac3-chart-help-popover dd {
+  margin: 2px 0 0;
+  color: #b0b1bc;
+}
+
 #smac3-cost-chart {
   display: block;
   width: 100%;
@@ -1363,6 +1459,15 @@ body.bench-active #analysis-panel {
   font-size: 10px;
   color: #8a8b96;
   margin-top: 2px;
+}
+
+.smac3-legend-emphasized {
+  color: #e0904a;
+  font-weight: 600;
+}
+
+.smac3-legend-muted {
+  opacity: 0.6;
 }
 
 .legend-swatch {
@@ -1381,6 +1486,10 @@ body.bench-active #analysis-panel {
   background: #4caf7a;
 }
 
+.legend-swatch-floor {
+  background: #e0904a;
+}
+
 .legend-swatch-ci {
   border-radius: 1px;
   background: rgba(91, 127, 214, 0.6);
@@ -1391,21 +1500,21 @@ body.bench-active #analysis-panel {
   background: #c9a227;
 }
 
-#smac3-diff-table {
+.smac3-diff-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
   margin-bottom: 4px;
 }
 
-#smac3-diff-table caption {
+.smac3-diff-table caption {
   text-align: left;
   font-size: 11px;
   color: #8a8b96;
   padding-bottom: 4px;
 }
 
-#smac3-diff-table th {
+.smac3-diff-table th {
   text-align: left;
   padding: 3px 8px 3px 0;
   color: #8a8b96;
@@ -1416,10 +1525,23 @@ body.bench-active #analysis-panel {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-#smac3-diff-table td {
+.smac3-diff-table td {
   padding: 3px 8px 3px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   color: #c7c9cf;
+}
+
+/* The incumbent diff table -- what "Use best as new baseline" actually
+   promotes -- gets the same emphasis treatment as the confirmed-floor
+   chart line, so the two "trust this" signals read as one visual language. */
+.smac3-diff-table-emphasized caption {
+  color: #e0904a;
+  font-weight: 600;
+}
+
+.smac3-diff-table-emphasized {
+  border-left: 2px solid #e0904a;
+  padding-left: 8px;
 }
 
 .smac3-diff-changed td:not(.smac3-param-name) {

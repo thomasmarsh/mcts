@@ -83,6 +83,29 @@ function chainRungLabel(rung: ChainRung, index: number): string {
   return index === 0 ? `Root (${rung.run_id})` : `Rung ${index + 1} (${rung.run_id})`;
 }
 
+interface ParamDiffRow {
+  name: string;
+  value: unknown;
+  def: unknown;
+  changed: boolean;
+}
+
+/** Diff a config's active parameters against each one's declared default
+ * (or `value`, for a `constant`-type param) from the tuner metadata. Only
+ * the config's *active* params are shown -- inactive ones are simply absent
+ * from it (see `TrialRow`'s doc comment in types.ts). Shared by the
+ * incumbent and lowest-single-trial diff tables below -- same shape, two
+ * different configs. */
+function paramsVsDefault(config: Record<string, unknown> | undefined, tuner: TunerInfo | null): ParamDiffRow[] {
+  if (!config || !tuner) return [];
+  return Object.entries(config).map(([name, value]) => {
+    const spec = tuner.parameters.find((p) => p.name === name);
+    const def = spec ? (spec.type === "constant" ? spec.value : spec.default) : undefined;
+    const changed = def !== undefined && JSON.stringify(def) !== JSON.stringify(value);
+    return { name, value, def, changed };
+  });
+}
+
 /** The baseline instance a trial's cost was measured against, when the run
  * used SMAC3's multi-instance mechanism (`Scenario(instances=...)`) --
  * `TrialTracker` (Python) stuffs it into the existing `extra` JSON column
@@ -108,6 +131,13 @@ interface ChartPoint {
   trial: TrialRow;
   rungIndex: number;
   bestSoFar: number;
+  /** Running minimum of each point's group's Wilson CI *upper* bound -- the
+   * cost this config is confirmed, at 95% confidence, to be no worse than.
+   * Unlike `bestSoFar` (the raw observed minimum, which a single lucky
+   * evaluation can drag down), this only improves once repeat evaluations
+   * have actually shrunk a group's interval -- see the chart's help
+   * popover for the operator-facing explanation of why both lines exist. */
+  confirmedFloor: number;
 }
 
 /** A vertical marker at the trial-index boundary between two rungs of a
@@ -214,10 +244,12 @@ export const Smac3RunDetail: Component<{
     const ts = scoredEntries();
     if (ts.length === 0) return [];
     let best = Infinity;
+    let confirmedFloor = Infinity;
     return ts.map((entry, i) => {
       best = Math.min(best, entry.trial.cost as number);
+      confirmedFloor = Math.min(confirmedFloor, groupFor(entry.trial).ci.upper);
       const x = PAD_LEFT + (ts.length > 1 ? (i / (ts.length - 1)) * PLOT_W : PLOT_W / 2);
-      return { x, trial: entry.trial, rungIndex: entry.rungIndex, bestSoFar: best };
+      return { x, trial: entry.trial, rungIndex: entry.rungIndex, bestSoFar: best, confirmedFloor };
     });
   });
 
@@ -266,28 +298,32 @@ export const Smac3RunDetail: Component<{
     return pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${scale(p.bestSoFar).toFixed(1)}`).join(" ");
   });
 
+  const confirmedFloorPathD = createMemo(() => {
+    const pts = chartPoints();
+    if (pts.length === 0) return "";
+    const scale = yScale();
+    return pts
+      .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${scale(p.confirmedFloor).toFixed(1)}`)
+      .join(" ");
+  });
+
   const yTicks = createMemo(() => {
     const max = yMax();
     const step = max / 4;
     return [0, step, step * 2, step * 3, max];
   });
 
-  // Active parameters of the best trial, compared against each parameter's
-  // declared default (or `value`, for a `constant`-type param) from the
-  // tuner metadata. Only the best trial's *active* params are shown --
-  // inactive ones are simply absent from its `config` (see TrialRow's
-  // doc comment in types.ts).
-  const bestVsDefault = createMemo(() => {
-    const best = bestTrial();
-    const tuner = props.tuner;
-    if (!best || !tuner) return [];
-    return Object.entries(best.config).map(([name, value]) => {
-      const spec = tuner.parameters.find((p) => p.name === name);
-      const def = spec ? (spec.type === "constant" ? spec.value : spec.default) : undefined;
-      const changed = def !== undefined && JSON.stringify(def) !== JSON.stringify(value);
-      return { name, value, def, changed };
-    });
-  });
+  // Two distinct "best" configs, deliberately not conflated (see the chart
+  // help popover's confirmed-floor/best-so-far split for the same
+  // distinction applied to the cost chart): the incumbent is SMAC3's own
+  // tracked champion -- re-challenged as the run progresses, and exactly
+  // what "Use best as new baseline" actually promotes -- while the lowest
+  // trial is just this chart's single cheapest observed dot, with no
+  // confirmation behind it.
+  const incumbentVsDefault = createMemo(() => paramsVsDefault(props.incumbent?.config, props.tuner));
+  const lowestTrialVsDefault = createMemo(() => paramsVsDefault(bestTrial()?.config, props.tuner));
+
+  const [helpOpen, setHelpOpen] = createSignal(false);
 
   const [copied, setCopied] = createSignal(false);
   async function copyIncumbentConfig(): Promise<void> {
@@ -352,6 +388,48 @@ export const Smac3RunDetail: Component<{
         </div>
 
         <div id="smac3-chart-wrapper">
+          <div id="smac3-chart-header">
+            <span id="smac3-chart-title">Cost history</span>
+            <div id="smac3-chart-help">
+              <button
+                id="smac3-chart-help-btn"
+                type="button"
+                aria-expanded={helpOpen()}
+                aria-label="How to read this chart"
+                onClick={() => setHelpOpen((v) => !v)}
+              >
+                i
+              </button>
+              <Show when={helpOpen()}>
+                <div id="smac3-chart-help-popover" role="tooltip">
+                  <button
+                    id="smac3-chart-help-close"
+                    type="button"
+                    aria-label="Close"
+                    onClick={() => setHelpOpen(false)}
+                  >
+                    ×
+                  </button>
+                  <dl>
+                    <dt><i class="legend-swatch legend-swatch-trial" /> Trial cost</dt>
+                    <dd>One dot per evaluated config: its raw win/loss rate over that trial's games. Noisy on its own -- a single trial is a small sample.</dd>
+                    <dt><i class="legend-swatch legend-swatch-floor" /> Confirmed floor</dt>
+                    <dd>The bold line, and the one to trust. The most conservative this run can currently claim: the best 95%-confidence "no worse than this" bound, across every repeat evaluation of a config. Only drops once a result is actually confirmed, not just observed once -- use this to judge whether a config is safe to promote.</dd>
+                    <dt><i class="legend-swatch legend-swatch-best" /> Best so far</dt>
+                    <dd>The faint dashed line. The lowest cost observed at any single point, with no confirmation behind it -- deliberately de-emphasized, since one lucky trial can pull it down without the config actually being better.</dd>
+                    <dt><i class="legend-swatch legend-swatch-ci" /> 95% CI whisker</dt>
+                    <dd>Per trial, the plausible range for that config's true cost given how many games (and repeat evaluations) back it up -- wider means less confidence.</dd>
+                    <Show when={props.chain.length > 1}>
+                      <dt><i class="legend-swatch legend-swatch-boundary" /> New baseline</dt>
+                      <dd>A vertical line marking where a run's incumbent was promoted to a new baseline and tuning continued against it.</dd>
+                    </Show>
+                    <dt>Incumbent</dt>
+                    <dd>SMAC3's own tracked best config, aggregated across every baseline instance and re-challenged as the run progresses. This is what "Use best as new baseline" actually promotes -- not the same as "Lowest single trial" below, which is just this chart's single cheapest dot, unconfirmed.</dd>
+                  </dl>
+                </div>
+              </Show>
+            </div>
+          </div>
           <svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`} id="smac3-cost-chart">
             <For each={yTicks()}>
               {(tick) => {
@@ -367,8 +445,34 @@ export const Smac3RunDetail: Component<{
               }}
             </For>
 
-            {/* Running best-so-far step line */}
-            <path d={bestPathD()} fill="none" stroke="#4caf7a" stroke-width="2" stroke-linejoin="round" />
+            {/* Running best-so-far step line -- deliberately the fainter,
+                thinner, dashed line: it's the raw observed minimum, which a
+                single lucky trial can drag down with no confirmation behind
+                it. Drawn first (underneath) so the bold confirmed-floor
+                line on top doesn't get visually buried by it. */}
+            <path
+              d={bestPathD()}
+              fill="none"
+              stroke="#4caf7a"
+              stroke-width="1.25"
+              stroke-dasharray="3,3"
+              stroke-opacity="0.55"
+              stroke-linejoin="round"
+            />
+
+            {/* Confirmed floor: running-min of each point's CI *upper*
+                bound -- the bold, solid, prominent line, since this is the
+                one that's actually safe to act on (see the help popover).
+                It sits at or above best-so-far by construction; the gap
+                between the two is itself the "how much do I trust this"
+                signal. */}
+            <path
+              d={confirmedFloorPathD()}
+              fill="none"
+              stroke="#e0904a"
+              stroke-width="2.5"
+              stroke-linejoin="round"
+            />
 
             {/* Per-point confidence whisker -- the Wilson interval of the
                 point's config group, shared across every point in that
@@ -438,7 +542,8 @@ export const Smac3RunDetail: Component<{
           </svg>
           <div class="smac3-chart-legend">
             <span><i class="legend-swatch legend-swatch-trial" /> trial cost</span>
-            <span><i class="legend-swatch legend-swatch-best" /> best so far</span>
+            <span class="smac3-legend-emphasized"><i class="legend-swatch legend-swatch-floor" /> confirmed floor</span>
+            <span class="smac3-legend-muted"><i class="legend-swatch legend-swatch-best" /> best so far</span>
             <span><i class="legend-swatch legend-swatch-ci" /> 95% CI</span>
             <Show when={props.chain.length > 1}>
               <span><i class="legend-swatch legend-swatch-boundary" /> new baseline</span>
@@ -446,18 +551,42 @@ export const Smac3RunDetail: Component<{
           </div>
         </div>
 
-        <Show when={bestVsDefault().length > 0}>
-          <table id="smac3-diff-table">
-            <caption>Best trial (#{bestTrial()!.trial_id}) vs. search-space default</caption>
+        <Show when={incumbentVsDefault().length > 0}>
+          <table id="smac3-incumbent-diff-table" class="smac3-diff-table smac3-diff-table-emphasized">
+            <caption>Incumbent vs. search-space default</caption>
             <thead>
               <tr>
                 <th>Parameter</th>
-                <th>Best</th>
+                <th>Incumbent</th>
                 <th>Default</th>
               </tr>
             </thead>
             <tbody>
-              <For each={bestVsDefault()}>
+              <For each={incumbentVsDefault()}>
+                {(row) => (
+                  <tr classList={{ "smac3-diff-changed": row.changed }}>
+                    <td class="smac3-param-name">{row.name}</td>
+                    <td>{String(row.value)}</td>
+                    <td>{row.def === undefined ? "—" : String(row.def)}</td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+        </Show>
+
+        <Show when={lowestTrialVsDefault().length > 0}>
+          <table id="smac3-lowest-trial-diff-table" class="smac3-diff-table">
+            <caption>Lowest single trial (#{bestTrial()!.trial_id}) vs. search-space default</caption>
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Lowest</th>
+                <th>Default</th>
+              </tr>
+            </thead>
+            <tbody>
+              <For each={lowestTrialVsDefault()}>
                 {(row) => (
                   <tr classList={{ "smac3-diff-changed": row.changed }}>
                     <td class="smac3-param-name">{row.name}</td>

@@ -230,16 +230,24 @@ describe("RunDetailPanel / smac3", () => {
     expect(Array.from(familyCells).map((c) => c.textContent)).toEqual(["ucb1", "ucb1_tuned", "rave"]);
 
     // Best trial (#2) is `family: "ucb1_tuned"`, not the search space's
-    // default `family: "rave"` -- the best-vs-default diff table must
-    // compare across two different families' configs, not two RAVE
-    // configs, and flag every param that differs from its own default.
-    const diffTable = document.querySelector("#smac3-diff-table")!;
+    // default `family: "rave"` -- the lowest-trial diff table must compare
+    // across two different families' configs, not two RAVE configs, and
+    // flag every param that differs from its own default.
+    const diffTable = document.querySelector("#smac3-lowest-trial-diff-table")!;
     expect(diffTable.textContent).toContain("ucb1_tuned");
     const familyRow = Array.from(diffTable.querySelectorAll("tbody tr")).find(
       (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
     )!;
     expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
     expect(familyRow.textContent).toContain("rave"); // the default, shown in the Default column
+
+    // fakeSmac3RunDetail's incumbent (family: "rave", c: 0.7) gets its own
+    // table -- the config "Use best as new baseline" would actually
+    // promote, distinct from (and here, different family than) the lowest
+    // single trial above.
+    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    expect(incumbentTable.textContent).toContain("rave");
+    expect(incumbentTable.textContent).toContain("0.7");
   });
 
   it("shows the SMAC-tracked incumbent and copies its config on click", async () => {
@@ -252,13 +260,57 @@ describe("RunDetailPanel / smac3", () => {
 
     // fakeSmac3RunDetail's incumbent is {config: {family: "rave", c: 0.7}, cost: 0.2}
     // -- distinct from the "Best trial" stat, which is derived from the
-    // trial fixture rows, not this field.
-    await screen.findByText("Incumbent");
+    // trial fixture rows, not this field. Scoped by selector since the
+    // incumbent diff table's caption also says "Incumbent".
+    await screen.findByText("Incumbent", { selector: ".smac3-stat-label" });
     expect(screen.getByText("20.0%", { selector: ".smac3-stat-value" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Copy as baseline config"));
     expect(writeText).toHaveBeenCalledWith(JSON.stringify({ family: "rave", c: 0.7 }));
     await screen.findByText("Copied!");
+  });
+
+  it("toggles the chart help popover open and closed", async () => {
+    const { store } = createTestStore();
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    expect(screen.queryByText(/95%-confidence "no worse than this" bound/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("How to read this chart"));
+    expect(screen.getByText(/95%-confidence "no worse than this" bound/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(screen.queryByText(/95%-confidence "no worse than this" bound/)).not.toBeInTheDocument();
+  });
+
+  it("draws a confirmed-floor line that is never more optimistic than best-so-far", async () => {
+    const { store } = createTestStore();
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    const paths = document.querySelectorAll("#smac3-cost-chart path");
+    const bestPath = Array.from(paths).find((p) => p.getAttribute("stroke") === "#4caf7a")!;
+    const floorPath = Array.from(paths).find((p) => p.getAttribute("stroke") === "#e0904a")!;
+    expect(bestPath).toBeTruthy();
+    expect(floorPath).toBeTruthy();
+
+    const lastY = (d: string): number => {
+      const points = [...d.matchAll(/[ML]([\d.]+),([\d.]+)/g)];
+      return parseFloat(points[points.length - 1]![2]!);
+    };
+    const bestY = lastY(bestPath.getAttribute("d")!);
+    const floorY = lastY(floorPath.getAttribute("d")!);
+    // Smaller y = higher up = a higher (worse) cost on this chart's
+    // inverted scale -- fakeTrialRows has no repeat evaluations, so every
+    // group's CI upper bound sits strictly above its own raw cost, and the
+    // confirmed floor must never render below (more optimistic than)
+    // best-so-far.
+    expect(floorY).toBeLessThanOrEqual(bestY);
   });
 
   it("pools trials with an identical config into one confidence-band group", async () => {
