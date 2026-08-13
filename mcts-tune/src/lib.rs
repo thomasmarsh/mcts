@@ -64,6 +64,20 @@ const EXPAND_THRESHOLD: u32 = 1;
 /// its round-trip test doesn't live in this file's fast suite.
 const META_MCTS_INNER_ITERATIONS: usize = 50;
 
+/// PN-MCTS families (Kowalski, Doe, Winands, Górski & Soemers, "Proof
+/// Number Based Monte-Carlo Tree Search", 2023): `select::UctPn` wraps plain
+/// UCB1 with a rank-based bonus from proof/disproof numbers, only meaningful
+/// with MCTS-Solver on (see `select::UctPn`'s doc comment) -- so both arms
+/// below force `use_mcts_solver(true)` and `reuse_tree(true)` rather than
+/// exposing either as a tunable (PNS-style search always wants its
+/// proof/disproof numbers carried across moves, not rebuilt from scratch
+/// every `choose_action` call), and expose the paper's own per-game knobs
+/// (`c_pn`, the proven-loss selection threshold `T` as
+/// `solver_loss_threshold`, and the final-move-selection contempt factor)
+/// as tunable params instead of assuming the paper's published values
+/// transfer to this repo's games.
+const PN_FAMILIES: &[&str] = &["ucb1_pn", "ucb1_pn_mast"];
+
 /// Families whose own named `strategy.rs` type leaves `final_action`
 /// configurable (the common `RobustChild`/`SecureChild` slot) rather than
 /// fixing something else -- these are the ones `tune eval`'s `final_action`
@@ -81,6 +95,8 @@ const FINAL_ACTION_FAMILIES: &[&str] = &[
     "ucb1_tuned_dm",
     "ucb1_tuned_dm_mast",
     "rave",
+    "ucb1_pn",
+    "ucb1_pn_mast",
 ];
 
 /// Families that share the plain exploration-constant `c` parameter (every
@@ -102,6 +118,8 @@ const C_FAMILIES: &[&str] = &[
     "ucb1_tuned_dm_mast",
     "ucb1_max_robust",
     "meta_mcts",
+    "ucb1_pn",
+    "ucb1_pn_mast",
 ];
 
 /// Families whose simulate step is (or wraps) an epsilon-greedy policy.
@@ -116,6 +134,7 @@ const EPSILON_FAMILIES: &[&str] = &[
     "amaf_mast",
     "ucb1_tuned_dm_mast",
     "rave",
+    "ucb1_pn_mast",
 ];
 
 fn base_config<G: Game, S: Strategy<G> + Default>(
@@ -158,6 +177,10 @@ pub struct TrialParams {
     k: Option<u32>,
     rave: Option<u32>,
     rave_ucb: Option<String>,
+    c_pn: Option<f64>,
+    solver_loss_threshold: Option<u32>,
+    contempt: Option<String>,
+    contempt_factor: Option<f64>,
 }
 
 /// Builds a candidate for any family whose `strategy.rs` counterpart leaves
@@ -231,6 +254,123 @@ where
     }
 }
 
+/// Builds a candidate for one of the PN-MCTS families (`ucb1_pn`/
+/// `ucb1_pn_mast`): like `build_with_final_action`, `final_action` stays
+/// configurable, but the solver is always turned on -- `select::UctPn`'s
+/// rank bonus degenerates to a no-op without it (see its doc comment), so a
+/// trial sampled with the solver off would just waste SMAC3's budget
+/// re-discovering plain UCB1/UCB1-MAST -- and the solver's own tunable
+/// knobs (`solver_loss_threshold`, `contempt_factor`) are applied alongside
+/// `UctPn`'s `c_pn`. Tree reuse (`reuse_tree`) is forced on for the same
+/// reason as the solver itself: proof/disproof numbers take real search
+/// effort to accumulate, and discarding the whole tree at the start of
+/// every `choose_action` call (this harness's default, matching every
+/// other family here) would throw that work away on every move instead of
+/// carrying it forward -- PNS-style search always wants tree reuse, not
+/// just as an optional speedup.
+/// The solver-side knobs `build_pn_with_final_action` applies on top of
+/// `select::UctPn` -- grouped into one struct rather than two more bare
+/// arguments to stay under clippy's `too_many_arguments` threshold.
+struct PnSolverParams {
+    solver_loss_threshold: u32,
+    contempt_factor: Option<f64>,
+}
+
+fn build_pn_with_final_action<G, Sim>(
+    c: f64,
+    c_pn: f64,
+    sim: Sim,
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+    solver: PnSolverParams,
+) -> Result<Box<dyn Search<G = G>>, HostError>
+where
+    G: Game + 'static,
+    Sim: SimulateStrategy<G> + 'static,
+{
+    let sel = select::UctPn::with_c(c, c_pn);
+    let PnSolverParams {
+        solver_loss_threshold,
+        contempt_factor,
+    } = solver;
+    let fa = p
+        .final_action
+        .as_deref()
+        .ok_or_else(|| HostError::bad_request("missing param: final_action"))?;
+    match fa {
+        "max_avg" => {
+            let config = base_config::<
+                G,
+                Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
+            >(p, seed, use_transpositions)?
+            .select(sel)
+            .simulate(sim)
+            .use_mcts_solver(true)
+            .reuse_tree(true)
+            .solver_loss_threshold(solver_loss_threshold)
+            .contempt_factor(contempt_factor);
+            Ok(
+                Box::new(
+                    TreeSearch::<
+                        G,
+                        Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
+                    >::new()
+                    .config(config),
+                ),
+            )
+        }
+        "secure_child" => {
+            let a =
+                p.a.ok_or_else(|| HostError::bad_request("missing param: a"))?;
+            let mut config = base_config::<
+                G,
+                Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
+            >(p, seed, use_transpositions)?
+            .select(sel)
+            .simulate(sim)
+            .use_mcts_solver(true)
+            .reuse_tree(true)
+            .solver_loss_threshold(solver_loss_threshold)
+            .contempt_factor(contempt_factor);
+            config.final_action.a = a;
+            Ok(
+                Box::new(
+                    TreeSearch::<
+                        G,
+                        Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
+                    >::new()
+                    .config(config),
+                ),
+            )
+        }
+        "robust_child" => {
+            let config = base_config::<
+                G,
+                Compose<select::UctPn, Sim, backprop::Classic, select::RobustChild>,
+            >(p, seed, use_transpositions)?
+            .select(sel)
+            .simulate(sim)
+            .use_mcts_solver(true)
+            .reuse_tree(true)
+            .solver_loss_threshold(solver_loss_threshold)
+            .contempt_factor(contempt_factor);
+            Ok(
+                Box::new(
+                    TreeSearch::<
+                        G,
+                        Compose<select::UctPn, Sim, backprop::Classic, select::RobustChild>,
+                    >::new()
+                    .config(config),
+                ),
+            )
+        }
+        other => Err(HostError::bad_request(format!(
+            "unknown final_action: {other}"
+        ))),
+    }
+}
+
 /// Builds a candidate for a family whose `strategy.rs` counterpart fixes its
 /// own `final_action` (`ucb1_max_robust`, `meta_mcts`) -- `p.final_action` is
 /// ignored (the search-space YAML never activates it for these families, per
@@ -282,6 +422,25 @@ fn make_candidate<G: Game + 'static>(
     let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
     let c = || p.c.ok_or_else(|| missing("c"));
     let epsilon = || p.epsilon.ok_or_else(|| missing("epsilon"));
+    let c_pn = || p.c_pn.ok_or_else(|| missing("c_pn"));
+    let solver_loss_threshold = || {
+        p.solver_loss_threshold
+            .ok_or_else(|| missing("solver_loss_threshold"))
+    };
+    // `contempt` gates `contempt_factor` the same way `rave_ucb`'s
+    // "none"/"ucb1"/"tuned" gates `c` -- an explicit "off" choice rather
+    // than treating the field's mere absence as off, so a trial that forgot
+    // the gate entirely is rejected the same way a missing required field
+    // always is here, not silently treated as "off".
+    let contempt_factor = || match p.contempt.as_deref() {
+        Some("off") => Ok(None),
+        Some("on") => Ok(Some(
+            p.contempt_factor
+                .ok_or_else(|| missing("contempt_factor"))?,
+        )),
+        Some(other) => Err(HostError::bad_request(format!("unknown contempt: {other}"))),
+        None => Err(missing("contempt")),
+    };
 
     match p.family.as_str() {
         "ucb1" => build_with_final_action(
@@ -415,6 +574,30 @@ fn make_candidate<G: Game + 'static>(
                 use_transpositions,
             )
         }
+        "ucb1_pn" => build_pn_with_final_action(
+            c()?,
+            c_pn()?,
+            simulate::Uniform,
+            p,
+            seed,
+            use_transpositions,
+            PnSolverParams {
+                solver_loss_threshold: solver_loss_threshold()?,
+                contempt_factor: contempt_factor()?,
+            },
+        ),
+        "ucb1_pn_mast" => build_pn_with_final_action(
+            c()?,
+            c_pn()?,
+            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
+            p,
+            seed,
+            use_transpositions,
+            PnSolverParams {
+                solver_loss_threshold: solver_loss_threshold()?,
+                contempt_factor: contempt_factor()?,
+            },
+        ),
         "ucb1_max_robust" => build_fixed(
             select::Ucb1::with_c(c()?),
             simulate::Uniform,
@@ -593,7 +776,7 @@ pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
                     "ucb1_progressive_history", "ucb1_max_robust",
                     "amaf", "amaf_mast",
                     "ucb1_tuned", "ucb1_tuned_mast", "ucb1_tuned_dm", "ucb1_tuned_dm_mast",
-                    "meta_mcts", "rave",
+                    "meta_mcts", "rave", "ucb1_pn", "ucb1_pn_mast",
                 ], "default": "rave"}),
             ),
             param(
@@ -652,6 +835,29 @@ pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
                 "rave_ucb",
                 json!({"type": "categorical", "choices": ["none", "ucb1", "tuned"], "default": "tuned"}),
             ),
+            param(
+                // Kowalski et al. 2023 Eq. 4: clustered 1.0-2.0 in the
+                // paper's own experiments, domain-dependent.
+                "c_pn",
+                json!({"type": "float", "bounds": [0, 3], "default": 1.0}),
+            ),
+            param(
+                // MCTS-Solver's proven-loss selection threshold `T`
+                // (Kowalski et al. 2023 Section III.B); the paper uses
+                // T=5 throughout.
+                "solver_loss_threshold",
+                json!({"type": "int", "bounds": [0, 50], "default": 5}),
+            ),
+            param(
+                "contempt",
+                json!({"type": "categorical", "choices": ["off", "on"], "default": "off"}),
+            ),
+            param(
+                // Compared against `Node::expected_score`, whose default
+                // range (`Game::compute_utilities`'s default) is [-1, 1].
+                "contempt_factor",
+                json!({"type": "float", "bounds": [-1, 1], "default": 0.0}),
+            ),
         ],
         conditions: vec![
             condition(json!({"family": FINAL_ACTION_FAMILIES}), &["final_action"]),
@@ -672,6 +878,11 @@ pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
             condition(json!({"schedule": "min_mse"}), &["bias"]),
             condition(json!({"schedule": "threshold"}), &["rave"]),
             condition(json!({"rave_ucb": ["ucb1", "tuned"]}), &["c"]),
+            condition(
+                json!({"family": PN_FAMILIES}),
+                &["c_pn", "solver_loss_threshold", "contempt"],
+            ),
+            condition(json!({"contempt": "on"}), &["contempt_factor"]),
         ],
     }
 }
@@ -739,6 +950,18 @@ mod tests {
         })
     }
 
+    fn pn_params() -> Value {
+        json!({
+            "family": "ucb1_pn",
+            "q_init": "Infinity",
+            "c": 1.4,
+            "c_pn": 1.0,
+            "final_action": "robust_child",
+            "solver_loss_threshold": 5,
+            "contempt": "off",
+        })
+    }
+
     #[test]
     fn test_tune_eval_rejects_params_missing_required_field() {
         // "schedule": "threshold" requires "rave", which is absent -- this
@@ -788,6 +1011,39 @@ mod tests {
         )
         .expect_err("unknown final_action must be rejected");
         assert!(err.message.contains("final_action"));
+    }
+
+    #[test]
+    fn test_tune_eval_rejects_unknown_contempt() {
+        let mut params = pn_params();
+        params["contempt"] = json!("not_a_real_contempt_mode");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("unknown contempt must be rejected");
+        assert!(err.message.contains("contempt"));
+    }
+
+    #[test]
+    fn test_tune_eval_rejects_contempt_on_missing_contempt_factor() {
+        let mut params = pn_params();
+        params["contempt"] = json!("on");
+        params.as_object_mut().unwrap().remove("contempt_factor");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            1,
+            Some(0),
+            false,
+            baseline,
+            <Nim as Game>::S::default(),
+        )
+        .expect_err("contempt=on without contempt_factor must be rejected");
+        assert!(err.message.contains("contempt_factor"));
     }
 
     #[test]
@@ -928,6 +1184,20 @@ mod tests {
         assert_family_round_trips(rave_params());
     }
 
+    #[test]
+    fn test_family_ucb1_pn_round_trips() {
+        assert_family_round_trips(pn_params());
+    }
+
+    #[test]
+    fn test_family_ucb1_pn_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+            "final_action": "robust_child", "solver_loss_threshold": 5,
+            "contempt": "on", "contempt_factor": -0.5,
+        }));
+    }
+
     /// Proves `build_search` (the public entry point `GameAdapter::
     /// tune_eval`'s `baseline_config` path uses) works as a
     /// `strategy_tune_eval` `baseline_build` source, not just as a
@@ -1024,6 +1294,15 @@ mod tests {
             ),
             ("rave", rave_params()),
             ("meta_mcts", json!({"family": "meta_mcts", "c": 1.4})),
+            ("ucb1_pn", pn_params()),
+            (
+                "ucb1_pn_mast",
+                json!({
+                    "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+                    "final_action": "robust_child", "solver_loss_threshold": 5,
+                    "contempt": "on", "contempt_factor": -0.5,
+                }),
+            ),
         ]
     }
 

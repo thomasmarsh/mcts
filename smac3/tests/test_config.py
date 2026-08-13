@@ -28,7 +28,8 @@ parameters:
     choices:
       [ucb1, ucb1_dm, ucb1_mast, ucb1_nst, ucb1_progressive_history,
        ucb1_max_robust, amaf, amaf_mast, ucb1_tuned, ucb1_tuned_mast,
-       ucb1_tuned_dm, ucb1_tuned_dm_mast, meta_mcts, rave]
+       ucb1_tuned_dm, ucb1_tuned_dm_mast, meta_mcts, rave, ucb1_pn,
+       ucb1_pn_mast]
     default: rave
   q_init:
     type: categorical
@@ -86,22 +87,40 @@ parameters:
     type: categorical
     choices: [none, ucb1, tuned]
     default: tuned
+  c_pn:
+    type: float
+    bounds: [0, 3]
+    default: 1.0
+  solver_loss_threshold:
+    type: int
+    bounds: [0, 50]
+    default: 5
+  contempt:
+    type: categorical
+    choices: ["off", "on"]
+    default: "off"
+  contempt_factor:
+    type: float
+    bounds: [-1, 1]
+    default: 0.0
 
 conditions:
   - if:
       family: [ucb1, ucb1_dm, ucb1_mast, ucb1_nst, ucb1_progressive_history,
                 amaf, amaf_mast, ucb1_tuned, ucb1_tuned_mast, ucb1_tuned_dm,
-                ucb1_tuned_dm_mast, rave]
+                ucb1_tuned_dm_mast, rave, ucb1_pn, ucb1_pn_mast]
     then: [final_action]
   - if: { final_action: secure_child }
     then: [a]
   - if:
       family: [ucb1, ucb1_dm, ucb1_mast, ucb1_nst, ucb1_progressive_history,
                 amaf, amaf_mast, ucb1_tuned, ucb1_tuned_mast, ucb1_tuned_dm,
-                ucb1_tuned_dm_mast, ucb1_max_robust, meta_mcts]
+                ucb1_tuned_dm_mast, ucb1_max_robust, meta_mcts, ucb1_pn,
+                ucb1_pn_mast]
     then: [c]
   - if:
-      family: [ucb1_mast, ucb1_nst, amaf_mast, ucb1_tuned_dm_mast, rave]
+      family: [ucb1_mast, ucb1_nst, amaf_mast, ucb1_tuned_dm_mast, rave,
+                ucb1_pn_mast]
     then: [epsilon]
   - if: { family: [amaf, amaf_mast] }
     then: [amaf_alpha]
@@ -119,6 +138,10 @@ conditions:
     then: [rave]
   - if: { rave_ucb: [ucb1, tuned] }
     then: [c]
+  - if: { family: [ucb1_pn, ucb1_pn_mast] }
+    then: [c_pn, solver_loss_threshold, contempt]
+  - if: { contempt: "on" }
+    then: [contempt_factor]
 """
 
 
