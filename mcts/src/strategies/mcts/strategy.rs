@@ -63,6 +63,38 @@ impl<G: Game> Strategy<G> for Ucb1DM {
     }
 }
 
+// Vanilla UCT + PN-MCTS's UCT-PN selection formula (Kowalski et al. 2023).
+// Only meaningful with `use_mcts_solver` on -- see `select::UctPn`'s doc
+// comment.
+#[derive(Clone, Default)]
+pub struct Ucb1Pn;
+
+impl<G: Game> Strategy<G> for Ucb1Pn {
+    type Select = select::UctPn;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_pn".into()
+    }
+}
+
+// UCT-PN + Mast
+#[derive(Clone, Default)]
+pub struct Ucb1PnMast;
+
+impl<G: Game> Strategy<G> for Ucb1PnMast {
+    type Select = select::UctPn;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Mast>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_pn_mast".into()
+    }
+}
+
 // Vanilla UCT + Mast
 #[derive(Clone, Default)]
 pub struct Ucb1Mast;

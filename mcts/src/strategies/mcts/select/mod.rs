@@ -1,6 +1,7 @@
 pub mod amaf;
 pub mod basic;
 pub mod history;
+pub mod pn;
 pub mod quasi;
 pub mod rave;
 pub mod ucb;
@@ -12,6 +13,7 @@ pub use basic::RobustChild;
 pub use basic::SecureChild;
 pub use basic::ThompsonSampling;
 pub use history::ProgressiveHistory;
+pub use pn::UctPn;
 pub use quasi::QuasiBestFirst;
 pub use rave::Rave;
 pub use rave::RaveSchedule;
@@ -204,6 +206,35 @@ where
     S: SelectStrategy<G>,
     G: Game,
 {
+    let aux = strategy.setup(ctx);
+    let unvisited_value = strategy.unvisited_value(ctx, aux);
+
+    random_best_index_by(children, ctx, rng, |i| {
+        if let Some(child_id) = children.node_id(i) {
+            strategy.score_child(ctx, child_id, children, i, aux)
+        } else {
+            unvisited_value
+        }
+    })
+}
+
+/// The tie-broken argmax + proven-loss-skip core of `random_best_index`,
+/// factored out to take a plain scoring closure instead of a
+/// `SelectStrategy` -- what lets a strategy whose per-child score depends on
+/// *every* sibling at once (e.g. `UctPn`'s rank, which isn't expressible as
+/// a `SelectStrategy::Aux` since that associated type must be `Copy` and a
+/// per-child rank table isn't) reuse this instead of re-implementing it.
+#[inline]
+pub(super) fn random_best_index_by<G, Score>(
+    children: &ChildArray<G::A>,
+    ctx: &SelectContext<'_, G>,
+    rng: &mut SmallRng,
+    mut child_value: impl FnMut(usize) -> Score,
+) -> usize
+where
+    G: Game,
+    Score: PartialOrd + Copy,
+{
     // To make the choice more uniformly random among the best moves, start
     // at a random offset and stride by a random amount. The stride must be
     // coprime with n, so pick from a set of 5 digit primes.
@@ -213,17 +244,6 @@ where
     let r = rng.gen_range(0..n * PRIMES.len());
     let mut i = r / PRIMES.len();
     let stride = PRIMES[r % PRIMES.len()];
-
-    let aux = strategy.setup(ctx);
-    let unvisited_value = strategy.unvisited_value(ctx, aux);
-
-    let child_value = |i: usize| {
-        if let Some(child_id) = children.node_id(i) {
-            strategy.score_child(ctx, child_id, children, i, aux)
-        } else {
-            unvisited_value
-        }
-    };
 
     // Proven-loss avoidance (MCTS-Solver): prefer any non-proven-loss
     // sibling, and only fall back to a proven-loss child when every sibling

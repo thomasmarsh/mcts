@@ -86,6 +86,52 @@ fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
     }
 }
 
+/// Re-derives `node_id`'s proof/disproof numbers from its (already up to
+/// date) children -- the magnitude counterpart to `derive_proven`, and the
+/// substrate `select::UctPn` ranks children by. Every node is scored
+/// "OR-style" relative to its own mover (matching `Proven`'s per-mover
+/// framing above), which collapses PNS's usual separate AND/OR recurrences
+/// into one uniform negamax pair: `pn(n)` is the minimum, over children, of
+/// the child's `dpn` (this node's mover needs only one child the opponent
+/// can't escape), and `dpn(n)` is the sum, over children, of the child's
+/// `pn` (refuting this node's mover requires every child to fail). An
+/// unexplored child slot (a legal action with no tree node yet, already
+/// known from `ChildArray`'s fixed action list -- see its doc comment)
+/// counts as PNS's "unknown leaf" case, `pn = dpn = 1`, without needing to
+/// force it into existence. Saturates at `u32::MAX` rather than
+/// overflowing. No-ops on a non-`Expanded` node, for the same reason as
+/// `derive_proven`.
+///
+/// `pub(crate)`, unlike `derive_proven` above, so `strategies::tests` can
+/// exercise this recurrence directly against a hand-built arena -- an
+/// integer min/sum/saturate recurrence is easy to get subtly wrong (e.g.
+/// swapping which side feeds `pn` vs `dpn`) in a way a purely behavioral
+/// test wouldn't necessarily catch. Generic over the action type `A`
+/// directly (unlike `derive_proven`'s `G: Game` bound) since, like
+/// `derive_proven`, it never actually calls a `Game` method -- keeping it
+/// to the bound it really needs is what lets a test build an arena without
+/// a real `Game` impl to hand.
+pub(crate) fn derive_pn_dpn<A: crate::game::Action>(node: &node::Node<A>, index: &TreeIndex<A>) {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+
+    let mut pn: u32 = u32::MAX;
+    let mut dpn: u32 = 0;
+    for i in 0..children.len() {
+        let (child_pn, child_dpn) = match children.node_id(i) {
+            Some(child_id) => {
+                let child = index.get(child_id);
+                (child.pn(), child.dpn())
+            }
+            None => (1, 1),
+        };
+        pn = pn.min(child_dpn);
+        dpn = dpn.saturating_add(child_pn);
+    }
+    node.set_pn_dpn(pn, dpn);
+}
+
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
@@ -229,6 +275,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     }
                 }
                 derive_proven::<G>(node, index);
+                derive_pn_dpn(node, index);
             }
             is_leaf = false;
 

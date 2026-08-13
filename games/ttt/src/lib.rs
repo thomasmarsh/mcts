@@ -269,7 +269,7 @@ mod tests {
     use mcts::{
         game::Game,
         strategies::{
-            mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, render, select, strategy, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },
         util::random_play,
@@ -484,6 +484,31 @@ mod tests {
             unsolved_iters, 5000,
             "without the solver, the full iteration budget should still run"
         );
+    }
+
+    // PN-MCTS's UCT-PN selection formula (Kowalski et al. 2023), on top of
+    // the solver: with a nonzero `c_pn`, `select::UctPn` should still find
+    // the same forced block as plain UCB1 (`test_ucb1_finds_forced_block`
+    // above) -- the (dis)proof-number rank bonus is meant to bias *which*
+    // unresolved lines get explored first, not override a move the solver
+    // has already proven necessary.
+    #[test]
+    fn test_uctpn_finds_forced_block() {
+        type TS = TreeSearch<TicTacToe, strategy::Ucb1Pn>;
+        let state = must_block_position();
+
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(5000)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .select(select::UctPn::with_c(1.414, 1.0))
+                .seed(42),
+        );
+
+        let action = ts.choose_action(&state);
+        assert_eq!(action, Move(7));
     }
 
     #[test]

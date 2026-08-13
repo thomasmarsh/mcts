@@ -165,3 +165,58 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     assert_eq!(children.child_index(new_ids[0]), 0);
     assert_eq!(children.child_index(new_ids[2]), 2);
 }
+
+// PN-MCTS (Kowalski et al. 2023): `derive_pn_dpn`'s negamax recurrence,
+// hand-verified on a tiny 3-child arena rather than through a real game --
+// small enough to compute the expected pn/dpn by hand, which a purely
+// behavioral (does-it-pick-the-right-move) test wouldn't necessarily
+// exercise: `pn(root) = min` over children of the child's *dpn*, and
+// `dpn(root) = sum` over children of the child's *pn* -- easy to get
+// backwards, since it's the opposite of the naive "sum pn, min dpn" a
+// classic (non-negamax) OR-node formula would suggest.
+//
+// Root has three child slots:
+//   - idx 0: an unexplored slot (no tree node at all) -- PNS's "unknown
+//     leaf" case, contributes (pn=1, dpn=1).
+//   - idx 1: a tree node proven `Win` for its own mover -- contributes
+//     (pn=0, dpn=MAX) via `Node::pn`/`dpn`'s `Proven` short-circuit.
+//   - idx 2: an unvisited tree node (never `expand()`ed, `Unproven`) --
+//     also (pn=1, dpn=1), but read from the *stored* atomic default this
+//     time rather than the unexplored-slot fallback, exercising the other
+//     code path that produces the same value.
+//
+// Expected: pn(root) = min(dpn_0=1, dpn_1=MAX, dpn_2=1) = 1.
+//           dpn(root) = pn_0=1 + pn_1=0 + pn_2=1 = 2.
+#[test]
+fn test_derive_pn_dpn_negamax_recurrence_hand_verified() {
+    use crate::strategies::mcts::backprop::derive_pn_dpn;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let proven_win_child = Node::new(1, 0);
+    proven_win_child.try_prove(Proven::Win(1));
+    let proven_win_id = index.insert(proven_win_child);
+
+    let unvisited_child = Node::new(1, 0);
+    let unvisited_id = index.insert(unvisited_child);
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2);
+    children.get_or_create_child(1, || proven_win_id);
+    children.get_or_create_child(2, || unvisited_id);
+    // idx 0 deliberately left unresolved (no `get_or_create_child` call).
+
+    assert_eq!(index.get(proven_win_id).pn(), 0);
+    assert_eq!(index.get(proven_win_id).dpn(), u32::MAX);
+    assert_eq!(index.get(unvisited_id).pn(), 1);
+    assert_eq!(index.get(unvisited_id).dpn(), 1);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_pn_dpn(&root, &index);
+
+    assert_eq!(root.pn(), 1, "pn(root) = min(dpn) over children");
+    assert_eq!(root.dpn(), 2, "dpn(root) = sum(pn) over children");
+}

@@ -639,9 +639,19 @@ pub struct Node<A: Action> {
     // `Relaxed` throughout, matching
     // `num_visits_virtual` on `NodeStats` above.
     proven: AtomicU8,
+    // PN-MCTS (Kowalski et al. 2023) proof/disproof numbers, seeded at `1`
+    // (PNS's "unknown leaf" case) rather than `0 = Unproven` -- see `pn()`/
+    // `dpn()`'s doc comments for why these fields are only read directly
+    // while `proven` is still `Unproven`. Not write-once like `proven`:
+    // `set_pn_dpn` (called from `derive_pn_dpn` in backprop.rs) overwrites
+    // them every time this node's children's counts change, only settling
+    // once `proven` itself resolves.
+    pn: AtomicU32,
+    dpn: AtomicU32,
 }
 
-// Manual impl: `AtomicU8` isn't `Clone`, so this can no longer be derived.
+// Manual impl: `AtomicU8`/`AtomicU32` aren't `Clone`, so this can no longer
+// be derived.
 impl<A: Action> Clone for Node<A> {
     fn clone(&self) -> Self {
         Self {
@@ -650,6 +660,8 @@ impl<A: Action> Clone for Node<A> {
             is_root: self.is_root,
             state: self.state.clone(),
             proven: AtomicU8::new(self.proven.load(Relaxed)),
+            pn: AtomicU32::new(self.pn.load(Relaxed)),
+            dpn: AtomicU32::new(self.dpn.load(Relaxed)),
         }
     }
 }
@@ -665,6 +677,8 @@ where
             is_root: false,
             state: OnceLock::new(),
             proven: AtomicU8::new(Proven::UNPROVEN_U8),
+            pn: AtomicU32::new(1),
+            dpn: AtomicU32::new(1),
         }
     }
 
@@ -684,6 +698,47 @@ where
         let _ = self
             .proven
             .compare_exchange(Proven::UNPROVEN_U8, status.to_u8(), Relaxed, Relaxed);
+    }
+
+    /// Proof number: PN-MCTS's (Kowalski et al. 2023) generalization of
+    /// `proven()` from a ternary status to a magnitude -- the minimum number
+    /// of leaf nodes that still need to resolve to prove *this node's own
+    /// mover* forces a win. `0` once `proven()` is `Win(player_idx)`;
+    /// saturated (`u32::MAX`) once it's proven anything else (`Draw` or the
+    /// opponent's win -- see `Proven`'s doc comment on why "loss" isn't
+    /// stored separately); otherwise the live count `derive_pn_dpn`
+    /// (backprop.rs) maintains, seeded at `1` for an unvisited leaf (PNS's
+    /// "unknown leaf" case). Only meaningful when `use_mcts_solver` is on --
+    /// with it off, `proven()` never leaves `Unproven` and `pn`/`dpn` never
+    /// move off their seed value (see `select::UctPn`'s doc comment).
+    #[inline]
+    pub fn pn(&self) -> u32 {
+        match self.proven() {
+            Proven::Win(w) if w == self.player_idx => 0,
+            Proven::Win(_) | Proven::Draw => u32::MAX,
+            Proven::Unproven => self.pn.load(Relaxed),
+        }
+    }
+
+    /// Disproof number -- the mirror image of `pn()` (see its doc comment):
+    /// the minimum number of leaf nodes that still need to resolve to
+    /// disprove this node's own mover forces a win.
+    #[inline]
+    pub fn dpn(&self) -> u32 {
+        match self.proven() {
+            Proven::Win(w) if w == self.player_idx => u32::MAX,
+            Proven::Win(_) | Proven::Draw => 0,
+            Proven::Unproven => self.dpn.load(Relaxed),
+        }
+    }
+
+    /// Overwrites the live proof/disproof counts. Called only from
+    /// `derive_pn_dpn` (backprop.rs); see the `pn`/`dpn` fields' doc comment
+    /// for why this isn't write-once like `try_prove`.
+    #[inline]
+    pub fn set_pn_dpn(&self, pn: u32, dpn: u32) {
+        self.pn.store(pn, Relaxed);
+        self.dpn.store(dpn, Relaxed);
     }
 
     #[inline]
