@@ -25,10 +25,11 @@ import {
   type JobPollEnv,
   type JobSubmitResult,
 } from "@mcts/core";
-import type { BenchState } from "./state.js";
+import type { BenchState, ChainedTrial } from "./state.js";
 import {
   isTerminalStatus,
   type BenchKindInfo,
+  type ChainRung,
   type CommitTrendData,
   type LaunchResponse,
   type LeaderboardEntry,
@@ -62,11 +63,17 @@ export interface BenchEnv {
   /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
    * seeded from its saved state. */
   resumeRun(runId: string, nTrials: number, nWorkers?: number): Effect<LaunchResponse>;
+  /** Promote this run's current incumbent to a new baseline instance and
+   * relaunch as the next rung in its ladder chain. Stops the run first if
+   * it's still running. */
+  advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Effect<LaunchResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game. */
   getSmac3Kinds(): Effect<Smac3GameInfo[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
+  /** Every rung of the ladder chain `runId` belongs to, oldest first. */
+  getRunChain(runId: string): Effect<ChainRung[]>;
 }
 
 export const TAIL_BACKOFF_START_MS = 1000;
@@ -110,6 +117,10 @@ export type BenchAction =
       /** Every tick's trial rows (see `tailTick` below for why this isn't
        * gated on run kind). Empty for every non-`"smac3"` run. */
       trials: TrialRow[];
+      /** This run's ladder chain and every rung's trials, concatenated in
+       * chain order — see `tailTick`. */
+      chain: ChainRung[];
+      chainedTrials: ChainedTrial[];
     }
   | { tag: "tailFailed"; generation: number; error: string }
   | { tag: "leaderboard"; action: LeaderboardAction }
@@ -126,6 +137,9 @@ export type BenchAction =
   | { tag: "resumeRun"; runId: string; nTrials: number; nWorkers?: number }
   | { tag: "resumeFinished"; runId: string }
   | { tag: "resumeFailed"; runId: string; error: string }
+  | { tag: "advanceBaseline"; runId: string; nTrials?: number; nWorkers?: number }
+  | { tag: "advanceBaselineFinished"; runId: string; newRunId: string }
+  | { tag: "advanceBaselineFailed"; runId: string; error: string }
   /** Load all available bench kinds/games/strategies for the launch form. */
   | { tag: "kinds"; action: KindsAction }
   /** Load per-game SMAC3 tuner metadata for the launch form + run detail. */
@@ -225,6 +239,8 @@ export function benchReducer(
       detail: null,
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
       trials: [],
+      chain: [],
+      chainedTrials: [],
     };
     // The first tick doubles as the detail fetch — no separate request.
     return Effect.send<BenchAction>({ tag: "tailTick", generation: draft.openGeneration });
@@ -251,12 +267,26 @@ export function benchReducer(
     // otherwise mean its trials are never fetched at all. The cost for
     // every other run kind is one query returning an empty row set.
     return Effect.fromPromise(async () => {
-      const [log, detail, trials] = await Promise.all([
+      const [log, detail, trials, chain] = await Promise.all([
         toPromise(env.getRunLog(runId, since)),
         toPromise(env.getRun(runId)),
         toPromise(env.getRunTrials(runId, 5000)),
+        toPromise(env.getRunChain(runId)),
       ]);
-      return { log, detail, trials };
+      // Refetched per rung every tick, same "just refetch the whole thing"
+      // tradeoff `trials` above already makes rather than an incremental
+      // cursor -- fine at SMAC3's trial-count *and* chain-length scale.
+      // This duplicates fetching `runId`'s own trials a second time when
+      // it's already in the chain (rather than reusing `trials` above) --
+      // deliberately, to keep this uniform across every rung instead of
+      // special-casing the currently-open one.
+      const rungTrials = await Promise.all(
+        chain.map((rung) => toPromise(env.getRunTrials(rung.run_id, 5000))),
+      );
+      const chainedTrials: ChainedTrial[] = rungTrials.flatMap((list, rungIndex) =>
+        list.map((trial) => ({ rungIndex, trial })),
+      );
+      return { log, detail, trials, chain, chainedTrials };
     })
       .map((r): BenchAction => ({
         tag: "tailed",
@@ -265,6 +295,8 @@ export function benchReducer(
         nextOffset: r.log.next_offset,
         detail: r.detail,
         trials: r.trials,
+        chain: r.chain,
+        chainedTrials: r.chainedTrials,
       }))
       .catch((e): BenchAction => ({ tag: "tailFailed", generation, error: String(e) }));
   }
@@ -278,6 +310,8 @@ export function benchReducer(
     open.tail.failures = 0;
     open.detail = action.detail;
     open.trials = action.trials;
+    open.chain = action.chain;
+    open.chainedTrials = action.chainedTrials;
     if (isTerminalStatus(action.detail.status)) {
       // The run's log file is complete once the process is done — one last
       // append (this tick's lines) and the loop stops. The runs list just
@@ -419,6 +453,36 @@ export function benchReducer(
 
   if (action.tag === "resumeFailed") {
     draft.resumeError = action.error;
+    return null;
+  }
+
+  if (action.tag === "advanceBaseline") {
+    draft.advanceBaselineError = null;
+    const { runId, nTrials, nWorkers } = action;
+    return env
+      .advanceBaseline(runId, nTrials, nWorkers)
+      .map((r): BenchAction => ({ tag: "advanceBaselineFinished", runId, newRunId: r.run_id }))
+      .catch((e): BenchAction => ({ tag: "advanceBaselineFailed", runId, error: String(e) }));
+  }
+
+  if (action.tag === "advanceBaselineFinished") {
+    // The widened rung is a brand-new row (its own run_id), chained back to
+    // this one via `resumed_from`/`ladder_root` -- refresh the list, and if
+    // the advanced run is still the one open in the detail panel, follow
+    // the chain there so the operator keeps watching the same continuous
+    // graph rather than a now-frozen predecessor (see Smac3RunDetail's
+    // chain-aware trial fetch, which renders every rung of the chain
+    // regardless of which one is "open").
+    const refreshEff = startRunsFetch(draft, env);
+    if (draft.openRun?.runId === action.runId) {
+      const openEff = Effect.send<BenchAction>({ tag: "openRun", runId: action.newRunId });
+      return refreshEff ? Effect.merge(refreshEff, openEff) : openEff;
+    }
+    return refreshEff;
+  }
+
+  if (action.tag === "advanceBaselineFailed") {
+    draft.advanceBaselineError = action.error;
     return null;
   }
 

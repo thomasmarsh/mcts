@@ -467,6 +467,35 @@
   background: #3a72a4;
 }
 
+#advance-baseline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+
+#advance-baseline-btn {
+  background: #6a5a1e;
+  border: 1px solid #c9a227;
+  color: #f0e4c0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#advance-baseline-btn:hover:not(:disabled) {
+  background: #8a7628;
+}
+
+#advance-baseline-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* ── Run Detail Meta ─────────────────────────────────────────────────── */
 
 #run-detail-meta {
@@ -1355,6 +1384,11 @@ body.bench-active #analysis-panel {
 .legend-swatch-ci {
   border-radius: 1px;
   background: rgba(91, 127, 214, 0.6);
+}
+
+.legend-swatch-boundary {
+  border-radius: 1px;
+  background: #c9a227;
 }
 
 #smac3-diff-table {

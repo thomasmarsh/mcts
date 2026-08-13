@@ -18,10 +18,11 @@ import {
   TAIL_BACKOFF_MAX_MS,
   TAIL_BACKOFF_START_MS,
   TAIL_MAX_FAILURES,
+  type BenchAction,
   type BenchEnv,
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
-import type { LaunchResponse, LeaderboardEntry, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
+import type { ChainRung, LaunchResponse, LeaderboardEntry, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -84,12 +85,18 @@ const mockEnv: BenchEnv = {
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
   resumeRun: () => Effect.none(),
+  advanceBaseline: () => Effect.none(),
   getBenchKinds: () => Effect.none(),
   getSmac3Kinds: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
   getRunTrials: () => Effect.send([]),
+  // Same reasoning as getRunTrials above: every tick fetches the chain too.
+  // An empty chain means the per-rung trials fetch loop is a no-op, which
+  // also keeps every existing `trialsCalls` assertion below unaffected by
+  // this addition.
+  getRunChain: () => Effect.send([]),
 };
 
 // ── Runs list ───────────────────────────────────────────────────────────────
@@ -166,6 +173,8 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
 
@@ -173,7 +182,7 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: ["l1", "l2"], nextOffset: 42, detail: runningDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: ["l1", "l2"], nextOffset: 42, detail: runningDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = runningDetail;
         s.openRun!.tail.lines = ["l1", "l2"];
@@ -187,7 +196,7 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 42, detail: terminalDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 42, detail: terminalDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
@@ -222,12 +231,14 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: runningDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: runningDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = runningDetail;
         s.openRun!.tail.idleAttempts = 1;
@@ -242,7 +253,7 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: runningDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: runningDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.tail.idleAttempts = 2;
       },
@@ -253,7 +264,7 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: terminalDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: terminalDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
@@ -286,6 +297,8 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -296,7 +309,7 @@ describe("benchReducer / log tail", () => {
     await ts.drain();
     // The tailed arrives with a valid generation but no open run — dropped,
     // no state change, no further tick scheduled.
-    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: runningDetail, trials: [] }, () => {});
+    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: runningDetail, trials: [], chain: [], chainedTrials: [] }, () => {});
   });
 
   it("drops a stale generation's tailed after a different run is opened", async () => {
@@ -317,6 +330,8 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -328,15 +343,17 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 2 });
     await ts.drain();
     // Run-a's tailed lands first (its fetch started first) and is dropped.
-    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [] }, () => {});
+    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [], chain: [], chainedTrials: [] }, () => {});
     // Run-b's tailed applies normally.
     ts.receive(
-      { tag: "tailed", generation: 2, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [] },
+      { tag: "tailed", generation: 2, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.lines = ["x"];
@@ -383,12 +400,14 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: smac3TerminalDetail, trials: trialRows },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: smac3TerminalDetail, trials: trialRows, chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = smac3TerminalDetail;
         s.openRun!.trials = trialRows;
@@ -404,6 +423,96 @@ describe("benchReducer / log tail", () => {
       },
     );
     expect(trialsCalls).toBe(1);
+  });
+
+  it("concatenates every rung's trials into chainedTrials, tagged by rung index", async () => {
+    const rootTrials: TrialRow[] = [
+      { trial_id: 1, ts: "2026-01-01T00:00:01Z", config: { c: 1.0 }, seed: 0, cost: 0.5, extra: null },
+      { trial_id: 2, ts: "2026-01-01T00:00:02Z", config: { c: 1.1 }, seed: 0, cost: 0.1, extra: null },
+    ];
+    const rung2Trials: TrialRow[] = [
+      { trial_id: 1, ts: "2026-01-02T00:00:01Z", config: { c: 1.4 }, seed: 0, cost: 0.3, extra: null },
+    ];
+    const chain: ChainRung[] = [
+      {
+        run_id: "root-1",
+        label: null,
+        status: "completed",
+        started_at: "2026-01-01T00:00:00Z",
+        ended_at: "2026-01-01T01:00:00Z",
+        trial_count: 2,
+        incumbent: null,
+      },
+      {
+        run_id: "root-1-ladder2",
+        label: "baseline advance from root-1",
+        status: "completed",
+        started_at: "2026-01-02T00:00:00Z",
+        ended_at: "2026-01-02T01:00:00Z",
+        trial_count: 1,
+        incumbent: { config: { c: 1.1 }, cost: 0.1 },
+      },
+    ];
+    // The direct (non-chain) trials fetch below is scoped to the currently
+    // open run ("root-1-ladder2") and returns its own rung's trials
+    // (rung2Trials) -- the chain fetch separately pulls every rung's
+    // trials, including root-1's, via the same `getRunTrials` mock keyed
+    // on run_id.
+    const env: BenchEnv = {
+      ...mockEnv,
+      getRunLog: () => Effect.send({ lines: [], next_offset: 0 }),
+      getRun: () => Effect.send({ ...smac3TerminalDetail, run_id: "root-1-ladder2" }),
+      getRunChain: () => Effect.send(chain),
+      getRunTrials: (runId: string) =>
+        Effect.send(runId === "root-1" ? rootTrials : runId === "root-1-ladder2" ? rung2Trials : []),
+      listRuns: () => Effect.send([]),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "openRun", runId: "root-1-ladder2" }, (s) => {
+      s.openGeneration = 1;
+      s.openRun = {
+        runId: "root-1-ladder2",
+        detail: null,
+        tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
+        trials: [],
+        chain: [],
+        chainedTrials: [],
+      };
+    });
+    ts.receive({ tag: "tailTick", generation: 1 });
+    await ts.drain();
+    const expectedChainedTrials = [
+      ...rootTrials.map((trial) => ({ rungIndex: 0, trial })),
+      ...rung2Trials.map((trial) => ({ rungIndex: 1, trial })),
+    ];
+    ts.receive(
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: [],
+        nextOffset: 0,
+        detail: { ...smac3TerminalDetail, run_id: "root-1-ladder2" },
+        trials: rung2Trials,
+        chain,
+        chainedTrials: expectedChainedTrials,
+      },
+      (s) => {
+        s.openRun!.detail = { ...smac3TerminalDetail, run_id: "root-1-ladder2" };
+        s.openRun!.trials = rung2Trials;
+        s.openRun!.chain = chain;
+        s.openRun!.chainedTrials = expectedChainedTrials;
+        s.openRun!.tail.active = false;
+        s.runs.status = "pending";
+      },
+    );
+    ts.receive(
+      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },
+      (s) => {
+        s.runs.status = "done";
+        s.runs.result = [];
+      },
+    );
   });
 
   it("also fetches (empty) trials for a non-smac3 run, harmlessly", async () => {
@@ -427,12 +536,14 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: terminalDetail, trials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: terminalDetail, trials: [], chain: [], chainedTrials: [] },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
@@ -464,6 +575,8 @@ describe("benchReducer / log tail", () => {
         detail: null,
         tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
         trials: [],
+        chain: [],
+        chainedTrials: [],
       };
     });
 
@@ -743,6 +856,82 @@ describe("benchReducer / resumeRun", () => {
     await ts.drain();
     ts.receive({ tag: "resumeFailed", runId: "smac3-run-1", error: "Error: nope" }, (s) => {
       s.resumeError = "Error: nope";
+    });
+  });
+});
+
+describe("benchReducer / advanceBaseline", () => {
+  it("advanceBaselineFinished dispatches openRun for the new rung when the advanced run is still open", () => {
+    // Exercised via a direct reducer call rather than TestStore: the
+    // returned effect (Effect.merge of a runs-list refresh and the
+    // follow-up openRun) would, once fully driven through TestStore,
+    // cascade into that openRun's own tailTick -- exactly what
+    // reducer.ts's log-tail tests already cover on their own. What's
+    // actually novel here is narrower: does advanceBaselineFinished route
+    // to the *new* run_id, only when it's still the open one. Asserting
+    // that against the raw dispatched actions keeps the test scoped to it.
+    const draft = initialBenchState();
+    draft.openGeneration = 1;
+    draft.openRun = {
+      runId: "root-1",
+      detail: null,
+      tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
+      trials: [],
+      chain: [],
+      chainedTrials: [],
+    };
+    // listRuns left at mockEnv's Effect.none() default -- the runs-list
+    // refresh half of the merge is irrelevant here (already covered below
+    // and by the resumeRun tests' identical shape) and Effect.none()
+    // resolves without ever dispatching, so it can't obscure the assertion
+    // on what openEff dispatches.
+    const effect = benchReducer(
+      draft,
+      { tag: "advanceBaselineFinished", runId: "root-1", newRunId: "smac3-run-2" },
+      mockEnv,
+    );
+    expect(draft.runs.status).toBe("pending"); // startRunsFetch's synchronous mutation
+
+    const sent: BenchAction[] = [];
+    void effect?.execute((a) => sent.push(a));
+    expect(sent).toEqual([{ tag: "openRun", runId: "smac3-run-2" }]);
+  });
+
+  it("does not follow the chain when a different run was opened before advanceBaseline resolved", async () => {
+    const env: BenchEnv = {
+      ...mockEnv,
+      advanceBaseline: () => Effect.send({ run_id: "smac3-run-2", pid: 999, log_path: "/x/log.jsonl" }),
+      listRuns: () => Effect.send([]),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "advanceBaseline", runId: "root-1" });
+    // No run is open at all -- advanceBaselineFinished must not synthesize
+    // one; it only refreshes the list.
+    await ts.drain();
+    ts.receive({ tag: "advanceBaselineFinished", runId: "root-1", newRunId: "smac3-run-2" }, (s) => {
+      s.runs.status = "pending";
+    });
+    ts.receive(
+      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },
+      (s) => {
+        s.runs.status = "done";
+        s.runs.result = [];
+      },
+    );
+  });
+
+  it("a rejected advanceBaseline lands in advanceBaselineError", async () => {
+    const env: BenchEnv = {
+      ...mockEnv,
+      advanceBaseline: () => Effect.fromPromise(() => Promise.reject(new Error("no incumbent"))),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "advanceBaseline", runId: "root-1" });
+    await ts.drain();
+    ts.receive({ tag: "advanceBaselineFailed", runId: "root-1", error: "Error: no incumbent" }, (s) => {
+      s.advanceBaselineError = "Error: no incumbent";
     });
   });
 });

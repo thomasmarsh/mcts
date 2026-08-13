@@ -4,7 +4,7 @@
 // (tailTick/tailed/tailFailed actions).  This component only reads state
 // and dispatches close/stop — it never manages timers itself.
 
-import { createMemo, createSignal, For, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
@@ -23,6 +23,7 @@ export const RunDetailPanel: Component<{
   const tail = createMemo(() => openRun()?.tail ?? null);
   const stopError = createMemo(() => state().stopError);
   const resumeError = createMemo(() => state().resumeError);
+  const advanceBaselineError = createMemo(() => state().advanceBaselineError);
 
   const isSmac3 = createMemo(() => detail()?.kind === "smac3");
   // A run can only be resumed once it's stopped producing new trials --
@@ -33,6 +34,23 @@ export const RunDetailPanel: Component<{
   // can always change it before clicking Resume.
   const resumeDefaultTrials = createMemo(() => (detail()?.trial_count ?? 0) + 200);
   const [resumeTrials, setResumeTrials] = createSignal<number | null>(null);
+  // Unlike Resume, this is available while the run is still `running` --
+  // the advance-baseline route stops it first itself (see server/bench's
+  // `advance_baseline` doc comment), so the operator doesn't have to click
+  // Stop and wait before promoting the current incumbent. The only real
+  // precondition is having an incumbent to promote at all.
+  const canAdvanceBaseline = createMemo(() => isSmac3() && detail()?.incumbent != null);
+  const [advancing, setAdvancing] = createSignal(false);
+  // Clears the optimistic "in flight" flag once the request settles --
+  // success replaces `openRun` with the new rung (see reducer.ts's
+  // `advanceBaselineFinished`), failure surfaces `advanceBaselineError`.
+  createEffect(() => {
+    const _error = advanceBaselineError();
+    const _runId = openRun()?.runId;
+    void _error;
+    void _runId;
+    setAdvancing(false);
+  });
   const smac3Tuner = createMemo(() => {
     const d = detail();
     const kinds = state().smac3Kinds;
@@ -138,6 +156,25 @@ export const RunDetailPanel: Component<{
           </Show>
         </Show>
 
+        <Show when={canAdvanceBaseline()}>
+          <div id="advance-baseline-row">
+            <button
+              id="advance-baseline-btn"
+              disabled={advancing()}
+              title="Promote this run's current incumbent to a new baseline instance and continue tuning against it -- stops the run first if it's still running."
+              onClick={() => {
+                setAdvancing(true);
+                dispatch({ tag: "advanceBaseline", runId: openRun()!.runId });
+              }}
+            >
+              {advancing() ? "Advancing…" : "Use best as new baseline"}
+            </button>
+          </div>
+          <Show when={advanceBaselineError()}>
+            <div class="launch-error">{advanceBaselineError()}</div>
+          </Show>
+        </Show>
+
         <div id="run-detail-summary">
           <Show when={detail()}>
             <div id="run-detail-meta">
@@ -183,6 +220,8 @@ export const RunDetailPanel: Component<{
           <Show when={isSmac3()}>
             <Smac3RunDetail
               trials={openRun()?.trials ?? []}
+              chain={openRun()?.chain ?? []}
+              chainedTrials={openRun()?.chainedTrials ?? []}
               tuner={smac3Tuner()}
               launchConfig={detail()?.config ?? null}
               incumbent={detail()?.incumbent ?? null}

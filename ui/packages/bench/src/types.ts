@@ -223,3 +223,21 @@ export interface TrialRow {
   cost: number | null;
   extra: unknown | null;
 }
+
+/** One rung of a SMAC3 ladder chain, as reported by `GET
+ * /api/bench/runs/{run_id}/chain` -- oldest first. A run with no
+ * `ladder_root` (a plain run, or a ladder run whose baseline was never
+ * advanced) is a one-element chain containing just itself, so this always
+ * has at least one entry for a run that exists. `incumbent` is the cost
+ * this rung's baseline was promoted at (the *prior* rung's own incumbent)
+ * -- `null` for the chain's root, which has no prior baseline advance
+ * behind it. */
+export interface ChainRung {
+  run_id: string;
+  label: string | null;
+  status: RunStatus;
+  started_at: string;
+  ended_at: string | null;
+  trial_count: number;
+  incumbent: IncumbentInfo | null;
+}

@@ -13,6 +13,8 @@ import {
   type BenchState,
   type BenchAction,
   type BenchEnv,
+  type ChainRung,
+  type TrialRow,
   LaunchForm,
   RunDetailPanel,
 } from "@mcts/bench";
@@ -21,6 +23,7 @@ import {
   FAKE_SMAC3_RUN_ID,
   fakeKinds,
   fakeSmac3RunDetail,
+  fakeTrialRows,
   fakeTrialRowsWithRepeats,
   fakeTrialRowsMultiInstance,
 } from "./fixtures/fake-bench.js";
@@ -352,5 +355,99 @@ describe("RunDetailPanel / smac3", () => {
     await screen.findByText("Status");
 
     expect(screen.queryByLabelText("Resume with n_trials")).not.toBeInTheDocument();
+  });
+
+  it("shows a Use best as new baseline control once an incumbent exists, even while the run is still running", async () => {
+    const runningSmac3Detail = { ...fakeSmac3RunDetail, status: "running", ended_at: null };
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      getRun: () => Effect.send(runningSmac3Detail),
+      advanceBaseline: (runId, nTrials, nWorkers) => {
+        seen.push([runId, nTrials, nWorkers]);
+        return createMockBenchEnv().advanceBaseline(runId, nTrials, nWorkers);
+      },
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Status");
+
+    // Unlike Resume (hidden above for the same running detail), this
+    // button doesn't require the run to have stopped first -- the route
+    // handles that itself.
+    const btn = screen.getByText("Use best as new baseline");
+    fireEvent.click(btn);
+    expect(seen).toEqual([[FAKE_SMAC3_RUN_ID, undefined, undefined]]);
+  });
+
+  it("hides the Use best as new baseline control before any incumbent has been reported", async () => {
+    const { store } = createTestStore({
+      getRun: () => Effect.send({ ...fakeSmac3RunDetail, incumbent: null }),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Status");
+
+    expect(screen.queryByText("Use best as new baseline")).not.toBeInTheDocument();
+  });
+
+  it("renders every rung of a ladder chain as one continuous trial history with a baseline-cutover marker", async () => {
+    const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
+    const rootTrials: TrialRow[] = [
+      { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1" }, seed: 0, cost: 0.5, extra: null },
+      { trial_id: 2, ts: "2026-02-01T00:00:02Z", config: { family: "ucb1" }, seed: 0, cost: 0.2, extra: null },
+    ];
+    const chain: ChainRung[] = [
+      {
+        run_id: rootRunId,
+        label: null,
+        status: "completed",
+        started_at: "2026-02-01T00:00:00Z",
+        ended_at: "2026-02-01T01:00:00Z",
+        trial_count: rootTrials.length,
+        incumbent: null,
+      },
+      {
+        run_id: FAKE_SMAC3_RUN_ID,
+        label: "baseline advance from " + rootRunId,
+        status: "completed",
+        started_at: "2026-03-01T00:00:00Z",
+        ended_at: "2026-03-01T01:00:00Z",
+        trial_count: fakeTrialRows.length,
+        incumbent: { config: { family: "ucb1" }, cost: 0.2 },
+      },
+    ];
+    const { store } = createTestStore({
+      getRunChain: () => Effect.send(chain),
+      getRunTrials: (runId) => Effect.send(runId === rootRunId ? rootTrials : fakeTrialRows),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    // Trial count spans both rungs (2 + 3), not just the open rung's own 3.
+    expect(screen.getByText("5", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+
+    // The trials table gained a "Run" column identifying each row's rung,
+    // and the cross-rung best cost (20.0%, root-1's trial #2) still wins
+    // over every rung-2 row.
+    expect(screen.getByText("Run")).toBeInTheDocument();
+    const rungCells = Array.from(document.querySelectorAll(".smac3-trial-rung")).map((c) => c.textContent);
+    expect(rungCells).toEqual([
+      // Table renders newest first: rung 2's 3 rows, then root's 2.
+      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
+      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
+      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
+      `Root (${rootRunId})`,
+      `Root (${rootRunId})`,
+    ]);
+    // Cross-rung best cost: root's trial #2 (20.0%) beats every rung-2 row.
+    expect(screen.getByText("#2", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+
+    // One cutover marker for the one rung boundary in a 2-rung chain.
+    expect(document.querySelectorAll(".smac3-rung-boundary").length).toBe(1);
+    expect(screen.getByText("new baseline")).toBeInTheDocument();
   });
 });

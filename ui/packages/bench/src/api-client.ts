@@ -14,6 +14,7 @@ import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
 import type {
   BenchKindInfo,
+  ChainRung,
   CommitTrendData,
   LaunchResponse,
   LeaderboardEntry,
@@ -43,11 +44,20 @@ export interface BenchApiClient {
   /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
    * seeded from its saved state (`POST /api/bench/runs/{run_id}/resume`). */
   resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse>;
+  /** Promote this run's current incumbent to a new baseline instance and
+   * relaunch as the next rung in its ladder chain (`POST
+   * /api/bench/runs/{run_id}/advance-baseline`). Stops the run first if
+   * it's still running. `nTrials` defaults server-side when omitted. */
+  advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Promise<LaunchResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
   /** Per-game tuner metadata for every game that supports SMAC3 tuning. */
   getSmac3Kinds(): Promise<Smac3GameInfo[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
+  /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
+   * /api/bench/runs/{run_id}/chain`) -- a one-element list containing just
+   * `runId` for a plain (non-laddered) run. */
+  getRunChain(runId: string): Promise<ChainRung[]>;
 }
 
 /** The server (`BenchError`'s `IntoResponse` impl, server/bench/mod.rs)
@@ -151,6 +161,12 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
         n_workers: nWorkers,
       });
     },
+    async advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Promise<LaunchResponse> {
+      return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/advance-baseline`), {
+        n_trials: nTrials,
+        n_workers: nWorkers,
+      });
+    },
     async getBenchKinds(): Promise<BenchKindInfo[]> {
       return fetchJson(url("/api/bench/kinds"));
     },
@@ -159,6 +175,9 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
+    },
+    async getRunChain(runId: string): Promise<ChainRung[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/chain`));
     },
   };
 }
@@ -176,8 +195,11 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
     resumeRun: (runId: string, nTrials: number, nWorkers?: number) =>
       lift(() => api.resumeRun(runId, nTrials, nWorkers)),
+    advanceBaseline: (runId: string, nTrials?: number, nWorkers?: number) =>
+      lift(() => api.advanceBaseline(runId, nTrials, nWorkers)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
     getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
+    getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
   };
 }

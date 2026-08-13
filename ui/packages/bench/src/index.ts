@@ -18,10 +18,11 @@ export type {
   Smac3GameInfo,
   TrialRow,
   IncumbentInfo,
+  ChainRung,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 
-export type { BenchState, OpenRunState, LogTailState, CommitTrendsState } from "./state.js";
+export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, ChainedTrial } from "./state.js";
 export { initialBenchState } from "./state.js";
 
 export type {

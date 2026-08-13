@@ -286,12 +286,17 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
         .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
         .route("/api/bench/runs/{run_id}/trials", get(get_run_trials))
+        .route("/api/bench/runs/{run_id}/chain", get(get_run_chain))
         .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
         .route(
             "/api/bench/runs/{run_id}/resume",
             post(resume_run).layer(launch_timeout),
+        )
+        .route(
+            "/api/bench/runs/{run_id}/advance-baseline",
+            post(advance_baseline).layer(launch_timeout),
         )
         .layer(cors)
         .with_state(state)
@@ -756,6 +761,116 @@ async fn get_run_trials(
     Ok(Json(rows))
 }
 
+/// One rung of a SMAC3 ladder chain, as reported by `GET
+/// /api/bench/runs/{run_id}/chain` -- a run's baseline history rendered as a
+/// continuous timeline stitches together each rung's own `trials` (fetched
+/// separately per rung, same route as a single run) using this list as the
+/// index: order, boundaries, and the incumbent each rung handed to the next.
+#[derive(Serialize)]
+pub struct ChainRung {
+    pub run_id: String,
+    pub label: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub trial_count: i64,
+    /// The cost this rung's baseline was promoted at (the prior rung's own
+    /// incumbent) -- `None` for the chain's root rung, which has no prior
+    /// baseline advance behind it.
+    pub incumbent: Option<IncumbentInfo>,
+}
+
+/// `GET /api/bench/runs/{run_id}/chain`
+///
+/// Every rung of the ladder chain `run_id` belongs to, oldest first --
+/// `ladder_root`/`resumed_from` (see `build_resume_config`'s and
+/// `plan_manual_advance`'s doc comments) link a sequence of otherwise
+/// independent `runs` rows into one logical baseline-advance timeline. A run
+/// with no `ladder_root` at all is its own one-rung chain (every plain
+/// SMAC3 run, and every ladder run that's never had its baseline advanced
+/// yet), so this always returns at least one element for a run that exists.
+async fn get_run_chain(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ChainRung>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    let config_str: Option<String> = match db.query_row(
+        "SELECT CAST(config AS TEXT) FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| row.get(0),
+    ) {
+        Ok(c) => c,
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    };
+    let config: Option<Value> = config_str.and_then(|s| serde_json::from_str(&s).ok());
+    let root = config
+        .as_ref()
+        .and_then(|c| c.get("ladder_root"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| run_id.clone());
+
+    let mut stmt = db.prepare(
+        "SELECT r.run_id, r.label, r.status, CAST(r.started_at AS TEXT), \
+                CAST(r.ended_at AS TEXT), COALESCE(t.trial_count, 0), \
+                CAST(r.config AS TEXT), CAST(i.config AS TEXT), i.cost \
+         FROM runs r \
+         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
+           ON r.run_id = t.run_id \
+         LEFT JOIN incumbents i ON r.run_id = i.run_id \
+         WHERE r.kind = 'smac3'",
+    )?;
+    let mut rungs: Vec<ChainRung> = stmt
+        .query_map([], |row| {
+            let run_config_str: Option<String> = row.get(6)?;
+            let run_config: Option<Value> =
+                run_config_str.and_then(|s| serde_json::from_str(&s).ok());
+            let incumbent_config_str: Option<String> = row.get(7)?;
+            let incumbent_cost: Option<f64> = row.get(8)?;
+            let incumbent =
+                incumbent_config_str
+                    .zip(incumbent_cost)
+                    .map(|(s, cost)| IncumbentInfo {
+                        config: serde_json::from_str(&s).unwrap_or(Value::Null),
+                        cost,
+                    });
+            Ok((
+                run_config,
+                ChainRung {
+                    run_id: row.get(0)?,
+                    label: row.get(1)?,
+                    status: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
+                    trial_count: row.get(5)?,
+                    incumbent,
+                },
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .filter(|(run_config, rung)| {
+            rung.run_id == root
+                || run_config
+                    .as_ref()
+                    .and_then(|c| c.get("ladder_root"))
+                    .and_then(|v| v.as_str())
+                    == Some(root.as_str())
+        })
+        .map(|(_, rung)| rung)
+        .collect();
+
+    rungs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+
+    Ok(Json(rungs))
+}
+
 /// `POST /api/bench/launch` — `{kind, game, config}`
 ///
 /// Translates the request into a command vector, spawns it via
@@ -1155,24 +1270,19 @@ fn plan_ladder_advances(
     advances
 }
 
-/// IO wrapper around `plan_ladder_advances`: reads `runs`/`trials`/
-/// `incumbents` for every SMAC3 run, then calls `launch_and_record` for
-/// each decided widen. Called once per tick from a background poll loop in
-/// `main.rs`, the same shape as the existing ingest loop.
-pub async fn advance_ladders_once(state: &Arc<BenchState>) {
-    let runs: Vec<LadderRunRow> = {
-        let db = state.db.lock().unwrap();
-        let mut stmt = match db.prepare(
-            "SELECT run_id, game, status, exit_code, CAST(config AS TEXT) FROM runs \
-             WHERE kind = 'smac3'",
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("ladder driver: query error: {e}");
-                return;
-            }
-        };
-        let mapped = stmt.query_map([], |row| {
+/// Read every SMAC3 run's ladder-relevant bookkeeping from `runs`. Shared by
+/// the automated driver (`advance_ladders_once`) and the manual
+/// `advance_baseline` route -- both need the same chain-walking data
+/// (`ladder_root`/`resumed_from`/`config`), just with different decision
+/// logic layered on top (`plan_ladder_advances` vs. `plan_manual_advance`).
+fn fetch_smac3_runs(state: &Arc<BenchState>) -> Result<Vec<LadderRunRow>, BenchError> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare(
+        "SELECT run_id, game, status, exit_code, CAST(config AS TEXT) FROM runs \
+         WHERE kind = 'smac3'",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1180,77 +1290,81 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, Option<String>>(4)?,
             ))
-        });
-        match mapped {
-            Ok(iter) => iter
-                .filter_map(Result::ok)
-                .map(
-                    |(run_id, game, status, exit_code, config_str)| LadderRunRow {
-                        run_id,
-                        game,
-                        status,
-                        exit_code,
-                        config: config_str.and_then(|s| serde_json::from_str(&s).ok()),
-                    },
-                )
-                .collect(),
-            Err(e) => {
-                eprintln!("ladder driver: query error: {e}");
-                return;
-            }
-        }
-    };
+        })?
+        .filter_map(Result::ok)
+        .map(
+            |(run_id, game, status, exit_code, config_str)| LadderRunRow {
+                run_id,
+                game,
+                status,
+                exit_code,
+                config: config_str.and_then(|s| serde_json::from_str(&s).ok()),
+            },
+        )
+        .collect();
+    Ok(rows)
+}
 
-    let trial_counts: HashMap<String, i64> = {
-        let db = state.db.lock().unwrap();
-        let mut stmt = match db.prepare("SELECT run_id, COUNT(*) FROM trials GROUP BY run_id") {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("ladder driver: trial-count query error: {e}");
-                return;
-            }
-        };
-        match stmt.query_map([], |row| {
+/// Trial counts per run, keyed by `run_id` -- used to compute a widened
+/// rung's cumulative `optimizer.n_trials` budget.
+fn fetch_trial_counts(state: &Arc<BenchState>) -> Result<HashMap<String, i64>, BenchError> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare("SELECT run_id, COUNT(*) FROM trials GROUP BY run_id")?;
+    let rows = stmt
+        .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        }) {
-            Ok(iter) => iter.filter_map(Result::ok).collect(),
-            Err(e) => {
-                eprintln!("ladder driver: trial-count query error: {e}");
-                return;
-            }
-        }
-    };
+        })?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
 
-    let incumbents: HashMap<String, (Value, f64)> = {
-        let db = state.db.lock().unwrap();
-        let mut stmt = match db.prepare("SELECT run_id, CAST(config AS TEXT), cost FROM incumbents")
-        {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("ladder driver: incumbents query error: {e}");
-                return;
-            }
-        };
-        let mapped = stmt.query_map([], |row| {
+/// Latest tracked incumbent per run, keyed by `run_id`.
+fn fetch_incumbents(state: &Arc<BenchState>) -> Result<HashMap<String, (Value, f64)>, BenchError> {
+    let db = state.db.lock().unwrap();
+    let mut stmt = db.prepare("SELECT run_id, CAST(config AS TEXT), cost FROM incumbents")?;
+    let rows = stmt
+        .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, f64>(2)?,
             ))
-        });
-        match mapped {
-            Ok(iter) => iter
-                .filter_map(Result::ok)
-                .filter_map(|(run_id, config_str, cost)| {
-                    serde_json::from_str::<Value>(&config_str)
-                        .ok()
-                        .map(|config| (run_id, (config, cost)))
-                })
-                .collect(),
-            Err(e) => {
-                eprintln!("ladder driver: incumbents query error: {e}");
-                return;
-            }
+        })?
+        .filter_map(Result::ok)
+        .filter_map(|(run_id, config_str, cost)| {
+            serde_json::from_str::<Value>(&config_str)
+                .ok()
+                .map(|config| (run_id, (config, cost)))
+        })
+        .collect();
+    Ok(rows)
+}
+
+/// IO wrapper around `plan_ladder_advances`: reads `runs`/`trials`/
+/// `incumbents` for every SMAC3 run, then calls `launch_and_record` for
+/// each decided widen. Called once per tick from a background poll loop in
+/// `main.rs`, the same shape as the existing ingest loop.
+pub async fn advance_ladders_once(state: &Arc<BenchState>) {
+    let runs = match fetch_smac3_runs(state) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ladder driver: query error: {}", e.message);
+            return;
+        }
+    };
+    let trial_counts = match fetch_trial_counts(state) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("ladder driver: trial-count query error: {}", e.message);
+            return;
+        }
+    };
+    let incumbents = match fetch_incumbents(state) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("ladder driver: incumbents query error: {}", e.message);
+            return;
         }
     };
 
@@ -1274,44 +1388,267 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
     }
 }
 
-/// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
+// ---------------------------------------------------------------------------
+// Manual baseline advance (operator-triggered ladder widen)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+pub struct AdvanceBaselineBody {
+    /// Total trial budget for the widened run (SMAC3's `optimizer.n_trials`
+    /// is cumulative once a runhistory is seeded via `--resume`, same as
+    /// `ResumeBody::n_trials`). Defaults to giving the new rung as many
+    /// fresh trials as the chain's root rung originally had, mirroring the
+    /// automated driver's own default (see `plan_manual_advance`).
+    #[serde(default)]
+    pub n_trials: Option<i64>,
+    #[serde(default)]
+    pub n_workers: Option<i64>,
+}
+
+/// The result of [`plan_manual_advance`]: what to relaunch, and (for a run
+/// that never opted into `ladder` at launch) a retroactive patch to the
+/// target run's own stored config so it's discoverable as a chain root by
+/// `ladder_root` alone from now on.
+#[derive(Debug)]
+struct ManualAdvance {
+    game: String,
+    widened_config: Value,
+    label: String,
+    root_patch: Option<(String, Value)>,
+}
+
+/// Decide how to widen a single, specific run's baseline set on demand --
+/// the manual counterpart to `plan_ladder_advances`, which only ever
+/// widens a rung that opted into `ladder: {max_rungs, saturation_threshold}`
+/// at launch time and only once it judges the rung saturated. This instead
+/// works on *any* SMAC3 run, the moment an operator (not the threshold)
+/// decides its incumbent is good enough to promote to a baseline -- an
+/// operator watching the cost chart approach 0% doesn't need to have
+/// pre-configured `ladder` at launch, or wait for `saturation_threshold` to
+/// trip, to start a chain.
 ///
-/// Sends SIGTERM to the recorded PID's whole process group (`kill -TERM
-/// -<pid>`) and marks the run as `stopped` in the database.  `launch::launch`
-/// puts every run in its own process group (`process_group(0)`), so the
-/// recorded PID is that group's leader -- signalling just that one PID would
-/// leave descendants (e.g. the `uv`/python child under `bench smac3`)
-/// orphaned instead of terminated.  If the PID is no longer alive, updates
-/// the status anyway (the process exited on its own between the list and the
-/// stop request).
-async fn stop_run(
+/// A run with no `ladder_root` yet becomes the chain's own root: this
+/// function returns a `root_patch` the caller must persist (`UPDATE runs
+/// SET config = ...`) so a *later* manual advance of a descendant rung (or
+/// the UI's chain walk) can find every rung by `ladder_root` alone, the same
+/// property `inject_ladder_root_if_new_ladder` gives an automated ladder's
+/// root at launch time.
+fn plan_manual_advance(
+    runs: &[LadderRunRow],
+    trial_counts: &HashMap<String, i64>,
+    incumbents: &HashMap<String, (Value, f64)>,
+    run_id: &str,
+    requested_n_trials: Option<i64>,
+    n_workers: Option<i64>,
+) -> Result<ManualAdvance, String> {
+    let run = runs
+        .iter()
+        .find(|r| r.run_id == run_id)
+        .ok_or_else(|| format!("run '{run_id}' not found among SMAC3 runs"))?;
+
+    let Some((incumbent_config, _incumbent_cost)) = incumbents.get(run_id) else {
+        return Err(format!(
+            "run '{run_id}' has no incumbent recorded yet -- nothing to promote to a baseline"
+        ));
+    };
+
+    let effective_root = ladder_root_of(run).unwrap_or(run_id).to_string();
+    let in_chain = |r: &&LadderRunRow| {
+        ladder_root_of(r) == Some(effective_root.as_str()) || r.run_id == effective_root
+    };
+    let rung_count = runs.iter().filter(in_chain).count() as i64;
+    let cumulative_trials: i64 = runs
+        .iter()
+        .filter(in_chain)
+        .map(|r| *trial_counts.get(&r.run_id).unwrap_or(&0))
+        .sum();
+    let root_trial_count = *trial_counts.get(&effective_root).unwrap_or(&0);
+    let next_n_trials = requested_n_trials.unwrap_or(cumulative_trials + root_trial_count);
+
+    let root_patch = if ladder_root_of(run).is_none() {
+        let mut root_config = run.config.clone().unwrap_or_else(|| json!({}));
+        if let Value::Object(ref mut map) = root_config {
+            map.insert("ladder_root".to_string(), json!(effective_root));
+        }
+        Some((effective_root.clone(), root_config))
+    } else {
+        None
+    };
+
+    let next_rung = rung_count + 1;
+    let next_id = format!("ladder{next_rung}");
+
+    let mut widened = build_resume_config(run_id, &run.config, next_n_trials, n_workers);
+    if let Value::Object(ref mut map) = widened {
+        map.entry("ladder_root").or_insert(json!(effective_root));
+    }
+    let mut baseline_configs = widened
+        .get("baseline_configs")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    baseline_configs.insert(next_id, incumbent_config.clone());
+    widened["baseline_configs"] = Value::Object(baseline_configs);
+
+    Ok(ManualAdvance {
+        game: run.game.clone(),
+        widened_config: widened,
+        label: format!("baseline advance from {run_id}"),
+        root_patch,
+    })
+}
+
+/// `POST /api/bench/runs/{run_id}/advance-baseline` — `{n_trials?, n_workers?}`
+///
+/// Operator-triggered counterpart to the automated ladder driver: promotes
+/// this run's current incumbent to a new baseline instance and relaunches
+/// with a widened `baseline_configs`, same mechanism as a scheduled ladder
+/// widen (`plan_ladder_advances`) but firing on demand rather than once
+/// `ladder.saturation_threshold` trips -- and it works on any SMAC3 run, not
+/// just one that opted into `ladder` at launch (see `plan_manual_advance`).
+///
+/// If the run is still `running`, it's stopped first (same SIGTERM-to-
+/// process-group as `POST .../stop`) and this waits for the process to
+/// actually exit before relaunching -- `--resume` reads the old run's
+/// `runhistory.json` from disk (see `smac3_cli/resume.py`), so racing a
+/// relaunch against the old process still flushing it on the way out would
+/// risk a torn read. This is exactly the ordering an operator doing it by
+/// hand (click Stop, wait, click Resume) already gets, just automated.
+async fn advance_baseline(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
-) -> Result<Json<Value>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    // Look up the run.
-    let (pid, status): (Option<i64>, String) = match db.query_row(
-        "SELECT pid, status FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    ) {
-        Ok(row) => row,
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
+    Json(body): Json<AdvanceBaselineBody>,
+) -> Result<Json<LaunchResponse>, BenchError> {
+    let kind: String = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT kind FROM runs WHERE run_id = ?1",
+            duckdb::params![&run_id],
+            |row| row.get(0),
+        ) {
+            Ok(k) => k,
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                return Err(BenchError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("run '{run_id}' not found"),
+                });
+            }
+            Err(e) => return Err(BenchError::from(e)),
         }
-        Err(e) => return Err(BenchError::from(e)),
+    };
+
+    if kind != "smac3" {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!(
+                "run '{run_id}' is a '{kind}' run, not 'smac3' -- only SMAC3 runs support baseline advance"
+            ),
+        });
+    }
+
+    let outcome = stop_run_impl(&state, &run_id).await?;
+    if outcome.prior_status == "running" {
+        if let Some(pid_val) = outcome.pid {
+            let pid = pid_val as u32;
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while launch::is_alive(pid) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            if launch::is_alive(pid) {
+                return Err(BenchError {
+                    status: StatusCode::CONFLICT,
+                    message: format!(
+                        "run '{run_id}' did not exit within 15s of being stopped -- try again once it has"
+                    ),
+                });
+            }
+        }
+    }
+
+    let runs = fetch_smac3_runs(&state)?;
+    let trial_counts = fetch_trial_counts(&state)?;
+    let incumbents = fetch_incumbents(&state)?;
+
+    let advance = plan_manual_advance(
+        &runs,
+        &trial_counts,
+        &incumbents,
+        &run_id,
+        body.n_trials,
+        body.n_workers,
+    )
+    .map_err(|message| BenchError {
+        status: StatusCode::BAD_REQUEST,
+        message,
+    })?;
+
+    if let Some((root_run_id, root_config)) = advance.root_patch {
+        let config_str = serde_json::to_string(&root_config)?;
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE runs SET config = ?1 WHERE run_id = ?2",
+            duckdb::params![config_str, &root_run_id],
+        )?;
+    }
+
+    let resp = launch_and_record(
+        &state,
+        "smac3",
+        &advance.game,
+        Some(advance.widened_config),
+        Some(&advance.label),
+        Some(&run_id),
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+/// Outcome of [`stop_run_impl`] — enough for a caller to build its own
+/// response (`stop_run`'s JSON body) or decide whether to wait for the
+/// process to actually exit (`advance_baseline`).
+struct StopOutcome {
+    pid: Option<i64>,
+    /// The run's status *before* this call — `"running"` means a signal was
+    /// (attempted to be) sent; anything else means this was a no-op.
+    prior_status: String,
+    signal_sent: bool,
+}
+
+/// Shared by `stop_run` and `advance_baseline`: sends SIGTERM to the
+/// recorded PID's whole process group (`kill -TERM -<pid>`) and marks the
+/// run as `stopped` in the database.  `launch::launch` puts every run in its
+/// own process group (`process_group(0)`), so the recorded PID is that
+/// group's leader -- signalling just that one PID would leave descendants
+/// (e.g. the `uv`/python child under `bench smac3`) orphaned instead of
+/// terminated.  If the PID is no longer alive, updates the status anyway
+/// (the process exited on its own between the list and the stop request). A
+/// run that isn't `running` is left untouched -- the caller's
+/// `prior_status` tells it so.
+async fn stop_run_impl(state: &Arc<BenchState>, run_id: &str) -> Result<StopOutcome, BenchError> {
+    let (pid, status): (Option<i64>, String) = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT pid, status FROM runs WHERE run_id = ?1",
+            duckdb::params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(row) => row,
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                return Err(BenchError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("run '{run_id}' not found"),
+                });
+            }
+            Err(e) => return Err(BenchError::from(e)),
+        }
     };
 
     if status != "running" {
-        return Ok(Json(json!({
-            "run_id": run_id,
-            "status": status,
-            "message": "run is not currently running, no signal sent",
-        })));
+        return Ok(StopOutcome {
+            pid,
+            prior_status: status,
+            signal_sent: false,
+        });
     }
 
     let mut signal_sent = false;
@@ -1352,15 +1689,18 @@ async fn stop_run(
 
     // Update the database.
     let now = iso_timestamp_now();
-    db.execute(
-        "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
-        duckdb::params![&now, &run_id],
-    )?;
+    {
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
+            duckdb::params![&now, run_id],
+        )?;
+    }
 
     // Append a stop event to the registry log so the ingest loop sees it
     // if it runs after us.
     let event = RegistryEvent::Stop {
-        run_id: run_id.clone(),
+        run_id: run_id.to_owned(),
         exit_code: None,
         ended_at: now,
     };
@@ -1376,17 +1716,39 @@ async fn stop_run(
         let _ = file.write_all(line.as_bytes());
     }
 
-    if signal_sent {
+    Ok(StopOutcome {
+        pid,
+        prior_status: status,
+        signal_sent,
+    })
+}
+
+/// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
+async fn stop_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Value>, BenchError> {
+    let outcome = stop_run_impl(&state, &run_id).await?;
+
+    if outcome.prior_status != "running" {
+        return Ok(Json(json!({
+            "run_id": run_id,
+            "status": outcome.prior_status,
+            "message": "run is not currently running, no signal sent",
+        })));
+    }
+
+    if outcome.signal_sent {
         Ok(Json(json!({
             "run_id": run_id,
-            "pid": pid,
+            "pid": outcome.pid,
             "signal": "SIGTERM",
             "message": "stop signal sent and run marked as stopped",
         })))
     } else {
         Ok(Json(json!({
             "run_id": run_id,
-            "pid": pid,
+            "pid": outcome.pid,
             "signal": null,
             "message": "run marked as stopped (PID was no longer alive or had no PID)",
         })))
@@ -2033,6 +2395,100 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}/chain
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_run_chain_404_for_unknown_run() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nonexistent/chain").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert_eq!(body_json(&body)["code"], 404);
+    }
+
+    fn insert_smac3_run(conn: &duckdb::Connection, run_id: &str, started_at: &str, config: &Value) {
+        conn.execute(
+            "INSERT INTO runs \
+             (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
+              started_at, ended_at, status, log_path) \
+             VALUES (?1, 'smac3', 'nim', ?2, 'abc1234', false, 'testhost', NULL, \
+                     ?3, ?3, 'completed', '/tmp/nope/log.jsonl')",
+            duckdb::params![run_id, config.to_string(), started_at],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_run_chain_single_rung_for_a_plain_run() {
+        let app = seeded_app(|conn, _dir| {
+            insert_smac3_run(
+                conn,
+                "root-1",
+                "2026-01-01T00:00:00Z",
+                &json!({"overrides": []}),
+            );
+        })
+        .0;
+
+        let (status, body) = http_get(app, "/api/bench/runs/root-1/chain").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let rows = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["run_id"], "root-1");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_chain_orders_every_rung_oldest_first() {
+        let app = seeded_app(|conn, _dir| {
+            insert_smac3_run(
+                conn,
+                "root-1",
+                "2026-01-01T00:00:00Z",
+                &json!({"ladder_root": "root-1"}),
+            );
+            insert_smac3_run(
+                conn,
+                "root-1-rung3",
+                "2026-01-03T00:00:00Z",
+                &json!({"ladder_root": "root-1", "resumed_from": "root-1-rung2"}),
+            );
+            insert_smac3_run(
+                conn,
+                "root-1-rung2",
+                "2026-01-02T00:00:00Z",
+                &json!({"ladder_root": "root-1", "resumed_from": "root-1"}),
+            );
+            // A run from a *different* chain (different ladder_root) must
+            // not leak into this chain's result.
+            insert_smac3_run(
+                conn,
+                "other-root",
+                "2026-01-02T12:00:00Z",
+                &json!({"ladder_root": "other-root"}),
+            );
+            conn.execute(
+                "INSERT INTO incumbents (run_id, ts, config, cost) \
+                 VALUES ('root-1', '2026-01-01T00:30:00Z', '{\"family\": \"ucb1\"}', 0.02)",
+                duckdb::params![],
+            )
+            .unwrap();
+        })
+        .0;
+
+        // Query from the *middle* rung -- the chain must resolve via
+        // ladder_root regardless of which rung's run_id is asked for.
+        let (status, body) = http_get(app, "/api/bench/runs/root-1-rung2/chain").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let rows = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(rows.len(), 3, "expected 3 rungs, got {rows:?}");
+        assert_eq!(rows[0]["run_id"], "root-1");
+        assert_eq!(rows[0]["incumbent"]["cost"], 0.02);
+        assert_eq!(rows[1]["run_id"], "root-1-rung2");
+        assert_eq!(rows[1]["incumbent"], Value::Null);
+        assert_eq!(rows[2]["run_id"], "root-1-rung3");
+    }
+
+    // -------------------------------------------------------------------
     // GET /api/bench/leaderboard
     // -------------------------------------------------------------------
 
@@ -2670,6 +3126,244 @@ mod tests {
             HashMap::from([("plain-run".to_string(), (json!({"family": "ucb1"}), 0.0))]);
 
         assert!(plan_ladder_advances(&runs, &trial_counts, &incumbents).is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // plan_manual_advance
+    // -------------------------------------------------------------------
+
+    fn plain_run(run_id: &str, trials: i64) -> LadderRunRow {
+        LadderRunRow {
+            run_id: run_id.to_string(),
+            game: "nim".to_string(),
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            config: Some(json!({"overrides": [format!("optimizer.n_trials={trials}")]})),
+        }
+    }
+
+    #[test]
+    fn test_plan_manual_advance_starts_a_new_chain_from_a_plain_run() {
+        let runs = vec![plain_run("root-1", 10)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([(
+            "root-1".to_string(),
+            (json!({"family": "ucb1", "c": 1.4}), 0.0),
+        )]);
+
+        let advance =
+            plan_manual_advance(&runs, &trial_counts, &incumbents, "root-1", None, None).unwrap();
+        assert_eq!(advance.game, "nim");
+        assert_eq!(advance.label, "baseline advance from root-1");
+        assert_eq!(advance.widened_config["resumed_from"], json!("root-1"));
+        assert_eq!(advance.widened_config["ladder_root"], json!("root-1"));
+        // No pre-existing "ladder" block -- this is a manual-only chain,
+        // so the automated driver must never pick it up.
+        assert!(advance.widened_config.get("ladder").is_none());
+        // Cumulative budget defaults to root's own trials + another batch.
+        assert_eq!(
+            advance.widened_config["overrides"],
+            json!(["optimizer.n_trials=10", "optimizer.n_trials=20"])
+        );
+        assert_eq!(
+            advance.widened_config["baseline_configs"]["ladder2"],
+            json!({"family": "ucb1", "c": 1.4})
+        );
+        // The root itself never had `ladder_root` set -- the caller must
+        // retroactively tag it so a later advance (or the UI) can find the
+        // chain by `ladder_root` alone.
+        let (root_id, root_config) = advance.root_patch.expect("expected a root patch");
+        assert_eq!(root_id, "root-1");
+        assert_eq!(root_config["ladder_root"], json!("root-1"));
+    }
+
+    #[test]
+    fn test_plan_manual_advance_respects_an_explicit_n_trials() {
+        let runs = vec![plain_run("root-1", 10)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        let advance = plan_manual_advance(
+            &runs,
+            &trial_counts,
+            &incumbents,
+            "root-1",
+            Some(500),
+            Some(4),
+        )
+        .unwrap();
+        assert_eq!(
+            advance.widened_config["overrides"],
+            json!([
+                "optimizer.n_trials=10",
+                "optimizer.n_trials=500",
+                "optimizer.n_workers=4"
+            ])
+        );
+    }
+
+    #[test]
+    fn test_plan_manual_advance_continues_an_existing_chain_without_re_patching_the_root() {
+        // root-1 already has ladder_root=root-1 (a prior manual or automated
+        // advance already tagged it) and one child rung already exists.
+        let mut root = plain_run("root-1", 10);
+        root.config.as_mut().unwrap()["ladder_root"] = json!("root-1");
+        let mut rung2 = plain_run("root-1-rung2", 10);
+        rung2.config.as_mut().unwrap()["ladder_root"] = json!("root-1");
+        rung2.config.as_mut().unwrap()["resumed_from"] = json!("root-1");
+        let runs = vec![root, rung2];
+        let trial_counts =
+            HashMap::from([("root-1".to_string(), 10), ("root-1-rung2".to_string(), 10)]);
+        let incumbents =
+            HashMap::from([("root-1-rung2".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        let advance = plan_manual_advance(
+            &runs,
+            &trial_counts,
+            &incumbents,
+            "root-1-rung2",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(advance.root_patch.is_none());
+        assert_eq!(advance.widened_config["ladder_root"], json!("root-1"));
+        // rung_count is 2 (root + rung2) before this widen -> next id "ladder3".
+        assert_eq!(
+            advance.widened_config["baseline_configs"]["ladder3"],
+            json!({"family": "ucb1"})
+        );
+        // Cumulative: root's 10 + rung2's 10 + another batch of root's 10.
+        assert_eq!(
+            advance.widened_config["overrides"],
+            json!(["optimizer.n_trials=10", "optimizer.n_trials=30"])
+        );
+    }
+
+    #[test]
+    fn test_plan_manual_advance_errors_without_an_incumbent() {
+        let runs = vec![plain_run("root-1", 10)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::new();
+
+        let err = plan_manual_advance(&runs, &trial_counts, &incumbents, "root-1", None, None)
+            .unwrap_err();
+        assert!(err.contains("no incumbent"));
+    }
+
+    #[test]
+    fn test_plan_manual_advance_errors_for_unknown_run() {
+        let runs = vec![plain_run("root-1", 10)];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.0))]);
+
+        let err =
+            plan_manual_advance(&runs, &trial_counts, &incumbents, "nope", None, None).unwrap_err();
+        assert!(err.contains("not found"));
+    }
+
+    // -------------------------------------------------------------------
+    // POST /api/bench/runs/{run_id}/advance-baseline
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_advance_baseline_returns_404_for_unknown_run() {
+        let app = seeded_app(|_, _| {}).0;
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/nonexistent/advance-baseline",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert_eq!(body_json(&body)["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_advance_baseline_rejects_non_smac3_run() {
+        // DEFAULT_RUN_ID is seeded as a 'round_robin' run.
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_post_json(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/advance-baseline"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        let body = body_json(&body);
+        assert!(body["error"].as_str().unwrap().contains("round_robin"));
+    }
+
+    #[tokio::test]
+    async fn test_advance_baseline_rejects_a_run_with_no_incumbent() {
+        let app = seeded_app(|conn, dir| {
+            std::fs::create_dir_all(dir).ok();
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
+                  started_at, ended_at, status, log_path) \
+                 VALUES ('smac3-no-incumbent', 'smac3', 'traffic-lights', \
+                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                         'abc1234', false, 'testhost', NULL, \
+                         '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
+                duckdb::params![],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/smac3-no-incumbent/advance-baseline",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        let body = body_json(&body);
+        assert!(body["error"].as_str().unwrap().contains("no incumbent"));
+    }
+
+    #[tokio::test]
+    async fn test_advance_baseline_smac3_reaches_the_launcher() {
+        // Same "reaches the launcher, doesn't get rejected as a bad
+        // request" shape as test_resume_smac3_reaches_the_launcher: a
+        // completed (non-running) run with a recorded incumbent should sail
+        // past the stop-and-wait step (a no-op for a non-running run) and
+        // the plan_manual_advance validation, reaching launch_and_record.
+        let app = seeded_app(|conn, dir| {
+            std::fs::create_dir_all(dir).ok();
+            conn.execute(
+                "INSERT INTO runs \
+                 (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
+                  started_at, ended_at, status, log_path) \
+                 VALUES ('smac3-advance-src', 'smac3', 'traffic-lights', \
+                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                         'abc1234', false, 'testhost', NULL, \
+                         '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
+                duckdb::params![],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO incumbents (run_id, ts, config, cost) \
+                 VALUES ('smac3-advance-src', '2026-01-01T00:30:00Z', '{\"family\": \"ucb1\"}', 0.02)",
+                duckdb::params![],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/smac3-advance-src/advance-baseline",
+            json!({}),
+        )
+        .await;
+
+        assert!(
+            status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
+            "advance-baseline returned unexpected status {status}: body={}",
+            String::from_utf8_lossy(&body),
+        );
     }
 
     // -------------------------------------------------------------------

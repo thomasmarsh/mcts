@@ -9,6 +9,7 @@ import {
 } from "@mcts/core";
 import type {
   BenchKindInfo,
+  ChainRung,
   CommitTrendData,
   LeaderboardEntry,
   LeaderboardFilters,
@@ -19,6 +20,16 @@ import type {
   Smac3GameInfo,
   TrialRow,
 } from "./types.js";
+
+/** One trial, tagged with which rung of the open run's ladder chain it came
+ * from (an index into `OpenRunState.chain`) -- what lets the run-detail
+ * chart render every rung's trials as one continuous series with milestone
+ * markers at each baseline cutover, instead of the currently open rung's
+ * trials in isolation. */
+export interface ChainedTrial {
+  rungIndex: number;
+  trial: TrialRow;
+}
 
 /** Live tail of one open run's `log.jsonl`, fed by the reducer's
  * self-scheduling poll loop (see reducer.ts). */
@@ -54,6 +65,16 @@ export interface OpenRunState {
    * once `detail.kind` is known to be `"smac3"` — see reducer.ts. Empty for
    * every other run kind. */
   trials: TrialRow[];
+  /** This run's ladder chain, oldest rung first — a one-element list
+   * containing just this run for a plain (non-laddered) run. Empty until
+   * the first tick resolves. */
+  chain: ChainRung[];
+  /** Every rung's trials concatenated in chain order, each tagged with its
+   * rung index — the data source for the chained cost chart. Refetched
+   * alongside `chain` on every tick, same "just refetch the whole thing"
+   * tradeoff `trials` already makes (see reducer.ts). Empty for a
+   * non-`"smac3"` run. */
+  chainedTrials: ChainedTrial[];
 }
 
 /** Win-rate-over-commits trend data: one leaderboard snapshot per git SHA. */
@@ -83,6 +104,9 @@ export interface BenchState {
   stopError: string | null;
   /** Last failed resume attempt's message; cleared by the next `resumeRun`. */
   resumeError: string | null;
+  /** Last failed baseline-advance attempt's message; cleared by the next
+   * `advanceBaseline`. */
+  advanceBaselineError: string | null;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
@@ -103,6 +127,7 @@ export function initialBenchState(): BenchState {
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
     resumeError: null,
+    advanceBaselineError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
     smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
   };

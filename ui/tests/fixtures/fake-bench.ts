@@ -6,6 +6,7 @@ import { Effect } from "@mcts/core";
 import type { BenchEnv } from "@mcts/bench";
 import type {
   BenchKindInfo,
+  ChainRung,
   RunDetail,
   RunLogResponse,
   RunSummary,
@@ -266,9 +267,26 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
     resumeRun: (_runId: string, _nTrials: number, _nWorkers?: number): Effect<LaunchResponse> =>
       Effect.send({ run_id: "resumed-run-123", pid: 99998, log_path: "/tmp/resumed/log.jsonl" }),
+    advanceBaseline: (_runId: string, _nTrials?: number, _nWorkers?: number): Effect<LaunchResponse> =>
+      Effect.send({ run_id: "advanced-run-123", pid: 99997, log_path: "/tmp/advanced/log.jsonl" }),
     getBenchKinds: () => Effect.send(fakeKinds),
     getSmac3Kinds: () => Effect.send(fakeSmac3Kinds),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),
+    // A single-rung chain containing just the requested run -- the common
+    // case (a plain SMAC3 run, never baseline-advanced). Tests exercising
+    // an actual multi-rung chain override this directly.
+    getRunChain: (runId: string): Effect<ChainRung[]> =>
+      Effect.send([
+        {
+          run_id: runId,
+          label: null,
+          status: "completed",
+          started_at: "2026-03-01T00:00:00Z",
+          ended_at: "2026-03-01T01:00:00Z",
+          trial_count: fakeTrialRows.length,
+          incumbent: null,
+        },
+      ]),
   };
   return { ...base, ...overrides };
 }
