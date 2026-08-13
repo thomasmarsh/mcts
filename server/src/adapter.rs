@@ -306,6 +306,7 @@ pub fn registry() -> HashMap<&'static str, Arc<dyn GameAdapter>> {
         ("gonnect", "game-gonnect"),
         ("knightthrough", "game-knightthrough"),
         ("othello", "game-othello"),
+        ("tak", "game-tak"),
         ("tanbo", "game-tanbo"),
         ("traffic-lights", "game-traffic-lights"),
         ("ttt", "game-ttt"),

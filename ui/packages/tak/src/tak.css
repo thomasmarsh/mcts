@@ -1,0 +1,52 @@
+/* tak.css — TakRenderer's own presentation (board canvas + spread-candidate
+   panel). Scoped to this package's own class names, same rationale as
+   ui/packages/druid/src/druid.css: GameShell's chrome has its own
+   stylesheet in app/src. */
+
+.tak-board {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+.tak-candidates {
+  position: fixed;
+  top: calc(var(--topbar-h, 44px) + 12px);
+  right: 12px;
+  z-index: 10;
+  background: rgba(20, 21, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.tak-candidates-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b7b8c2;
+  margin-bottom: 4px;
+}
+
+.tak-candidate {
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f0f0f4;
+  cursor: pointer;
+}
+
+.tak-candidate:hover {
+  background: rgba(82, 194, 238, 0.25);
+  border-color: rgba(82, 194, 238, 0.6);
+}

@@ -6,11 +6,13 @@
   "dependencies": {
     "@mcts/atarigo": "workspace:*",
     "@mcts/breakthrough": "workspace:*",
+    "@mcts/congo": "workspace:*",
     "@mcts/core": "workspace:*",
     "@mcts/druid": "workspace:*",
     "@mcts/gonnect": "workspace:*",
     "@mcts/knightthrough": "workspace:*",
     "@mcts/othello": "workspace:*",
+    "@mcts/tak": "workspace:*",
     "@mcts/tanbo": "workspace:*",
     "@mcts/traffic-lights": "workspace:*",
     "@mcts/ttt": "workspace:*",

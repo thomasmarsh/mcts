@@ -1,0 +1,218 @@
+/* congo.css — 7×7 board styling: blue river, green grasslands, golden 3×3
+   lion castles. Zone textures are intentionally very low-opacity (~0.06–0.14
+   alpha) so they read as texture, not decoration competing with the pieces. */
+
+.cg-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 100vh;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.cg-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(7, 1fr);
+  gap: 0;
+  max-width: 560px;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 3px solid #3a2f1e;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.cg-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border: none;
+  padding: 0;
+  cursor: default;
+  outline: none;
+  transition: background-color 0.1s ease;
+}
+
+/* ── Terrain ─────────────────────────────────────────────────────────── */
+
+.cg-grass {
+  background-color: #5f8a4a;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cg stroke='%23ffffff' stroke-opacity='0.07' stroke-width='2' stroke-linecap='round' fill='none'%3E%3Cpath d='M22 88 Q19 74 24 60'/%3E%3Cpath d='M32 90 Q34 78 29 66'/%3E%3Cpath d='M74 86 Q71 73 77 59'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 100% 100%;
+}
+
+.cg-grass.cg-checker {
+  background-color: #6b9752;
+}
+
+.cg-river {
+  background-color: #3f83ad;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cg stroke='%23ffffff' stroke-opacity='0.14' stroke-width='3' fill='none'%3E%3Cpath d='M-5 32 Q20 22 45 32 T95 32'/%3E%3Cpath d='M-5 68 Q20 58 45 68 T95 68'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 100% 100%;
+  background-position: center;
+}
+
+.cg-castle {
+  background-color: #b99a4e;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cg fill='%23ffffff' fill-opacity='0.10'%3E%3Ccircle cx='22' cy='26' r='3'/%3E%3Ccircle cx='63' cy='16' r='2'/%3E%3Ccircle cx='80' cy='58' r='2.5'/%3E%3Ccircle cx='34' cy='72' r='2'/%3E%3Ccircle cx='67' cy='82' r='3'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 100% 100%;
+}
+
+/* ── Pieces ──────────────────────────────────────────────────────────── */
+
+.cg-piece {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 82%;
+  height: 82%;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.cg-piece-black {
+  background: radial-gradient(circle at 35% 32%, #4a4a4a, #1a1a1a 75%);
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.45);
+}
+
+.cg-piece-white {
+  background: radial-gradient(circle at 35% 32%, #fff8ea, #ddd3b8 75%);
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.cg-piece-icon {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Icons are drawn dark-ink-on-light-halo; invert so they read as light ink
+   on dark halo against the Black disc's dark background. */
+.cg-piece-black .cg-piece-icon {
+  filter: invert(1);
+}
+
+.cg-piece-ghost {
+  opacity: 0.4;
+  box-shadow: none;
+}
+
+.cg-piece-ghost.cg-piece-black {
+  background: radial-gradient(circle, rgba(20, 20, 20, 0.5), transparent 75%);
+}
+
+.cg-piece-ghost.cg-piece-white {
+  background: radial-gradient(circle, rgba(255, 248, 234, 0.6), transparent 75%);
+}
+
+/* Superpawn promotion badge */
+.cg-badge {
+  position: absolute;
+  top: -4%;
+  right: -4%;
+  font-size: 46%;
+  line-height: 1;
+  color: #ffd54a;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* Drowning warning — piece has spent a turn in the river and drowns if it
+   doesn't move again this turn. */
+.cg-risk-ring {
+  position: absolute;
+  inset: -6%;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 210, 90, 0.75);
+  pointer-events: none;
+  animation: cg-risk-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cg-risk-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.9; }
+}
+
+/* ── Interaction states ─────────────────────────────────────────────── */
+
+.cg-cell.legal {
+  cursor: pointer;
+}
+
+.cg-cell.legal::after {
+  content: "";
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+  pointer-events: none;
+}
+
+.cg-cell.legal.capture-legal::after {
+  display: none;
+}
+
+.cg-cell.cg-movable {
+  cursor: pointer;
+}
+
+.cg-cell.cg-movable .cg-piece-black,
+.cg-cell.cg-movable .cg-piece-white {
+  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.cg-cell.cg-selected-source {
+  cursor: pointer;
+}
+
+.cg-cell.cg-selected-source .cg-piece-black,
+.cg-cell.cg-selected-source .cg-piece-white {
+  box-shadow: 0 0 0 3px #ffe066, 1px 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.cg-cell.legal.capture-legal .cg-piece-black,
+.cg-cell.legal.capture-legal .cg-piece-white {
+  box-shadow: 0 0 0 3px rgba(220, 60, 50, 0.75), 1px 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* A square a hovered move would capture on (may differ from the move's
+   destination -- a Monkey's jump target is beyond the captured piece). */
+.cg-cell.capture-target::before {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  border: 3px solid rgba(220, 60, 50, 0.85);
+  pointer-events: none;
+}
+
+.cg-cell.hovered {
+  background-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+/* Analysis heatmap overlay */
+.cg-cell.heat::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 169, 77, calc(0.10 + var(--heat) * 0.45));
+  pointer-events: none;
+}
+
+.cg-cell.proven::after {
+  background: rgba(76, 175, 122, calc(0.10 + var(--heat) * 0.45));
+}
+
+.cg-cell.suggested {
+  box-shadow: inset 0 0 0 3px #ffe066;
+}
