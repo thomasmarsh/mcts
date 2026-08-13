@@ -13,6 +13,21 @@ impl Id {
     }
 }
 
+/// Transparent newtype encoding -- `Id` is just an arena index, and
+/// round-tripping it (e.g. `OpeningBook`'s serialized form) should read as
+/// a plain integer, not `{"0": 3}`.
+impl serde::Serialize for Id {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Id {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        usize::deserialize(deserializer).map(Id)
+    }
+}
+
 // TODO: benchmark keeping child/sibling relationships here vs. on Node (space vs. time)
 //
 /// Entries are heap-allocated (`Box`) so that growing `entries` (a write-locked
@@ -89,5 +104,24 @@ impl<T> Arena<T> {
         for entry in entries.iter() {
             f(entry);
         }
+    }
+}
+
+/// Round-trips as a plain JSON array in insertion order -- `insert` always
+/// appends, so an entry's position in that array is exactly the `Id` it was
+/// assigned, and deserializing back through repeated pushes (skipping the
+/// `insert` method, which would also work but takes a write lock per entry
+/// for no reason here) reproduces identical `Id`s without needing to
+/// serialize them at all.
+impl<T: serde::Serialize> serde::Serialize for Arena<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.read().unwrap().serialize(serializer)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Arena<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries: Vec<Box<T>> = serde::Deserialize::deserialize(deserializer)?;
+        Ok(Self(RwLock::new(entries)))
     }
 }

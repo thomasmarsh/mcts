@@ -192,6 +192,30 @@ pub struct TunerInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Opening-book metadata (Quasi-Best-First self-play)
+// ---------------------------------------------------------------------------
+
+/// Metadata describing a game's opening-book support, as reported by the
+/// `book describe` subcommand -- mirrors `TunerInfo`'s shape and reasoning:
+/// enough for a generic caller (a launch form, a CLI wrapper script) to
+/// know book generation exists and what its default knob values are,
+/// without embedding the self-play loop itself (that stays behind
+/// `book_build`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BookInfo {
+    pub id: String,
+    /// Default number of self-play games `book_build` runs when the caller
+    /// doesn't override `rounds`.
+    pub default_rounds: u32,
+    /// The game's own `default_config()` -- same purpose as
+    /// `TunerInfo::game_config`: a game-setup axis (e.g. board size)
+    /// `book_build`'s `game_config` argument pins the run to, separate from
+    /// `rounds`/`seed`. `{}` for a game whose board is fixed at compile
+    /// time.
+    pub game_config: Value,
+}
+
+// ---------------------------------------------------------------------------
 // GameAdapter trait
 // ---------------------------------------------------------------------------
 
@@ -263,6 +287,34 @@ pub trait GameAdapter: Send + Sync {
         game_config: Option<Value>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
+    }
+
+    /// Opening-book metadata, for games that support Quasi-Best-First
+    /// self-play book generation via `book_build`. `None` (the default) for
+    /// every game that hasn't wired this up -- opt-in, same shape as
+    /// `tuner()`.
+    fn book(&self) -> Option<BookInfo> {
+        None
+    }
+
+    /// Runs `rounds` self-play games (Chaslot et al.'s Quasi-Best-First
+    /// algorithm) and returns the resulting opening book, serialized as
+    /// JSON. `seed` seeds the run for reproducibility; `None` means
+    /// whatever the game's own default is. `game_config` pins the run to a
+    /// non-default game setup, same convention as `tune_eval`'s argument of
+    /// the same name. CLI-only (`book build`), never dispatched over the
+    /// JSONL loop -- same rationale as `tune_eval`: a many-game self-play
+    /// run is a batch job, not a per-move request.
+    #[allow(unused_variables)]
+    fn book_build(
+        &self,
+        rounds: u32,
+        seed: Option<u64>,
+        game_config: Option<Value>,
+    ) -> Result<Value, HostError> {
+        Err(HostError::not_found(
+            "opening book generation not supported",
+        ))
     }
 }
 
@@ -419,6 +471,25 @@ where
                 0
             }
         },
+        Some("book") => match args.next().as_deref() {
+            Some("describe") => match adapter.book() {
+                Some(info) => {
+                    let json = serde_json::to_string(&info).expect("BookInfo always serializes");
+                    let _ = writeln!(writer, "{json}");
+                    0
+                }
+                None => {
+                    eprintln!("opening book generation not supported");
+                    1
+                }
+            },
+            Some("build") => run_book_build(args, &mut writer, &adapter),
+            // Same fallback rationale as the `tune` arm above.
+            _ => {
+                run_host(reader, writer, adapter);
+                0
+            }
+        },
         _ => {
             run_host(reader, writer, adapter);
             0
@@ -486,6 +557,55 @@ where
     match result {
         Ok(v) => {
             let json = serde_json::to_string(&v).expect("tune_eval result always serializes");
+            let _ = writeln!(writer, "{json}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// Parses `--rounds <n> [--seed <n>] [--game-config <json>]` from the
+/// remaining CLI args, calls [`GameAdapter::book_build`], and prints its
+/// JSON result (the serialized opening book) verbatim to `writer` -- same
+/// shape as [`run_tune_eval`], including leaving the actual work (and the
+/// question of where the resulting book gets saved) to the caller, which
+/// redirects stdout to a file same as it would for `tune eval`.
+fn run_book_build<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
+where
+    I: Iterator<Item = String>,
+    W: Write,
+    A: GameAdapter,
+{
+    let mut args = args;
+    let mut rounds: Option<u32> = None;
+    let mut seed: Option<u64> = None;
+    let mut game_config: Option<String> = None;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--rounds" => rounds = args.next().and_then(|s| s.parse().ok()),
+            "--seed" => seed = args.next().and_then(|s| s.parse().ok()),
+            "--game-config" => game_config = args.next(),
+            _ => {}
+        }
+    }
+
+    let result = (|| -> Result<Value, HostError> {
+        let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
+        let game_config = game_config
+            .map(|s| {
+                serde_json::from_str(&s)
+                    .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
+            })
+            .transpose()?;
+        adapter.book_build(rounds, seed, game_config)
+    })();
+
+    match result {
+        Ok(v) => {
+            let json = serde_json::to_string(&v).expect("book_build result always serializes");
             let _ = writeln!(writer, "{json}");
             0
         }
@@ -1282,6 +1402,137 @@ mod tests {
         match resp {
             Response::Success { id, result } => {
                 assert_eq!(id, 9);
+                assert_eq!(result, "fake");
+            }
+            _ => panic!("expected success response"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // `book` subcommand tests
+    // -----------------------------------------------------------------------
+
+    /// A fake adapter that implements `book`/`book_build`, mirroring
+    /// `TunableFakeAdapter` above but for the `book` subcommand family --
+    /// kept separate for the same reason: `FakeAdapter` stays free of
+    /// opt-in state so the dozens of protocol tests above don't have to
+    /// think about it.
+    struct BookableFakeAdapter;
+
+    impl GameAdapter for BookableFakeAdapter {
+        fn kind(&self) -> &'static str {
+            "bookable-fake"
+        }
+        fn label(&self) -> &'static str {
+            "Bookable Fake Game"
+        }
+        fn description(&self) -> &'static str {
+            "A fake adapter that supports book generation, for testing `book` subcommands"
+        }
+        fn default_config(&self) -> Value {
+            serde_json::json!({})
+        }
+        fn new_state(&self, _config: Value) -> Result<Value, HostError> {
+            Ok(serde_json::json!({}))
+        }
+        fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, HostError> {
+            Ok(vec![])
+        }
+        fn apply(&self, state: &Value, _mv: &Value) -> Result<Value, HostError> {
+            Ok(state.clone())
+        }
+        fn view(&self, _state: &Value) -> Result<Value, HostError> {
+            Ok(serde_json::json!({"terminal": true}))
+        }
+        fn ai_presets(&self) -> Vec<AiPresetInfo> {
+            vec![]
+        }
+        fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
+            Err(HostError::not_found("not implemented in test fake"))
+        }
+        fn analyze(
+            &self,
+            _state: &Value,
+            _preset: &str,
+            _budget_ms: Option<u64>,
+        ) -> Result<Analysis, HostError> {
+            Err(HostError::not_found("not implemented in test fake"))
+        }
+
+        fn book(&self) -> Option<BookInfo> {
+            Some(BookInfo {
+                id: "test".into(),
+                default_rounds: 20,
+                game_config: serde_json::json!({}),
+            })
+        }
+
+        fn book_build(
+            &self,
+            rounds: u32,
+            seed: Option<u64>,
+            game_config: Option<Value>,
+        ) -> Result<Value, HostError> {
+            Ok(serde_json::json!({
+                "rounds": rounds,
+                "seed": seed,
+                "game_config": game_config,
+            }))
+        }
+    }
+
+    #[test]
+    fn test_run_cli_book_describe_unsupported_when_book_none() {
+        let (out, code) = run_cli_capture(&["book", "describe"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_book_describe_prints_book_info() {
+        let (out, code) = run_cli_capture_with(BookableFakeAdapter, &["book", "describe"], "");
+        assert_eq!(code, 0);
+        let info: BookInfo = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(info.id, "test");
+        assert_eq!(info.default_rounds, 20);
+    }
+
+    #[test]
+    fn test_run_cli_book_build_prints_result_verbatim() {
+        let (out, code) = run_cli_capture_with(
+            BookableFakeAdapter,
+            &["book", "build", "--rounds", "5", "--seed", "7"],
+            "",
+        );
+        assert_eq!(code, 0);
+        let result: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(result["rounds"], 5);
+        assert_eq!(result["seed"], 7);
+    }
+
+    #[test]
+    fn test_run_cli_book_build_missing_rounds_errors() {
+        let (out, code) = run_cli_capture_with(BookableFakeAdapter, &["book", "build"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_book_build_unsupported_by_default() {
+        let (out, code) = run_cli_capture(&["book", "build", "--rounds", "5"], "");
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_book_with_no_further_args_falls_back_to_stdin_stdout_loop() {
+        let (out, code) =
+            run_cli_capture(&["book"], "{\"id\":11,\"method\":\"kind\",\"params\":{}}\n");
+        assert_eq!(code, 0);
+        let resp = parse_response(out.lines().next().unwrap());
+        match resp {
+            Response::Success { id, result } => {
+                assert_eq!(id, 11);
                 assert_eq!(result, "fake");
             }
             _ => panic!("expected success response"),

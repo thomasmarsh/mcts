@@ -1,11 +1,12 @@
 use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, BookInfo, GameAdapter,
+    HostError, TunerInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use game_core::bigbitboard::BigBitBoard;
+use game_gonnect::book::{self, BookBuildConfig};
 use game_gonnect::{Gonnect, Move, Player, State};
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
@@ -400,6 +401,39 @@ impl GameAdapter for GonnectAdapter {
                 "losses": outcome.losses,
                 "draws": outcome.draws,
             }))
+        })
+    }
+
+    fn book(&self) -> Option<BookInfo> {
+        Some(BookInfo {
+            id: "gonnect/qbf".into(),
+            default_rounds: BookBuildConfig::default().rounds,
+            game_config: self.default_config(),
+        })
+    }
+
+    fn book_build(
+        &self,
+        rounds: u32,
+        seed: Option<u64>,
+        game_config: Option<Value>,
+    ) -> Result<Value, HostError> {
+        let size = match game_config {
+            Some(cfg) => {
+                let cfg: NewGameConfig = serde_json::from_value(cfg)
+                    .map_err(|e| HostError::bad_request(format!("invalid game_config: {e}")))?;
+                cfg.size
+            }
+            None => DEFAULT_SIZE,
+        };
+        let config = BookBuildConfig {
+            rounds,
+            seed: seed.unwrap_or(0),
+            ..Default::default()
+        };
+        dispatch_size!(size, N, WORDS, {
+            let built = book::build::<N, WORDS>(&config, |_round, _plies, _utilities| {});
+            serde_json::to_value(built).map_err(|e| HostError::internal(e.to_string()))
         })
     }
 }

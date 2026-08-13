@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+pub mod book;
+
 use game_core::bigbitboard;
 use game_core::bigbitboard::BigBitBoard;
 use game_core::display::RectangularBoard;

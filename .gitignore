@@ -19,6 +19,10 @@ AGENTS.md
 CLAUDE.md
 .claude
 bench-runs/
+# Generated opening-book files (examples/build_book.rs and friends) --
+# regenerate with the relevant game's `build_book` example rather than
+# committing what's essentially large, easily-reproducible binary data.
+books/
 
 # Per-machine Cargo build configuration (machine-specific paths like
 # DUCKDB_LIB_DIR, DUCKDB_INCLUDE_DIR for Homebrew-installed DuckDB)

@@ -56,7 +56,8 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Decisive / Anti-Decisive Playout Truncation
 
 ### Tuning
-- [ ] Opening books
+- [x] Opening books (Quasi-Best-First self-play, Gonnect; `game_host::GameAdapter::book_build` is the
+      generic per-game hook other games can adopt the same way `tune_eval` was adopted)
 - [ ] Online Tuning
 - [ ] Search seeding (seed nodes with artificial runs)
 
