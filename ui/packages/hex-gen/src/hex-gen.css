@@ -1,0 +1,90 @@
+/* hex-gen.css — HexGenRenderer's own presentation, scoped to this package's
+   own class names (not ids), same discipline as ttt.css. Edge coloring
+   (`.edge-p0`/`.edge-p1`) mirrors the board's win condition: P0's amber
+   marks the top/bottom edges it must connect, P1's teal marks the
+   left/right edges. */
+
+.hex-gen-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #c7c9cf;
+}
+
+.hex-gen-grid {
+  filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.35));
+  max-width: 92vw;
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+}
+
+.hex-gen-hex {
+  fill: #eceef2;
+  stroke: #5a5c66;
+  stroke-width: 2;
+}
+
+.hex-gen-cell.legal {
+  cursor: pointer;
+}
+
+.hex-gen-cell.legal:hover .hex-gen-hex,
+.hex-gen-cell.hovered .hex-gen-hex {
+  fill: #dfe3ee;
+}
+
+.hex-gen-cell.edge-p0 .hex-gen-hex {
+  stroke: #d98c2b;
+  stroke-width: 3;
+}
+
+.hex-gen-cell.edge-p1 .hex-gen-hex {
+  stroke: #2b9a94;
+  stroke-width: 3;
+}
+
+.hex-gen-cell.heat .hex-gen-hex {
+  fill: color-mix(in srgb, #ffa94d calc(12% + var(--heat) * 55%), #eceef2);
+}
+
+.hex-gen-cell.proven .hex-gen-hex {
+  fill: color-mix(in srgb, #4caf7a calc(12% + var(--heat) * 55%), #eceef2);
+}
+
+.hex-gen-cell.suggested .hex-gen-hex {
+  stroke: #ffe066;
+  stroke-width: 4;
+}
+
+.hex-gen-stone {
+  stroke: #2a2b32;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.hex-gen-stone.p0 {
+  fill: #d98c2b;
+}
+
+.hex-gen-stone.p1 {
+  fill: #2b9a94;
+}
+
+.hex-gen-ghost {
+  fill: none;
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.hex-gen-ghost.p0 {
+  stroke: #d98c2b;
+}
+
+.hex-gen-ghost.p1 {
+  stroke: #2b9a94;
+}

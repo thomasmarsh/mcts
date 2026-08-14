@@ -1,10 +1,18 @@
 //! Confirms `gdl::codegen::hex`'s Rust-source backend and `core::interp`'s tree-walking backend
 //! agree directly with each other, not just transitively via both separately agreeing with
 //! `tests/hex_oracle.rs`'s from-scratch reference (`tests/hex_gen_oracle.rs`). Mirrors
-//! `tests/ttt_gen_vs_interp.rs` -- same structure, `games/hex-gen` (`codegen::hex`'s output for
-//! Hex) in place of `games/ttt-gen`.
+//! `tests/ttt_gen_vs_interp.rs` -- same structure, `games/hex3-gen` (`codegen::hex`'s
+//! `BitBoard`-branch output for Hex) in place of `games/ttt-gen`.
+//!
+//! Deliberately still a 3x3 board (`games/hex3-gen`, not the 11x11
+//! `games/hex-gen` the UI actually plays): `core::interp::State<N, M>` is
+//! itself `game_core::bitboard::BitBoard<N, M>`-backed, capped at 64 cells,
+//! so it cannot represent an 11x11 (121-cell) position at all -- this
+//! comparison can only ever run against codegen::hex's `BitBoard` branch.
+//! `tests/hex_gen_oracle.rs` covers the `BigBitBoard` branch instead, via a
+//! from-scratch oracle that has no such cap.
 
-use game_hex_gen::{Move as GenMove, Player, Position as GenPosition};
+use game_hex3_gen::{Move as GenMove, Player, Position as GenPosition};
 use gdl::core::interp::State;
 use gdl::core::Program;
 use gdl::style_c::parse_game;

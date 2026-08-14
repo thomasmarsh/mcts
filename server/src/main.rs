@@ -467,10 +467,15 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
+                "atarigo",
                 "breakthrough",
+                "congo",
                 "druid",
+                "gonnect",
+                "hex-gen",
                 "knightthrough",
                 "othello",
+                "tak",
                 "tanbo",
                 "traffic-lights",
                 "ttt"

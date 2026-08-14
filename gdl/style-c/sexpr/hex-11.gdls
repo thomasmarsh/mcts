@@ -1,0 +1,18 @@
+// Hex on an 11x11 board -- the regulation tournament size, and the source
+// `games/hex-gen` (the UI-facing game) is generated from. A sibling of
+// `hex.gdls` (same shape, different `side`), not a replacement: `hex.gdls`
+// stays fixed at 3x3 because it's a load-bearing parser fixture checked
+// against a hand-built `Program` in `src/style_c/mod.rs`'s tests, and those
+// hand-built `player_regions` site lists are specific to a 3x3 board. This
+// file exercises `codegen::hex`'s `BigBitBoard` path (11*11 = 121 cells,
+// over the 64-cell `BitBoard` threshold) via `tests/hex_gen_vs_interp.rs`/
+// `tests/hex_gen_oracle.rs`, the same way `hex.gdls` exercises the
+// `BitBoard` path.
+
+(game "Hex"
+  (topology (hex 11))
+  (players 2)
+  (moves (sites Empty))
+  (end (connects Six))
+  (regions 0 (side NE) (side SW))
+  (regions 1 (side NW) (side SE)))

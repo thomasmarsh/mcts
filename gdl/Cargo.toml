@@ -12,6 +12,7 @@ game-core = { path = "../games/game-core" }
 game-ttt = { path = "../games/ttt" }
 game-ttt-gen = { path = "../games/ttt-gen" }
 game-hex-gen = { path = "../games/hex-gen" }
+game-hex3-gen = { path = "../games/hex3-gen" }
 mcts = { path = "../mcts" }
 
 [lints]

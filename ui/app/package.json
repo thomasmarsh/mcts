@@ -10,6 +10,7 @@
     "@mcts/core": "workspace:*",
     "@mcts/druid": "workspace:*",
     "@mcts/gonnect": "workspace:*",
+    "@mcts/hex-gen": "workspace:*",
     "@mcts/knightthrough": "workspace:*",
     "@mcts/othello": "workspace:*",
     "@mcts/tak": "workspace:*",

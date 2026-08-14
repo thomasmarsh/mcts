@@ -1,7 +1,11 @@
 //! `Topology::Hex` codegen: lowers a `Program` into the text of a standalone `games/*`-shaped
-//! Rust crate, on the same `side x side` `game_core::bitboard::BitBoard<N, N>` grid
-//! `core::interp::State`/`core::hex::Hex` already use for a Rhombus board -- see this module's
-//! own doc comment in `mod.rs` for the scope this backend covers.
+//! Rust crate, on the same `side x side` grid `core::interp::State`/`core::hex::Hex` already use
+//! for a Rhombus board -- see this module's own doc comment in `mod.rs` for the scope this
+//! backend covers. The generated `Board` type is `game_core::bitboard::BitBoard<side, side>`
+//! when `side * side <= 64` (fits one `u64`), else
+//! `game_core::bigbitboard::BigBitBoard<side, side, WORDS>` -- the same threshold and swap
+//! `games/gonnect` makes by hand for its own larger board sizes, done here at generation time
+//! instead (see `board_type`/`region_expr`'s `words` parameter).
 //!
 //! Only lowers what a Rhombus-shaped Hex-topology `Program` actually needs: the same
 //! `Region::Occupied`/`Union`/`Complement`/`Sites` shapes `rect` already lowers (Hex's own
@@ -21,15 +25,30 @@ use super::{fnv1a, Error};
 /// Topology variant" architecture) rather than shared, since `rect`'s copy will grow
 /// `Intersect`/`Shift`/`Adjacent`/`Flood` lowerings independently once a Rect-topology game forces
 /// them.
-fn region_expr(region: &Region) -> Result<String, Error> {
+///
+/// `words` mirrors `generate`'s own board-type choice: `None` emits a plain `u64` literal for
+/// `Region::Sites` (`Board::new(0b...)`, `BitBoard::new`'s signature), `Some(n)` emits an
+/// `n`-element word array (`Board::new([0x..., ...])`, `BigBitBoard::new`'s signature) instead.
+fn region_expr(region: &Region, words: Option<usize>) -> Result<String, Error> {
     Ok(match region {
         Region::Occupied(Player(i)) => format!("self.occupied[{i}]"),
-        Region::Union(a, b) => format!("({} | {})", region_expr(a)?, region_expr(b)?),
-        Region::Complement(a) => format!("!{}", region_expr(a)?),
-        Region::Sites(sites) => {
-            let mask = sites.iter().fold(0u64, |acc, &s| acc | (1 << s));
-            format!("Board::new(0b{mask:b})")
-        }
+        Region::Union(a, b) => format!("({} | {})", region_expr(a, words)?, region_expr(b, words)?),
+        Region::Complement(a) => format!("!{}", region_expr(a, words)?),
+        Region::Sites(sites) => match words {
+            None => {
+                let mask = sites.iter().fold(0u64, |acc, &s| acc | (1 << s));
+                format!("Board::new(0b{mask:b})")
+            }
+            Some(words) => {
+                let mut word_masks = vec![0u64; words];
+                for &s in sites {
+                    word_masks[s / 64] |= 1 << (s % 64);
+                }
+                let items: Vec<String> =
+                    word_masks.iter().map(|w| format!("0x{w:016x}")).collect();
+                format!("Board::new([{}])", items.join(", "))
+            }
+        },
         Region::Intersect(..)
         | Region::Shift { .. }
         | Region::Adjacent { .. }
@@ -63,16 +82,23 @@ fn contains_connects(expr: &BoolExpr) -> bool {
 /// lowers to a plain function call (`hex_connects(...)`) rather than an inline block, so it composes
 /// safely as an `Any` operand without needing disambiguating parens (a leading `{ ... }` block
 /// followed by `||` is itself ambiguous with an empty-parameter closure at statement start).
-fn bool_expr(expr: &BoolExpr, board: &str, edges: Option<&str>) -> Result<String, Error> {
+fn bool_expr(
+    expr: &BoolExpr,
+    board: &str,
+    edges: Option<&str>,
+    words: Option<usize>,
+) -> Result<String, Error> {
     Ok(match expr {
-        BoolExpr::Contains(region) => format!("({}).is_subset({board})", region_expr(region)?),
+        BoolExpr::Contains(region) => {
+            format!("({}).is_subset({board})", region_expr(region, words)?)
+        }
         BoolExpr::Any(exprs) => {
             if exprs.is_empty() {
                 "false".to_string()
             } else {
                 let parts = exprs
                     .iter()
-                    .map(|e| bool_expr(e, board, edges))
+                    .map(|e| bool_expr(e, board, edges, words))
                     .collect::<Result<Vec<_>, _>>()?;
                 parts.join(" || ")
             }
@@ -97,13 +123,18 @@ fn bool_expr(expr: &BoolExpr, board: &str, edges: Option<&str>) -> Result<String
     })
 }
 
-fn end_expr(end: &[EndRule], board: &str, edges: Option<&str>) -> Result<String, Error> {
+fn end_expr(
+    end: &[EndRule],
+    board: &str,
+    edges: Option<&str>,
+    words: Option<usize>,
+) -> Result<String, Error> {
     if end.is_empty() {
         return Ok("false".to_string());
     }
     let parts = end
         .iter()
-        .map(|rule| bool_expr(&rule.condition, board, edges))
+        .map(|rule| bool_expr(&rule.condition, board, edges, words))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(parts.join(" || "))
 }
@@ -141,6 +172,20 @@ pub fn generate(
     let num_players = program.num_players;
     let seed = fnv1a(struct_name);
 
+    let cells = side * side;
+    let words_count = cells.div_ceil(64);
+    let words_param = (cells > 64).then_some(words_count);
+    let (board_import, board_type) = match words_param {
+        None => (
+            "use game_core::bitboard::BitBoard;".to_string(),
+            format!("BitBoard<{side}, {side}>"),
+        ),
+        Some(words_count) => (
+            "use game_core::bigbitboard::BigBitBoard;".to_string(),
+            format!("BigBitBoard<{side}, {side}, {words_count}>"),
+        ),
+    };
+
     let needs_connects = program
         .end
         .iter()
@@ -157,9 +202,9 @@ pub fn generate(
         )));
     }
 
-    let move_expr = region_expr(&program.move_gen.to)?;
+    let move_expr = region_expr(&program.move_gen.to, words_param)?;
     let edges_var = needs_connects.then_some("edges");
-    let win_expr = end_expr(&program.end, "board", edges_var)?;
+    let win_expr = end_expr(&program.end, "board", edges_var, words_param)?;
 
     let player_variants: String = (0..num_players).map(|i| format!("    P{i},\n")).collect();
     let to_index_arms: String = (0..num_players)
@@ -177,7 +222,7 @@ pub fn generate(
             .map(|(player, regions)| {
                 let items = regions
                     .iter()
-                    .map(region_expr)
+                    .map(|r| region_expr(r, words_param))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(format!(
                     "            {player} => &[{}],\n",
@@ -227,7 +272,7 @@ fn hex_connects(board: Board, edges: &[Board]) -> bool {
 //
 // {game_name}, lowered from {source_path} via gdl::core::Program.
 
-use game_core::bitboard::BitBoard;
+{board_import}
 use game_core::display::{{RectangularBoard, RectangularBoardDisplay}};
 use mcts::game::{{Game, PlayerIndex}};
 use mcts::zobrist::LazyZobristTable;
@@ -237,7 +282,7 @@ use std::fmt;
 const SIDE: usize = {side};
 const NUM_PLAYERS: usize = {num_players};
 
-type Board = BitBoard<{side}, {side}>;
+type Board = {board_type};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Player {{

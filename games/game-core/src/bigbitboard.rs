@@ -19,14 +19,19 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, N
 /// This type implements `BitBoard`'s directional shifts, wall masks, and
 /// shift-based `flood4`/4-way connectivity (used by go-variant capture
 /// logic -- see [`check_go_move`]), carrying a bit shift across word
-/// boundaries the same way a bignum shift does. It intentionally does *not*
-/// implement the diagonal shifts or `flood8`/8-way connectivity: those
-/// require masking two walls at once per direction, real added complexity
-/// nothing using this type today needs. If a caller needs 8-way traversal
-/// (or Tanbo-style group tracing that doesn't fit the shift model at all),
-/// walking `to_index`/neighbour arithmetic and testing `get` remains the
-/// expected approach. By design there is no shared implementation with
-/// `BitBoard<N, M>`; the two types happen to expose parallel APIs.
+/// boundaries the same way a bignum shift does. It also implements the
+/// `shift_northeast`/`shift_southwest` diagonal pair and `flood6`/6-way
+/// (hex) connectivity, mirroring `BitBoard::flood6` -- codegen's Hex
+/// backend needs these once a hex board's `N * M` exceeds 64 cells (see
+/// `gdl/src/codegen/hex.rs`). It intentionally does *not* implement
+/// `flood8`/8-way connectivity or the other two diagonals
+/// (`shift_northwest`/`shift_southeast`): those still require masking two
+/// walls at once with nothing today driving the need. If a caller needs
+/// 8-way traversal (or Tanbo-style group tracing that doesn't fit the shift
+/// model at all), walking `to_index`/neighbour arithmetic and testing `get`
+/// remains the expected approach. By design there is no shared
+/// implementation with `BitBoard<N, M>`; the two types happen to expose
+/// parallel APIs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BigBitBoard<const N: usize, const M: usize, const WORDS: usize>([u64; WORDS]);
 
@@ -456,6 +461,19 @@ impl<const N: usize, const M: usize, const WORDS: usize> BigBitBoard<N, M, WORDS
         (self & !Self::wall(Direction::West)) >> 1
     }
 
+    /// The hex-adjacent diagonal `flood6` needs -- see `BitBoard`'s own
+    /// "Hex flood fill" section for why NE/SW (not NW/SE) is the pair that
+    /// turns 4-way adjacency into 6-way.
+    #[inline(always)]
+    pub fn shift_northeast(self) -> Self {
+        (self & !Self::wall(Direction::North) & !Self::wall(Direction::East)) << (M + 1)
+    }
+
+    #[inline(always)]
+    pub fn shift_southwest(self) -> Self {
+        (self & !Self::wall(Direction::South) & !Self::wall(Direction::West)) >> (M + 1)
+    }
+
     #[inline]
     pub fn shift(self, direction: Direction) -> Self {
         match direction {
@@ -499,6 +517,35 @@ impl<const N: usize, const M: usize, const WORDS: usize> BigBitBoard<N, M, WORDS
             let temp = flood;
             flood |=
                 flood.shift_north() | flood.shift_east() | flood.shift_south() | flood.shift_west();
+            flood &= self;
+            if flood == temp {
+                break;
+            }
+        }
+        flood
+    }
+
+    /// Performs a six-way (hex) floodfill traversing set bits, seeded from
+    /// every set bit of `seed` rather than a single start index -- mirrors
+    /// `BitBoard::flood6` (see that method's doc comment for why all six
+    /// shifts must be OR'd into `flood` in one expression, not split across
+    /// statements).
+    pub fn flood6(self, seed: Self) -> Self {
+        debug_assert!(self == self.sanitize());
+        let mut flood = seed & self;
+
+        if flood.is_empty() {
+            return flood;
+        }
+
+        loop {
+            let temp = flood;
+            flood |= flood.shift_north()
+                | flood.shift_south()
+                | flood.shift_east()
+                | flood.shift_west()
+                | flood.shift_northeast()
+                | flood.shift_southwest();
             flood &= self;
             if flood == temp {
                 break;
@@ -978,5 +1025,96 @@ mod tests {
         let (safe, will_capture) = check_go_move::<9, 2>(player, opponent, 63);
         assert!(safe);
         assert_eq!(will_capture, B::from_index(64));
+    }
+
+    #[test]
+    fn flood6_uses_northeast_southwest_diagonal_only() {
+        // Mirrors `bitboard::tests::test_flood6_uses_northeast_southwest_diagonal_only` exactly
+        // (single word, so this only proves the two implementations agree on which diagonal is
+        // hex-adjacent).
+        type B = BigBitBoard<3, 3, 1>;
+        let board = B::ONES;
+        let seed = B::from_coord(0, 0);
+        let flood = board.flood6(seed);
+        assert!(flood.get_at(1, 1));
+
+        let isolated = B::from_coord(0, 1) | B::from_coord(1, 0);
+        let flood = isolated.flood6(B::from_coord(0, 1));
+        assert_eq!(flood, B::from_coord(0, 1));
+    }
+
+    #[test]
+    fn flood6_carries_the_hex_diagonal_across_a_word_boundary() {
+        // 9x9: bit 63 (row 7, col 0) is the last bit of word 0; bit 73 (row 8, col 1) is the
+        // hex-adjacent (northeast/southwest) diagonal neighbor, in word 1. flood6 must reach it
+        // the same way the single-word test above proves it does within one word.
+        type B = BigBitBoard<9, 9, 2>;
+        let mut board = B::EMPTY;
+        board.set(63);
+        board.set(73);
+        let flood = board.flood6(B::from_index(63));
+        assert!(flood.get_at(8, 1));
+        assert_eq!(flood.count_ones(), 2);
+    }
+
+    /// Independent BFS oracle for `flood6`, seeded from every set bit of `seed_bits` (not a
+    /// single start index, unlike `check_flood4_against_oracle`) -- mirrors `flood6`'s own
+    /// multi-seed contract (a hex connection check seeds from an entire edge region). The six
+    /// neighbor deltas are `flood6`'s actual hex-adjacent set: the four cardinals plus the
+    /// `(+1, +1)`/`(-1, -1)` diagonal (not the `(+1, -1)`/`(-1, +1)` one) -- see
+    /// `shift_northeast`/`shift_southwest`'s doc comments.
+    fn check_flood6_against_oracle<const N: usize, const M: usize, const WORDS: usize>(
+        board_bits: &[usize],
+        seed_bits: &[usize],
+    ) {
+        let n = N * M;
+        let mut board = BigBitBoard::<N, M, WORDS>::EMPTY;
+        for &i in board_bits {
+            board.set(i % n);
+        }
+        let mut seed = BigBitBoard::<N, M, WORDS>::EMPTY;
+        for &i in seed_bits {
+            seed.set(i % n);
+        }
+
+        let result = board.flood6(seed);
+
+        let mut visited = BigBitBoard::<N, M, WORDS>::EMPTY;
+        let mut stack: Vec<(usize, usize)> = (seed & board)
+            .map(BigBitBoard::<N, M, WORDS>::to_coord)
+            .collect();
+        let ns: [(i64, i64); 6] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)];
+        while let Some((row, col)) = stack.pop() {
+            if !visited.get_at(row, col) && board.get_at(row, col) {
+                visited.set_at(row, col);
+                for &(dr, dc) in &ns {
+                    let nr = row as i64 + dr;
+                    let nc = col as i64 + dc;
+                    if nr >= 0 && nc >= 0 && (nr as usize) < N && (nc as usize) < M {
+                        stack.push((nr as usize, nc as usize));
+                    }
+                }
+            }
+        }
+
+        assert_eq!(result, visited, "flood6 mismatch vs BFS oracle");
+    }
+
+    proptest! {
+        #[test]
+        fn flood6_connectivity_9x9(
+            board_bits in proptest::collection::vec(0usize..81, 0..200),
+            seed_bits in proptest::collection::vec(0usize..81, 0..10),
+        ) {
+            check_flood6_against_oracle::<9, 9, 2>(&board_bits, &seed_bits);
+        }
+
+        #[test]
+        fn flood6_connectivity_11x11(
+            board_bits in proptest::collection::vec(0usize..121, 0..300),
+            seed_bits in proptest::collection::vec(0usize..121, 0..10),
+        ) {
+            check_flood6_against_oracle::<11, 11, 2>(&board_bits, &seed_bits);
+        }
     }
 }
