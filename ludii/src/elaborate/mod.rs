@@ -4,8 +4,15 @@
 //! module layout -- a ludeme with no elaboration function yet simply isn't supported. See each
 //! submodule for how far it currently reaches.
 
+pub mod boolean;
+pub mod common;
+pub mod equipment;
 pub mod game;
+pub mod graph;
+pub mod moves;
 pub mod numeric;
+pub mod region;
+pub mod rules;
 pub mod types;
 
 use crate::ast::located::{Located, Span};

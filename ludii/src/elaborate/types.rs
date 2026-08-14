@@ -5,7 +5,7 @@
 //! more [`ident_enum`] invocations as later chapters need them.
 
 use crate::ast::located::Located;
-use crate::ast::types::{CompassDirection, ModeType};
+use crate::ast::types::{CompassDirection, ModeType, ResultType, RoleType};
 use crate::elaborate::ElaborateError;
 use crate::parse::SExpr;
 
@@ -44,6 +44,17 @@ ident_enum!(elaborate_mode_type -> ModeType {
     Alternating, Simultaneous, Simulation
 });
 
+ident_enum!(elaborate_role_type -> RoleType {
+    Neutral, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15, P16,
+    Team1, Team2, Team3, Team4, Team5, Team6, Team7, Team8, Team9, Team10, Team11, Team12,
+    Team13, Team14, Team15, Team16, TeamMover, Each, Shared, All, Mover, Next, Prev, NonMover,
+    Enemy, Friend, Ally, Player,
+});
+
+ident_enum!(elaborate_result_type -> ResultType {
+    Win, Loss, Draw, Tie, Abandon, Crash
+});
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +83,23 @@ mod tests {
         assert_eq!(
             elaborate_mode_type(&parse_one("Simultaneous")).unwrap(),
             ModeType::Simultaneous
+        );
+    }
+
+    #[test]
+    fn role_type() {
+        assert_eq!(elaborate_role_type(&parse_one("P1")).unwrap(), RoleType::P1);
+        assert_eq!(
+            elaborate_role_type(&parse_one("Mover")).unwrap(),
+            RoleType::Mover
+        );
+    }
+
+    #[test]
+    fn result_type() {
+        assert_eq!(
+            elaborate_result_type(&parse_one("Win")).unwrap(),
+            ResultType::Win
         );
     }
 

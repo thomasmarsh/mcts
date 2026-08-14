@@ -5,5 +5,11 @@ edition = "2021"
 description = "Ludii Language support"
 license = "MIT OR Apache-2.0"
 
+[dependencies]
+game-core = { path = "../games/game-core" }
+
+[dev-dependencies]
+game-ttt = { path = "../games/ttt" }
+
 [lints]
 workspace = true
