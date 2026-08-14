@@ -1,6 +1,7 @@
 //! The Ludii game description language AST, mirroring the structure of
-//! `LudiiLanguageReference.md`. Parsing is not implemented yet -- this crate currently only
-//! defines the target tree that a future S-expression parser will build.
+//! `LudiiLanguageReference.md`. This is the target tree for elaborating a parsed
+//! [`crate::parse::SExpr`] (see [`crate::parse`]) -- that elaboration is not implemented yet and
+//! will be built incrementally, one language-reference chapter at a time.
 //!
 //! Module layout follows the reference document's own parts and chapters:
 //!
