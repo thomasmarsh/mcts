@@ -1555,3 +1555,100 @@ exit test) and `tests/ttt_gen_oracle.rs` (generated crate vs. hand-written
 the operator's own requested point of comparison). `Hex`/`Connects`-shaped
 end rules still route through `core::interp` only -- real work for
 `ROADMAP.md`'s phase 6, not attempted speculatively here.
+
+## Session note: second codegen backend, proven on Hex -- `Connects`/`flood6` forced in
+
+Prompted directly by the operator: emit Hex to Rust "just as we proved for tic-tac-toe" --
+`ROADMAP.md`'s phase 6 ("Second game through codegen (Hex or Y)"), the real forcing case flagged
+at the end of the previous session's note (`Hex`'s `Connects` end rule, which `codegen::rect`
+deliberately doesn't lower).
+
+**Landed**: `src/codegen/hex.rs`, a second backend module (`src/codegen/mod.rs` now dispatches
+`Topology::Hex` to it instead of unconditionally erroring). Its `region_expr` is a second, separate
+copy of `rect::region_expr` -- same `Occupied`/`Union`/`Complement`/`Sites` shapes, same
+not-yet-lowered `Intersect`/`Shift`/`Adjacent`/`Flood` error, matching `mod.rs`'s "one pass per
+`Topology` variant" architecture rather than sharing a generic helper across backends whose
+`Region` coverage is expected to diverge over time (`rect` will grow its own `Intersect` lowering
+independently once a Rect-topology game with a `Connects` rule forces it, unrelated to what `hex`
+needs). The one genuinely new piece is `BoolExpr::Connects`: rather than reproducing
+`core::interp::bounded_fixpoint`'s general iterate-to-a-fixpoint loop in generated source,
+`hex::generate` emits a small standalone `hex_connects(board, edges)` function that calls
+`game_core::bitboard::BitBoard::flood6` directly (the same specialization
+`Region::Flood`'s own doc comment already describes `core::interp::flood` as replacing at the
+interpreter level, done here a second time at codegen's compile-once level) -- scoped to
+`Connectivity::Six` only, since that's the only connectivity any corpus Hex-topology game's end
+rule uses; any other `Connectivity` on a `Connects` node is a codegen `Error`, not a guess.
+`player_regions` lowers to a `let edges: &[Board] = match last_mover { ... }` table, one match arm
+per player, each entry itself a `region_expr` lowering (not hardcoded to `Sites`, so a
+`Union`/`Complement`-built player region would still lower correctly if a future game needed one).
+The `hex_connects` helper and `edges` table are only emitted when an end rule actually needs them
+(`contains_connects`, walking the `BoolExpr` tree including through `Any`) -- a hypothetical
+`Contains`-only Hex-topology game wouldn't get dead code that this workspace's `-D warnings` would
+turn into a hard build failure.
+
+**A real syntax gotcha found and designed around, not just fixed after the fact**: the previous
+session's `BoolExpr::Any` join relies on every operand already being unambiguous wherever it lands
+(a `let` value, a block's tail, a `||`-joined list) without adding parens itself. A first draft of
+`Connects`'s lowering produced a bare `{ let flooded = ...; ... }` block expression the same shape
+`Any`'s other operands already are as bare atoms -- but a block expression specifically is
+ambiguous with a statement boundary the moment anything follows it on the same "line": `{ ... } ||
+rest` parses as two separate statements (the block, then a syntax error at `||`, since `||` is also
+valid Rust for an empty-parameter closure). Wrapping the block in `(...)` sidesteps that ambiguity
+in the `Any`-joined case but then trips `-D unused-parens` in the common single-end-rule case
+(exactly Hex's own `(end (connects Six))`), where the parens really are redundant once nothing
+follows. Chose a third option instead of picking one lint to fight: lower `Connects` to a plain
+function *call* expression (`hex_connects(board, edges)`), which is unambiguous in every syntactic
+position a `BoolExpr` can land in, the same way `Occupied`/`Sites` already are as bare atoms --
+sidestepping the tradeoff entirely rather than papering over it with a targeted `#[allow]`.
+
+**Checked into `games/hex-gen`** (new workspace member, `game-hex-gen`): `codegen::hex::generate`'s
+literal output for `style-c/sexpr/hex.gdls`, produced via `cargo run -p gdl --bin codegen --
+gdl/style-c/sexpr/hex.gdls Hex Hex`. Since there's no hand-written `games/hex` crate to compare
+against (per `DESIGN.md`'s corpus notes -- Hex has never had one in this repo), two new oracle
+tests take the two roles `tests/ttt_gen_vs_interp.rs`/`tests/ttt_gen_oracle.rs` played for
+Tic-Tac-Toe:
+
+- `tests/hex_gen_vs_interp.rs` -- `games/hex-gen`'s `Position` vs. `core::interp::State` on the
+  same `Program`, walking `tests/hex_oracle.rs`'s own move sequences through both.
+- `tests/hex_gen_oracle.rs` -- `games/hex-gen`'s `mcts::game::Game` impl, exercised end to end
+  (`generate_actions`/`apply`/`is_terminal`/`winner`, the same discipline
+  `tests/ttt_gen_oracle.rs` used), against a second, independent copy of `tests/hex_oracle.rs`'s
+  from-scratch `HexOracle` -- deliberately duplicated rather than imported, so a bug shared between
+  the two oracle copies is very unlikely to be a coincidence, the same reasoning `hex_oracle.rs`'s
+  own doc comment already gives for not calling into `gdl::core::hex`/`game_core::bitboard` itself.
+
+This repo now has three independent, cross-checked implementations of Hex's rules
+(`core::interp` + `style_c`, `games/hex-gen`, `tests/hex_oracle.rs`'s from-scratch `HexOracle`),
+the same triangulation Tic-Tac-Toe already has against `games/ttt`.
+
+`HexShape::Triangle` (Y) stays unsupported -- `hex::generate` returns an `Error` up front rather
+than mis-lowering, since a triangular board additionally needs `Region::Intersect` to mask
+`(sites Empty)` down to the triangular half of the grid, a real next step for whoever routes Y
+through codegen next, not attempted speculatively here.
+
+`cargo test -p gdl -p game-hex-gen -p game-ttt-gen -p game-ttt`, `cargo clippy -p gdl
+-p game-hex-gen --all-targets`, and `cargo fmt -p gdl -p game-hex-gen -- --check` are all clean;
+`cargo check --workspace --exclude mcts-bench --exclude game-host` (every other member, including
+the new `games/hex-gen`) is unaffected.
+
+## Suggested commit message:
+
+Land the second Core-IR-to-Rust codegen backend, proven on Hex
+
+Add `src/codegen/hex.rs` (`ROADMAP.md`'s phase 6) -- the same
+`Region::Occupied`/`Union`/`Complement`/`Sites` lowering `rect` already has,
+plus `BoolExpr::Connects` itself via a generated `hex_connects` helper that
+calls `game_core::bitboard::BitBoard::flood6` directly, scoped to
+`Connectivity::Six`. Lower `Connects` to a plain function-call expression
+rather than an inline block, sidestepping a real block-vs-closure syntax
+ambiguity against `BoolExpr::Any`'s existing no-extra-parens join instead of
+picking one lint to fight with a targeted `#[allow]`. Check in its output
+for Hex as a new workspace member, `games/hex-gen`, and add
+`tests/hex_gen_vs_interp.rs` (generated crate vs. `core::interp`) and
+`tests/hex_gen_oracle.rs` (generated crate's `Game` impl vs. a second,
+independent copy of `tests/hex_oracle.rs`'s from-scratch `HexOracle`, since
+there's no hand-written `games/hex` to compare against) -- the same two
+comparisons `tests/ttt_gen_vs_interp.rs`/`tests/ttt_gen_oracle.rs` proved
+for Tic-Tac-Toe. `HexShape::Triangle` (Y) still routes through
+`core::interp` only -- real work for whoever takes that game through
+codegen next, not attempted speculatively here.

@@ -81,9 +81,24 @@ for how long that happened to the surface-syntax question already).
    clean on both `gdl` and `games/ttt-gen`; `games/ttt-gen` is a first-class workspace member,
    playable by `mcts`/`game-host` like any other game crate (not yet actually wired into
    `game-host`'s game registry — that's ordinary per-game plumbing, not a pipeline question).
-6. **Second game through codegen (Hex or Y).** Proves the generator isn't overfit to the trivial
-   case, the same discipline the interpreter's own Tic-Tac-Toe→Hex bootstrap already followed.
-   *Exit test:* same as phase 5, different topology.
+6. **Second game through codegen (Hex or Y). Done, Hex.** `src/codegen/hex.rs` is the second
+   backend (`src/codegen/mod.rs` now dispatches `Topology::Hex` to it instead of erroring) --
+   lowers the same `Region::Occupied`/`Union`/`Complement`/`Sites` shapes `rect` does for Hex's
+   `(sites Empty)` move generator and `(regions ...)` edges, plus `BoolExpr::Connects` itself
+   (specialized to `Connectivity::Six`, the only one any corpus Hex-topology game uses, via a
+   generated `hex_connects` helper that calls `game_core::bitboard::BitBoard::flood6` directly
+   rather than reproducing `core::interp::bounded_fixpoint`'s general fixpoint loop). Only
+   `HexShape::Rhombus` is supported -- `HexShape::Triangle` (Y) additionally needs
+   `Region::Intersect` to mask `(sites Empty)` down to the triangular half of the grid, a real next
+   step, not attempted here. *Exit test, passed:* checked into `games/hex-gen` (workspace member
+   `game-hex-gen`), generated from `style-c/sexpr/hex.gdls` via `cargo run -p gdl --bin codegen`.
+   Since there's no hand-written `games/hex` to compare against (per `DESIGN.md`'s corpus notes),
+   two oracle tests take the two roles `tests/ttt_gen_vs_interp.rs`/`tests/ttt_gen_oracle.rs` played
+   for phase 5: `tests/hex_gen_vs_interp.rs` (generated crate's `Position` vs. `core::interp::State`
+   on the same `Program`) and `tests/hex_gen_oracle.rs` (generated crate's `mcts::game::Game` impl,
+   exercised end to end, vs. a second, independent copy of `tests/hex_oracle.rs`'s from-scratch
+   `HexOracle`). `cargo clippy`/`fmt --check` clean on `gdl` and `game-hex-gen`; `cargo test --lib`
+   across the touched crates and full-workspace `cargo check` are unaffected.
 7. **Decide generated-vs-hand-written coexistence.** Once codegen is real: do generated crates
    replace the hand-written ones they duplicate (`games/ttt` becomes generated), or live alongside
    them as a separate, clearly-labeled set? Either is fine; pick deliberately once there's a real

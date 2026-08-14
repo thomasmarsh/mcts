@@ -88,17 +88,7 @@ fn end_expr(end: &[EndRule], board: &str) -> Result<String, Error> {
     Ok(parts.join(" || "))
 }
 
-/// FNV-1a over `s`'s bytes -- just needs to be a stable, well-distributed seed for this game's
-/// `LazyZobristTable`, not cryptographic; deterministic on `struct_name` so regenerating the same
-/// game twice produces byte-identical output.
-fn fnv1a(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in s.bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
+use super::fnv1a;
 
 pub fn generate(
     game_name: &str,

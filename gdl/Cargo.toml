@@ -11,6 +11,7 @@ game-core = { path = "../games/game-core" }
 [dev-dependencies]
 game-ttt = { path = "../games/ttt" }
 game-ttt-gen = { path = "../games/ttt-gen" }
+game-hex-gen = { path = "../games/hex-gen" }
 mcts = { path = "../mcts" }
 
 [lints]
