@@ -23,7 +23,9 @@ use crate::ast::region::{RegionFunction, SideTarget, Sites, SitesIndexType};
 use crate::ast::rules::end::EndRule as AstEndRule;
 use crate::ast::types::{ResultType, RoleType};
 use crate::core::hex::{Edge, Hex};
-use crate::core::{EndRule, MoveGen, Player, Program, Rect, Region, Topology};
+use crate::core::{
+    BoolExpr, Connectivity, EndRule, MoveGen, Player, Program, Rect, Region, Topology,
+};
 
 /// A lowering failure: `.lud` shapes the Core lowering doesn't (yet) recognize.
 #[derive(Debug, Clone, PartialEq)]
@@ -160,7 +162,7 @@ fn lower_move_gen(game: &Game, num_players: usize) -> Result<MoveGen, LowerError
     })
 }
 
-fn lower_end(game: &Game) -> Result<Vec<EndRule>, LowerError> {
+fn lower_end(game: &Game, topology: &Topology) -> Result<Vec<EndRule>, LowerError> {
     let end = game
         .rules
         .end
@@ -210,8 +212,18 @@ fn lower_end(game: &Game) -> Result<Vec<EndRule>, LowerError> {
             if length <= 0 {
                 return Err(err("minLength must be positive"));
             }
-            Ok(vec![EndRule::Line {
-                length: length as usize,
+            let Topology::Rect(rect) = topology else {
+                return Err(err(
+                    "(is Line ...) is only lowered for a Rect topology so far",
+                ));
+            };
+            Ok(vec![EndRule {
+                condition: BoolExpr::Any(
+                    rect.lines(length as usize)
+                        .into_iter()
+                        .map(|line| BoolExpr::Contains(Region::Sites(line)))
+                        .collect(),
+                ),
             }])
         }
         Is::Connect {
@@ -235,7 +247,16 @@ fn lower_end(game: &Game) -> Result<Vec<EndRule>, LowerError> {
             if !matches!(regions, ConnectRegions::Role(RoleType::Mover)) {
                 return Err(err("only (is Connected Mover) is lowered so far"));
             }
-            Ok(vec![EndRule::Connected])
+            let Topology::Hex(_) = topology else {
+                return Err(err(
+                    "(is Connected ...) is only lowered for a Hex topology so far",
+                ));
+            };
+            Ok(vec![EndRule {
+                condition: BoolExpr::Connects {
+                    conn: Connectivity::Six,
+                },
+            }])
         }
         _ => Err(err(
             "only (is Line ...) or (is Connected ...) is lowered so far",
@@ -340,7 +361,7 @@ pub fn lower_game(game: &Game) -> Result<Program, LowerError> {
     let topology = lower_topology(game)?;
     let players = num_players(game)?;
     let move_gen = lower_move_gen(game, players)?;
-    let end = lower_end(game)?;
+    let end = lower_end(game, &topology)?;
     let player_regions = lower_player_regions(game, &topology, players)?;
     Ok(Program {
         topology,
@@ -377,7 +398,16 @@ mod tests {
                 Box::new(Region::Occupied(Player(1))),
             )))
         );
-        assert_eq!(program.end, vec![EndRule::Line { length: 3 }]);
+        let [EndRule {
+            condition: BoolExpr::Any(arms),
+        }] = program.end.as_slice()
+        else {
+            panic!("expected a single Any-of-Contains end rule");
+        };
+        assert_eq!(arms.len(), 8); // 3 rows, 3 columns, 2 diagonals -- see Rect::lines's own tests.
+        assert!(arms.iter().all(
+            |arm| matches!(arm, BoolExpr::Contains(Region::Sites(sites)) if sites.len() == 3)
+        ));
         assert!(program.player_regions.is_empty());
     }
 
@@ -392,7 +422,14 @@ mod tests {
                 Box::new(Region::Occupied(Player(1))),
             )))
         );
-        assert_eq!(program.end, vec![EndRule::Connected]);
+        assert_eq!(
+            program.end,
+            vec![EndRule {
+                condition: BoolExpr::Connects {
+                    conn: Connectivity::Six,
+                },
+            }]
+        );
         assert_eq!(
             program.player_regions,
             vec![
