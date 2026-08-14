@@ -15,6 +15,16 @@ board, and `kuhn-poker.sc`/`sprouts.sc`/`sylver-coinage.sc`/`ghost.sc` each drop
 piece of "spatial bitboard game" (hidden info, fixed topology, a board at all, in that order) to
 see what's left of the grammar without it.
 
+`sexpr/` is a different thing entirely, not more of the above: it holds real, checked, *parseable*
+source for `src/style_c/mod.rs`, a second `s-expr -> Core IR` frontend (see the top-level
+`README.md`'s session note and `DESIGN.md`'s Pipeline section) that bypasses both this directory's
+still-hand-written Style C notation *and* the `.lud`/`ast`/`elaborate` pipeline, going straight
+from a direct s-expression rendering of `core::Program` to a real `Program` value. `sexpr/
+tic-tac-toe.sc` and `sexpr/hex.sc` are load-bearing test fixtures (`include_str!`'d by
+`src/style_c/mod.rs`'s tests), each checked against the same `Program` the `.lud` pipeline lowers
+`lud/Tic-Tac-Toe.lud`/`lud/Hex.lud` to -- treat them the same as any other checked-in fixture, not
+scratch files.
+
 | File | Game / `.lud` source | Demonstrates |
 |---|---|---|
 | `games/tic-tac-toe.sc` | `lud/Tic-Tac-Toe.lud`, full game | base declarative layer only -- no `then`/`state`/`invariant`/templates needed |
@@ -29,7 +39,7 @@ see what's left of the grammar without it.
 | `02-suicide-rule.sc` | `Go.lud:35` | same `invariant: always` construct, confirms it generalizes |
 | `03-superko.sc` | `Go.lud`, `(meta (no Repeat))` | past-temporal `once`, no bespoke history builtin |
 | `04-chess-pawn-template.sc` | `Chess.lud:126-137` | `template def`, compile-time generics |
-| `05-havannah-cycle.sc` | `Havannah.lud:13`, `(is Loop)` | bounded `fixpoint`, typed threaded state |
+| `05-havannah-cycle.sc` | `Havannah.lud:13`, `(is Loop)` | `has_cycle` as a Core primop (real usage is one call); a bounded-`fixpoint` derivation kept only as a reference definition, not authoring surface -- see the top-level `README.md`'s session note |
 
 `games/tic-tac-toe.sc` and `games/hex.sc` are the sanity check the previous session's charter
 asked for: neither needs any of the machinery the five case fragments exist to exercise, which is

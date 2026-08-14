@@ -22,7 +22,7 @@ use crate::ast::numeric::int::IntFunction;
 use crate::ast::region::{RegionFunction, SideTarget, Sites, SitesIndexType};
 use crate::ast::rules::end::EndRule as AstEndRule;
 use crate::ast::types::{ResultType, RoleType};
-use crate::core::hex::{Edge, Hex};
+use crate::core::hex::{Edge, Hex, HexShape};
 use crate::core::{
     BoolExpr, Connectivity, EndRule, MoveGen, Player, Program, Rect, Region, Topology,
 };
@@ -89,7 +89,10 @@ fn lower_topology(game: &Game) -> Result<Topology, LowerError> {
                 return Err(err("only (hex Diamond <dim>) boards are lowered so far"));
             }
             let side = lower_square_dim(&hex.extent, "(hex Diamond ...)")?;
-            Ok(Topology::Hex(Hex { side }))
+            Ok(Topology::Hex(Hex {
+                side,
+                shape: HexShape::Rhombus,
+            }))
         }
         _ => Err(err(
             "only (square ...) or (hex Diamond ...) boards are lowered so far",
@@ -110,8 +113,10 @@ fn num_players(game: &Game) -> Result<usize, LowerError> {
     Ok(n as usize)
 }
 
-/// The union of every player's occupied region -- "any site with a piece on it."
-fn all_occupied(num_players: usize) -> Region {
+/// The union of every player's occupied region -- "any site with a piece on it." `pub(crate)`
+/// since [`crate::style_c`]'s independent sexpr frontend reuses it for its own `(sites Empty)`
+/// sugar, rather than duplicating the fold.
+pub(crate) fn all_occupied(num_players: usize) -> Region {
     (1..num_players).fold(Region::Occupied(Player(0)), |acc, i| {
         Region::Union(Box::new(acc), Box::new(Region::Occupied(Player(i))))
     })
@@ -299,14 +304,18 @@ fn lower_side_region(
 }
 
 /// Every `(regions <roleType> {...})` equipment item, indexed by player. Empty when the game
-/// declares none (e.g. Tic-Tac-Toe) -- only a game with an `EndRule::Connected` end rule looks
-/// this table up.
+/// declares none (e.g. Tic-Tac-Toe) -- only a game with a `BoolExpr::Connects` end rule looks
+/// this table up. Each player's entry is a list of named regions, not a fixed pair -- Hex
+/// declares two (`(sites Side NE)`/`(sites Side SW)`), but `core::Program.player_regions`'s
+/// shape is arbitrary-length per DESIGN.md's "Y's three-edge win is about to be a third [data
+/// point]" note, so this lowering accepts any nonempty list rather than pattern-matching a fixed
+/// arity.
 fn lower_player_regions(
     game: &Game,
     topology: &Topology,
     num_players: usize,
-) -> Result<Vec<(Region, Region)>, LowerError> {
-    let mut slots: Vec<Option<(Region, Region)>> = vec![None; num_players];
+) -> Result<Vec<Vec<Region>>, LowerError> {
+    let mut slots: Vec<Option<Vec<Region>>> = vec![None; num_players];
     let mut found_any = false;
     for item in &game.equipment.items {
         let Item::Regions(regions) = item else {
@@ -332,18 +341,20 @@ fn lower_player_regions(
         })?;
         let RegionsSpec::Regions(funcs) = &regions.spec else {
             return Err(err(
-                "only (regions <roleType> {(sites Side ...) (sites Side ...)}) is lowered so far",
+                "only (regions <roleType> {(sites Side ...) ...}) is lowered so far",
             ));
         };
-        let [a, b] = funcs.as_slice() else {
+        if funcs.is_empty() {
             return Err(err(
-                "(regions ...) must have exactly two (sites Side ...) entries so far",
+                "(regions ...) must have at least one (sites Side ...) entry",
             ));
-        };
-        *slot = Some((
-            lower_side_region(a, topology)?,
-            lower_side_region(b, topology)?,
-        ));
+        }
+        *slot = Some(
+            funcs
+                .iter()
+                .map(|f| lower_side_region(f, topology))
+                .collect::<Result<Vec<_>, LowerError>>()?,
+        );
     }
     if !found_any {
         return Ok(Vec::new());
@@ -414,7 +425,13 @@ mod tests {
     #[test]
     fn hex_fixture_lowers() {
         let program = lower_fixture(include_str!("../../lud/Hex.lud"));
-        assert_eq!(program.topology, Topology::Hex(Hex { side: 3 }));
+        assert_eq!(
+            program.topology,
+            Topology::Hex(Hex {
+                side: 3,
+                shape: HexShape::Rhombus,
+            })
+        );
         assert_eq!(
             program.move_gen.to,
             Region::Complement(Box::new(Region::Union(
@@ -433,14 +450,14 @@ mod tests {
         assert_eq!(
             program.player_regions,
             vec![
-                (
+                vec![
                     Region::Sites(vec![6, 7, 8]), // NE -> North edge
                     Region::Sites(vec![0, 1, 2]), // SW -> South edge
-                ),
-                (
+                ],
+                vec![
                     Region::Sites(vec![0, 3, 6]), // NW -> West edge
                     Region::Sites(vec![2, 5, 8]), // SE -> East edge
-                ),
+                ],
             ]
         );
     }

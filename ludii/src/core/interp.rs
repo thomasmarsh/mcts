@@ -141,6 +141,7 @@ fn eval_region<const N: usize, const M: usize>(
         Region::Occupied(Player(i)) => occupied[*i],
         Region::Union(a, b) => eval_region(a, occupied) | eval_region(b, occupied),
         Region::Complement(a) => !eval_region(a, occupied),
+        Region::Intersect(a, b) => eval_region(a, occupied) & eval_region(b, occupied),
         Region::Sites(sites) => sites
             .iter()
             .fold(BitBoard::EMPTY, |acc, &s| acc | BitBoard::from_index(s)),
@@ -156,22 +157,26 @@ fn eval_region<const N: usize, const M: usize>(
 
 /// Evaluates a [`BoolExpr`] against `board` (the region under test -- `State::winner` always
 /// passes the mover's own occupied region, matching what `EndRule`'s doc comment promises).
-/// `edges` is `Some((edge_a, edge_b))` from `Program.player_regions[mover]` when the program
-/// declares any -- required by `BoolExpr::Connects`, unused otherwise; see that variant's doc
-/// comment in `core::mod` for why the pair is threaded in from the caller rather than embedded in
-/// the expression.
+/// `edges` is `Some(list)` from `Program.player_regions[mover]` when the program declares any --
+/// required by `BoolExpr::Connects` (which floods from `edges[0]` and checks the result
+/// intersects every remaining entry), unused otherwise; see that variant's doc comment in
+/// `core::mod` for why the list is threaded in from the caller rather than embedded in the
+/// expression.
 fn eval_bool<const N: usize, const M: usize>(
     expr: &BoolExpr,
     board: BitBoard<N, M>,
-    edges: Option<(BitBoard<N, M>, BitBoard<N, M>)>,
+    edges: Option<&[BitBoard<N, M>]>,
     occupied: &[BitBoard<N, M>],
 ) -> bool {
     match expr {
         BoolExpr::Contains(sites) => eval_region(sites, occupied).is_subset(board),
         BoolExpr::Connects { conn } => {
-            let (edge_a, edge_b) =
-                edges.expect("BoolExpr::Connects requires Program.player_regions");
-            flood(board, edge_a, *conn).intersects(edge_b)
+            let edges = edges.expect("BoolExpr::Connects requires Program.player_regions");
+            let [first, rest @ ..] = edges else {
+                panic!("BoolExpr::Connects requires at least one player region");
+            };
+            let flooded = flood(board, *first, *conn);
+            rest.iter().all(|&edge| flooded.intersects(edge))
         }
         BoolExpr::Any(exprs) => exprs.iter().any(|e| eval_bool(e, board, edges, occupied)),
     }
@@ -228,16 +233,16 @@ impl<const N: usize, const M: usize> State<N, M> {
     pub fn winner(&self, program: &Program) -> Option<usize> {
         let last_mover = self.last_mover();
         let board = self.occupied[last_mover];
-        let edges = program.player_regions.get(last_mover).map(|(a, b)| {
-            (
-                eval_region(a, &self.occupied),
-                eval_region(b, &self.occupied),
-            )
+        let edges: Option<Vec<_>> = program.player_regions.get(last_mover).map(|regions| {
+            regions
+                .iter()
+                .map(|r| eval_region(r, &self.occupied))
+                .collect()
         });
         program
             .end
             .iter()
-            .any(|rule| eval_bool(&rule.condition, board, edges, &self.occupied))
+            .any(|rule| eval_bool(&rule.condition, board, edges.as_deref(), &self.occupied))
             .then_some(last_mover)
     }
 }
@@ -246,6 +251,7 @@ impl<const N: usize, const M: usize> State<N, M> {
 mod tests {
     use super::*;
     use crate::ast::game::Description;
+    use crate::core::hex::HexShape;
     use crate::core::{lower_game, EndRule, Hex, MoveGen, Rect};
     use crate::elaborate::game::elaborate_description;
     use crate::parse::parse;
@@ -334,7 +340,10 @@ mod tests {
     #[test]
     fn manual_hex_program_matches_lowered_one() {
         let manual = Program {
-            topology: Topology::Hex(Hex { side: 3 }),
+            topology: Topology::Hex(Hex {
+                side: 3,
+                shape: HexShape::Rhombus,
+            }),
             num_players: 2,
             move_gen: MoveGen {
                 to: Region::Complement(Box::new(Region::Union(
@@ -348,8 +357,8 @@ mod tests {
                 },
             }],
             player_regions: vec![
-                (Region::Sites(vec![6, 7, 8]), Region::Sites(vec![0, 1, 2])),
-                (Region::Sites(vec![0, 3, 6]), Region::Sites(vec![2, 5, 8])),
+                vec![Region::Sites(vec![6, 7, 8]), Region::Sites(vec![0, 1, 2])],
+                vec![Region::Sites(vec![0, 3, 6]), Region::Sites(vec![2, 5, 8])],
             ],
         };
         assert_eq!(manual, hex_program());
@@ -507,6 +516,63 @@ mod tests {
             BoolExpr::Contains(Region::Sites(vec![5])), // not present -- must not affect the result
         ]);
         assert!(eval_bool(&expr, occupied[0], None, &occupied));
+    }
+
+    #[test]
+    fn region_intersect_keeps_only_sites_in_both_operands() {
+        let occupied: Vec<BitBoard<3, 3>> = Vec::new();
+        let expr = Region::Intersect(
+            Box::new(Region::Sites(vec![0, 1, 2, 3])),
+            Box::new(Region::Sites(vec![2, 3, 4, 5])),
+        );
+        let expected = BitBoard::<3, 3>::from_index(2) | BitBoard::from_index(3);
+        assert_eq!(eval_region(&expr, &occupied), expected);
+    }
+
+    #[test]
+    fn bool_expr_connects_requires_touching_every_declared_edge() {
+        // A three-edge Connects (Y's shape, not Hex's): a group spanning only two of the three
+        // declared edges must not satisfy it, even though it would satisfy a two-edge Connects
+        // over the same pair. Board: edges are three sides of a 3x3 grid used as stand-ins (top
+        // row, left column, bottom row) -- not an actual triangle, just enough to exercise arity.
+        let top =
+            BitBoard::<3, 3>::from_index(6) | BitBoard::from_index(7) | BitBoard::from_index(8);
+        let left =
+            BitBoard::<3, 3>::from_index(0) | BitBoard::from_index(3) | BitBoard::from_index(6);
+        let bottom =
+            BitBoard::<3, 3>::from_index(0) | BitBoard::from_index(1) | BitBoard::from_index(2);
+        let expr = BoolExpr::Connects {
+            conn: Connectivity::Six,
+        };
+
+        // {8, 4}: a northeast/southwest-diagonal chain touching only `top` (site 8) -- never
+        // reaches `left` or `bottom`. Must fail the three-edge Connects even though it trivially
+        // satisfies a (degenerate) one-edge Connects over `top` alone.
+        let two_edges_only = vec![BitBoard::<3, 3>::from_index(8) | BitBoard::from_index(4)];
+        assert!(!eval_bool(
+            &expr,
+            two_edges_only[0],
+            Some(&[top, left, bottom]),
+            &two_edges_only
+        ));
+        assert!(eval_bool(
+            &expr,
+            two_edges_only[0],
+            Some(&[top]),
+            &two_edges_only
+        ));
+
+        // Extending the same chain down to site 0 (shared by both `left` and `bottom`) now
+        // touches all three declared edges from one connected component.
+        let all_three = vec![
+            BitBoard::<3, 3>::from_index(8) | BitBoard::from_index(4) | BitBoard::from_index(0),
+        ];
+        assert!(eval_bool(
+            &expr,
+            all_three[0],
+            Some(&[top, left, bottom]),
+            &all_three
+        ));
     }
 
     /// Confirms `bounded_fixpoint`'s shape -- see that function's doc comment -- actually holds

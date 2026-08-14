@@ -76,6 +76,11 @@ pub enum Region {
     Occupied(Player),
     Union(Box<Region>, Box<Region>),
     Complement(Box<Region>),
+    /// The sites in both `a` and `b` -- DESIGN.md's Region algebra table's `intersect`. Forced in
+    /// by Y's triangular board: legal moves need to be "empty AND inside the triangle," not just
+    /// "empty," since a triangle's valid sites are a proper subset of the `side x side` grid its
+    /// [`crate::core::hex::Hex::valid_sites`] is carved out of.
+    Intersect(Box<Region>, Box<Region>),
     Sites(Vec<usize>),
     /// `region` shifted one step in `dir` -- DESIGN.md's `shift(dir): Region -> Region`.
     Shift {
@@ -120,14 +125,18 @@ pub enum BoolExpr {
     /// <length>)`. Tic-Tac-Toe's end rule lowers to `Any` of one `Contains` per candidate line
     /// (see `core::rect::Rect::lines`).
     Contains(Region),
-    /// The region under test contains a `conn`-connected component reachable from the mover's
-    /// first named region (`Program.player_regions[mover].0`) that also touches their second
-    /// (`.1`) -- DESIGN.md's `connects(edge_a, edge_b): Region -> Bool`, built from
-    /// [`Region::Flood`] plus an intersection test (see `interp::eval_bool`). `edge_a`/`edge_b`
-    /// aren't embedded here the way `Contains`'s static `sites` is, because `Program.end` is
-    /// shared across every player while `player_regions` varies per player -- the interpreter
-    /// looks the pair up per mover, the same way it looks up which player's occupied region is
-    /// "the board under test" in the first place.
+    /// The region under test contains a single `conn`-connected component that touches every one
+    /// of the mover's named regions (`Program.player_regions[mover]`) -- DESIGN.md's
+    /// `connects(edge_a, edge_b): Region -> Bool`, generalized from a fixed pair to an arbitrary
+    /// list: flood from the first named region and check the result intersects every other one
+    /// (see `interp::eval_bool`). Two named regions (Hex's edge-to-edge win) and three (Y's
+    /// three-side win, the game that forced this generalization -- a fixed `(Region, Region)`
+    /// pair has no third slot) are both just different lengths of the same list, not two
+    /// different `BoolExpr` shapes. The regions themselves aren't embedded here the way
+    /// `Contains`'s static `sites` is, because `Program.end` is shared across every player while
+    /// `player_regions` varies per player -- the interpreter looks the list up per mover, the
+    /// same way it looks up which player's occupied region is "the board under test" in the
+    /// first place.
     Connects { conn: Connectivity },
     /// True if any of the given expressions is true.
     Any(Vec<BoolExpr>),
@@ -153,7 +162,9 @@ pub struct Program {
     pub num_players: usize,
     pub move_gen: MoveGen,
     pub end: Vec<EndRule>,
-    /// Indexed by player. Empty when no end rule's `BoolExpr::Connects` references it (e.g.
-    /// Tic-Tac-Toe).
-    pub player_regions: Vec<(Region, Region)>,
+    /// Indexed by player; each player's entry is the list of named regions their
+    /// `BoolExpr::Connects` end rule must all be touched by one connected component (two for
+    /// Hex's edge-to-edge win, three for Y's three-side win -- see `BoolExpr::Connects`'s doc
+    /// comment). Empty when no end rule's `BoolExpr::Connects` references it (e.g. Tic-Tac-Toe).
+    pub player_regions: Vec<Vec<Region>>,
 }
