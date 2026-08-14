@@ -1,26 +1,29 @@
 //! Lowers an elaborated [`crate::ast::game::Game`] into a Core IR [`super::Program`].
 //!
-//! Scoped exactly to what `lud/Tic-Tac-Toe.lud` elaborates to (see `crate::elaborate`'s own
-//! per-ludeme scoping notes) -- a `(square <n>)` board, one `(piece ...)` per player, a
-//! `(move Add (to (sites Empty)))` play rule, and a single `(if (is Line <n>) (result Mover
-//! Win))` end rule. Any other shape is a lowering error, not a panic: this is meant to grow one
-//! real `.lud` file at a time, not to silently do the wrong thing on a shape it doesn't
-//! recognize yet.
+//! Scoped exactly to what `lud/Tic-Tac-Toe.lud` and `lud/Hex.lud` elaborate to (see
+//! `crate::elaborate`'s own per-ludeme scoping notes) -- a `(square <n>)` or `(hex Diamond <n>)`
+//! board, a `(move Add (to (sites Empty)))` play rule, and a single end rule that's either
+//! `(if (is Line <n>) (result Mover Win))` or `(if (is Connected Mover) (result Mover Win))`. Any
+//! other shape is a lowering error, not a panic: this is meant to grow one real `.lud` file at a
+//! time, not to silently do the wrong thing on a shape it doesn't recognize yet.
 
-use crate::ast::boolean::{BooleanFunction, Is};
+use crate::ast::boolean::{BooleanFunction, ConnectRegions, Is, IsConnectType};
 use crate::ast::common::SiteOrRegion;
+use crate::ast::equipment::other::RegionsSpec;
 use crate::ast::equipment::Item;
 use crate::ast::game::{Game, Players};
-use crate::ast::graph::generator::Extent;
+use crate::ast::graph::generator::{Extent, HexShapeType};
 use crate::ast::graph::GraphFunction;
+use crate::ast::located::LBox;
 use crate::ast::moves::decision::{Decision, MoveSiteType};
 use crate::ast::moves::Moves;
 use crate::ast::numeric::dim::DimFunction;
 use crate::ast::numeric::int::IntFunction;
-use crate::ast::region::{RegionFunction, Sites, SitesIndexType};
+use crate::ast::region::{RegionFunction, SideTarget, Sites, SitesIndexType};
 use crate::ast::rules::end::EndRule as AstEndRule;
 use crate::ast::types::{ResultType, RoleType};
-use crate::core::{EndRule, MoveGen, Player, Program, Rect, Region};
+use crate::core::hex::{Edge, Hex};
+use crate::core::{EndRule, MoveGen, Player, Program, Rect, Region, Topology};
 
 /// A lowering failure: `.lud` shapes the Core lowering doesn't (yet) recognize.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,7 +41,29 @@ fn err(message: impl Into<String>) -> LowerError {
     LowerError(message.into())
 }
 
-fn lower_topology(game: &Game) -> Result<Rect, LowerError> {
+/// A single-dimension `Extent::Dims(<dim>, None)`, the only extent shape either `(square <n>)` or
+/// `(hex Diamond <n>)` is lowered for so far.
+fn lower_square_dim(extent: &Extent, context: &str) -> Result<usize, LowerError> {
+    let Extent::Dims(dim, cols) = extent else {
+        return Err(err(format!(
+            "only a plain {context} <dim> extent is lowered so far"
+        )));
+    };
+    if cols.is_some() {
+        return Err(err(format!(
+            "{context} rows columns isn't lowered yet -- only square boards"
+        )));
+    }
+    let DimFunction::Int(n) = dim.node else {
+        return Err(err("only an integer board dimension is lowered so far"));
+    };
+    if n <= 0 {
+        return Err(err("board dimension must be positive"));
+    }
+    Ok(n as usize)
+}
+
+fn lower_topology(game: &Game) -> Result<Topology, LowerError> {
     let mut boards = game.equipment.items.iter().filter_map(|item| match item {
         Item::Board(board) => Some(board),
         _ => None,
@@ -49,28 +74,25 @@ fn lower_topology(game: &Game) -> Result<Rect, LowerError> {
     if boards.next().is_some() {
         return Err(err("expected exactly one (board ...) in equipment"));
     }
-    let GraphFunction::Square(square) = &board.graph.node else {
-        return Err(err("only (square ...) boards are lowered so far"));
-    };
-    if square.shape.is_some() || square.modifier.is_some() {
-        return Err(err("(square ...) shape/modifier aren't lowered yet"));
+    match &board.graph.node {
+        GraphFunction::Square(square) => {
+            if square.shape.is_some() || square.modifier.is_some() {
+                return Err(err("(square ...) shape/modifier aren't lowered yet"));
+            }
+            let n = lower_square_dim(&square.extent, "(square ...)")?;
+            Ok(Topology::Rect(Rect { rows: n, cols: n }))
+        }
+        GraphFunction::Hex(hex) => {
+            if hex.shape != Some(HexShapeType::Diamond) {
+                return Err(err("only (hex Diamond <dim>) boards are lowered so far"));
+            }
+            let side = lower_square_dim(&hex.extent, "(hex Diamond ...)")?;
+            Ok(Topology::Hex(Hex { side }))
+        }
+        _ => Err(err(
+            "only (square ...) or (hex Diamond ...) boards are lowered so far",
+        )),
     }
-    let Extent::Dims(rows, cols) = &square.extent else {
-        return Err(err("only a plain (square <dim>) extent is lowered so far"));
-    };
-    if cols.is_some() {
-        return Err(err(
-            "(square rows columns) isn't lowered yet -- only square boards",
-        ));
-    }
-    let DimFunction::Int(n) = rows.node else {
-        return Err(err("only an integer board dimension is lowered so far"));
-    };
-    if n <= 0 {
-        return Err(err("board dimension must be positive"));
-    }
-    let n = n as usize;
-    Ok(Rect { rows: n, cols: n })
 }
 
 fn num_players(game: &Game) -> Result<usize, LowerError> {
@@ -155,41 +177,161 @@ fn lower_end(game: &Game) -> Result<Vec<EndRule>, LowerError> {
         .as_ref()
         .ok_or_else(|| err("(if ...) requires a condition"))?;
     let BooleanFunction::Is(is) = &condition.node else {
-        return Err(err("only (is Line ...) is lowered so far"));
-    };
-    let Is::Line(line) = is.as_ref() else {
-        return Err(err("only (is Line ...) is lowered so far"));
-    };
-    if line.site_type.is_some()
-        || line.direction.is_some()
-        || line.through.is_some()
-        || line.owner.is_some()
-        || line.what.is_some()
-        || line.exact.is_some()
-        || line.contiguous.is_some()
-        || line.condition.is_some()
-        || line.by_level.is_some()
-    {
         return Err(err(
-            "only a bare (is Line <int>) -- no site type/direction/through/owner/what/exact/\
-             contiguous/condition/byLevel -- is lowered so far",
+            "only (is Line ...) or (is Connected ...) is lowered so far",
         ));
-    }
-    let IntFunction::Int(length) = line.min_length.node else {
-        return Err(err("only an integer minLength is lowered so far"));
     };
-    if length <= 0 {
-        return Err(err("minLength must be positive"));
-    }
     let result = if_rule
         .result
         .ok_or_else(|| err("(if ...) requires a result -- default-only ifs aren't lowered yet"))?;
     if result.role != RoleType::Mover || result.result != ResultType::Win {
         return Err(err("only (result Mover Win) is lowered so far"));
     }
-    Ok(vec![EndRule {
-        line_length: length as usize,
-    }])
+    match is.as_ref() {
+        Is::Line(line) => {
+            if line.site_type.is_some()
+                || line.direction.is_some()
+                || line.through.is_some()
+                || line.owner.is_some()
+                || line.what.is_some()
+                || line.exact.is_some()
+                || line.contiguous.is_some()
+                || line.condition.is_some()
+                || line.by_level.is_some()
+            {
+                return Err(err(
+                    "only a bare (is Line <int>) -- no site type/direction/through/owner/what/\
+                     exact/contiguous/condition/byLevel -- is lowered so far",
+                ));
+            }
+            let IntFunction::Int(length) = line.min_length.node else {
+                return Err(err("only an integer minLength is lowered so far"));
+            };
+            if length <= 0 {
+                return Err(err("minLength must be positive"));
+            }
+            Ok(vec![EndRule::Line {
+                length: length as usize,
+            }])
+        }
+        Is::Connect {
+            kind,
+            min_regions,
+            site_type,
+            at,
+            direction,
+            regions,
+        } => {
+            if *kind != IsConnectType::Connected {
+                return Err(err(
+                    "only (is Connected ...) is lowered so far -- not Blocked",
+                ));
+            }
+            if min_regions.is_some() || site_type.is_some() || at.is_some() || direction.is_some() {
+                return Err(err(
+                    "(is Connected ...) minRegions/siteType/at/direction aren't lowered yet",
+                ));
+            }
+            if !matches!(regions, ConnectRegions::Role(RoleType::Mover)) {
+                return Err(err("only (is Connected Mover) is lowered so far"));
+            }
+            Ok(vec![EndRule::Connected])
+        }
+        _ => Err(err(
+            "only (is Line ...) or (is Connected ...) is lowered so far",
+        )),
+    }
+}
+
+/// A single `(regions <roleType> {(sites Side <compassDirection>) (sites Side
+/// <compassDirection>)})` equipment entry, lowered to a `(Region, Region)` pair of static edge
+/// site lists -- so far only meaningful for a `Hex` topology.
+fn lower_side_region(
+    func: &LBox<RegionFunction>,
+    topology: &Topology,
+) -> Result<Region, LowerError> {
+    let RegionFunction::Sites(sites) = &func.node else {
+        return Err(err(
+            "only (sites Side <compassDirection>) is lowered for (regions ...) entries",
+        ));
+    };
+    let Sites::Side {
+        site_type: None,
+        target: Some(SideTarget::Compass(compass)),
+    } = sites.as_ref()
+    else {
+        return Err(err(
+            "only (sites Side <compassDirection>) is lowered so far",
+        ));
+    };
+    let Topology::Hex(hex) = topology else {
+        return Err(err(
+            "(sites Side ...) is only lowered for a Hex topology so far",
+        ));
+    };
+    let edge: Edge = Hex::edge_for_compass(*compass).ok_or_else(|| {
+        err(format!(
+            "unsupported compass direction for a Hex side: {compass:?}"
+        ))
+    })?;
+    Ok(Region::Sites(hex.edge(edge)))
+}
+
+/// Every `(regions <roleType> {...})` equipment item, indexed by player. Empty when the game
+/// declares none (e.g. Tic-Tac-Toe) -- only a game with an `EndRule::Connected` end rule looks
+/// this table up.
+fn lower_player_regions(
+    game: &Game,
+    topology: &Topology,
+    num_players: usize,
+) -> Result<Vec<(Region, Region)>, LowerError> {
+    let mut slots: Vec<Option<(Region, Region)>> = vec![None; num_players];
+    let mut found_any = false;
+    for item in &game.equipment.items {
+        let Item::Regions(regions) = item else {
+            continue;
+        };
+        found_any = true;
+        let owner = regions
+            .owner
+            .ok_or_else(|| err("(regions ...) requires an owner role"))?;
+        let player = match owner {
+            RoleType::P1 => 0,
+            RoleType::P2 => 1,
+            other => {
+                return Err(err(format!(
+                    "(regions ...) owner {other:?} isn't lowered yet -- only P1/P2"
+                )))
+            }
+        };
+        let slot = slots.get_mut(player).ok_or_else(|| {
+            err(format!(
+                "(regions ...) owner player {player} is out of range for {num_players} players"
+            ))
+        })?;
+        let RegionsSpec::Regions(funcs) = &regions.spec else {
+            return Err(err(
+                "only (regions <roleType> {(sites Side ...) (sites Side ...)}) is lowered so far",
+            ));
+        };
+        let [a, b] = funcs.as_slice() else {
+            return Err(err(
+                "(regions ...) must have exactly two (sites Side ...) entries so far",
+            ));
+        };
+        *slot = Some((
+            lower_side_region(a, topology)?,
+            lower_side_region(b, topology)?,
+        ));
+    }
+    if !found_any {
+        return Ok(Vec::new());
+    }
+    slots
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| slot.ok_or_else(|| err(format!("missing (regions ...) for player {i}"))))
+        .collect()
 }
 
 /// Lowers a self-contained `ast::game::Game` into a Core IR [`Program`]. See the module doc for
@@ -199,11 +341,13 @@ pub fn lower_game(game: &Game) -> Result<Program, LowerError> {
     let players = num_players(game)?;
     let move_gen = lower_move_gen(game, players)?;
     let end = lower_end(game)?;
+    let player_regions = lower_player_regions(game, &topology, players)?;
     Ok(Program {
         topology,
         num_players: players,
         move_gen,
         end,
+        player_regions,
     })
 }
 
@@ -225,7 +369,7 @@ mod tests {
     #[test]
     fn tic_tac_toe_fixture_lowers() {
         let program = lower_fixture(include_str!("../../lud/Tic-Tac-Toe.lud"));
-        assert_eq!(program.topology, Rect { rows: 3, cols: 3 });
+        assert_eq!(program.topology, Topology::Rect(Rect { rows: 3, cols: 3 }));
         assert_eq!(
             program.move_gen.to,
             Region::Complement(Box::new(Region::Union(
@@ -233,6 +377,34 @@ mod tests {
                 Box::new(Region::Occupied(Player(1))),
             )))
         );
-        assert_eq!(program.end, vec![EndRule { line_length: 3 }]);
+        assert_eq!(program.end, vec![EndRule::Line { length: 3 }]);
+        assert!(program.player_regions.is_empty());
+    }
+
+    #[test]
+    fn hex_fixture_lowers() {
+        let program = lower_fixture(include_str!("../../lud/Hex.lud"));
+        assert_eq!(program.topology, Topology::Hex(Hex { side: 3 }));
+        assert_eq!(
+            program.move_gen.to,
+            Region::Complement(Box::new(Region::Union(
+                Box::new(Region::Occupied(Player(0))),
+                Box::new(Region::Occupied(Player(1))),
+            )))
+        );
+        assert_eq!(program.end, vec![EndRule::Connected]);
+        assert_eq!(
+            program.player_regions,
+            vec![
+                (
+                    Region::Sites(vec![6, 7, 8]), // NE -> North edge
+                    Region::Sites(vec![0, 1, 2]), // SW -> South edge
+                ),
+                (
+                    Region::Sites(vec![0, 3, 6]), // NW -> West edge
+                    Region::Sites(vec![2, 5, 8]), // SE -> East edge
+                ),
+            ]
+        );
     }
 }

@@ -2,12 +2,17 @@
 //! true/false about the current game state.
 //!
 //! Only `(is Line <int>)` (9.7.1's `Line` form, with no `[<siteType>]`, `[<absoluteDirection>]`,
-//! `through:`, `[<roleType>]`, `exact:`, `contiguous:`, `if:`, or `byLevel:`) is elaborated so
-//! far, since it's all [`crate::elaborate::rules::end`] needs for `(is Line 3)`.
+//! `through:`, `[<roleType>]`, `exact:`, `contiguous:`, `if:`, or `byLevel:`) and
+//! `(is Connected <roleType>)` (9.7.1's `Connected` form of `(is <isConnectType> ...)`, with no
+//! `minRegions:`/`[<siteType>]`/`at:`/`[<absoluteDirection>]`, and only a bare `<roleType>` for
+//! the regions argument -- no explicit region list or static-region-type form) are elaborated so
+//! far, since between them that's all [`crate::elaborate::rules::end`] needs for `(is Line 3)`
+//! and Hex's `(is Connected Mover)`.
 
-use crate::ast::boolean::{BooleanFunction, Is, IsLine};
+use crate::ast::boolean::{BooleanFunction, ConnectRegions, Is, IsConnectType, IsLine};
 use crate::ast::located::Located;
 use crate::elaborate::numeric::int::elaborate_int_function;
+use crate::elaborate::types::elaborate_role_type;
 use crate::elaborate::{call_ident, ElaborateError};
 use crate::parse::SExpr;
 
@@ -48,14 +53,32 @@ fn elaborate_is(v: &Located<SExpr>) -> Result<Is, ElaborateError> {
                 by_level: None,
             })))
         }
+        "Connected" => {
+            let role_arg = positional.next().ok_or_else(|| ElaborateError {
+                message: "(is Connected ...) requires a roleType argument".into(),
+                span: v.span,
+            })?;
+            let role = elaborate_role_type(&role_arg.value)?;
+            Ok(Is::Connect {
+                kind: IsConnectType::Connected,
+                min_regions: None,
+                site_type: None,
+                at: None,
+                direction: None,
+                regions: ConnectRegions::Role(role),
+            })
+        }
         other => Err(ElaborateError {
-            message: format!("unsupported (is {other} ...) -- only Line is elaborated so far"),
+            message: format!(
+                "unsupported (is {other} ...) -- only Line and Connected are elaborated so far"
+            ),
             span: kind_arg.value.span,
         }),
     }
 }
 
-/// Any ludeme computing a boolean value. Only [`elaborate_is`]'s `Line` form is wired up so far.
+/// Any ludeme computing a boolean value. Only [`elaborate_is`]'s `Line`/`Connected` forms are
+/// wired up so far.
 pub fn elaborate_boolean_function(v: &Located<SExpr>) -> Result<BooleanFunction, ElaborateError> {
     Ok(BooleanFunction::Is(Box::new(elaborate_is(v)?)))
 }
@@ -79,6 +102,21 @@ mod tests {
         };
         assert_eq!(line.min_length.node, IntFunction::Int(3));
         assert_eq!(line.owner, None);
+    }
+
+    #[test]
+    fn is_connected_mover() {
+        assert_eq!(
+            elaborate_is(&parse_one("(is Connected Mover)")).unwrap(),
+            Is::Connect {
+                kind: IsConnectType::Connected,
+                min_regions: None,
+                site_type: None,
+                at: None,
+                direction: None,
+                regions: ConnectRegions::Role(crate::ast::types::RoleType::Mover),
+            }
+        );
     }
 
     #[test]

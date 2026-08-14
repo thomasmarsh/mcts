@@ -561,6 +561,55 @@ impl<const N: usize, const M: usize> BitBoard<N, M> {
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Hex flood fill
+//
+// A hex grid packed into a rectangular bitboard (axial coordinates (col, row), row-major site
+// indexing) has six-way adjacency: the four `Rect` cardinal directions plus one diagonal pair.
+// Shearing each row rightward as row increases makes northeast/southwest the hex-adjacent
+// diagonal (northwest/southeast is the *other* square diagonal, and is deliberately not
+// hex-adjacent -- that's what turns 8-connectivity into 6-connectivity).
+
+impl<const N: usize, const M: usize> BitBoard<N, M> {
+    /// Performs a six-way (hex) floodfill traversing set bits, seeded from every set bit of
+    /// `seed` rather than a single start index -- unlike [`Self::flood4`]/[`Self::flood8`], a hex
+    /// connection check (e.g. "does the mover's group touch both of their board edges") needs to
+    /// seed from an entire edge region, which may contain several disconnected stones.
+    ///
+    /// All six shifts must be OR'd into `flood` in a single expression, as [`Self::flood4`] does
+    /// (unlike [`Self::flood8`], which splits its four shifts across two `|=` statements) --
+    /// splitting them here would let one direction's shift compound off a *previous statement's*
+    /// unmasked result within the same iteration (e.g. north, then west of the shifted-north
+    /// bits), bridging through a cell not actually in `self`. That's invisible for
+    /// [`Self::flood8`], since any such compound lands on a cell that's already a direct 8-way
+    /// neighbor anyway, but six-way adjacency deliberately excludes one diagonal (see the comment
+    /// above), so the same compounding would wrongly treat that excluded diagonal as connected.
+    pub fn flood6(self, seed: Self) -> Self {
+        debug_assert!(self == self.sanitize());
+        let mut flood = seed & self;
+
+        if flood.is_empty() {
+            return flood;
+        }
+
+        while !flood.is_empty() {
+            let temp = flood;
+            flood |= flood.shift_north()
+                | flood.shift_south()
+                | flood.shift_east()
+                | flood.shift_west()
+                | flood.shift_northeast()
+                | flood.shift_southwest();
+            flood &= self;
+            if flood == temp {
+                break;
+            }
+        }
+        flood
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
 // Connectivity tests
 
 impl<const N: usize, const M: usize> BitBoard<N, M> {
@@ -881,6 +930,33 @@ mod tests {
         assert_eq!(flood, expected);
     }
 
+    #[test]
+    fn test_flood6_uses_northeast_southwest_diagonal_only() {
+        type B = BitBoard<3, 3>;
+        // (0, 0) and (1, 1) are hex-adjacent (northeast/southwest diagonal): flood6 from a
+        // single-bit seed at (0, 0) reaches (1, 1) directly.
+        let board = B::ONES;
+        let seed = B::from_coord(0, 0);
+        let flood = board.flood6(seed);
+        assert!(flood.get_at(1, 1));
+
+        // (0, 1) and (1, 0) are the *other* diagonal (northwest/southeast) -- not hex-adjacent.
+        // Isolate them from every other neighbor and confirm flood6 does not connect them.
+        let isolated = B::from_coord(0, 1) | B::from_coord(1, 0);
+        let flood = isolated.flood6(B::from_coord(0, 1));
+        assert_eq!(flood, B::from_coord(0, 1));
+    }
+
+    #[test]
+    fn test_flood6_seeds_from_every_set_bit() {
+        type B = BitBoard<4, 4>;
+        // Two isolated single-cell seeds, on either side of a filled board, both start flooding
+        // simultaneously.
+        let board = B::ONES;
+        let seed = B::from_coord(0, 0) | B::from_coord(3, 3);
+        assert_eq!(board.flood6(seed), board);
+    }
+
     /////////////////////////////////////////////////////////////////////////////////////////////
 
     use crate::bitboard_match::*;
@@ -978,6 +1054,28 @@ mod tests {
         fn connectivity8(input: RuntimeBitBoard) {
             match_bitboard!(input, connectivity8_impl);
         }
+
+        #[test]
+        fn connectivity6(input: RuntimeBitBoard) {
+            match_bitboard!(input, connectivity6_impl);
+        }
+    }
+
+    fn connectivity6_impl<const N: usize, const M: usize>(
+        input: BitBoard<N, M>,
+        row: usize,
+        col: usize,
+    ) {
+        assert!(row < N);
+        assert!(col < M);
+        let start = BitBoard::<N, M>::to_index(row, col);
+        let seed = BitBoard::<N, M>::from_index(start);
+
+        let result = input.flood6(seed);
+        // (1, -1) and (-1, 1) (the northwest/southeast diagonal) are deliberately excluded --
+        // see the module-level comment above `flood6`.
+        let ns = [(1, 0), (1, 1), (0, 1), (0, -1), (-1, 0), (-1, -1)];
+        assert!(check_connectivity(input, result, start, &ns));
     }
 
     fn connectivity4_impl<const N: usize, const M: usize>(

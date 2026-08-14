@@ -1,16 +1,20 @@
 //! Elaboration of [`crate::ast::equipment`] (Language Reference chapter 3): what a game is
 //! played with.
 //!
-//! Only `(board <graphFunction>)` (3.4.1, graph only -- no tracks/values/use/largeStack) and
-//! `(piece <string> [<roleType>])` (3.2.4, name/owner only -- no facing/flips/moves/max*) are
-//! elaborated so far, since they're all [`crate::elaborate::game`] needs for Tic-Tac-Toe's
-//! `(equipment { (board (square 3)) (piece "Disc" P1) (piece "Cross" P2) })`.
+//! Only `(board <graphFunction>)` (3.4.1, graph only -- no tracks/values/use/largeStack),
+//! `(piece <string> [<roleType>])` (3.2.4, name/owner only -- no facing/flips/moves/max*), and
+//! `(regions <roleType> {<regionFunction>})` (3.7.4, an explicit region-function list only -- no
+//! sites/single-region/static forms) are elaborated so far, since they're all
+//! [`crate::elaborate::game`] needs for Tic-Tac-Toe's `(equipment { (board (square 3)) (piece
+//! "Disc" P1) (piece "Cross" P2) })` and Hex's `(regions P1 {(sites Side NE) (sites Side SW)})`.
 
 use crate::ast::equipment::component::Piece;
 use crate::ast::equipment::container::Board;
+use crate::ast::equipment::other::{Regions, RegionsSpec};
 use crate::ast::equipment::{Equipment, Item};
 use crate::ast::located::Located;
 use crate::elaborate::graph::elaborate_graph_function;
+use crate::elaborate::region::elaborate_region_function;
 use crate::elaborate::types::elaborate_role_type;
 use crate::elaborate::{call_ident, ElaborateError};
 use crate::parse::{Call, Head, SExpr};
@@ -75,8 +79,44 @@ pub fn elaborate_piece(v: &Located<SExpr>) -> Result<Piece, ElaborateError> {
     })
 }
 
-/// A single `(equipment {...})` entry. Only [`Item::Board`] and [`Item::Piece`] are elaborated
-/// so far -- add more arms as later chapters need them.
+/// `(regions <roleType> {<regionFunction>})` (3.7.4), an explicit region-function list only.
+pub fn elaborate_regions(v: &Located<SExpr>) -> Result<Regions, ElaborateError> {
+    let call = call_ident(v, "regions")?;
+    let mut args = positional_args(call);
+    let owner_arg = args.next().ok_or_else(|| ElaborateError {
+        message: "(regions ...) requires an owner argument".into(),
+        span: v.span,
+    })?;
+    let owner = elaborate_role_type(owner_arg)?;
+    let list_arg = args.next().ok_or_else(|| ElaborateError {
+        message: "(regions ...) requires a region-function list argument".into(),
+        span: v.span,
+    })?;
+    let SExpr::List(items) = &list_arg.node else {
+        return Err(ElaborateError {
+            message: format!("expected a {{...}} region list, found {:?}", list_arg.node),
+            span: list_arg.span,
+        });
+    };
+    let regions = items
+        .iter()
+        .map(|item| {
+            Ok(Box::new(Located::new(
+                elaborate_region_function(item)?,
+                item.span,
+            )))
+        })
+        .collect::<Result<_, ElaborateError>>()?;
+    Ok(Regions {
+        name: None,
+        owner: Some(owner),
+        spec: RegionsSpec::Regions(regions),
+        hint_name: None,
+    })
+}
+
+/// A single `(equipment {...})` entry. Only [`Item::Board`], [`Item::Piece`], and
+/// [`Item::Regions`] are elaborated so far -- add more arms as later chapters need them.
 fn elaborate_item(v: &Located<SExpr>) -> Result<Item, ElaborateError> {
     let SExpr::Call(raw_call) = &v.node else {
         return Err(ElaborateError {
@@ -87,6 +127,7 @@ fn elaborate_item(v: &Located<SExpr>) -> Result<Item, ElaborateError> {
     match &raw_call.head {
         Head::Ident(s) if s == "board" => Ok(Item::Board(elaborate_board(v)?)),
         Head::Ident(s) if s == "piece" => Ok(Item::Piece(elaborate_piece(v)?)),
+        Head::Ident(s) if s == "regions" => Ok(Item::Regions(elaborate_regions(v)?)),
         other => Err(ElaborateError {
             message: format!("unsupported equipment item head {other:?}"),
             span: v.span,

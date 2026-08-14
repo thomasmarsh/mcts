@@ -4,6 +4,7 @@
 //! Only the enums actually needed by an implemented elaboration function are covered so far; add
 //! more [`ident_enum`] invocations as later chapters need them.
 
+use crate::ast::graph::generator::HexShapeType;
 use crate::ast::located::Located;
 use crate::ast::types::{CompassDirection, ModeType, ResultType, RoleType};
 use crate::elaborate::ElaborateError;
@@ -53,6 +54,10 @@ ident_enum!(elaborate_role_type -> RoleType {
 
 ident_enum!(elaborate_result_type -> ResultType {
     Win, Loss, Draw, Tie, Abandon, Crash
+});
+
+ident_enum!(elaborate_hex_shape_type -> HexShapeType {
+    NoShape, Square, Rectangle, Diamond, Triangle, Hexagon, Star, Limping, Prism
 });
 
 #[cfg(test)]

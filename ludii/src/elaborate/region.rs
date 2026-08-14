@@ -2,22 +2,31 @@
 //! region (a collection of sites).
 //!
 //! Only `(sites Empty)` (12.4.4, the `sitesIndexType::Empty` form of the `(sites ...)` "super
-//! ludeme", with no `[<siteType>]`/`[<int>]` qualifiers) is elaborated so far, since it's all
-//! [`crate::elaborate::common`] needs for `(to (sites Empty))`.
+//! ludeme", with no `[<siteType>]`/`[<int>]` qualifiers) and `(sites Side <compassDirection>)`
+//! (12.4.2's `Side` form, with no `[<siteType>]`) are elaborated so far, since between them
+//! that's all [`crate::elaborate::common`]/[`crate::elaborate::equipment`] need for `(to (sites
+//! Empty))` and Hex's `(regions P1 {(sites Side NE) (sites Side SW)})`.
 
 use crate::ast::located::Located;
-use crate::ast::region::{RegionFunction, Sites, SitesIndexType};
-use crate::elaborate::{call_ident, one_positional_arg, ElaborateError};
+use crate::ast::region::{RegionFunction, SideTarget, Sites, SitesIndexType};
+use crate::elaborate::types::elaborate_compass_direction;
+use crate::elaborate::{call_ident, ElaborateError};
 use crate::parse::SExpr;
 
-/// `(sites Empty)` (12.4.4).
 pub fn elaborate_sites(v: &Located<SExpr>) -> Result<Sites, ElaborateError> {
     let call = call_ident(v, "sites")?;
-    let arg = one_positional_arg(call, v.span)?;
-    let SExpr::Ident(kind) = &arg.node else {
+    let mut positional = call.args.iter().filter(|a| a.name.is_none());
+    let kind_arg = positional.next().ok_or_else(|| ElaborateError {
+        message: "(sites ...) requires a sitesIndexType/kind argument".into(),
+        span: v.span,
+    })?;
+    let SExpr::Ident(kind) = &kind_arg.value.node else {
         return Err(ElaborateError {
-            message: format!("expected a sitesIndexType identifier, found {:?}", arg.node),
-            span: arg.span,
+            message: format!(
+                "expected a sitesIndexType identifier, found {:?}",
+                kind_arg.value.node
+            ),
+            span: kind_arg.value.span,
         });
     };
     match kind.as_str() {
@@ -26,9 +35,22 @@ pub fn elaborate_sites(v: &Located<SExpr>) -> Result<Sites, ElaborateError> {
             site_type: None,
             index: None,
         }),
+        "Side" => {
+            let compass_arg = positional.next().ok_or_else(|| ElaborateError {
+                message: "(sites Side ...) requires a compassDirection argument".into(),
+                span: v.span,
+            })?;
+            let compass = elaborate_compass_direction(&compass_arg.value)?;
+            Ok(Sites::Side {
+                site_type: None,
+                target: Some(SideTarget::Compass(compass)),
+            })
+        }
         other => Err(ElaborateError {
-            message: format!("unsupported (sites {other} ...) -- only Empty is elaborated so far"),
-            span: arg.span,
+            message: format!(
+                "unsupported (sites {other} ...) -- only Empty and Side are elaborated so far"
+            ),
+            span: kind_arg.value.span,
         }),
     }
 }
@@ -57,6 +79,17 @@ mod tests {
                 kind: SitesIndexType::Empty,
                 site_type: None,
                 index: None,
+            }
+        );
+    }
+
+    #[test]
+    fn sites_side() {
+        assert_eq!(
+            elaborate_sites(&parse_one("(sites Side NE)")).unwrap(),
+            Sites::Side {
+                site_type: None,
+                target: Some(SideTarget::Compass(crate::ast::types::CompassDirection::NE)),
             }
         );
     }
