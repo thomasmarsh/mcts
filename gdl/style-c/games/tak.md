@@ -1,15 +1,15 @@
 # Tak
 
-Proof-of-concept rewrite of `games/tak.sc`, per the top-level `HISTORY.md`'s "Style C was leaking
+Proof-of-concept rewrite of `games/tak.gdl`, per the top-level `HISTORY.md`'s "Style C was leaking
 Rust -- and a first fix overcorrected into leaking Alloy instead" session note. Same game, same
 license (pro forma, not required to parse or lower to any existing `core::Program` shape) -- the
 point of this file is the *syntax*, not new rules content.
 
-Moved from `games/tak-relational.sc` to this literate form because the file had become as much a
+Moved from `games/tak-relational.gdl` to this literate form because the file had become as much a
 worked-example write-up (six rounds of live syntax review, each with real reasoning worth keeping)
 as it was source -- Markdown lets that reasoning read as prose next to the code it explains, rather
 than as `//`-block comments competing with the code for visual weight. The code fragments below are
-not `.sc` in their own right; read them as excerpts of one `Tak` game, in source order.
+not `.gdl` in their own right; read them as excerpts of one `Tak` game, in source order.
 
 Two governing rules apply throughout, both established in live review and unchanged since:
 
@@ -56,7 +56,7 @@ def stack_bits(n: Int): Int = 2 * (piece_reserve(n) + capstone_reserve(n))
 ## Piece kind and outcome
 
 `enum` was withdrawn from the leak inventory (see the `HISTORY.md` session note) -- this was never
-Rust-specific notation, so it's unchanged from `games/tak.sc`.
+Rust-specific notation, so it's unchanged from `games/tak.gdl`.
 
 ```sc
 enum PieceKind { Flat, Wall, Capstone }
@@ -159,7 +159,7 @@ pure functions returning a new `Region`/`Raster` value.
 
 `fold`, not `fixpoint` (unchanged verdict from round 2): `fixpoint` promises *convergence* semantics
 (repeat until no more change, `max_iters` only as a safety valve) -- exactly what
-`05-havannah-cycle.sc`'s cycle check legitimately needs, since it can't know in advance how many
+`05-havannah-cycle.gdl`'s cycle check legitimately needs, since it can't know in advance how many
 steps until the visited set stabilizes. Tak's spread has a statically known length before the walk
 starts, so there's no convergence question, just "apply one step per element of an already-bounded
 sequence, threading an accumulator" -- an ordinary fold.
@@ -179,7 +179,7 @@ lambda calculus" principle, not an exception to it. Once `fold` matches that sha
 = ...` priming turns out to have been curing a symptom: an ordinary lambda's trailing expression is
 unambiguously its return value the same way it already is for `any`/`all`/`project`'s lambdas, so no
 special primed-name convention is needed once `fold` stops being a special form -- one fewer idiom
-to remember, not a new one. (`fixpoint`'s own header/body syntax in `05-havannah-cycle.sc` likely
+to remember, not a new one. (`fixpoint`'s own header/body syntax in `05-havannah-cycle.gdl` likely
 has the identical problem; still an open followup, not assumed fixed by analogy.)
 
 `shift(from, dir, i + 1)` was renamed to `walk` (see `DESIGN.md`'s "Standard library" section): it
@@ -224,7 +224,7 @@ directly with no helper needed.
 
 ### Road win
 
-Disjunctive `connects`, unchanged from `games/tak.sc` -- this was never Rust-flavored notation,
+Disjunctive `connects`, unchanged from `games/tak.gdl` -- this was never Rust-flavored notation,
 nothing to revise.
 
 ```sc
@@ -238,7 +238,7 @@ nothing to revise.
   def out_of_pieces(p: Player): Bool = reserve[p] == 0 && caps[p] == 0
 ```
 
-`count_where`, unchanged in name from `games/tak.sc` -- the discarded Alloy draft's insight (that
+`count_where`, unchanged in name from `games/tak.gdl` -- the discarded Alloy draft's insight (that
 "count where" is a special case of a more general aggregation-over-a-predicate idea, not a bespoke
 combinator) still stands even though its notation (`#{s: Site | ...}`) didn't survive the
 correction. It's since been promoted from an open notation question to a real Core primitive (see
@@ -279,7 +279,7 @@ game "Tak5" = Tak[5]
 
 ## Revision history
 
-Scorecard against `games/tak.sc`'s five original findings, after six rounds of live syntax review:
+Scorecard against `games/tak.gdl`'s five original findings, after six rounds of live syntax review:
 
 - **Const/template generics** survive, now spelled with square brackets per Go's precedent rather
   than angle brackets (`template game "Tak"[const N: Int]`).

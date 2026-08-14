@@ -8,12 +8,12 @@
 //! every step is a direct oracle check, not a translation exercise.
 
 use game_ttt::{Piece, Position};
-use ludii::core::interp::State;
-use ludii::core::Program;
-use ludii::style_c::parse_game;
+use gdl::core::interp::State;
+use gdl::core::Program;
+use gdl::style_c::parse_game;
 
 fn tic_tac_toe_program() -> Program {
-    parse_game(include_str!("../style-c/sexpr/tic-tac-toe.sc")).unwrap()
+    parse_game(include_str!("../style-c/sexpr/tic-tac-toe.gdls")).unwrap()
 }
 
 fn oracle_winner(position: &Position) -> Option<usize> {
@@ -31,7 +31,7 @@ fn legal_sites(position: &Position) -> Vec<usize> {
     sites
 }
 
-fn legal_sites_ludii(state: &State<3, 3>, program: &Program) -> Vec<usize> {
+fn legal_sites_gdl(state: &State<3, 3>, program: &Program) -> Vec<usize> {
     let mut sites: Vec<usize> = state.legal_moves(program).collect();
     sites.sort_unstable();
     sites
@@ -46,7 +46,7 @@ fn assert_agrees(sites: &[usize]) {
 
     assert_eq!(
         legal_sites(&oracle),
-        legal_sites_ludii(&interp, &program),
+        legal_sites_gdl(&interp, &program),
         "initial legal moves disagree"
     );
     assert_eq!(oracle_winner(&oracle), interp.winner(&program));
@@ -57,7 +57,7 @@ fn assert_agrees(sites: &[usize]) {
 
         assert_eq!(
             legal_sites(&oracle),
-            legal_sites_ludii(&interp, &program),
+            legal_sites_gdl(&interp, &program),
             "legal moves disagree after move {step} (site {site})"
         );
         assert_eq!(

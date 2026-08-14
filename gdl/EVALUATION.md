@@ -35,7 +35,7 @@ Region algebra (`union`/`shift`/`flood`/`adjacent`/`connects`/`has_cycle`), Rast
 `fold`/`bounded_fixpoint` are a genuinely small set, and — unlike Ludii's ludeme pile — there is
 real cross-game reuse evidence: the same fixpoint shape covers Congo's chain-capture, Tak's spread,
 and Havannah's cycle check (`DESIGN.md`'s corpus table). The design spike's case 5
-(`05-havannah-cycle.sc`) caught a *real bug* this way — naive transitive closure over undirected
+(`05-havannah-cycle.gdl`) caught a *real bug* this way — naive transitive closure over undirected
 adjacency is wrong — specifically because the primitive's threaded-state type was written down
 before the logic was. GDL has no equivalent: `adjacent`/`flood` aren't primitives, they're exploded
 per-game fact tables. Ludii has macro reuse but no comparable guarantee that two ludemes claiming
@@ -78,7 +78,7 @@ ad hoc ludeme pile had to be shown, after the fact, to cover everything. This pr
 principles explicitly *decline* that target: "First-order, not full lambda calculus,"
 `bounded_fixpoint` instead of general recursion, statically-bounded `Region`/`Raster` state, and an
 Open Problems list naming exactly the two things this rules out — unbounded/dynamic topology
-(`sprouts.sc`, deferred) and truly unbounded auxiliary state (superko's `Set<Hash>`, sketched only at
+(`sprouts.gdl`, deferred) and truly unbounded auxiliary state (superko's `Set<Hash>`, sketched only at
 the backend level). That's a real, considered trade — buying provability/compilability by *refusing*
 general recursion and dynamic structure — but it means "preserve universality" the way GDL or Ludii
 mean it isn't actually the goal, and claiming it as a fourth win alongside the other three would be

@@ -84,7 +84,7 @@ rather than waiting for that surface grammar to stabilize — it reuses `parse::
 s-expression vocabulary that mirrors `core::Program`/`Region`/`BoolExpr`'s own shape instead of
 Ludii's ludeme names, and lowers straight to `Program` with no intermediate typed AST. This makes
 "grammar not yet designed" true only of the human-facing surface syntax annotation above, not of
-the arrows after it: those now have a real, tested, growing implementation (`style-c/sexpr/*.sc`,
+the arrows after it: those now have a real, tested, growing implementation (`style-c/sexpr/*.gdls`,
 checked against hand-built `Program` values and independent oracles). A pretty-printer from Style
 C's eventual concrete syntax down to this s-expression form remains a plausible way to fill in the
 still-missing first arrow later, or `ROADMAP.md`'s phase 2 may instead promote this sexpr form to
@@ -237,7 +237,7 @@ required, load-bearing infrastructure the way it was scoped last session.
   one. Confirmed by `has_cycle`: a hand-derived `fixpoint` definition is useful as a reference/spec
   (pinning down intended semantics precisely enough to check a backend against, the same role
   `tests/hex_oracle.rs`'s BFS oracle plays for `flood6`), not as something the grammar must be able
-  to express as ordinary authoring-surface code -- see `style-c/05-havannah-cycle.sc` and the
+  to express as ordinary authoring-surface code -- see `style-c/05-havannah-cycle.gdl` and the
   top-level `HISTORY.md`'s session note.
 - **Promote to a composable primitive once a second dedicated special case
   appears — don't wait for a third to force it.** `core::EndRule` growing a
@@ -261,16 +261,16 @@ some need real per-topology backend lowering, some are pure algebra expressible 
 language itself, and a few are genuinely opaque calls to something outside the language entirely
 (a dictionary, a planar-geometry check, an RNG). Nothing distinguishes these three shapes today,
 and that ambiguity had already produced real bugs, not just unlabeled examples — `05-havannah-
-cycle.sc` defines `has_cycle` from scratch via `fixpoint`/`frontier`/`adjacent` even though this
+cycle.gdl` defines `has_cycle` from scratch via `fixpoint`/`frontier`/`adjacent` even though this
 doc's own Region-algebra table already lists `has_cycle` as a *core primitive*; `tak.md`
 called a `pop(r, s, n)` three-argument form nothing in this doc ever specified (the documented
-signature is the one-site `pop(r: Raster, s: Site): Raster`); `sprouts.sc` reads "whose turn it is"
-as `to_move`, `kuhn-poker.sc`/`tak.md` read it as `mover`, and this doc's own Game-state
+signature is the one-site `pop(r: Raster, s: Site): Raster`); `sprouts.gdl` reads "whose turn it is"
+as `to_move`, `kuhn-poker.gdl`/`tak.md` read it as `mover`, and this doc's own Game-state
 combinators table calls it `current_player` — three names for one concept; and
 `tak.md`'s `legal_spread_path` called `carried_top_is(from, drops, i, Capstone)`, a
 helper never defined anywhere, an outright dangling reference rather than a design question.
 
-Going forward, every name used in a `.sc` file must resolve to exactly one of three tiers:
+Going forward, every name used in a `.gdl`/`.gdls` file must resolve to exactly one of three tiers:
 
 - **Core** — backend-native primitives needing real per-topology lowering (bit shifts, packed-cell
   arithmetic, Zobrist-hash bookkeeping) that the surface language cannot express in terms of
@@ -284,22 +284,22 @@ Going forward, every name used in a `.sc` file must resolve to exactly one of th
   the first real candidate content for one.)
 - **Extern** — a genuinely foreign call this language will never be able to express, declared with
   a new `extern def name(params): Type` form: no body, just a typed signature the backend treats
-  as an opaque call into host code. `geometric_oracle` (`sprouts.sc`'s planar-curve intersection
-  check), `dictionary_has_prefix`/`dictionary_has_word` (`ghost.sc`), and `shuffle`/`draw2`
-  (`kuhn-poker.sc`'s card dealing) are the corpus's only real candidates so far — every one of them
+  as an opaque call into host code. `geometric_oracle` (`sprouts.gdl`'s planar-curve intersection
+  check), `dictionary_has_prefix`/`dictionary_has_word` (`ghost.gdl`), and `shuffle`/`draw2`
+  (`kuhn-poker.gdl`'s card dealing) are the corpus's only real candidates so far — every one of them
   is already flagged inline, in prose, as "black-box" or "externally supplied"; `extern def` just
   gives that existing intent an actual keyword instead of leaving an extern call syntactically
   indistinguishable from a typo or an unfinished `def`. Left open: `shuffle`/`draw2` are also
   *nondeterministic*, which `extern def` alone doesn't flag — whether chance moves need a purity/
   determinism tag on top of `extern`, or whether that's adequately covered by `chance` already
-  being its own move kind (see `games/kuhn-poker.sc`), is undecided; no corpus game has forced a
+  being its own move kind (see `games/kuhn-poker.gdl`), is undecided; no corpus game has forced a
   second nondeterministic extern call yet to check the two designs against each other.
 
 ### Worked pass: every builtin `games/tak.md` uses
 
 Tak is the only file currently on post-review syntax (`guard`, primed `field'`/`out'` bindings,
 `Tak[N]` square-bracket instantiation — see the HISTORY.md session notes), so it's the only file
-this pass reclassifies. `01`-`05` and `kuhn-poker.sc`/`sprouts.sc`/`sylver-coinage.sc`/`ghost.sc`
+this pass reclassifies. `01`-`05` and `kuhn-poker.gdl`/`sprouts.gdl`/`sylver-coinage.gdl`/`ghost.gdl`
 still predate those rounds; their builtin surface is real evidence for the *existence* of gaps
 (the `mover`/`to_move`/`current_player` and `len`/`length` collisions above both came from them)
 but reclassifying their calls one by one isn't worth doing until they get the same syntax refresh
@@ -313,8 +313,8 @@ but reclassifying their calls one by one isn't worth doing until they get the sa
 | `count_where(region, pred)` | Core | Promoted from aspirational (this doc previously only *mentioned* it, in "Move caching", as an example of what a backend might incrementalize) to a real fourth member of the Control and aggregation table, alongside `any`/`all`/`for_each`. Needs the same backend-internal cell-by-cell access `count` already has — not expressible as a Stdlib `def` over the existing combinator set. |
 | `is_full(board)` | Core | **New.** A `Raster`-level "every cell holds a value" check, parallel to Region's `is_empty` — needs the backend's own empty-cell sentinel, which is exactly the kind of thing a Stdlib `def` can't see. |
 | `opponent(mover)` | Core | **New.** Added to Game-state combinators: `opponent(p: Player): Player`. |
-| `mover` | Core | Confirmed as the canonical name for "whose turn it is." `current_player` (this doc's Game-state combinators table) and `to_move` (`sprouts.sc`) are retired in its favor — `mover` is what every current-syntax file already uses, and reads more like game vocabulary than either alternative. |
-| `min`, `sum`, `len`, `range`/`a..b` | Core | Ordinary scalar/collection primitives — type-generic arithmetic, not game-domain library content, so Core rather than Stdlib even though they're trivial. `len` is confirmed as the canonical sequence-length name; `length` (`ghost.sc`) is retired in its favor. |
+| `mover` | Core | Confirmed as the canonical name for "whose turn it is." `current_player` (this doc's Game-state combinators table) and `to_move` (`sprouts.gdl`) are retired in its favor — `mover` is what every current-syntax file already uses, and reads more like game vocabulary than either alternative. |
+| `min`, `sum`, `len`, `range`/`a..b` | Core | Ordinary scalar/collection primitives — type-generic arithmetic, not game-domain library content, so Core rather than Stdlib even though they're trivial. `len` is confirmed as the canonical sequence-length name; `length` (`ghost.gdl`) is retired in its favor. |
 | `side(North)` etc. | Core | Needs a value type this doc never listed: `Edge` (already implied by `connects(edge_a, edge_b: Edge): Region -> Bool`'s own signature, and by `regions P1 = (side(NE), side(SW))` in the hardened grammar — just never added to the Value types table). `side(dir: Direction): Edge` is the constructor. |
 | `sites(Empty)`, `sites(Occupied(mover))` | Core | Confirmed as direct sugar over `core::Region`'s existing leaf variants (`Occupied`/`Complement`/`Sites`) — the syntactic front door onto a `Region` value, not a separate library function. |
 | `take(carried, drops[i], from: i)` | Stdlib | The one real Stdlib candidate this pass found: `take(s: Stack<T>, n: Int, from: Int): Stack<T>` is an ordinary sub-run extraction, definable over a small new Core `Stack<T>` value kind (needs only `len`/`nth`) rather than needing its own backend lowering. |
@@ -330,9 +330,9 @@ was in the HISTORY.md session notes — real, but with no forcing case yet:
   beyond Tak) exists to check a design against.
 - **`has_cycle`.** Kept as a Core primitive (unchanged from its original placement below) — it
   needs real backend-level flood-plus-parent-tracking for performance the way `05-havannah-
-  cycle.sc`'s own `fixpoint` rendering doesn't attempt. That file's version should be re-labeled a
+  cycle.gdl`'s own `fixpoint` rendering doesn't attempt. That file's version should be re-labeled a
   *reference definition* (what a correct Core `has_cycle` lowering must agree with, not a
-  competing definition) the next time `05-havannah-cycle.sc` gets its own syntax-refresh pass —
+  competing definition) the next time `05-havannah-cycle.gdl` gets its own syntax-refresh pass —
   not changed blind here, per the same discipline this section applies to the other stale files.
 
 ## Relational GDL: superseded as the primary authoring language
@@ -859,7 +859,7 @@ of record) -- read by hand (or by an LLM) to translate a game, per the "Goal"/"T
 sections above. This project used to also keep a small `lud/` directory of hand-concretized `.lud`
 fixtures (fixed board size, options/templates resolved) that a now-deleted mechanical pipeline
 loaded at test time; per `ROADMAP.md`'s decision that directory and its load-bearing role are gone
--- every game below is instead checked against `style-c/sexpr/*.sc` fixtures and an oracle, the
+-- every game below is instead checked against `style-c/sexpr/*.gdls` fixtures and an oracle, the
 same way `y` already was before this cleanup.
 
 ### Already covered (existing `games/*`)
@@ -877,8 +877,8 @@ same way `y` already was before this cleanup.
 | `gonnect` | `Rect`, big board | edge-to-edge `connects` win condition (Go-Connect hybrid) |
 | `druid` | `Rect` | fixed small-template placement (`Piece::Lintel`, a rigid 3-cell shape in 2 orientations) — a narrow case of shape-placement, not full polyomino rotation |
 | `nim`, `count`, `unit`, `null`, `traffic-lights` | non-bitboard / trivial | harness/test games, not board-topology-relevant |
-| `hex` (`style-c/sexpr/hex.sc`, Core-interpreted via `style_c`, no `games/hex` crate) | `Hex { Rhombus }` | axial-into-rectangle packing (reuses `BitBoard<N, N>` directly — see below), six-way adjacency (`flood6`), edge-to-edge `BoolExpr::Connects` |
-| `y` (`style-c/sexpr/y.sc`, Core-interpreted via `style_c`) | `Hex { Triangle }` | triangular masking of the same `Rhombus` grid/adjacency (`Region::Intersect` against `Hex::valid_sites`), three-edge `connects` (generalizes `player_regions`/`BoolExpr::Connects` from a fixed pair to an arbitrary list) |
+| `hex` (`style-c/sexpr/hex.gdls`, Core-interpreted via `style_c`, no `games/hex` crate) | `Hex { Rhombus }` | axial-into-rectangle packing (reuses `BitBoard<N, N>` directly — see below), six-way adjacency (`flood6`), edge-to-edge `BoolExpr::Connects` |
+| `y` (`style-c/sexpr/y.gdls`, Core-interpreted via `style_c`) | `Hex { Triangle }` | triangular masking of the same `Rhombus` grid/adjacency (`Region::Intersect` against `Hex::valid_sites`), three-edge `connects` (generalizes `player_regions`/`BoolExpr::Connects` from a fixed pair to an arbitrary list) |
 
 Hex turned out *not* to need a new bit layout or backend at all: axial coordinates `(col, row)`
 packed into the same row-major `BitBoard<N, N>` indexing `Rect` already uses, with adjacency
@@ -899,7 +899,7 @@ open gap it surfaced: `connects`'s edge operands are still looked up per-mover b
 not embedded as literal `BoolExpr` operands — see that variant's doc comment) and
 `COMPLETENESS.md`'s primitive table for how it checks against the FO(LFP) upper-bound conjecture.
 
-Y (`style-c/sexpr/y.sc`) confirmed the coordinate-packing prediction wrong in the useful direction:
+Y (`style-c/sexpr/y.gdls`) confirmed the coordinate-packing prediction wrong in the useful direction:
 a `Hex { Triangle }` board turned out *not* to need "coordinate packing that isn't just Hex's
 rhombus with corners chopped" (see the now-superseded "Worth adding" rationale below) — it's
 literally the same `side x side` grid and six-way adjacency, restricted to `row + col < side` via a

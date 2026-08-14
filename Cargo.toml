@@ -51,7 +51,7 @@ members = [
     "games/unit",
     "games/druid",
     "games/congo",
-    "ludii",
+    "gdl",
     "server",
     "bench",
 ]

@@ -1,8 +1,8 @@
 [package]
-name = "ludii"
+name = "gdl"
 version = "0.1.0"
 edition = "2021"
-description = "Ludii Language support"
+description = "GDL (game description language) support"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

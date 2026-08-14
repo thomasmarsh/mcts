@@ -10,8 +10,8 @@ these are hand-written, not machine-checked.
 numbered files below are isolated mechanic fragments transcribing one hard case each from the
 design spike, not complete games -- see each file's header comment for which `.lud` source it's
 from and, where relevant, what larger game it'd need to be embedded in to actually run.
-`tic-tac-toe.sc`/`hex.sc` are the base-layer sanity check, `tak.sc` pushes on a still-spatial
-board, and `kuhn-poker.sc`/`sprouts.sc`/`sylver-coinage.sc`/`ghost.sc` each drop a different
+`tic-tac-toe.gdl`/`hex.gdl` are the base-layer sanity check, `tak.gdl` pushes on a still-spatial
+board, and `kuhn-poker.gdl`/`sprouts.gdl`/`sylver-coinage.gdl`/`ghost.gdl` each drop a different
 piece of "spatial bitboard game" (hidden info, fixed topology, a board at all, in that order) to
 see what's left of the grammar without it.
 
@@ -19,27 +19,27 @@ see what's left of the grammar without it.
 source for `src/style_c/mod.rs`, this project's one real frontend onto `core::Program` (see the
 top-level `README.md`'s "Current status" and `DESIGN.md`'s Pipeline section) -- a direct
 s-expression rendering of Core IR, distinct from this directory's still-hand-written, unparsed
-Style C notation. `sexpr/tic-tac-toe.sc` and `sexpr/hex.sc` are load-bearing test fixtures
+Style C notation. `sexpr/tic-tac-toe.gdls` and `sexpr/hex.gdls` are load-bearing test fixtures
 (`include_str!`'d by `src/style_c/mod.rs`'s tests), each checked against a hand-built `Program`
 value -- treat them the same as any other checked-in fixture, not scratch files.
 
 | File | Game / `.lud` source | Demonstrates |
 |---|---|---|
-| `games/tic-tac-toe.sc` | Tic-Tac-Toe, full game | base declarative layer only -- no `then`/`state`/`invariant`/templates needed |
-| `games/hex.sc` | Hex, full game | same base layer plus named `regions` and `connects` |
-| `games/tak.sc` | not `.lud`-sourced, full game, board-size-parametrized 3x3-8x8 | superseded (surface syntax) by `games/tak.md`, see the top-level HISTORY.md; findings below still stand |
-| `games/tak.md` | literate rewrite of `games/tak.sc` (was `games/tak-relational.sc` through round 6, moved to Markdown afterward) | same findings, in this project's own domain-native notation instead of borrowed Rust/Alloy syntax -- see the top-level HISTORY.md's "Style C was leaking Rust" session note |
-| `games/kuhn-poker.sc` | not `.lud`-sourced, full game (card) | `topology = None`, private/epistemic per-player state, `chance` moves, path-dependent outcome -- see below |
-| `games/sprouts.sc` | not `.lud`-sourced, full game (graph) | mutable/growing topology, unbounded-domain Raster, expensive geometric oracle predicate -- see below |
-| `games/sylver-coinage.sc` | not `.lud`-sourced, full game (math) | `topology = None`, unbounded `Set` state, oracle-as-`bounded_fixpoint`, non-constructive termination -- see below |
-| `games/ghost.sc` | not `.lud`-sourced, full game (word) | growing `Seq` state, dictionary oracle, legal-but-suicidal terminal move -- see below |
-| `01-check-safety.sc` | `Chess.lud:166` | top-level `invariant: always`, primed `state'` |
-| `02-suicide-rule.sc` | `Go.lud:35` | same `invariant: always` construct, confirms it generalizes |
-| `03-superko.sc` | `Go.lud`, `(meta (no Repeat))` | past-temporal `once`, no bespoke history builtin |
-| `04-chess-pawn-template.sc` | `Chess.lud:126-137` | `template def`, compile-time generics |
-| `05-havannah-cycle.sc` | `Havannah.lud:13`, `(is Loop)` | `has_cycle` as a Core primop (real usage is one call); a bounded-`fixpoint` derivation kept only as a reference definition, not authoring surface -- see the top-level `HISTORY.md`'s session note |
+| `games/tic-tac-toe.gdl` | Tic-Tac-Toe, full game | base declarative layer only -- no `then`/`state`/`invariant`/templates needed |
+| `games/hex.gdl` | Hex, full game | same base layer plus named `regions` and `connects` |
+| `games/tak.gdl` | not `.lud`-sourced, full game, board-size-parametrized 3x3-8x8 | superseded (surface syntax) by `games/tak.md`, see the top-level HISTORY.md; findings below still stand |
+| `games/tak.md` | literate rewrite of `games/tak.gdl` (was `games/tak-relational.gdl` through round 6, moved to Markdown afterward) | same findings, in this project's own domain-native notation instead of borrowed Rust/Alloy syntax -- see the top-level HISTORY.md's "Style C was leaking Rust" session note |
+| `games/kuhn-poker.gdl` | not `.lud`-sourced, full game (card) | `topology = None`, private/epistemic per-player state, `chance` moves, path-dependent outcome -- see below |
+| `games/sprouts.gdl` | not `.lud`-sourced, full game (graph) | mutable/growing topology, unbounded-domain Raster, expensive geometric oracle predicate -- see below |
+| `games/sylver-coinage.gdl` | not `.lud`-sourced, full game (math) | `topology = None`, unbounded `Set` state, oracle-as-`bounded_fixpoint`, non-constructive termination -- see below |
+| `games/ghost.gdl` | not `.lud`-sourced, full game (word) | growing `Seq` state, dictionary oracle, legal-but-suicidal terminal move -- see below |
+| `01-check-safety.gdl` | `Chess.lud:166` | top-level `invariant: always`, primed `state'` |
+| `02-suicide-rule.gdl` | `Go.lud:35` | same `invariant: always` construct, confirms it generalizes |
+| `03-superko.gdl` | `Go.lud`, `(meta (no Repeat))` | past-temporal `once`, no bespoke history builtin |
+| `04-chess-pawn-template.gdl` | `Chess.lud:126-137` | `template def`, compile-time generics |
+| `05-havannah-cycle.gdl` | `Havannah.lud:13`, `(is Loop)` | `has_cycle` as a Core primop (real usage is one call); a bounded-`fixpoint` derivation kept only as a reference definition, not authoring surface -- see the top-level `HISTORY.md`'s session note |
 
-`games/tic-tac-toe.sc` and `games/hex.sc` are the sanity check the previous session's charter
+`games/tic-tac-toe.gdl` and `games/hex.gdl` are the sanity check the previous session's charter
 asked for: neither needs any of the machinery the five case fragments exist to exercise, which is
 the point -- it confirms the grammar isn't overfit to the five hard cases. They match how small
 `core::Program` already is for both games (see each file's header comment) -- a strict superset of
@@ -101,7 +101,7 @@ one-step lookahead or trace history), included here for completeness so all five
 cases live together as one set of artifacts rather than split across a session note and a
 separate directory.
 
-## `games/tak.sc`: a sixth, more complicated pathological example
+## `games/tak.gdl`: a sixth, more complicated pathological example
 
 Explicitly a "pro forma" design exploration (session request), not required to parse against the
 grammar above or lower to any existing `core::Program` shape -- unlike the five cases, Tak has no
@@ -150,10 +150,10 @@ generics, indexed state, named effect blocks, disjunctive `connects`, `count_whe
 *vocabulary* layered on the same Region/Raster foundation every earlier case shared. These four
 go further: each picks a game genre with essentially nothing in common with Ludii's board-game
 corpus, specifically to find out whether Core IR's declarative layer means anything once there's
-no spatial board to build on top of. Same license as `games/tak.sc` -- pro forma design
+no spatial board to build on top of. Same license as `games/tak.gdl` -- pro forma design
 exploration, none `.lud`-sourced, none required to parse or lower:
 
-- **`games/kuhn-poker.sc` (card game).** Kuhn poker is the standard minimal test case in the
+- **`games/kuhn-poker.gdl` (card game).** Kuhn poker is the standard minimal test case in the
   extensive-form-game/CFR/ISMCTS literature (3-card deck, 1 card dealt to each player, one
   betting round) -- picked over a "bigger" card game specifically because it's small enough to
   transcribe in full while still forcing the real issue: **hidden information**. Every earlier
@@ -166,7 +166,7 @@ exploration, none `.lud`-sourced, none required to parse or lower:
   new base value type (`Card`, ordered, drawn from a `Deck`), and an `outcome` that depends on
   *which move ended the hand* (fold vs. showdown), not just on a snapshot of final state the way
   every earlier `outcome` could get away with.
-- **`games/sprouts.sc` (graph game).** Picked over a fixed-graph game (Shannon Switching, Node
+- **`games/sprouts.gdl` (graph game).** Picked over a fixed-graph game (Shannon Switching, Node
   Kayles) specifically because Sprouts's board *grows* every move and its legality is a *global
   topological* property (no crossing curves), which stresses the Topology/Region split harder
   than "just support an arbitrary graph" would. This is the one finding in this batch that cuts
@@ -177,7 +177,7 @@ exploration, none `.lud`-sourced, none required to parse or lower:
   `no_crossing`, an "oracle" predicate -- a call out to real computational geometry that Region
   algebra has no vocabulary for and no static cost bound for, unlike every earlier
   `bounded_fixpoint`'s `max_iters`.
-- **`games/sylver-coinage.sc` (math game).** No board, no topology, no spatial concept
+- **`games/sylver-coinage.gdl` (math game).** No board, no topology, no spatial concept
   whatsoever -- `state` is a single unbounded `Set<Int>` of named numbers, and a move's legality
   is numerical-semigroup non-membership. Two findings: first, unlike Sprouts's `no_crossing`,
   this game's oracle predicate (`in_semigroup`) turns out to reduce cleanly to an ordinary
@@ -187,7 +187,7 @@ exploration, none `.lud`-sourced, none required to parse or lower:
   name 1 -- Sylver Coinage's finiteness is a real but *non-constructive* theorem (Hutchings), the
   first case in the corpus where "the game terminates" isn't something the grammar can express or
   check, only something its author has to take on faith from the literature.
-- **`games/ghost.sc` (word game).** `state` is a growing, order-sensitive `Seq<Letter>` (as
+- **`games/ghost.gdl` (word game).** `state` is a growing, order-sensitive `Seq<Letter>` (as
   opposed to Sylver Coinage's unordered `Set<Int>` -- both grow by one element per move, but only
   one of them needs a notion of "prefix of"). Legality and termination both depend on
   `dictionary_has_prefix`/`dictionary_has_word`, an oracle over externally supplied data with no

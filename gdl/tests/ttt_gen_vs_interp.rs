@@ -1,4 +1,4 @@
-//! Confirms `ludii::codegen::rect`'s Rust-source backend and `core::interp`'s tree-walking backend
+//! Confirms `gdl::codegen::rect`'s Rust-source backend and `core::interp`'s tree-walking backend
 //! agree directly with each other, not just transitively via both separately agreeing with
 //! `games/ttt` (`tests/oracle.rs`, `tests/ttt_gen_oracle.rs`). Walks the same move sequences
 //! `tests/oracle.rs` already uses through both `core::interp::State` (the backend every
@@ -6,12 +6,12 @@
 //! (`codegen::rect`'s output for the same `Program`).
 
 use game_ttt_gen::{Move as GenMove, Player, Position as GenPosition};
-use ludii::core::interp::State;
-use ludii::core::Program;
-use ludii::style_c::parse_game;
+use gdl::core::interp::State;
+use gdl::core::Program;
+use gdl::style_c::parse_game;
 
 fn tic_tac_toe_program() -> Program {
-    parse_game(include_str!("../style-c/sexpr/tic-tac-toe.sc")).unwrap()
+    parse_game(include_str!("../style-c/sexpr/tic-tac-toe.gdls")).unwrap()
 }
 
 fn legal_sites_interp(state: &State<3, 3>, program: &Program) -> Vec<usize> {

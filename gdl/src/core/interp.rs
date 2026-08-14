@@ -256,11 +256,11 @@ mod tests {
     use std::collections::HashMap;
 
     fn tic_tac_toe_program() -> Program {
-        parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.sc")).unwrap()
+        parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.gdls")).unwrap()
     }
 
     fn hex_program() -> Program {
-        parse_game(include_str!("../../style-c/sexpr/hex.sc")).unwrap()
+        parse_game(include_str!("../../style-c/sexpr/hex.gdls")).unwrap()
     }
 
     #[test]

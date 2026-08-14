@@ -22,15 +22,15 @@ parse it mechanically" methodology (`DESIGN.md`'s "Goal") never needed `ast`/`pa
 *compiler* infrastructure — Y already proved a game start to finish without touching it. Carrying it
 forward costs real weight (a second AST, a `define`-expansion gap that was never closed, two
 fixtures — `tests/oracle.rs`/`tests/hex_oracle.rs` — pinned to `lud/*.lud` instead of the real
-`style-c/sexpr/*.sc` frontend) for a cross-check `style_c`'s own hand-built-`Program` tests already
+`style-c/sexpr/*.gdls` frontend) for a cross-check `style_c`'s own hand-built-`Program` tests already
 provide more directly. `database-1/lud/games/` and `LudiiLanguageReference/` stay as reference
 material for translation-by-understanding — reading a `.lud` file to figure out what a game does is
 still the intended way to source new corpus games; only the *code path* that loads and lowers `.lud`
 is retired.
 
 Concrete cleanup (small, mechanical, do it early so it stops being live surface area to keep
-compiling): retarget `tests/oracle.rs`/`tests/hex_oracle.rs` to lower `style-c/sexpr/tic-tac-toe.sc`/
-`hex.sc` instead of `lud/*.lud` (same oracle-comparison structure, same games, just swap the
+compiling): retarget `tests/oracle.rs`/`tests/hex_oracle.rs` to lower `style-c/sexpr/tic-tac-toe.gdls`/
+`hex.gdls` instead of `lud/*.lud` (same oracle-comparison structure, same games, just swap the
 `Program`-construction side — `tests/y_oracle.rs` already shows the pattern), then delete
 `src/ast/`, `src/parse/`, `src/elaborate/`, `src/core/lower.rs`'s `.lud`-shaped path, and `lud/`.
 
@@ -42,7 +42,7 @@ for how long that happened to the surface-syntax question already).
 
 1. **Retire the `.lud` pipeline. Done.** `src/ast/`, `src/elaborate/`, `src/core/lower.rs`, and
    `lud/` are deleted; `tests/oracle.rs`/`hex_oracle.rs` now build their `Program`s from
-   `style-c/sexpr/*.sc` via `style_c::parse_game`, the same pattern `tests/y_oracle.rs` already
+   `style-c/sexpr/*.gdls` via `style_c::parse_game`, the same pattern `tests/y_oracle.rs` already
    used. `src/parse/` (the generic s-expr reader) stayed — `style_c` depends on it — along with the
    small `Located`/`Span` span-tracking types it needed (moved from `ast::located` into
    `parse::located`, since `ast` no longer exists to own them) and `core::lower::all_occupied`
@@ -71,14 +71,14 @@ for how long that happened to the surface-syntax question already).
    ttt_gen_vs_interp.rs` round-trips `games/ttt-gen`'s `Game` impl against `core::interp`'s own
    oracle-tested `Program` evaluation, move by move.
 5. **First full pipeline proof: Tic-Tac-Toe. Done.** Through the whole chain end to end: surface
-   syntax (`style-c/sexpr/tic-tac-toe.sc`) → Core IR (`style_c::parse_game`) → generated crate
+   syntax (`style-c/sexpr/tic-tac-toe.gdls`) → Core IR (`style_c::parse_game`) → generated crate
    (`src/bin/codegen.rs`) → checked into `games/ttt-gen/src/lib.rs`, wired into the root workspace
    `Cargo.toml` as `game-ttt-gen`. *Exit test, passed:* `tests/ttt_gen_oracle.rs` walks
    `games/ttt-gen` and hand-written `games/ttt` through the same move sequences via
    `mcts::game::Game` on both sides and asserts legal moves/terminal-ness/winner agree at every
    step — the same kind of oracle check `games/ttt` already gets, run directly against the
    hand-built crate rather than only transitively through the interpreter. `cargo clippy`/`fmt`
-   clean on both `ludii` and `games/ttt-gen`; `games/ttt-gen` is a first-class workspace member,
+   clean on both `gdl` and `games/ttt-gen`; `games/ttt-gen` is a first-class workspace member,
    playable by `mcts`/`game-host` like any other game crate (not yet actually wired into
    `game-host`'s game registry — that's ordinary per-game plumbing, not a pipeline question).
 6. **Second game through codegen (Hex or Y).** Proves the generator isn't overfit to the trivial

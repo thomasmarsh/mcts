@@ -1,25 +1,25 @@
 //! Oracle test for Y, mirroring `tests/hex_oracle.rs`'s methodology: there's no existing
-//! `games/y` crate to reuse, and (per `style-c/sexpr/y.sc`'s header) Y isn't pushed through the
+//! `games/y` crate to reuse, and (per `style-c/sexpr/y.gdls`'s header) Y isn't pushed through the
 //! `.lud`/`ast`/`elaborate` pipeline this round -- so `Y` here is the `style_c`-lowered
-//! `style-c/sexpr/y.sc` `Program`, checked against an independent, from-scratch hand-rolled
+//! `style-c/sexpr/y.gdls` `Program`, checked against an independent, from-scratch hand-rolled
 //! reference rather than against a second lowering of the same `.lud` source the way
 //! `tests/oracle.rs`/`tests/hex_oracle.rs` check `ttt`/Hex.
 //!
-//! [`YOracle`] deliberately doesn't call into `ludii::core::hex` or `ludii::core::interp` at all
+//! [`YOracle`] deliberately doesn't call into `gdl::core::hex` or `gdl::core::interp` at all
 //! -- it recomputes the triangular board's valid sites, six-way hex adjacency, and three-edge
 //! connectivity from first principles (a plain BFS over an explicit six-neighbor delta list plus
 //! its own row/col edge membership tests), so a bug shared between the oracle and the interpreter
 //! is very unlikely to be a coincidence.
 
-use ludii::core::interp::State;
-use ludii::core::Program;
-use ludii::style_c::parse_game;
+use gdl::core::interp::State;
+use gdl::core::Program;
+use gdl::style_c::parse_game;
 
 const SIDE: usize = 4;
 const SITES: usize = SIDE * SIDE;
 
 fn y_program() -> Program {
-    parse_game(include_str!("../style-c/sexpr/y.sc")).unwrap()
+    parse_game(include_str!("../style-c/sexpr/y.gdls")).unwrap()
 }
 
 /// A from-scratch reference implementation of Y on a side-`SIDE` triangular board: a site
@@ -117,7 +117,7 @@ impl YOracle {
     }
 }
 
-fn legal_sites_ludii(state: &State<SIDE, SIDE>, program: &Program) -> Vec<usize> {
+fn legal_sites_gdl(state: &State<SIDE, SIDE>, program: &Program) -> Vec<usize> {
     let mut sites: Vec<usize> = state.legal_moves(program).collect();
     sites.sort_unstable();
     sites
@@ -132,7 +132,7 @@ fn assert_agrees(sites: &[usize]) {
 
     assert_eq!(
         oracle.legal_moves(),
-        legal_sites_ludii(&interp, &program),
+        legal_sites_gdl(&interp, &program),
         "initial legal moves disagree"
     );
     assert_eq!(oracle.winner(), interp.winner(&program));
@@ -143,7 +143,7 @@ fn assert_agrees(sites: &[usize]) {
 
         assert_eq!(
             oracle.legal_moves(),
-            legal_sites_ludii(&interp, &program),
+            legal_sites_gdl(&interp, &program),
             "legal moves disagree after move {step} (site {site})"
         );
         assert_eq!(

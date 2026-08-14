@@ -510,7 +510,7 @@ mod tests {
             }],
             player_regions: Vec::new(),
         };
-        let program = parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.sc")).unwrap();
+        let program = parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.gdls")).unwrap();
         assert_eq!(program, manual);
     }
 
@@ -538,7 +538,7 @@ mod tests {
                 vec![Region::Sites(vec![0, 3, 6]), Region::Sites(vec![2, 5, 8])],
             ],
         };
-        let program = parse_game(include_str!("../../style-c/sexpr/hex.sc")).unwrap();
+        let program = parse_game(include_str!("../../style-c/sexpr/hex.gdls")).unwrap();
         assert_eq!(program, manual);
     }
 
@@ -572,7 +572,7 @@ mod tests {
             }],
             player_regions: vec![three_sides.clone(), three_sides],
         };
-        let program = parse_game(include_str!("../../style-c/sexpr/y.sc")).unwrap();
+        let program = parse_game(include_str!("../../style-c/sexpr/y.gdls")).unwrap();
         assert_eq!(program, manual);
     }
 

@@ -1,4 +1,4 @@
-# Ludii → Core IR
+# GDL → Core IR
 
 ## Goal
 
@@ -21,7 +21,7 @@ relations), so mechanically parsing it can't converge on a small combinator set 
 **What actually compiles today:** `src/style_c/mod.rs`, the crate's one frontend onto
 [`core::Program`], parsing a direct s-expression rendering of `core::Program`'s own shape — parens
 for calls, no ludeme vocabulary, not an attempt at Style C's planned human-friendly notation — and
-lowering straight to `Program`. Its load-bearing fixtures are `style-c/sexpr/*.sc`; each is checked
+lowering straight to `Program`. Its load-bearing fixtures are `style-c/sexpr/*.gdls`; each is checked
 (`include_str!`'d test) against an independent oracle or hand-built `Program` value, not just
 against itself.
 
@@ -29,9 +29,9 @@ against itself.
 
 | Game | Topology | Fixture | Oracle/check |
 |---|---|---|---|
-| Tic-Tac-Toe | `Rect` 3×3 | `style-c/sexpr/tic-tac-toe.sc` | `tests/oracle.rs` (cross-checked against `games/ttt`), hand-built-`Program` equality check |
-| Hex | `Hex { Rhombus }` | `style-c/sexpr/hex.sc` | `tests/hex_oracle.rs`, hand-built-`Program` equality check |
-| Y | `Hex { Triangle }` | `style-c/sexpr/y.sc` | `tests/y_oracle.rs`, hand-built-`Program` equality check |
+| Tic-Tac-Toe | `Rect` 3×3 | `style-c/sexpr/tic-tac-toe.gdls` | `tests/oracle.rs` (cross-checked against `games/ttt`), hand-built-`Program` equality check |
+| Hex | `Hex { Rhombus }` | `style-c/sexpr/hex.gdls` | `tests/hex_oracle.rs`, hand-built-`Program` equality check |
+| Y | `Hex { Triangle }` | `style-c/sexpr/y.gdls` | `tests/y_oracle.rs`, hand-built-`Program` equality check |
 
 **The `.lud`/`ast`/`elaborate` pipeline this project used to also have has been retired and
 deleted** (`ROADMAP.md`'s phase 1, done) — it used to independently re-prove Tic-Tac-Toe/Hex by
@@ -44,7 +44,7 @@ this crate loads or lowers it anymore. `src/parse/` (the generic s-expression re
 **Backend codegen (`ROADMAP.md`'s phase 4) has a first real implementation:** `src/codegen/rect.rs`
 lowers a `Topology::Rect` `Program` into the text of a standalone Rust `games/*` crate (a `Game`
 impl, zobrist hashing, `Display` — the same shape every hand-written game crate has), rather than
-interpreting it. `src/bin/codegen.rs` is the offline driver (`cargo run -p ludii --bin codegen --
+interpreting it. `src/bin/codegen.rs` is the offline driver (`cargo run -p gdl --bin codegen --
 <sexpr-path> <StructName> <"Game Name">`, output piped through `rustfmt`); its checked-in output
 for Tic-Tac-Toe is `games/ttt-gen/src/lib.rs`, wired into the root workspace as `game-ttt-gen` —
 `ROADMAP.md`'s phase 5 proof game. Three tests cross-check the three independent implementations of
@@ -62,17 +62,17 @@ yet either. Hex/Y stay on `core::interp` until a second game is deliberately rou
 
 **`style-c/`'s two other kinds of content are design exploration, not compiled or checked:**
 
-- `style-c/games/*.sc`, `style-c/games/tak.md`, and the numbered `style-c/0{1..5}-*.sc` fragments
+- `style-c/games/*.gdl`, `style-c/games/tak.md`, and the numbered `style-c/0{1..5}-*.gdl` fragments
   are hand-written in the *human-facing* Style C surface syntax — the language `DESIGN.md`'s pipeline
   still lists as "not yet built." Nothing here has a lexer/parser; see `style-c/README.md` for what
   each file demonstrates.
 - **`tak.md` is on the current syntax** (`guard`, primed `field'`/`out'` bindings, square-bracket
   `Tak[N]` template instantiation, `fold`/`fixpoint` split, `def` not `rule`) after several rounds of
   live syntax review — see "Prior design directions" below. **The rest predate that review and
-  haven't been refreshed**: `games/{tic-tac-toe,hex,tak,kuhn-poker,sprouts,sylver-coinage,ghost}.sc`
-  and `01-check-safety.sc` through `04-chess-pawn-template.sc` still use older spellings (`rule`
+  haven't been refreshed**: `games/{tic-tac-toe,hex,tak,kuhn-poker,sprouts,sylver-coinage,ghost}.gdl`
+  and `01-check-safety.gdl` through `04-chess-pawn-template.gdl` still use older spellings (`rule`
   instead of `def`, bare `if`/`then` instead of `guard`, `<...>` instead of `[...]` for templates,
-  etc.). `05-havannah-cycle.sc` is deliberately exempt: it documents `has_cycle` as a Core primop
+  etc.). `05-havannah-cycle.gdl` is deliberately exempt: it documents `has_cycle` as a Core primop
   call plus a reference definition of its semantics, not authoring-surface code, so it isn't subject
   to the syntax-currency question at all.
 
@@ -127,7 +127,7 @@ A lexer/parser for Style C's own surface grammar is explicitly not being built r
 rounds of syntax review left it unstable, and effort was deliberately redirected toward the
 completeness conjecture and real `core::mod`/`core::interp` Rust work (the `s-expr -> Core IR`
 frontend above) instead. Revisit once `style-c/games/tak.md`'s syntax has stabilized further and the
-other `style-c/games/*.sc` files have been brought up to match it.
+other `style-c/games/*.gdl` files have been brought up to match it.
 
 ## What's next
 

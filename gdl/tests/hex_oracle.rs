@@ -4,26 +4,26 @@
 //! `DESIGN.md`'s corpus notes, so this test *is* the second implementation rather than a wrapper
 //! around one.
 //!
-//! [`HexOracle`] deliberately doesn't call into `ludii::core::hex` or `game_core::bitboard`'s
+//! [`HexOracle`] deliberately doesn't call into `gdl::core::hex` or `game_core::bitboard`'s
 //! `flood6` at all -- it recomputes hex adjacency and connected components from first principles
 //! (a plain BFS over an explicit six-neighbor delta list), so a bug shared between the oracle and
 //! the interpreter is very unlikely to be a coincidence.
 
-use ludii::core::interp::State;
-use ludii::core::Program;
-use ludii::style_c::parse_game;
+use gdl::core::interp::State;
+use gdl::core::Program;
+use gdl::style_c::parse_game;
 
 const SIDE: usize = 3;
 const SITES: usize = SIDE * SIDE;
 
 fn hex_program() -> Program {
-    parse_game(include_str!("../style-c/sexpr/hex.sc")).unwrap()
+    parse_game(include_str!("../style-c/sexpr/hex.gdls")).unwrap()
 }
 
 /// A from-scratch reference implementation of Hex on a `SIDE x SIDE` board: player 0 ("P1")
 /// connects row 0 to row `SIDE - 1`, player 1 ("P2") connects column 0 to column `SIDE - 1` --
 /// matching `Hex::edge_for_compass`'s NE/SW -> North/South, NW/SE -> West/East convention (see
-/// `ludii::core::hex`'s doc comment), but re-derived independently rather than calling into it.
+/// `gdl::core::hex`'s doc comment), but re-derived independently rather than calling into it.
 struct HexOracle {
     occupied: [[bool; SITES]; 2],
     to_move: usize,
@@ -112,7 +112,7 @@ impl HexOracle {
     }
 }
 
-fn legal_sites_ludii(state: &State<SIDE, SIDE>, program: &Program) -> Vec<usize> {
+fn legal_sites_gdl(state: &State<SIDE, SIDE>, program: &Program) -> Vec<usize> {
     let mut sites: Vec<usize> = state.legal_moves(program).collect();
     sites.sort_unstable();
     sites
@@ -127,7 +127,7 @@ fn assert_agrees(sites: &[usize]) {
 
     assert_eq!(
         oracle.legal_moves(),
-        legal_sites_ludii(&interp, &program),
+        legal_sites_gdl(&interp, &program),
         "initial legal moves disagree"
     );
     assert_eq!(oracle.winner(), interp.winner(&program));
@@ -138,7 +138,7 @@ fn assert_agrees(sites: &[usize]) {
 
         assert_eq!(
             oracle.legal_moves(),
-            legal_sites_ludii(&interp, &program),
+            legal_sites_gdl(&interp, &program),
             "legal moves disagree after move {step} (site {site})"
         );
         assert_eq!(
