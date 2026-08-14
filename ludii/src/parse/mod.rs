@@ -2,9 +2,9 @@
 //!
 //! This stage knows the surface syntax of the language (parens, `{}` lists, literals, `key:value`
 //! named arguments, option references, ranges, define calls, option-priority markers) but nothing
-//! about what any particular ludeme means. It exists so that later work -- turning a parsed form
-//! into a [`crate::ast`] node -- can be built and tested per chapter against a [`sexpr::SExpr`]
-//! value, independent of tokenizing and bracket-matching concerns.
+//! about what any particular ludeme means. It exists so that [`crate::elaborate`] -- turning a
+//! parsed form into a [`crate::ast`] node -- can be built and tested per chapter against a
+//! [`sexpr::SExpr`] value, independent of tokenizing and bracket-matching concerns.
 //!
 //! See [`sexpr::parse`] for the entry point.
 

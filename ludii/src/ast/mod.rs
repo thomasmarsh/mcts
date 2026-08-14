@@ -1,7 +1,7 @@
 //! The Ludii game description language AST, mirroring the structure of
 //! `LudiiLanguageReference.md`. This is the target tree for elaborating a parsed
-//! [`crate::parse::SExpr`] (see [`crate::parse`]) -- that elaboration is not implemented yet and
-//! will be built incrementally, one language-reference chapter at a time.
+//! [`crate::parse::SExpr`] (see [`crate::parse`]); [`crate::elaborate`] does that, built
+//! incrementally, one language-reference chapter at a time.
 //!
 //! Module layout follows the reference document's own parts and chapters:
 //!
