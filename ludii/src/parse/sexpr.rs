@@ -55,7 +55,10 @@ pub struct Arg {
 /// siblings: `(game ...)`, `(option ...)` declarations, `(metadata ...)`, etc).
 pub fn parse(src: &str) -> Result<Vec<Located<SExpr>>, ParseError> {
     let tokens = lexer::lex(src)?;
-    let mut p = Parser { tokens: &tokens, i: 0 };
+    let mut p = Parser {
+        tokens: &tokens,
+        i: 0,
+    };
     let mut out = Vec::new();
     while p.peek().is_some() {
         out.push(p.parse_value()?);
@@ -90,9 +93,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value(&mut self) -> Result<Located<SExpr>, ParseError> {
-        let tok = self
-            .peek()
-            .ok_or_else(|| ParseError::new("unexpected end of input, expected a value", self.eof_span()))?;
+        let tok = self.peek().ok_or_else(|| {
+            ParseError::new("unexpected end of input, expected a value", self.eof_span())
+        })?;
         let span = tok.span;
         match &tok.node {
             Token::Str(s) => {
@@ -147,7 +150,10 @@ impl<'a> Parser<'a> {
             }
         }
         let close = self.bump().unwrap().span; // '}'
-        Ok(Located::new(SExpr::List(items), Span::new(open.start, close.end)))
+        Ok(Located::new(
+            SExpr::List(items),
+            Span::new(open.start, close.end),
+        ))
     }
 
     fn parse_call(&mut self) -> Result<Located<SExpr>, ParseError> {
@@ -190,7 +196,11 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Located::new(
-            SExpr::Call(Call { head, args, priority }),
+            SExpr::Call(Call {
+                head,
+                args,
+                priority,
+            }),
             Span::new(open.start, end),
         ))
     }
@@ -198,7 +208,10 @@ impl<'a> Parser<'a> {
     fn parse_arg(&mut self) -> Result<Arg, ParseError> {
         if let Some(name) = self.try_take_named_key() {
             let value = self.parse_value()?;
-            Ok(Arg { name: Some(name), value })
+            Ok(Arg {
+                name: Some(name),
+                value,
+            })
         } else {
             let value = self.parse_value()?;
             Ok(Arg { name: None, value })
@@ -210,7 +223,9 @@ impl<'a> Parser<'a> {
     /// parser untouched.
     fn try_take_named_key(&mut self) -> Option<String> {
         let key_tok = self.peek()?;
-        let Token::Ident(name) = &key_tok.node else { return None };
+        let Token::Ident(name) = &key_tok.node else {
+            return None;
+        };
         let colon_tok = self.peek_at(1)?;
         if !matches!(colon_tok.node, Token::Colon) || key_tok.span.end != colon_tok.span.start {
             return None;
@@ -227,7 +242,11 @@ mod tests {
 
     fn parse_one(src: &str) -> SExpr {
         let mut forms = parse(src).unwrap();
-        assert_eq!(forms.len(), 1, "expected exactly one top-level form in {src:?}");
+        assert_eq!(
+            forms.len(),
+            1,
+            "expected exactly one top-level form in {src:?}"
+        );
         forms.remove(0).node
     }
 
@@ -240,7 +259,10 @@ mod tests {
         assert_eq!(parse_one(r#""Pawn""#), SExpr::Str("Pawn".into()));
         assert_eq!(parse_one("Win"), SExpr::Ident("Win".into()));
         assert_eq!(parse_one("0..9"), SExpr::Range(0, 9));
-        assert_eq!(parse_one("<Board:size>"), SExpr::OptionRef("Board:size".into()));
+        assert_eq!(
+            parse_one("<Board:size>"),
+            SExpr::OptionRef("Board:size".into())
+        );
     }
 
     #[test]
@@ -270,7 +292,8 @@ mod tests {
 
     #[test]
     fn nested_call_as_named_arg_value() {
-        let SExpr::Call(call) = parse_one(r#"(to if:(is Empty (to)) (apply (remove (to))))"#) else {
+        let SExpr::Call(call) = parse_one(r#"(to if:(is Empty (to)) (apply (remove (to))))"#)
+        else {
             panic!("expected a call")
         };
         assert_eq!(call.args[0].name.as_deref(), Some("if"));
@@ -292,7 +315,10 @@ mod tests {
             panic!("expected a call")
         };
         assert_eq!(call.head, Head::OptionRef("Tiling:type".into()));
-        assert_eq!(call.args[0].value.node, SExpr::OptionRef("Board:size".into()));
+        assert_eq!(
+            call.args[0].value.node,
+            SExpr::OptionRef("Board:size".into())
+        );
     }
 
     #[test]

@@ -277,9 +277,12 @@ fn lex_number(lx: &mut Lexer) -> Result<Token, ParseError> {
             lx.bump();
         }
         let text = lx.slice(start, lx.pos());
-        let f: f64 = text
-            .parse()
-            .map_err(|_| ParseError::new(format!("invalid float {text:?}"), Span::new(start, lx.pos())))?;
+        let f: f64 = text.parse().map_err(|_| {
+            ParseError::new(
+                format!("invalid float {text:?}"),
+                Span::new(start, lx.pos()),
+            )
+        })?;
         return Ok(Token::Float(f));
     }
 
@@ -359,7 +362,10 @@ mod tests {
         assert_eq!(kinds("-7"), vec![Token::Int(-7)]);
         assert_eq!(kinds("1.5"), vec![Token::Float(1.5)]);
         assert_eq!(kinds("-1.5"), vec![Token::Float(-1.5)]);
-        assert_eq!(kinds("true false"), vec![Token::Bool(true), Token::Bool(false)]);
+        assert_eq!(
+            kinds("true false"),
+            vec![Token::Bool(true), Token::Bool(false)]
+        );
     }
 
     #[test]
@@ -378,7 +384,10 @@ mod tests {
 
     #[test]
     fn option_refs() {
-        assert_eq!(kinds("<Tiling:type>"), vec![Token::OptionRef("Tiling:type".into())]);
+        assert_eq!(
+            kinds("<Tiling:type>"),
+            vec![Token::OptionRef("Tiling:type".into())]
+        );
         assert_eq!(kinds("<type>"), vec![Token::OptionRef("type".into())]);
         assert_eq!(kinds("<4>"), vec![Token::OptionRef("4".into())]);
     }
@@ -407,8 +416,14 @@ mod tests {
 
     #[test]
     fn comments_are_skipped() {
-        assert_eq!(kinds("a // comment\nb"), vec![Token::Ident("a".into()), Token::Ident("b".into())]);
-        assert_eq!(kinds("a /* comment */ b"), vec![Token::Ident("a".into()), Token::Ident("b".into())]);
+        assert_eq!(
+            kinds("a // comment\nb"),
+            vec![Token::Ident("a".into()), Token::Ident("b".into())]
+        );
+        assert_eq!(
+            kinds("a /* comment */ b"),
+            vec![Token::Ident("a".into()), Token::Ident("b".into())]
+        );
     }
 
     #[test]
