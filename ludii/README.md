@@ -41,6 +41,25 @@ stays valuable as spec/oracle material to read by hand (`database-1/lud/games/`)
 this crate loads or lowers it anymore. `src/parse/` (the generic s-expression reader) survives —
 `style_c` reuses it — even though it originated as that pipeline's lexer.
 
+**Backend codegen (`ROADMAP.md`'s phase 4) has a first real implementation:** `src/codegen/rect.rs`
+lowers a `Topology::Rect` `Program` into the text of a standalone Rust `games/*` crate (a `Game`
+impl, zobrist hashing, `Display` — the same shape every hand-written game crate has), rather than
+interpreting it. `src/bin/codegen.rs` is the offline driver (`cargo run -p ludii --bin codegen --
+<sexpr-path> <StructName> <"Game Name">`, output piped through `rustfmt`); its checked-in output
+for Tic-Tac-Toe is `games/ttt-gen/src/lib.rs`, wired into the root workspace as `game-ttt-gen` —
+`ROADMAP.md`'s phase 5 proof game. Three tests cross-check the three independent implementations of
+Tic-Tac-Toe now in this repo: `tests/oracle.rs` (`style_c` + `core::interp` vs. hand-written
+`games/ttt`), `tests/ttt_gen_vs_interp.rs` (`games/ttt-gen` vs. `core::interp`, phase 4's own exit
+test read literally), and `tests/ttt_gen_oracle.rs` (`games/ttt-gen` vs. hand-written `games/ttt`
+directly, via the `mcts::game::Game` trait on both sides — phase 5's exit test, and the "point of
+comparison to the hand-built `games/ttt`" this was built for). Scoped narrowly on purpose, per
+`DESIGN.md`'s "grow from real lowerings": `codegen::rect` only lowers the `Region`/`BoolExpr`
+variants Tic-Tac-Toe's `Program` actually uses (`Occupied`/`Union`/`Complement`/`Sites`,
+`Contains`/`Any`) and returns an error on anything else (`Intersect`/`Shift`/`Adjacent`/`Flood`,
+`Connects`) rather than guessing at an unforced lowering; `Topology::Hex` has no codegen backend
+yet either. Hex/Y stay on `core::interp` until a second game is deliberately routed through codegen
+(`ROADMAP.md`'s phase 6).
+
 **`style-c/`'s two other kinds of content are design exploration, not compiled or checked:**
 
 - `style-c/games/*.sc`, `style-c/games/tak.md`, and the numbered `style-c/0{1..5}-*.sc` fragments

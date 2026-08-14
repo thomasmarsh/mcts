@@ -10,6 +10,8 @@ game-core = { path = "../games/game-core" }
 
 [dev-dependencies]
 game-ttt = { path = "../games/ttt" }
+game-ttt-gen = { path = "../games/ttt-gen" }
+mcts = { path = "../mcts" }
 
 [lints]
 workspace = true

@@ -59,20 +59,28 @@ for how long that happened to the surface-syntax question already).
    rather than something state-free). Grow this the same "one real game forces it" way Region algebra
    already grew, not speculatively. *Exit test:* interpreter-level (still no codegen) proof of
    whichever primitive was added, on a real game.
-4. **Backend codegen: Core IR → Rust source.** The actual missing arrow — nothing in this repo emits
-   Rust today, only interprets. *Decisions:* what a generated crate must implement to be a real
-   workspace citizen (`mcts::game::Game`, zobrist table, display — same shape every hand-written
-   `games/*` crate already has); whether generation is an offline step whose output is checked in
-   (reviewable, debuggable, consistent with how every other crate in this workspace is source-
-   controlled) or a `build.rs`/proc-macro step (recommend the former unless a concrete reason
-   emerges not to); which topology backend goes first (`Rect` — simplest, most proven). *Exit test:*
-   a generated crate compiles and its `Game` impl round-trips through the interpreter's own oracle
-   tests for the same game.
-5. **First full pipeline proof: Tic-Tac-Toe.** Cheapest already-interpreter-proven game, through the
-   whole chain end to end: surface syntax → Core IR → generated crate → checked into `games/`,
-   wired into the root workspace `Cargo.toml`. *Exit test:* the generated crate passes the same kind
-   of oracle check `games/ttt` already gets, `cargo clippy`/`fmt` clean, playable by `mcts`/
-   `game-host` like any other game crate.
+4. **Backend codegen: Core IR → Rust source. First implementation landed, scoped to `Rect`.**
+   *Decisions, made:* a generated crate implements `mcts::game::Game` plus a zobrist table and
+   `Display`, the same shape every hand-written `games/*` crate already has (see `games/ttt-gen`);
+   generation is an offline step whose output is checked in (`src/bin/codegen.rs`, piped through
+   `rustfmt`), not a `build.rs`/proc-macro step; `Rect` went first. `src/codegen/rect.rs` only
+   lowers the `Region`/`BoolExpr` shapes Tic-Tac-Toe's `Program` actually uses
+   (`Occupied`/`Union`/`Complement`/`Sites`, `Contains`/`Any`) — `Intersect`/`Shift`/`Adjacent`/
+   `Flood`/`Connects` (needed by Hex/Y) and `Topology::Hex` itself are still unimplemented, real
+   next steps for phase 6, not attempted speculatively. *Exit test, passed:* `tests/
+   ttt_gen_vs_interp.rs` round-trips `games/ttt-gen`'s `Game` impl against `core::interp`'s own
+   oracle-tested `Program` evaluation, move by move.
+5. **First full pipeline proof: Tic-Tac-Toe. Done.** Through the whole chain end to end: surface
+   syntax (`style-c/sexpr/tic-tac-toe.sc`) → Core IR (`style_c::parse_game`) → generated crate
+   (`src/bin/codegen.rs`) → checked into `games/ttt-gen/src/lib.rs`, wired into the root workspace
+   `Cargo.toml` as `game-ttt-gen`. *Exit test, passed:* `tests/ttt_gen_oracle.rs` walks
+   `games/ttt-gen` and hand-written `games/ttt` through the same move sequences via
+   `mcts::game::Game` on both sides and asserts legal moves/terminal-ness/winner agree at every
+   step — the same kind of oracle check `games/ttt` already gets, run directly against the
+   hand-built crate rather than only transitively through the interpreter. `cargo clippy`/`fmt`
+   clean on both `ludii` and `games/ttt-gen`; `games/ttt-gen` is a first-class workspace member,
+   playable by `mcts`/`game-host` like any other game crate (not yet actually wired into
+   `game-host`'s game registry — that's ordinary per-game plumbing, not a pipeline question).
 6. **Second game through codegen (Hex or Y).** Proves the generator isn't overfit to the trivial
    case, the same discipline the interpreter's own Tic-Tac-Toe→Hex bootstrap already followed.
    *Exit test:* same as phase 5, different topology.
@@ -93,10 +101,18 @@ reading the whole WBS:
 - Surface syntax: promote `style_c` sexpr to canonical, or build the Style C human grammar's parser?
 - Core IR growth order: what's the minimal floor before codegen is worth starting (vs. `DESIGN.md`'s
   full wishlist)?
-- Codegen mechanism: checked-in generated source vs. build-time generation.
-- Generated-crate integration: what exactly must a generated `games/<name>` crate implement to be a
-  first-class workspace member (`Game`, zobrist, display, symmetry)?
+- ~~Codegen mechanism: checked-in generated source vs. build-time generation.~~ **Decided** (phase
+  4): checked-in, via `src/bin/codegen.rs`.
+- ~~Generated-crate integration: what exactly must a generated `games/<name>` crate implement to be
+  a first-class workspace member (`Game`, zobrist, display, symmetry)?~~ **Decided for `Rect`**
+  (phase 4/5, see `games/ttt-gen`): `Game`, a plain (non-symmetry-aware) zobrist table, `Display`.
+  Symmetry-aware hashing (`games/ttt`'s own D4 `HashedPosition`) stays a hand-written-crate-only
+  optimization for now — `Program` has no way to declare a topology's symmetry group yet, and no
+  codegen'd game has forced that gap open.
 - Generated vs. hand-written: replace or coexist, once there's a real generated crate to judge by.
+  `games/ttt-gen` exists alongside `games/ttt` today (coexist) — revisit once a second generated
+  game exists to judge the question by more than one data point, per this file's own "decide
+  deliberately once there's a real generated crate to look at" framing.
 - Effects/state layer (Freyd-category split, `DESIGN.md`'s Categorical structure section): still
   design-only — first real game that needs `state` forces landing it in `core::mod`, not before.
 

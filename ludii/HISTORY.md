@@ -1459,3 +1459,99 @@ hand-built `Program` plus a from-scratch BFS oracle (`tests/y_oracle.rs`)
 rather than the legacy `.lud`/`ast`/`elaborate` pipeline, per `DESIGN.md`'s
 own framing of that pipeline as bootstrap, not where new corpus games grow.
 
+
+## Session note: first Core-IR-to-Rust codegen, proven on Tic-Tac-Toe against the hand-built `games/ttt`
+
+Prompted directly by the operator: "take the next step in building the core IR to rust pipeline,"
+with Tic-Tac-Toe named explicitly as "a point of comparison to the hand-built `games/ttt`" --
+`ROADMAP.md`'s phases 4 ("Backend codegen: Core IR → Rust source," 0% built until now) and 5
+("First full pipeline proof: Tic-Tac-Toe"), tackled together since phase 5 is phase 4's own first
+real exercise.
+
+**Landed**: `src/codegen/` (`mod.rs` dispatches on `Program.topology`; `rect.rs` is the only real
+backend). Unlike `core::interp` -- a generic tree-walking evaluator that re-walks a `Program`'s
+`Region`/`BoolExpr` trees every call, deliberately kept as the slow, obviously-correct oracle --
+`codegen::rect::generate` lowers a `Program` once, at generation time, into the *text* of an
+ordinary standalone Rust source file: a `Player` enum, `Move`/`Position` types built on
+`game_core::bitboard::BitBoard<N, M>`, an incrementally-hashed `HashedPosition`, and a real
+`mcts::game::Game` impl -- the same shape every hand-written `games/*` crate already has. Per
+`ROADMAP.md`'s phase 4 decision (made this session): generation is an offline step
+(`src/bin/codegen.rs`, `cargo run -p ludii --bin codegen -- <sexpr> <StructName> <"Game Name">`,
+output piped through `rustfmt` so the checked-in result passes this repo's own `cargo fmt --check`),
+not a `build.rs`/proc-macro step -- reviewable and debuggable the same way every other crate in this
+workspace is source-controlled.
+
+Scoped narrowly on purpose, matching `DESIGN.md`'s "grow from real lowerings" principle applied to
+a *second* backend, not just the first: `region_expr`/`bool_expr` only lower the `Region`/`BoolExpr`
+variants Tic-Tac-Toe's own `Program` actually uses (`Occupied`/`Union`/`Complement`/`Sites` for the
+move generator, `Contains`/`Any` for the end rule) and return `codegen::Error` -- not a panic, not a
+silent wrong lowering -- on anything else (`Intersect`/`Shift`/`Adjacent`/`Flood`, `Connects`).
+Those are exactly what Hex/Y's `Program`s need and don't have a `Rect`-codegen lowering yet; neither
+does `Topology::Hex` itself. Real next steps for `ROADMAP.md`'s phase 6, not attempted
+speculatively here.
+
+**Proof, checked into `games/ttt-gen`** (a new workspace member, `game-ttt-gen`): the generated
+`games/ttt-gen/src/lib.rs` is `codegen::rect::generate`'s literal output for
+`style-c/sexpr/tic-tac-toe.sc`, regenerating byte-for-byte identical (confirmed by re-running the
+binary and diffing). Two new oracle tests close the loop from both directions named in the two
+exit tests `ROADMAP.md` already specified:
+
+- `tests/ttt_gen_vs_interp.rs` -- phase 4's exit test, read literally ("a generated crate compiles
+  and its `Game` impl round-trips through the interpreter's own oracle tests for the same game"):
+  walks `tests/oracle.rs`'s same move sequences through `games/ttt-gen`'s `Position` and
+  `core::interp::State<3, 3>` directly, asserting legal moves and winner agree at every step.
+- `tests/ttt_gen_oracle.rs` -- phase 5's exit test ("the generated crate passes the same kind of
+  oracle check `games/ttt` already gets") and the operator's own framing: walks the same sequences
+  through `games/ttt-gen::TicTacToe` and hand-written `games/ttt::TicTacToe` via the
+  `mcts::game::Game` trait on *both* sides (not just `Position` methods), so it exercises the
+  generated crate's actual `Game` impl -- `generate_actions`/`apply`/`is_terminal`/`winner` -- against
+  the hand-built one end to end. One wrinkle: `games/ttt::Game::winner` panics
+  (`unreachable!()`) if called on a non-terminal state, so the comparison only calls `winner` on
+  both sides once both agree the position is terminal.
+
+This repo now has three independent, cross-checked implementations of Tic-Tac-Toe's rules
+(`core::interp` + `style_c`, `games/ttt-gen`, hand-written `games/ttt`), pairwise checked against
+each other by `tests/oracle.rs`, `tests/ttt_gen_vs_interp.rs`, and `tests/ttt_gen_oracle.rs`.
+
+**Deliberate representation differences from `games/ttt`**, called out in `games/ttt-gen/src/
+lib.rs`'s own doc comment rather than treated as a gap to close: one `BitBoard` per player here
+(matching `core::interp::State`'s own representation) vs. `games/ttt`'s packed 2-bit-per-cell
+`u32`; a plain incrementally-XORed zobrist hash here vs. `games/ttt`'s D4-symmetry-aware
+`HashedPosition` (`Program` has no way to declare a topology's symmetry group yet, and no codegen'd
+game has forced that gap open -- not attempted speculatively); `'A'`/`'B'`-per-player-index display
+characters here vs. `games/ttt`'s game-specific `'X'`/`'O'`, since generic codegen has no
+game-specific vocabulary to draw display characters from. `ROADMAP.md`'s phase 5 exit test asks for
+behavioral parity via an oracle check, not byte-identical memory layout -- these differences are
+exactly the kind of backend/schedule choice `DESIGN.md`'s "referentially transparent, à la Halide"
+principle says shouldn't be forced to match a hand-tuned implementation's specific choices.
+
+Two small `rustc`/clippy lints shaped the codegen templates directly, worth recording since they'll
+recur for the next game routed through codegen: `-D unused-parens` rejects a redundant enclosing
+`(...)` specifically in a few syntactic positions (a `let` value, a block's tail) -- `BoolExpr::Any`
+no longer wraps its `||`-joined operands in parens at all (every combinator at this level is `||`,
+so grouping was never semantically load-bearing); and `-D clippy::double_parens` caught
+`Region::Complement` wrapping an already-self-parenthesizing `Region::Union` a second time --
+fixed by having `Complement` never add its own parens, relying on every other `region_expr` arm
+already being unambiguous on its own (an atom, or already parenthesized).
+
+`cargo test -p ludii -p game-ttt-gen -p game-ttt`, `cargo clippy -p ludii -p game-ttt-gen
+--all-targets`, and `cargo fmt -p ludii -p game-ttt-gen -- --check` are all clean; full-workspace
+`cargo test --lib --workspace --exclude mcts-bench --exclude game-host` passes unchanged (168 lib
+tests across the touched crates plus every other workspace member).
+
+## Suggested commit message:
+
+Land the first Core-IR-to-Rust codegen backend, proven on Tic-Tac-Toe
+
+Add `src/codegen/rect.rs` (`Program` -> Rust source, scoped to the
+`Region`/`BoolExpr` shapes Tic-Tac-Toe's `Program` actually uses) and
+`src/bin/codegen.rs` (the offline generator driver, output piped through
+`rustfmt`) -- `ROADMAP.md`'s phase 4, previously 0% built. Check in its
+output for Tic-Tac-Toe as a new workspace member, `games/ttt-gen`
+(`ROADMAP.md`'s phase 5 proof game), and add two oracle tests:
+`tests/ttt_gen_vs_interp.rs` (generated crate vs. `core::interp`, phase 4's
+exit test) and `tests/ttt_gen_oracle.rs` (generated crate vs. hand-written
+`games/ttt` via `mcts::game::Game` on both sides, phase 5's exit test and
+the operator's own requested point of comparison). `Hex`/`Connects`-shaped
+end rules still route through `core::interp` only -- real work for
+`ROADMAP.md`'s phase 6, not attempted speculatively here.
