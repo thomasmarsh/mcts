@@ -700,6 +700,66 @@ still lack a working target to lower onto — `Rect` and both proven `Hex` shape
   so it likely needs its own coordinate packing rather than reusing `Rhombus`'s. This remains real,
   unstarted design work — treat it as its own milestone before attempting Havannah.
 
+### Slider move generation (queen/rook/bishop rays): a worked comparison for Amazons
+
+Amazons (see "Worth adding" below) forces a queen slide-to-first-blocker move shape on a 10×10 board — the
+first corpus candidate where naive move generation (ray-cast one cell at a time per direction) is a real
+*efficiency* question, not just a correctness one, per that table's own framing. Three candidate techniques
+exist in the wider bitboard-programming literature; this pass checked each against this project's actual
+`BitBoard`/`BigBitBoard` shape (row-major `to_index(row, col) = row*M + col`) rather than citing them from
+memory, since the multi-word `BigBitBoard` boundary turned out to matter more than expected.
+
+- **Kogge-Stone-style doubling flood — already proven, in production.** `games/othello/src/lib.rs`'s
+  `flood_left`/`flood_right` (repeated shift-and-OR by doubling distances, masked against a wall guard each
+  step) already computes exactly this shape — "flood along a direction until blocked" — for Othello's
+  slide-and-flip, generalizing directly onto this doc's own `shift(dir)`/`Direction` Region-algebra
+  primitives above. It needs zero precomputed tables, and composes with `BigBitBoard` for free (its `shift`
+  already handles cross-word carries — `games/game-core/src/bigbitboard.rs`). **Recommended as the first
+  implementation for Amazons'** queen move (and arrow-shot, same ray geometry): per "Move caching" below's
+  own "get a correct backend that recomputes every predicate every ply first" principle, reach for something
+  fancier only once profiling shows this is a bottleneck at 10×10 scale.
+- **Hyperbola Quintessence (`(o ^ (o - 2*s)) & mask`, plus a reversed-word pass for the opposite direction)**
+  — verified correct, but with a hard boundary at exactly this project's own `BitBoard`/`BigBitBoard` split.
+  Checked against a naive ray-cast oracle over 5,000 random `(square, occupancy)` trials each: **5000/5000**
+  matched on an 8×8 board (fits one `u64`, same as `BitBoard<N,M>` for `N*M <= 64`); only **1784/5000**
+  matched on a 10×10 board (100 cells, doesn't fit one word) using a naive single-word bit-reversal. The
+  failure is real, not incidental: `BitBoard::reverse_bits` (`games/game-core/src/bitboard.rs:266`) already
+  exists and is exactly right for the `BitBoard` case, but a correct 10×10 version needs a genuine multi-word
+  bit-reversal (reverse word order *and* reverse bits within each word) plus ripple-borrow subtraction across
+  words for the `o - 2s` half — real, unbuilt `BigBitBoard` primitives, not a free generalization of the
+  single-word trick. Worth keeping in mind for a future `Rect` game that stays under 64 cells and has a hot
+  single-line connectivity/slide check; not recommended for Amazons as-is.
+- **Magic bitboards (per-square multiplicative hash into a precomputed attack table)** — the search itself
+  works fine at Amazons' scale; an initial worry that a *combined* queen ray-mask would exceed 64 bits on a
+  10×10 board was checked and was wrong. Measured mask sizes (edge-inclusive, no far-square-exclusion
+  optimization):
+
+  | | 8×8 | 10×10 |
+  |---|---|---|
+  | rook (both axes) | 14 bits, *every square, always* — `(N-1)+(M-1)`, provably position-invariant since opposite-direction ray lengths always sum to the full dimension | 18 bits, every square |
+  | bishop | 7–13 bits | 9–17 bits |
+  | queen (rook ∪ bishop) | 21–27 bits | 27–35 bits |
+
+  35 bits fits a single `u64` multiply comfortably even for Amazons' combined queen mask — the real obstacle
+  is per-square table *size* if a naive dense queen table were built (`2^35` entries), which is why real
+  chess engines never build one: separate rook-magics (≤18 bits here) and bishop-magics (≤17 bits) unioned
+  at query time keeps every per-square table ≤ 262,144 entries. Magic numbers for a handful of representative
+  8×8 squares were found and verified collision-free against every occupancy subset of their mask (e.g. rook
+  corner: `0x020C644040008000` in 7,914 random tries; bishop center: `0x0001004002040002` in 149 tries) — the
+  search itself converges fast. **These belong in the Core→backend lowering pass, generated once per template
+  instantiation, not searched at runtime**: board size is already a compile-time template parameter (the same
+  `[const N: Int]` monomorphization `tak.md`'s `piece_reserve(N)`/`stack_bits(N)` tables use), so the mask
+  shapes and a valid magic are fully determined the moment a game like `Amazons[10]` is instantiated — codegen
+  should run the (seeded, deterministic) search once and emit the found constants as a `static` array literal
+  in the generated source, the same way `shibumi`'s `MASKS: [u32; 3]` is a checked-in constant today, not
+  something recomputed at process startup.
+
+De Bruijn sequences (a classic bitscan technique: `index = table[((bb & -bb) * DEBRUIJN64) >> 58]`) were also
+considered and are **not worth adopting**: `BitBoard`'s existing `trailing_zeros()`/`leading_zeros()`
+(`games/game-core/src/bitboard.rs:261-263`) already lower to a single hardware `TZCNT`/`LZCNT` instruction via
+Rust's intrinsics on every target this project cares about. The multiply-and-lookup trick was a workaround for
+languages/eras without that intrinsic; it adds a table and an extra multiply for no benefit here.
+
 ## Cross-cutting backend concerns: hashing, symmetry, caching, evaluation
 
 Once Core state is a uniform, typed `(Site, Value)` space instead of a
@@ -863,7 +923,7 @@ directly `style_c`'s sexpr frontend, checked against a from-scratch hand-rolled 
 | **Havannah** | `Hex { Hexagon }`, **`has_cycle`** (ring win condition), plus bridge/fork win conditions (connectivity to 2 vs 3+ distinct edge-or-corner classes) | The one remaining game in this list that needs a genuinely new Region-algebra primitive (`has_cycle`) rather than just a new topology instance. Also the hardest hex board to coordinate-pack — unlike `Rhombus`/`Triangle`, a hexagon doesn't tile a rectangle or triangle cleanly (see "Backend lowering" above). |
 | **Margo** | `Pyramid { base: 5, levels: 5 }` (or whatever its actual base/levels are — confirm rules before implementing) | Same mechanic family as Shibumi at a different size; the point is proving `support` is a real topology-level primitive and not something Shibumi's `MASKS` happened to get away with hardcoding once. |
 | **Abalone** | `Rect`, but a **push-along-a-line** move (a run of up to 3 own pieces shoves adjacent opponent pieces off the board edge) | New move-generation shape: not a single-cell placement or single-piece slide, but a line-shaped multi-cell effect with off-board elimination. Tests whether `for_each`/`shift`-composition is expressive enough for line pushes without a new combinator. |
-| **Amazons** | `Rect`, large board, queen-move-then-burn-a-square (shrinking the legal region every move, on both players' behalf) | Tests whether `Region` composition handles a *monotonically shrinking* shared obstacle set cleanly, and whether move generation over a large empty region (queen moves on 10×10) is efficient in the lowered form, not just correct. |
+| **Amazons** | `Rect`, large board, queen-move-then-burn-a-square (shrinking the legal region every move, on both players' behalf) | Tests whether `Region` composition handles a *monotonically shrinking* shared obstacle set cleanly, and whether move generation over a large empty region (queen moves on 10×10) is efficient in the lowered form, not just correct. See "Slider move generation" under Backend lowering above for a worked comparison of three candidate techniques (Kogge-Stone flood, Hyperbola Quintessence, magic bitboards) against this project's actual `BitBoard`/`BigBitBoard` shape. |
 | **Lines of Action** | `Rect`, **dynamic-range sliding** (a piece moves exactly as many squares as there are pieces, of either color, on its current line) | The one case in this corpus where move *distance* is a runtime-computed value (`count` along a line) rather than a static direction/offset — stresses whether Core's `shift` combinator needs a variable-distance form or whether `count` + iteration already covers it. |
 
 Recommended order if you want to build the corpus incrementally rather than
