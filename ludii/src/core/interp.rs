@@ -5,8 +5,8 @@
 //! not a performance target itself.
 //!
 //! The caller picks `N`/`M` to match `program.topology` (there is currently no dynamic-topology
-//! `BitBoard`, so this only works for a topology known at the call site -- see
-//! `core::lower::lower_game`'s tests and the oracle test in `tests/` for the Tic-Tac-Toe case).
+//! `BitBoard`, so this only works for a topology known at the call site -- see this module's own
+//! tests and the oracle tests in `tests/` for concrete examples).
 
 use game_core::bitboard::BitBoard;
 
@@ -250,27 +250,17 @@ impl<const N: usize, const M: usize> State<N, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::game::Description;
     use crate::core::hex::HexShape;
-    use crate::core::{lower_game, EndRule, Hex, MoveGen, Rect};
-    use crate::elaborate::game::elaborate_description;
-    use crate::parse::parse;
+    use crate::core::{EndRule, Hex, MoveGen, Rect};
+    use crate::style_c::parse_game;
     use std::collections::HashMap;
 
     fn tic_tac_toe_program() -> Program {
-        let forms = parse(include_str!("../../lud/Tic-Tac-Toe.lud")).unwrap();
-        let Description::Game(game) = elaborate_description(&forms[0]).unwrap() else {
-            panic!("expected Description::Game");
-        };
-        lower_game(&game).unwrap()
+        parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.sc")).unwrap()
     }
 
     fn hex_program() -> Program {
-        let forms = parse(include_str!("../../lud/Hex.lud")).unwrap();
-        let Description::Game(game) = elaborate_description(&forms[0]).unwrap() else {
-            panic!("expected Description::Game");
-        };
-        lower_game(&game).unwrap()
+        parse_game(include_str!("../../style-c/sexpr/hex.sc")).unwrap()
     }
 
     #[test]
@@ -311,9 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn manual_program_matches_lowered_one() {
-        // Core IR should be constructible and checkable by hand, independent of elaboration --
-        // this pins down that a hand-built Program behaves identically to the lowered one.
+    fn manual_program_matches_parsed_one() {
+        // Core IR should be constructible and checkable by hand, independent of any parser --
+        // this pins down that a hand-built Program behaves identically to the parsed one.
         let rect = Rect { rows: 3, cols: 3 };
         let manual = Program {
             topology: Topology::Rect(rect),
@@ -338,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_hex_program_matches_lowered_one() {
+    fn manual_hex_program_matches_parsed_one() {
         let manual = Program {
             topology: Topology::Hex(Hex {
                 side: 3,
@@ -491,8 +481,8 @@ mod tests {
     fn region_flood_matches_direct_flood6_call() {
         // The exact scenario `hex_p2_wins_by_connecting_west_and_east_edges_via_diagonal` above
         // already proves end-to-end through a real Program -- this pins the same fact down
-        // directly against `Region::Flood`/`eval_region`, independent of `lower`/`elaborate`,
-        // and checks it against a direct `BitBoard::flood6` call (the code path `Region::Flood`
+        // directly against `Region::Flood`/`eval_region`, independent of any parser, and checks
+        // it against a direct `BitBoard::flood6` call (the code path `Region::Flood`
         // replaced in `State::winner`).
         let occupied = vec![
             BitBoard::<3, 3>::EMPTY,

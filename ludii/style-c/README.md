@@ -1,9 +1,9 @@
 # Style C reference cases
 
 Standalone, self-contained fragments and full games in the typed functional/equational surface
-syntax ("Style C" in the top-level `README.md`'s design-spike write-up), saved here as reference
+syntax ("Style C" in the top-level `HISTORY.md`'s design-spike write-up), saved here as reference
 artifacts in their own right rather than left as inline snippets in a session-note history. There
-is no lexer/parser for this syntax yet (see the top-level `README.md`'s "Next session charter") --
+is no lexer/parser for this syntax yet (see the top-level `HISTORY.md`'s "Next session charter") --
 these are hand-written, not machine-checked.
 
 `games/` holds complete, runnable-shaped games (a full `game "Name" { ... }` block); the
@@ -16,21 +16,19 @@ piece of "spatial bitboard game" (hidden info, fixed topology, a board at all, i
 see what's left of the grammar without it.
 
 `sexpr/` is a different thing entirely, not more of the above: it holds real, checked, *parseable*
-source for `src/style_c/mod.rs`, a second `s-expr -> Core IR` frontend (see the top-level
-`README.md`'s session note and `DESIGN.md`'s Pipeline section) that bypasses both this directory's
-still-hand-written Style C notation *and* the `.lud`/`ast`/`elaborate` pipeline, going straight
-from a direct s-expression rendering of `core::Program` to a real `Program` value. `sexpr/
-tic-tac-toe.sc` and `sexpr/hex.sc` are load-bearing test fixtures (`include_str!`'d by
-`src/style_c/mod.rs`'s tests), each checked against the same `Program` the `.lud` pipeline lowers
-`lud/Tic-Tac-Toe.lud`/`lud/Hex.lud` to -- treat them the same as any other checked-in fixture, not
-scratch files.
+source for `src/style_c/mod.rs`, this project's one real frontend onto `core::Program` (see the
+top-level `README.md`'s "Current status" and `DESIGN.md`'s Pipeline section) -- a direct
+s-expression rendering of Core IR, distinct from this directory's still-hand-written, unparsed
+Style C notation. `sexpr/tic-tac-toe.sc` and `sexpr/hex.sc` are load-bearing test fixtures
+(`include_str!`'d by `src/style_c/mod.rs`'s tests), each checked against a hand-built `Program`
+value -- treat them the same as any other checked-in fixture, not scratch files.
 
 | File | Game / `.lud` source | Demonstrates |
 |---|---|---|
-| `games/tic-tac-toe.sc` | `lud/Tic-Tac-Toe.lud`, full game | base declarative layer only -- no `then`/`state`/`invariant`/templates needed |
-| `games/hex.sc` | `lud/Hex.lud`, full game | same base layer plus named `regions` and `connects` |
-| `games/tak.sc` | not `.lud`-sourced, full game, board-size-parametrized 3x3-8x8 | superseded (surface syntax) by `games/tak.md`, see the top-level README.md; findings below still stand |
-| `games/tak.md` | literate rewrite of `games/tak.sc` (was `games/tak-relational.sc` through round 6, moved to Markdown afterward) | same findings, in this project's own domain-native notation instead of borrowed Rust/Alloy syntax -- see the top-level README.md's "Style C was leaking Rust" session note |
+| `games/tic-tac-toe.sc` | Tic-Tac-Toe, full game | base declarative layer only -- no `then`/`state`/`invariant`/templates needed |
+| `games/hex.sc` | Hex, full game | same base layer plus named `regions` and `connects` |
+| `games/tak.sc` | not `.lud`-sourced, full game, board-size-parametrized 3x3-8x8 | superseded (surface syntax) by `games/tak.md`, see the top-level HISTORY.md; findings below still stand |
+| `games/tak.md` | literate rewrite of `games/tak.sc` (was `games/tak-relational.sc` through round 6, moved to Markdown afterward) | same findings, in this project's own domain-native notation instead of borrowed Rust/Alloy syntax -- see the top-level HISTORY.md's "Style C was leaking Rust" session note |
 | `games/kuhn-poker.sc` | not `.lud`-sourced, full game (card) | `topology = None`, private/epistemic per-player state, `chance` moves, path-dependent outcome -- see below |
 | `games/sprouts.sc` | not `.lud`-sourced, full game (graph) | mutable/growing topology, unbounded-domain Raster, expensive geometric oracle predicate -- see below |
 | `games/sylver-coinage.sc` | not `.lud`-sourced, full game (math) | `topology = None`, unbounded `Set` state, oracle-as-`bounded_fixpoint`, non-constructive termination -- see below |
@@ -39,7 +37,7 @@ scratch files.
 | `02-suicide-rule.sc` | `Go.lud:35` | same `invariant: always` construct, confirms it generalizes |
 | `03-superko.sc` | `Go.lud`, `(meta (no Repeat))` | past-temporal `once`, no bespoke history builtin |
 | `04-chess-pawn-template.sc` | `Chess.lud:126-137` | `template def`, compile-time generics |
-| `05-havannah-cycle.sc` | `Havannah.lud:13`, `(is Loop)` | `has_cycle` as a Core primop (real usage is one call); a bounded-`fixpoint` derivation kept only as a reference definition, not authoring surface -- see the top-level `README.md`'s session note |
+| `05-havannah-cycle.sc` | `Havannah.lud:13`, `(is Loop)` | `has_cycle` as a Core primop (real usage is one call); a bounded-`fixpoint` derivation kept only as a reference definition, not authoring surface -- see the top-level `HISTORY.md`'s session note |
 
 `games/tic-tac-toe.sc` and `games/hex.sc` are the sanity check the previous session's charter
 asked for: neither needs any of the machinery the five case fragments exist to exercise, which is
@@ -49,7 +47,7 @@ what those already-proven Core programs needed, not a rewrite of them.
 
 ## Temporal refinement: Alloy-style `state'`/`always`/`once`, replacing `ifAfterwards`
 
-The previous session's grammar (top-level `README.md`) had `ifAfterwards: P` as a per-move
+The previous session's grammar (top-level `HISTORY.md`) had `ifAfterwards: P` as a per-move
 guard clause -- workable, but flagged as feeling ad hoc: a bespoke keyword bolted onto whichever
 move rules happened to need a one-step lookahead. Cases 01-03 here replace it with vocabulary
 borrowed directly from Alloy 6's temporal mechanics (Electrum), not TLA+ (an earlier framing of
@@ -58,7 +56,7 @@ operators below are specifically Alloy's):
 
 - **`state'`** is a primed reference to the hypothetical state after the move currently being
   legality-checked (`next(state, this)`, board-shaped only -- see the boundary discussion in
-  the top-level `README.md`). It can appear in any expression, not just a dedicated guard
+  the top-level `HISTORY.md`). It can appear in any expression, not just a dedicated guard
   clause, so `ifAfterwards` is no longer a separate keyword; an ordinary expression that happens
   to reference `state'` *is* the one-step-lookahead case.
 - **`invariant: always P`** is a new top-level game declaration (alongside `moves`/`terminal`/
@@ -92,7 +90,7 @@ operators below are specifically Alloy's):
   reading.
 
 Backend consequence: `once(P)` where `P` references board-shaped state lowers to the same
-mechanism the top-level `README.md`'s "Unbounded auxiliary state" section already sketched (a
+mechanism the top-level `HISTORY.md`'s "Unbounded auxiliary state" section already sketched (a
 heap-backed, amortized-O(1) hash set keyed on the Zobrist hash already derived for Core state) --
 that design is unchanged by this session, just now motivated as the general lowering for the
 `once` operator over `Region`/`Raster`-typed values, rather than a per-game special case the

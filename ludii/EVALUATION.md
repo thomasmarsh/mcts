@@ -1,7 +1,7 @@
 # Evaluation: Style C vs. Stanford GDL and Ludii
 
 A first-principles assessment, prompted directly by the operator asking how this project's
-authoring surface (`style-c/`, see `README.md`'s design-spike history and `DESIGN.md`'s Core IR
+authoring surface (`style-c/`, see `HISTORY.md`'s design-spike history and `DESIGN.md`'s Core IR
 spec) is actually faring against the two established general game description languages, against
 four criteria the operator named: (1) a small set of correct, composable primitives, (2)
 expressiveness/concision, (3) provability guarantees useful for compilation, (4) preserving
@@ -98,7 +98,7 @@ worst-case cost. See `COMPLETENESS.md` for the working conjecture.
 
 - **Effects layer unimplemented.** The provability story's premonoidal half is design-only.
 - **No real parser/lowering beyond two games.** Everything past Tic-Tac-Toe/Hex is hand-transcribed
-  markdown, not machine-checked. (Deliberately not being fixed next — see `README.md`'s current
+  markdown, not machine-checked. (Deliberately not being fixed next — see `HISTORY.md`'s current
   charter; the language is judged too unstable to freeze into a parser yet.)
 - **Open items sitting exactly where universality would break**: `Raster` cell `Value`'s shape
   (tuple vs. record — undecided), determinism tagging for `extern` chance calls (undecided — GDL-II
@@ -116,4 +116,4 @@ conjecture above and (2) extending `core::mod` itself — making `flood`/`connec
 composable Region-algebra primitives instead of dedicated `EndRule` variants, which `DESIGN.md`'s own
 "promote once a second special case appears" principle already flags as due — deferring the Style C
 parser until the language is judged stable enough to be worth freezing into a grammar. See
-`README.md`'s current "Next session charter."
+`HISTORY.md`'s current "Next session charter."

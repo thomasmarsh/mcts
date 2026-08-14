@@ -1,7 +1,6 @@
-//! Oracle test proving the whole `.lud` -> lex -> s-expr -> ast -> elaborate -> Core IR ->
-//! interpreter chain agrees with `games/ttt`'s hand-written implementation, for a handful of
-//! fixed positions (a couple of in-progress boards, a P1 win, a P2 win, a draw). See the "prove
-//! the whole chain on Tic-Tac-Toe" session charter in `README.md`.
+//! Oracle test proving the `style_c` sexpr -> Core IR -> interpreter chain agrees with
+//! `games/ttt`'s hand-written implementation, for a handful of fixed positions (a couple of
+//! in-progress boards, a P1 win, a P2 win, a draw).
 //!
 //! `games/ttt::Position` and the Core interpreter's `State<3, 3>` happen to agree on cell
 //! indexing (row-major, 0..9) and player numbering (player 0 == `Piece::X` moves first), so
@@ -9,19 +8,12 @@
 //! every step is a direct oracle check, not a translation exercise.
 
 use game_ttt::{Piece, Position};
-use ludii::ast::game::Description;
 use ludii::core::interp::State;
-use ludii::core::lower_game;
 use ludii::core::Program;
-use ludii::elaborate::game::elaborate_description;
-use ludii::parse::parse;
+use ludii::style_c::parse_game;
 
 fn tic_tac_toe_program() -> Program {
-    let forms = parse(include_str!("../lud/Tic-Tac-Toe.lud")).unwrap();
-    let Description::Game(game) = elaborate_description(&forms[0]).unwrap() else {
-        panic!("expected Description::Game");
-    };
-    lower_game(&game).unwrap()
+    parse_game(include_str!("../style-c/sexpr/tic-tac-toe.sc")).unwrap()
 }
 
 fn oracle_winner(position: &Position) -> Option<usize> {

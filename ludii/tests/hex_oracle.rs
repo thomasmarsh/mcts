@@ -1,30 +1,23 @@
-//! Oracle test proving the whole `.lud` -> lex -> s-expr -> ast -> elaborate -> Core IR ->
-//! interpreter chain agrees, on Hex, with an independent, from-scratch hand-rolled connectivity
-//! reference -- there's no existing `games/hex` crate to reuse the way `games/ttt` was reused for
-//! `tests/oracle.rs`, per `DESIGN.md`'s corpus notes, so this test *is* the second implementation
-//! rather than a wrapper around one.
+//! Oracle test proving the `style_c` sexpr -> Core IR -> interpreter chain agrees, on Hex, with an
+//! independent, from-scratch hand-rolled connectivity reference -- there's no existing
+//! `games/hex` crate to reuse the way `games/ttt` was reused for `tests/oracle.rs`, per
+//! `DESIGN.md`'s corpus notes, so this test *is* the second implementation rather than a wrapper
+//! around one.
 //!
 //! [`HexOracle`] deliberately doesn't call into `ludii::core::hex` or `game_core::bitboard`'s
 //! `flood6` at all -- it recomputes hex adjacency and connected components from first principles
 //! (a plain BFS over an explicit six-neighbor delta list), so a bug shared between the oracle and
 //! the interpreter is very unlikely to be a coincidence.
 
-use ludii::ast::game::Description;
 use ludii::core::interp::State;
-use ludii::core::lower_game;
 use ludii::core::Program;
-use ludii::elaborate::game::elaborate_description;
-use ludii::parse::parse;
+use ludii::style_c::parse_game;
 
 const SIDE: usize = 3;
 const SITES: usize = SIDE * SIDE;
 
 fn hex_program() -> Program {
-    let forms = parse(include_str!("../lud/Hex.lud")).unwrap();
-    let Description::Game(game) = elaborate_description(&forms[0]).unwrap() else {
-        panic!("expected Description::Game");
-    };
-    lower_game(&game).unwrap()
+    parse_game(include_str!("../style-c/sexpr/hex.sc")).unwrap()
 }
 
 /// A from-scratch reference implementation of Hex on a `SIDE x SIDE` board: player 0 ("P1")

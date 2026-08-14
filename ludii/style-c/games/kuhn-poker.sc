@@ -8,7 +8,7 @@
 // the grammar or lower to any existing `core::Program` shape. This is the "card game" pathological
 // case; findings flagged inline, cross-referenced in `style-c/README.md`.
 //
-// --- Syntax refresh (per README.md's "Next session charter: refresh games/kuhn-poker.sc"),
+// --- Syntax refresh (per HISTORY.md's "Next session charter: refresh games/kuhn-poker.sc"),
 // bringing this file from its original pre-review syntax (bare `if COND then { }` moves, Rust
 // array-typed `[Int; players]` state, an unlabeled implicit `Outcome`) up to what `games/tak.md`
 // already has: `guard`, primed `field'` effect bindings, `state x[p: Player]: T` indexed-state

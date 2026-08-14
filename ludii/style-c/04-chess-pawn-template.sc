@@ -10,7 +10,7 @@
 // "Translating `.lud`" section) -- what's demonstrated here is the *shape* of template
 // parametrization the call site forces, not a claim about `ChessPawn`'s exact body.
 //
-// --- Syntax refresh (see README.md's Core/Stdlib/Extern and `rule`-to-`def` session notes):
+// --- Syntax refresh (see HISTORY.md's Core/Stdlib/Extern and `rule`-to-`def` session notes):
 // square brackets for template params/instantiation (`chess_pawn[...]`, not `chess_pawn<...>`/
 // the `::<...>` turbofish), matching the `Tak[N]` precedent; `move`'s effect body is a `field' =
 // expr` binding, not a `then { statement; statement }` block. `Tail`'s kind changes from

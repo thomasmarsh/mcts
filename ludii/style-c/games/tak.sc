@@ -1,7 +1,7 @@
 // SUPERSEDED (surface syntax only, findings below still stand) by `games/tak-relational.sc` --
 // this file's syntax turned out to be Rust with game nouns (`const fn`/`match`, `[T; N]` arrays,
 // `Set<T>`/`Seq<T>`, imperative `then { push/set/for }` blocks) rather than anything targeted at
-// this domain, per the top-level README.md's "Style C was leaking Rust" session note. A first
+// this domain, per the top-level HISTORY.md's "Style C was leaking Rust" session note. A first
 // revision attempt overcorrected into transliterating literal Alloy notation instead
 // (`<:`/`~`/dot-join chains/`abstract sig`/`no`/`univ`) -- caught and discarded before landing,
 // see that session note's follow-up. Left in place rather than rewritten in place or deleted, per
@@ -13,7 +13,7 @@
 // isn't in this repo's `lud/`/`database-1/` corpus at all; this is written directly from the
 // published ruleset and this repo's existing hand-written `games/tak/src/lib.rs`, per the
 // session request for a "pro forma design exploration," explicitly NOT required to parse
-// against the grammar in the top-level README.md or lower to any existing `core::Program`
+// against the grammar in the top-level HISTORY.md or lower to any existing `core::Program`
 // shape. Tak needed real extensions the five pathological cases never forced -- const generics,
 // per-player indexed state, composable named effect blocks, a disjunctive `connects`, and
 // `count_where` -- each flagged inline where it first appears, the same way the five cases'

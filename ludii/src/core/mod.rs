@@ -1,25 +1,24 @@
-//! Core IR: a small, regular language that sits between the Ludii [`crate::ast`] and a concrete
-//! board backend (see `DESIGN.md`). [`crate::elaborate`] turns `.lud` source into `ast::*`;
-//! [`lower`] turns a self-contained `ast::game::Game` into a [`Program`] here; [`interp`]
-//! evaluates a `Program` directly against a `Rect`-backed board rather than compiling it, per
-//! `DESIGN.md`'s "Interpret Core, don't codegen yet" bootstrap order.
+//! Core IR: a small, regular language that a concrete board backend compiles down to (see
+//! `DESIGN.md`). [`crate::style_c`] parses a direct s-expression rendering of this module's own
+//! types into a [`Program`]; [`interp`] evaluates a `Program` directly against a `Rect`-backed
+//! board rather than compiling it, per `DESIGN.md`'s "Interpret Core, don't codegen yet" bootstrap
+//! order. There used to be a second frontend here lowering Ludii's own `.lud`/ludeme AST
+//! (`crate::ast`/`crate::elaborate`) into a `Program` -- retired per `ROADMAP.md`'s decision to
+//! stop loading `.lud` source in code at all; a `.lud` file is read by a person, not this crate.
 //!
-//! Scoped to exactly what Tic-Tac-Toe's and Hex's `.lud` files need: two topologies (`Rect`,
-//! `Hex`), a region algebra of `union`/`complement`/`member`/a static `Sites` list plus real
-//! `shift`/`adjacent`/`flood` combinators (the `member` test itself realized by the backend's
-//! bitboard indexing rather than a dedicated IR node), a placement move generator, and a single
-//! composable end-rule predicate (`BoolExpr`) built from those combinators -- Tic-Tac-Toe's
-//! line-win and Hex's edge-to-edge connectivity-win are now two particular `BoolExpr` values, not
-//! two dedicated Rust variants (see `DESIGN.md`'s "promote to a composable primitive" corollary).
-//! Growing this into `DESIGN.md`'s full Core IR (raster ops, `has_cycle`, control combinators,
-//! other topologies) is future work, one real game at a time.
+//! Scoped to exactly what Tic-Tac-Toe/Hex/Y need: two topologies (`Rect`, `Hex`), a region algebra
+//! of `union`/`intersect`/`complement`/`member`/a static `Sites` list plus real `shift`/`adjacent`/
+//! `flood` combinators (the `member` test itself realized by the backend's bitboard indexing
+//! rather than a dedicated IR node), a placement move generator, and a single composable end-rule
+//! predicate (`BoolExpr`) built from those combinators -- Tic-Tac-Toe's line-win, Hex's edge-to-edge
+//! connectivity-win, and Y's three-edge connectivity-win are three particular `BoolExpr`/`Region`
+//! values, not three dedicated Rust variants (see `DESIGN.md`'s "promote to a composable
+//! primitive" corollary). Growing this into `DESIGN.md`'s full Core IR (raster ops, `has_cycle`,
+//! control combinators, other topologies) is future work, one real game at a time.
 
 pub mod hex;
 pub mod interp;
-pub mod lower;
 pub mod rect;
-
-pub use lower::lower_game;
 
 pub use hex::Hex;
 pub use rect::Rect;
@@ -105,6 +104,15 @@ pub enum Region {
     },
 }
 
+/// The union of every player's occupied region -- "any site with a piece on it." `pub(crate)`
+/// since [`crate::style_c`]'s sexpr frontend reuses it for its own `(sites Empty)` sugar rather
+/// than duplicating the fold.
+pub(crate) fn all_occupied(num_players: usize) -> Region {
+    (1..num_players).fold(Region::Occupied(Player(0)), |acc, i| {
+        Region::Union(Box::new(acc), Box::new(Region::Occupied(Player(i))))
+    })
+}
+
 /// A move generator: for now, only "add a piece to every site in a region" -- both Tic-Tac-Toe's
 /// and Hex's `(move Add (to (sites Empty)))`.
 #[derive(Debug, Clone, PartialEq)]
@@ -145,9 +153,8 @@ pub enum BoolExpr {
 /// A terminal/end-condition check: the mover wins if `condition` holds against their own occupied
 /// region. Per DESIGN.md's "Design principles" corollary, this is one composable predicate built
 /// from `Region`/`BoolExpr` combinators rather than a dedicated Rust variant per end-rule shape --
-/// the previous `EndRule::Line`/`EndRule::Connected` enum is now just two particular `BoolExpr`
-/// values a `.lud` file can lower to (see `core::lower::lower_end`), not two special cases
-/// `interp::State::winner` has to know about by name.
+/// the previous `EndRule::Line`/`EndRule::Connected` enum is now just particular `BoolExpr` values
+/// (see `crate::style_c`), not special cases `interp::State::winner` has to know about by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EndRule {
     pub condition: BoolExpr,

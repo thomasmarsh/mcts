@@ -3,7 +3,7 @@
 //!
 //! See the [module doc](super) for why this sits between the lexer and the typed [`crate::ast`].
 
-use crate::ast::located::{Located, Span};
+use super::located::{Located, Span};
 use crate::parse::lexer::{self, Token};
 use crate::parse::ParseError;
 
@@ -351,11 +351,23 @@ mod tests {
     }
 
     #[test]
-    fn breakthrough_fixture_round_trips() {
-        let src = include_str!("../../lud/Breakthrough.lud");
+    fn a_realistic_multi_form_source_round_trips() {
+        // A synthetic stand-in for a real `.lud` file's shape (this reader has no `.lud`-loading
+        // caller left in this crate -- see `ROADMAP.md` -- but stays generic enough to parse this
+        // syntax, and it's worth stress-testing option priority markers/nested option items/named
+        // args/multiple top-level forms together rather than only in isolation).
+        let src = r#"
+            (game "Breakthrough"
+                (players 2)
+                (equipment {(board (square 8)) (piece "Pawn" Each)})
+                (rules (play (move Step)) (end (if (is Line 1) (result Mover Win)))))
+            (option "Board Size" <8> args:{<size>}
+                {(item "8x8" <8> "Standard 8x8 board")*
+                 (item "10x10" <10> "Larger 10x10 board")**})
+            (metadata (info (description "A pawn-advancement race game.")))
+        "#;
         let forms = parse(src).unwrap();
-        // (game ...), (option "Board" ...), (option "Board Size" ...), (metadata ...)
-        assert_eq!(forms.len(), 4);
+        assert_eq!(forms.len(), 3);
 
         let SExpr::Call(game) = &forms[0].node else {
             panic!("expected a call")
@@ -381,7 +393,7 @@ mod tests {
         };
         assert_eq!(first_item.priority, 1);
 
-        let SExpr::Call(metadata) = &forms[3].node else {
+        let SExpr::Call(metadata) = &forms[2].node else {
             panic!("expected a call")
         };
         assert_eq!(metadata.head, Head::Ident("metadata".into()));

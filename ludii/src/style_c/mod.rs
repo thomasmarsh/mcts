@@ -1,30 +1,21 @@
-//! An independent frontend that lowers a small, direct s-expression encoding of Core IR straight
-//! to [`crate::core::Program`], bypassing both halves of the existing `.lud` pipeline
-//! (`ast`/`elaborate`, which is scoped to Ludii's *ludeme* vocabulary, and a from-scratch Style C
-//! lexer/parser for the `def`/`guard`/`fixpoint`/... surface grammar sketched in the top-level
-//! `README.md`, which several sessions of syntax review left unstable and which `README.md`'s
-//! "pivot to descriptive complexity" session note deliberately deprioritized).
+//! The real, working frontend onto [`crate::core::Program`] (see `README.md`'s "Current status"):
+//! a small, direct s-expression encoding of Core IR, parsed with [`crate::parse::sexpr`]'s
+//! generic reader (parens for calls, `{}` for lists, ordinary literals). This is *not* an attempt
+//! at Style C's planned human-friendly surface notation (`def`, `guard`, primed fields,
+//! `fixpoint`, ... -- see `style-c/games/tak.md`) -- the grammar below is a near-literal
+//! parenthesized rendering of [`crate::core::Program`]/[`Region`]/[`BoolExpr`]'s own Rust shape,
+//! "Core IR as data." Per `HISTORY.md`'s session note: several rounds of live syntax review left
+//! Style C's own grammar unstable, so this frontend exists to stop that from blocking real
+//! progress -- nothing about writing a game's declarative subset and running it through Core IR
+//! needs a human-friendly lexer to exist first. A pretty-printer from Style C's eventual surface
+//! syntax down to this s-expression form remains a plausible future addition; it's not required to
+//! make this frontend useful on its own, and no longer planned per `ROADMAP.md`'s phase 2 (which
+//! may instead promote this sexpr form to the canonical surface syntax outright).
 //!
-//! Per a live design discussion (see `README.md`'s session note): the three-stage pipeline
-//! `DESIGN.md` sketches is `surface syntax -> s-expr -> Core IR -> backend`. The first arrow (a
-//! real lexer/parser for Style C's `game "Tak" { ... }` notation) is *not* implemented here and
-//! isn't blocking real progress -- nothing stops a game's declarative subset from being written
-//! directly as s-expressions and fed straight into the second arrow, reusing
-//! [`crate::parse::sexpr`]'s existing, already-tested reader (parens for calls, `{}` for lists,
-//! ordinary literals) rather than inventing and stabilizing a second lexer. The grammar below is
-//! consequently a near-literal parenthesized rendering of [`crate::core::Program`]/[`Region`]/
-//! [`BoolExpr`]'s own Rust shape -- "Core IR as data" -- not an attempt at Style C's planned
-//! human-friendly notation (`def`, `guard`, primed fields, `fixpoint`, ...). A pretty-printer
-//! from that eventual surface syntax down to this s-expression form remains a plausible future
-//! "surface lang -> s-expr" stage; it is out of scope here and not required to make this frontend
-//! useful on its own.
-//!
-//! Deliberately independent of `crate::ast`/`crate::elaborate`: this frontend's whole point is to
-//! grow the declarative subset a real game needs (topology/players/moves/end/regions today, more
-//! as further corpus games force it) without being coupled to Ludii's ludeme-shaped AST, per
-//! `DESIGN.md`'s framing that the old pipeline "isn't where new corpus games should grow." Where
-//! both frontends need the same fact (e.g. Hex's compass-to-edge mapping), the mapping is
-//! duplicated in miniature rather than shared, to keep that independence real rather than nominal.
+//! This module used to also advertise independence from a `.lud`-parsing `ast`/`elaborate`
+//! pipeline that lowered Ludii's own ludeme AST into a `Program`; that pipeline has since been
+//! deleted outright (`ROADMAP.md`'s decision to stop loading `.lud` source in code at all), so
+//! there's nothing left to be independent *from* -- this is simply the frontend now.
 //!
 //! # Grammar
 //!
@@ -63,10 +54,9 @@
 //! `Program` value exactly rather than adding a redundant `Intersect` wrapper.
 
 use crate::core::hex::{Edge, HexShape, TriangleEdge};
-use crate::core::lower::all_occupied;
 use crate::core::{
-    BoolExpr, Connectivity, Direction, EndRule, Hex, MoveGen, Player, Program, Rect, Region,
-    Topology,
+    all_occupied, BoolExpr, Connectivity, Direction, EndRule, Hex, MoveGen, Player, Program, Rect,
+    Region, Topology,
 };
 use crate::parse::sexpr::{self, Call, Head, SExpr};
 use crate::parse::ParseError;
@@ -333,10 +323,10 @@ fn lower_bool(node: &SExpr, ctx: &Ctx) -> Result<BoolExpr, Error> {
     }
 }
 
-/// `(side <compass>)` or `(tri_side <edge>)`, valid only inside a `(regions ...)` clause. `side`
-/// duplicates `core::hex::Hex::edge_for_compass`'s NE/SE/SW/NW mapping in miniature (rather than
-/// calling it, which would pull in `crate::ast::types::CompassDirection`) -- see the module doc
-/// on why this frontend stays independent of `ast`/`elaborate`. `tri_side` is the equivalent for
+/// `(side <compass>)` or `(tri_side <edge>)`, valid only inside a `(regions ...)` clause. `side`'s
+/// NE/SE/SW/NW-to-edge mapping matches `core::hex::Hex`'s own diamond-rotation convention (see
+/// that module's doc comment) -- spelled out here directly since this frontend takes compass
+/// names as plain identifiers, not a typed `CompassDirection`. `tri_side` is the equivalent for
 /// `Hex { Triangle }`'s three edges, spelled out by name (`Bottom`/`Left`/`Hypotenuse`) rather
 /// than a compass point, since a triangle doesn't have four sides to name that way.
 fn lower_side(node: &SExpr, ctx: &Ctx) -> Result<Region, Error> {
@@ -493,40 +483,68 @@ fn lower_game(node: &SExpr) -> Result<Program, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::game::Description;
-    use crate::elaborate::game::elaborate_description;
 
-    /// Same fixture-loading dance `core::lower`'s and `core::interp`'s own test modules already
-    /// use for `.lud` -> `ast::game::Game` -> `core::lower_game` -- duplicated here rather than
-    /// shared, matching that existing per-module convention.
-    fn lud_program(src: &str) -> Program {
-        let forms = crate::parse::parse(src).unwrap();
-        let Description::Game(game) = elaborate_description(&forms[0]).unwrap() else {
-            panic!("expected Description::Game");
+    #[test]
+    fn tic_tac_toe_matches_a_hand_built_program() {
+        // Same hand-built value `core::interp`'s own `manual_program_matches_parsed_one` test
+        // checks the interpreter against -- duplicated here rather than shared, since the two
+        // tests are checking different things (this parser's output vs. the interpreter's
+        // fixture-loading), per "Core IR should be constructible and checkable by hand."
+        let rect = Rect { rows: 3, cols: 3 };
+        let manual = Program {
+            topology: Topology::Rect(rect),
+            num_players: 2,
+            move_gen: MoveGen {
+                to: Region::Complement(Box::new(Region::Union(
+                    Box::new(Region::Occupied(Player(0))),
+                    Box::new(Region::Occupied(Player(1))),
+                ))),
+            },
+            end: vec![EndRule {
+                condition: BoolExpr::Any(
+                    rect.lines(3)
+                        .into_iter()
+                        .map(|line| BoolExpr::Contains(Region::Sites(line)))
+                        .collect(),
+                ),
+            }],
+            player_regions: Vec::new(),
         };
-        crate::core::lower_game(&game).unwrap()
-    }
-
-    #[test]
-    fn tic_tac_toe_matches_the_lud_lowered_program() {
         let program = parse_game(include_str!("../../style-c/sexpr/tic-tac-toe.sc")).unwrap();
-        let expected = lud_program(include_str!("../../lud/Tic-Tac-Toe.lud"));
-        assert_eq!(program, expected);
+        assert_eq!(program, manual);
     }
 
     #[test]
-    fn hex_matches_the_lud_lowered_program() {
+    fn hex_matches_a_hand_built_program() {
+        let manual = Program {
+            topology: Topology::Hex(Hex {
+                side: 3,
+                shape: HexShape::Rhombus,
+            }),
+            num_players: 2,
+            move_gen: MoveGen {
+                to: Region::Complement(Box::new(Region::Union(
+                    Box::new(Region::Occupied(Player(0))),
+                    Box::new(Region::Occupied(Player(1))),
+                ))),
+            },
+            end: vec![EndRule {
+                condition: BoolExpr::Connects {
+                    conn: Connectivity::Six,
+                },
+            }],
+            player_regions: vec![
+                vec![Region::Sites(vec![6, 7, 8]), Region::Sites(vec![0, 1, 2])],
+                vec![Region::Sites(vec![0, 3, 6]), Region::Sites(vec![2, 5, 8])],
+            ],
+        };
         let program = parse_game(include_str!("../../style-c/sexpr/hex.sc")).unwrap();
-        let expected = lud_program(include_str!("../../lud/Hex.lud"));
-        assert_eq!(program, expected);
+        assert_eq!(program, manual);
     }
 
     #[test]
     fn y_matches_a_hand_built_program() {
-        // No `.lud` oracle here -- see the module doc's "Translating `.lud`" framing and
-        // style-c/sexpr/y.sc's header: Y is deliberately not pushed through the ast/elaborate
-        // pipeline this round, since DESIGN.md already treats that pipeline as legacy. Checked
-        // instead against a hand-built `Program`, the same "Core IR should be constructible and
+        // Checked against a hand-built `Program`, the same "Core IR should be constructible and
         // checkable by hand" discipline `core::interp`'s own manual-Program tests use.
         let hex = Hex {
             side: 4,

@@ -13,7 +13,7 @@
 //! dispatch (not fixed operator precedence) for things like `(< a b)` -- to the lexer these are
 //! just names.
 
-use crate::ast::located::{Located, Span};
+use super::located::{Located, Span};
 use crate::parse::ParseError;
 
 #[derive(Debug, Clone, PartialEq)]

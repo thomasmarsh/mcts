@@ -4,7 +4,7 @@
 
 Compile game descriptions to optimized Rust bitboard implementations (and eventually GPU
 kernels). The primary source language is a small **typed functional/equational language** (see
-"Relational GDL: superseded..." further down, and `README.md`'s design-spike write-up) over
+"Relational GDL: superseded..." further down, and `HISTORY.md`'s design-spike write-up) over
 `Region`/`Raster`/`Site`-typed objects: named `let`-bound values (including hypothetical
 "next state" values, replacing GDL-style unification), ordinary function definitions with
 pattern matching, a restricted typed `then { }` effect block, and templates as compile-time
@@ -27,12 +27,14 @@ mechanically parsing Ludii's ludeme syntax. This distinction matters because Lud
 is **operationally specified**: `then`, `apply`, `moveAgain`, `remember` describe a *sequence of
 effects*, not a *relation to be computed*. No amount of syntax-directed translation turns an
 effect sequence into a declarative expression in general — that's decompilation, an open-ended,
-per-idiom reverse-engineering problem, which is exactly why the existing `ast::*`/`parse`/
-`elaborate` pipeline (still functional, still covering `Tic-Tac-Toe`/`Hex`, 96 passing tests) had
-to special-case a new operational shape roughly once per game and was never going to converge on a
-small combinator set by itself. It remains in the tree as a working bootstrap and a second,
-independent way to validate `Tic-Tac-Toe`/`Hex`'s Core programs — not as the path new games
-should grow through.
+per-idiom reverse-engineering problem, which is exactly why this project used to also have a
+mechanical `ast::*`/`parse`/`elaborate` pipeline lowering `.lud` source into Core IR directly (it
+worked, and covered `Tic-Tac-Toe`/`Hex`), but had to special-case a new operational shape roughly
+once per game and was never going to converge on a small combinator set by itself. Per
+`ROADMAP.md`'s decision, that pipeline has since been deleted outright rather than kept as a
+bootstrap — nothing loads or lowers `.lud` source in code anymore; `crate::style_c` is this
+project's one frontend onto `core::Program`, and `.lud` is read by a person, never parsed by this
+crate.
 
 Core itself — the value types, Region algebra, Raster ops, and backend lowering below — is
 mostly unchanged by this pivot: it was already trying to be the declarative, referentially
@@ -48,7 +50,7 @@ is adopted only where a corpus game has already forced the problem it solves, no
 Primary path — the typed functional/equational surface is authored directly, close to Core IR already:
 
 ```
-typed functional/equational source  (NEW: grammar not yet designed -- next session per README.md)
+typed functional/equational source  (NEW: grammar not yet designed -- next session per HISTORY.md)
   -> lex/parse -> rule AST
   -> rule AST -> Core IR             (NEW: mostly direct -- named values already are Region-algebra/effect expressions)
   -> Core IR -> Core IR (optimized)  (NEW: algebraic rewrite passes, justified by the categorical structure below)
@@ -66,25 +68,28 @@ Translation path — offline, by a human or LLM, not part of the compiler:
   -> source, checked in
 ```
 
-The existing mechanical pipeline (`.lud text -> lex -> s-expr -> ast::* -> Core IR`, via
-`parse`/`elaborate`) still exists, still compiles, and still proves `Tic-Tac-Toe` and `Hex` two
-independent ways. It isn't being deleted, but it isn't where new corpus games should grow — see
-"Goal" above for why syntax-directed translation from `.lud`'s operationally-specified ludemes
-doesn't scale the way translation-by-understanding does.
+This project used to also have a mechanical pipeline (`.lud text -> lex -> s-expr -> ast::* ->
+Core IR`, via `parse`/`elaborate`) that independently re-proved `Tic-Tac-Toe`/`Hex`. Per
+`ROADMAP.md`'s decision it has been deleted outright, not kept as a bootstrap — see "Goal" above
+for why syntax-directed translation from `.lud`'s operationally-specified ludemes doesn't scale the
+way translation-by-understanding does, and why the cross-check it provided wasn't worth the weight
+of a second AST once `style_c`'s own hand-built-`Program` tests covered the same ground more
+directly.
 
-**A third, independent frontend now exists for real**: `src/style_c/mod.rs` (see `README.md`'s
-session note) targets the primary path's `s-expr -> Core IR` arrow directly, skipping the
-"typed functional/equational source -> lex/parse -> rule AST" stages above entirely rather than
-waiting for that surface grammar to stabilize — it reuses `parse::sexpr`'s existing reader (which
-was never actually Ludii-specific, just used that way so far) against a *second*, independent
+**`src/style_c/mod.rs` is this project's one real frontend onto `core::Program`** (see
+`README.md`'s "Current status"): it targets the primary path's `s-expr -> Core IR` arrow directly,
+skipping the "typed functional/equational source -> lex/parse -> rule AST" stages above entirely
+rather than waiting for that surface grammar to stabilize — it reuses `parse::sexpr`'s reader
+(which was never actually Ludii-specific, just used that way originally) against its own
 s-expression vocabulary that mirrors `core::Program`/`Region`/`BoolExpr`'s own shape instead of
 Ludii's ludeme names, and lowers straight to `Program` with no intermediate typed AST. This makes
 "grammar not yet designed" true only of the human-facing surface syntax annotation above, not of
-the arrows after it: those now have a real, tested, growing implementation
-(`style-c/sexpr/*.sc`, checked against the same `Tic-Tac-Toe`/`Hex` `Program` values the `.lud`
-pipeline already proves). A pretty-printer from Style C's eventual concrete syntax down to this
-s-expression form remains the plausible way to fill in the still-missing first arrow later; it
-isn't required to keep growing Core IR/backend coverage in the meantime.
+the arrows after it: those now have a real, tested, growing implementation (`style-c/sexpr/*.sc`,
+checked against hand-built `Program` values and independent oracles). A pretty-printer from Style
+C's eventual concrete syntax down to this s-expression form remains a plausible way to fill in the
+still-missing first arrow later, or `ROADMAP.md`'s phase 2 may instead promote this sexpr form to
+the canonical surface syntax outright; neither is required to keep growing Core IR/backend coverage
+in the meantime.
 
 Each arrow above is a separate, independently testable pass. Core IR should be *constructible and
 checkable by hand* (as a Rust value, not just parsed from the authoring surface's source) so backend
@@ -97,7 +102,7 @@ Ludii's `(define "Name" body)` mechanism (Language Reference ch. 20, Appendix B)
 Java-class-hierarchy leakage into the surface syntax — it's a genuine small-core-plus-derived-forms
 design, the same shape as Scheme's core special forms plus a library of derived expressions. A
 "known define" expands, by textual substitution with positional parameters (`#1`, `#2`, ...), into
-ordinary compositional ludeme syntax that already fits the `ast::*`/Core split above:
+ordinary compositional ludeme syntax:
 
 ```
 (define "NoMoves" (if (no Moves Next) (result Next #1)))
@@ -106,14 +111,14 @@ ordinary compositional ludeme syntax that already fits the `ast::*`/Core split a
             (to if:(is Empty (to)))))
 ```
 
-`parse/sexpr.rs` already recognizes a quoted-string call head as `Head::Define(String)` (a "known
-define" invocation, 20.4), but `ast/metalanguage.rs` keeps a `Define`'s body generic/unexpanded —
-nothing in this pipeline resolves what a call like `("BlockWin")` or `("ReachWin" (sites Mover)
-Mover)` actually expands to. That's a missing pipeline stage, not a gap in `elaborate/`'s per-ludeme
-coverage: elaborate should never see a `Head::Define` call at all, the same way it never sees a
-`<Tag:arg>` option reference once option/template resolution has run.
+`parse/sexpr.rs`'s generic reader recognizes a quoted-string call head as `Head::Define(String)` (a
+"known define" invocation, 20.4) at the syntax level, but nothing in this project resolves what a
+call like `("BlockWin")` or `("ReachWin" (sites Mover) Mover)` actually expands to — that expansion
+has to happen in a translator's head (or an LLM's), reading the real `.lud`/`def/` source directly,
+since no code here loads `.lud` at all (see "Goal" above) to do it mechanically.
 
-This is not a hypothetical gap. Across the current `lud/` corpus:
+This is not a hypothetical gap. Across a representative sample of the corpus (games this project
+has actually read closely so far):
 
 | File | Known-defines used |
 |---|---|
@@ -140,9 +145,8 @@ ludeme-frequency stats for Ludii's own research) — `ReachWin`, for instance, a
 a one-line human-readable description ("Win in reaching a region"), not as expandable source. The
 actual `def/` bodies live in Ludii's own source distribution and still need to be sourced from
 there. What `database-1/` *does* give this project: the real, un-concretized source for every
-corpus game (`lud/`'s hand-concretized fixtures — see below — are derived from these), and a much
-larger pool to eventually pick "worth adding" games from than the handful sketched in the corpus
-table further down.
+corpus game to read by hand, and a much larger pool to eventually pick "worth adding" games from
+than the handful sketched in the corpus table further down.
 
 Whoever translates a `.lud` game into this project's authoring surface — a person or an LLM — needs the real
 `define` bodies to read the source correctly; guessing what `("BlockWin")` or `("ReachWin"
@@ -164,7 +168,7 @@ required, load-bearing infrastructure the way it was scoped last session.
   chain captures — see Congo's Monkey below) that's modeled as a bounded
   fixpoint combinator over regions, not general recursion. Templates
   (Chess's `ChessPawn`-style piece parametrization — see the design spike in
-  `README.md`) are compile-time generics, monomorphized per call site before
+  `HISTORY.md`) are compile-time generics, monomorphized per call site before
   Core ever sees them, not first-class function values passed at runtime —
   same principle, applied to the template layer specifically.
   **Scope correction from the design spike:** "statically bounded" is a claim
@@ -182,7 +186,7 @@ required, load-bearing infrastructure the way it was scoped last session.
   schedule. This is what makes a second backend (GPU, eventually) plausible
   without redesigning Core.
 - **A whole-value state update (`field' = expr`) is not a whole-value copy at runtime.** The
-  design-spike surface syntax (`README.md`'s Style C) writes every state transition as a pure
+  design-spike surface syntax (`HISTORY.md`'s Style C) writes every state transition as a pure
   function of the *entire* prior value — `board' = push(board, s, v)` denotationally replaces the
   whole board, not one cell. That's the same Halide-style algorithm/schedule separation as the
   principle above, applied to *updates* rather than to computing a value: the expression says
@@ -234,7 +238,7 @@ required, load-bearing infrastructure the way it was scoped last session.
   (pinning down intended semantics precisely enough to check a backend against, the same role
   `tests/hex_oracle.rs`'s BFS oracle plays for `flood6`), not as something the grammar must be able
   to express as ordinary authoring-surface code -- see `style-c/05-havannah-cycle.sc` and the
-  top-level `README.md`'s session note.
+  top-level `HISTORY.md`'s session note.
 - **Promote to a composable primitive once a second dedicated special case
   appears — don't wait for a third to force it.** `core::EndRule` growing a
   second hardcoded, non-composable variant (`Connected`, copying `Line`'s
@@ -294,7 +298,7 @@ Going forward, every name used in a `.sc` file must resolve to exactly one of th
 ### Worked pass: every builtin `games/tak.md` uses
 
 Tak is the only file currently on post-review syntax (`guard`, primed `field'`/`out'` bindings,
-`Tak[N]` square-bracket instantiation — see the README.md session notes), so it's the only file
+`Tak[N]` square-bracket instantiation — see the HISTORY.md session notes), so it's the only file
 this pass reclassifies. `01`-`05` and `kuhn-poker.sc`/`sprouts.sc`/`sylver-coinage.sc`/`ghost.sc`
 still predate those rounds; their builtin surface is real evidence for the *existence* of gaps
 (the `mover`/`to_move`/`current_player` and `len`/`length` collisions above both came from them)
@@ -317,7 +321,7 @@ but reclassifying their calls one by one isn't worth doing until they get the sa
 | `carried_top_is(from, drops, i, Capstone)` | — | **Not a design question — a bug.** Never defined anywhere in the file. Fixed directly (see below): the predicate it was standing in for ("is the single piece landing on the last cell a Capstone") is already answerable from `top(board, from).kind == Capstone`, since Tak's pickup/drop order means the final single-piece drop is always the original stack's top piece — no helper needed at all. |
 
 Two items surfaced by the audit but not resolved by this pass, flagged the same way `Player`/`Team`
-was in the README.md session notes — real, but with no forcing case yet:
+was in the HISTORY.md session notes — real, but with no forcing case yet:
 
 - **`Raster` cell `Value`'s shape.** Every game so far accesses it with named fields (`.owner`,
   `.kind`) rather than positional ones (`.0`, `.1`), but nothing formally specifies whether `Value`
@@ -334,7 +338,7 @@ was in the README.md session notes — real, but with no forcing case yet:
 ## Relational GDL: superseded as the primary authoring language
 
 **Status: superseded, kept for its intensional-primitive design points.** A design-spike session
-(see `README.md`) hand-transcribed five pathological cases (Chess's `ifAfterwards` check-safety
+(see `HISTORY.md`) hand-transcribed five pathological cases (Chess's `ifAfterwards` check-safety
 filter, Go's `ifAfterwards` suicide-rule filter, Go's positional-superko `(meta (no Repeat))`,
 Chess's `ChessPawn` piece-template composition, Havannah's `has_cycle`) in three candidate surface
 syntaxes: flat Horn-clause Datalog (this section's original proposal), point-free categorical
@@ -348,7 +352,7 @@ closure over an undirected adjacency relation is trivially "true" for any edge) 
 the categorical style's discipline of writing the threaded state's type down explicitly. The typed
 functional/equational style reached every case as directly as the categorical style while needing no
 new vocabulary (`let`, generics, and a named accumulator loop, not `guard`/`Tr`/`≜`) — see
-`README.md`'s spike write-up for all five cases in all three styles and the full reasoning.
+`HISTORY.md`'s spike write-up for all five cases in all three styles and the full reasoning.
 
 **Consequence:** this section's core claim ("Horn-clause logic is sugar over the categorical core")
 is retracted as a description of the primary authoring surface — a human should not be asked to
@@ -359,7 +363,7 @@ replaces this section; conjunction-as-join/disjunction-as-union/negation-as-comp
 remain true statements about Core's *semantics*, just no longer a description of what a human types.
 The categorical structure below is unaffected — it was never proposed as the authoring surface, and
 the spike confirmed it as the correct desugaring *target*. The next session designs the typed
-functional/equational style's actual grammar (Style C in `README.md`'s spike) as the real primary
+functional/equational style's actual grammar (Style C in `HISTORY.md`'s spike) as the real primary
 authoring language replacing this section.
 
 A game is a finite set of typed relations over `Region`/`Raster`/`Site`/`Player` objects (the
@@ -392,7 +396,7 @@ it would be layered onto an ordinary functional core.
 This section was deliberately a sketch, not a grammar — and per the "Status" note above, it's now a
 retired sketch: the design spike found flat Horn-clause bodies didn't reach the pathological cases
 directly, and the actual syntax/type system work moves to the typed functional/equational style
-instead (see `README.md`'s next-session charter), checked the same way this section always intended
+instead (see `HISTORY.md`'s next-session charter), checked the same way this section always intended
 — against real corpus games, starting with `Tic-Tac-Toe`/`Hex`'s existing working Core programs and
 oracles — per this doc's "grow from real lowerings" principle.
 
@@ -428,7 +432,7 @@ feedback construction at different bounds. Adopting the trace framing doesn't ch
 `bounded_fixpoint`'s Rust shape today, but it's the thing to check before writing an optimizer
 pass over it: trace axioms (naturality, yanking, superposing) are exactly the laws that would
 justify fusing or reordering two bounded fixpoints, rather than that being argued fresh per game.
-**Confirmed, not just hypothesized, by the design spike** (see `README.md`): Havannah's `has_cycle`
+**Confirmed, not just hypothesized, by the design spike** (see `HISTORY.md`): Havannah's `has_cycle`
 specifically forced the threaded state object to be `(Region, Raster<Direction>)` rather than bare
 `Region` — a naive bare-`Region` transitive-closure rendering is not just weaker, it's outright
 wrong (every edge in an undirected adjacency relation falsely looks like a 2-cycle). The trace
@@ -453,7 +457,7 @@ move concurrency (a real, correct connection — Petri nets and free symmetric m
 correspond via Meseguer–Montanari — but nothing in the corpus needs genuine concurrent/
 simultaneous moves yet).
 
-**Universality target: descriptive complexity, not unrestricted universality.** `README.md`'s
+**Universality target: descriptive complexity, not unrestricted universality.** `HISTORY.md`'s
 GDL/Ludii evaluation session concluded this project should not claim universality the way GDL
 (unrestricted logic programming) or Ludii (an after-the-fact corpus-coverage proof over an ad hoc
 ludeme set) do — this doc's own "First-order, not full lambda calculus" principle and
@@ -552,7 +556,7 @@ also make sense for `Hex`.
 
 **Implemented in `core::mod`/`core::interp`** (`shift`/`flood`/`adjacent`/`intersect` as real
 `Region` variants plus `connects` as a `BoolExpr` variant, all proven against Tic-Tac-Toe/Hex/Y —
-see the "Already covered" table's Hex/Y entries and `README.md`'s session notes). One correction
+see the "Already covered" table's Hex/Y entries and `HISTORY.md`'s session notes). One correction
 this pass made to the signature above: `flood`'s `seed` is `Region`-valued, not `Site`-valued as an
 earlier draft of this table had it — a connectivity check seeds from a whole board edge (potentially
 several sites, e.g. Hex's `(sites Side NE)`), not a single site, which `flood6`'s own signature
@@ -790,15 +794,13 @@ project's authoring surface (see above), verified against an oracle — not a sh
 `elaborate/` to grow to cover — but which primitive/topology each game forces is unchanged by
 that shift.
 
-Two different `.lud` corpora exist in this repo, deliberately: `database-1/lud/games/` is the
-full, real, un-concretized Ludii games database (~1650 files, source of record); `lud/` is the
-small set this project has actually proven through the pipeline, each one hand-concretized (fixed
-board size, options/templates resolved, same treatment `Tic-Tac-Toe.lud` and `Hex.lud` got) since
-option/template resolution is out of scope for `elaborate/` until it's mechanized (see "Macro
-expansion" above — the same is true of `<Tag:arg>` option resolution, not just `define`). Files in
-`lud/` are load-bearing fixtures (`include_str!`'d by `tests/`, `src/core/{interp,lower}.rs`,
-`src/elaborate/game.rs`, `src/parse/sexpr.rs`) — treat them the same as any other checked-in test
-fixture, not as scratch copies of `database-1/`.
+`database-1/lud/games/` is the full, real, un-concretized Ludii games database (~1650 files, source
+of record) -- read by hand (or by an LLM) to translate a game, per the "Goal"/"Translating `.lud`"
+sections above. This project used to also keep a small `lud/` directory of hand-concretized `.lud`
+fixtures (fixed board size, options/templates resolved) that a now-deleted mechanical pipeline
+loaded at test time; per `ROADMAP.md`'s decision that directory and its load-bearing role are gone
+-- every game below is instead checked against `style-c/sexpr/*.sc` fixtures and an oracle, the
+same way `y` already was before this cleanup.
 
 ### Already covered (existing `games/*`)
 
@@ -815,8 +817,8 @@ fixture, not as scratch copies of `database-1/`.
 | `gonnect` | `Rect`, big board | edge-to-edge `connects` win condition (Go-Connect hybrid) |
 | `druid` | `Rect` | fixed small-template placement (`Piece::Lintel`, a rigid 3-cell shape in 2 orientations) — a narrow case of shape-placement, not full polyomino rotation |
 | `nim`, `count`, `unit`, `null`, `traffic-lights` | non-bitboard / trivial | harness/test games, not board-topology-relevant |
-| `hex` (`lud/Hex.lud`, Core-interpreted, no `games/hex` crate) | `Hex { Rhombus }` | axial-into-rectangle packing (reuses `BitBoard<N, N>` directly — see below), six-way adjacency (`flood6`), edge-to-edge `EndRule::Connected` |
-| `y` (`style-c/sexpr/y.sc`, Core-interpreted via `style_c`, no `.lud` lowering — see below) | `Hex { Triangle }` | triangular masking of the same `Rhombus` grid/adjacency (`Region::Intersect` against `Hex::valid_sites`), three-edge `connects` (generalizes `player_regions`/`BoolExpr::Connects` from a fixed pair to an arbitrary list) |
+| `hex` (`style-c/sexpr/hex.sc`, Core-interpreted via `style_c`, no `games/hex` crate) | `Hex { Rhombus }` | axial-into-rectangle packing (reuses `BitBoard<N, N>` directly — see below), six-way adjacency (`flood6`), edge-to-edge `BoolExpr::Connects` |
+| `y` (`style-c/sexpr/y.sc`, Core-interpreted via `style_c`) | `Hex { Triangle }` | triangular masking of the same `Rhombus` grid/adjacency (`Region::Intersect` against `Hex::valid_sites`), three-edge `connects` (generalizes `player_regions`/`BoolExpr::Connects` from a fixed pair to an arbitrary list) |
 
 Hex turned out *not* to need a new bit layout or backend at all: axial coordinates `(col, row)`
 packed into the same row-major `BitBoard<N, N>` indexing `Rect` already uses, with adjacency
@@ -832,7 +834,7 @@ are now real, composable Region-algebra combinators: `core::Region` also has `Sh
 and `core::interp` evaluates `Region::Flood` via a generic `bounded_fixpoint` trace function
 instead of calling `BitBoard::flood6` directly. `EndRule` itself is now just `{ condition:
 BoolExpr }` — Tic-Tac-Toe's line-win and Hex's connectivity-win are two different `BoolExpr` values,
-not two Rust enum variants. See `README.md`'s session note for what this confirmed (and one real
+not two Rust enum variants. See `HISTORY.md`'s session note for what this confirmed (and one real
 open gap it surfaced: `connects`'s edge operands are still looked up per-mover by the interpreter,
 not embedded as literal `BoolExpr` operands — see that variant's doc comment) and
 `COMPLETENESS.md`'s primitive table for how it checks against the FO(LFP) upper-bound conjecture.
@@ -880,7 +882,7 @@ then **Abalone or Lines of Action**
   that's real remaining work, just no longer an open design question.
 - **Unbounded auxiliary effect-state (positional superko).** Go's `(meta (no Repeat))` needs a
   `Set<Hash>` of every past state, checked by membership and grown by one entry per ply — the design
-  spike (`README.md`) confirmed the Freyd-category effects layer is agnostic to the threaded state
+  spike (`HISTORY.md`) confirmed the Freyd-category effects layer is agnostic to the threaded state
   object's *type* (a scalar and a growing set are both just "some object"), but that's a different
   claim from "Core stays first-order/statically bounded" (this doc's "Design principles" above,
   currently justified by *board-size* bounds: `max_iters` "always a static bound derivable from board

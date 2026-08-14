@@ -1,19 +1,17 @@
-//! Front end for `.lud` source text: a lexer and a generic, semantics-free s-expression parser.
-//!
-//! This stage knows the surface syntax of the language (parens, `{}` lists, literals, `key:value`
-//! named arguments, option references, ranges, define calls, option-priority markers) but nothing
-//! about what any particular ludeme means. It exists so that [`crate::elaborate`] -- turning a
-//! parsed form into a [`crate::ast`] node -- can be built and tested per chapter against a
-//! [`sexpr::SExpr`] value, independent of tokenizing and bracket-matching concerns.
-//!
-//! See [`sexpr::parse`] for the entry point.
+//! A lexer and a generic, semantics-free s-expression parser: parens for calls, `{}` for lists,
+//! ordinary literals, `key:value` named arguments. Originally built as Ludii's own `.lud` front
+//! end (hence support for option references/define calls/priority markers this crate's own
+//! grammar doesn't use), but nothing about the reader itself is Ludii-specific -- it's reused
+//! as-is by [`crate::style_c`] for a completely different, non-Ludii s-expression vocabulary. See
+//! [`sexpr::parse`] for the entry point.
 
 mod lexer;
+pub mod located;
 pub mod sexpr;
 
 pub use sexpr::{parse, Arg, Call, Head, SExpr};
 
-use crate::ast::located::Span;
+use located::Span;
 
 /// A lex or parse failure, with the byte span in the source that produced it.
 #[derive(Debug, Clone, PartialEq)]

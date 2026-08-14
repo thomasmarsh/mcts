@@ -27,12 +27,12 @@ pub struct Hex {
 }
 
 /// One of a `Hex { Rhombus }` board's four straight edges. Named after the compass point each one
-/// faces once the underlying `side x side` square is pictured rotated 45 degrees into a diamond,
-/// per [`Hex::edge_for_compass`]'s doc comment -- not a claim about matching real Ludii's rendered
-/// board geometry, only about being internally consistent between [`crate::core::interp`] and
-/// its own oracle test (there's no existing `games/hex` crate to check against, per `DESIGN.md`'s
-/// corpus notes). Only meaningful for [`HexShape::Rhombus`] -- see [`TriangleEdge`] for the other
-/// shape's three edges.
+/// faces once the underlying `side x side` square is pictured rotated 45 degrees into a diamond
+/// (`crate::style_c`'s `(side NE|SE|SW|NW)` names these directly) -- not a claim about matching
+/// real Ludii's rendered board geometry, only about being internally consistent between
+/// [`crate::core::interp`] and its own oracle test (there's no existing `games/hex` crate to check
+/// against, per `DESIGN.md`'s corpus notes). Only meaningful for [`HexShape::Rhombus`] -- see
+/// [`TriangleEdge`] for the other shape's three edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
     North,
@@ -101,23 +101,6 @@ impl Hex {
             TriangleEdge::Hypotenuse => (0..n).map(|r| r * n + (n - 1 - r)).collect(),
         }
     }
-
-    /// Maps a `.lud` `(sites Side <compassDirection>)` compass point onto one of this rhombus's
-    /// four edges. `lud/Hex.lud` names its four sides `NE`/`SE`/`SW`/`NW` (the diagonal compass
-    /// points, since a diamond's sides don't face the cardinal directions) -- picture the
-    /// `side x side` square rotated 45 degrees clockwise into a diamond: the square's North edge
-    /// now faces NE, East faces SE, South faces SW, and West faces NW. `None` for any other
-    /// compass point, since nothing in the corpus so far needs one.
-    pub fn edge_for_compass(compass: crate::ast::types::CompassDirection) -> Option<Edge> {
-        use crate::ast::types::CompassDirection as C;
-        match compass {
-            C::NE => Some(Edge::North),
-            C::SE => Some(Edge::East),
-            C::SW => Some(Edge::South),
-            C::NW => Some(Edge::West),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -174,25 +157,6 @@ mod tests {
         assert_eq!(shared(&bottom, &left), vec![0]);
         assert_eq!(shared(&bottom, &hyp), vec![3]);
         assert_eq!(shared(&left, &hyp), vec![12]);
-    }
-
-    #[test]
-    fn compass_mapping_pairs_opposite_edges() {
-        use crate::ast::types::CompassDirection as C;
-        // P1 ((sites Side NE) (sites Side SW)) and P2 ((sites Side NW) (sites Side SE)) must
-        // each map to a pair of *opposite* edges, and all four edges must be distinct, for
-        // "connects across the board" to mean anything.
-        assert_eq!(Hex::edge_for_compass(C::NE), Some(Edge::North));
-        assert_eq!(Hex::edge_for_compass(C::SW), Some(Edge::South));
-        assert_eq!(Hex::edge_for_compass(C::NW), Some(Edge::West));
-        assert_eq!(Hex::edge_for_compass(C::SE), Some(Edge::East));
-    }
-
-    #[test]
-    fn other_compass_points_are_unsupported() {
-        use crate::ast::types::CompassDirection as C;
-        assert_eq!(Hex::edge_for_compass(C::N), None);
-        assert_eq!(Hex::edge_for_compass(C::E), None);
     }
 
     #[test]

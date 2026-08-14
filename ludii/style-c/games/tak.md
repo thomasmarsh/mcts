@@ -1,6 +1,6 @@
 # Tak
 
-Proof-of-concept rewrite of `games/tak.sc`, per the top-level `README.md`'s "Style C was leaking
+Proof-of-concept rewrite of `games/tak.sc`, per the top-level `HISTORY.md`'s "Style C was leaking
 Rust -- and a first fix overcorrected into leaking Alloy instead" session note. Same game, same
 license (pro forma, not required to parse or lower to any existing `core::Program` shape) -- the
 point of this file is the *syntax*, not new rules content.
@@ -42,7 +42,7 @@ pure functions uniformly. `table` above stays a distinct form regardless -- not 
 because "this is a literal finite lookup" is worth saying whether or not it happens to be
 const-evaluable.
 
-`rule` was renamed to `def` project-wide (see the top-level `README.md`'s session note): every use
+`rule` was renamed to `def` project-wide (see the top-level `HISTORY.md`'s session note): every use
 of the keyword across this corpus is an ordinary named pure function -- there's no surviving case
 where it carries genuine Horn-clause/logic-rule semantics now that Relational GDL is retracted as
 the authoring surface, so the name was a vestige of retired terminology that also collided with the
@@ -55,7 +55,7 @@ def stack_bits(n: Int): Int = 2 * (piece_reserve(n) + capstone_reserve(n))
 
 ## Piece kind and outcome
 
-`enum` was withdrawn from the leak inventory (see the `README.md` session note) -- this was never
+`enum` was withdrawn from the leak inventory (see the `HISTORY.md` session note) -- this was never
 Rust-specific notation, so it's unchanged from `games/tak.sc`.
 
 ```sc
