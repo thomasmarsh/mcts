@@ -16,12 +16,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::{
     extract::{Path as AxumPath, Query, State as AxumState},
     http::{HeaderValue, Method, StatusCode},
-    response::{IntoResponse, Json},
-    routing::{get, post},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json,
+    },
+    routing::{delete, get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
@@ -275,7 +280,7 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             "http://localhost:5173".parse::<HeaderValue>().unwrap(),
             "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
         ])
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     Router::new()
@@ -287,9 +292,16 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
         .route("/api/bench/runs/{run_id}/trials", get(get_run_trials))
         .route("/api/bench/runs/{run_id}/chain", get(get_run_chain))
+        .route("/api/bench/runs/{run_id}/games", get(get_run_games))
+        .route(
+            "/api/bench/runs/{run_id}/games/{game_seq}/moves",
+            get(get_run_game_moves),
+        )
+        .route("/api/bench/runs/{run_id}/live", get(live_run_moves))
         .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
+        .route("/api/bench/runs/{run_id}", delete(delete_run))
         .route(
             "/api/bench/runs/{run_id}/resume",
             post(resume_run).layer(launch_timeout),
@@ -759,6 +771,340 @@ async fn get_run_trials(
         .collect();
 
     Ok(Json(rows))
+}
+
+/// One game's summary within a run, as reported by `GET
+/// /api/bench/runs/{run_id}/games` -- one row per distinct `game_seq` in
+/// `game_moves`. `strategy_a`/`strategy_b`/`outcome`/`winner` come from a
+/// `LEFT JOIN` onto `match_results` (round-robin's own `seq` == a trace's
+/// `game_seq`, by construction -- see plan/spectator.md Session 2a); `None`
+/// for SMAC3 trial self-play, whose traces don't join onto `trials.trial_id`
+/// (see Session 2b's note on `MoveTracer::start_game`'s own `game_seq`).
+#[derive(Serialize)]
+pub struct GameSummary {
+    pub game_seq: i64,
+    pub ply_count: i64,
+    pub started_at: String,
+    pub ended_at: String,
+    pub strategy_a: Option<String>,
+    pub strategy_b: Option<String>,
+    pub outcome: Option<String>,
+    pub winner: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct GamesParams {
+    pub limit: Option<i64>,
+}
+
+/// `GET /api/bench/runs/{run_id}/games?limit=`
+///
+/// Lists every game that has at least one traced ply, most recent
+/// (highest `game_seq`) first -- the run-detail page's game picker (Session
+/// 4) and "is there a live game" check both read this.
+async fn get_run_games(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+    Query(params): Query<GamesParams>,
+) -> Result<Json<Vec<GameSummary>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    match db.query_row(
+        "SELECT run_id FROM runs WHERE run_id = ?1",
+        duckdb::params![&run_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(_) => {}
+        Err(duckdb::Error::QueryReturnedNoRows) => {
+            return Err(BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            });
+        }
+        Err(e) => return Err(BenchError::from(e)),
+    }
+
+    let mut sql = String::from(
+        "SELECT g.game_seq, COUNT(*), CAST(MIN(g.ts) AS TEXT), CAST(MAX(g.ts) AS TEXT), \
+                m.strategy_a, m.strategy_b, m.outcome, m.winner \
+         FROM game_moves g \
+         LEFT JOIN match_results m ON m.run_id = g.run_id AND m.seq = g.game_seq \
+         WHERE g.run_id = ?1 \
+         GROUP BY g.game_seq, m.strategy_a, m.strategy_b, m.outcome, m.winner \
+         ORDER BY g.game_seq DESC",
+    );
+    if let Some(limit) = params.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+
+    let mut stmt = db.prepare(&sql)?;
+    let rows: Vec<GameSummary> = stmt
+        .query_map(duckdb::params![&run_id], |row| {
+            Ok(GameSummary {
+                game_seq: row.get(0)?,
+                ply_count: row.get(1)?,
+                started_at: row.get(2)?,
+                ended_at: row.get(3)?,
+                strategy_a: row.get(4)?,
+                strategy_b: row.get(5)?,
+                outcome: row.get(6)?,
+                winner: row.get(7)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(rows))
+}
+
+/// One traced ply, as reported by `GET
+/// /api/bench/runs/{run_id}/games/{game_seq}/moves` -- `state`/`mv` are the
+/// same wire-JSON shape `GameAdapter::ai_move` already produces for
+/// round-robin traces, so the UI's existing per-game renderer (Session 4)
+/// can draw them with no new code. SMAC3 traces store `state` as a
+/// `Display`-text JSON string instead (see plan/spectator.md Session 2b) --
+/// not renderer-ready, but still fine to tail as text.
+#[derive(Serialize)]
+pub struct MoveRow {
+    pub ply: i64,
+    pub ts: String,
+    pub state: Value,
+    pub mv: Option<Value>,
+    pub player: Option<String>,
+}
+
+/// `GET /api/bench/runs/{run_id}/games/{game_seq}/moves`
+///
+/// A single game's full trace, ordered by ply -- historical replay (Session
+/// 4) is a plain fetch of this, no SSE needed. Unknown `run_id`/`game_seq`
+/// both just come back an empty list rather than 404, matching
+/// `get_run_trials`'s own no-existence-check-beyond-the-run pattern.
+async fn get_run_game_moves(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath((run_id, game_seq)): AxumPath<(String, i64)>,
+) -> Result<Json<Vec<MoveRow>>, BenchError> {
+    let db = state.db.lock().unwrap();
+
+    let mut stmt = db.prepare(
+        "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player \
+         FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 ORDER BY ply ASC",
+    )?;
+    let rows: Vec<MoveRow> = stmt
+        .query_map(duckdb::params![&run_id, game_seq], |row| {
+            let state_str: String = row.get(2)?;
+            let mv_str: Option<String> = row.get(3)?;
+            Ok(MoveRow {
+                ply: row.get(0)?,
+                ts: row.get(1)?,
+                state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
+                mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
+                player: row.get(4)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(rows))
+}
+
+/// One live ply pushed down `GET /api/bench/runs/{run_id}/live`'s SSE
+/// stream. `game_seq` is included on every event (not just once) since the
+/// currently in-flight game can change mid-stream (one trial/match ends,
+/// the next one's moves start arriving) -- the client detects that by
+/// watching for a `game_seq` change, no separate "game boundary" event type
+/// needed.
+#[derive(Serialize)]
+struct LiveMoveEvent {
+    game_seq: i64,
+    ply: i64,
+    ts: String,
+    state: Value,
+    mv: Option<Value>,
+    player: Option<String>,
+}
+
+/// `GET /api/bench/runs/{run_id}/live` (SSE)
+///
+/// Polls `game_moves` every 750ms for plies newer than the last one sent,
+/// on whichever `game_seq` is currently the highest for this run (the
+/// "in-flight" game, per plan/spectator.md Session 3) -- a fresh game
+/// starting under the same run (next round-robin match / SMAC3 trial) is
+/// picked up automatically by the `MAX(game_seq)` jumping, no restart
+/// needed. Ends when the client disconnects (the spawned polling task's
+/// `tx.send` starts failing once the `Sse` response's stream is dropped).
+async fn live_run_moves(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, BenchError> {
+    {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT run_id FROM runs WHERE run_id = ?1",
+            duckdb::params![&run_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(_) => {}
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                return Err(BenchError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("run '{run_id}' not found"),
+                });
+            }
+            Err(e) => return Err(BenchError::from(e)),
+        }
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
+    tokio::spawn(async move {
+        let mut current_game_seq: Option<i64> = None;
+        let mut last_ply: i64 = -1;
+        let mut interval = tokio::time::interval(Duration::from_millis(750));
+        loop {
+            interval.tick().await;
+
+            let max_seq: Option<i64> = {
+                let db = state.db.lock().unwrap();
+                db.query_row(
+                    "SELECT MAX(game_seq) FROM game_moves WHERE run_id = ?1",
+                    duckdb::params![&run_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(None)
+            };
+            let Some(max_seq) = max_seq else { continue };
+
+            if current_game_seq != Some(max_seq) {
+                current_game_seq = Some(max_seq);
+                last_ply = -1;
+            }
+
+            let new_rows: Vec<(i64, String, String, Option<String>, Option<String>)> = {
+                let db = state.db.lock().unwrap();
+                let stmt = db.prepare(
+                    "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player \
+                     FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 AND ply > ?3 \
+                     ORDER BY ply ASC",
+                );
+                match stmt {
+                    Ok(mut stmt) => {
+                        let mapped =
+                            stmt.query_map(duckdb::params![&run_id, max_seq, last_ply], |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, Option<String>>(3)?,
+                                    row.get::<_, Option<String>>(4)?,
+                                ))
+                            });
+                        match mapped {
+                            Ok(iter) => iter.filter_map(Result::ok).collect(),
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            };
+
+            for (ply, ts, state_str, mv_str, player) in new_rows {
+                last_ply = ply;
+                let payload = LiveMoveEvent {
+                    game_seq: max_seq,
+                    ply,
+                    ts,
+                    state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
+                    mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
+                    player,
+                };
+                let Ok(event) = Event::default().json_data(&payload) else {
+                    continue;
+                };
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+
+    Ok(Sse::new(ReceiverStream::new(rx).map(Ok)).keep_alive(KeepAlive::default()))
+}
+
+/// `DELETE /api/bench/runs/{run_id}`
+///
+/// Removes a run's rows from every table (`game_moves`, `incumbents`,
+/// `trials`, `match_results`, `runs`, in FK-safe child-before-parent order)
+/// plus its `_ingest_cursor` entries and its `bench-runs/<run_id>/`
+/// directory (`log.jsonl`/`moves.jsonl`/`stdout.log`) -- per
+/// plan/spectator.md's scope decision, this is the *only* deletion path
+/// (no automatic retention/pruning of traces). Refuses a still-`running`
+/// run with 409 rather than deleting out from under a live process; stop it
+/// first.
+async fn delete_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<StatusCode, BenchError> {
+    let status: String = {
+        let db = state.db.lock().unwrap();
+        match db.query_row(
+            "SELECT status FROM runs WHERE run_id = ?1",
+            duckdb::params![&run_id],
+            |row| row.get(0),
+        ) {
+            Ok(s) => s,
+            Err(duckdb::Error::QueryReturnedNoRows) => {
+                return Err(BenchError {
+                    status: StatusCode::NOT_FOUND,
+                    message: format!("run '{run_id}' not found"),
+                });
+            }
+            Err(e) => return Err(BenchError::from(e)),
+        }
+    };
+    if status == "running" {
+        return Err(BenchError {
+            status: StatusCode::CONFLICT,
+            message: format!("run '{run_id}' is still running -- stop it before deleting"),
+        });
+    }
+
+    let run_dir = state.bench_runs_dir.join(&run_id);
+    {
+        let db = state.db.lock().unwrap();
+        db.execute(
+            "DELETE FROM game_moves WHERE run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM incumbents WHERE run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM trials WHERE run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM match_results WHERE run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        for file in ["log.jsonl", "moves.jsonl", "stdout.log"] {
+            let path = run_dir.join(file).to_string_lossy().to_string();
+            db.execute(
+                "DELETE FROM _ingest_cursor WHERE log_path = ?1",
+                duckdb::params![&path],
+            )?;
+        }
+        db.execute(
+            "DELETE FROM runs WHERE run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+    }
+
+    // Best-effort: reclaim the on-disk trace/log files too. A failure here
+    // (e.g. already gone) doesn't roll back the DB deletion above -- the DB
+    // is the source of truth the UI reads from.
+    let _ = std::fs::remove_dir_all(&run_dir);
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// One rung of a SMAC3 ladder chain, as reported by `GET
@@ -2129,6 +2475,21 @@ mod tests {
         ).unwrap();
     }
 
+    /// Default seed plus a two-ply trace for `match_results.seq = 1` (game
+    /// 1: "strong" beats "master") -- exercises the join between
+    /// `game_moves` and `match_results` on `(run_id, seq == game_seq)`.
+    fn game_moves_seed(conn: &duckdb::Connection, bench_runs_dir: &Path) {
+        default_seed(conn, bench_runs_dir);
+        conn.execute(
+            "INSERT INTO game_moves (run_id, game_seq, ply, ts, state, mv, player) \
+             VALUES \
+             (?1, 1, 0, '2026-01-01T00:00:10Z', '{\"board\":[]}', NULL, NULL), \
+             (?1, 1, 1, '2026-01-01T00:00:11Z', '{\"board\":[1]}', '4', 'strong')",
+            duckdb::params![DEFAULT_RUN_ID],
+        )
+        .unwrap();
+    }
+
     fn body_json(body: &axum::body::Bytes) -> Value {
         serde_json::from_slice(body).unwrap()
     }
@@ -2161,6 +2522,22 @@ mod tests {
                     .uri(uri)
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&json).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
+    async fn http_delete(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(uri)
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
@@ -2443,6 +2820,154 @@ mod tests {
         let rows = body_json(&body).as_array().unwrap().clone();
         assert_eq!(rows.len(), 1, "expected 1 trial with limit=1");
         assert_eq!(rows[0]["trial_id"], 1);
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}/games, .../games/{game_seq}/moves
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_run_games_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_get(app, "/api/bench/runs/nonexistent/games").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert_eq!(body_json(&body)["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_get_run_games_empty_when_no_traces() {
+        // `default_seed` has match_results but no game_moves rows.
+        let app = seeded_app(default_seed).0;
+        let (status, body) =
+            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert!(body_json(&body).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_run_games_joins_match_results_by_seq() {
+        let app = seeded_app(game_moves_seed).0;
+        let (status, body) =
+            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let games = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(games.len(), 1, "expected 1 traced game, got {games:?}");
+        assert_eq!(games[0]["game_seq"], 1);
+        assert_eq!(games[0]["ply_count"], 2);
+        assert_eq!(games[0]["strategy_a"], "strong");
+        assert_eq!(games[0]["strategy_b"], "master");
+        assert_eq!(games[0]["winner"], "strong");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_game_moves_ordered_by_ply() {
+        let app = seeded_app(game_moves_seed).0;
+        let (status, body) = http_get(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games/1/moves"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let moves = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[0]["ply"], 0);
+        assert_eq!(moves[0]["mv"], Value::Null);
+        assert_eq!(moves[0]["state"], json!({"board": []}));
+        assert_eq!(moves[1]["ply"], 1);
+        assert_eq!(moves[1]["mv"], 4);
+        assert_eq!(moves[1]["player"], "strong");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_game_moves_empty_for_unknown_game_seq() {
+        let app = seeded_app(game_moves_seed).0;
+        let (status, body) = http_get(
+            app,
+            &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games/999/moves"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert!(body_json(&body).as_array().unwrap().is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // DELETE /api/bench/runs/{run_id}
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_delete_run_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, body) = http_delete(app, "/api/bench/runs/nonexistent").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert_eq!(body_json(&body)["code"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_delete_run_409_while_running() {
+        let app = seeded_app(running_run_seed).0;
+        let (status, body) = http_delete(app, "/api/bench/runs/running-run").await;
+        assert_eq!(status, HttpStatusCode::CONFLICT);
+        assert_eq!(body_json(&body)["code"], 409);
+    }
+
+    #[tokio::test]
+    async fn test_delete_run_removes_all_rows_and_files() {
+        let (app, tmp_dir) = seeded_app(game_moves_seed);
+        let run_dir = tmp_dir.join("bench-runs").join(DEFAULT_RUN_ID);
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(run_dir.join("log.jsonl"), "{}\n").unwrap();
+        std::fs::write(run_dir.join("moves.jsonl"), "{}\n").unwrap();
+
+        let (status, _) =
+            http_delete(app.clone(), &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
+        assert_eq!(status, HttpStatusCode::NO_CONTENT);
+
+        let (status, _) = http_get(app.clone(), "/api/bench/runs").await;
+        assert_eq!(status, HttpStatusCode::OK);
+
+        let (status, _) = http_get(app.clone(), &format!("/api/bench/runs/{DEFAULT_RUN_ID}")).await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+
+        let (status, body) =
+            http_get(app, &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games")).await;
+        assert_eq!(
+            status,
+            HttpStatusCode::NOT_FOUND,
+            "run row itself is gone: {body:?}"
+        );
+
+        assert!(!run_dir.exists(), "run directory should be removed");
+    }
+
+    // -------------------------------------------------------------------
+    // GET /api/bench/runs/{run_id}/live (SSE)
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_live_run_moves_404_for_unknown_run() {
+        let app = seeded_app(default_seed).0;
+        let (status, _) = http_get(app, "/api/bench/runs/nonexistent/live").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_live_run_moves_opens_sse_stream_for_known_run() {
+        let app = seeded_app(game_moves_seed).0;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/bench/runs/{DEFAULT_RUN_ID}/live"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), HttpStatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
     }
 
     // -------------------------------------------------------------------
