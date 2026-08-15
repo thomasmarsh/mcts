@@ -230,6 +230,47 @@ def test_train_omits_max_iterations_when_unset(monkeypatch, tmp_path: Path):
     assert "--max-iterations" not in captured["cmd"]
 
 
+def test_train_forwards_trace_path_when_set(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    trace_path = str(tmp_path / "moves.jsonl")
+    train = make_target(cfg, trace_path=trace_path)
+    cost = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(0.5)
+    assert "--trace-path" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--trace-path") + 1] == trace_path
+
+
+def test_train_omits_trace_path_when_unset(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    train({"family": "ucb1"}, seed=0)
+
+    assert "--trace-path" not in captured["cmd"]
+
+
 def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
     import math
 

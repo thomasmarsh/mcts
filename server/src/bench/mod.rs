@@ -1894,6 +1894,21 @@ fn build_command(
                 }
             }
 
+            // Move-trace lines go to a dedicated `moves.jsonl` in the run's
+            // own directory, same as round_robin below -- see
+            // `LogRecord::Move`'s doc comment for why a full move trace is
+            // kept out of the main log. Each trial's game-binary subprocess
+            // opens this path in append mode, so every trial in the run
+            // accumulates into the same file.
+            cmd.push("--trace-path".into());
+            cmd.push(
+                std::path::Path::new(launch::BENCH_RUNS_DIR)
+                    .join(run_id)
+                    .join("moves.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+
             Ok(cmd)
         }
         "round_robin" => {
@@ -2726,9 +2741,10 @@ mod tests {
         .unwrap();
 
         // First element is the (unresolved-in-test) bench binary path --
-        // everything after it is the argv this test actually cares about.
+        // everything after it is the argv this test actually cares about
+        // (trailing --trace-path is asserted separately, below).
         assert_eq!(
-            cmd[1..],
+            cmd[1..cmd.len() - 2],
             vec![
                 "smac3",
                 "--game",
@@ -2746,7 +2762,26 @@ mod tests {
     #[test]
     fn test_build_command_smac3_with_no_config_is_just_game() {
         let cmd = build_command("smac3", "druid", &None, "test-run").unwrap();
-        assert_eq!(cmd[1..], vec!["smac3", "--game", "druid"]);
+        assert_eq!(cmd[1..cmd.len() - 2], vec!["smac3", "--game", "druid"]);
+    }
+
+    #[test]
+    fn test_build_command_smac3_includes_trace_path_derived_from_run_id() {
+        let cmd = build_command(
+            "smac3",
+            "druid",
+            &None,
+            "smac3-druid-20260101T000000-abcdef",
+        )
+        .unwrap();
+        let idx = cmd
+            .iter()
+            .position(|a| a == "--trace-path")
+            .expect("--trace-path flag present");
+        assert_eq!(
+            cmd[idx + 1],
+            "bench-runs/smac3-druid-20260101T000000-abcdef/moves.jsonl"
+        );
     }
 
     #[test]
@@ -2798,7 +2833,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            cmd[1..],
+            cmd[1..cmd.len() - 2],
             vec![
                 "smac3",
                 "--game",

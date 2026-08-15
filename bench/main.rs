@@ -136,6 +136,13 @@ enum Command {
         #[arg(long)]
         resume: Option<String>,
 
+        /// Optional path to append per-ply move-trace JSONL lines to
+        /// (opened in append mode by each trial's game-binary subprocess,
+        /// same file across the whole run). Passed through as `smac3
+        /// --trace-path`. Omit to disable move tracing entirely.
+        #[arg(long)]
+        trace_path: Option<String>,
+
         /// Launch in the background (detached process) instead of
         /// running in the foreground.
         #[arg(long)]
@@ -187,6 +194,7 @@ fn main() {
             label,
             run_id,
             resume,
+            trace_path,
             background,
         } => cmd_smac3(
             config.as_deref(),
@@ -197,6 +205,7 @@ fn main() {
             label.as_deref(),
             run_id.as_deref(),
             resume.as_deref(),
+            trace_path.as_deref(),
             background,
         ),
 
@@ -361,6 +370,7 @@ fn build_smac3_command(
     game: &str,
     run_id: Option<&str>,
     resume: Option<&str>,
+    trace_path: Option<&str>,
 ) -> Vec<String> {
     let mut cmd = vec![
         "uv".to_string(),
@@ -415,6 +425,11 @@ fn build_smac3_command(
         cmd.push(id.to_string());
     }
 
+    if let Some(path) = trace_path {
+        cmd.push("--trace-path".to_string());
+        cmd.push(path.to_string());
+    }
+
     cmd
 }
 
@@ -428,6 +443,7 @@ fn cmd_smac3(
     label: Option<&str>,
     run_id: Option<&str>,
     resume: Option<&str>,
+    trace_path: Option<&str>,
     background: bool,
 ) {
     if background {
@@ -448,6 +464,7 @@ fn cmd_smac3(
             game,
             Some(&run_id),
             resume,
+            trace_path,
         );
 
         // Launch via the detached-process launcher.
@@ -489,6 +506,7 @@ fn cmd_smac3(
             game,
             run_id,
             resume,
+            trace_path,
         );
         let mut child = match StdCommand::new(&cmd[0])
             .args(&cmd[1..])
@@ -557,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_overrides_target_binary_from_game() {
-        let cmd = build_smac3_command(None, &[], &[], None, "breakthrough", None, None);
+        let cmd = build_smac3_command(None, &[], &[], None, "breakthrough", None, None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-breakthrough")
@@ -572,7 +590,7 @@ mod tests {
         // repeated key, so an explicit caller override for the same key
         // must come after (and thus win over) the game-derived one.
         let overrides = vec!["target.binary=custom/path".to_string()];
-        let cmd = build_smac3_command(None, &overrides, &[], None, "druid", None, None);
+        let cmd = build_smac3_command(None, &overrides, &[], None, "druid", None, None, None);
         let game_idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-druid")
@@ -594,6 +612,7 @@ mod tests {
             "druid",
             Some("smac3-druid-run-1"),
             Some("smac3-druid-run-0"),
+            None,
         );
         let run_id_idx = cmd
             .iter()
@@ -610,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_omits_run_id_and_resume_when_absent() {
-        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None);
+        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
     }
@@ -618,7 +637,7 @@ mod tests {
     #[test]
     fn test_build_smac3_command_forwards_baseline_configs() {
         let baseline_configs = vec![r#"ladder1={"family":"ucb1"}"#.to_string()];
-        let cmd = build_smac3_command(None, &[], &baseline_configs, None, "nim", None, None);
+        let cmd = build_smac3_command(None, &[], &baseline_configs, None, "nim", None, None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "--baseline-config")
@@ -636,6 +655,7 @@ mod tests {
             "druid",
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -646,7 +666,32 @@ mod tests {
 
     #[test]
     fn test_build_smac3_command_omits_game_config_when_absent() {
-        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None);
+        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
         assert!(!cmd.iter().any(|a| a == "--game-config"));
+    }
+
+    #[test]
+    fn test_build_smac3_command_forwards_trace_path() {
+        let cmd = build_smac3_command(
+            None,
+            &[],
+            &[],
+            None,
+            "druid",
+            None,
+            None,
+            Some("bench-runs/smac3-druid-run-1/moves.jsonl"),
+        );
+        let idx = cmd
+            .iter()
+            .position(|a| a == "--trace-path")
+            .expect("--trace-path flag present");
+        assert_eq!(cmd[idx + 1], "bench-runs/smac3-druid-run-1/moves.jsonl");
+    }
+
+    #[test]
+    fn test_build_smac3_command_omits_trace_path_when_absent() {
+        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
+        assert!(!cmd.iter().any(|a| a == "--trace-path"));
     }
 }

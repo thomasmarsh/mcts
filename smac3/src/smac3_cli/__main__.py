@@ -152,6 +152,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--trace-path",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Append per-ply move-trace JSONL lines to this file (opened in "
+            "append mode by each trial's game-binary subprocess, so every "
+            "trial in the run accumulates into the same file). Forwarded "
+            "verbatim as `tune eval --trace-path <path>` on every trial. "
+            "Omit to disable move tracing."
+        ),
+    )
+    p.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -173,6 +186,7 @@ def build_optimizer(
     resume: str | None = None,
     git_sha: str | None = None,
     verbose: bool = False,
+    trace_path: str | None = None,
 ) -> HyperparameterOptimizationFacade:
     """Build a ready-to-`.optimize()` SMAC3 facade from *cfg*.
 
@@ -201,7 +215,7 @@ def build_optimizer(
     logger.info("ConfigSpace: %d parameters, %d conditions", len(cs), len(cs.conditions))
 
     # -- target function ---------------------------------------------------
-    train = make_target(cfg)
+    train = make_target(cfg, trace_path=trace_path)
 
     # -- SMAC scenario -----------------------------------------------------
     n_workers = cfg.optimizer.n_workers
@@ -289,6 +303,7 @@ def main() -> None:
         resume=args.resume,
         git_sha=args.git_sha,
         verbose=args.verbose,
+        trace_path=args.trace_path,
     )
     cs = smac.scenario.configspace
 

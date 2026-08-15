@@ -43,11 +43,14 @@ FLOOR_BASELINES: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 
-def make_target(cfg: SearchConfig):
+def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
     """Return a callable suitable as SMAC's ``target_function``.
 
     The returned closure captures the binary path and evaluation settings so
-    that the optimizer only sees ``(config, seed)``.
+    that the optimizer only sees ``(config, seed)``. ``trace_path``, when
+    given, is forwarded verbatim as ``tune eval --trace-path <path>`` on
+    every trial -- the game binary's own `MoveTracer` opens it in append
+    mode, so all trials in the run accumulate into the same file.
     """
     binary: Path = cfg.resolve_binary()
     if not binary.is_file():
@@ -105,6 +108,9 @@ def make_target(cfg: SearchConfig):
 
         if cfg.target.max_iterations is not None:
             cmd += ["--max-iterations", str(cfg.target.max_iterations)]
+
+        if trace_path is not None:
+            cmd += ["--trace-path", trace_path]
 
         logger.debug("Running: %s", " ".join(cmd))
 
