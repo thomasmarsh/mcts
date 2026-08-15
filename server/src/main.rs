@@ -10,6 +10,11 @@
 mod adapter;
 mod bench;
 
+const BUILD_INFO: mcts_bench::launch::BuildInfo<'static> = mcts_bench::launch::BuildInfo {
+    git_sha: env!("GIT_SHA"),
+    git_dirty: matches!(env!("GIT_DIRTY").as_bytes(), b"true"),
+};
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

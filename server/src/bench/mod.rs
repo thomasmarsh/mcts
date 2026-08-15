@@ -1398,7 +1398,7 @@ async fn launch_and_record(
     label: Option<&str>,
     resume_from: Option<&str>,
 ) -> Result<LaunchResponse, BenchError> {
-    let run_id = launch::generate_run_id(kind, game);
+    let run_id = launch::generate_run_id(kind, game, crate::BUILD_INFO);
     let config = if kind == "smac3" {
         record_floor_baseline_settings(config)
     } else {
@@ -1424,10 +1424,12 @@ async fn launch_and_record(
         pid,
         log_path,
         log_dir,
-    } = launch::launch_with_run_id(run_id, cmd, kind, game, label).map_err(|e| BenchError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("failed to launch run: {e}"),
-    })?;
+    } = launch::launch_with_run_id(run_id, cmd, kind, game, label, crate::BUILD_INFO).map_err(
+        |e| BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to launch run: {e}"),
+        },
+    )?;
 
     let started_at = iso_timestamp_now();
 
@@ -1450,8 +1452,8 @@ async fn launch_and_record(
                 game,
                 label,
                 config_str,
-                game_host::build_info::GIT_SHA,
-                game_host::build_info::GIT_DIRTY == "true",
+                crate::BUILD_INFO.git_sha,
+                crate::BUILD_INFO.git_dirty,
                 hostname,
                 pid as i64,
                 &started_at,

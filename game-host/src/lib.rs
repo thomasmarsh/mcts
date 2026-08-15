@@ -8,7 +8,6 @@
 //! trait and the request/response types used by the `SubprocessAdapter`
 //! (Step 3 of the workspace migration).
 
-pub mod build_info;
 pub mod subprocess;
 
 use serde_json::Value;

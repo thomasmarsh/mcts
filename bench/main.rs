@@ -15,13 +15,17 @@ use std::process::{Command as StdCommand, Stdio};
 
 use clap::{Parser, Subcommand};
 
-use game_host::build_info;
 use mcts::util::Verbosity;
 use mcts_bench::ingest;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::registry;
 use mcts_bench::schema;
 use mcts_bench::tournament::round_robin_bench_multiple;
+
+const BUILD_INFO: launch::BuildInfo<'static> = launch::BuildInfo {
+    git_sha: env!("GIT_SHA"),
+    git_dirty: matches!(env!("GIT_DIRTY").as_bytes(), b"true"),
+};
 
 #[derive(Parser)]
 #[command(name = "bench", about = "Benchmark, tournament, and SMAC3 harness")]
@@ -330,7 +334,7 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
         pid,
         log_path,
         ..
-    } = match launch::launch(cmd.to_vec(), kind, game, label) {
+    } = match launch::launch(cmd.to_vec(), kind, game, label, BUILD_INFO) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: failed to launch run: {e}");
@@ -413,7 +417,7 @@ fn build_smac3_command(
     // Pass the compile-time git SHA so the Python side can include it
     // in its JSONL output for attribution.
     cmd.push("--git-sha".to_string());
-    cmd.push(build_info::GIT_SHA.to_string());
+    cmd.push(BUILD_INFO.git_sha.to_string());
 
     if let Some(id) = run_id {
         cmd.push("--run-id".to_string());
@@ -455,7 +459,7 @@ fn cmd_smac3(
         // output directory it actually needs.
         let run_id = run_id
             .map(str::to_string)
-            .unwrap_or_else(|| launch::generate_run_id("smac3", game));
+            .unwrap_or_else(|| launch::generate_run_id("smac3", game, BUILD_INFO));
         let cmd = build_smac3_command(
             config,
             overrides,
@@ -473,7 +477,7 @@ fn cmd_smac3(
             pid,
             log_path,
             ..
-        } = match launch::launch_with_run_id(run_id, cmd, "smac3", game, label) {
+        } = match launch::launch_with_run_id(run_id, cmd, "smac3", game, label, BUILD_INFO) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("error: failed to launch SMAC3 run: {e}");

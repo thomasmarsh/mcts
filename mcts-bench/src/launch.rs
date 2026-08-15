@@ -15,7 +15,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::unix::process::CommandExt;
 
 use crate::log::RegistryEvent;
-use game_host::build_info;
+
+/// Source revision attached to a launched benchmark run.
+#[derive(Clone, Copy)]
+pub struct BuildInfo<'a> {
+    pub git_sha: &'a str,
+    pub git_dirty: bool,
+}
 
 /// Default root directory for benchmark run data (relative to the repo root,
 /// or absolute).  Matches the `bench-runs/` entry in `.gitignore`.
@@ -51,8 +57,16 @@ pub fn launch(
     kind: &str,
     game: &str,
     label: Option<&str>,
+    build_info: BuildInfo<'_>,
 ) -> std::io::Result<LaunchedRun> {
-    launch_with_run_id(generate_run_id(kind, game), cmd, kind, game, label)
+    launch_with_run_id(
+        generate_run_id(kind, game, build_info),
+        cmd,
+        kind,
+        game,
+        label,
+        build_info,
+    )
 }
 
 /// Like [`launch`], but with a caller-supplied `run_id` instead of one
@@ -68,6 +82,7 @@ pub fn launch_with_run_id(
     kind: &str,
     game: &str,
     _label: Option<&str>,
+    build_info: BuildInfo<'_>,
 ) -> std::io::Result<LaunchedRun> {
     let log_dir = Path::new(BENCH_RUNS_DIR).join(&run_id);
     fs::create_dir_all(&log_dir)?;
@@ -126,9 +141,6 @@ pub fn launch_with_run_id(
         let _ = append_registry_event(&stop);
     });
 
-    let git_sha = build_info::GIT_SHA;
-    let git_dirty = build_info::GIT_DIRTY == "true";
-
     let event = RegistryEvent::Start {
         run_id: run_id.clone(),
         kind: kind.to_owned(),
@@ -136,8 +148,8 @@ pub fn launch_with_run_id(
         pid,
         cmd: cmd.clone(),
         log_path: log_path.to_string_lossy().to_string(),
-        git_sha: git_sha.to_owned(),
-        git_dirty,
+        git_sha: build_info.git_sha.to_owned(),
+        git_dirty: build_info.git_dirty,
         started_at: iso_timestamp(),
     };
     append_registry_event(&event)?;
@@ -168,8 +180,8 @@ pub fn is_alive(pid: u32) -> bool {
 
 /// Generate a run_id following the convention:
 /// `{kind}-{game}-{yyyymmddThhmmss}-{short_git_sha}`
-pub fn generate_run_id(kind: &str, game: &str) -> String {
-    let sha = build_info::GIT_SHA;
+pub fn generate_run_id(kind: &str, game: &str, build_info: BuildInfo<'_>) -> String {
+    let sha = build_info.git_sha;
     let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
     format!("{kind}-{game}-{ts}-{short_sha}", ts = compact_timestamp())
 }
@@ -329,7 +341,14 @@ mod tests {
 
     #[test]
     fn generate_run_id_uses_correct_format() {
-        let id = generate_run_id("round_robin", "druid");
+        let id = generate_run_id(
+            "round_robin",
+            "druid",
+            BuildInfo {
+                git_sha: "abcdef0123456789",
+                git_dirty: false,
+            },
+        );
         let parts: Vec<&str> = id.split('-').collect();
         assert!(
             parts.len() >= 4,
