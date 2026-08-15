@@ -1,6 +1,6 @@
 // Smac3RunDetail.tsx — Trial history for an open `kind: "smac3"` run:
 // stats, a cost-over-trials chart (per-trial cost + running best-so-far),
-// and a best-trial-vs-default parameter table.
+// and parameter tables comparing candidates with the baseline they faced.
 //
 // Pure presentational component: `trials`/`tuner`/`launchConfig` are read
 // from BenchState by RunDetailPanel.tsx (which owns the tail loop that
@@ -86,43 +86,38 @@ function chainRungLabel(rung: ChainRung, index: number): string {
 interface ParamDiffRow {
   name: string;
   value: unknown;
-  def: unknown;
+  baseline: unknown;
   changed: boolean;
 }
 
-/** Diff a config's active parameters against each one's declared default
- * (or `value`, for a `constant`-type param) from the tuner metadata. Only
- * used as a fallback when there's no real baseline config to diff against
- * yet (a chain still on its root rung -- see `paramsVsBaseline`), since a
- * fixed search-space default is far less informative than "did this
- * actually change relative to what it's currently playing against." */
-function paramsVsDefault(config: Record<string, unknown> | undefined, tuner: TunerInfo | null): ParamDiffRow[] {
-  if (!config || !tuner) return [];
-  return Object.entries(config).map(([name, value]) => {
-    const spec = tuner.parameters.find((p) => p.name === name);
-    const def = spec ? (spec.type === "constant" ? spec.value : spec.default) : undefined;
-    const changed = def !== undefined && JSON.stringify(def) !== JSON.stringify(value);
-    return { name, value, def, changed };
-  });
-}
-
-/** Diff a config's active parameters against a real baseline config (the
- * opponent it's actually being scored against right now), rather than the
- * search space's fixed default -- "how does this differ from what it's
- * currently playing" is the more useful question once a real baseline
- * config is available. Same shape as `paramsVsDefault`, so both feed the
- * same table renderer; `def` here holds the baseline's value for the param
- * instead of the search-space default. */
+/** Diff a config's active parameters against the actual baseline config
+ * used for this run. */
 function paramsVsBaseline(
   config: Record<string, unknown> | undefined,
   baseline: Record<string, unknown> | null,
 ): ParamDiffRow[] {
   if (!config || !baseline) return [];
   return Object.entries(config).map(([name, value]) => {
-    const def = baseline[name];
-    const changed = def !== undefined && JSON.stringify(def) !== JSON.stringify(value);
-    return { name, value, def, changed };
+    const baselineValue = baseline[name];
+    const changed = baselineValue !== undefined && JSON.stringify(baselineValue) !== JSON.stringify(value);
+    return { name, value, baseline: baselineValue, changed };
   });
+}
+
+/** The launch record stores the resolved parameter settings for each
+ * baseline instance. A promoted rung also keeps the raw setting under
+ * `baseline_configs`, because that is what the CLI forwards to the game.
+ * A comparison only makes sense with exactly one baseline instance. */
+function baselineConfig(launchConfig: unknown): Record<string, unknown> | null {
+  const config = launchConfig as { baseline_settings?: unknown; baseline_configs?: unknown } | null;
+  const settings = config?.baseline_settings ?? config?.baseline_configs;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
+  const entries = Object.values(settings as Record<string, unknown>);
+  if (entries.length !== 1) return null;
+  const baseline = entries[0];
+  return baseline && typeof baseline === "object" && !Array.isArray(baseline)
+    ? baseline as Record<string, unknown>
+    : null;
 }
 
 /** The baseline instance a trial's cost was measured against, when the run
@@ -339,33 +334,13 @@ export const Smac3RunDetail: Component<{
   // what "Use best as new baseline" actually promotes -- while the lowest
   // trial is just this chart's single cheapest observed dot, with no
   // confirmation behind it.
-  // The opponent config the *latest* rung is actually being scored against
-  // right now: a ladder rung's baseline is the prior rung's own incumbent
-  // (see `ChainRung`'s doc comment), so `chain[last].incumbent.config` *is*
-  // that baseline in the same `TrialParams` shape a trial's own `config` is
-  // -- diffable the same way. `null` on a chain still on its root rung (no
-  // ladder advance yet), or when the current baseline is a named preset
-  // (e.g. Druid's "strong") rather than a discovered config -- neither has
-  // a per-parameter breakdown to diff against, so the tables below fall
-  // back to the search-space default in that case.
-  const currentBaselineConfig = createMemo((): Record<string, unknown> | null => {
-    const chain = props.chain;
-    if (chain.length < 2) return null;
-    return chain[chain.length - 1]?.incumbent?.config ?? null;
-  });
+  // This is recorded when the run is launched, before SMAC has an
+  // incumbent. It therefore remains the authoritative opponent for the
+  // root rung as well as for later promoted rungs.
+  const currentBaselineConfig = createMemo(() => baselineConfig(props.launchConfig));
 
-  const incumbentVsDefault = createMemo(() => {
-    const baseline = currentBaselineConfig();
-    return baseline
-      ? paramsVsBaseline(props.incumbent?.config, baseline)
-      : paramsVsDefault(props.incumbent?.config, props.tuner);
-  });
-  const lowestTrialVsDefault = createMemo(() => {
-    const baseline = currentBaselineConfig();
-    return baseline
-      ? paramsVsBaseline(bestTrial()?.config, baseline)
-      : paramsVsDefault(bestTrial()?.config, props.tuner);
-  });
+  const incumbentVsBaseline = createMemo(() => paramsVsBaseline(props.incumbent?.config, currentBaselineConfig()));
+  const lowestTrialVsBaseline = createMemo(() => paramsVsBaseline(bestTrial()?.config, currentBaselineConfig()));
 
   const [helpOpen, setHelpOpen] = createSignal(false);
 
@@ -595,25 +570,23 @@ export const Smac3RunDetail: Component<{
           </div>
         </div>
 
-        <Show when={incumbentVsDefault().length > 0}>
+        <Show when={incumbentVsBaseline().length > 0}>
           <table id="smac3-incumbent-diff-table" class="smac3-diff-table smac3-diff-table-emphasized">
-            <caption>
-              Incumbent vs. {currentBaselineConfig() ? "current baseline" : "search-space default (no baseline promotion yet)"}
-            </caption>
+            <caption>Incumbent vs. baseline</caption>
             <thead>
               <tr>
                 <th>Parameter</th>
                 <th>Incumbent</th>
-                <th>{currentBaselineConfig() ? "Baseline" : "Default"}</th>
+                <th>Baseline</th>
               </tr>
             </thead>
             <tbody>
-              <For each={incumbentVsDefault()}>
+              <For each={incumbentVsBaseline()}>
                 {(row) => (
                   <tr classList={{ "smac3-diff-changed": row.changed }}>
                     <td class="smac3-param-name">{row.name}</td>
                     <td>{String(row.value)}</td>
-                    <td>{row.def === undefined ? "—" : String(row.def)}</td>
+                    <td>{row.baseline === undefined ? "—" : String(row.baseline)}</td>
                   </tr>
                 )}
               </For>
@@ -621,26 +594,23 @@ export const Smac3RunDetail: Component<{
           </table>
         </Show>
 
-        <Show when={lowestTrialVsDefault().length > 0}>
+        <Show when={lowestTrialVsBaseline().length > 0}>
           <table id="smac3-lowest-trial-diff-table" class="smac3-diff-table">
-            <caption>
-              Lowest single trial (#{bestTrial()!.trial_id}) vs.{" "}
-              {currentBaselineConfig() ? "current baseline" : "search-space default (no baseline promotion yet)"}
-            </caption>
+            <caption>Lowest single trial (#{bestTrial()!.trial_id}) vs. baseline</caption>
             <thead>
               <tr>
                 <th>Parameter</th>
                 <th>Lowest</th>
-                <th>{currentBaselineConfig() ? "Baseline" : "Default"}</th>
+                <th>Baseline</th>
               </tr>
             </thead>
             <tbody>
-              <For each={lowestTrialVsDefault()}>
+              <For each={lowestTrialVsBaseline()}>
                 {(row) => (
                   <tr classList={{ "smac3-diff-changed": row.changed }}>
                     <td class="smac3-param-name">{row.name}</td>
                     <td>{String(row.value)}</td>
-                    <td>{row.def === undefined ? "—" : String(row.def)}</td>
+                    <td>{row.baseline === undefined ? "—" : String(row.baseline)}</td>
                   </tr>
                 )}
               </For>

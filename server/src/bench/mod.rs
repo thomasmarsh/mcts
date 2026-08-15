@@ -1346,6 +1346,50 @@ fn inject_ladder_root_if_new_ladder(config: Option<Value>, run_id: &str) -> Opti
     config
 }
 
+/// Persist the exact settings of a floor baseline alongside the launch
+/// request. The SMAC3 runner already resolves these ids to raw params when
+/// it invokes `tune eval`; keeping the same params in the run record lets
+/// the detail view compare the eventual incumbent with the opponent it was
+/// actually evaluated against from the first trial onward.
+///
+/// This is deliberately display metadata, not `baseline_configs`: adding it
+/// to the latter would make the Python runner register the same instance
+/// twice (once through `target.baselines`, once through `baseline_configs`).
+fn record_floor_baseline_settings(config: Option<Value>) -> Option<Value> {
+    let mut config = config?;
+    let Some(object) = config.as_object_mut() else {
+        return Some(config);
+    };
+    if object.contains_key("baseline_settings") {
+        return Some(config);
+    }
+    let baselines = object
+        .get("overrides")
+        .and_then(Value::as_array)
+        .and_then(|overrides| {
+            overrides.iter().rev().find_map(|override_| {
+                let text = override_.as_str()?;
+                let raw = text.strip_prefix("target.baselines=")?;
+                serde_json::from_str::<Vec<String>>(raw).ok()
+            })
+        });
+    let Some(baselines) = baselines else {
+        return Some(config);
+    };
+
+    let mut settings = serde_json::Map::new();
+    for baseline in baselines {
+        let params = match baseline.as_str() {
+            "flat_mc" => json!({"family": "flat_mc", "q_init": "Infinity"}),
+            "random" => json!({"family": "random", "q_init": "Infinity"}),
+            _ => return Some(config),
+        };
+        settings.insert(baseline, params);
+    }
+    object.insert("baseline_settings".into(), Value::Object(settings));
+    Some(config)
+}
+
 async fn launch_and_record(
     state: &Arc<BenchState>,
     kind: &str,
@@ -1355,6 +1399,11 @@ async fn launch_and_record(
     resume_from: Option<&str>,
 ) -> Result<LaunchResponse, BenchError> {
     let run_id = launch::generate_run_id(kind, game);
+    let config = if kind == "smac3" {
+        record_floor_baseline_settings(config)
+    } else {
+        config
+    };
     let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
@@ -1545,6 +1594,7 @@ fn resumed_from_of(r: &LadderRunRow) -> Option<&str> {
 /// changes per rung.
 fn replace_baseline_with_incumbent(widened: &mut Value, next_id: &str, incumbent_config: &Value) {
     widened["baseline_configs"] = json!({ next_id: incumbent_config });
+    widened["baseline_settings"] = json!({ next_id: incumbent_config });
     let mut overrides: Vec<Value> = widened
         .get("overrides")
         .and_then(|v| v.as_array())
@@ -3641,6 +3691,36 @@ mod tests {
     #[test]
     fn test_inject_ladder_root_handles_none_config() {
         assert_eq!(inject_ladder_root_if_new_ladder(None, "some-run"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // record_floor_baseline_settings
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_record_floor_baseline_settings_persists_flat_mc_params() {
+        let config = Some(json!({
+            "overrides": ["optimizer.n_trials=10", "target.baselines=[\"flat_mc\"]"],
+        }));
+        let config = record_floor_baseline_settings(config).unwrap();
+        assert_eq!(
+            config["baseline_settings"]["flat_mc"],
+            json!({"family": "flat_mc", "q_init": "Infinity"})
+        );
+        assert!(config.get("baseline_configs").is_none());
+    }
+
+    #[test]
+    fn test_record_floor_baseline_settings_preserves_existing_settings() {
+        let config = Some(json!({
+            "overrides": ["target.baselines=[\"random\"]"],
+            "baseline_settings": {"chosen": {"family": "custom"}},
+        }));
+        let config = record_floor_baseline_settings(config).unwrap();
+        assert_eq!(
+            config["baseline_settings"],
+            json!({"chosen": {"family": "custom"}})
+        );
     }
 
     // -------------------------------------------------------------------

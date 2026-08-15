@@ -113,7 +113,7 @@ export interface BenchState {
   kinds: JobPollState<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
    * — populates the SMAC3 launch fields' game picker and the run-detail
-   * best-vs-default parameter diff. */
+   * baseline parameter comparison. */
   smac3Kinds: JobPollState<Smac3GameInfo[]>;
 }
 

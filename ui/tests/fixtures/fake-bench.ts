@@ -90,7 +90,10 @@ export const fakeSmac3RunDetail: RunDetail = {
   run_id: FAKE_SMAC3_RUN_ID,
   kind: "smac3",
   game: "traffic-lights",
-  config: { overrides: ["optimizer.n_trials=50"] },
+  config: {
+    overrides: ["optimizer.n_trials=50", "target.baselines=[\"flat_mc\"]"],
+    baseline_settings: { flat_mc: { family: "flat_mc", q_init: "Infinity" } },
+  },
   trial_count: 3,
   incumbent: { config: { family: "rave", c: 0.7 }, cost: 0.2 },
 };
@@ -147,10 +150,9 @@ export const fakeSmac3Kinds: Smac3GameInfo[] = [
   },
 ];
 
-// Best trial (#2, cost 0.3) is deliberately `family: "ucb1_tuned"`, not the
-// search space's default `family: "rave"` -- proves the run-detail
-// best-vs-default diff table (and the trial table's Family column) work
-// across two different families' configs, not just two RAVE configs.
+// Best trial (#2, cost 0.3) is deliberately `family: "ucb1_tuned"`, unlike
+// the run's `flat_mc` baseline -- proves the run-detail baseline comparison
+// and the trial table's Family column work across different configs.
 export const fakeTrialRows: TrialRow[] = [
   {
     trial_id: 1,

@@ -276,7 +276,7 @@ describe("LaunchForm / smac3", () => {
 });
 
 describe("RunDetailPanel / smac3", () => {
-  it("renders trial stats, the best-vs-default table, and the trial history once trials land", async () => {
+  it("renders trial stats, baseline comparisons, and the trial history once trials land", async () => {
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
 
@@ -303,17 +303,15 @@ describe("RunDetailPanel / smac3", () => {
     const familyCells = document.querySelectorAll(".smac3-trial-family");
     expect(Array.from(familyCells).map((c) => c.textContent)).toEqual(["ucb1", "ucb1_tuned", "rave"]);
 
-    // Best trial (#2) is `family: "ucb1_tuned"`, not the search space's
-    // default `family: "rave"` -- the lowest-trial diff table must compare
-    // across two different families' configs, not two RAVE configs, and
-    // flag every param that differs from its own default.
+    // Best trial (#2) is `family: "ucb1_tuned"`; its table compares it
+    // against the actual floor baseline selected when the run started.
     const diffTable = document.querySelector("#smac3-lowest-trial-diff-table")!;
     expect(diffTable.textContent).toContain("ucb1_tuned");
     const familyRow = Array.from(diffTable.querySelectorAll("tbody tr")).find(
       (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
     )!;
     expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
-    expect(familyRow.textContent).toContain("rave"); // the default, shown in the Default column
+    expect(familyRow.textContent).toContain("flat_mc");
 
     // fakeSmac3RunDetail's incumbent (family: "rave", c: 0.7) gets its own
     // table -- the config "Use best as new baseline" would actually
@@ -322,6 +320,9 @@ describe("RunDetailPanel / smac3", () => {
     const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
     expect(incumbentTable.textContent).toContain("rave");
     expect(incumbentTable.textContent).toContain("0.7");
+    expect(incumbentTable.textContent).toContain("flat_mc");
+    expect(incumbentTable.querySelector("thead")!.textContent).toContain("Baseline");
+    expect(incumbentTable.textContent).not.toMatch(/default/i);
   });
 
   it("shows the SMAC-tracked incumbent and copies its config on click", async () => {
@@ -577,16 +578,13 @@ describe("RunDetailPanel / smac3", () => {
     expect(screen.getByText("new baseline")).toBeInTheDocument();
   });
 
-  it("diffs the incumbent/lowest-trial tables against the latest rung's actual baseline, not the search-space default", async () => {
+  it("diffs the incumbent/lowest-trial tables against the latest rung's recorded baseline", async () => {
     const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
     const rootTrials: TrialRow[] = [
       { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1", c: 1.4 }, seed: 0, cost: 0.5, extra: null },
     ];
-    // Rung 2's baseline is rung 1's own incumbent -- a real `TrialParams`
-    // config, distinct from both fakeSmac3RunDetail's own incumbent
-    // (family: "rave", c: 0.7) and the search space's declared default
-    // (family: "rave" too, per the tuner fixture) -- so a pass here can't
-    // be confused with the old default-diff behavior by coincidence.
+    // Rung 2's baseline is rung 1's own incumbent, stored in the current
+    // run's launch config as the resolved baseline settings.
     const chain: ChainRung[] = [
       {
         run_id: rootRunId,
@@ -607,7 +605,12 @@ describe("RunDetailPanel / smac3", () => {
         incumbent: { config: { family: "ucb1", c: 1.4 }, cost: 0.2 },
       },
     ];
+    const detail = {
+      ...fakeSmac3RunDetail,
+      config: { baseline_settings: { ladder2: { family: "ucb1", c: 1.4 } } },
+    };
     const { store } = createTestStore({
+      getRun: () => Effect.send(detail),
       getRunChain: () => Effect.send(chain),
       getRunTrials: (runId) => Effect.send(runId === rootRunId ? rootTrials : fakeTrialRows),
     });
@@ -616,14 +619,13 @@ describe("RunDetailPanel / smac3", () => {
     store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
-    expect(screen.getByText("Incumbent vs. current baseline")).toBeInTheDocument();
-    expect(screen.queryByText(/search-space default/)).not.toBeInTheDocument();
+    expect(screen.getByText("Incumbent vs. baseline")).toBeInTheDocument();
+    expect(screen.queryByText(/default/i)).not.toBeInTheDocument();
 
     const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
     expect(incumbentTable.querySelector("thead")!.textContent).toContain("Baseline");
     // Incumbent (family: "rave", c: 0.7) vs. the rung's baseline
-    // (family: "ucb1", c: 1.4) -- both params differ from the baseline,
-    // not from "rave"/whatever the search-space default happens to be.
+    // (family: "ucb1", c: 1.4): both params differ.
     const familyRow = Array.from(incumbentTable.querySelectorAll("tbody tr")).find(
       (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
     )!;
