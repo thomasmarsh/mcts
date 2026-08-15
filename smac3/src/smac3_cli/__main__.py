@@ -199,9 +199,17 @@ def build_optimizer(
     # (`tune describe`), not hand-maintained YAML -- see
     # `SearchConfig.parameters_from_binary`'s docstring.
     binary = cfg.resolve_binary()
-    cfg.parameters, cfg.conditions, cfg.target.baselines = SearchConfig.parameters_from_binary(
-        binary
-    )
+    parameters, conditions, advertised_baselines = SearchConfig.parameters_from_binary(binary)
+    cfg.parameters = parameters
+    cfg.conditions = conditions
+    # `tune describe` advertises available named presets; it does not choose
+    # an opponent for the run. Requiring the caller to choose avoids silently
+    # tuning against an unintended baseline when launch wiring is incomplete.
+    if not cfg.target.baselines:
+        raise ValueError(
+            "target.baselines must be explicitly provided "
+            f"(advertised named presets: {advertised_baselines})"
+        )
     logger.info(
         "Search space from %s: %d parameters, %d conditions, baselines=%s",
         binary,

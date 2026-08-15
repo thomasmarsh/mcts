@@ -24,8 +24,9 @@ const DEFAULT_SMAC3_SATURATION_THRESHOLD = 0.0;
  * `rounds` is likewise omitted when it matches the tuner's own
  * `eval_rounds` default, so a run launched without touching the field
  * produces the same argv as before this field existed. `startingBaseline`
- * is forwarded as `target.baselines=[...]` whenever it differs from the
- * tuner's own default baseline list -- `smac3_cli`'s `_apply_overrides`
+ * is always forwarded as `target.baselines=[...]`; tuner metadata lists
+ * available presets but deliberately supplies no runtime default.
+ * `smac3_cli`'s `_apply_overrides`
  * parses the value with `ast.literal_eval`, so a Python list literal
  * round-trips as-is (see `smac3/src/smac3_cli/__main__.py`). */
 function buildSmac3Overrides(opts: {
@@ -36,7 +37,6 @@ function buildSmac3Overrides(opts: {
   rounds: number;
   defaultRounds: number | null;
   startingBaseline: string;
-  defaultBaselines: string[];
   /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
    * `maxIterations` prop doc comment. */
   maxIterations: string;
@@ -53,9 +53,7 @@ function buildSmac3Overrides(opts: {
   }
   const maxIterations = opts.maxIterations.trim();
   if (maxIterations !== "") overrides.push(`target.max_iterations=${maxIterations}`);
-  const isDefaultBaseline =
-    opts.defaultBaselines.length === 1 && opts.defaultBaselines[0] === opts.startingBaseline;
-  if (opts.startingBaseline !== "" && !isDefaultBaseline) {
+  if (opts.startingBaseline !== "") {
     overrides.push(`target.baselines=['${opts.startingBaseline}']`);
   }
   return overrides;
@@ -220,7 +218,6 @@ export const LaunchForm: Component<{
             rounds: smac3Rounds(),
             defaultRounds: tuner?.eval_rounds ?? null,
             startingBaseline: smac3StartingBaseline(),
-            defaultBaselines: tuner?.baselines ?? [],
             maxIterations: smac3MaxIterations(),
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)

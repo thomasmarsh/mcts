@@ -19,7 +19,7 @@ from smac3_cli.config import OptimizerConfig, SearchConfig, TargetConfig
 def _cfg(binary: Path, n_trials: int) -> SearchConfig:
     return SearchConfig(
         optimizer=OptimizerConfig(n_trials=n_trials, n_workers=1, deterministic=True, seed=7),
-        target=TargetConfig(binary=binary, rounds=2),
+        target=TargetConfig(binary=binary, rounds=2, baselines=["strong"]),
     )
 
 

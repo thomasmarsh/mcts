@@ -152,7 +152,7 @@ describe("LaunchForm / smac3", () => {
     ]);
   });
 
-  it("omits target.baselines when the starting baseline matches the tuner's own default", () => {
+  it("sends target.baselines when the starting baseline is a named preset", () => {
     const seen: unknown[] = [];
     const { store } = createTestStore({
       launchRun: (_kind, _game, config) => {
@@ -167,7 +167,7 @@ describe("LaunchForm / smac3", () => {
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides.some((o) => o.startsWith("target.baselines"))).toBe(false);
+    expect(overrides).toContain("target.baselines=['strong']");
   });
 
   it("sets config.ladder only when the ladder checkbox is enabled", () => {

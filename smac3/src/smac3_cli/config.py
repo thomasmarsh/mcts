@@ -41,10 +41,9 @@ class TargetConfig:
     binary: Path = Path("target/release/game-traffic-lights")
     rounds: int = 20
     # Baseline instance ids to evaluate each trial config against (SMAC3's
-    # `Scenario(instances=...)`). Sourced from the binary's own `tune
-    # describe` at launch time, same as `parameters`/`conditions` --  see
-    # `SearchConfig.parameters_from_binary`'s docstring for why the binary,
-    # not this dataclass's default, is the source of truth.
+    # `Scenario(instances=...)`). Must be provided explicitly for every run;
+    # the binary's `tune describe` baselines are available choices, not a
+    # default selection.
     baselines: list[str] = field(default_factory=list)
     # Extra instances backed by a raw discovered config rather than a named
     # preset -- id -> the exact JSON `tune eval --baseline-config` expects
@@ -149,10 +148,10 @@ class SearchConfig:
         ``{"name": ..., ...}`` objects instead of a name-keyed mapping, so
         it's reshaped into that mapping and run back through `_from_dict`
         rather than duplicating its field-extraction logic. ``baselines``
-        (the list of opponent-instance ids, e.g. ``["strong", "master"]``)
-        is reported alongside `parameters`/`conditions` for the same reason
-        -- it's part of the binary's tuner metadata, not something to
-        hand-maintain here.
+        (the available named opponent ids, e.g. ``["strong", "master"]``)
+        is reported alongside `parameters`/`conditions` for the same reason.
+        The caller must still explicitly provide ``target.baselines`` for a
+        run.
         """
         result = subprocess.run(
             [str(binary), "tune", "describe"],

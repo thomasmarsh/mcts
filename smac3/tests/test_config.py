@@ -179,6 +179,41 @@ def test_parameters_from_binary_reports_baselines(game_nim_binary: Path):
     assert baselines == ["strong"]
 
 
+def test_build_optimizer_preserves_explicit_baseline_instances(
+    game_nim_binary: Path, tmp_path: Path, monkeypatch
+):
+    """A launch override must win over `tune describe`'s named presets."""
+    from smac3_cli.__main__ import build_optimizer
+    from smac3_cli.config import OptimizerConfig, TargetConfig
+
+    monkeypatch.chdir(tmp_path)
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_trials=1, n_workers=1),
+        target=TargetConfig(binary=game_nim_binary, rounds=1, baselines=["flat_mc"]),
+    )
+
+    optimizer = build_optimizer(cfg, run_id="explicit-baseline-test")
+
+    assert optimizer.scenario.instances == ["flat_mc"]
+    assert cfg.target.baselines == ["flat_mc"]
+
+
+def test_build_optimizer_requires_explicit_baseline_instances(
+    game_nim_binary: Path, tmp_path: Path, monkeypatch
+):
+    from smac3_cli.__main__ import build_optimizer
+    from smac3_cli.config import OptimizerConfig, TargetConfig
+
+    monkeypatch.chdir(tmp_path)
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_trials=1, n_workers=1),
+        target=TargetConfig(binary=game_nim_binary, rounds=1),
+    )
+
+    with pytest.raises(ValueError, match="target.baselines must be explicitly provided"):
+        build_optimizer(cfg, run_id="missing-baseline-test")
+
+
 def test_binary_sourced_space_round_trips_through_legacy_space(legacy_space, binary_space):
     """Sample many configs from the binary-sourced space and confirm every
     one's active-parameter set is also valid in the other space, rather than
