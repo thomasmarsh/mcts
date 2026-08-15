@@ -4,7 +4,7 @@
 
 import type { GameSummary } from "@mcts/game";
 import type { GameState, GameView, Move, Player } from "./types.js";
-import { SIDE } from "./types.js";
+import { sideOf } from "./types.js";
 
 /** Prose reminding the player which pair of edges each side connects --
  * not recoverable from `view` alone, since the wire state only carries
@@ -34,7 +34,8 @@ export function summarize(view: GameView): GameSummary {
 }
 
 export function formatMove(move: Move, before: GameState): string {
-  const row = Math.floor(move / SIDE);
-  const col = move % SIDE;
+  const side = sideOf(before.cells.length);
+  const row = Math.floor(move / side);
+  const col = move % side;
   return `${before.turn} (${col}, ${row})`;
 }

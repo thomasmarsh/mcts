@@ -34,26 +34,42 @@ fn main() {
     // --- re-run on commit / ref move ---
     // Resolve the actual git dir so the rerun-if-changed paths below exist;
     // a missing path turns a build script permanently dirty and forces the
-    // whole workspace to rebuild every time.
+    // whole workspace to rebuild every time. HEAD itself is per-worktree, so
+    // it's watched under `--absolute-git-dir`. But the ref HEAD points at
+    // (e.g. `refs/heads/gdl`) is *not* per-worktree -- it lives under the
+    // common git dir shared by the main checkout and all worktrees. Joining
+    // it against the worktree-private dir instead (as this used to do)
+    // produces a path that never exists, e.g.
+    // `.git/worktrees/<name>/refs/heads/gdl`, which cargo treats as
+    // permanently stale -- rerunning this script, and everything downstream
+    // of game-host, on every single build.
     let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"], manifest_dir).map(PathBuf::from)
     else {
         return; // not a git checkout: keep the "unknown"/clean defaults
     };
     println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
 
-    if let Some(ref_path) = read_ref(&git_dir.join("HEAD")) {
+    let Some(common_dir) =
+        git(&["rev-parse", "--path-format=absolute", "--git-common-dir"], manifest_dir)
+            .map(PathBuf::from)
+    else {
+        return;
+    };
+    if let Some(ref_path) = read_ref(&git_dir.join("HEAD"), &common_dir) {
         println!("cargo:rerun-if-changed={}", ref_path.display());
     }
 }
 
-/// Support a `ref: refs/heads/<branch>` HEAD by returning the ref file path.
-fn read_ref(head_path: &Path) -> Option<PathBuf> {
+/// Support a `ref: refs/heads/<branch>` HEAD by returning the ref file path,
+/// resolved against the common git dir (shared across worktrees) rather than
+/// `head_path`'s own directory, since refs aren't per-worktree.
+fn read_ref(head_path: &Path, common_dir: &Path) -> Option<PathBuf> {
     let contents = std::fs::read_to_string(head_path).ok()?;
     contents
         .strip_prefix("ref: ")
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|ref_path| head_path.parent().unwrap().join(ref_path))
+        .map(|ref_path| common_dir.join(ref_path))
 }
 
 /// Run a git command, returning trimmed stdout as a String (or None on error).

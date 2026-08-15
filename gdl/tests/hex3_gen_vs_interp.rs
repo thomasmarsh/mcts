@@ -7,17 +7,19 @@
 //! Deliberately still a 3x3 board (`games/hex3-gen`, not the 11x11
 //! `games/hex-gen` the UI actually plays): `core::interp::State<N, M>` is
 //! itself `game_core::bitboard::BitBoard<N, M>`-backed, capped at 64 cells,
-//! so it cannot represent an 11x11 (121-cell) position at all -- this
-//! comparison can only ever run against codegen::hex's `BitBoard` branch.
-//! `tests/hex_gen_oracle.rs` covers the `BigBitBoard` branch instead, via a
-//! from-scratch oracle that has no such cap.
+//! so it cannot represent an 11x11 (121-cell) position at all. `games/hex3-gen`'s own
+//! `Position`/`Hex` are const-generic (see `gdl/src/codegen/hex.rs`'s doc comment); pinned at
+//! `<3, 1>` here, the size `style-c/sexpr/hex.gdls` (this crate's source `.gdls`) itself uses.
 
-use game_hex3_gen::{Move as GenMove, Player, Position as GenPosition};
+use game_hex3_gen::{Move as GenMove, Player};
 use gdl::core::interp::State;
 use gdl::core::Program;
 use gdl::style_c::parse_game;
 
 const SIDE: usize = 3;
+const WORDS: usize = 1;
+
+type GenPosition = game_hex3_gen::Position<SIDE, WORDS>;
 
 fn hex_program() -> Program {
     parse_game(include_str!("../style-c/sexpr/hex.gdls")).unwrap()

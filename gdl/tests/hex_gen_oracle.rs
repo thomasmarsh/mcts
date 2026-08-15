@@ -16,11 +16,16 @@
 //! reference this crate's `BigBitBoard` codegen branch can be checked
 //! against.
 
-use game_hex_gen::Hex as Generated;
 use mcts::game::{Game, PlayerIndex};
 
 const SIDE: usize = 11;
+const WORDS: usize = 2;
 const SITES: usize = SIDE * SIDE;
+
+/// `game_hex_gen::Hex` is const-generic over board side (see
+/// `gdl/src/codegen/hex.rs`'s doc comment) -- pin it at 11x11/2-words here, the size
+/// `style-c/sexpr/hex-11.gdls` (this crate's source `.gdls`) itself uses.
+type Generated = game_hex_gen::Hex<SIDE, WORDS>;
 
 /// A from-scratch reference implementation of Hex on a `SIDE x SIDE` board -- see
 /// `tests/hex_oracle.rs`'s identical [`HexOracle`] for the full doc comment; kept as a second,
@@ -200,7 +205,10 @@ fn interleave(p0: &[usize], p1: &[usize]) -> Vec<usize> {
 /// `count` distinct sites not in `used` -- filler moves for the player who isn't the one being
 /// tested, chosen not to overlap (and so not to accidentally complete) the line under test.
 fn filler(used: &[usize], count: usize) -> Vec<usize> {
-    (0..SITES).filter(|s| !used.contains(s)).take(count).collect()
+    (0..SITES)
+        .filter(|s| !used.contains(s))
+        .take(count)
+        .collect()
 }
 
 #[test]

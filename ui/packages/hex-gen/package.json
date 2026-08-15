@@ -7,6 +7,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@mcts/game": "workspace:*",
+    "@mcts/goban": "workspace:*",
     "solid-js": "^1.9.0"
   }
 }

@@ -99,6 +99,40 @@ for how long that happened to the surface-syntax question already).
    exercised end to end, vs. a second, independent copy of `tests/hex_oracle.rs`'s from-scratch
    `HexOracle`). `cargo clippy`/`fmt --check` clean on `gdl` and `game-hex-gen`; `cargo test --lib`
    across the touched crates and full-workspace `cargo check` are unaffected.
+
+   **Follow-on, done: multi-size boards from one generated crate, not one `.gdls`/crate per size.**
+   Hex is genuinely a game over any `N x N` board, and the UI needs at least 5x5/7x7/11x11 to be
+   selectable, not just the one size a `.gdls` file happens to name. Decided *against* generating
+   one crate per size (which `style-c/sexpr/hex-11.gdls` had been a first step towards): instead
+   `src/codegen/hex.rs` now emits a single **const-generic** `Position<const N: usize, const
+   WORDS: usize>` (plus `HashedPosition`/the `Game`-implementing marker struct), the same
+   `<const N, const WORDS>` shape `games/gonnect` already hand-writes for its own 9/13/19 board
+   sizes -- `games/hex-gen/src/main.rs`'s hand-written `dispatch_size!` macro (mirroring
+   `games/gonnect/src/main.rs`'s) then instantiates it at N=5/7/11 from one binary, one `kind`, one
+   `ui/packages/hex-gen` module (`createSizeField`, reused from `@mcts/goban` the way
+   `@mcts/gonnect` already does, adds the new-game size picker). One `.gdls` still suffices as
+   codegen's input (any single concrete `side` -- `style-c/sexpr/hex-11.gdls` stays what
+   `games/hex-gen` is regenerated from): only the *shape* of the rules (which edges, whether
+   `Connects` is used) is read off it, not its literal board size.
+
+   The real consequence of going const-generic: `Region::Sites` (the `(regions ...)` edges) can no
+   longer lower to a literal bitmask, since one generic function body has to work for every
+   instantiated `N`. Each `Sites` region is instead matched (`identify_edge`) against what
+   `core::hex::Hex::edge` computes for each compass edge at the input `.gdls`'s own concrete
+   `side`; a match lowers to a small generic formula function (`side_north`/`side_south`/
+   `side_east`/`side_west`, a loop setting `N` bits) instead of a table. A `Sites` region that
+   isn't one of those four edges has no generic lowering and is rejected -- same scoping
+   discipline `Intersect`/`Shift`/`Adjacent`/`Flood` already get. Zobrist hashing also changed
+   shape: a `static LazyZobristTable<NUM_HASHES>` needs `NUM_HASHES` fixed at the item level, which
+   can't depend on the generic `N` on stable Rust (the same limitation that forces `WORDS` to be
+   its own parameter rather than computed from `N`) -- `HashedPosition::compute_hash` recomputes an
+   FNV-1a-style hash from `Position`'s raw board words on every `apply` instead of maintaining an
+   incremental table; `WORDS` is always tiny (1-2) for every board size this backend targets, so
+   the recomputation cost is nowhere near a hot path. `games/hex3-gen` (kept as the dedicated small-
+   board fixture `tests/hex3_gen_vs_interp.rs` cross-checks against `core::interp`) was regenerated
+   the same way, pinned at `<3, 1>` by its own test file, proving the const-generic backend isn't
+   `games/hex-gen`-specific. Also done: `HexGenRenderer`/`summary.ts` in `ui/packages/hex-gen` no
+   longer assume a fixed `SIDE`, deriving board side from `cells.length` (`sideOf`) instead.
 7. **Decide generated-vs-hand-written coexistence.** Once codegen is real: do generated crates
    replace the hand-written ones they duplicate (`games/ttt` becomes generated), or live alongside
    them as a separate, clearly-labeled set? Either is fine; pick deliberately once there's a real
