@@ -335,21 +335,31 @@ impl GameAdapter for CongoAdapter {
         _baseline: Option<String>,
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
+        max_iterations: Option<usize>,
     ) -> Result<Value, HostError> {
         // Congo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
         // `strategy_tune_eval` doc comment.
         let outcome = if let Some(cfg) = baseline_config {
             let baseline_seed = seed.unwrap_or(0);
-            mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false)?;
+            // This opponent is itself a `build_search`-built config, on
+            // the same iteration-based footing as the candidate -- both
+            // sides get the *same* budget (an operator's `max_iterations`
+            // override included) so there's nothing to match asymmetrically
+            // (see `SearchBudget`'s and `build_search`'s doc comments).
+            let budget = mcts_tune::SearchBudget {
+                max_iterations,
+                ..Default::default()
+            };
+            mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false, &budget)?;
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 false,
-                mcts_tune::SearchBudget::default(),
+                budget,
                 move || {
-                    mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false)
+                    mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false, &budget)
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
@@ -360,7 +370,10 @@ impl GameAdapter for CongoAdapter {
                 rounds,
                 seed,
                 false,
-                mcts_tune::SearchBudget::default(),
+                mcts_tune::SearchBudget {
+                    max_iterations,
+                    ..Default::default()
+                },
                 build_strong,
                 Default::default(),
             )?

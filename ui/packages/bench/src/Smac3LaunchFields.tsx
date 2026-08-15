@@ -94,6 +94,15 @@ export const Smac3LaunchFields: Component<{
   onSeedChange: (n: number) => void;
   rounds: number;
   onRoundsChange: (n: number) => void;
+  /** Per-run MCTS iteration ceiling (`mcts_tune::SearchBudget::max_iterations`
+   * on the Rust side) -- how much compute *every* trial's candidate (and,
+   * for a `baseline_config`-backed opponent, that opponent too) gets, not a
+   * hyperparameter SMAC3 searches over. Empty string means "unset" (use the
+   * game binary's own historical default, `mcts-tune`'s `MAX_ITER`
+   * constant) -- forwarded as `target.max_iterations=N` only when set, same
+   * convention as `nWorkers`'s "auto". */
+  maxIterations: string;
+  onMaxIterationsChange: (v: string) => void;
   /** Raw JSON text for the "Game config" field -- only rendered when the
    * selected game's `tuner().game_config` isn't `{}`. */
   gameConfig: string;
@@ -275,6 +284,23 @@ export const Smac3LaunchFields: Component<{
                 onInput={(e) => props.onRoundsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
                 disabled={props.disabled}
               />
+            </label>
+
+            <label>
+              Iteration budget
+              <input
+                type="number"
+                min={1}
+                placeholder="auto"
+                value={props.maxIterations}
+                onInput={(e) => props.onMaxIterationsChange(e.currentTarget.value)}
+                disabled={props.disabled}
+              />
+              <span class="smac3-field-hint">
+                MCTS iterations per move, applied to every trial's candidate (and its opponent, when
+                self-play). Blank uses the game binary's own default -- this is a compute budget, not
+                something SMAC3 tunes for you.
+              </span>
             </label>
 
             <label class="smac3-checkbox-field">

@@ -39,3 +39,18 @@ target:
   # Number of self-play rounds (each round: candidate-first + baseline-first
   # game) one `tune eval` call runs; passed as `--rounds`.
   rounds: 20
+
+  # Per-*run* search-effort ceiling (MCTS iterations per move) forwarded as
+  # `--max-iterations` to every `tune eval` call this run makes -- how much
+  # compute a trial's candidate gets, not a hyperparameter SMAC3 searches
+  # over (that would just reward the trial with the biggest budget, not the
+  # best hyperparameters at a fixed one -- see `family`/`c`/etc. above for
+  # what SMAC3 *does* search). Applies to a `baseline_config`-backed
+  # opponent too (a ladder rung's self-play baseline, or `random`/`flat_mc`),
+  # so both sides of that match stay on equal footing regardless of the
+  # value chosen. `null` (the default) means "use the game binary's own
+  # historical default" (`mcts-tune`'s `MAX_ITER` constant, currently
+  # 10,000). Lower this (e.g. 1000) for a faster, noisier search; raise it
+  # for a slower, more decisive one. Override per launch with `--override
+  # target.max_iterations=1000`.
+  max_iterations: null

@@ -569,6 +569,7 @@ impl GameAdapter for DruidAdapter {
         baseline: Option<String>,
         baseline_config: Option<Value>,
         game_config: Option<Value>,
+        max_iterations: Option<usize>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
@@ -576,22 +577,28 @@ impl GameAdapter for DruidAdapter {
         let initial_state = initial_state_from_config(game_config)?;
         let outcome = if let Some(cfg) = baseline_config {
             let baseline_seed = seed.unwrap_or(0);
+            // This opponent is itself a `build_search`-built config, on the
+            // same iteration-based footing as the candidate -- both sides
+            // get the *same* budget (an operator's `max_iterations`
+            // override included) so there's nothing to match asymmetrically
+            // (see `SearchBudget`'s and `build_search`'s doc comments).
+            let budget = mcts_tune::SearchBudget {
+                max_iterations,
+                ..Default::default()
+            };
             // Fail fast on an invalid baseline config, before any games are
             // played -- mirrors how a bad candidate `params` is already
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)?;
-            // `SearchBudget::default()` -- this opponent is itself a
-            // `build_search`-built config, on the same iteration-based
-            // footing as the candidate, so there's nothing to match.
+            mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true, &budget)?;
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 true,
-                mcts_tune::SearchBudget::default(),
+                budget,
                 move || {
-                    mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)
+                    mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true, &budget)
                         .expect("baseline_config already validated above")
                 },
                 initial_state,
@@ -628,6 +635,7 @@ impl GameAdapter for DruidAdapter {
             let budget = mcts_tune::SearchBudget {
                 max_time: Some(Duration::from_millis(cfg.time_budget_ms)),
                 threads: 1,
+                max_iterations,
             };
             mcts_tune::strategy_tune_eval(
                 &params,
@@ -671,7 +679,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -697,7 +705,7 @@ mod tests {
             "final_action": "robust_child",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, Some(baseline_config), None)
+            .tune_eval(params, 1, Some(0), None, Some(baseline_config), None, None)
             .expect("tune_eval should round-trip against a config-built opponent");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -724,7 +732,7 @@ mod tests {
         });
         let game_config = serde_json::json!({ "size": { "w": 3, "h": 3 } });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, Some(game_config))
+            .tune_eval(params, 1, Some(0), None, None, Some(game_config), None)
             .expect("tune_eval should round-trip on a non-default board size");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -744,7 +752,7 @@ mod tests {
         });
         let game_config = serde_json::json!({ "size": { "w": 1, "h": 1 } });
         let err = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, Some(game_config))
+            .tune_eval(params, 1, Some(0), None, None, Some(game_config), None)
             .expect_err("an unsupported board size should error before any games are played");
         assert_eq!(err.code, 400);
     }
@@ -757,6 +765,7 @@ mod tests {
                 1,
                 Some(0),
                 Some("nonexistent".into()),
+                None,
                 None,
                 None,
             )

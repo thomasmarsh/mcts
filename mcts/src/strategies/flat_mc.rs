@@ -3,6 +3,7 @@ use rand::Rng;
 use rand_core::SeedableRng;
 
 use crate::game::Game;
+use crate::game::PlayerIndex;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -48,7 +49,18 @@ impl<G: Game> Default for FlatMonteCarloStrategy<G> {
     }
 }
 
-fn rollout<G: Game>(max_rollout_depth: u32, init_state: &G::S, rng: &mut SmallRng) -> f64
+/// Rolls out a uniformly-random playout from `init_state` and returns the
+/// reward for `player` (the index of the player who is choosing the move
+/// this rollout is scoring, *not* `player_to_move(init_state)` -- `init_state`
+/// here is already the state *after* that move, so its own mover is the
+/// opponent, and `Game::get_reward`'s init-relative convention would score
+/// the opponent's outcome instead of the candidate move's own).
+fn rollout<G: Game>(
+    max_rollout_depth: u32,
+    player: usize,
+    init_state: &G::S,
+    rng: &mut SmallRng,
+) -> f64
 where
     G::S: Clone,
 {
@@ -56,7 +68,7 @@ where
     let mut actions = Vec::new();
     for _ in 0..max_rollout_depth {
         if G::is_terminal(&state) {
-            return G::get_reward(init_state, &state);
+            return G::compute_utilities(&state)[player];
         }
         actions.clear();
         G::generate_actions(&state, &mut actions);
@@ -87,6 +99,7 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
         }
 
         let mut rng = SmallRng::from_entropy();
+        let player = G::player_to_move(state).to_index();
 
         let mut actions = Vec::new();
         G::generate_actions(state, &mut actions);
@@ -98,7 +111,7 @@ impl<G: Game + Sync + Send> Search for FlatMonteCarloStrategy<G> {
                 tmp = new_state;
                 let mut n = 0;
                 for _ in 0..self.samples_per_move {
-                    let result = rollout::<G>(self.max_rollout_depth, &tmp, &mut rng);
+                    let result = rollout::<G>(self.max_rollout_depth, player, &tmp, &mut rng);
                     if result > 0. {
                         n += 1;
                     }

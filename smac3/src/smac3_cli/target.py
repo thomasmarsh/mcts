@@ -103,6 +103,9 @@ def make_target(cfg: SearchConfig):
         if cfg.target.game_config is not None:
             cmd += ["--game-config", json.dumps(cfg.target.game_config)]
 
+        if cfg.target.max_iterations is not None:
+            cmd += ["--max-iterations", str(cfg.target.max_iterations)]
+
         logger.debug("Running: %s", " ".join(cmd))
 
         try:

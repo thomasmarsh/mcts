@@ -61,6 +61,18 @@ class TargetConfig:
     # default"; `train()` only forwards `--game-config` when this is set.
     # Settable via `--game-config <json>` or this same key in YAML.
     game_config: dict | None = None
+    # Per-*run* search-effort ceiling forwarded as `--max-iterations` to
+    # every `tune eval` call this run makes -- `mcts_tune::SearchBudget`'s
+    # `max_iterations` on the Rust side. Deliberately a launch-time setting,
+    # not a `parameters:` entry: it's how *much* compute a trial's candidate
+    # (and, for a `baseline_config`-backed opponent, that opponent too) gets
+    # to spend, not a hyperparameter SMAC3 should search over -- letting
+    # SMAC3 tune this would just reward whichever trial got the biggest
+    # budget, not the best hyperparameters at a fixed budget. `None` (the
+    # default) means "use the game binary's own historical default"
+    # (`mcts-tune`'s `MAX_ITER` constant). Settable via `--max-iterations
+    # <n>` or this same key in YAML.
+    max_iterations: int | None = None
 
 
 @dataclass
@@ -203,6 +215,7 @@ class SearchConfig:
                 rounds=tgt.get("rounds", 20),
                 baselines=list(tgt.get("baselines", [])),
                 game_config=tgt.get("game_config"),
+                max_iterations=tgt.get("max_iterations"),
             ),
             parameters=params,
             conditions=conds,

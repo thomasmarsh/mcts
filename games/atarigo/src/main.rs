@@ -334,6 +334,7 @@ impl GameAdapter for AtarigoAdapter {
         _baseline: Option<String>,
         baseline_config: Option<Value>,
         game_config: Option<Value>,
+        max_iterations: Option<usize>,
     ) -> Result<Value, HostError> {
         let size = match game_config {
             Some(cfg) => {
@@ -349,20 +350,34 @@ impl GameAdapter for AtarigoAdapter {
         dispatch_size!(size, N, WORDS, {
             let outcome = if let Some(cfg) = baseline_config {
                 let baseline_seed = seed.unwrap_or(0);
+                // This opponent is itself a `build_search`-built config, on
+                // the same iteration-based footing as the candidate -- both
+                // sides get the *same* budget (an operator's `max_iterations`
+                // override included) so there's nothing to match asymmetrically
+                // (see `SearchBudget`'s and `build_search`'s doc comments).
+                let budget = mcts_tune::SearchBudget {
+                    max_iterations,
+                    ..Default::default()
+                };
                 // Fail fast on an invalid baseline config, before any games are
                 // played -- mirrors how a bad candidate `params` is already
                 // rejected during `TrialParams` deserialization inside
                 // `strategy_tune_eval` itself.
-                mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false)?;
+                mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false, &budget)?;
                 mcts_tune::strategy_tune_eval(
                     &params,
                     rounds,
                     seed,
                     false,
-                    mcts_tune::SearchBudget::default(),
+                    budget,
                     move || {
-                        mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false)
-                            .expect("baseline_config already validated above")
+                        mcts_tune::build_search::<AtariGo<N, WORDS>>(
+                            &cfg,
+                            baseline_seed,
+                            false,
+                            &budget,
+                        )
+                        .expect("baseline_config already validated above")
                     },
                     Default::default(),
                 )?
@@ -372,7 +387,10 @@ impl GameAdapter for AtarigoAdapter {
                     rounds,
                     seed,
                     false,
-                    mcts_tune::SearchBudget::default(),
+                    mcts_tune::SearchBudget {
+                        max_iterations,
+                        ..Default::default()
+                    },
                     build_strong::<N, WORDS>,
                     Default::default(),
                 )?
@@ -410,7 +428,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = AtarigoAdapter
-            .tune_eval(params, 1, Some(0), None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

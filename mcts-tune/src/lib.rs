@@ -146,7 +146,7 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
     let mut config = SearchConfig::new()
-        .max_iterations(MAX_ITER)
+        .max_iterations(budget.max_iterations.unwrap_or(MAX_ITER))
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
         .q_init(q_init)
@@ -186,10 +186,26 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
 /// `tune_eval` is responsible for building a `SearchBudget` that mirrors
 /// whatever named preset it's dispatching to in that case (see
 /// `games/druid/src/main.rs`'s `tune_eval`).
+///
+/// `max_iterations` is deliberately **not** part of `TrialParams` -- it's a
+/// per-*run* compute budget an operator sets once at launch (`--override
+/// target.max_iterations=N`, or the launch form's "Iteration budget"
+/// field), not a per-*trial* hyperparameter SMAC3 gets to search over
+/// (searching it would just reward configs that use the biggest budget
+/// available, not the best hyperparameters at a fixed budget). `None` here
+/// means "use this crate's historical constant" (`MAX_ITER`) -- see
+/// `base_config`. A game's `tune_eval` reads this from its own
+/// `max_iterations: Option<usize>` CLI-forwarded argument and threads the
+/// *same* value into both the candidate's budget and, for a
+/// `baseline_config`-backed opponent, `build_search`'s budget too --
+/// leaving one side on the old `MAX_ITER` default while the other honors an
+/// operator's override would silently reintroduce the exact asymmetric-
+/// budget mismatch this type exists to prevent.
 #[derive(Debug, Clone, Copy)]
 pub struct SearchBudget {
     pub max_time: Option<std::time::Duration>,
     pub threads: usize,
+    pub max_iterations: Option<usize>,
 }
 
 impl Default for SearchBudget {
@@ -197,6 +213,7 @@ impl Default for SearchBudget {
         Self {
             max_time: None,
             threads: 1,
+            max_iterations: None,
         }
     }
 }
@@ -449,21 +466,26 @@ where
 /// candidate side -- exposed so a caller can also build an *opponent* from
 /// an arbitrary discovered config, not just a named preset. See
 /// `game_host::GameAdapter::tune_eval`'s `baseline_config` parameter.
+///
+/// Every caller of `build_search` builds an *opponent* -- a
+/// `baseline_config`-backed baseline, or a `--baseline-config` for the
+/// ladder driver's own self-play rungs -- never the candidate under tune.
+/// That side of the match is already symmetric with the candidate (both go
+/// through this exact function), so `budget` should always be the *same*
+/// `SearchBudget` the caller is about to pass as `strategy_tune_eval`'s
+/// `candidate_budget` -- passing `SearchBudget::default()` here while the
+/// candidate runs under an operator's `max_iterations` override would break
+/// that symmetry (an opponent quietly capped at the old `MAX_ITER` while
+/// the candidate is held to a smaller budget, or vice versa).
 pub fn build_search<G: Game + 'static>(
     params: &Value,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
-    // Every caller of `build_search` builds an *opponent* -- a
-    // `baseline_config`-backed baseline, or a `--baseline-config` for the
-    // ladder driver's own self-play rungs -- never the candidate under
-    // tune. That side of the match is already symmetric with the candidate
-    // (both go through this exact function), so there's nothing to match a
-    // budget to; the default (`MAX_ITER` iterations, single-threaded,
-    // uncapped time) is always correct here.
-    make_candidate(&trial, seed, use_transpositions, &SearchBudget::default())
+    make_candidate(&trial, seed, use_transpositions, budget)
 }
 
 fn make_candidate<G: Game + 'static>(
@@ -1311,7 +1333,7 @@ mod tests {
             false,
             SearchBudget::default(),
             || {
-                build_search::<Nim>(&baseline_params, 0, false)
+                build_search::<Nim>(&baseline_params, 0, false, &SearchBudget::default())
                     .expect("baseline_params is a valid ucb1 config")
             },
             <Nim as Game>::S::default(),
@@ -1326,8 +1348,13 @@ mod tests {
     /// `strategy_tuner_info().parameters`'s `family` choices below.
     #[test]
     fn test_build_search_builds_random_floor_family() {
-        build_search::<Nim>(&json!({"family": "random", "q_init": "Infinity"}), 0, false)
-            .expect("random should build with just family/q_init");
+        build_search::<Nim>(
+            &json!({"family": "random", "q_init": "Infinity"}),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .expect("random should build with just family/q_init");
     }
 
     #[test]
@@ -1336,6 +1363,7 @@ mod tests {
             &json!({"family": "flat_mc", "q_init": "Infinity"}),
             0,
             false,
+            &SearchBudget::default(),
         )
         .expect("flat_mc should build with just family/q_init");
     }
@@ -1366,7 +1394,7 @@ mod tests {
         params["family"] = json!("not_a_real_family");
         // `Box<dyn Search<G>>` isn't `Debug`, so `Result::expect_err` doesn't
         // apply here -- match instead.
-        let err = match build_search::<Nim>(&params, 0, false) {
+        let err = match build_search::<Nim>(&params, 0, false, &SearchBudget::default()) {
             Err(e) => e,
             Ok(_) => panic!("unknown family must be rejected"),
         };

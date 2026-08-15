@@ -92,6 +92,29 @@ describe("LaunchForm / smac3", () => {
     expect(overridesWithRounds).toContain("target.rounds=5");
   });
 
+  it("omits target.max_iterations when blank, includes it when the field is set", () => {
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      launchRun: (_kind, _game, config) => {
+        seen.push(config);
+        return createMockBenchEnv().launchRun(_kind, _game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    const overrides = (seen[0] as { overrides: string[] }).overrides;
+    expect(overrides.some((o) => o.startsWith("target.max_iterations"))).toBe(false);
+
+    seen.length = 0;
+    fireEvent.input(screen.getByLabelText(/Iteration budget/), { target: { value: "1000" } });
+    fireEvent.click(screen.getByText("Launch"));
+    const overridesWithBudget = (seen[0] as { overrides: string[] }).overrides;
+    expect(overridesWithBudget).toContain("target.max_iterations=1000");
+  });
+
   it("submitting builds --override argv from the budget fields, not a strategies list", () => {
     const seen: { kind: string; game: string; config?: unknown }[] = [];
     const { store } = createTestStore({
@@ -552,5 +575,64 @@ describe("RunDetailPanel / smac3", () => {
     // One cutover marker for the one rung boundary in a 2-rung chain.
     expect(document.querySelectorAll(".smac3-rung-boundary").length).toBe(1);
     expect(screen.getByText("new baseline")).toBeInTheDocument();
+  });
+
+  it("diffs the incumbent/lowest-trial tables against the latest rung's actual baseline, not the search-space default", async () => {
+    const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
+    const rootTrials: TrialRow[] = [
+      { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1", c: 1.4 }, seed: 0, cost: 0.5, extra: null },
+    ];
+    // Rung 2's baseline is rung 1's own incumbent -- a real `TrialParams`
+    // config, distinct from both fakeSmac3RunDetail's own incumbent
+    // (family: "rave", c: 0.7) and the search space's declared default
+    // (family: "rave" too, per the tuner fixture) -- so a pass here can't
+    // be confused with the old default-diff behavior by coincidence.
+    const chain: ChainRung[] = [
+      {
+        run_id: rootRunId,
+        label: null,
+        status: "completed",
+        started_at: "2026-02-01T00:00:00Z",
+        ended_at: "2026-02-01T01:00:00Z",
+        trial_count: rootTrials.length,
+        incumbent: null,
+      },
+      {
+        run_id: FAKE_SMAC3_RUN_ID,
+        label: "baseline advance from " + rootRunId,
+        status: "completed",
+        started_at: "2026-03-01T00:00:00Z",
+        ended_at: "2026-03-01T01:00:00Z",
+        trial_count: fakeTrialRows.length,
+        incumbent: { config: { family: "ucb1", c: 1.4 }, cost: 0.2 },
+      },
+    ];
+    const { store } = createTestStore({
+      getRunChain: () => Effect.send(chain),
+      getRunTrials: (runId) => Effect.send(runId === rootRunId ? rootTrials : fakeTrialRows),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    expect(screen.getByText("Incumbent vs. current baseline")).toBeInTheDocument();
+    expect(screen.queryByText(/search-space default/)).not.toBeInTheDocument();
+
+    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    expect(incumbentTable.querySelector("thead")!.textContent).toContain("Baseline");
+    // Incumbent (family: "rave", c: 0.7) vs. the rung's baseline
+    // (family: "ucb1", c: 1.4) -- both params differ from the baseline,
+    // not from "rave"/whatever the search-space default happens to be.
+    const familyRow = Array.from(incumbentTable.querySelectorAll("tbody tr")).find(
+      (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
+    )!;
+    expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(familyRow.textContent).toContain("ucb1");
+    const cRow = Array.from(incumbentTable.querySelectorAll("tbody tr")).find(
+      (row) => row.querySelector(".smac3-param-name")?.textContent === "c",
+    )!;
+    expect(cRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(cRow.textContent).toContain("1.4");
   });
 });

@@ -37,6 +37,9 @@ function buildSmac3Overrides(opts: {
   defaultRounds: number | null;
   startingBaseline: string;
   defaultBaselines: string[];
+  /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
+   * `maxIterations` prop doc comment. */
+  maxIterations: string;
 }): string[] {
   const overrides = [
     `optimizer.n_trials=${opts.nTrials}`,
@@ -48,6 +51,8 @@ function buildSmac3Overrides(opts: {
   if (opts.defaultRounds !== null && opts.rounds !== opts.defaultRounds) {
     overrides.push(`target.rounds=${opts.rounds}`);
   }
+  const maxIterations = opts.maxIterations.trim();
+  if (maxIterations !== "") overrides.push(`target.max_iterations=${maxIterations}`);
   const isDefaultBaseline =
     opts.defaultBaselines.length === 1 && opts.defaultBaselines[0] === opts.startingBaseline;
   if (opts.startingBaseline !== "" && !isDefaultBaseline) {
@@ -91,6 +96,10 @@ export const LaunchForm: Component<{
   const [smac3Deterministic, setSmac3Deterministic] = createSignal(false);
   const [smac3Seed, setSmac3Seed] = createSignal(DEFAULT_SMAC3_SEED);
   const [smac3Rounds, setSmac3Rounds] = createSignal(1);
+  // Per-run MCTS iteration ceiling override -- "" means unset/auto, same
+  // convention as `smac3NWorkers`. See Smac3LaunchFields.tsx's
+  // `maxIterations` prop doc comment.
+  const [smac3MaxIterations, setSmac3MaxIterations] = createSignal("");
   // Raw JSON text for the "Game config" field -- only meaningful (and only
   // rendered by Smac3LaunchFields) when the selected game's tuner reports a
   // non-empty `game_config`.
@@ -212,6 +221,7 @@ export const LaunchForm: Component<{
             defaultRounds: tuner?.eval_rounds ?? null,
             startingBaseline: smac3StartingBaseline(),
             defaultBaselines: tuner?.baselines ?? [],
+            maxIterations: smac3MaxIterations(),
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)
             ? { game_config: JSON.parse(smac3GameConfig()) }
@@ -355,6 +365,8 @@ export const LaunchForm: Component<{
               onSeedChange={setSmac3Seed}
               rounds={smac3Rounds()}
               onRoundsChange={setSmac3Rounds}
+              maxIterations={smac3MaxIterations()}
+              onMaxIterationsChange={setSmac3MaxIterations}
               gameConfig={smac3GameConfig()}
               onGameConfigChange={setSmac3GameConfig}
               gameConfigError={smac3GameConfigError()}

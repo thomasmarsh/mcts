@@ -187,6 +187,49 @@ def test_train_omits_game_config_when_unset(monkeypatch, tmp_path: Path):
     assert "--game-config" not in captured["cmd"]
 
 
+def test_train_forwards_max_iterations_when_set(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(),
+        target=TargetConfig(binary=binary, rounds=4, max_iterations=1000),
+    )
+    train = make_target(cfg)
+    cost = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(0.5)
+    assert "--max-iterations" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--max-iterations") + 1] == "1000"
+
+
+def test_train_omits_max_iterations_when_unset(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    train({"family": "ucb1"}, seed=0)
+
+    assert "--max-iterations" not in captured["cmd"]
+
+
 def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
     import math
 
@@ -195,6 +238,10 @@ def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
 
 def test_target_config_baseline_configs_defaults_empty():
     assert TargetConfig().baseline_configs == {}
+
+
+def test_target_config_max_iterations_defaults_none():
+    assert TargetConfig().max_iterations is None
 
 
 def test_target_config_game_config_defaults_none():

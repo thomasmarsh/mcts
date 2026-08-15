@@ -276,6 +276,17 @@ pub trait GameAdapter: Send + Sync {
     /// `{"size": {...}}`), falling back to `default_config()`'s value when
     /// `None`. A game whose board is fixed at compile time (`default_config`
     /// returns `{}`) has nothing to vary here and ignores this argument.
+    ///
+    /// `max_iterations` is an operator-set, per-*run* compute budget (not a
+    /// per-trial hyperparameter SMAC3 searches over -- see
+    /// `mcts_tune::SearchBudget`'s doc comment for why), forwarded verbatim
+    /// from `--max-iterations`. `None` means "use `mcts-tune`'s own
+    /// historical default." An implementation threading this into
+    /// `mcts_tune::SearchBudget` must apply the *same* value to both the
+    /// candidate and, for a `baseline_config`-backed opponent,
+    /// `mcts_tune::build_search`'s own budget -- see that function's doc
+    /// comment for why an asymmetric override there is a real bug, not a
+    /// simplification.
     #[allow(unused_variables)]
     fn tune_eval(
         &self,
@@ -285,6 +296,7 @@ pub trait GameAdapter: Send + Sync {
         baseline: Option<String>,
         baseline_config: Option<Value>,
         game_config: Option<Value>,
+        max_iterations: Option<usize>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
@@ -498,11 +510,13 @@ where
 }
 
 /// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id> |
-/// --baseline-config <json>] [--game-config <json>]` from the remaining CLI
-/// args, calls [`GameAdapter::tune_eval`], and prints its JSON result
-/// verbatim to `writer`. Returns the process exit code. `--baseline` and
-/// `--baseline-config` are mutually exclusive -- supplying both is rejected
-/// before the adapter is ever called.
+/// --baseline-config <json>] [--game-config <json>] [--max-iterations <n>]`
+/// from the remaining CLI args, calls [`GameAdapter::tune_eval`], and prints
+/// its JSON result verbatim to `writer`. Returns the process exit code.
+/// `--baseline` and `--baseline-config` are mutually exclusive -- supplying
+/// both is rejected before the adapter is ever called. `--max-iterations`
+/// is the per-run compute-budget override -- see `tune_eval`'s own doc
+/// comment.
 fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
 where
     I: Iterator<Item = String>,
@@ -516,6 +530,7 @@ where
     let mut baseline: Option<String> = None;
     let mut baseline_config: Option<String> = None;
     let mut game_config: Option<String> = None;
+    let mut max_iterations: Option<usize> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--config" => config = args.next(),
@@ -524,6 +539,7 @@ where
             "--baseline" => baseline = args.next(),
             "--baseline-config" => baseline_config = args.next(),
             "--game-config" => game_config = args.next(),
+            "--max-iterations" => max_iterations = args.next().and_then(|s| s.parse().ok()),
             _ => {}
         }
     }
@@ -551,7 +567,15 @@ where
                     .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
             })
             .transpose()?;
-        adapter.tune_eval(params, rounds, seed, baseline, baseline_config, game_config)
+        adapter.tune_eval(
+            params,
+            rounds,
+            seed,
+            baseline,
+            baseline_config,
+            game_config,
+            max_iterations,
+        )
     })();
 
     match result {
@@ -1188,7 +1212,9 @@ mod tests {
             baseline: Option<String>,
             baseline_config: Option<Value>,
             game_config: Option<Value>,
+            max_iterations: Option<usize>,
         ) -> Result<Value, HostError> {
+            let _ = max_iterations;
             Ok(serde_json::json!({
                 "cost": 0.25,
                 "params": params,
