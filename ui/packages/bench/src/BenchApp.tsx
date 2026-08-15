@@ -24,7 +24,7 @@ import { CommitComparison } from "./CommitComparison.js";
 
 type BenchTab = "runs" | "leaderboard";
 
-export const BenchApp: Component = () => {
+export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: string; kind: string; live: boolean }> }> = (props) => {
   const api = createBenchApiClient();
   const env = createBenchEnv(api);
   const store: Store<BenchState, BenchAction> = createStore(
@@ -70,7 +70,7 @@ export const BenchApp: Component = () => {
             <RunList store={store} />
           </div>
           <Show when={state().openRun !== null}>
-            <RunDetailPanel store={store} />
+            <RunDetailPanel store={store} Spectator={props.Spectator} />
           </Show>
         </div>
       </Show>

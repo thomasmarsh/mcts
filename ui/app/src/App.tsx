@@ -26,6 +26,7 @@ import {
   type Env,
 } from "@mcts/game";
 import { DEFAULT_GAME_KIND } from "./games.js";
+import { SpectatorPanel } from "./SpectatorPanel.js";
 import "./app.css";
 import "./bench.css";
 
@@ -82,7 +83,7 @@ const App = () => {
       </Show>
 
       <Show when={activeTab() === "bench"}>
-        <BenchApp />
+        <BenchApp Spectator={SpectatorPanel} />
       </Show>
     </>
   );

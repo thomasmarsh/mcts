@@ -797,6 +797,15 @@ pub struct GamesParams {
     pub limit: Option<i64>,
 }
 
+/// Optional game pin for the live trace stream. Without it the endpoint
+/// follows the newest game, which is useful for a compact status display;
+/// callers replaying a particular worker/game pass this to avoid being
+/// switched to another game when the run starts one.
+#[derive(Deserialize, Default)]
+pub struct LiveGamesParams {
+    pub game_seq: Option<i64>,
+}
+
 /// `GET /api/bench/runs/{run_id}/games?limit=`
 ///
 /// Lists every game that has at least one traced ply, most recent
@@ -935,6 +944,7 @@ struct LiveMoveEvent {
 async fn live_run_moves(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
+    Query(params): Query<LiveGamesParams>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, BenchError> {
     {
         let db = state.db.lock().unwrap();
@@ -962,19 +972,25 @@ async fn live_run_moves(
         loop {
             interval.tick().await;
 
-            let max_seq: Option<i64> = {
-                let db = state.db.lock().unwrap();
-                db.query_row(
-                    "SELECT MAX(game_seq) FROM game_moves WHERE run_id = ?1",
-                    duckdb::params![&run_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(None)
+            let game_seq = match params.game_seq {
+                Some(game_seq) => game_seq,
+                None => {
+                    let max_seq: Option<i64> = {
+                        let db = state.db.lock().unwrap();
+                        db.query_row(
+                            "SELECT MAX(game_seq) FROM game_moves WHERE run_id = ?1",
+                            duckdb::params![&run_id],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(None)
+                    };
+                    let Some(max_seq) = max_seq else { continue };
+                    max_seq
+                }
             };
-            let Some(max_seq) = max_seq else { continue };
 
-            if current_game_seq != Some(max_seq) {
-                current_game_seq = Some(max_seq);
+            if current_game_seq != Some(game_seq) {
+                current_game_seq = Some(game_seq);
                 last_ply = -1;
             }
 
@@ -988,7 +1004,7 @@ async fn live_run_moves(
                 match stmt {
                     Ok(mut stmt) => {
                         let mapped =
-                            stmt.query_map(duckdb::params![&run_id, max_seq, last_ply], |row| {
+                            stmt.query_map(duckdb::params![&run_id, game_seq, last_ply], |row| {
                                 Ok((
                                     row.get::<_, i64>(0)?,
                                     row.get::<_, String>(1)?,
@@ -1009,7 +1025,7 @@ async fn live_run_moves(
             for (ply, ts, state_str, mv_str, player) in new_rows {
                 last_ply = ply;
                 let payload = LiveMoveEvent {
-                    game_seq: max_seq,
+                    game_seq,
                     ply,
                     ts,
                     state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
@@ -2958,6 +2974,26 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/api/bench/runs/{DEFAULT_RUN_ID}/live"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), HttpStatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_live_run_moves_accepts_a_pinned_game() {
+        let app = seeded_app(game_moves_seed).0;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/bench/runs/{DEFAULT_RUN_ID}/live?game_seq=7"))
                     .body(Body::empty())
                     .unwrap(),
             )

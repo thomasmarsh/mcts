@@ -7,6 +7,8 @@
 // so no real server, DuckDB, or browser is involved.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Component } from "solid-js";
+import { Effect } from "@mcts/core";
 import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
 import { createStore } from "@mcts/core";
 import {
@@ -18,7 +20,7 @@ import {
   RunList,
   RunDetailPanel,
 } from "@mcts/bench";
-import { createMockBenchEnv, FAKE_RUN_ID } from "./fixtures/fake-bench.js";
+import { createMockBenchEnv, FAKE_RUN_ID, FAKE_SMAC3_RUN_ID } from "./fixtures/fake-bench.js";
 import type { BenchEnv } from "@mcts/bench";
 
 /** Create a seeded test store with a mocked bench env. */
@@ -140,5 +142,37 @@ describe("RunDetailPanel", () => {
     expect(screen.getByText("completed")).toBeInTheDocument();
     expect(screen.getByText("druid")).toBeInTheDocument();
     expect(screen.getByText("10")).toBeInTheDocument(); // match_count
+  });
+
+  it("opens the read-only spectator and deletes a completed run through the env", async () => {
+    const deleteRun = vi.fn(() => Effect.send(undefined));
+    const { store } = createTestStore({ deleteRun });
+    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
+      <div data-testid="spectator">{props.runId}:{props.game}:{props.kind}:{String(props.live)}</div>
+    );
+    render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
+    store.dispatch({ tag: "openRun", runId: FAKE_RUN_ID });
+
+    await vi.waitFor(() => expect(screen.getByText("Browse games")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Browse games"));
+    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_RUN_ID}:druid:round_robin:false`);
+
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Confirm delete"));
+    await vi.waitFor(() => expect(deleteRun).toHaveBeenCalledWith(FAKE_RUN_ID));
+    expect(screen.queryByText("Run Detail")).not.toBeInTheDocument();
+  });
+
+  it("shows SMAC3 progress and makes its text traces available", async () => {
+    const { store } = createTestStore();
+    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
+      <div data-testid="spectator">{props.runId}:{props.kind}</div>
+    );
+    render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+
+    await vi.waitFor(() => expect(screen.getByText("3 / 50 (6%) complete")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Browse games"));
+    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_SMAC3_RUN_ID}:smac3`);
   });
 });

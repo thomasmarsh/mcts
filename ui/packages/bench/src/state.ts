@@ -107,6 +107,8 @@ export interface BenchState {
   /** Last failed baseline-advance attempt's message; cleared by the next
    * `advanceBaseline`. */
   advanceBaselineError: string | null;
+  /** Last failed run deletion's message; cleared by the next delete. */
+  deleteError: string | null;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
   /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
@@ -128,6 +130,7 @@ export function initialBenchState(): BenchState {
     stopError: null,
     resumeError: null,
     advanceBaselineError: null,
+    deleteError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
     smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
   };

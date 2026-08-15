@@ -41,6 +41,8 @@ import {
   type Smac3GameInfo,
   type StopResponse,
   type TrialRow,
+  type GameTraceSummary,
+  type GameMove,
 } from "./types.js";
 
 /** Every network operation the bench reducer may perform, lifted to
@@ -74,6 +76,9 @@ export interface BenchEnv {
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first. */
   getRunChain(runId: string): Effect<ChainRung[]>;
+  getRunGames(runId: string, limit?: number): Effect<GameTraceSummary[]>;
+  getRunGameMoves(runId: string, gameSeq: number): Effect<GameMove[]>;
+  deleteRun(runId: string): Effect<void>;
 }
 
 export const TAIL_BACKOFF_START_MS = 1000;
@@ -140,6 +145,9 @@ export type BenchAction =
   | { tag: "advanceBaseline"; runId: string; nTrials?: number; nWorkers?: number }
   | { tag: "advanceBaselineFinished"; runId: string; newRunId: string }
   | { tag: "advanceBaselineFailed"; runId: string; error: string }
+  | { tag: "deleteRun"; runId: string }
+  | { tag: "deleteFinished"; runId: string }
+  | { tag: "deleteFailed"; runId: string; error: string }
   /** Load all available bench kinds/games/strategies for the launch form. */
   | { tag: "kinds"; action: KindsAction }
   /** Load per-game SMAC3 tuner metadata for the launch form + run detail. */
@@ -483,6 +491,27 @@ export function benchReducer(
 
   if (action.tag === "advanceBaselineFailed") {
     draft.advanceBaselineError = action.error;
+    return null;
+  }
+
+  if (action.tag === "deleteRun") {
+    draft.deleteError = null;
+    return env
+      .deleteRun(action.runId)
+      .map((): BenchAction => ({ tag: "deleteFinished", runId: action.runId }))
+      .catch((e): BenchAction => ({ tag: "deleteFailed", runId: action.runId, error: String(e) }));
+  }
+
+  if (action.tag === "deleteFinished") {
+    if (draft.openRun?.runId === action.runId) {
+      draft.openRun = null;
+      draft.openGeneration += 1;
+    }
+    return startRunsFetch(draft, env);
+  }
+
+  if (action.tag === "deleteFailed") {
+    draft.deleteError = action.error;
     return null;
   }
 

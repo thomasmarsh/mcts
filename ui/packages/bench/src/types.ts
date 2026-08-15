@@ -76,6 +76,33 @@ export interface RunLogResponse {
   next_offset: number;
 }
 
+/** One traced game, newest first, from `GET /api/bench/runs/{run_id}/games`. */
+export interface GameTraceSummary {
+  game_seq: number;
+  ply_count: number;
+  started_at: string;
+  ended_at: string;
+  strategy_a: string | null;
+  strategy_b: string | null;
+  outcome: string | null;
+  winner: string | null;
+}
+
+/** One persisted trace position. `state` is wire JSON for round-robin and
+ * display text for SMAC3 traces. */
+export interface GameMove {
+  ply: number;
+  ts: string;
+  state: unknown;
+  mv: unknown | null;
+  player: string | null;
+}
+
+/** One SSE payload from a run's live trace stream. */
+export interface LiveGameMove extends GameMove {
+  game_seq: number;
+}
+
 /** `GET /api/bench/leaderboard` element. `win_rate` counts draws as
  * half a win; `ci_lower`/`ci_upper` are the Wilson interval. */
 export interface LeaderboardEntry {

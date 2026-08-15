@@ -92,6 +92,9 @@ const mockEnv: BenchEnv = {
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
   getRunTrials: () => Effect.send([]),
+  getRunGames: () => Effect.none(),
+  getRunGameMoves: () => Effect.none(),
+  deleteRun: () => Effect.none(),
   // Same reasoning as getRunTrials above: every tick fetches the chain too.
   // An empty chain means the per-rung trials fetch loop is a no-op, which
   // also keeps every existing `trialsCalls` assertion below unaffected by

@@ -15,6 +15,8 @@ import type {
   LeaderboardEntry,
   Smac3GameInfo,
   TrialRow,
+  GameTraceSummary,
+  GameMove,
 } from "@mcts/bench";
 
 export const FAKE_RUN_ID = "rr-druid-20260101T000000-abc1234";
@@ -176,6 +178,25 @@ export const fakeTrialRows: TrialRow[] = [
   },
 ];
 
+export const fakeGameTraces: GameTraceSummary[] = [
+  {
+    game_seq: 10,
+    ply_count: 3,
+    started_at: "2026-01-01T00:00:00Z",
+    ended_at: "2026-01-01T00:00:02Z",
+    strategy_a: "strong",
+    strategy_b: "master",
+    outcome: "win",
+    winner: "Black",
+  },
+];
+
+export const fakeGameMoves: GameMove[] = [
+  { ply: 0, ts: "2026-01-01T00:00:00Z", state: { player: "Black", board: [] }, mv: null, player: null },
+  { ply: 1, ts: "2026-01-01T00:00:01Z", state: { player: "White", board: [] }, mv: ["Black", 0], player: "Black" },
+  { ply: 2, ts: "2026-01-01T00:00:02Z", state: { player: "Black", board: [] }, mv: ["White", 1], player: "White" },
+];
+
 // A variant trial set where trial #2's exact config is re-evaluated twice
 // more (trials #4/#5, different seeds/costs) -- exercises the confidence
 // band: those three rows must pool into one group with a tighter CI than
@@ -287,6 +308,9 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
           incumbent: null,
         },
       ]),
+    getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),
+    getRunGameMoves: (): Effect<GameMove[]> => Effect.send(fakeGameMoves),
+    deleteRun: (): Effect<void> => Effect.send(undefined),
   };
   return { ...base, ...overrides };
 }

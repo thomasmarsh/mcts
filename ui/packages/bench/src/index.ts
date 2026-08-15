@@ -19,6 +19,9 @@ export type {
   TrialRow,
   IncumbentInfo,
   ChainRung,
+  GameTraceSummary,
+  GameMove,
+  LiveGameMove,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 

@@ -26,6 +26,8 @@ import type {
   Smac3GameInfo,
   StopResponse,
   TrialRow,
+  GameTraceSummary,
+  GameMove,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -58,6 +60,9 @@ export interface BenchApiClient {
    * /api/bench/runs/{run_id}/chain`) -- a one-element list containing just
    * `runId` for a plain (non-laddered) run. */
   getRunChain(runId: string): Promise<ChainRung[]>;
+  getRunGames(runId: string, limit?: number): Promise<GameTraceSummary[]>;
+  getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]>;
+  deleteRun(runId: string): Promise<void>;
 }
 
 /** The server (`BenchError`'s `IntoResponse` impl, server/bench/mod.rs)
@@ -94,6 +99,11 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
   });
   if (!r.ok) throw new Error(await errorMessage(r));
   return r.json() as Promise<T>;
+}
+
+async function deleteRequest(url: string): Promise<void> {
+  const r = await fetch(url, { method: "DELETE" });
+  if (!r.ok) throw new Error(await errorMessage(r));
 }
 
 /** Build a `?k=v&...` suffix, skipping null/undefined values. */
@@ -179,6 +189,15 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getRunChain(runId: string): Promise<ChainRung[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/chain`));
     },
+    async getRunGames(runId: string, limit?: number): Promise<GameTraceSummary[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit })}`));
+    },
+    async getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games/${gameSeq}/moves`));
+    },
+    async deleteRun(runId: string): Promise<void> {
+      return deleteRequest(url(`/api/bench/runs/${encodeURIComponent(runId)}`));
+    },
   };
 }
 
@@ -201,5 +220,8 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
+    getRunGames: (runId: string, limit?: number) => lift(() => api.getRunGames(runId, limit)),
+    getRunGameMoves: (runId: string, gameSeq: number) => lift(() => api.getRunGameMoves(runId, gameSeq)),
+    deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),
   };
 }

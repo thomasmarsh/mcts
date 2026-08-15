@@ -12,9 +12,39 @@ import { Smac3RunDetail } from "./Smac3RunDetail.js";
 
 const MAX_VISIBLE_LINES = 500;
 
+function configOverride(config: unknown, key: string): number | null {
+  const overrides = (config as { overrides?: unknown } | null)?.overrides;
+  if (!Array.isArray(overrides)) return null;
+  for (const override of overrides) {
+    if (typeof override !== "string" || !override.startsWith(`${key}=`)) continue;
+    const value = Number(override.slice(key.length + 1));
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function progress(detail: NonNullable<BenchState["openRun"]>["detail"]): { completed: number; total: number | null; workers: number | null } {
+  if (!detail) return { completed: 0, total: null, workers: null };
+  if (detail.kind === "smac3") {
+    return {
+      completed: detail.trial_count,
+      total: configOverride(detail.config, "optimizer.n_trials"),
+      workers: configOverride(detail.config, "optimizer.n_workers"),
+    };
+  }
+  const config = detail.config as { strategies?: unknown; rounds?: unknown } | null;
+  const strategies = Array.isArray(config?.strategies) ? config.strategies.length : 0;
+  const rounds = typeof config?.rounds === "number" && config.rounds > 0 ? config.rounds : 1;
+  return { completed: detail.match_count, total: strategies > 1 ? strategies * (strategies - 1) * rounds : null, workers: null };
+}
+
 export const RunDetailPanel: Component<{
   store: Store<BenchState, BenchAction>;
+  /** App-owned board panel: the bench package deliberately does not depend
+   * on individual game renderers. */
+  Spectator?: Component<{ runId: string; game: string; kind: string; live: boolean }>;
 }> = (props) => {
+  const Spectator = props.Spectator;
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
 
@@ -24,8 +54,16 @@ export const RunDetailPanel: Component<{
   const stopError = createMemo(() => state().stopError);
   const resumeError = createMemo(() => state().resumeError);
   const advanceBaselineError = createMemo(() => state().advanceBaselineError);
+  const deleteError = createMemo(() => state().deleteError);
+  const [spectatorVisible, setSpectatorVisible] = createSignal(false);
+  const [deleteArmed, setDeleteArmed] = createSignal(false);
 
   const isSmac3 = createMemo(() => detail()?.kind === "smac3");
+  const runProgress = createMemo(() => progress(detail()));
+  const progressPercent = createMemo(() => {
+    const { completed, total } = runProgress();
+    return total === null ? null : Math.min(100, Math.floor((completed / total) * 100));
+  });
   // A run can only be resumed once it's stopped producing new trials --
   // resuming a still-running one would launch a second process racing the
   // first over the same prior state.
@@ -121,11 +159,30 @@ export const RunDetailPanel: Component<{
             <button id="close-run-btn" onClick={() => dispatch({ tag: "closeRun" })}>
               Close
             </button>
+            <Show when={props.Spectator}>
+              <button id="watch-games-btn" onClick={() => setSpectatorVisible(!spectatorVisible())}>
+                {spectatorVisible() ? "Hide games" : "Browse games"}
+              </button>
+            </Show>
+            <Show when={detail()?.status !== "running"}>
+              <button
+                id="delete-run-btn"
+                onClick={() => {
+                  if (deleteArmed()) dispatch({ tag: "deleteRun", runId: openRun()!.runId });
+                  else setDeleteArmed(true);
+                }}
+              >
+                {deleteArmed() ? "Confirm delete" : "Delete"}
+              </button>
+            </Show>
           </div>
         </div>
 
         <Show when={stopError()}>
           <div class="launch-error">{stopError()}</div>
+        </Show>
+        <Show when={deleteError()}>
+          <div class="launch-error">{deleteError()}</div>
         </Show>
 
         <Show when={canResume()}>
@@ -198,6 +255,23 @@ export const RunDetailPanel: Component<{
                 <span class="meta-label">Trials</span>
                 <span class="meta-value">{detail()!.trial_count}</span>
               </div>
+              <div class="meta-row progress-row">
+                <span class="meta-label">Progress</span>
+                <span class="meta-value">
+                  {runProgress().completed}{runProgress().total !== null ? ` / ${runProgress().total} (${progressPercent()}%) complete` : " completed"}
+                  <Show when={isSmac3() && detail()!.status === "running"}>
+                    {` · ${runProgress().workers ?? "auto"} workers`}
+                  </Show>
+                  <Show when={runProgress().total !== null}>
+                    <progress
+                      class="run-progress-bar"
+                      value={runProgress().completed}
+                      max={runProgress().total!}
+                      aria-label="Run progress"
+                    />
+                  </Show>
+                </span>
+              </div>
               <div class="meta-row">
                 <span class="meta-label">Git SHA</span>
                 <span class="meta-value"><code>{detail()!.git_sha.slice(0, 12)}</code></span>
@@ -228,6 +302,10 @@ export const RunDetailPanel: Component<{
             />
           </Show>
         </div>
+
+        <Show when={spectatorVisible() && Spectator && detail()}>
+          {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
+        </Show>
 
         <div id="log-panel">
           <div id="log-header">
