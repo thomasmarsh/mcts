@@ -109,15 +109,37 @@ function paramsVsBaseline(
  * `baseline_configs`, because that is what the CLI forwards to the game.
  * A comparison only makes sense with exactly one baseline instance. */
 function baselineConfig(launchConfig: unknown): Record<string, unknown> | null {
-  const config = launchConfig as { baseline_settings?: unknown; baseline_configs?: unknown } | null;
+  const config = launchConfig as {
+    baseline_settings?: unknown;
+    baseline_configs?: unknown;
+    overrides?: unknown;
+  } | null;
   const settings = config?.baseline_settings ?? config?.baseline_configs;
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
-  const entries = Object.values(settings as Record<string, unknown>);
-  if (entries.length !== 1) return null;
-  const baseline = entries[0];
-  return baseline && typeof baseline === "object" && !Array.isArray(baseline)
-    ? baseline as Record<string, unknown>
-    : null;
+  if (settings && typeof settings === "object" && !Array.isArray(settings)) {
+    const entries = Object.values(settings as Record<string, unknown>);
+    if (entries.length !== 1) return null;
+    const baseline = entries[0];
+    return baseline && typeof baseline === "object" && !Array.isArray(baseline)
+      ? baseline as Record<string, unknown>
+      : null;
+  }
+
+  // Runs launched before `baseline_settings` was persisted still identify
+  // their floor opponent in the launch override. Only the two deliberately
+  // supported floor families are reconstructable here; named game presets
+  // are intentionally neither inferred nor displayed as tuning baselines.
+  if (!Array.isArray(config?.overrides)) return null;
+  let baselineOverride: string | undefined;
+  for (let i = config.overrides.length - 1; i >= 0; i--) {
+    const value = config.overrides[i];
+    if (typeof value === "string" && value.startsWith("target.baselines=")) {
+      baselineOverride = value;
+      break;
+    }
+  }
+  const match = baselineOverride?.match(/^target\.baselines=\[(['"])(flat_mc|random)\1\]$/);
+  if (!match) return null;
+  return { family: match[2], q_init: "Infinity" };
 }
 
 /** The baseline instance a trial's cost was measured against, when the run

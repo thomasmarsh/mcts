@@ -345,6 +345,22 @@ describe("RunDetailPanel / smac3", () => {
     await screen.findByText("Copied!");
   });
 
+  it("reconstructs a floor baseline for runs recorded before baseline settings", async () => {
+    const detail = {
+      ...fakeSmac3RunDetail,
+      config: { overrides: ["optimizer.n_trials=50", "target.baselines=['random']"] },
+    };
+    const { store } = createTestStore({ getRun: () => Effect.send(detail) });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Incumbent vs. baseline");
+
+    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    expect(incumbentTable.textContent).toContain("random");
+    expect(incumbentTable.textContent).not.toMatch(/default|strong|master|easy/i);
+  });
+
   it("toggles the chart help popover open and closed", async () => {
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
