@@ -203,19 +203,22 @@ def build_optimizer(
     cfg.parameters = parameters
     cfg.conditions = conditions
     # `tune describe` advertises available named presets; it does not choose
-    # an opponent for the run. Requiring the caller to choose avoids silently
-    # tuning against an unintended baseline when launch wiring is incomplete.
-    if not cfg.target.baselines:
+    # an opponent for the run. Require the caller to choose either a named
+    # preset or a raw discovered config. Automated ladder rungs intentionally
+    # clear the named presets and use only the prior incumbent's raw config.
+    if not cfg.target.baselines and not cfg.target.baseline_configs:
         raise ValueError(
-            "target.baselines must be explicitly provided "
+            "a baseline must be explicitly provided through target.baselines "
+            "or --baseline-config "
             f"(advertised named presets: {advertised_baselines})"
         )
     logger.info(
-        "Search space from %s: %d parameters, %d conditions, baselines=%s",
+        "Search space from %s: %d parameters, %d conditions, baselines=%s, baseline_configs=%s",
         binary,
         len(cfg.parameters),
         len(cfg.conditions),
         cfg.target.baselines,
+        list(cfg.target.baseline_configs),
     )
 
     # -- build configuration space -----------------------------------------

@@ -198,6 +198,32 @@ def test_build_optimizer_preserves_explicit_baseline_instances(
     assert cfg.target.baselines == ["flat_mc"]
 
 
+def test_build_optimizer_accepts_discovered_baseline_without_named_preset(
+    game_nim_binary: Path, tmp_path: Path, monkeypatch
+):
+    """A promoted ladder rung faces only the prior rung's incumbent."""
+    from smac3_cli.__main__ import build_optimizer
+    from smac3_cli.config import OptimizerConfig, TargetConfig
+
+    monkeypatch.chdir(tmp_path)
+    incumbent = {"family": "flat_mc", "simulation_budget": 10}
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_trials=1, n_workers=1),
+        target=TargetConfig(
+            binary=game_nim_binary,
+            rounds=1,
+            baselines=[],
+            baseline_configs={"ladder2": incumbent},
+        ),
+    )
+
+    optimizer = build_optimizer(cfg, run_id="ladder-baseline-test")
+
+    assert optimizer.scenario.instances == ["ladder2"]
+    assert cfg.target.baselines == []
+    assert cfg.target.baseline_configs == {"ladder2": incumbent}
+
+
 def test_build_optimizer_requires_explicit_baseline_instances(
     game_nim_binary: Path, tmp_path: Path, monkeypatch
 ):
@@ -210,7 +236,7 @@ def test_build_optimizer_requires_explicit_baseline_instances(
         target=TargetConfig(binary=game_nim_binary, rounds=1),
     )
 
-    with pytest.raises(ValueError, match="target.baselines must be explicitly provided"):
+    with pytest.raises(ValueError, match="a baseline must be explicitly provided"):
         build_optimizer(cfg, run_id="missing-baseline-test")
 
 
