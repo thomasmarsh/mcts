@@ -279,6 +279,7 @@ impl GameAdapter for OthAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Othello has one, so merging transposed nodes during
@@ -310,6 +311,7 @@ impl GameAdapter for OthAdapter {
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
+                trace_path.as_deref(),
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -323,6 +325,7 @@ impl GameAdapter for OthAdapter {
                 },
                 build_strong,
                 Default::default(),
+                trace_path.as_deref(),
             )?
         };
         Ok(serde_json::json!({
@@ -357,7 +360,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = OthAdapter
-            .tune_eval(params, 1, Some(0), None, None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

@@ -39,6 +39,8 @@
 
 use std::str::FromStr;
 
+pub mod trace;
+
 use game_host::{HostError, TunerCondition, TunerInfo, TunerParameter};
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
@@ -782,17 +784,30 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     candidate_budget: SearchBudget,
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
     initial_state: G::S,
+    trace_path: Option<&std::path::Path>,
 ) -> Result<TuneEvalOutcome, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
     let seed = seed.unwrap_or(0);
+
+    let mut tracer = trace_path
+        .map(trace::MoveTracer::open)
+        .transpose()
+        .map_err(|e| HostError::bad_request(format!("failed to open --trace-path: {e}")))?;
 
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     for _ in 0..rounds {
         let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
 
-        let (c, b, d) = play_one(candidate.as_mut(), baseline.as_mut(), initial_state.clone());
+        let (c, b, d) = play_one(
+            candidate.as_mut(),
+            baseline.as_mut(),
+            initial_state.clone(),
+            tracer.as_mut(),
+            "candidate",
+            "baseline",
+        );
         wins += c;
         losses += b;
         draws += d;
@@ -800,7 +815,14 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         // Swap move order so the candidate plays second half the time.
         let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
-        let (b, c, d) = play_one(baseline.as_mut(), candidate.as_mut(), initial_state.clone());
+        let (b, c, d) = play_one(
+            baseline.as_mut(),
+            candidate.as_mut(),
+            initial_state.clone(),
+            tracer.as_mut(),
+            "baseline",
+            "candidate",
+        );
         wins += c;
         losses += b;
         draws += d;
@@ -839,8 +861,18 @@ fn play_one<G: Game>(
     first: &mut dyn Search<G = G>,
     second: &mut dyn Search<G = G>,
     initial_state: G::S,
+    mut tracer: Option<&mut trace::MoveTracer>,
+    first_label: &str,
+    second_label: &str,
 ) -> (u32, u32, u32) {
+    let game_seq = tracer.as_mut().map(|t| t.start_game());
     let mut state = initial_state;
+    let mut ply = 0u32;
+
+    if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
+        t.write_ply::<G::S, G::A>(seq, ply, &state, None, None);
+    }
+
     while !G::is_terminal(&state) {
         let mover = G::player_to_move(&state).to_index();
         let action = if mover == 0 {
@@ -849,6 +881,16 @@ fn play_one<G: Game>(
             second.choose_action(&state)
         };
         state = G::apply(state, &action);
+        ply += 1;
+
+        if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
+            let player = if mover == 0 {
+                first_label
+            } else {
+                second_label
+            };
+            t.write_ply(seq, ply, &state, Some(&action), Some(player));
+        }
     }
     match G::winner(&state) {
         None => (0, 0, 1),
@@ -1088,6 +1130,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("missing `rave` must be rejected");
         assert!(err.message.contains("rave"));
@@ -1105,6 +1148,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("unknown schedule must be rejected");
         assert!(err.message.contains("schedule"));
@@ -1122,6 +1166,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("unknown final_action must be rejected");
         assert!(err.message.contains("final_action"));
@@ -1139,6 +1184,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("unknown contempt must be rejected");
         assert!(err.message.contains("contempt"));
@@ -1157,6 +1203,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("contempt=on without contempt_factor must be rejected");
         assert!(err.message.contains("contempt_factor"));
@@ -1174,6 +1221,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .expect_err("unknown family must be rejected");
         assert!(err.message.contains("family"));
@@ -1194,6 +1242,7 @@ mod tests {
             SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
+            None,
         )
         .unwrap_or_else(|e| {
             panic!(
@@ -1337,6 +1386,7 @@ mod tests {
                     .expect("baseline_params is a valid ucb1 config")
             },
             <Nim as Game>::S::default(),
+            None,
         )
         .expect("candidate vs config-built baseline should round-trip");
         assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);

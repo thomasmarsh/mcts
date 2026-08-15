@@ -54,6 +54,28 @@ pub enum LogRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         extra: Option<serde_json::Value>,
     },
+    /// One ply of one game's move trace, for live spectating / post-hoc
+    /// replay through the same per-game UI renderer used for interactive
+    /// play. `game_seq` is the existing per-run game identifier: it's
+    /// `MatchResult.seq` for a round_robin run, `Trial.trial_id` for a
+    /// smac3 run -- deliberately reused rather than minting a new id, so a
+    /// trace joins straight onto `match_results`/`trials` with no mapping
+    /// table.
+    Move {
+        game_seq: u64,
+        ply: u32,
+        /// Wire-format game state after this ply, in the same shape
+        /// `GameAdapter::ai_move`'s `result.state` already produces --
+        /// renderers need no new code to draw it.
+        state: serde_json::Value,
+        /// The move applied to reach `state`. `None` for the initial state
+        /// (ply 0), before any move has been made.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mv: Option<serde_json::Value>,
+        /// Preset/strategy id that made this move, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<String>,
+    },
     /// Periodic liveness heartbeat.
     Heartbeat { games_played: u64 },
 }
@@ -137,6 +159,27 @@ mod tests {
         let json = rec.to_json_line();
         let parsed: LogRecord = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, LogRecord::Trial { trial_id: 42, .. }));
+    }
+
+    #[test]
+    fn log_record_move_round_trips() {
+        let rec = LogRecord::Move {
+            game_seq: 3,
+            ply: 5,
+            state: serde_json::json!({"board": [1, 0, 2]}),
+            mv: Some(serde_json::json!({"cell": 4})),
+            player: Some("strong".into()),
+        };
+        let json = rec.to_json_line();
+        let parsed: LogRecord = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed,
+            LogRecord::Move {
+                game_seq: 3,
+                ply: 5,
+                ..
+            }
+        ));
     }
 
     #[test]

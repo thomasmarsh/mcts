@@ -570,6 +570,7 @@ impl GameAdapter for DruidAdapter {
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
@@ -602,6 +603,7 @@ impl GameAdapter for DruidAdapter {
                         .expect("baseline_config already validated above")
                 },
                 initial_state,
+                trace_path.as_deref(),
             )?
         } else {
             let baseline = baseline.as_deref().unwrap_or("strong");
@@ -645,6 +647,7 @@ impl GameAdapter for DruidAdapter {
                 budget,
                 || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg, 1),
                 initial_state,
+                trace_path.as_deref(),
             )?
         };
         Ok(serde_json::json!({
@@ -679,7 +682,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -705,7 +708,16 @@ mod tests {
             "final_action": "robust_child",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, Some(baseline_config), None, None)
+            .tune_eval(
+                params,
+                1,
+                Some(0),
+                None,
+                Some(baseline_config),
+                None,
+                None,
+                None,
+            )
             .expect("tune_eval should round-trip against a config-built opponent");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -732,7 +744,16 @@ mod tests {
         });
         let game_config = serde_json::json!({ "size": { "w": 3, "h": 3 } });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, Some(game_config), None)
+            .tune_eval(
+                params,
+                1,
+                Some(0),
+                None,
+                None,
+                Some(game_config),
+                None,
+                None,
+            )
             .expect("tune_eval should round-trip on a non-default board size");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -752,7 +773,16 @@ mod tests {
         });
         let game_config = serde_json::json!({ "size": { "w": 1, "h": 1 } });
         let err = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, Some(game_config), None)
+            .tune_eval(
+                params,
+                1,
+                Some(0),
+                None,
+                None,
+                Some(game_config),
+                None,
+                None,
+            )
             .expect_err("an unsupported board size should error before any games are played");
         assert_eq!(err.code, 400);
     }
@@ -765,6 +795,7 @@ mod tests {
                 1,
                 Some(0),
                 Some("nonexistent".into()),
+                None,
                 None,
                 None,
                 None,

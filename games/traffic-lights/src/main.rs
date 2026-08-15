@@ -269,6 +269,7 @@ impl GameAdapter for TlAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- TrafficLights has one (see `lib.rs`), so merging
@@ -300,6 +301,7 @@ impl GameAdapter for TlAdapter {
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
+                trace_path.as_deref(),
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -313,6 +315,7 @@ impl GameAdapter for TlAdapter {
                 },
                 build_strong,
                 Default::default(),
+                trace_path.as_deref(),
             )?
         };
         Ok(serde_json::json!({

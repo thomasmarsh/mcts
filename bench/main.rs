@@ -52,6 +52,14 @@ enum Command {
         /// Show progress bars and verbose result tables on stderr.
         #[arg(long)]
         verbose: bool,
+
+        /// Optional path to append per-ply move-trace JSONL lines to
+        /// (opened in append mode). Kept separate from stdout/`log.jsonl`
+        /// since a full move trace is much higher-volume than match
+        /// results and would otherwise flood anyone tailing the run's
+        /// log. Omit to disable move tracing entirely.
+        #[arg(long)]
+        trace_path: Option<String>,
     },
 
     /// Launch a detached background run via the OS process launcher.
@@ -160,7 +168,8 @@ fn main() {
             strategies,
             rounds,
             verbose,
-        } => cmd_round_robin(&game, &strategies, rounds, verbose),
+            trace_path,
+        } => cmd_round_robin(&game, &strategies, rounds, verbose, trace_path.as_deref()),
 
         Command::Launch {
             kind,
@@ -197,7 +206,13 @@ fn main() {
     }
 }
 
-fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verbose: bool) {
+fn cmd_round_robin(
+    game_kind: &str,
+    strategy_ids: &[String],
+    rounds: usize,
+    verbose: bool,
+    trace_path: Option<&str>,
+) {
     let games = registry();
     let Some(bench_game) = games.get(game_kind) else {
         eprintln!("error: unknown game kind '{game_kind}'");
@@ -239,7 +254,26 @@ fn cmd_round_robin(game_kind: &str, strategy_ids: &[String], rounds: usize, verb
     };
 
     let mut writer = stdout().lock();
-    let results = round_robin_bench_multiple(bench_game.as_ref(), &ids, rounds, &mut writer, verb);
+    let mut moves_file = trace_path.map(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .unwrap_or_else(|e| {
+                eprintln!("error: failed to open --trace-path {p}: {e}");
+                std::process::exit(1);
+            })
+    });
+    let moves_writer: Option<&mut dyn std::io::Write> =
+        moves_file.as_mut().map(|f| f as &mut dyn std::io::Write);
+    let results = round_robin_bench_multiple(
+        bench_game.as_ref(),
+        &ids,
+        rounds,
+        &mut writer,
+        moves_writer,
+        verb,
+    );
 
     // Final summary to stderr.
     if verbose {

@@ -13,7 +13,7 @@ use game_host::subprocess::SubprocessAdapter;
 use game_host::{AiPresetInfo, GameAdapter, GameDescription, TunerInfo};
 use serde_json::Value;
 
-use crate::{BenchGame, MatchOutcome, StrategyInfo};
+use crate::{BenchGame, MatchOutcome, PlyEvent, StrategyInfo};
 
 pub fn registry() -> HashMap<&'static str, Box<dyn BenchGame>> {
     let mut m: HashMap<&'static str, Box<dyn BenchGame>> = HashMap::new();
@@ -166,8 +166,13 @@ impl BenchGame for SubprocessBenchGame {
             .collect()
     }
 
-    fn play_match(&self, strategy_a: &str, strategy_b: &str) -> MatchOutcome {
-        play_match_via_adapter(&self.adapter, strategy_a, strategy_b)
+    fn play_match(
+        &self,
+        strategy_a: &str,
+        strategy_b: &str,
+        on_ply: &mut dyn FnMut(PlyEvent),
+    ) -> MatchOutcome {
+        play_match_via_adapter(&self.adapter, strategy_a, strategy_b, on_ply)
     }
 }
 
@@ -175,6 +180,7 @@ fn play_match_via_adapter(
     adapter: &SubprocessAdapter,
     preset_a: &str,
     preset_b: &str,
+    on_ply: &mut dyn FnMut(PlyEvent),
 ) -> MatchOutcome {
     let config = adapter.default_config();
     let state = match adapter.new_state(config) {
@@ -188,7 +194,14 @@ fn play_match_via_adapter(
         }
     };
 
-    play_match_inner(adapter, state, preset_a, preset_b, 0)
+    on_ply(PlyEvent {
+        ply: 0,
+        state: &state,
+        mv: None,
+        player: None,
+    });
+
+    play_match_inner(adapter, state, preset_a, preset_b, 0, on_ply)
 }
 
 fn play_match_inner(
@@ -197,6 +210,7 @@ fn play_match_inner(
     preset_a: &str,
     preset_b: &str,
     turn: usize,
+    on_ply: &mut dyn FnMut(PlyEvent),
 ) -> MatchOutcome {
     let view = match adapter.view(&state) {
         Ok(v) => v,
@@ -240,7 +254,14 @@ fn play_match_inner(
         }
     };
 
-    play_match_inner(adapter, result.state, preset_a, preset_b, turn + 1)
+    on_ply(PlyEvent {
+        ply: (turn + 1) as u32,
+        state: &result.state,
+        mv: Some(&result.mv),
+        player: Some(preset),
+    });
+
+    play_match_inner(adapter, result.state, preset_a, preset_b, turn + 1, on_ply)
 }
 
 fn find_game_binary(pkg_name: &str) -> Option<PathBuf> {

@@ -30,6 +30,21 @@ pub struct MatchOutcome {
     pub extra: Option<serde_json::Value>,
 }
 
+/// One ply of a match in progress, handed to a `play_match` caller's
+/// `on_ply` sink as it happens -- so a caller can write+flush a
+/// `LogRecord::Move` line immediately, the same way `write_match_result`
+/// already does for the final outcome, rather than buffering a whole
+/// game's trace and losing live-spectate freshness.
+pub struct PlyEvent<'a> {
+    pub ply: u32,
+    pub state: &'a serde_json::Value,
+    /// The move applied to reach `state`. `None` for the initial state
+    /// (ply 0), before any move has been made.
+    pub mv: Option<&'a serde_json::Value>,
+    /// Strategy id that made this move, if any.
+    pub player: Option<&'a str>,
+}
+
 /// Per-game-kind trait for the benchmark harness.  One impl per game kind,
 /// registered in `registry()`.  Mirrors `GameAdapter`'s shape but for
 /// "build these named strategies and play matches" rather than "serve JSON
@@ -45,8 +60,15 @@ pub trait BenchGame: Send + Sync {
     fn strategies(&self) -> Vec<StrategyInfo>;
 
     /// Play one match between two strategies identified by their strategy
-    /// IDs.  Returns the outcome.
-    fn play_match(&self, strategy_a: &str, strategy_b: &str) -> MatchOutcome;
+    /// IDs.  Returns the outcome. Calls `on_ply` once per ply (including
+    /// the initial state, at `ply == 0`) as the game is played, for callers
+    /// that want a live move trace.
+    fn play_match(
+        &self,
+        strategy_a: &str,
+        strategy_b: &str,
+        on_ply: &mut dyn FnMut(PlyEvent),
+    ) -> MatchOutcome;
 }
 
 /// Register all known `BenchGame` implementations.

@@ -114,6 +114,20 @@ pub fn wilson_interval(successes: f64, total: usize, z: f64) -> (f64, f64) {
 // Helpers for emitting result records
 // ---------------------------------------------------------------------------
 
+fn write_move(writer: &mut dyn Write, game_seq: u64, ev: crate::PlyEvent) {
+    let rec = LogRecord::Move {
+        game_seq,
+        ply: ev.ply,
+        state: ev.state.clone(),
+        mv: ev.mv.cloned(),
+        player: ev.player.map(|p| p.to_owned()),
+    };
+    let mut line = rec.to_json_line();
+    line.push('\n');
+    let _ = writer.write_all(line.as_bytes());
+    let _ = writer.flush();
+}
+
 fn write_match_result<W: Write>(
     writer: &mut W,
     seq: u64,
@@ -314,15 +328,27 @@ where
 
 /// Play a single match between two strategies identified by their
 /// `BenchGame` strategy IDs, write the result to `writer`, and return the
-/// per-strategy `Result` for the match.
+/// per-strategy `Result` for the match. Per-ply move records go to
+/// `on_move` instead of `writer` -- kept as a separate destination
+/// (typically a dedicated `moves.jsonl`, not the run's main `log.jsonl`)
+/// since a full move trace is much higher-volume than match results and
+/// would otherwise flood anyone tailing the run's log. Callers that don't
+/// want move tracing pass a no-op closure.
+///
+/// Takes the sink as an `on_move` callback rather than `Option<&mut dyn
+/// Write>` directly: reborrowing an `Option<&mut dyn Trait>` across a
+/// per-iteration function call hits trait-object lifetime invariance (the
+/// reborrow can't be shortened to the call site the way a concrete `&mut
+/// W` can), which a fresh closure built at each call site sidesteps.
 fn play_one_match<W: Write>(
     game: &dyn BenchGame,
     a_id: &str,
     b_id: &str,
     seq: u64,
     writer: &mut W,
+    on_move: &mut dyn FnMut(crate::PlyEvent),
 ) -> (usize, usize) /* (a_win, b_win) or draw */ {
-    let outcome = game.play_match(a_id, b_id);
+    let outcome = game.play_match(a_id, b_id, on_move);
     let (outcome_str, winner_str) = match outcome.winner {
         None => ("draw", None),
         Some(0) => ("win_a", Some(a_id.to_owned())),
@@ -358,6 +384,7 @@ pub fn round_robin_bench<W: Write>(
     game: &dyn BenchGame,
     strategy_ids: &[String],
     writer: &mut W,
+    moves_writer: &mut Option<&mut dyn Write>,
     verbose: Verbosity,
     seq: &mut u64,
 ) -> Vec<Result> {
@@ -385,8 +412,18 @@ pub fn round_robin_bench<W: Write>(
             if i == j {
                 continue;
             }
-            let (a_wins, b_wins) =
-                play_one_match(game, &strategy_ids[i], &strategy_ids[j], *seq, writer);
+            let (a_wins, b_wins) = play_one_match(
+                game,
+                &strategy_ids[i],
+                &strategy_ids[j],
+                *seq,
+                writer,
+                &mut |ev| {
+                    if let Some(mw) = moves_writer.as_deref_mut() {
+                        write_move(mw, *seq, ev);
+                    }
+                },
+            );
             *seq += 1;
             results[i].wins += a_wins;
             results[i].losses += b_wins;
@@ -411,12 +448,20 @@ pub fn round_robin_bench_multiple<W: Write>(
     strategy_ids: &[String],
     rounds: usize,
     writer: &mut W,
+    mut moves_writer: Option<&mut dyn Write>,
     verbose: Verbosity,
 ) -> Vec<Result> {
     let mut results = vec![Result::default(); strategy_ids.len()];
     let mut seq: u64 = 1;
     for _ in 0..rounds {
-        let new_results = round_robin_bench(game, strategy_ids, writer, verbose, &mut seq);
+        let new_results = round_robin_bench(
+            game,
+            strategy_ids,
+            writer,
+            &mut moves_writer,
+            verbose,
+            &mut seq,
+        );
         for (index, result) in new_results.iter().enumerate() {
             results[index] += *result;
         }
@@ -509,7 +554,12 @@ mod tests {
             ]
         }
 
-        fn play_match(&self, strategy_a: &str, strategy_b: &str) -> MatchOutcome {
+        fn play_match(
+            &self,
+            strategy_a: &str,
+            strategy_b: &str,
+            _on_ply: &mut dyn FnMut(crate::PlyEvent),
+        ) -> MatchOutcome {
             let winner = match (strategy_a, strategy_b) {
                 ("a", "b") | ("b", "a") => {
                     if strategy_a == "a" {
@@ -541,6 +591,143 @@ mod tests {
         }
     }
 
+    /// A fake game whose `play_match` emits a two-ply trace (initial state
+    /// + one move) via `on_ply` before returning a draw, so `play_one_match`
+    /// / `write_move`'s wiring can be exercised without a real MCTS search.
+    struct TracedDraw;
+
+    impl BenchGame for TracedDraw {
+        fn kind(&self) -> &'static str {
+            "traced_draw"
+        }
+
+        fn strategies(&self) -> Vec<StrategyInfo> {
+            vec![
+                StrategyInfo {
+                    id: "a".into(),
+                    label: "A".into(),
+                    description: "".into(),
+                },
+                StrategyInfo {
+                    id: "b".into(),
+                    label: "B".into(),
+                    description: "".into(),
+                },
+            ]
+        }
+
+        fn play_match(
+            &self,
+            _strategy_a: &str,
+            strategy_b: &str,
+            on_ply: &mut dyn FnMut(crate::PlyEvent),
+        ) -> MatchOutcome {
+            let initial = serde_json::json!({"board": []});
+            on_ply(crate::PlyEvent {
+                ply: 0,
+                state: &initial,
+                mv: None,
+                player: None,
+            });
+            let mv = serde_json::json!({"cell": 0});
+            let after = serde_json::json!({"board": [1]});
+            on_ply(crate::PlyEvent {
+                ply: 1,
+                state: &after,
+                mv: Some(&mv),
+                player: Some(strategy_b),
+            });
+            MatchOutcome {
+                winner: None,
+                extra: None,
+            }
+        }
+    }
+
+    #[test]
+    fn test_round_robin_bench_emits_move_records_to_a_separate_writer() {
+        let game = TracedDraw;
+        let ids: Vec<String> = game.strategies().into_iter().map(|s| s.id).collect();
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut moves_buf: Vec<u8> = Vec::new();
+        let mut seq: u64 = 1;
+        round_robin_bench(
+            &game,
+            &ids,
+            &mut buf,
+            &mut Some(&mut moves_buf),
+            Verbosity::Silent,
+            &mut seq,
+        );
+
+        // `buf` (the run's main log) should carry only match results -- no
+        // Move records mixed in, so tailing it stays low-volume even for a
+        // long tournament.
+        let records: Vec<LogRecord> = buf
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        for rec in &records {
+            assert!(matches!(rec, LogRecord::MatchResult { .. }));
+        }
+
+        // The moves go to the dedicated writer instead.
+        let move_records: Vec<LogRecord> = moves_buf
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        // 2 ordered pairs (a-vs-b, b-vs-a) x 2 plies each.
+        assert_eq!(move_records.len(), 4);
+        for rec in &move_records {
+            assert!(matches!(rec, LogRecord::Move { .. }));
+        }
+
+        // Every Move record's game_seq should match some MatchResult's seq.
+        let match_seqs: std::collections::HashSet<u64> = records
+            .iter()
+            .filter_map(|r| match r {
+                LogRecord::MatchResult { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        for rec in &move_records {
+            if let LogRecord::Move { game_seq, .. } = rec {
+                assert!(match_seqs.contains(game_seq));
+            }
+        }
+    }
+
+    #[test]
+    fn test_round_robin_bench_with_no_moves_writer_emits_no_move_records() {
+        let game = TracedDraw;
+        let ids: Vec<String> = game.strategies().into_iter().map(|s| s.id).collect();
+
+        let mut buf: Vec<u8> = Vec::new();
+        let mut seq: u64 = 1;
+        round_robin_bench(
+            &game,
+            &ids,
+            &mut buf,
+            &mut None,
+            Verbosity::Silent,
+            &mut seq,
+        );
+
+        let records: Vec<LogRecord> = buf
+            .split(|&b| b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        for rec in &records {
+            assert!(matches!(rec, LogRecord::MatchResult { .. }));
+        }
+    }
+
     #[test]
     fn test_round_robin_bench_emits_correct_number_of_match_records() {
         let game = RockPaperScissors;
@@ -548,7 +735,14 @@ mod tests {
 
         let mut buf: Vec<u8> = Vec::new();
         let mut seq: u64 = 1;
-        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent, &mut seq);
+        let results = round_robin_bench(
+            &game,
+            &ids,
+            &mut buf,
+            &mut None,
+            Verbosity::Silent,
+            &mut seq,
+        );
 
         let records: Vec<LogRecord> = buf
             .split(|&b| b == b'\n')
@@ -589,7 +783,14 @@ mod tests {
 
         let mut buf: Vec<u8> = Vec::new();
         let mut seq: u64 = 1;
-        let results = round_robin_bench(&game, &ids, &mut buf, Verbosity::Silent, &mut seq);
+        let results = round_robin_bench(
+            &game,
+            &ids,
+            &mut buf,
+            &mut None,
+            Verbosity::Silent,
+            &mut seq,
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].total(), 0);
         assert!(buf.is_empty());
@@ -601,7 +802,7 @@ mod tests {
         let ids: Vec<String> = game.strategies().into_iter().map(|s| s.id).collect();
 
         let mut buf: Vec<u8> = Vec::new();
-        let results = round_robin_bench_multiple(&game, &ids, 3, &mut buf, Verbosity::Silent);
+        let results = round_robin_bench_multiple(&game, &ids, 3, &mut buf, None, Verbosity::Silent);
 
         assert_eq!(results[0].total(), 12);
         assert_eq!(results[0].wins, 6);

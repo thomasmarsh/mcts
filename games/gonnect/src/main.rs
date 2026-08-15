@@ -423,6 +423,7 @@ impl GameAdapter for GonnectAdapter {
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         let size = match game_config {
             Some(cfg) => {
@@ -468,6 +469,7 @@ impl GameAdapter for GonnectAdapter {
                         .expect("baseline_config already validated above")
                     },
                     Default::default(),
+                    trace_path.as_deref(),
                 )?
             } else {
                 mcts_tune::strategy_tune_eval(
@@ -481,6 +483,7 @@ impl GameAdapter for GonnectAdapter {
                     },
                     build_strong::<N, WORDS>,
                     Default::default(),
+                    trace_path.as_deref(),
                 )?
             };
             Ok(serde_json::json!({
@@ -549,7 +552,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = GonnectAdapter::load()
-            .tune_eval(params, 1, Some(0), None, None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

@@ -37,6 +37,7 @@ fn test_family_meta_mcts_round_trips() {
         mcts_tune::SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        None,
     )
     .expect("meta_mcts should round-trip with a minimal config");
     assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);

@@ -992,8 +992,8 @@ async fn launch_and_record(
     label: Option<&str>,
     resume_from: Option<&str>,
 ) -> Result<LaunchResponse, BenchError> {
-    let mut cmd = build_command(kind, game, &config)?;
     let run_id = launch::generate_run_id(kind, game);
+    let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
     // `--run-id`/`--resume` are SMAC3-specific flags (see `smac3_cli`'s
@@ -1837,6 +1837,7 @@ fn build_command(
     kind: &str,
     game: &str,
     config: &Option<Value>,
+    run_id: &str,
 ) -> Result<Vec<String>, BenchError> {
     let bench_binary = find_bench_binary();
 
@@ -1922,6 +1923,21 @@ fn build_command(
             // Always include --verbose so progress bars appear on stderr
             // (the launcher redirects stderr to stdout.log).
             cmd.push("--verbose".into());
+
+            // Move-trace lines go to a dedicated `moves.jsonl` in the run's
+            // own directory, not `log.jsonl` -- see `LogRecord::Move`'s doc
+            // comment for why a full move trace is kept out of the main
+            // log. The path is derivable from `run_id` alone (matches
+            // `launch::launch_with_run_id`'s own `bench-runs/<run_id>/`
+            // layout), so no round-trip through the launcher is needed.
+            cmd.push("--trace-path".into());
+            cmd.push(
+                std::path::Path::new(launch::BENCH_RUNS_DIR)
+                    .join(run_id)
+                    .join("moves.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
+            );
 
             Ok(cmd)
         }
@@ -2705,6 +2721,7 @@ mod tests {
                 "config": "smac3/config/default.yaml",
                 "overrides": ["optimizer.n_trials=10", "optimizer.n_workers=2"],
             })),
+            "test-run",
         )
         .unwrap();
 
@@ -2728,7 +2745,7 @@ mod tests {
 
     #[test]
     fn test_build_command_smac3_with_no_config_is_just_game() {
-        let cmd = build_command("smac3", "druid", &None).unwrap();
+        let cmd = build_command("smac3", "druid", &None, "test-run").unwrap();
         assert_eq!(cmd[1..], vec!["smac3", "--game", "druid"]);
     }
 
@@ -2740,6 +2757,7 @@ mod tests {
             &Some(json!({
                 "game_config": {"size": {"w": 9, "h": 9}},
             })),
+            "test-run",
         )
         .unwrap();
 
@@ -2758,6 +2776,7 @@ mod tests {
             &Some(json!({
                 "game_config": null,
             })),
+            "test-run",
         )
         .unwrap();
         assert!(!cmd.iter().any(|a| a == "--game-config"));
@@ -2774,6 +2793,7 @@ mod tests {
                     "ladder1": {"family": "ucb1", "c": 1.5},
                 },
             })),
+            "test-run",
         )
         .unwrap();
 
@@ -2793,8 +2813,28 @@ mod tests {
 
     #[test]
     fn test_build_command_unknown_kind_lists_smac3_as_supported() {
-        let err = build_command("nope", "druid", &None).unwrap_err();
+        let err = build_command("nope", "druid", &None, "test-run").unwrap_err();
         assert!(err.message.contains("smac3"));
+    }
+
+    #[test]
+    fn test_build_command_round_robin_includes_trace_path_derived_from_run_id() {
+        let cmd = build_command(
+            "round_robin",
+            "druid",
+            &None,
+            "rr-druid-20260101T000000-abcdef",
+        )
+        .unwrap();
+
+        let idx = cmd
+            .iter()
+            .position(|a| a == "--trace-path")
+            .expect("--trace-path flag present");
+        assert_eq!(
+            cmd[idx + 1],
+            "bench-runs/rr-druid-20260101T000000-abcdef/moves.jsonl"
+        );
     }
 
     // -------------------------------------------------------------------

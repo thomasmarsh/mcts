@@ -336,6 +336,7 @@ impl GameAdapter for CongoAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         // Congo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
@@ -363,6 +364,7 @@ impl GameAdapter for CongoAdapter {
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
+                trace_path.as_deref(),
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -376,6 +378,7 @@ impl GameAdapter for CongoAdapter {
                 },
                 build_strong,
                 Default::default(),
+                trace_path.as_deref(),
             )?
         };
         Ok(serde_json::json!({

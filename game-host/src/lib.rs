@@ -287,6 +287,11 @@ pub trait GameAdapter: Send + Sync {
     /// `mcts_tune::build_search`'s own budget -- see that function's doc
     /// comment for why an asymmetric override there is a real bug, not a
     /// simplification.
+    /// `trace_path`, forwarded verbatim from `--trace-path`, is a plain
+    /// file path a `mcts_tune::trace::MoveTracer` appends move-trace JSON
+    /// lines to as self-play games are played -- for live monitoring/
+    /// sanity-checking a SMAC3 run in progress. `None` disables tracing
+    /// entirely (no file opened, no per-ply overhead).
     #[allow(unused_variables)]
     fn tune_eval(
         &self,
@@ -297,6 +302,7 @@ pub trait GameAdapter: Send + Sync {
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
@@ -531,6 +537,7 @@ where
     let mut baseline_config: Option<String> = None;
     let mut game_config: Option<String> = None;
     let mut max_iterations: Option<usize> = None;
+    let mut trace_path: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--config" => config = args.next(),
@@ -540,6 +547,7 @@ where
             "--baseline-config" => baseline_config = args.next(),
             "--game-config" => game_config = args.next(),
             "--max-iterations" => max_iterations = args.next().and_then(|s| s.parse().ok()),
+            "--trace-path" => trace_path = args.next(),
             _ => {}
         }
     }
@@ -575,6 +583,7 @@ where
             baseline_config,
             game_config,
             max_iterations,
+            trace_path.map(std::path::PathBuf::from),
         )
     })();
 
@@ -1213,8 +1222,9 @@ mod tests {
             baseline_config: Option<Value>,
             game_config: Option<Value>,
             max_iterations: Option<usize>,
+            trace_path: Option<std::path::PathBuf>,
         ) -> Result<Value, HostError> {
-            let _ = max_iterations;
+            let _ = (max_iterations, trace_path);
             Ok(serde_json::json!({
                 "cost": 0.25,
                 "params": params,

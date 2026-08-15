@@ -216,6 +216,7 @@ impl GameAdapter for NimAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        trace_path: Option<std::path::PathBuf>,
     ) -> Result<Value, HostError> {
         // Nim's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
@@ -247,6 +248,7 @@ impl GameAdapter for NimAdapter {
                         .expect("baseline_config already validated above")
                 },
                 Default::default(),
+                trace_path.as_deref(),
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -260,6 +262,7 @@ impl GameAdapter for NimAdapter {
                 },
                 build_strong,
                 Default::default(),
+                trace_path.as_deref(),
             )?
         };
         Ok(serde_json::json!({
@@ -294,7 +297,7 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = NimAdapter
-            .tune_eval(params, 1, Some(0), None, None, None, None)
+            .tune_eval(params, 1, Some(0), None, None, None, None, None)
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }

@@ -47,6 +47,16 @@ pub const CREATE_TABLES: &[&str] = &[
         cost        DOUBLE NOT NULL,
         extra       JSON
     )",
+    "CREATE TABLE IF NOT EXISTS game_moves (
+        run_id      TEXT NOT NULL REFERENCES runs(run_id),
+        game_seq    BIGINT NOT NULL,
+        ply         INTEGER NOT NULL,
+        ts          TIMESTAMP NOT NULL,
+        state       JSON NOT NULL,
+        mv          JSON,
+        player      TEXT,
+        PRIMARY KEY (run_id, game_seq, ply)
+    )",
     "CREATE TABLE IF NOT EXISTS _ingest_cursor (
         log_path    TEXT PRIMARY KEY,
         byte_offset BIGINT NOT NULL DEFAULT 0,
@@ -89,6 +99,7 @@ mod tests {
             "match_results",
             "trials",
             "incumbents",
+            "game_moves",
             "_ingest_cursor",
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");

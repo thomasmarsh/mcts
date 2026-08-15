@@ -144,109 +144,156 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
         .collect();
 
     for (run_id, log_path_str) in &running_runs {
-        let log_path = Path::new(log_path_str);
-        if !log_path.exists() {
-            continue;
-        }
+        process_one_log_file(conn, run_id, Path::new(log_path_str))?;
 
-        let cursor_key = log_path.to_string_lossy().to_string();
-        let offset = get_cursor(conn, &cursor_key)?;
-        let file_len = fs::metadata(log_path)?.len();
+        // Move-trace lines land in a dedicated `moves.jsonl` next to
+        // `log.jsonl` (see `LogRecord::Move`'s doc comment for why they're
+        // kept out of the main log) -- same directory, derived rather than
+        // stored as its own `runs` column. Not every run kind writes one
+        // (only round-robin/SMAC3 launches that pass `--trace-path`;
+        // ad hoc `bench round-robin` runs without it don't), so a missing
+        // file here is normal, not an error.
+        let moves_path = Path::new(log_path_str).with_file_name("moves.jsonl");
+        process_one_log_file(conn, run_id, &moves_path)?;
+    }
 
-        if file_len <= offset {
-            continue;
-        }
+    Ok(())
+}
 
-        let mut file = fs::File::open(log_path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let reader = BufReader::new(file);
+fn process_one_log_file(
+    conn: &Connection,
+    run_id: &str,
+    log_path: &Path,
+) -> Result<(), IngestError> {
+    if !log_path.exists() {
+        return Ok(());
+    }
 
-        for line_result in reader.lines() {
-            let line = line_result?;
+    let cursor_key = log_path.to_string_lossy().to_string();
+    let offset = get_cursor(conn, &cursor_key)?;
+    let file_len = fs::metadata(log_path)?.len();
 
-            let record: LogRecord = match serde_json::from_str(&line) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+    if file_len <= offset {
+        return Ok(());
+    }
 
-            match record {
-                LogRecord::MatchResult {
-                    seq,
-                    strategy_a,
-                    strategy_b,
-                    outcome,
-                    winner,
-                    extra,
-                } => {
-                    let ts = iso_timestamp();
-                    let extra_json = extra
-                        .as_ref()
-                        .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                    conn.execute(
-                        "INSERT INTO match_results \
+    let mut file = fs::File::open(log_path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let reader = BufReader::new(file);
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+
+        let record: LogRecord = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        match record {
+            LogRecord::MatchResult {
+                seq,
+                strategy_a,
+                strategy_b,
+                outcome,
+                winner,
+                extra,
+            } => {
+                let ts = iso_timestamp();
+                let extra_json = extra
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
+                conn.execute(
+                    "INSERT INTO match_results \
                          (run_id, seq, ts, strategy_a, strategy_b, \
                           outcome, winner, extra) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                          ON CONFLICT (run_id, seq) DO NOTHING",
-                        params![
-                            run_id, seq as i64, ts, strategy_a, strategy_b, outcome, winner,
-                            extra_json,
-                        ],
-                    )?;
-                }
-                LogRecord::Trial {
-                    trial_id,
-                    config,
-                    seed,
-                    cost,
-                    extra,
-                } => {
-                    let ts = iso_timestamp();
-                    let config_json = serde_json::to_string(&config).expect("Value -> String");
-                    let extra_json = extra
-                        .as_ref()
-                        .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                    conn.execute(
-                        "INSERT INTO trials \
+                    params![
+                        run_id, seq as i64, ts, strategy_a, strategy_b, outcome, winner,
+                        extra_json,
+                    ],
+                )?;
+            }
+            LogRecord::Trial {
+                trial_id,
+                config,
+                seed,
+                cost,
+                extra,
+            } => {
+                let ts = iso_timestamp();
+                let config_json = serde_json::to_string(&config).expect("Value -> String");
+                let extra_json = extra
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
+                conn.execute(
+                    "INSERT INTO trials \
                          (run_id, trial_id, ts, config, seed, cost, extra) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
                          ON CONFLICT (run_id, trial_id) DO NOTHING",
-                        params![
-                            run_id,
-                            trial_id as i64,
-                            ts,
-                            config_json,
-                            seed.map(|s| s as i64),
-                            cost,
-                            extra_json,
-                        ],
-                    )?;
-                }
-                LogRecord::Incumbent {
-                    config,
-                    cost,
-                    extra,
-                } => {
-                    let ts = iso_timestamp();
-                    let config_json = serde_json::to_string(&config).expect("Value -> String");
-                    let extra_json = extra
-                        .as_ref()
-                        .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                    conn.execute(
-                        "INSERT INTO incumbents (run_id, ts, config, cost, extra) \
+                    params![
+                        run_id,
+                        trial_id as i64,
+                        ts,
+                        config_json,
+                        seed.map(|s| s as i64),
+                        cost,
+                        extra_json,
+                    ],
+                )?;
+            }
+            LogRecord::Incumbent {
+                config,
+                cost,
+                extra,
+            } => {
+                let ts = iso_timestamp();
+                let config_json = serde_json::to_string(&config).expect("Value -> String");
+                let extra_json = extra
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
+                conn.execute(
+                    "INSERT INTO incumbents (run_id, ts, config, cost, extra) \
                          VALUES (?1, ?2, ?3, ?4, ?5) \
                          ON CONFLICT (run_id) DO UPDATE SET \
                              ts = excluded.ts, config = excluded.config, \
                              cost = excluded.cost, extra = excluded.extra",
-                        params![run_id, ts, config_json, cost, extra_json],
-                    )?;
-                }
-                LogRecord::Heartbeat { .. } => {}
+                    params![run_id, ts, config_json, cost, extra_json],
+                )?;
             }
+            LogRecord::Move {
+                game_seq,
+                ply,
+                state,
+                mv,
+                player,
+            } => {
+                let ts = iso_timestamp();
+                let state_json = serde_json::to_string(&state).expect("Value -> String");
+                let mv_json = mv
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
+                conn.execute(
+                    "INSERT INTO game_moves \
+                         (run_id, game_seq, ply, ts, state, mv, player) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                         ON CONFLICT (run_id, game_seq, ply) DO NOTHING",
+                    params![
+                        run_id,
+                        game_seq as i64,
+                        ply as i64,
+                        ts,
+                        state_json,
+                        mv_json,
+                        player
+                    ],
+                )?;
+            }
+            LogRecord::Heartbeat { .. } => {}
         }
-
-        set_cursor(conn, &cursor_key, file_len)?;
     }
+
+    set_cursor(conn, &cursor_key, file_len)?;
 
     Ok(())
 }
@@ -966,6 +1013,167 @@ mod tests {
         assert_eq!(config["family"], "rave");
         let extra: serde_json::Value = serde_json::from_str(&extra_str.unwrap()).unwrap();
         assert_eq!(extra["hash"], "abc123");
+    }
+
+    #[test]
+    fn test_ingest_tails_moves_jsonl_sibling_of_log_jsonl() {
+        // Move traces land in a `moves.jsonl` next to `log.jsonl`, not
+        // inside it (see `LogRecord::Move`'s doc comment) -- this proves
+        // `process_run_logs` derives and tails that sibling path too, not
+        // just the registered `log_path` itself.
+        let (bench_runs, db) = {
+            let dir = std::env::temp_dir()
+                .join(format!("mcts_bench_moves_sibling_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let bench_runs = dir.join("bench-runs");
+            fs::create_dir_all(&bench_runs).unwrap();
+
+            let run_id = "sibling-moves-run";
+            let run_dir = bench_runs.join(run_id);
+            fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            let log_path_str = log_path.to_string_lossy().to_string();
+            let moves_path = run_dir.join("moves.jsonl");
+
+            let reg_events = vec![start_event(
+                run_id,
+                "round_robin",
+                "druid",
+                99990,
+                &log_path_str,
+            )];
+            let mut reg_content = String::new();
+            for ev in &reg_events {
+                reg_content.push_str(&ev.to_json_line());
+                reg_content.push('\n');
+            }
+            fs::write(bench_runs.join("registry.log"), &reg_content).unwrap();
+
+            // The main log only carries the match result...
+            let match_result = LogRecord::MatchResult {
+                seq: 1,
+                strategy_a: "a".into(),
+                strategy_b: "b".into(),
+                outcome: "win_a".into(),
+                winner: Some("a".into()),
+                extra: None,
+            };
+            fs::write(&log_path, format!("{}\n", match_result.to_json_line())).unwrap();
+
+            // ...while the moves live in the sibling file.
+            let mv = LogRecord::Move {
+                game_seq: 1,
+                ply: 0,
+                state: serde_json::json!({"board": []}),
+                mv: None,
+                player: None,
+            };
+            fs::write(&moves_path, format!("{}\n", mv.to_json_line())).unwrap();
+
+            let db = duckdb::Connection::open_in_memory().unwrap();
+            ensure_schema(&db).unwrap();
+
+            (bench_runs, db)
+        };
+
+        ingest_once(&db, &bench_runs).unwrap();
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM match_results", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM game_moves", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_ingest_moves() {
+        let (bench_runs, db) = {
+            let dir = std::env::temp_dir().join(format!("mcts_bench_moves_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            let bench_runs = dir.join("bench-runs");
+            fs::create_dir_all(&bench_runs).unwrap();
+
+            let run_id = "moves-run";
+            let run_dir = bench_runs.join(run_id);
+            fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            let log_path_str = log_path.to_string_lossy().to_string();
+
+            let reg_events = vec![start_event(run_id, "smac3", "druid", 99994, &log_path_str)];
+            let mut reg_content = String::new();
+            for ev in &reg_events {
+                reg_content.push_str(&ev.to_json_line());
+                reg_content.push('\n');
+            }
+            fs::write(bench_runs.join("registry.log"), &reg_content).unwrap();
+
+            let records = vec![
+                LogRecord::Move {
+                    game_seq: 7,
+                    ply: 0,
+                    state: serde_json::json!({"board": []}),
+                    mv: None,
+                    player: None,
+                },
+                LogRecord::Move {
+                    game_seq: 7,
+                    ply: 1,
+                    state: serde_json::json!({"board": [1]}),
+                    mv: Some(serde_json::json!({"cell": 0})),
+                    player: Some("strong".into()),
+                },
+            ];
+            let mut log_content = String::new();
+            for rec in &records {
+                log_content.push_str(&rec.to_json_line());
+                log_content.push('\n');
+            }
+            fs::write(&log_path, &log_content).unwrap();
+
+            let db = duckdb::Connection::open_in_memory().unwrap();
+            ensure_schema(&db).unwrap();
+
+            (bench_runs, db)
+        };
+
+        ingest_once(&db, &bench_runs).unwrap();
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM game_moves", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+
+        let (state_str, mv_str, player): (String, Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT CAST(state AS TEXT), CAST(mv AS TEXT), player \
+                 FROM game_moves WHERE run_id = 'moves-run' AND game_seq = 7 AND ply = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&state_str).unwrap();
+        assert_eq!(state["board"][0], 1);
+        let mv: serde_json::Value = serde_json::from_str(&mv_str.unwrap()).unwrap();
+        assert_eq!(mv["cell"], 0);
+        assert_eq!(player.as_deref(), Some("strong"));
+
+        // Idempotent re-ingest should not duplicate rows.
+        ingest_once(&db, &bench_runs).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM game_moves", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
