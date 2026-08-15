@@ -31,6 +31,13 @@
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { Smac3GameInfo, TunerParameter } from "./index.js";
 
+/** Baseline-only families (`mcts-tune`'s `make_candidate`) that exist purely
+ * as ladder floor rungs -- never in any game's `tuner().baselines` (those
+ * are named presets), never SMAC3-searchable, but always launchable as the
+ * starting opponent via `target.baselines=[...]`. See `mcts-tune/src/
+ * lib.rs`'s `"random"`/`"flat_mc"` match arms. */
+export const FLOOR_BASELINES = ["flat_mc", "random"] as const;
+
 /** Whether a `tuner().game_config` value means "nothing to configure" --
  * every game but Druid reports `{}` here. */
 export function isEmptyGameConfig(gameConfig: unknown): boolean {
@@ -93,6 +100,24 @@ export const Smac3LaunchFields: Component<{
   onGameConfigChange: (v: string) => void;
   /** Parse error for `gameConfig`, or `null` when it's valid JSON. */
   gameConfigError: string | null;
+  /** Which opponent a fresh run's root rung starts against -- one of the
+   * selected game's own named presets (`tuner().baselines`) or a floor
+   * family (`FLOOR_BASELINES`). Forwarded as a `target.baselines=[...]`
+   * override at submit time (see `LaunchForm.tsx`'s `buildSmac3Overrides`)
+   * rather than defaulting to the tuner's full baseline list. */
+  startingBaseline: string;
+  onStartingBaselineChange: (v: string) => void;
+  /** Whether this launch opts into the automated ladder driver
+   * (`server/src/bench/mod.rs`'s `plan_ladder_advances`) -- when on, the
+   * run's `config.ladder = {max_rungs, saturation_threshold}` is set, and
+   * once this rung saturates, the driver stops it and relaunches facing
+   * only its own incumbent (see `replace_baseline_with_incumbent`). */
+  ladderEnabled: boolean;
+  onLadderEnabledChange: (v: boolean) => void;
+  maxRungs: number;
+  onMaxRungsChange: (n: number) => void;
+  saturationThreshold: number;
+  onSaturationThresholdChange: (n: number) => void;
   disabled: boolean;
 }> = (props) => {
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
@@ -128,9 +153,26 @@ export const Smac3LaunchFields: Component<{
               <div class="smac3-tuner-meta">
                 <span class="meta-label">Tuner</span>
                 <span class="meta-value"><code>{tuner().id}</code></span>
-                <span class="meta-label">{tuner().baselines.length > 1 ? "Baselines" : "Baseline"}</span>
+                <span class="meta-label">
+                  {tuner().baselines.length > 1 ? "Named presets" : "Named preset"}
+                </span>
                 <span class="meta-value">{tuner().baselines.join(", ")}</span>
               </div>
+              {/* This is metadata about the game's tuner, not what the run
+                  actually starts against -- that's the "Starting baseline"
+                  selector below. Listing every named preset here just
+                  documents what's available to pick from. */}
+              <label>
+                Starting baseline
+                <select
+                  value={props.startingBaseline}
+                  onChange={(e) => props.onStartingBaselineChange(e.currentTarget.value)}
+                  disabled={props.disabled}
+                >
+                  <For each={tuner().baselines}>{(b) => <option value={b}>{b}</option>}</For>
+                  <For each={FLOOR_BASELINES}>{(b) => <option value={b}>{b} (floor)</option>}</For>
+                </select>
+              </label>
 
               <table id="smac3-param-table">
                 <thead>
@@ -244,6 +286,49 @@ export const Smac3LaunchFields: Component<{
               />
               Deterministic (single seed per config)
             </label>
+          </div>
+
+          <div id="smac3-ladder-fields">
+            <label class="smac3-checkbox-field">
+              <input
+                type="checkbox"
+                checked={props.ladderEnabled}
+                onChange={(e) => props.onLadderEnabledChange(e.currentTarget.checked)}
+                disabled={props.disabled}
+              />
+              Ladder (auto-widen to face own incumbent once saturated)
+            </label>
+
+            <Show when={props.ladderEnabled}>
+              <label>
+                Max rungs
+                <input
+                  type="number"
+                  min={1}
+                  value={props.maxRungs}
+                  onInput={(e) => props.onMaxRungsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                  disabled={props.disabled}
+                />
+              </label>
+
+              <label>
+                Saturation threshold (max incumbent loss rate, 0–1)
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={props.saturationThreshold}
+                  onInput={(e) => props.onSaturationThresholdChange(parseFloat(e.currentTarget.value) || 0)}
+                  disabled={props.disabled}
+                />
+                <span class="smac3-field-hint">
+                  Widens once the incumbent's loss rate against the current baseline is at or below
+                  this (0 = must go undefeated; 0.1 = widen once losing at most 10% of games) -- a
+                  fraction of games lost, not a percent-complete or 0–100 scale.
+                </span>
+              </label>
+            </Show>
           </div>
         </Show>
       </Show>

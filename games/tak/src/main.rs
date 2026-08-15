@@ -429,6 +429,7 @@ impl GameAdapter for TakAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<Tak<5>>(&cfg, baseline_seed, true)
                         .expect("baseline_config already validated above")
@@ -441,6 +442,7 @@ impl GameAdapter for TakAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?

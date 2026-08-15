@@ -278,6 +278,7 @@ impl GameAdapter for KtAdapter {
                 rounds,
                 seed,
                 false,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<Knightthrough<8, 8>>(&cfg, baseline_seed, false)
                         .expect("baseline_config already validated above")
@@ -290,6 +291,7 @@ impl GameAdapter for KtAdapter {
                 rounds,
                 seed,
                 false,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?

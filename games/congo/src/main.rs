@@ -347,6 +347,7 @@ impl GameAdapter for CongoAdapter {
                 rounds,
                 seed,
                 false,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false)
                         .expect("baseline_config already validated above")
@@ -359,6 +360,7 @@ impl GameAdapter for CongoAdapter {
                 rounds,
                 seed,
                 false,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?

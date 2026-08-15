@@ -34,6 +34,7 @@ fn test_family_meta_mcts_round_trips() {
         1,
         Some(0),
         false,
+        mcts_tune::SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
     )

@@ -359,6 +359,7 @@ impl GameAdapter for AtarigoAdapter {
                     rounds,
                     seed,
                     false,
+                    mcts_tune::SearchBudget::default(),
                     move || {
                         mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false)
                             .expect("baseline_config already validated above")
@@ -371,6 +372,7 @@ impl GameAdapter for AtarigoAdapter {
                     rounds,
                     seed,
                     false,
+                    mcts_tune::SearchBudget::default(),
                     build_strong::<N, WORDS>,
                     Default::default(),
                 )?

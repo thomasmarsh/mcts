@@ -57,6 +57,17 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
+/// `preset`'s own deployed tree-parallelism thread count -- `0` means
+/// "auto" (every available core). Real gameplay/analysis callers use this;
+/// `tune_eval` deliberately does not (see its own call site).
+fn preset_threads(cfg: &PresetConfig) -> usize {
+    if cfg.num_threads == 0 {
+        ai_thread_count()
+    } else {
+        cfg.num_threads
+    }
+}
+
 const PRESET_CONFIGS: [(&str, PresetConfig); 4] = [
     (
         "easy",
@@ -128,13 +139,16 @@ type Ucb1DmNst = strategy::Compose<
     simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
 >;
 
-/// Build a fresh `TreeSearch` for `preset` with the given time budget.
-fn build_ai(preset: &str, budget: Duration, cfg: &PresetConfig) -> Box<dyn Search<G = Druid>> {
-    let threads = if cfg.num_threads == 0 {
-        ai_thread_count()
-    } else {
-        cfg.num_threads
-    };
+/// Build a fresh `TreeSearch` for `preset` with the given time budget and
+/// tree-parallelism thread count. Real gameplay/analysis callers pass
+/// `preset_threads(cfg)` (the preset's own deployed thread count); `tune_eval`
+/// pins this to `1` instead -- see its own call site for why.
+fn build_ai(
+    preset: &str,
+    budget: Duration,
+    cfg: &PresetConfig,
+    threads: usize,
+) -> Box<dyn Search<G = Druid>> {
     match preset {
         "easy" => Box::new(
             TreeSearch::<Druid, strategy::Ucb1>::new().config(
@@ -434,6 +448,7 @@ impl GameAdapter for DruidAdapter {
                 static_preset,
                 Duration::from_millis(cfg.time_budget_ms),
                 cfg,
+                preset_threads(cfg),
             )
         });
 
@@ -490,12 +505,14 @@ impl GameAdapter for DruidAdapter {
                 static_preset,
                 Duration::from_millis(clamp_budget_ms(ms)),
                 cfg,
+                preset_threads(cfg),
             ),
             None => self.cache.take(static_preset, hash).unwrap_or_else(|| {
                 build_ai(
                     static_preset,
                     Duration::from_millis(cfg.time_budget_ms),
                     cfg,
+                    preset_threads(cfg),
                 )
             }),
         };
@@ -564,11 +581,15 @@ impl GameAdapter for DruidAdapter {
             // rejected during `TrialParams` deserialization inside
             // `strategy_tune_eval` itself.
             mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)?;
+            // `SearchBudget::default()` -- this opponent is itself a
+            // `build_search`-built config, on the same iteration-based
+            // footing as the candidate, so there's nothing to match.
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<Druid>(&cfg, baseline_seed, true)
                         .expect("baseline_config already validated above")
@@ -579,12 +600,42 @@ impl GameAdapter for DruidAdapter {
             let baseline = baseline.as_deref().unwrap_or("strong");
             let cfg = preset_cfg(baseline)
                 .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
+            // Match the candidate's *time* budget to this named preset's own
+            // -- `build_ai` runs it on a wall-clock time budget, not
+            // `mcts-tune`'s default fixed-iteration one, and leaving the
+            // candidate on the default here would pit a fixed-iteration
+            // search against a time-budgeted one, a mismatch severe enough
+            // to produce a near-100%-loss streak on its own, independent of
+            // which family/hyperparameters SMAC3 samples.
+            //
+            // Deliberately *not* matching thread count, though -- pin both
+            // sides to a single thread instead of this preset's own
+            // deployed `preset_threads(cfg)` (all cores, for strong/
+            // master). SMAC3 already runs `n_workers` trials concurrently
+            // (`smac3/config/default.yaml`'s `optimizer.n_workers`, sized
+            // assuming ~1 core per worker); every trial subprocess also
+            // claiming every core for its own tree search means
+            // `n_workers`-many processes all fighting for the whole
+            // machine at once, which saturates every CPU and makes the
+            // `max_time` budget above non-reproducible (the same
+            // wall-clock duration does less real search under contention
+            // than on an idle box, so trial costs stop being comparable to
+            // each other). A single-threaded baseline during tuning is
+            // measurably weaker than the real deployed "strong"/"master"
+            // preset, but that gap is fixed and known, not load-dependent
+            // noise -- a strictly better property for an optimizer that's
+            // trying to compare many trials' costs against each other.
+            let budget = mcts_tune::SearchBudget {
+                max_time: Some(Duration::from_millis(cfg.time_budget_ms)),
+                threads: 1,
+            };
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
                 seed,
                 true,
-                || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg),
+                budget,
+                || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg, 1),
                 initial_state,
             )?
         };

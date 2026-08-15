@@ -20,6 +20,25 @@ from .config import SearchConfig
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Floor baselines
+# ---------------------------------------------------------------------------
+
+# Baseline-only families `mcts-tune`'s own `make_candidate` (mcts-tune/src/
+# lib.rs) builds directly from a raw params object -- not named presets any
+# game's `preset_cfg`/`PRESET_CONFIGS` knows about. A game's `tune_eval` only
+# recognizes a `--baseline <id>` as one of *its own* named presets (Druid:
+# easy/medium/strong/master); passing "flat_mc"/"random" that way fails with
+# "unknown baseline" on every trial, which this harness's own error handling
+# below scores as `cost = 1.0` -- an apparent 100%-loss streak that's
+# actually every trial silently erroring, not a real result. Routing them as
+# `--baseline-config` instead (same as a `cfg.target.baseline_configs` entry)
+# reaches `mcts_tune::build_search`, which does know these two families.
+FLOOR_BASELINES: dict[str, dict] = {
+    "flat_mc": {"family": "flat_mc", "q_init": "Infinity"},
+    "random": {"family": "random", "q_init": "Infinity"},
+}
+
+# ---------------------------------------------------------------------------
 # Target function factory
 # ---------------------------------------------------------------------------
 
@@ -47,12 +66,13 @@ def make_target(cfg: SearchConfig):
             (those whose parent conditions are satisfied) are included.
         instance:
             The baseline instance id to evaluate against (from
-            ``Scenario(instances=...)``). A named preset (member of
-            ``cfg.target.baselines``) is forwarded as ``--baseline``; an id
-            backed by a raw discovered config instead (member of
-            ``cfg.target.baseline_configs``) is forwarded as
-            ``--baseline-config`` with its raw config JSON instead. ``None``
-            when the scenario wasn't given an instance list.
+            ``Scenario(instances=...)``). An id backed by a raw discovered
+            config (member of ``cfg.target.baseline_configs``) or one of the
+            built-in ``FLOOR_BASELINES`` is forwarded as ``--baseline-config``
+            with its params JSON; anything else is assumed to be a named
+            preset (member of ``cfg.target.baselines``) and forwarded as
+            ``--baseline``. ``None`` when the scenario wasn't given an
+            instance list.
         seed:
             Random seed forwarded by SMAC (from the scenario).
 
@@ -75,6 +95,8 @@ def make_target(cfg: SearchConfig):
         if instance is not None:
             if instance in cfg.target.baseline_configs:
                 cmd += ["--baseline-config", json.dumps(cfg.target.baseline_configs[instance])]
+            elif instance in FLOOR_BASELINES:
+                cmd += ["--baseline-config", json.dumps(FLOOR_BASELINES[instance])]
             else:
                 cmd += ["--baseline", instance]
 

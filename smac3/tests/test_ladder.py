@@ -104,6 +104,44 @@ def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(
     assert "--baseline" not in captured["cmd"]
 
 
+@pytest.mark.parametrize("floor_id", ["flat_mc", "random"])
+def test_train_dispatches_floor_baseline_as_dash_dash_baseline_config(
+    monkeypatch, tmp_path: Path, floor_id: str
+):
+    # A game's `tune_eval` only recognizes `--baseline <id>` as one of its
+    # *own* named presets (Druid: easy/medium/strong/master) -- routing a
+    # floor family that way fails with "unknown baseline" on every trial,
+    # which `train()`'s own non-zero-exit handling below scores as
+    # `cost = 1.0`, an apparent 100%-loss streak that's actually every
+    # trial silently erroring. This is exactly what surfaced as a real
+    # regression: launching with "flat_mc" as the starting baseline (a
+    # plain `target.baselines=['flat_mc']` override, not a
+    # `baseline_configs` entry) produced 100% loss on every trial.
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.1}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(),
+        target=TargetConfig(binary=binary, rounds=4, baselines=[floor_id]),
+    )
+    train = make_target(cfg)
+    cost = train({"family": "ucb1"}, instance=floor_id, seed=0)
+
+    assert cost == pytest.approx(0.1)
+    assert "--baseline-config" in captured["cmd"]
+    sent = json.loads(captured["cmd"][captured["cmd"].index("--baseline-config") + 1])
+    assert sent == {"family": floor_id, "q_init": "Infinity"}
+    assert "--baseline" not in captured["cmd"]
+
+
 def test_train_forwards_game_config_when_set(monkeypatch, tmp_path: Path):
     binary = tmp_path / "game-fake"
     binary.touch()

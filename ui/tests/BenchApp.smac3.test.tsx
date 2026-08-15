@@ -55,7 +55,7 @@ describe("LaunchForm / smac3", () => {
     // renders read-only, driven purely by the /smac3/kinds metadata.
     const gameSelect = screen.getByLabelText("Game") as HTMLSelectElement;
     expect(gameSelect.value).toBe("traffic-lights");
-    expect(screen.getByText("strong")).toBeInTheDocument(); // baseline
+    expect(screen.getByText("strong", { selector: ".meta-value" })).toBeInTheDocument(); // named preset
     expect(screen.getByText("schedule")).toBeInTheDocument(); // a parameter name
     expect(screen.getByText("epsilon")).toBeInTheDocument(); // another parameter name
     expect(screen.getByText(/schedule = threshold/)).toBeInTheDocument(); // a condition
@@ -114,9 +114,60 @@ describe("LaunchForm / smac3", () => {
       {
         kind: "smac3",
         game: "traffic-lights",
-        config: { overrides: ["optimizer.n_trials=25", "optimizer.deterministic=True", "optimizer.seed=42"] },
+        config: {
+          // Includes `target.baselines=['flat_mc']` -- the default
+          // starting baseline (the floor rung) differs from traffic-lights'
+          // own default named preset ("strong"), so the override is needed.
+          overrides: [
+            "optimizer.n_trials=25",
+            "optimizer.deterministic=True",
+            "optimizer.seed=42",
+            "target.baselines=['flat_mc']",
+          ],
+        },
       },
     ]);
+  });
+
+  it("omits target.baselines when the starting baseline matches the tuner's own default", () => {
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      launchRun: (_kind, _game, config) => {
+        seen.push(config);
+        return createMockBenchEnv().launchRun(_kind, _game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Starting baseline"), { target: { value: "strong" } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    const overrides = (seen[0] as { overrides: string[] }).overrides;
+    expect(overrides.some((o) => o.startsWith("target.baselines"))).toBe(false);
+  });
+
+  it("sets config.ladder only when the ladder checkbox is enabled", () => {
+    const seen: { config?: { ladder?: unknown } }[] = [];
+    const { store } = createTestStore({
+      launchRun: (kind, game, config) => {
+        seen.push({ config: config as { ladder?: unknown } });
+        return createMockBenchEnv().launchRun(kind, game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.click(screen.getByText("Launch"));
+    expect(seen[0]!.config!.ladder).toBeUndefined();
+
+    seen.length = 0;
+    fireEvent.click(screen.getByLabelText(/Ladder/));
+    fireEvent.input(screen.getByLabelText("Max rungs"), { target: { value: "8" } });
+    fireEvent.input(screen.getByLabelText(/Saturation threshold/), { target: { value: "0.1" } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    expect(seen[0]!.config!.ladder).toEqual({ max_rungs: 8, saturation_threshold: 0.1 });
   });
 
   it("omits optimizer.n_workers entirely when the Workers field is left blank", () => {

@@ -447,6 +447,7 @@ impl GameAdapter for GonnectAdapter {
                     rounds,
                     seed,
                     false,
+                    mcts_tune::SearchBudget::default(),
                     move || {
                         mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false)
                             .expect("baseline_config already validated above")
@@ -459,6 +460,7 @@ impl GameAdapter for GonnectAdapter {
                     rounds,
                     seed,
                     false,
+                    mcts_tune::SearchBudget::default(),
                     build_strong::<N, WORDS>,
                     Default::default(),
                 )?

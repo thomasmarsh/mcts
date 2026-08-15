@@ -141,16 +141,64 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
 ) -> Result<SearchConfig<G, S>, HostError> {
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
-    Ok(SearchConfig::new()
+    let mut config = SearchConfig::new()
         .max_iterations(MAX_ITER)
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
         .q_init(q_init)
         .use_transpositions(use_transpositions)
-        .seed(seed))
+        // Every hand-built preset in every game turns both of these on --
+        // a tuned candidate that doesn't is being measured under search
+        // conditions nothing actually deployed ever runs with. Only the PN
+        // families used to force these (their own `select::UctPn` needs
+        // both to be meaningful at all); there's no reason every other
+        // family shouldn't get the same tactical sharpness and continuity.
+        .use_mcts_solver(true)
+        .reuse_tree(true)
+        .num_tree_threads(budget.threads)
+        .seed(seed);
+    if let Some(max_time) = budget.max_time {
+        config = config.max_time(max_time);
+    }
+    Ok(config)
+}
+
+/// A candidate's search-effort ceiling -- orthogonal to `TrialParams`
+/// (which family/hyperparameters to run), this is *how much compute* that
+/// family gets to run for. Defaults to this harness's historical behavior
+/// (`MAX_ITER` iterations, single-threaded, uncapped wall time) -- the
+/// right shape for a `baseline_config`-backed opponent (self-play against a
+/// discovered config, including the `random`/`flat_mc` floor families
+/// below), since both sides of that match are built the same way and so
+/// stay symmetric regardless of budget.
+///
+/// A **named-preset** baseline (e.g. Druid's `strong`/`master`, built by
+/// `build_ai` on a wall-clock time budget and every available CPU core, not
+/// `MAX_ITER`) is a different story: leaving the candidate at the default
+/// here pits a single-threaded, tree-discarding-per-move, fixed-iteration
+/// search against a multi-core, tree-persisting, time-budgeted one -- a
+/// mismatch severe enough to produce a near-100%-loss streak on its own,
+/// independent of which family/hyperparameters SMAC3 samples. A game's own
+/// `tune_eval` is responsible for building a `SearchBudget` that mirrors
+/// whatever named preset it's dispatching to in that case (see
+/// `games/druid/src/main.rs`'s `tune_eval`).
+#[derive(Debug, Clone, Copy)]
+pub struct SearchBudget {
+    pub max_time: Option<std::time::Duration>,
+    pub threads: usize,
+}
+
+impl Default for SearchBudget {
+    fn default() -> Self {
+        Self {
+            max_time: None,
+            threads: 1,
+        }
+    }
 }
 
 /// One trial's candidate parameters, deserialized from the `params` JSON
@@ -194,6 +242,7 @@ fn build_with_final_action<G, Sel, Sim>(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError>
 where
     G: Game + 'static,
@@ -211,6 +260,7 @@ where
                     p,
                     seed,
                     use_transpositions,
+                    budget,
                 )?
                 .select(sel)
                 .simulate(sim);
@@ -225,7 +275,7 @@ where
             let mut config = base_config::<
                 G,
                 Compose<Sel, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions)?
+            >(p, seed, use_transpositions, budget)?
             .select(sel)
             .simulate(sim);
             config.final_action.a = a;
@@ -240,6 +290,7 @@ where
                     p,
                     seed,
                     use_transpositions,
+                    budget,
                 )?
                 .select(sel)
                 .simulate(sim);
@@ -256,18 +307,12 @@ where
 
 /// Builds a candidate for one of the PN-MCTS families (`ucb1_pn`/
 /// `ucb1_pn_mast`): like `build_with_final_action`, `final_action` stays
-/// configurable, but the solver is always turned on -- `select::UctPn`'s
-/// rank bonus degenerates to a no-op without it (see its doc comment), so a
-/// trial sampled with the solver off would just waste SMAC3's budget
-/// re-discovering plain UCB1/UCB1-MAST -- and the solver's own tunable
-/// knobs (`solver_loss_threshold`, `contempt_factor`) are applied alongside
-/// `UctPn`'s `c_pn`. Tree reuse (`reuse_tree`) is forced on for the same
-/// reason as the solver itself: proof/disproof numbers take real search
-/// effort to accumulate, and discarding the whole tree at the start of
-/// every `choose_action` call (this harness's default, matching every
-/// other family here) would throw that work away on every move instead of
-/// carrying it forward -- PNS-style search always wants tree reuse, not
-/// just as an optional speedup.
+/// configurable. `use_mcts_solver`/`reuse_tree` are no longer set here
+/// explicitly -- `base_config` now turns both on unconditionally for every
+/// family (PNS-style search's need for them was always the general case,
+/// not a PN-specific one) -- only the solver's own tunable knobs
+/// (`solver_loss_threshold`, `contempt_factor`) stay applied here, alongside
+/// `UctPn`'s `c_pn`.
 /// The solver-side knobs `build_pn_with_final_action` applies on top of
 /// `select::UctPn` -- grouped into one struct rather than two more bare
 /// arguments to stay under clippy's `too_many_arguments` threshold.
@@ -283,6 +328,7 @@ fn build_pn_with_final_action<G, Sim>(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
     solver: PnSolverParams,
 ) -> Result<Box<dyn Search<G = G>>, HostError>
 where
@@ -303,11 +349,9 @@ where
             let config = base_config::<
                 G,
                 Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions)?
+            >(p, seed, use_transpositions, budget)?
             .select(sel)
             .simulate(sim)
-            .use_mcts_solver(true)
-            .reuse_tree(true)
             .solver_loss_threshold(solver_loss_threshold)
             .contempt_factor(contempt_factor);
             Ok(
@@ -326,11 +370,9 @@ where
             let mut config = base_config::<
                 G,
                 Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions)?
+            >(p, seed, use_transpositions, budget)?
             .select(sel)
             .simulate(sim)
-            .use_mcts_solver(true)
-            .reuse_tree(true)
             .solver_loss_threshold(solver_loss_threshold)
             .contempt_factor(contempt_factor);
             config.final_action.a = a;
@@ -348,11 +390,9 @@ where
             let config = base_config::<
                 G,
                 Compose<select::UctPn, Sim, backprop::Classic, select::RobustChild>,
-            >(p, seed, use_transpositions)?
+            >(p, seed, use_transpositions, budget)?
             .select(sel)
             .simulate(sim)
-            .use_mcts_solver(true)
-            .reuse_tree(true)
             .solver_loss_threshold(solver_loss_threshold)
             .contempt_factor(contempt_factor);
             Ok(
@@ -382,6 +422,7 @@ fn build_fixed<G, Sel, Sim, FA>(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError>
 where
     G: Game + 'static,
@@ -389,11 +430,15 @@ where
     Sim: SimulateStrategy<G> + 'static,
     FA: SelectStrategy<G> + 'static,
 {
-    let config =
-        base_config::<G, Compose<Sel, Sim, backprop::Classic, FA>>(p, seed, use_transpositions)?
-            .select(sel)
-            .simulate(sim)
-            .final_action(fa);
+    let config = base_config::<G, Compose<Sel, Sim, backprop::Classic, FA>>(
+        p,
+        seed,
+        use_transpositions,
+        budget,
+    )?
+    .select(sel)
+    .simulate(sim)
+    .final_action(fa);
     Ok(Box::new(
         TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, FA>>::new().config(config),
     ))
@@ -411,13 +456,21 @@ pub fn build_search<G: Game + 'static>(
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
-    make_candidate(&trial, seed, use_transpositions)
+    // Every caller of `build_search` builds an *opponent* -- a
+    // `baseline_config`-backed baseline, or a `--baseline-config` for the
+    // ladder driver's own self-play rungs -- never the candidate under
+    // tune. That side of the match is already symmetric with the candidate
+    // (both go through this exact function), so there's nothing to match a
+    // budget to; the default (`MAX_ITER` iterations, single-threaded,
+    // uncapped time) is always correct here.
+    make_candidate(&trial, seed, use_transpositions, &SearchBudget::default())
 }
 
 fn make_candidate<G: Game + 'static>(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
+    budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
     let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
     let c = || p.c.ok_or_else(|| missing("c"));
@@ -443,12 +496,24 @@ fn make_candidate<G: Game + 'static>(
     };
 
     match p.family.as_str() {
+        // Baseline-only floor families -- deliberately *not* in
+        // `strategy_tuner_info`'s searchable `family` choices (a candidate
+        // sampled as `random`/`flat_mc` would just hover around a ~0.5 cost
+        // forever, wasting SMAC3's trial budget). Reachable only via
+        // `build_search`/`--baseline-config`, e.g. as a ladder's floor rung.
+        // Neither reads `q_init` or any other `TrialParams` field beyond
+        // `family` itself.
+        "random" => Ok(Box::new(mcts::strategies::random::Random::<G>::new())),
+        "flat_mc" => Ok(Box::new(
+            mcts::strategies::flat_mc::FlatMonteCarloStrategy::<G>::new(),
+        )),
         "ucb1" => build_with_final_action(
             select::Ucb1::with_c(c()?),
             simulate::Uniform,
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_dm" => build_with_final_action(
             select::Ucb1::with_c(c()?),
@@ -456,6 +521,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_mast" => build_with_final_action(
             select::Ucb1::with_c(c()?),
@@ -463,6 +529,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_nst" => {
             let nst = simulate::Nst::new().backoff_threshold(
@@ -475,6 +542,7 @@ fn make_candidate<G: Game + 'static>(
                 p,
                 seed,
                 use_transpositions,
+                budget,
             )
         }
         "ucb1_progressive_history" => build_with_final_action(
@@ -486,6 +554,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "amaf" => build_with_final_action(
             select::Amaf::new()
@@ -495,6 +564,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "amaf_mast" => build_with_final_action(
             select::Amaf::new()
@@ -504,6 +574,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_tuned" => build_with_final_action(
             select::Ucb1Tuned::with_c(c()?),
@@ -511,6 +582,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_tuned_mast" => build_with_final_action(
             select::Ucb1Tuned::with_c(c()?),
@@ -518,6 +590,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_tuned_dm" => build_with_final_action(
             select::Ucb1Tuned::with_c(c()?),
@@ -525,6 +598,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "ucb1_tuned_dm_mast" => build_with_final_action(
             select::Ucb1Tuned::with_c(c()?),
@@ -534,6 +608,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "rave" => {
             let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
@@ -572,6 +647,7 @@ fn make_candidate<G: Game + 'static>(
                 p,
                 seed,
                 use_transpositions,
+                budget,
             )
         }
         "ucb1_pn" => build_pn_with_final_action(
@@ -581,6 +657,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
             PnSolverParams {
                 solver_loss_threshold: solver_loss_threshold()?,
                 contempt_factor: contempt_factor()?,
@@ -593,6 +670,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
             PnSolverParams {
                 solver_loss_threshold: solver_loss_threshold()?,
                 contempt_factor: contempt_factor()?,
@@ -605,6 +683,7 @@ fn make_candidate<G: Game + 'static>(
             p,
             seed,
             use_transpositions,
+            budget,
         ),
         "meta_mcts" => {
             // `simulate::MetaMcts`'s inner search has no default iteration
@@ -623,6 +702,7 @@ fn make_candidate<G: Game + 'static>(
                 p,
                 seed,
                 use_transpositions,
+                budget,
             )
         }
         other => Err(HostError::bad_request(format!("unknown family: {other}"))),
@@ -664,11 +744,20 @@ pub struct TuneEvalOutcome {
 /// board size) builds one from its own `tune_eval`'s `game_config` argument
 /// instead; every other game ignores that argument entirely, since its
 /// board is fixed at compile time regardless.
+/// `candidate_budget` is the compute the *candidate* side gets -- see
+/// `SearchBudget`'s doc comment. Pass `SearchBudget::default()` when
+/// `baseline_build` builds an opponent already on the same iteration-based
+/// footing as the candidate (a `baseline_config`-backed self-play opponent,
+/// built via `build_search`, or any of this crate's own floor families);
+/// pass a budget mirroring the opponent's own compute when `baseline_build`
+/// wraps a named, wall-clock/thread-budgeted preset instead (see
+/// `games/druid/src/main.rs`'s `tune_eval`).
 pub fn strategy_tune_eval<G: Game + 'static>(
     params: &Value,
     rounds: u32,
     seed: Option<u64>,
     use_transpositions: bool,
+    candidate_budget: SearchBudget,
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
     initial_state: G::S,
 ) -> Result<TuneEvalOutcome, HostError> {
@@ -678,7 +767,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
 
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     for _ in 0..rounds {
-        let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
+        let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
 
         let (c, b, d) = play_one(candidate.as_mut(), baseline.as_mut(), initial_state.clone());
@@ -687,7 +776,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         draws += d;
 
         // Swap move order so the candidate plays second half the time.
-        let mut candidate = make_candidate(&trial, seed, use_transpositions)?;
+        let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
         let (b, c, d) = play_one(baseline.as_mut(), candidate.as_mut(), initial_state.clone());
         wins += c;
@@ -974,6 +1063,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -990,6 +1080,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1006,6 +1097,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1022,6 +1114,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1039,6 +1132,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1055,6 +1149,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1074,6 +1169,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             baseline,
             <Nim as Game>::S::default(),
         )
@@ -1213,6 +1309,7 @@ mod tests {
             1,
             Some(0),
             false,
+            SearchBudget::default(),
             || {
                 build_search::<Nim>(&baseline_params, 0, false)
                     .expect("baseline_params is a valid ucb1 config")
@@ -1221,6 +1318,46 @@ mod tests {
         )
         .expect("candidate vs config-built baseline should round-trip");
         assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
+    }
+
+    /// `random`/`flat_mc` are floor families reachable only via
+    /// `build_search`/`--baseline-config` (a ladder's floor rung), never
+    /// sampled as a SMAC3 candidate -- proven by their absence from
+    /// `strategy_tuner_info().parameters`'s `family` choices below.
+    #[test]
+    fn test_build_search_builds_random_floor_family() {
+        build_search::<Nim>(&json!({"family": "random", "q_init": "Infinity"}), 0, false)
+            .expect("random should build with just family/q_init");
+    }
+
+    #[test]
+    fn test_build_search_builds_flat_mc_floor_family() {
+        build_search::<Nim>(
+            &json!({"family": "flat_mc", "q_init": "Infinity"}),
+            0,
+            false,
+        )
+        .expect("flat_mc should build with just family/q_init");
+    }
+
+    #[test]
+    fn test_strategy_tuner_info_excludes_floor_families_from_searchable_choices() {
+        let tuner = strategy_tuner_info(&["strong"], 1);
+        let family = tuner
+            .parameters
+            .iter()
+            .find(|p| p.name == "family")
+            .expect("family param must exist");
+        let choices = family.spec["choices"]
+            .as_array()
+            .expect("family choices must be an array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            !choices.contains(&"random") && !choices.contains(&"flat_mc"),
+            "floor families must never be SMAC3-searchable candidates: {choices:?}"
+        );
     }
 
     #[test]

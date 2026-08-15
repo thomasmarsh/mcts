@@ -284,6 +284,7 @@ impl GameAdapter for TlAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<TrafficLights>(&cfg, baseline_seed, true)
                         .expect("baseline_config already validated above")
@@ -296,6 +297,7 @@ impl GameAdapter for TlAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?

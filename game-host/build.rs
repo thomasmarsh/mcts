@@ -49,10 +49,11 @@ fn main() {
     };
     println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
 
-    let Some(common_dir) =
-        git(&["rev-parse", "--path-format=absolute", "--git-common-dir"], manifest_dir)
-            .map(PathBuf::from)
-    else {
+    let Some(common_dir) = git(
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        manifest_dir,
+    )
+    .map(PathBuf::from) else {
         return;
     };
     if let Some(ref_path) = read_ref(&git_dir.join("HEAD"), &common_dir) {

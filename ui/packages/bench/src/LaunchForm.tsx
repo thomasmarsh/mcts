@@ -8,11 +8,14 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
-import { isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
+import { FLOOR_BASELINES, isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
 
 const SMAC3_KIND = "smac3";
 const DEFAULT_SMAC3_N_TRIALS = 100;
 const DEFAULT_SMAC3_SEED = 42;
+const DEFAULT_SMAC3_STARTING_BASELINE = FLOOR_BASELINES[0]; // "flat_mc"
+const DEFAULT_SMAC3_MAX_RUNGS = 5;
+const DEFAULT_SMAC3_SATURATION_THRESHOLD = 0.0;
 
 /** Build the `--override key=value` argv (as `config.overrides`, per
  * `build_command`'s `"smac3"` arm in `server/src/bench/mod.rs`) from the
@@ -20,7 +23,11 @@ const DEFAULT_SMAC3_SEED = 42;
  * matching `smac3/config/default.yaml`'s `null -> cpu_count // 2` default.
  * `rounds` is likewise omitted when it matches the tuner's own
  * `eval_rounds` default, so a run launched without touching the field
- * produces the same argv as before this field existed. */
+ * produces the same argv as before this field existed. `startingBaseline`
+ * is forwarded as `target.baselines=[...]` whenever it differs from the
+ * tuner's own default baseline list -- `smac3_cli`'s `_apply_overrides`
+ * parses the value with `ast.literal_eval`, so a Python list literal
+ * round-trips as-is (see `smac3/src/smac3_cli/__main__.py`). */
 function buildSmac3Overrides(opts: {
   nTrials: number;
   nWorkers: string;
@@ -28,6 +35,8 @@ function buildSmac3Overrides(opts: {
   seed: number;
   rounds: number;
   defaultRounds: number | null;
+  startingBaseline: string;
+  defaultBaselines: string[];
 }): string[] {
   const overrides = [
     `optimizer.n_trials=${opts.nTrials}`,
@@ -38,6 +47,11 @@ function buildSmac3Overrides(opts: {
   if (workers !== "") overrides.push(`optimizer.n_workers=${workers}`);
   if (opts.defaultRounds !== null && opts.rounds !== opts.defaultRounds) {
     overrides.push(`target.rounds=${opts.rounds}`);
+  }
+  const isDefaultBaseline =
+    opts.defaultBaselines.length === 1 && opts.defaultBaselines[0] === opts.startingBaseline;
+  if (opts.startingBaseline !== "" && !isDefaultBaseline) {
+    overrides.push(`target.baselines=['${opts.startingBaseline}']`);
   }
   return overrides;
 }
@@ -81,6 +95,15 @@ export const LaunchForm: Component<{
   // rendered by Smac3LaunchFields) when the selected game's tuner reports a
   // non-empty `game_config`.
   const [smac3GameConfig, setSmac3GameConfig] = createSignal("");
+  // Which opponent a fresh run's root rung starts against, and whether it
+  // opts into the automated ladder driver -- see Smac3LaunchFields.tsx's
+  // prop doc comments and buildSmac3Overrides above.
+  const [smac3StartingBaseline, setSmac3StartingBaseline] = createSignal(DEFAULT_SMAC3_STARTING_BASELINE);
+  const [smac3LadderEnabled, setSmac3LadderEnabled] = createSignal(false);
+  const [smac3MaxRungs, setSmac3MaxRungs] = createSignal(DEFAULT_SMAC3_MAX_RUNGS);
+  const [smac3SaturationThreshold, setSmac3SaturationThreshold] = createSignal(
+    DEFAULT_SMAC3_SATURATION_THRESHOLD,
+  );
 
   // Derived from kinds metadata.
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
@@ -119,6 +142,7 @@ export const LaunchForm: Component<{
         setSelectedGame(first.game);
         setSmac3Rounds(first.tuner.eval_rounds);
         setSmac3GameConfig(gameConfigTextFor(first.tuner));
+        setSmac3StartingBaseline(DEFAULT_SMAC3_STARTING_BASELINE);
       }
       return;
     }
@@ -142,6 +166,7 @@ export const LaunchForm: Component<{
     const tuner = smac3Games().find((g) => g.game === game)?.tuner;
     if (tuner) setSmac3Rounds(tuner.eval_rounds);
     setSmac3GameConfig(gameConfigTextFor(tuner));
+    setSmac3StartingBaseline(DEFAULT_SMAC3_STARTING_BASELINE);
   }
 
   function toggleStrategy(id: string): void {
@@ -185,9 +210,23 @@ export const LaunchForm: Component<{
             seed: smac3Seed(),
             rounds: smac3Rounds(),
             defaultRounds: tuner?.eval_rounds ?? null,
+            startingBaseline: smac3StartingBaseline(),
+            defaultBaselines: tuner?.baselines ?? [],
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)
             ? { game_config: JSON.parse(smac3GameConfig()) }
+            : {}),
+          // Consumed by `inject_ladder_root_if_new_ladder`
+          // (`server/src/bench/mod.rs`) -- this launch becomes a new
+          // ladder's root rung, and `plan_ladder_advances`'s background
+          // poll loop takes it from there once it saturates.
+          ...(smac3LadderEnabled()
+            ? {
+                ladder: {
+                  max_rungs: smac3MaxRungs(),
+                  saturation_threshold: smac3SaturationThreshold(),
+                },
+              }
             : {}),
         }
       : {
@@ -319,6 +358,14 @@ export const LaunchForm: Component<{
               gameConfig={smac3GameConfig()}
               onGameConfigChange={setSmac3GameConfig}
               gameConfigError={smac3GameConfigError()}
+              startingBaseline={smac3StartingBaseline()}
+              onStartingBaselineChange={setSmac3StartingBaseline}
+              ladderEnabled={smac3LadderEnabled()}
+              onLadderEnabledChange={setSmac3LadderEnabled}
+              maxRungs={smac3MaxRungs()}
+              onMaxRungsChange={setSmac3MaxRungs}
+              saturationThreshold={smac3SaturationThreshold()}
+              onSaturationThresholdChange={setSmac3SaturationThreshold}
               disabled={busy()}
             />
           </Show>

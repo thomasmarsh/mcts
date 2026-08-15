@@ -296,6 +296,7 @@ impl GameAdapter for TttAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<TicTacToe>(&cfg, baseline_seed, true)
                         .expect("baseline_config already validated above")
@@ -308,6 +309,7 @@ impl GameAdapter for TttAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?

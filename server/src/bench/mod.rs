@@ -1160,6 +1160,38 @@ fn resumed_from_of(r: &LadderRunRow) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
+/// Sets a widened rung's opponent to *just* the new incumbent -- pure
+/// self-play curriculum ("always face the current incumbent"), not an
+/// ever-growing accumulation of every prior rung's baseline. Two things a
+/// naive `baseline_configs.insert` would leave in place otherwise:
+///
+/// - Any `baseline_configs` entries inherited from the parent's config
+///   (`build_resume_config` carries the whole config forward verbatim) are
+///   dropped, not merged into.
+/// - Any `target.baselines=[...]` override inherited the same way (e.g. the
+///   root rung's own chosen starting baseline) is neutralized with a
+///   trailing `target.baselines=[]` override -- `smac3_cli`'s
+///   `_apply_overrides` applies overrides as a dict keyed by dotted path,
+///   so the last occurrence of a repeated key wins, and `Scenario.
+///   instances = [*target.baselines, *baseline_configs]`
+///   (`smac3/src/smac3_cli/__main__.py`) would otherwise still include the
+///   old named baseline alongside the new incumbent, right back to the
+///   multi-instance-averaging problem this ladder redesign exists to avoid.
+///
+/// The runhistory merge (`--resume`) is untouched -- prior rungs' recorded
+/// trial costs keep displaying continuously, only the *live* instance set
+/// changes per rung.
+fn replace_baseline_with_incumbent(widened: &mut Value, next_id: &str, incumbent_config: &Value) {
+    widened["baseline_configs"] = json!({ next_id: incumbent_config });
+    let mut overrides: Vec<Value> = widened
+        .get("overrides")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    overrides.push(json!("target.baselines=[]"));
+    widened["overrides"] = json!(overrides);
+}
+
 /// Scans every SMAC3 run for a completed, ladder-enabled rung that hasn't
 /// been widened yet and decides whether it saturated its current baseline
 /// set -- the decision half of an automated stop -> extract incumbent ->
@@ -1251,13 +1283,7 @@ fn plan_ladder_advances(
         let next_id = format!("ladder{next_rung}");
 
         let mut widened = build_resume_config(&run.run_id, &run.config, next_n_trials, None);
-        let mut baseline_configs = widened
-            .get("baseline_configs")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-        baseline_configs.insert(next_id, incumbent_config.clone());
-        widened["baseline_configs"] = Value::Object(baseline_configs);
+        replace_baseline_with_incumbent(&mut widened, &next_id, incumbent_config);
 
         advances.push(LadderAdvance {
             parent_run_id: run.run_id.clone(),
@@ -1482,13 +1508,7 @@ fn plan_manual_advance(
     if let Value::Object(ref mut map) = widened {
         map.entry("ladder_root").or_insert(json!(effective_root));
     }
-    let mut baseline_configs = widened
-        .get("baseline_configs")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-    baseline_configs.insert(next_id, incumbent_config.clone());
-    widened["baseline_configs"] = Value::Object(baseline_configs);
+    replace_baseline_with_incumbent(&mut widened, &next_id, incumbent_config);
 
     Ok(ManualAdvance {
         game: run.game.clone(),
@@ -3022,10 +3042,17 @@ mod tests {
         assert_eq!(advance.label, "ladder rung 2 of root-1");
         assert_eq!(advance.widened_config["resumed_from"], json!("root-1"));
         assert_eq!(advance.widened_config["ladder_root"], json!("root-1"));
-        // Cumulative budget: root's own 10 trials + another 10 for the new rung.
+        // Cumulative budget: root's own 10 trials + another 10 for the new
+        // rung, plus a trailing `target.baselines=[]` neutralizing whatever
+        // named baseline the root started against -- see
+        // `replace_baseline_with_incumbent`'s doc comment.
         assert_eq!(
             advance.widened_config["overrides"],
-            json!(["optimizer.n_trials=10", "optimizer.n_trials=20"])
+            json!([
+                "optimizer.n_trials=10",
+                "optimizer.n_trials=20",
+                "target.baselines=[]"
+            ])
         );
         // rung_count is 1 (the root itself) before this widen, so the new
         // rung being created is rung 2 -- its baseline id is "ladder2".
@@ -3033,6 +3060,36 @@ mod tests {
             advance.widened_config["baseline_configs"]["ladder2"],
             json!({"family": "ucb1", "c": 1.4})
         );
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_replaces_rather_than_accumulates_baseline_configs() {
+        // The parent rung already carries a `baseline_configs` entry from a
+        // prior widen (or a hand-launched `--baseline-config`) -- the new
+        // widen must *replace* it with just the new incumbent, not merge
+        // alongside it, matching "always face the current incumbent" rather
+        // than SMAC3's multi-instance averaging.
+        let mut root = ladder_root_run("root-1", 5, 0.0);
+        root.config.as_mut().unwrap()["baseline_configs"] =
+            json!({"ladder1": {"family": "ucb1", "c": 0.5}});
+        let runs = vec![root];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([(
+            "root-1".to_string(),
+            (json!({"family": "rave", "threshold": 700}), 0.0),
+        )]);
+
+        let advances = plan_ladder_advances(&runs, &trial_counts, &incumbents);
+        assert_eq!(advances.len(), 1);
+        let baseline_configs = advances[0].widened_config["baseline_configs"]
+            .as_object()
+            .unwrap();
+        assert_eq!(baseline_configs.len(), 1);
+        assert_eq!(
+            baseline_configs.get("ladder2"),
+            Some(&json!({"family": "rave", "threshold": 700}))
+        );
+        assert!(!baseline_configs.contains_key("ladder1"));
     }
 
     #[test]
@@ -3160,10 +3217,16 @@ mod tests {
         // No pre-existing "ladder" block -- this is a manual-only chain,
         // so the automated driver must never pick it up.
         assert!(advance.widened_config.get("ladder").is_none());
-        // Cumulative budget defaults to root's own trials + another batch.
+        // Cumulative budget defaults to root's own trials + another batch,
+        // plus the trailing `target.baselines=[]` reset (see
+        // `replace_baseline_with_incumbent`).
         assert_eq!(
             advance.widened_config["overrides"],
-            json!(["optimizer.n_trials=10", "optimizer.n_trials=20"])
+            json!([
+                "optimizer.n_trials=10",
+                "optimizer.n_trials=20",
+                "target.baselines=[]"
+            ])
         );
         assert_eq!(
             advance.widened_config["baseline_configs"]["ladder2"],
@@ -3197,7 +3260,8 @@ mod tests {
             json!([
                 "optimizer.n_trials=10",
                 "optimizer.n_trials=500",
-                "optimizer.n_workers=4"
+                "optimizer.n_workers=4",
+                "target.baselines=[]"
             ])
         );
     }
@@ -3236,8 +3300,37 @@ mod tests {
         // Cumulative: root's 10 + rung2's 10 + another batch of root's 10.
         assert_eq!(
             advance.widened_config["overrides"],
-            json!(["optimizer.n_trials=10", "optimizer.n_trials=30"])
+            json!([
+                "optimizer.n_trials=10",
+                "optimizer.n_trials=30",
+                "target.baselines=[]"
+            ])
         );
+    }
+
+    #[test]
+    fn test_plan_manual_advance_replaces_rather_than_accumulates_baseline_configs() {
+        let mut root = plain_run("root-1", 10);
+        root.config.as_mut().unwrap()["baseline_configs"] =
+            json!({"ladder1": {"family": "ucb1", "c": 0.5}});
+        let runs = vec![root];
+        let trial_counts = HashMap::from([("root-1".to_string(), 10)]);
+        let incumbents = HashMap::from([(
+            "root-1".to_string(),
+            (json!({"family": "rave", "threshold": 700}), 0.0),
+        )]);
+
+        let advance =
+            plan_manual_advance(&runs, &trial_counts, &incumbents, "root-1", None, None).unwrap();
+        let baseline_configs = advance.widened_config["baseline_configs"]
+            .as_object()
+            .unwrap();
+        assert_eq!(baseline_configs.len(), 1);
+        assert_eq!(
+            baseline_configs.get("ladder2"),
+            Some(&json!({"family": "rave", "threshold": 700}))
+        );
+        assert!(!baseline_configs.contains_key("ladder1"));
     }
 
     #[test]

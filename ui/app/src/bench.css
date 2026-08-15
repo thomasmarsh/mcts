@@ -1270,7 +1270,8 @@ body.bench-active #analysis-panel {
   gap: 0 10px;
 }
 
-#smac3-budget-fields input[type="number"] {
+#smac3-budget-fields input[type="number"],
+#smac3-ladder-fields input[type="number"] {
   width: 100%;
   box-sizing: border-box;
   background: #2a2c34;
@@ -1290,6 +1291,23 @@ body.bench-active #analysis-panel {
 
 .smac3-checkbox-field input[type="checkbox"] {
   accent-color: #5b7fd6;
+}
+
+#smac3-ladder-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 10px;
+  margin-top: 8px;
+}
+
+.smac3-field-hint {
+  grid-column: 1 / -1;
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #9a9ba5;
+  line-height: 1.4;
 }
 
 /* ── SMAC3 Run Detail ────────────────────────────────────────────────── */

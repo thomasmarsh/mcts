@@ -294,6 +294,7 @@ impl GameAdapter for OthAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 move || {
                     mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true)
                         .expect("baseline_config already validated above")
@@ -306,6 +307,7 @@ impl GameAdapter for OthAdapter {
                 rounds,
                 seed,
                 true,
+                mcts_tune::SearchBudget::default(),
                 build_strong,
                 Default::default(),
             )?
