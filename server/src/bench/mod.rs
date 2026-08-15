@@ -1606,7 +1606,7 @@ fn replace_baseline_with_incumbent(widened: &mut Value, next_id: &str, incumbent
     widened["overrides"] = json!(overrides);
 }
 
-/// Scans every SMAC3 run for a completed, ladder-enabled rung that hasn't
+/// Scans every active or completed SMAC3 run for a ladder-enabled rung that hasn't
 /// been widened yet and decides whether it saturated its current baseline
 /// set -- the decision half of an automated stop -> extract incumbent ->
 /// widen instances -> resume cycle (`incumbents` is keyed by `run_id`,
@@ -1627,10 +1627,13 @@ fn plan_ladder_advances(
     let mut advances = Vec::new();
 
     for run in runs {
-        // Only a naturally-completed rung is eligible -- an operator's
-        // explicit `stop` or a crash must not be silently overridden by
-        // the driver reviving the chain.
-        if run.status != "completed" || run.exit_code.is_some_and(|c| c != 0) {
+        // A running rung is eligible as soon as its incumbent crosses the
+        // configured threshold; the IO wrapper stops it before resuming so
+        // its runhistory is fully flushed. An operator's explicit `stop` or
+        // a crash must not be silently overridden by reviving the chain.
+        if !matches!(run.status.as_str(), "running" | "completed")
+            || run.exit_code.is_some_and(|c| c != 0)
+        {
             continue;
         }
         let Some(config) = &run.config else {
@@ -1663,8 +1666,7 @@ fn plan_ladder_advances(
 
         // Saturation is judged from the durable per-run incumbent (the
         // `incumbents` table, SMAC3's own tracked best config aggregated
-        // across every active instance) after this rung's *full*
-        // configured trial budget completed -- not `Scenario.
+        // across every active instance) -- not `Scenario.
         // termination_cost_threshold`, which only averages the
         // instance-seed pairs recorded so far for a config and so is
         // unsafe to rely on once more than one baseline instance is
@@ -1810,6 +1812,36 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
 
     let advances = plan_ladder_advances(&runs, &trial_counts, &incumbents);
     for advance in advances {
+        // Crossing the threshold is allowed to end a rung before its trial
+        // budget is exhausted. Stop and reap the process before resuming:
+        // `--resume` reads the parent's runhistory from disk, so launching
+        // while the old process is still flushing could read a torn file.
+        let outcome = match stop_run_impl(state, &advance.parent_run_id).await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                eprintln!(
+                    "ladder driver: failed to stop run {}: {}",
+                    advance.parent_run_id, e.message
+                );
+                continue;
+            }
+        };
+        if outcome.prior_status == "running" {
+            if let Some(pid_val) = outcome.pid {
+                let pid = pid_val as u32;
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                while launch::is_alive(pid) && std::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                if launch::is_alive(pid) {
+                    eprintln!(
+                        "ladder driver: run {} did not exit within 15s; not widening yet",
+                        advance.parent_run_id
+                    );
+                    continue;
+                }
+            }
+        }
         if let Err(e) = launch_and_record(
             state,
             "smac3",
@@ -3777,6 +3809,29 @@ mod tests {
         assert_eq!(
             advance.widened_config["baseline_configs"]["ladder2"],
             json!({"family": "ucb1", "c": 1.4})
+        );
+    }
+
+    #[test]
+    fn test_plan_ladder_advances_widens_a_running_rung_at_threshold() {
+        let mut run = ladder_root_run("root-1", 3, 0.15);
+        run.status = "running".to_string();
+        run.exit_code = None;
+        let runs = vec![run];
+        let trial_counts = HashMap::from([("root-1".to_string(), 3)]);
+        let incumbents =
+            HashMap::from([("root-1".to_string(), (json!({"family": "ucb1"}), 0.025))]);
+
+        let advances = plan_ladder_advances(&runs, &trial_counts, &incumbents);
+        assert_eq!(advances.len(), 1);
+        assert_eq!(advances[0].parent_run_id, "root-1");
+        assert_eq!(
+            advances[0].widened_config["overrides"],
+            json!([
+                "optimizer.n_trials=10",
+                "optimizer.n_trials=6",
+                "target.baselines=[]"
+            ])
         );
     }
 
