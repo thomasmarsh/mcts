@@ -16,7 +16,7 @@ afterEach(() => {
 const noOpEnv: BenchEnv = {
   listProjects: () => Effect.none(), createProject: () => Effect.none(), getProject: () => Effect.none(), updateProject: () => Effect.none(),
   listExperiments: () => Effect.none(), createExperiment: () => Effect.none(), getExperiment: () => Effect.none(), updateExperiment: () => Effect.none(), launchExperiment: () => Effect.none(),
-  getRunCells: () => Effect.send([]), listRuns: () => Effect.none(), getRun: () => Effect.none(), getRunLog: () => Effect.none(), getRunStdout: () => Effect.none(),
+  getRunCells: () => Effect.send([]), listRuns: () => Effect.none(), getRun: () => Effect.none(), getRunLog: () => Effect.none(), getRunStdout: () => Effect.none(), downloadFile: () => Effect.none(),
   getLeaderboard: () => Effect.none(), fetchCommitTrends: () => Effect.none(), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(), advanceBaseline: () => Effect.none(),
   getBenchKinds: () => Effect.none(), getSmac3Kinds: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
 };
@@ -219,9 +219,9 @@ describe("persisted experiment components", () => {
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await vi.waitFor(() => expect(dispatched).toContainEqual({ tag: "experimentLaunched", response: { run_id: "run-1", pid: 1, log_path: "/tmp/log.jsonl" } }));
     await vi.waitFor(() => expect(store.state.activeTab).toBe("runs"));
-    await vi.waitFor(() => expect(screen.getByRole("button", { name: /Variant: 1\/2/ })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /Variant: 1\/2/ }));
-    expect(screen.getByText(/Candidate:/)).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: /nim, 1 iterations, Variant/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /nim, 1 iterations, Variant/ }));
+    expect(screen.getByText("Candidate configuration")).toBeInTheDocument();
   });
 
   it("renders a mocked 2x2x3 run, filters source games by cell, rejects stale polls, and stops", async () => {
@@ -278,7 +278,7 @@ describe("persisted experiment components", () => {
     const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, env);
     const { container } = render(() => <ExperimentRunDetail store={store} />);
 
-    expect(container.querySelectorAll(".projects-cell-selector button")).toHaveLength(12);
+    expect(container.querySelectorAll(".projects-matrix-cell")).toHaveLength(12);
     expect(screen.getByText("18 / 24")).toBeInTheDocument();
     expect(screen.getByText("completed with errors")).toBeInTheDocument();
     expect(screen.getByText("variant rejected")).toBeInTheDocument();
@@ -286,10 +286,10 @@ describe("persisted experiment components", () => {
     expect(screen.getByText("failed cells")).toBeInTheDocument();
     expect(screen.getByText("cancelled cells")).toBeInTheDocument();
 
-    const secondCell = container.querySelector(".projects-cell-selector button:nth-child(2)") as HTMLButtonElement;
+    const secondCell = container.querySelector(".projects-matrix-table tbody tr:first-child td:nth-child(3) button") as HTMLButtonElement;
     fireEvent.click(secondCell);
-    await vi.waitFor(() => expect(calls).toContainEqual(["grid-run", 5000, "cell-000002"]));
-    await vi.waitFor(() => expect(screen.getByText("Game 2")).toBeInTheDocument());
+    await vi.waitFor(() => expect(calls).toContainEqual(["grid-run", 5000, "cell-000005"]));
+    await vi.waitFor(() => expect(screen.getByText(/Match 2 · Trace 2/)).toBeInTheDocument());
 
     store.dispatch({ tag: "openRun", runId: "new-run" });
     store.dispatch({ tag: "tailed", generation: 4, lines: ["stale"], nextOffset: 9, detail, trials: [], chain: [], chainedTrials: [], cells });

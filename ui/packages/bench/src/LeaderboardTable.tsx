@@ -8,15 +8,8 @@
 
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
-import type { BenchAction, BenchState, LeaderboardEntry } from "./index.js";
-
-function fmtRate(v: number): string {
-  return (v * 100).toFixed(1) + "%";
-}
-
-function ciLabel(entry: LeaderboardEntry): string {
-  return `${fmtRate(entry.ci_lower)} – ${fmtRate(entry.ci_upper)}`;
-}
+import type { BenchAction, BenchState } from "./index.js";
+import { formatInterval, formatRate, formatWld } from "./result-format.js";
 
 export const LeaderboardTable: Component<{
   store: Store<BenchState, BenchAction>;
@@ -159,18 +152,18 @@ export const LeaderboardTable: Component<{
                       <td class="lb-strategy">{entry.strategy}</td>
                       <td class="lb-total">{entry.total}</td>
                       <td class="lb-wld">
-                        {entry.wins}/{entry.losses}/{entry.draws}
+                        {formatWld(entry)}
                       </td>
                       <td class="lb-rate">
                         <div class="lb-bar-bg">
                           <div
                             class="lb-bar-fill"
-                            style={{ width: `${entry.win_rate * 100}%` }}
+                            style={{ width: `${entry.total === 0 ? 0 : entry.win_rate * 100}%` }}
                           />
                         </div>
-                        <span class="lb-rate-text">{fmtRate(entry.win_rate)}</span>
+                        <span class="lb-rate-text">{entry.total === 0 ? "No games yet" : formatRate(entry.win_rate)}</span>
                       </td>
-                      <td class="lb-ci">{ciLabel(entry)}</td>
+                      <td class="lb-ci">{entry.total === 0 ? "No games yet" : formatInterval(entry.ci_lower, entry.ci_upper)}</td>
                     </tr>
                   )}
                 </For>

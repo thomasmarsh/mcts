@@ -23,8 +23,9 @@ import { WinRateChart } from "./WinRateChart.js";
 import { CommitComparison } from "./CommitComparison.js";
 import { ProjectsApp } from "./ProjectsApp.js";
 import { ExperimentRunDetail } from "./ExperimentRunDetail.js";
+import type { BenchSpectatorProps } from "./types.js";
 
-export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: string; kind: string; live: boolean }> }> = (props) => {
+export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }> = (props) => {
   const api = createBenchApiClient();
   const env = createBenchEnv(api);
   const store: Store<BenchState, BenchAction> = createStore(
@@ -74,7 +75,7 @@ export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: 
             <RunList store={store} />
           </div>
           <Show when={state().openRun !== null}>
-            <Show when={state().openRun?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} /></Show>
+            <Show when={state().openRun?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
           </Show>
         </div>
       </Show>

@@ -38,6 +38,15 @@ export interface ExperimentCell {
   wins: number; losses: number; draws: number; win_rate: number; ci_lower: number; ci_upper: number;
 }
 
+export interface BenchSpectatorProps {
+  runId: string;
+  game: string;
+  kind: string;
+  live: boolean;
+  cellId?: string;
+  initialGameSeq?: number;
+}
+
 /** A run is finished once its status leaves "running". Its log file is
  * complete at that point — the run process writes it directly, so process
  * exit means fully flushed — which is what lets a log tail stop polling

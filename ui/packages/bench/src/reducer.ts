@@ -49,6 +49,7 @@ import {
   type ExperimentSpecV1,
 } from "./types.js";
 import { expandExperimentSpec } from "./experiment-grid.js";
+import { serializeExperimentRunCsv, serializeExperimentRunJson, sanitizeExportRunId } from "./experiment-export.js";
 
 /** Every network operation the bench reducer may perform, lifted to
  * `Effect` — hard rule (enforced by ui/eslint.config.js's fetch ban): no
@@ -94,6 +95,7 @@ export interface BenchEnv {
   getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
   getRunGameMoves(runId: string, gameSeq: number): Effect<GameMove[]>;
   deleteRun(runId: string): Effect<void>;
+  downloadFile(filename: string, mimeType: string, contents: string): Effect<void>;
 }
 
 export const TAIL_BACKOFF_START_MS = 1000;
@@ -200,7 +202,10 @@ export type BenchAction =
   | { tag: "experimentLaunched"; response: LaunchResponse }
   | { tag: "experimentRunFailed"; error: string }
   | { tag: "openCell"; cellId: string }
-  | { tag: "cellGamesLoaded"; cellId: string; games: GameTraceSummary[] };
+  | { tag: "cellGamesLoaded"; cellId: string; games: GameTraceSummary[] }
+  | { tag: "exportExperimentRun"; format: "json" | "csv" }
+  | { tag: "experimentExportFinished" }
+  | { tag: "experimentExportFailed"; error: string };
 
 export type KindsAction =
   | { tag: "request" }
@@ -501,6 +506,39 @@ export function benchReducer(
     if (draft.selectedCellId === action.cellId && draft.openRun) draft.openRun.games = action.games;
     return null;
   }
+  if (action.tag === "exportExperimentRun") {
+    if (draft.experimentExportStatus === "pending") return null;
+    const detail = draft.openRun?.detail;
+    const cells = draft.openRun?.cells;
+    if (!detail || !detail.experiment_spec || !cells) {
+      draft.experimentExportError = "The run snapshot and cells are not loaded yet.";
+      return null;
+    }
+    draft.experimentExportStatus = "pending";
+    draft.experimentExportError = null;
+    try {
+      const isJson = action.format === "json";
+      const contents = isJson ? serializeExperimentRunJson(detail, cells) : serializeExperimentRunCsv(detail, cells);
+      const filename = `experiment-${sanitizeExportRunId(detail.run_id)}.${action.format}`;
+      const mimeType = isJson ? "application/json" : "text/csv;charset=utf-8";
+      return env.downloadFile(filename, mimeType, contents)
+        .map((): BenchAction => ({ tag: "experimentExportFinished" }))
+        .catch((error): BenchAction => ({ tag: "experimentExportFailed", error: String(error) }));
+    } catch (error) {
+      draft.experimentExportStatus = "idle";
+      draft.experimentExportError = String(error);
+      return null;
+    }
+  }
+  if (action.tag === "experimentExportFinished") {
+    draft.experimentExportStatus = "idle";
+    return null;
+  }
+  if (action.tag === "experimentExportFailed") {
+    draft.experimentExportStatus = "idle";
+    draft.experimentExportError = action.error;
+    return null;
+  }
   if (action.tag === "runs") {
     const ra = action.action;
     if (ra.tag === "request") return startRunsFetch(draft, env);
@@ -525,6 +563,8 @@ export function benchReducer(
   if (action.tag === "openRun") {
     draft.openGeneration += 1;
     draft.selectedCellId = null;
+    draft.experimentExportStatus = "idle";
+    draft.experimentExportError = null;
     draft.openRun = {
       runId: action.runId,
       detail: null,

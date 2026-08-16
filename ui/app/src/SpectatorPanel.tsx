@@ -13,14 +13,18 @@ function readonlyView(state: unknown): unknown {
     : { terminal: false, winner: null };
 }
 
-export const SpectatorPanel: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => {
+export const SpectatorPanel: Component<{ runId: string; game: string; kind: string; live: boolean; cellId?: string; initialGameSeq?: number }> = (props) => {
   const api = createBenchApiClient();
-  const [games, { refetch: refetchGames }] = createResource(() => props.runId, (runId) => api.getRunGames(runId, 100));
+  const [games, { refetch: refetchGames }] = createResource(() => JSON.stringify([props.runId, props.cellId ?? null]), (key) => {
+    const [runId, cellId] = JSON.parse(key) as [string, string | null];
+    return api.getRunGames(runId, 100, cellId);
+  });
   const [selectedSeq, setSelectedSeq] = createSignal<number | null>(null);
   const [moves, setMoves] = createSignal<GameMove[]>([]);
   const [moveError, setMoveError] = createSignal<string | null>(null);
   const [currentPly, setCurrentPly] = createSignal(0);
   const [liveError, setLiveError] = createSignal<string | null>(null);
+  const [appliedInitialKey, setAppliedInitialKey] = createSignal<string | null>(null);
   const [module] = createResource(() => props.game, async (game): Promise<GameKindModule<unknown, unknown, unknown> | null> => {
     const load = GAME_MODULES[game];
     return load ? load() : null;
@@ -39,6 +43,25 @@ export const SpectatorPanel: Component<{ runId: string; game: string; kind: stri
 
   const selectedGame = createMemo(() => (games() ?? []).find((game) => game.game_seq === selectedSeq()) ?? null);
   const isRendererTrace = createMemo(() => currentMove() !== null && typeof currentMove()!.state !== "string");
+
+  createEffect(() => {
+    setAppliedInitialKey(null);
+    setSelectedSeq(props.initialGameSeq ?? null);
+    setMoves([]);
+    setCurrentPly(0);
+    setMoveError(null);
+  });
+
+  createEffect(() => {
+    const key = `${props.runId}:${props.cellId ?? ""}:${props.initialGameSeq ?? ""}`;
+    const requested = props.initialGameSeq;
+    const available = games() ?? [];
+    if (games.loading || appliedInitialKey() === key) return;
+    if (requested !== undefined && available.some((game) => game.game_seq === requested)) {
+      setAppliedInitialKey(key);
+      void selectGame(requested);
+    }
+  });
 
   async function selectGame(gameSeq: number): Promise<void> {
     setSelectedSeq(gameSeq);

@@ -118,6 +118,7 @@ const mockEnv: BenchEnv = {
   getRun: () => Effect.none(),
   getRunLog: () => Effect.none(),
   getRunStdout: () => Effect.none(),
+  downloadFile: () => Effect.none(),
   getLeaderboard: () => Effect.none(),
   fetchCommitTrends: () => Effect.none(),
   launchRun: () => Effect.none(),
@@ -1178,5 +1179,44 @@ describe("benchReducer / advanceBaseline", () => {
     ts.receive({ tag: "advanceBaselineFailed", runId: "root-1", error: "Error: no incumbent" }, (s) => {
       s.advanceBaselineError = "Error: no incumbent";
     });
+  });
+});
+
+describe("benchReducer / experiment exports", () => {
+  function exportState() {
+    const state = initialBenchState();
+    const spec = emptyExperimentSpec("nim");
+    state.openRun = {
+      runId: "export-run",
+      detail: makeDetail({ kind: "experiment", experiment_spec: spec, run_id: "export-run", status: "completed" }),
+      tail: { lines: [], offset: 0, active: false, error: null, idleAttempts: 0, failures: 0 },
+      trials: [], chain: [], chainedTrials: [], games: [],
+      cells: [{ cell_id: "export-cell", cell_seed: 1, game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant", candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {}, budget: spec.budgets[0]!, rounds: 1, planned_games: 2, completed_games: 0, status: "pending", started_at: null, ended_at: null, error: null, wins: 0, losses: 0, draws: 0, win_rate: 0.5, ci_lower: 0, ci_upper: 1 }],
+    };
+    return state;
+  }
+
+  it("downloads a deterministic snapshot once while pending", async () => {
+    const downloads: Array<[string, string, string]> = [];
+    const env: BenchEnv = { ...mockEnv, downloadFile: (filename, mimeType, contents) => { downloads.push([filename, mimeType, contents]); return Effect.send(undefined); } };
+    const ts = createTestStore(benchReducer, env, exportState());
+    ts.send({ tag: "exportExperimentRun", format: "json" }, (s) => { s.experimentExportStatus = "pending"; s.experimentExportError = null; });
+    ts.send({ tag: "exportExperimentRun", format: "json" });
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0]![0]).toBe("experiment-export-run.json");
+    expect(downloads[0]![1]).toBe("application/json");
+    ts.receive({ tag: "experimentExportFinished" }, (s) => { s.experimentExportStatus = "idle"; });
+  });
+
+  it("clears pending state on download failure without losing the open run", async () => {
+    const env: BenchEnv = { ...mockEnv, downloadFile: () => Effect.fromPromise(() => Promise.reject(new Error("download failed"))) };
+    const ts = createTestStore(benchReducer, env, exportState());
+    ts.send({ tag: "exportExperimentRun", format: "csv" }, (s) => { s.experimentExportStatus = "pending"; s.experimentExportError = null; });
+    await ts.drain();
+    ts.receive({ tag: "experimentExportFailed", error: "Error: download failed" }, (s) => {
+      s.experimentExportStatus = "idle";
+      s.experimentExportError = "Error: download failed";
+    });
+    expect(ts.getState().openRun?.runId).toBe("export-run");
   });
 });

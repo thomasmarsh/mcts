@@ -9,6 +9,7 @@ import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
 import { Smac3RunDetail } from "./Smac3RunDetail.js";
+import type { BenchSpectatorProps } from "./types.js";
 
 const MAX_VISIBLE_LINES = 500;
 
@@ -42,7 +43,7 @@ export const RunDetailPanel: Component<{
   store: Store<BenchState, BenchAction>;
   /** App-owned board panel: the bench package deliberately does not depend
    * on individual game renderers. */
-  Spectator?: Component<{ runId: string; game: string; kind: string; live: boolean }>;
+  Spectator?: Component<BenchSpectatorProps>;
 }> = (props) => {
   const Spectator = props.Spectator;
   const state = props.store.getState();

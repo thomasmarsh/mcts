@@ -330,6 +330,7 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),
     getRunGameMoves: (): Effect<GameMove[]> => Effect.send(fakeGameMoves),
     deleteRun: (): Effect<void> => Effect.send(undefined),
+    downloadFile: (): Effect<void> => Effect.send(undefined),
   };
   return { ...base, ...overrides };
 }

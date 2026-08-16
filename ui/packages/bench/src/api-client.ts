@@ -267,5 +267,17 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),
     getRunGameMoves: (runId: string, gameSeq: number) => lift(() => api.getRunGameMoves(runId, gameSeq)),
     deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),
+    downloadFile: (filename: string, mimeType: string, contents: string) => Effect.fromPromise(async () => {
+      const blob = new Blob([contents], { type: mimeType });
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = filename;
+        anchor.click();
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    }),
   };
 }

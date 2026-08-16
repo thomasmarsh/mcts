@@ -143,6 +143,8 @@ export interface BenchState {
    * — populates the SMAC3 launch fields' game picker and the run-detail
    * baseline parameter comparison. */
   smac3Kinds: JobPollState<Smac3GameInfo[]>;
+  experimentExportStatus: "idle" | "pending";
+  experimentExportError: string | null;
 }
 
 export function initialBenchState(): BenchState {
@@ -179,5 +181,7 @@ export function initialBenchState(): BenchState {
     deleteError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
     smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
+    experimentExportStatus: "idle",
+    experimentExportError: null,
   };
 }

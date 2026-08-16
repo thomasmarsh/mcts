@@ -1033,9 +1033,32 @@ body.bench-active #analysis-panel {
 .projects-run-view button:focus-visible { outline: none; border-color: #8aaff0; box-shadow: 0 0 0 3px rgba(91, 127, 214, 0.28); }
 .projects-cell-row > span:last-child { color: #8aaff0; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .projects-result-summary { margin: -8px 0 14px; color: #aeb0bb; font-size: 12px; font-variant-numeric: tabular-nums; }
-.projects-cell-selector { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }
-.projects-cell-selector button { padding: 7px 10px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; background: #24262e; color: #bfc1ca; cursor: pointer; }
-.projects-cell-selector button.projects-cell-selected { border-color: #5b7fd6; color: #e8e8ec; }
+.projects-matrix-section { min-width: 0; }
+.projects-matrix-scroll { display: block; padding: 0; overflow-x: auto; }
+.projects-matrix-table { width: 100%; min-width: 760px; border-collapse: separate; border-spacing: 0; color: #d8d9df; font-size: 12px; }
+.projects-matrix-table caption { padding: 0 0 9px; color: #8f929d; text-align: left; }
+.projects-matrix-table th, .projects-matrix-table td { min-width: 155px; padding: 8px; border-right: 1px solid rgba(255, 255, 255, 0.07); border-bottom: 1px solid rgba(255, 255, 255, 0.07); vertical-align: top; text-align: left; }
+.projects-matrix-table thead th { background: #24262e; color: #e8e8ec; font-weight: 700; }
+.projects-matrix-table tbody th { min-width: 110px; background: rgba(36, 38, 46, 0.65); color: #e8e8ec; font-weight: 600; }
+.projects-matrix-cell { display: flex; width: 100%; min-height: 112px; box-sizing: border-box; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px; border: 1px solid rgba(255, 255, 255, 0.11); border-radius: 6px; background: #1c1e24; color: #c7c9d1; cursor: pointer; font: inherit; text-align: left; }
+.projects-matrix-cell:hover { border-color: rgba(138, 175, 240, 0.55); background: #252832; }
+.projects-matrix-cell.projects-cell-selected { border-color: #6d92e5; box-shadow: inset 0 0 0 1px rgba(109, 146, 229, 0.28); }
+.projects-matrix-cell-status { align-self: stretch; }
+.projects-matrix-cell-error { color: #efaaaa; overflow-wrap: anywhere; }
+.projects-matrix-missing { display: block; padding: 12px 8px; color: #8f929d; font-style: italic; }
+.projects-matrix-context { margin: 0 0 12px; color: #aeb0bb; font-size: 13px; }
+.projects-matrix-warning { margin: 0 0 12px; padding: 9px 11px; border: 1px solid rgba(214, 178, 118, 0.35); border-radius: 7px; background: rgba(214, 178, 118, 0.1); color: #e0c38d; font-size: 12px; overflow-wrap: anywhere; }
+.projects-run-export-actions { margin: 0 0 14px; color: #aeb0bb; font-size: 12px; }
+.projects-run-export-actions button { padding: 6px 11px; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; background: #2a2c34; color: #e8e8ec; cursor: pointer; }
+.projects-run-export-actions button:disabled { opacity: 0.45; cursor: default; }
+.projects-detail-grid-results { margin-top: 20px; }
+.projects-log-tail { color: #c9cad2; }
+.projects-log-tail summary { cursor: pointer; font-weight: 600; }
+.projects-log-tail p { color: #8f929d; font-size: 12px; }
+.projects-log-tail pre { max-height: 300px; margin: 12px 0 0; padding: 12px; overflow: auto; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 7px; background: #15161b; color: #b9c8ee; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.projects-source-game { width: 100%; font: inherit; text-align: left; cursor: pointer; }
+.projects-source-metrics { grid-column: 1 / -1; max-height: 140px; padding: 7px; overflow: auto; border-radius: 5px; background: #15161b; white-space: pre-wrap; overflow-wrap: anywhere; }
+.projects-source-games > .projects-source-game:not(button) { cursor: default; }
 .projects-result-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .projects-result-metrics span { display: flex; flex-direction: column; gap: 4px; padding: 11px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 7px; background: rgba(20, 21, 26, 0.45); }
 .projects-result-metrics strong { color: #e8e8ec; font-size: 15px; font-variant-numeric: tabular-nums; }
