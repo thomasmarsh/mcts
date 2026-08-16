@@ -336,6 +336,7 @@ fn build_snapshot(
     }
     let snapshot = JournalSnapshot {
         manifest,
+        launch_nonce: nonce,
         child,
         terminal,
         outputs,

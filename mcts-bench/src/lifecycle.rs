@@ -64,6 +64,7 @@ pub struct OutputClosure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalSnapshot {
     pub manifest: WrapperManifest,
+    pub launch_nonce: String,
     pub child: Option<u64>,
     pub terminal: Option<TerminalEvidence>,
     pub outputs: Option<Vec<OutputClosure>>,

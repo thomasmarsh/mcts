@@ -1,4 +1,7 @@
 use super::*;
+use crate::lifecycle::{
+    InvalidReason, JournalRead, JournalSnapshot, LifecycleError, TerminalEvidence, WrapperManifest,
+};
 use std::ffi::OsString;
 
 fn d() -> LaunchDescriptor {
@@ -66,6 +69,46 @@ fn evidence(a: &str, n: &str, pid: u64, pgid: u64) -> ReadinessEvidence {
         },
     }
 }
+fn manifest(x: &LaunchDescriptor) -> WrapperManifest {
+    WrapperManifest {
+        logical_run_id: x.logical_run_id.clone(),
+        attempt_id: x.attempt_id.clone(),
+        parent_attempt_id: x.parent_attempt_id.clone(),
+        argv: x.workload_argv.clone(),
+        wrapper_pid: 4,
+        process_group_id: 9,
+        hostname: "host".into(),
+        boot_id: None,
+        process_start_id: None,
+    }
+}
+fn journal(
+    m: WrapperManifest,
+    nonce: &str,
+    child: Option<u64>,
+    terminal: Option<TerminalEvidence>,
+) -> JournalRead {
+    JournalRead::Incomplete(JournalSnapshot {
+        manifest: m,
+        launch_nonce: nonce.into(),
+        child,
+        terminal,
+        outputs: None,
+        last_sequence: 0,
+    })
+}
+fn complete(m: WrapperManifest, nonce: &str, child: u64) -> JournalRead {
+    JournalRead::Complete(JournalSnapshot {
+        manifest: m,
+        launch_nonce: nonce.into(),
+        child: Some(child),
+        terminal: Some(TerminalEvidence::Exited(
+            crate::lifecycle::ExitEvidence::Code { code: 0 },
+        )),
+        outputs: Some(vec![]),
+        last_sequence: 3,
+    })
+}
 
 #[test]
 fn exact_command_and_non_utf8_values() {
@@ -103,6 +146,58 @@ fn exact_command_and_non_utf8_values() {
     expected[8] = x.journal_path.clone().into_os_string();
     assert_eq!(c.executable, x.supervisor);
     assert_eq!(c.arguments, expected);
+}
+
+#[test]
+fn classifier_decides_pending_ready_startup_and_correlation() {
+    let x = d();
+    let w = WrapperIdentity {
+        pid: 4,
+        process_group_id: 9,
+    };
+    assert_eq!(
+        classify_readiness(&x, w, Ok(JournalRead::Missing)),
+        ReadinessDecision::Pending
+    );
+    assert_eq!(
+        classify_readiness(&x, w, Ok(journal(manifest(&x), "nonce", None, None))),
+        ReadinessDecision::Pending
+    );
+    assert_eq!(
+        classify_readiness(&x, w, Ok(journal(manifest(&x), "nonce", Some(8), None))),
+        ReadinessDecision::Ready(ReadinessEvidence {
+            attempt_id: "attempt".into(),
+            launch_nonce: "nonce".into(),
+            wrapper: w
+        })
+    );
+    assert_eq!(
+        classify_readiness(&x, w, Ok(complete(manifest(&x), "nonce", 8))),
+        ReadinessDecision::Ready(ReadinessEvidence {
+            attempt_id: "attempt".into(),
+            launch_nonce: "nonce".into(),
+            wrapper: w
+        })
+    );
+    assert_eq!(
+        classify_readiness(
+            &x,
+            w,
+            Ok(journal(
+                manifest(&x),
+                "nonce",
+                None,
+                Some(TerminalEvidence::SpawnFailed {
+                    stage: "spawn".into(),
+                    error: "no".into()
+                })
+            ))
+        ),
+        ReadinessDecision::StartupFailed {
+            stage: "spawn".into(),
+            error: "no".into()
+        }
+    );
 }
 #[test]
 fn ordered_spawn_readiness_and_ready_facts() {
@@ -204,7 +299,7 @@ fn every_readiness_failure_retains_wrapper() {
         ReadinessFailure::EarlyExit,
         ReadinessFailure::Timeout,
         ReadinessFailure::UnavailableEvidence,
-        ReadinessFailure::MalformedEvidence,
+        ReadinessFailure::Malformed(InvalidReason::JsonSyntax),
         ReadinessFailure::Conflict,
     ] {
         let x = d();
@@ -220,4 +315,115 @@ fn every_readiness_failure_retains_wrapper() {
             }
         );
     }
+}
+
+#[test]
+fn classifier_reports_each_exact_mismatch_and_error_kind() {
+    let x = d();
+    let w = WrapperIdentity {
+        pid: 4,
+        process_group_id: 9,
+    };
+    let mut cases = Vec::new();
+    let mut m = manifest(&x);
+    m.logical_run_id = "other".into();
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::LogicalRunIdMismatch {
+            expected: "run".into(),
+            observed: "other".into(),
+        },
+    ));
+    let mut m = manifest(&x);
+    m.attempt_id = "other".into();
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::AttemptMismatch {
+            expected: "attempt".into(),
+            observed: "other".into(),
+        },
+    ));
+    let mut m = manifest(&x);
+    m.parent_attempt_id = None;
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::ParentAttemptIdMismatch {
+            expected: Some("parent".into()),
+            observed: None,
+        },
+    ));
+    cases.push((
+        journal(manifest(&x), "other", None, None),
+        ReadinessFailure::NonceMismatch {
+            expected: "nonce".into(),
+            observed: "other".into(),
+        },
+    ));
+    let mut m = manifest(&x);
+    m.argv = vec!["other".into(); 1];
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::WorkloadMismatch {
+            expected: vec!["worker".into(), "--literal".into()],
+            observed: vec!["other".into()],
+        },
+    ));
+    let mut m = manifest(&x);
+    m.wrapper_pid = 8;
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::WrapperPidMismatch {
+            expected: 4,
+            observed: 8,
+        },
+    ));
+    let mut m = manifest(&x);
+    m.process_group_id = 8;
+    cases.push((
+        journal(m, "nonce", None, None),
+        ReadinessFailure::ProcessGroupMismatch {
+            expected: 9,
+            observed: 8,
+        },
+    ));
+    for (read, failure) in cases {
+        assert_eq!(
+            classify_readiness(&x, w, Ok(read)),
+            ReadinessDecision::Invalid(failure)
+        );
+    }
+    assert!(matches!(
+        classify_readiness(
+            &x,
+            w,
+            Err(LifecycleError::Invalid {
+                path: "x".into(),
+                line: None,
+                sequence: None,
+                reason: InvalidReason::BlankRecord
+            })
+        ),
+        ReadinessDecision::Invalid(ReadinessFailure::Malformed(InvalidReason::BlankRecord))
+    ));
+    assert_eq!(
+        classify_readiness(&x, w, Err(LifecycleError::Conflict { path: "x".into() })),
+        ReadinessDecision::Invalid(ReadinessFailure::Conflict)
+    );
+    let io = std::io::Error::new(std::io::ErrorKind::Other, "io");
+    assert_eq!(
+        classify_readiness(
+            &x,
+            w,
+            Err(LifecycleError::Io {
+                path: "x".into(),
+                operation: "read",
+                source: io
+            })
+        ),
+        ReadinessDecision::Invalid(ReadinessFailure::Unreadable)
+    );
+    assert_eq!(
+        classify_readiness(&x, w, Err(LifecycleError::Poisoned { path: "x".into() })),
+        ReadinessDecision::Invalid(ReadinessFailure::Unreadable)
+    );
 }

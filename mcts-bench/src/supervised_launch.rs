@@ -1,4 +1,5 @@
-//! Dependency-free contract for launching one detached supervisor.
+//! Typed launch and lifecycle-readiness decisions for one detached supervisor.
+use crate::lifecycle::{InvalidReason, JournalRead, TerminalEvidence};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -45,12 +46,37 @@ pub enum ReadinessFailure {
     EarlyExit,
     Timeout,
     UnavailableEvidence,
-    MalformedEvidence,
     Conflict,
-    AttemptMismatch { expected: String, observed: String },
-    NonceMismatch { expected: String, observed: String },
-    WrapperPidMismatch { expected: u64, observed: u64 },
-    ProcessGroupMismatch { expected: u64, observed: u64 },
+    AttemptMismatch {
+        expected: String,
+        observed: String,
+    },
+    NonceMismatch {
+        expected: String,
+        observed: String,
+    },
+    WrapperPidMismatch {
+        expected: u64,
+        observed: u64,
+    },
+    ProcessGroupMismatch {
+        expected: u64,
+        observed: u64,
+    },
+    Malformed(InvalidReason),
+    Unreadable,
+    LogicalRunIdMismatch {
+        expected: String,
+        observed: String,
+    },
+    ParentAttemptIdMismatch {
+        expected: Option<String>,
+        observed: Option<String>,
+    },
+    WorkloadMismatch {
+        expected: Vec<String>,
+        observed: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +84,100 @@ pub struct ReadinessEvidence {
     pub attempt_id: String,
     pub launch_nonce: String,
     pub wrapper: WrapperIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadinessDecision {
+    Pending,
+    Ready(ReadinessEvidence),
+    StartupFailed { stage: String, error: String },
+    Invalid(ReadinessFailure),
+}
+
+pub fn classify_readiness(
+    descriptor: &LaunchDescriptor,
+    wrapper: WrapperIdentity,
+    journal: Result<JournalRead, crate::lifecycle::LifecycleError>,
+) -> ReadinessDecision {
+    let read = match journal {
+        Ok(read) => read,
+        Err(crate::lifecycle::LifecycleError::Invalid { reason, .. }) => {
+            return ReadinessDecision::Invalid(ReadinessFailure::Malformed(reason))
+        }
+        Err(crate::lifecycle::LifecycleError::Conflict { .. }) => {
+            return ReadinessDecision::Invalid(ReadinessFailure::Conflict)
+        }
+        Err(
+            crate::lifecycle::LifecycleError::Io { .. }
+            | crate::lifecycle::LifecycleError::Poisoned { .. },
+        ) => return ReadinessDecision::Invalid(ReadinessFailure::Unreadable),
+    };
+    let snapshot = match read {
+        JournalRead::Missing => return ReadinessDecision::Pending,
+        JournalRead::Incomplete(snapshot) | JournalRead::Complete(snapshot) => snapshot,
+    };
+    let manifest = &snapshot.manifest;
+    if manifest.logical_run_id != descriptor.logical_run_id {
+        return ReadinessDecision::Invalid(ReadinessFailure::LogicalRunIdMismatch {
+            expected: descriptor.logical_run_id.clone(),
+            observed: manifest.logical_run_id.clone(),
+        });
+    }
+    if manifest.attempt_id != descriptor.attempt_id {
+        return ReadinessDecision::Invalid(ReadinessFailure::AttemptMismatch {
+            expected: descriptor.attempt_id.clone(),
+            observed: manifest.attempt_id.clone(),
+        });
+    }
+    if manifest.parent_attempt_id != descriptor.parent_attempt_id {
+        return ReadinessDecision::Invalid(ReadinessFailure::ParentAttemptIdMismatch {
+            expected: descriptor.parent_attempt_id.clone(),
+            observed: manifest.parent_attempt_id.clone(),
+        });
+    }
+    if snapshot.launch_nonce != descriptor.launch_nonce {
+        return ReadinessDecision::Invalid(ReadinessFailure::NonceMismatch {
+            expected: descriptor.launch_nonce.clone(),
+            observed: snapshot.launch_nonce,
+        });
+    }
+    if manifest.argv != descriptor.workload_argv {
+        return ReadinessDecision::Invalid(ReadinessFailure::WorkloadMismatch {
+            expected: descriptor.workload_argv.clone(),
+            observed: manifest.argv.clone(),
+        });
+    }
+    if manifest.wrapper_pid != wrapper.pid {
+        return ReadinessDecision::Invalid(ReadinessFailure::WrapperPidMismatch {
+            expected: wrapper.pid,
+            observed: manifest.wrapper_pid,
+        });
+    }
+    if manifest.process_group_id != wrapper.process_group_id {
+        return ReadinessDecision::Invalid(ReadinessFailure::ProcessGroupMismatch {
+            expected: wrapper.process_group_id,
+            observed: manifest.process_group_id,
+        });
+    }
+    match snapshot.terminal {
+        Some(TerminalEvidence::SpawnFailed { stage, error }) => {
+            ReadinessDecision::StartupFailed { stage, error }
+        }
+        Some(TerminalEvidence::Exited(_)) if snapshot.child.is_some() => {
+            ReadinessDecision::Ready(ReadinessEvidence {
+                attempt_id: descriptor.attempt_id.clone(),
+                launch_nonce: descriptor.launch_nonce.clone(),
+                wrapper,
+            })
+        }
+        None if snapshot.child.is_some() => ReadinessDecision::Ready(ReadinessEvidence {
+            attempt_id: descriptor.attempt_id.clone(),
+            launch_nonce: descriptor.launch_nonce.clone(),
+            wrapper,
+        }),
+        Some(TerminalEvidence::Exited(_)) => ReadinessDecision::Invalid(ReadinessFailure::Conflict),
+        None => ReadinessDecision::Pending,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
