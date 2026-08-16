@@ -6,6 +6,7 @@ pub mod experiment;
 pub mod games;
 pub mod launch;
 pub mod log;
+pub mod orchestration;
 pub mod tournament;
 
 #[cfg(feature = "duckdb")]
