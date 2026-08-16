@@ -803,6 +803,16 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
     let seed = seed.unwrap_or(0);
 
+    if rounds == 0 {
+        let _ = make_candidate::<G>(&trial, seed, use_transpositions, &candidate_budget)?;
+        return Ok(TuneEvalOutcome {
+            cost: 0.0,
+            wins: 0,
+            losses: 0,
+            draws: 0,
+        });
+    }
+
     let mut tracer = trace_path
         .map(trace::MoveTracer::open)
         .transpose()
@@ -1337,6 +1347,28 @@ mod tests {
             &mut |_| Ok(()),
         )
         .expect_err("missing `rave` must be rejected");
+        assert!(err.message.contains("rave"));
+    }
+
+    #[test]
+    fn zero_round_internal_validation_builds_candidate_without_playing() {
+        let mut params = rave_params();
+        params.as_object_mut().unwrap().remove("rave");
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            0,
+            Some(0),
+            false,
+            SearchBudget {
+                max_iterations: Some(1),
+                ..Default::default()
+            },
+            baseline,
+            <Nim as Game>::S::default(),
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect_err("zero-round validation must reach the strategy builder");
         assert!(err.message.contains("rave"));
     }
 

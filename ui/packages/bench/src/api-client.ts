@@ -74,7 +74,7 @@ export interface BenchApiClient {
    * /api/bench/runs/{run_id}/chain`) -- a one-element list containing just
    * `runId` for a plain (non-laddered) run. */
   getRunChain(runId: string): Promise<ChainRung[]>;
-  getRunGames(runId: string, limit?: number): Promise<GameTraceSummary[]>;
+  getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
   getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]>;
   deleteRun(runId: string): Promise<void>;
 }
@@ -223,8 +223,8 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getRunChain(runId: string): Promise<ChainRung[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/chain`));
     },
-    async getRunGames(runId: string, limit?: number): Promise<GameTraceSummary[]> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit })}`));
+    async getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit, cell_id: cellId })}`));
     },
     async getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games/${gameSeq}/moves`));
@@ -264,7 +264,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
-    getRunGames: (runId: string, limit?: number) => lift(() => api.getRunGames(runId, limit)),
+    getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),
     getRunGameMoves: (runId: string, gameSeq: number) => lift(() => api.getRunGameMoves(runId, gameSeq)),
     deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),
   };

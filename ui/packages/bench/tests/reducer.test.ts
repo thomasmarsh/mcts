@@ -24,6 +24,7 @@ import {
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
 import type { ChainRung, Experiment, ExperimentCell, LaunchResponse, LeaderboardEntry, Project, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
+import { deriveSeed, expandExperimentSpec } from "../src/experiment-grid.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,27 @@ const smac3TerminalDetail = makeDetail({
   status: "completed",
   ended_at: "2026-01-01T01:00:00Z",
   exit_code: 0,
+});
+
+describe("experiment grid expansion", () => {
+  it("matches the deterministic 2-game by 2-budget by 3-variant acceptance shape", () => {
+    const plan = expandExperimentSpec({
+      version: 1,
+      games: [{ game: "game-a", game_config: null }, { game: "game-b", game_config: null }],
+      baseline: { id: "base", label: "Base", config: {} },
+      variants: [{ id: "v1", label: "V1", config: {} }, { id: "v2", label: "V2", config: {} }, { id: "v3", label: "V3", config: {} }],
+      budgets: [{ kind: "iterations", value: 10 }, { kind: "time_per_move_ms", value: 20 }],
+      rounds_per_cell: 2, base_seed: 42, max_parallel_cells: 2,
+    });
+    expect(plan.cells).toHaveLength(12);
+    expect(plan.total_planned_games).toBe(48);
+    expect(plan.cells.slice(0, 3).map((cell) => [cell.cell_id, cell.game, cell.budget.kind, cell.variant_id])).toEqual([
+      ["cell-000001", "game-a", "iterations", "v1"], ["cell-000002", "game-a", "iterations", "v2"], ["cell-000003", "game-a", "iterations", "v3"],
+    ]);
+    expect(plan.cells[0]?.cell_seed).toBe(7294331206661666);
+    expect(plan.cells[0]?.round_seeds).toEqual([8360105604253074, 5482876856761435]);
+    expect(deriveSeed(42, 1)).toBe(6529064058449557);
+  });
 });
 
 const mockEnv: BenchEnv = {
@@ -173,7 +195,7 @@ describe("benchReducer / persisted experiments", () => {
     spec: emptyExperimentSpec(), created_at: project.created_at, updated_at: project.updated_at,
   };
   const cell: ExperimentCell = {
-    cell_id: "cell-1", game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
+    cell_id: "cell-1", cell_seed: 7294331206661666, game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
     candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {},
     budget: { kind: "iterations", value: 1 }, rounds: 1, planned_games: 2, completed_games: 1,
     status: "running", started_at: project.created_at, ended_at: null, error: null,

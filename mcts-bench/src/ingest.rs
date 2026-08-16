@@ -126,11 +126,40 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                 // observed the exit yet). Whichever path reaches a given
                 // run first wins; the other becomes a no-op, matching
                 // `reconcile_liveness`'s identical guard below.
-                conn.execute(
-                    "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = 'completed' \
-                     WHERE run_id = ?3 AND status = 'running'",
-                    params![ended_at, exit_code, run_id],
-                )?;
+                let kind: Option<String> = conn
+                    .query_row(
+                        "SELECT kind FROM runs WHERE run_id = ?1",
+                        params![&run_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                if kind.as_deref() == Some("experiment") {
+                    if exit_code != Some(0) {
+                        mark_experiment_crashed(conn, &run_id, &ended_at, "coordinator exited")?;
+                    } else {
+                        let failed: i64 = conn.query_row(
+                            "SELECT COUNT(*) FROM experiment_cells WHERE run_id = ?1 AND status = 'failed'",
+                            params![&run_id],
+                            |row| row.get(0),
+                        )?;
+                        let status = if failed > 0 {
+                            "completed_with_errors"
+                        } else {
+                            "completed"
+                        };
+                        conn.execute(
+                            "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = ?3 \
+                             WHERE run_id = ?4 AND status = 'running'",
+                            params![ended_at, exit_code, status, run_id],
+                        )?;
+                    }
+                } else {
+                    conn.execute(
+                        "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = 'completed' \
+                         WHERE run_id = ?3 AND status = 'running'",
+                        params![ended_at, exit_code, run_id],
+                    )?;
+                }
             }
         }
     }
@@ -253,7 +282,7 @@ fn process_one_log_file(
                     });
                 }
                 conn.execute(
-                    "UPDATE experiment_cells SET status = 'running', started_at = COALESCE(started_at, ?1) WHERE run_id = ?2 AND cell_id = ?3",
+                    "UPDATE experiment_cells SET status = 'running', started_at = COALESCE(started_at, ?1) WHERE run_id = ?2 AND cell_id = ?3 AND status = 'pending'",
                     params![iso_timestamp(), run_id, cell_id],
                 )?;
             }
@@ -263,7 +292,7 @@ fn process_one_log_file(
             } => {
                 ensure_cell_belongs(conn, run_id, &cell_id)?;
                 conn.execute(
-                    "UPDATE experiment_cells SET status = 'completed', completed_games = ?1, ended_at = ?2 WHERE run_id = ?3 AND cell_id = ?4",
+                    "UPDATE experiment_cells SET status = 'completed', completed_games = ?1, ended_at = ?2 WHERE run_id = ?3 AND cell_id = ?4 AND status IN ('pending', 'running')",
                     params![completed_games, iso_timestamp(), run_id, cell_id],
                 )?;
             }
@@ -274,11 +303,11 @@ fn process_one_log_file(
             } => {
                 ensure_cell_belongs(conn, run_id, &cell_id)?;
                 conn.execute(
-                    "UPDATE experiment_cells SET status = 'failed', completed_games = ?1, error = ?2, ended_at = ?3 WHERE run_id = ?4 AND cell_id = ?5",
+                    "UPDATE experiment_cells SET status = 'failed', completed_games = ?1, error = ?2, ended_at = ?3 WHERE run_id = ?4 AND cell_id = ?5 AND status IN ('pending', 'running')",
                     params![completed_games, error, iso_timestamp(), run_id, cell_id],
                 )?;
                 conn.execute(
-                    "UPDATE runs SET status = 'crashed', ended_at = ?1 WHERE run_id = ?2 AND status IN ('running', 'completed')",
+                    "UPDATE runs SET status = 'completed_with_errors', ended_at = ?1 WHERE kind = 'experiment' AND run_id = ?2 AND status IN ('running', 'completed')",
                     params![iso_timestamp(), run_id],
                 )?;
             }
@@ -381,6 +410,27 @@ fn ensure_cell_belongs(conn: &Connection, run_id: &str, cell_id: &str) -> Result
     Ok(())
 }
 
+fn mark_experiment_crashed(
+    conn: &Connection,
+    run_id: &str,
+    ended_at: &str,
+    error: &str,
+) -> Result<(), IngestError> {
+    conn.execute(
+        "UPDATE experiment_cells SET status = 'failed', error = COALESCE(error, ?1), ended_at = COALESCE(ended_at, ?2) WHERE run_id = ?3 AND status = 'running'",
+        params![error, ended_at, run_id],
+    )?;
+    conn.execute(
+        "UPDATE experiment_cells SET status = 'cancelled', error = COALESCE(error, ?1), ended_at = COALESCE(ended_at, ?2) WHERE run_id = ?3 AND status = 'pending'",
+        params![error, ended_at, run_id],
+    )?;
+    conn.execute(
+        "UPDATE runs SET ended_at = ?1, status = 'crashed' WHERE run_id = ?2 AND status IN ('running', 'completed')",
+        params![ended_at, run_id],
+    )?;
+    Ok(())
+}
+
 fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
     let mut stmt =
         conn.prepare("SELECT run_id, pid FROM runs WHERE status = 'running' AND pid IS NOT NULL")?;
@@ -394,11 +444,22 @@ fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
     for (run_id, pid) in &maybe_dead {
         if !is_alive(*pid as u32) {
             let ended_at = iso_timestamp();
-            conn.execute(
-                "UPDATE runs SET ended_at = ?1, status = 'crashed' \
-                 WHERE run_id = ?2 AND status = 'running'",
-                params![ended_at, run_id],
-            )?;
+            let kind: Option<String> = conn
+                .query_row(
+                    "SELECT kind FROM runs WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            if kind.as_deref() == Some("experiment") {
+                mark_experiment_crashed(conn, run_id, &ended_at, "coordinator disappeared")?;
+            } else {
+                conn.execute(
+                    "UPDATE runs SET ended_at = ?1, status = 'crashed' \
+                     WHERE run_id = ?2 AND status = 'running'",
+                    params![ended_at, run_id],
+                )?;
+            }
         }
     }
 
@@ -447,6 +508,7 @@ fn hostname() -> String {
 mod tests {
     use super::*;
     use crate::schema::ensure_schema;
+    use std::io::Write;
 
     static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -1480,6 +1542,131 @@ mod tests {
             )
             .unwrap(),
             "failed"
+        );
+    }
+
+    #[test]
+    fn experiment_stop_then_late_failure_upgrades_completed_status() {
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_late_failure_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("late-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(&log_path, "").unwrap();
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n",
+                start_event(
+                    "late-run",
+                    "experiment",
+                    "nim",
+                    std::process::id(),
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        process_registry(&db, &bench_runs.join("registry.log")).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('late-run', 'cell-000001', 'nim', '{}', 'v', 'V', '{}', 'b', 'B', '{}', '{}', 1, 2)", []).unwrap();
+        fs::write(
+            &log_path,
+            format!(
+                "{}\n",
+                LogRecord::CellFailed {
+                    cell_id: "cell-000001".into(),
+                    completed_games: 1,
+                    error: "late child failure".into()
+                }
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        let mut registry = fs::OpenOptions::new()
+            .append(true)
+            .open(bench_runs.join("registry.log"))
+            .unwrap();
+        writeln!(
+            registry,
+            "{}",
+            stop_event("late-run", Some(0)).to_json_line()
+        )
+        .unwrap();
+        ingest_once(&db, &bench_runs).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'late-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed_with_errors"
+        );
+    }
+
+    #[test]
+    fn nonzero_experiment_exit_cleans_running_and_pending_cells() {
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_crash_cleanup_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("crashed-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(&log_path, "").unwrap();
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n",
+                start_event(
+                    "crashed-run",
+                    "experiment",
+                    "nim",
+                    std::process::id(),
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        process_registry(&db, &bench_runs.join("registry.log")).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES ('crashed-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 1, 2, 'running'), ('crashed-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 1, 2, 'pending')", []).unwrap();
+        let mut registry = fs::OpenOptions::new()
+            .append(true)
+            .open(bench_runs.join("registry.log"))
+            .unwrap();
+        writeln!(
+            registry,
+            "{}",
+            stop_event("crashed-run", Some(1)).to_json_line()
+        )
+        .unwrap();
+        ingest_once(&db, &bench_runs).unwrap();
+        let statuses: Vec<String> = db
+            .prepare(
+                "SELECT status FROM experiment_cells WHERE run_id = 'crashed-run' ORDER BY cell_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(statuses, vec!["failed", "cancelled"]);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'crashed-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "crashed"
         );
     }
 }

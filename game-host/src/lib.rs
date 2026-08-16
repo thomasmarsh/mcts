@@ -243,6 +243,22 @@ pub struct TunerInfo {
     pub game_config: Value,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CompareValidationField {
+    pub field: String,
+    pub message: String,
+}
+
+/// Stable 53-bit SplitMix64-derived seed used by configured comparisons.
+/// Inputs are a seed and a zero-based ordinal; the result is safe to carry
+/// through JSON and JavaScript without losing integer precision.
+pub fn derive_seed(seed: u64, ordinal: u64) -> u64 {
+    let mut value = seed.wrapping_add(ordinal.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    (value ^ (value >> 31)) & 9_007_199_254_740_991
+}
+
 // ---------------------------------------------------------------------------
 // Opening-book metadata (Quasi-Best-First self-play)
 // ---------------------------------------------------------------------------
@@ -308,6 +324,75 @@ pub trait GameAdapter: Send + Sync {
     /// game, not a universal requirement.
     fn tuner(&self) -> Option<TunerInfo> {
         None
+    }
+
+    /// Validate one configured comparison without playing a game. Concrete
+    /// adapters retain ownership of game setup and strategy construction;
+    /// this default implementation exercises those same adapter paths with
+    /// zero evaluation rounds.
+    fn validate_compare(
+        &self,
+        candidate_config: Value,
+        baseline_config: Value,
+        game_config: Option<Value>,
+    ) -> Vec<CompareValidationField> {
+        let mut errors = Vec::new();
+        if self.tuner().is_none() {
+            errors.push(CompareValidationField {
+                field: "candidate_config".into(),
+                message: "game does not support configured strategy validation".into(),
+            });
+            return errors;
+        }
+        let setup = game_config.clone().unwrap_or_else(|| self.default_config());
+        if let Err(error) = self.new_state(setup) {
+            errors.push(CompareValidationField {
+                field: "game_config".into(),
+                message: error.message,
+            });
+        }
+        let baseline_name = self
+            .tuner()
+            .and_then(|info| info.baselines.first().cloned());
+        if !errors.iter().any(|error| error.field == "game_config") {
+            let mut sink = |_result: ConfiguredMatchResult| Ok(());
+            if let Err(error) = self.tune_eval(
+                candidate_config,
+                0,
+                Some(0),
+                baseline_name,
+                None,
+                game_config.clone(),
+                Some(1),
+                None,
+                None,
+                &mut sink,
+            ) {
+                errors.push(CompareValidationField {
+                    field: "candidate_config".into(),
+                    message: error.message,
+                });
+            }
+            let mut sink = |_result: ConfiguredMatchResult| Ok(());
+            if let Err(error) = self.tune_eval(
+                baseline_config.clone(),
+                0,
+                Some(0),
+                None,
+                Some(baseline_config),
+                game_config,
+                Some(1),
+                None,
+                None,
+                &mut sink,
+            ) {
+                errors.push(CompareValidationField {
+                    field: "baseline_config".into(),
+                    message: error.message,
+                });
+            }
+        }
+        errors
     }
 
     /// Play `rounds` games of a `params`-built candidate strategy against an
@@ -555,6 +640,7 @@ where
                     1
                 }
             },
+            Some("validate") => run_compare_validate(args, &mut writer, &adapter),
             Some("eval") => run_compare_eval(args, &mut writer, &adapter),
             _ => {
                 run_host(reader, writer, adapter);
@@ -627,6 +713,9 @@ where
     let result = (|| -> Result<Value, HostError> {
         let config = config.ok_or_else(|| HostError::bad_request("missing --config"))?;
         let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
+        if rounds == 0 {
+            return Err(HostError::bad_request("--rounds must be positive"));
+        }
         let params: Value = serde_json::from_str(&config)
             .map_err(|e| HostError::bad_request(format!("invalid --config JSON: {e}")))?;
         if baseline.is_some() && baseline_config.is_some() {
@@ -670,6 +759,73 @@ where
         }
         Err(e) => {
             eprintln!("{e}");
+            1
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CompareValidationResponse {
+    valid: bool,
+    errors: Vec<CompareValidationField>,
+}
+
+fn run_compare_validate<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
+where
+    I: Iterator<Item = String>,
+    W: Write,
+    A: GameAdapter,
+{
+    let mut candidate_config: Option<String> = None;
+    let mut baseline_config: Option<String> = None;
+    let mut game_config: Option<String> = None;
+    let result = (|| -> Result<CompareValidationResponse, HostError> {
+        let mut args = args;
+        while let Some(flag) = args.next() {
+            let value = |name: &str, args: &mut I| {
+                args.next()
+                    .ok_or_else(|| HostError::bad_request(format!("missing value for {name}")))
+            };
+            match flag.as_str() {
+                "--candidate-config" => candidate_config = Some(value(&flag, &mut args)?),
+                "--baseline-config" => baseline_config = Some(value(&flag, &mut args)?),
+                "--game-config" => game_config = Some(value(&flag, &mut args)?),
+                _ => return Err(HostError::bad_request(format!("unknown flag: {flag}"))),
+            }
+        }
+        let candidate_config = serde_json::from_str(
+            &candidate_config
+                .ok_or_else(|| HostError::bad_request("missing --candidate-config"))?,
+        )
+        .map_err(|e| HostError::bad_request(format!("invalid --candidate-config JSON: {e}")))?;
+        let baseline_config = serde_json::from_str(
+            &baseline_config.ok_or_else(|| HostError::bad_request("missing --baseline-config"))?,
+        )
+        .map_err(|e| HostError::bad_request(format!("invalid --baseline-config JSON: {e}")))?;
+        let game_config = game_config
+            .map(|raw| {
+                serde_json::from_str(&raw)
+                    .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
+            })
+            .transpose()?;
+        let errors = adapter.validate_compare(candidate_config, baseline_config, game_config);
+        Ok(CompareValidationResponse {
+            valid: errors.is_empty(),
+            errors,
+        })
+    })();
+    match result {
+        Ok(response) => {
+            let json = serde_json::to_string(&response).expect("validation response serializes");
+            let _ = writeln!(writer, "{json}");
+            if response.valid {
+                0
+            } else {
+                1
+            }
+        }
+        Err(error) => {
+            eprintln!("{error}");
             1
         }
     }
@@ -768,38 +924,52 @@ where
             })
             .transpose()?;
 
-        let mut on_game = |record: ConfiguredMatchResult| -> Result<(), HostError> {
-            let json = serde_json::to_string(&record).map_err(|e| {
-                HostError::internal(format!("failed to serialize match result: {e}"))
-            })?;
-            writeln!(writer, "{json}")
-                .and_then(|_| writer.flush())
-                .map_err(|e| HostError::internal(format!("failed to write match result: {e}")))
-        };
-        let value = adapter.tune_eval(
-            candidate_config,
-            rounds,
-            Some(seed),
-            None,
-            Some(baseline_config),
-            game_config,
-            max_iterations,
-            max_time_ms,
-            trace_path.map(std::path::PathBuf::from),
-            &mut on_game,
-        )?;
-        let wins = value["wins"]
-            .as_u64()
-            .ok_or_else(|| HostError::internal("configured comparison returned invalid wins"))?
-            as u32;
-        let losses = value["losses"]
-            .as_u64()
-            .ok_or_else(|| HostError::internal("configured comparison returned invalid losses"))?
-            as u32;
-        let draws = value["draws"]
-            .as_u64()
-            .ok_or_else(|| HostError::internal("configured comparison returned invalid draws"))?
-            as u32;
+        let mut sequence = 0_u64;
+        let (mut wins, mut losses, mut draws) = (0_u32, 0_u32, 0_u32);
+        for round_index in 0..rounds {
+            let round = round_index + 1;
+            let round_seed = derive_seed(seed, u64::from(round_index));
+            let candidate_config = candidate_config.clone();
+            let baseline_config = baseline_config.clone();
+            let game_config = game_config.clone();
+            let trace_path = trace_path.clone();
+            let mut on_game = |mut record: ConfiguredMatchResult| -> Result<(), HostError> {
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or_else(|| HostError::internal("comparison sequence overflow"))?;
+                record.seq = sequence;
+                record.round = round;
+                record.seed = round_seed;
+                let json = serde_json::to_string(&record).map_err(|e| {
+                    HostError::internal(format!("failed to serialize match result: {e}"))
+                })?;
+                writeln!(writer, "{json}")
+                    .and_then(|_| writer.flush())
+                    .map_err(|e| HostError::internal(format!("failed to write match result: {e}")))
+            };
+            let value = adapter.tune_eval(
+                candidate_config,
+                1,
+                Some(round_seed),
+                None,
+                Some(baseline_config),
+                game_config,
+                max_iterations,
+                max_time_ms,
+                trace_path.map(std::path::PathBuf::from),
+                &mut on_game,
+            )?;
+            wins =
+                wins.saturating_add(value["wins"].as_u64().ok_or_else(|| {
+                    HostError::internal("configured comparison returned invalid wins")
+                })? as u32);
+            losses = losses.saturating_add(value["losses"].as_u64().ok_or_else(|| {
+                HostError::internal("configured comparison returned invalid losses")
+            })? as u32);
+            draws = draws.saturating_add(value["draws"].as_u64().ok_or_else(|| {
+                HostError::internal("configured comparison returned invalid draws")
+            })? as u32);
+        }
         let summary = ConfiguredComparisonSummary {
             record_type: "configured_comparison_summary".into(),
             games: wins.saturating_add(losses).saturating_add(draws),
@@ -1634,6 +1804,74 @@ mod tests {
         assert_eq!(lines[2]["games"], 2);
         assert_eq!(lines[2]["wins"], 1);
         assert_eq!(lines[2]["losses"], 1);
+    }
+
+    #[test]
+    fn compare_eval_uses_stable_round_seeds_and_run_sequences() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "compare",
+                "eval",
+                "--candidate-config",
+                "{}",
+                "--baseline-config",
+                "{}",
+                "--rounds",
+                "2",
+                "--seed",
+                "42",
+                "--max-iterations",
+                "1",
+            ],
+            "",
+        );
+        assert_eq!(code, 0);
+        let lines: Vec<Value> = out
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 5);
+        for (index, line) in lines[..4].iter().enumerate() {
+            assert_eq!(line["seq"], (index + 1) as u64);
+            assert_eq!(line["round"], (index / 2 + 1) as u64);
+            assert_eq!(line["seed"], derive_seed(42, (index / 2) as u64));
+            assert_eq!(line["seed"], lines[index ^ 1]["seed"]);
+        }
+        assert_eq!(lines[0]["seed"], derive_seed(42, 0));
+        assert_ne!(lines[0]["seed"], lines[2]["seed"]);
+        assert_eq!(lines[4]["games"], 4);
+    }
+
+    #[test]
+    fn compare_validate_returns_structured_success_without_matches() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "compare",
+                "validate",
+                "--candidate-config",
+                "{}",
+                "--baseline-config",
+                "{}",
+            ],
+            "",
+        );
+        assert_eq!(code, 0);
+        let response: Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(response["valid"], true);
+        assert_eq!(response["errors"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn tune_eval_rejects_zero_rounds_before_calling_adapter() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &["tune", "eval", "--config", "{}", "--rounds", "0"],
+            "",
+        );
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
     }
 
     #[test]

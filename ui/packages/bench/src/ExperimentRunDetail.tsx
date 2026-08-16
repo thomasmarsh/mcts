@@ -22,6 +22,10 @@ export const ExperimentRunDetail: Component<{ store: Store<BenchState, BenchActi
   const open = () => state().openRun;
   const selected = () => open()?.cells.find((cell) => cell.cell_id === state().selectedCellId) ?? open()?.cells[0];
   const selectedGames = () => open()?.games.filter((game) => game.cell_id === selected()?.cell_id) ?? [];
+  const totalCompleted = () => (open()?.cells ?? []).reduce((sum, cell) => sum + cell.completed_games, 0);
+  const totalPlanned = () => (open()?.cells ?? []).reduce((sum, cell) => sum + cell.planned_games, 0);
+  const statusCount = (status: string) => (open()?.cells ?? []).filter((cell) => cell.status === status).length;
+  const budgetLabel = (cell: ExperimentCell) => cell.budget.kind === "iterations" ? `${cell.budget.value} iterations` : `${cell.budget.value} ms/move`;
 
   return <Show when={open()?.detail} fallback={<section class="projects-state"><span class="projects-state-title">No experiment run selected</span><span>Open a run from history to inspect its progress and source games.</span></section>}>
     <section class="projects-run-view">
@@ -29,10 +33,11 @@ export const ExperimentRunDetail: Component<{ store: Store<BenchState, BenchActi
         <div><p class="projects-eyebrow">Experiment run</p><h1>{open()?.detail?.label ?? "Experiment run"}</h1><code class="projects-run-id">{open()?.detail?.run_id}</code></div>
         <StatusBadge status={open()?.detail?.status ?? "pending"} />
       </header>
+      <section class="projects-panel projects-result-metrics" aria-label="Run summary"><span><strong>{totalCompleted()} / {totalPlanned()}</strong><small>completed games</small></span><span><strong>{statusCount("pending")}</strong><small>pending cells</small></span><span><strong>{statusCount("running")}</strong><small>running cells</small></span><span><strong>{statusCount("completed")}</strong><small>completed cells</small></span><span><strong>{statusCount("failed") + statusCount("cancelled")}</strong><small>failed/cancelled</small></span></section>
 
-      <Show when={selected()} fallback={<section class="projects-panel projects-state"><span class="projects-state-title">Waiting for cell results</span><span>The run has not reported its one-cell result yet.</span></section>}>
+        <Show when={selected()} fallback={<section class="projects-panel projects-state"><span class="projects-state-title">Waiting for cell results</span><span>The run has not reported a cell result yet.</span></section>}>
         <Show when={(open()?.cells.length ?? 0) > 1}>
-          <section class="projects-panel projects-cell-selector" aria-label="Run cells"><For each={open()?.cells ?? []}>{(cell) => <button type="button" classList={{ "projects-cell-selected": cell.cell_id === selected()?.cell_id }} onClick={() => dispatch({ tag: "openCell", cellId: cell.cell_id })}>{cell.variant_label} · {cell.completed_games}/{cell.planned_games}</button>}</For></section>
+          <section class="projects-panel projects-cell-selector" aria-label="Run cells"><For each={open()?.cells ?? []}>{(cell) => <button type="button" classList={{ "projects-cell-selected": cell.cell_id === selected()?.cell_id }} onClick={() => dispatch({ tag: "openCell", cellId: cell.cell_id })}><code>{cell.cell_id}</code><span>{cell.game} · {cell.variant_label} · {budgetLabel(cell)}</span><StatusBadge status={cell.status} /><span>{cell.completed_games}/{cell.planned_games} · {cell.wins}/{cell.losses}/{cell.draws}</span><Show when={cell.error}><small>{cell.error}</small></Show></button>}</For></section>
         </Show>
         <section class="projects-panel" aria-labelledby="result-heading">
           <div class="projects-panel-heading"><div><h2 id="result-heading">{selected()?.variant_label ?? "Variant"} versus {selected()?.baseline_label ?? "Baseline"}</h2><p>{selected()?.game} · started {formatTime(selected()?.started_at)}</p></div><StatusBadge status={selected()?.status ?? "pending"} /></div>

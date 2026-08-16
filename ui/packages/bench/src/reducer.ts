@@ -48,6 +48,7 @@ import {
   type ExperimentCell,
   type ExperimentSpecV1,
 } from "./types.js";
+import { expandExperimentSpec } from "./experiment-grid.js";
 
 /** Every network operation the bench reducer may perform, lifted to
  * `Effect` — hard rule (enforced by ui/eslint.config.js's fetch ban): no
@@ -90,7 +91,7 @@ export interface BenchEnv {
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first. */
   getRunChain(runId: string): Effect<ChainRung[]>;
-  getRunGames(runId: string, limit?: number): Effect<GameTraceSummary[]>;
+  getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
   getRunGameMoves(runId: string, gameSeq: number): Effect<GameMove[]>;
   deleteRun(runId: string): Effect<void>;
 }
@@ -183,13 +184,23 @@ export type BenchAction =
   | { tag: "experimentLoaded"; experiment: Experiment }
   | { tag: "experimentDraft"; draft: { name: string; description: string; spec: ExperimentSpecV1 } }
   | { tag: "experimentGameChanged"; game: string; gameConfig: unknown }
+  | { tag: "experimentGameAdded"; game?: string; gameConfig?: unknown }
+  | { tag: "experimentGameRemoved"; index: number }
+  | { tag: "experimentGameEdited"; index: number; game: string; gameConfig: unknown }
+  | { tag: "experimentVariantAdded" }
+  | { tag: "experimentVariantRemoved"; index: number }
+  | { tag: "experimentVariantEdited"; index: number; field: "id" | "label" | "config"; value: string | Record<string, unknown> }
+  | { tag: "experimentBudgetAdded" }
+  | { tag: "experimentBudgetRemoved"; index: number }
+  | { tag: "experimentBudgetEdited"; index: number; field: "kind" | "value"; value: string | number }
   | { tag: "saveExperiment" }
   | { tag: "experimentSaved"; experiment: Experiment }
   | { tag: "experimentFailed"; error: string }
   | { tag: "launchExperiment" }
   | { tag: "experimentLaunched"; response: LaunchResponse }
   | { tag: "experimentRunFailed"; error: string }
-  | { tag: "openCell"; cellId: string };
+  | { tag: "openCell"; cellId: string }
+  | { tag: "cellGamesLoaded"; cellId: string; games: GameTraceSummary[] };
 
 export type KindsAction =
   | { tag: "request" }
@@ -276,22 +287,30 @@ export function emptyExperimentSpec(game = "nim"): ExperimentSpecV1 {
 
 function validateExperimentSpec(spec: ExperimentSpecV1): string | null {
   const errors: string[] = [];
-  if (spec.games.length !== 1) errors.push("spec.games: must contain exactly one game");
-  if (spec.variants.length !== 1) errors.push("spec.variants: must contain exactly one variant");
-  if (spec.budgets.length !== 1) errors.push("spec.budgets: must contain exactly one budget");
+  if (spec.games.length === 0) errors.push("spec.games: must contain at least one game");
+  if (spec.variants.length === 0) errors.push("spec.variants: must contain at least one variant");
+  if (spec.budgets.length === 0) errors.push("spec.budgets: must contain at least one budget");
   if (!Number.isFinite(spec.rounds_per_cell) || spec.rounds_per_cell <= 0) errors.push("spec.rounds_per_cell: must be positive");
-  if (spec.max_parallel_cells !== 1) errors.push("spec.max_parallel_cells: must be 1 in the one-cell slice");
-  if (!spec.games[0]?.game.trim()) errors.push("spec.games[0].game: must not be empty");
+  if (!Number.isSafeInteger(spec.max_parallel_cells) || spec.max_parallel_cells <= 0) errors.push("spec.max_parallel_cells: must be positive");
+  if (!Number.isSafeInteger(spec.base_seed) || spec.base_seed < 0) errors.push("spec.base_seed: must be a non-negative safe integer");
+  spec.games.forEach((game, index) => { if (!game.game.trim()) errors.push(`spec.games[${index}].game: must not be empty`); });
   if (!spec.baseline.id.trim()) errors.push("spec.baseline.id: must not be empty");
   if (!spec.baseline.label.trim()) errors.push("spec.baseline.label: must not be empty");
-  if (!spec.variants[0]?.id.trim()) errors.push("spec.variants[0].id: must not be empty");
-  if (!spec.variants[0]?.label.trim()) errors.push("spec.variants[0].label: must not be empty");
-  if (spec.variants[0]?.id === spec.baseline.id) errors.push("spec.variants[0].id: must differ from baseline.id");
-  if (spec.variants[0]?.label === spec.baseline.label) errors.push("spec.variants[0].label: must differ from baseline.label");
+  const variantIds = new Set<string>();
+  const variantLabels = new Set<string>();
+  spec.variants.forEach((variant, index) => {
+    if (!variant.id.trim()) errors.push(`spec.variants[${index}].id: must not be empty`);
+    if (!variant.label.trim()) errors.push(`spec.variants[${index}].label: must not be empty`);
+    if (variant.id === spec.baseline.id) errors.push(`spec.variants[${index}].id: must differ from baseline.id`);
+    if (variant.label === spec.baseline.label) errors.push(`spec.variants[${index}].label: must differ from baseline.label`);
+    if (variantIds.has(variant.id)) errors.push(`spec.variants[${index}].id: duplicate variant id`);
+    if (variantLabels.has(variant.label)) errors.push(`spec.variants[${index}].label: duplicate variant label`);
+    variantIds.add(variant.id); variantLabels.add(variant.label);
+  });
   if (!spec.baseline.config || typeof spec.baseline.config !== "object" || Array.isArray(spec.baseline.config)) errors.push("spec.baseline.config: must be a JSON object");
-  if (!spec.variants[0]?.config || typeof spec.variants[0].config !== "object" || Array.isArray(spec.variants[0].config)) errors.push("spec.variants[0].config: must be a JSON object");
-  const budget = spec.budgets[0];
-  if (budget && (!Number.isFinite(budget.value) || budget.value <= 0)) errors.push("spec.budgets[0].value: must be positive");
+  const budgets = new Set<string>();
+  spec.budgets.forEach((budget, index) => { if (!Number.isSafeInteger(budget.value) || budget.value <= 0) errors.push(`spec.budgets[${index}].value: must be a positive safe integer`); const key = `${budget.kind}:${budget.value}`; if (budgets.has(key)) errors.push(`spec.budgets[${index}]: duplicate budget`); budgets.add(key); });
+  try { expandExperimentSpec(spec); } catch (error) { errors.push(`spec: ${String(error)}`); }
   return errors.length > 0 ? errors.join("; ") : null;
 }
 
@@ -367,7 +386,9 @@ export function benchReducer(
     draft.activeTab = "projects"; draft.selectedProjectId = action.projectId; draft.selectedExperimentId = null; draft.experimentDraft = null;
     draft.runFilters = { status: null, game: null, project_id: action.projectId, experiment_id: null };
     const project = draft.projects.result?.find((value) => value.project_id === action.projectId) ?? null; draft.selectedProject = project;
-    return Effect.merge(env.getProject(action.projectId).map((value): BenchAction => ({ tag: "projectCreated", project: value })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) })), env.listExperiments(action.projectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
+    const runsEffect = startRunsFetch(draft, env);
+    const effects = Effect.merge(env.getProject(action.projectId).map((value): BenchAction => ({ tag: "projectCreated", project: value })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) })), env.listExperiments(action.projectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
+    return runsEffect ? Effect.merge(effects, runsEffect) : effects;
   }
   if (action.tag === "experimentsLoaded") { draft.experiments = { ...draft.experiments, status: "done", result: action.experiments, error: null }; return null; }
   if (action.tag === "experimentsFailed") { draft.experiments = { ...draft.experiments, status: "error", result: null, error: action.error }; draft.experimentError = action.error; return null; }
@@ -405,6 +426,26 @@ export function benchReducer(
     draft.experimentFieldErrors = {};
     draft.experimentError = null;
     return null;
+  }
+  if (action.tag === "experimentGameAdded" || action.tag === "experimentGameRemoved" || action.tag === "experimentGameEdited" || action.tag === "experimentVariantAdded" || action.tag === "experimentVariantRemoved" || action.tag === "experimentVariantEdited" || action.tag === "experimentBudgetAdded" || action.tag === "experimentBudgetRemoved" || action.tag === "experimentBudgetEdited") {
+    if (!draft.experimentDraft) return null;
+    const spec = JSON.parse(JSON.stringify(draft.experimentDraft.spec)) as ExperimentSpecV1;
+    if (action.tag === "experimentGameAdded") spec.games.push({ game: action.game ?? spec.games.at(-1)?.game ?? "nim", game_config: action.gameConfig ?? spec.games.at(-1)?.game_config ?? null });
+    if (action.tag === "experimentGameRemoved" && spec.games.length > 1) spec.games.splice(action.index, 1);
+    if (action.tag === "experimentGameEdited" && spec.games[action.index]) { spec.games[action.index]!.game = action.game; spec.games[action.index]!.game_config = action.gameConfig; }
+    if (action.tag === "experimentVariantAdded") { let n = spec.variants.length + 1; while (spec.variants.some((variant) => variant.id === `variant-${n}` || variant.label === `Variant ${n}`)) n += 1; spec.variants.push({ id: `variant-${n}`, label: `Variant ${n}`, config: {} }); }
+    if (action.tag === "experimentVariantRemoved" && spec.variants.length > 1) spec.variants.splice(action.index, 1);
+    if (action.tag === "experimentVariantEdited" && spec.variants[action.index]) {
+      if (action.field === "config") spec.variants[action.index]!.config = action.value as Record<string, unknown>;
+      else spec.variants[action.index]![action.field] = action.value as string;
+    }
+    if (action.tag === "experimentBudgetAdded") spec.budgets.push({ kind: "iterations", value: 25 });
+    if (action.tag === "experimentBudgetRemoved" && spec.budgets.length > 1) spec.budgets.splice(action.index, 1);
+    if (action.tag === "experimentBudgetEdited" && spec.budgets[action.index]) {
+      if (action.field === "kind") spec.budgets[action.index] = { kind: action.value as "iterations" | "time_per_move_ms", value: spec.budgets[action.index]!.value };
+      else spec.budgets[action.index]!.value = action.value as number;
+    }
+    draft.experimentDraft = { ...draft.experimentDraft, spec }; draft.experimentFieldErrors = {}; draft.experimentError = null; return null;
   }
   if (action.tag === "saveExperiment") {
     const draftValue = draft.experimentDraft;
@@ -446,7 +487,15 @@ export function benchReducer(
     draft.experimentFieldErrors = parsed.fields;
     return null;
   }
-  if (action.tag === "openCell") { draft.selectedCellId = action.cellId; return null; }
+  if (action.tag === "openCell") {
+    draft.selectedCellId = action.cellId;
+    const runId = draft.openRun?.runId;
+    return runId ? env.getRunGames(runId, 5000, action.cellId).map((games): BenchAction => ({ tag: "cellGamesLoaded", cellId: action.cellId, games })) : null;
+  }
+  if (action.tag === "cellGamesLoaded") {
+    if (draft.selectedCellId === action.cellId && draft.openRun) draft.openRun.games = action.games;
+    return null;
+  }
   if (action.tag === "runs") {
     const ra = action.action;
     if (ra.tag === "request") return startRunsFetch(draft, env);
@@ -470,6 +519,7 @@ export function benchReducer(
 
   if (action.tag === "openRun") {
     draft.openGeneration += 1;
+    draft.selectedCellId = null;
     draft.openRun = {
       runId: action.runId,
       detail: null,
@@ -511,7 +561,7 @@ export function benchReducer(
         toPromise(env.getRunTrials(runId, 5000)),
         toPromise(env.getRunChain(runId)),
         toPromise(env.getRunCells(runId)),
-        toPromise(env.getRunGames(runId, 5000)),
+        toPromise(env.getRunGames(runId, 5000, draft.selectedCellId)),
       ]);
       // Refetched per rung every tick, same "just refetch the whole thing"
       // tradeoff `trials` above already makes rather than an incremental

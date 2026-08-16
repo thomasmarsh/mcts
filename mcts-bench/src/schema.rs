@@ -57,6 +57,7 @@ pub const CREATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS experiment_cells (
         run_id TEXT NOT NULL REFERENCES runs(run_id),
         cell_id TEXT NOT NULL,
+        cell_seed UBIGINT,
         game TEXT NOT NULL,
         game_config JSON NOT NULL,
         variant_id TEXT NOT NULL,
@@ -124,6 +125,7 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE match_results ADD COLUMN seed UBIGINT",
         "ALTER TABLE match_results ADD COLUMN trace_game_seq UBIGINT",
         "ALTER TABLE match_results ADD COLUMN metrics JSON",
+        "ALTER TABLE experiment_cells ADD COLUMN cell_seed UBIGINT",
     ] {
         let _ = conn.execute_batch(ddl);
     }
@@ -166,6 +168,14 @@ mod tests {
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }
+        let cell_seed: (String, bool) = conn
+            .query_row(
+                "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'experiment_cells' AND column_name = 'cell_seed'",
+                [],
+                |row| Ok((row.get(0)?, row.get::<_, String>(1)? == "YES")),
+            )
+            .unwrap();
+        assert_eq!(cell_seed, ("cell_seed".into(), true));
     }
 
     #[test]
@@ -225,5 +235,25 @@ mod tests {
         assert_eq!(row.3, None);
         assert_eq!(row.4, None);
         assert_eq!(row.5, None);
+    }
+
+    #[test]
+    fn migrates_legacy_experiment_cells_with_a_null_seed() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, game TEXT, git_sha TEXT NOT NULL, git_dirty BOOLEAN NOT NULL, host TEXT NOT NULL, started_at TIMESTAMP NOT NULL, status TEXT NOT NULL, log_path TEXT NOT NULL);
+             CREATE TABLE experiment_cells (run_id TEXT NOT NULL, cell_id TEXT NOT NULL, game TEXT NOT NULL, game_config JSON NOT NULL, variant_id TEXT NOT NULL, variant_label TEXT NOT NULL, candidate_config JSON NOT NULL, baseline_id TEXT NOT NULL, baseline_label TEXT NOT NULL, baseline_config JSON NOT NULL, budget JSON NOT NULL, rounds INTEGER NOT NULL, planned_games UBIGINT NOT NULL, completed_games UBIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY(run_id, cell_id));
+             INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('run', 'cell-000001', 'nim', '{}', 'v', 'V', '{}', 'b', 'B', '{}', '{}', 1, 2);",
+        )
+        .unwrap();
+        ensure_schema(&conn).unwrap();
+        let seed: Option<u64> = conn
+            .query_row(
+                "SELECT cell_seed FROM experiment_cells WHERE run_id = 'run'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(seed, None);
     }
 }

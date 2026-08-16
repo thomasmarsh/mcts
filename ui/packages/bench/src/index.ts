@@ -32,6 +32,7 @@ export type {
   ExperimentCell,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
+export { deriveSeed, expandExperimentSpec, cellFromResponse, JS_MAX_SAFE_INTEGER } from "./experiment-grid.js";
 
 export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, ChainedTrial } from "./state.js";
 export { initialBenchState } from "./state.js";

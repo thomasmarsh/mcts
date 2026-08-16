@@ -33,5 +33,13 @@ export const ProjectDetail: Component<{ store: Store<BenchState, BenchAction> }>
         </Show>
       </Show>
     </section>
+    <section class="projects-panel" aria-labelledby="recent-runs-heading">
+      <div class="projects-panel-heading"><div><h2 id="recent-runs-heading">Recent runs</h2><p>Project runs remain available while definitions evolve.</p></div></div>
+      <Show when={state().runs.status === "done"} fallback={<div class="projects-state">Loading recent runs…</div>}>
+        <Show when={(state().runs.result ?? []).length > 0} fallback={<div class="projects-state"><span class="projects-state-title">No runs yet</span><span>Launch a saved experiment to create the first project run.</span></div>}>
+          <div class="projects-run-list"><For each={state().runs.result ?? []}>{(run) => <button class="projects-run-row" type="button" onClick={() => dispatch({ tag: "openRun", runId: run.run_id })}><span class="projects-run-main"><strong>{run.label ?? "Bench run"}</strong><code>{run.run_id}</code></span><span class={`status-badge badge-${run.status}`}>{run.status.replaceAll("_", " ")}</span><span>{run.match_count} matches</span><time datetime={run.started_at}>{new Date(run.started_at).toLocaleString()}</time></button>}</For></div>
+        </Show>
+      </Show>
+    </section>
   </>;
 };

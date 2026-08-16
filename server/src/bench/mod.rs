@@ -46,7 +46,20 @@ use mcts_bench::StrategyInfo;
 pub struct BenchState {
     pub db: Mutex<duckdb::Connection>,
     pub bench_runs_dir: PathBuf,
+    pub experiment_validator: ExperimentValidator,
+    pub experiment_launcher: ExperimentLauncher,
 }
+
+pub type ExperimentValidator = Arc<
+    dyn Fn(&ExperimentSpecV1) -> Result<(), Vec<mcts_bench::experiment::ValidationField>>
+        + Send
+        + Sync,
+>;
+pub type ExperimentLauncher = Arc<
+    dyn Fn(String, Vec<String>, String, String, Option<String>) -> std::io::Result<LaunchedRun>
+        + Send
+        + Sync,
+>;
 
 // ---------------------------------------------------------------------------
 // Query parameter types
@@ -296,6 +309,7 @@ struct ExperimentResponse {
 #[derive(Serialize)]
 struct CellResponse {
     cell_id: String,
+    cell_seed: Option<u64>,
     game: String,
     game_config: Value,
     variant_id: String,
@@ -354,6 +368,44 @@ impl From<serde_json::Error> for BenchError {
         BenchError {
             status: StatusCode::BAD_REQUEST,
             message: format!("JSON error: {e}"),
+        }
+    }
+}
+
+enum ExperimentRouteError {
+    Bench(BenchError),
+    Validation(ValidationError),
+}
+
+impl From<BenchError> for ExperimentRouteError {
+    fn from(error: BenchError) -> Self {
+        Self::Bench(error)
+    }
+}
+
+impl From<duckdb::Error> for ExperimentRouteError {
+    fn from(error: duckdb::Error) -> Self {
+        Self::Bench(error.into())
+    }
+}
+
+impl From<std::io::Error> for ExperimentRouteError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Bench(error.into())
+    }
+}
+
+impl From<serde_json::Error> for ExperimentRouteError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Bench(error.into())
+    }
+}
+
+impl IntoResponse for ExperimentRouteError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::Bench(error) => error.into_response(),
+            Self::Validation(error) => error.into_response(),
         }
     }
 }
@@ -462,6 +514,84 @@ fn validate_name(path: &str, value: &str) -> Result<(), ValidationError> {
         })
     } else {
         Ok(())
+    }
+}
+
+pub fn validate_experiment_spec(
+    spec: &ExperimentSpecV1,
+) -> Result<(), Vec<mcts_bench::experiment::ValidationField>> {
+    spec.expand().map_err(|error| error.fields)?;
+    let mut fields = Vec::new();
+    for (game_index, game) in spec.games.iter().enumerate() {
+        let Some(binary) = mcts_bench::games::find_game_binary(&game.game) else {
+            fields.push(mcts_bench::experiment::ValidationField {
+                path: format!("spec.games[{game_index}].game"),
+                message: "not found".into(),
+            });
+            continue;
+        };
+        for (variant_index, variant) in spec.variants.iter().enumerate() {
+            let mut command = vec![
+                binary.to_string_lossy().into_owned(),
+                "compare".into(),
+                "validate".into(),
+                "--candidate-config".into(),
+                variant.config.to_string(),
+                "--baseline-config".into(),
+                spec.baseline.config.to_string(),
+            ];
+            if !game.game_config.is_null() {
+                command.extend(["--game-config".into(), game.game_config.to_string()]);
+            }
+            let output = match std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .output()
+            {
+                Ok(output) => output,
+                Err(error) => {
+                    fields.push(mcts_bench::experiment::ValidationField {
+                        path: format!("spec.games[{game_index}].game"),
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let response = serde_json::from_slice::<Value>(&output.stdout).ok();
+            let errors = response
+                .as_ref()
+                .and_then(|value| value.get("errors"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if errors.is_empty() && !output.status.success() {
+                fields.push(mcts_bench::experiment::ValidationField {
+                    path: format!("spec.variants[{variant_index}].config"),
+                    message: "configured validation failed".into(),
+                });
+            }
+            for error in errors {
+                let field = error.get("field").and_then(Value::as_str).unwrap_or("");
+                let path = match field {
+                    "game_config" => format!("spec.games[{game_index}].game_config"),
+                    "candidate_config" => format!("spec.variants[{variant_index}].config"),
+                    "baseline_config" => "spec.baseline.config".into(),
+                    _ => format!("spec.variants[{variant_index}].config"),
+                };
+                fields.push(mcts_bench::experiment::ValidationField {
+                    path,
+                    message: error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("invalid configuration")
+                        .into(),
+                });
+            }
+        }
+    }
+    if fields.is_empty() {
+        Ok(())
+    } else {
+        Err(fields)
     }
 }
 
@@ -644,11 +774,7 @@ async fn create_experiment(
     Json(body): Json<ExperimentBody>,
 ) -> Result<(StatusCode, Json<ExperimentResponse>), ValidationError> {
     validate_name("name", &body.name)?;
-    body.spec
-        .validate_one_cell()
-        .map_err(|error| ValidationError {
-            fields: error.fields,
-        })?;
+    (state.experiment_validator)(&body.spec).map_err(|fields| ValidationError { fields })?;
     let db = state.db.lock().unwrap();
     let parent: i64 = db
         .query_row(
@@ -712,11 +838,7 @@ async fn update_experiment(
     Json(body): Json<ExperimentBody>,
 ) -> Result<Json<ExperimentResponse>, ValidationError> {
     validate_name("name", &body.name)?;
-    body.spec
-        .validate_one_cell()
-        .map_err(|error| ValidationError {
-            fields: error.fields,
-        })?;
+    (state.experiment_validator)(&body.spec).map_err(|fields| ValidationError { fields })?;
     let db = state.db.lock().unwrap();
     let project_id: String = db
         .query_row(
@@ -763,7 +885,7 @@ async fn launch_experiment(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(experiment_id): AxumPath<String>,
     Json(_body): Json<Value>,
-) -> Result<Json<LaunchResponse>, BenchError> {
+) -> Result<Json<LaunchResponse>, ExperimentRouteError> {
     let (project_id, name, spec): (String, String, ExperimentSpecV1) = {
         let db = state.db.lock().unwrap();
         let row = db.query_row(
@@ -780,50 +902,56 @@ async fn launch_experiment(
         let (project_id, name, spec_json) = match row {
             Ok(value) => value,
             Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(BenchError {
+                return Err(ExperimentRouteError::Bench(BenchError {
                     status: StatusCode::NOT_FOUND,
                     message: "experiment not found".into(),
-                })
+                }))
             }
             Err(error) => return Err(error.into()),
         };
-        let spec = serde_json::from_str(&spec_json).map_err(|error| BenchError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("invalid saved experiment spec: {error}"),
+        let spec = serde_json::from_str(&spec_json).map_err(|error| {
+            ExperimentRouteError::Bench(BenchError {
+                status: StatusCode::BAD_REQUEST,
+                message: format!("invalid saved experiment spec: {error}"),
+            })
         })?;
         (project_id, name, spec)
     };
-    let planned_games = spec.validate_one_cell().map_err(|error| BenchError {
-        status: StatusCode::BAD_REQUEST,
-        message: error.to_string(),
+    (state.experiment_validator)(&spec)
+        .map_err(|fields| ExperimentRouteError::Validation(ValidationError { fields }))?;
+    let plan = spec.expand().map_err(|error| {
+        ExperimentRouteError::Validation(ValidationError {
+            fields: error.fields,
+        })
     })?;
-    let run_id = launch::generate_run_id("experiment", &spec.games[0].game, crate::BUILD_INFO);
+    let run_game = (spec.games.len() == 1).then(|| spec.games[0].game.clone());
+    let run_game_segment = run_game.as_deref().unwrap_or("experiment-grid");
+    let run_id = launch::generate_run_id("experiment", run_game_segment, crate::BUILD_INFO);
     let run_dir = Path::new(launch::BENCH_RUNS_DIR).join(&run_id);
     let log_path = run_dir.join("log.jsonl");
-    let trace_path = run_dir.join("moves.jsonl");
-    let command =
-        mcts_bench::experiment::experiment_command(&spec, Some(&trace_path)).map_err(|error| {
-            BenchError {
-                status: StatusCode::BAD_REQUEST,
-                message: error.to_string(),
-            }
-        })?;
+    let command = build_experiment_command(&spec, &run_id).map_err(|error| {
+        ExperimentRouteError::Bench(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: error,
+        })
+    })?;
     let now = iso_timestamp_now();
     {
         let mut db = state.db.lock().unwrap();
         let transaction = db.transaction()?;
         let spec_json = serde_json::to_string(&spec).unwrap();
-        transaction.execute("INSERT INTO runs (run_id, kind, game, project_id, experiment_id, experiment_spec, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES (?1, 'experiment', ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, ?10, 'running', ?11)", duckdb::params![run_id, spec.games[0].game, project_id, experiment_id, spec_json, name, crate::BUILD_INFO.git_sha, crate::BUILD_INFO.git_dirty, hostname(), now, log_path.to_string_lossy().to_string()])?;
-        transaction.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, 'cell-1', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending')", duckdb::params![run_id, spec.games[0].game, spec.games[0].game_config.to_string(), spec.variants[0].id, spec.variants[0].label, spec.variants[0].config.to_string(), spec.baseline.id, spec.baseline.label, spec.baseline.config.to_string(), serde_json::to_string(&spec.budgets[0]).unwrap(), spec.rounds_per_cell, planned_games])?;
+        transaction.execute("INSERT INTO runs (run_id, kind, game, project_id, experiment_id, experiment_spec, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES (?1, 'experiment', ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, ?10, 'running', ?11)", duckdb::params![run_id, run_game, project_id, experiment_id, spec_json, name, crate::BUILD_INFO.git_sha, crate::BUILD_INFO.git_dirty, hostname(), now, log_path.to_string_lossy().to_string()])?;
+        for cell in &plan.cells {
+            transaction.execute("INSERT INTO experiment_cells (run_id, cell_id, cell_seed, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'pending')", duckdb::params![run_id, cell.cell_id, cell.cell_seed, cell.game, cell.game_config.to_string(), cell.variant_id, cell.variant_label, cell.candidate_config.to_string(), cell.baseline_id, cell.baseline_label, cell.baseline_config.to_string(), serde_json::to_string(&cell.budget).unwrap(), cell.rounds, cell.planned_games])?;
+        }
         transaction.commit()?;
     }
-    let launched = match launch::launch_with_run_id(
+    let launched = match (state.experiment_launcher)(
         run_id.clone(),
         command,
-        "experiment",
-        &spec.games[0].game,
-        Some(&name),
-        crate::BUILD_INFO,
+        "experiment".into(),
+        run_game_segment.into(),
+        Some(name.clone()),
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -833,11 +961,11 @@ async fn launch_experiment(
                 "UPDATE runs SET status = 'crashed', ended_at = ?1 WHERE run_id = ?2",
                 duckdb::params![now, run_id],
             );
-            let _ = db.execute("UPDATE experiment_cells SET status = 'failed', error = ?1, ended_at = ?2 WHERE run_id = ?3 AND cell_id = 'cell-1'", duckdb::params![error.to_string(), now, run_id]);
-            return Err(BenchError {
+            let _ = db.execute("UPDATE experiment_cells SET status = 'failed', error = ?1, ended_at = ?2 WHERE run_id = ?3", duckdb::params![error.to_string(), now, run_id]);
+            return Err(ExperimentRouteError::Bench(BenchError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: format!("failed to launch experiment: {error}"),
-            });
+            }));
         }
     };
     let db = state.db.lock().unwrap();
@@ -1363,10 +1491,8 @@ async fn get_run_trials(
 /// One game's summary within a run, as reported by `GET
 /// /api/bench/runs/{run_id}/games` -- one row per distinct `game_seq` in
 /// `game_moves`. `strategy_a`/`strategy_b`/`outcome`/`winner` come from a
-/// `LEFT JOIN` onto `match_results` (round-robin's own `seq` == a trace's
-/// `game_seq`, by construction -- see plan/spectator.md Session 2a); `None`
-/// for SMAC3 trial self-play, whose traces don't join onto `trials.trial_id`
-/// (see Session 2b's note on `MoveTracer::start_game`'s own `game_seq`).
+/// `LEFT JOIN` onto `match_results`; `None` when a trace has no matching
+/// persisted result.
 #[derive(Serialize)]
 pub struct GameSummary {
     pub game_seq: i64,
@@ -1386,6 +1512,7 @@ pub struct GameSummary {
 #[derive(Deserialize, Default)]
 pub struct GamesParams {
     pub limit: Option<i64>,
+    pub cell_id: Option<String>,
 }
 
 /// Optional game pin for the live trace stream. Without it the endpoint
@@ -1429,7 +1556,7 @@ async fn get_run_games(
                 m.strategy_a, m.strategy_b, m.outcome, m.winner \
          FROM game_moves g \
          LEFT JOIN match_results m ON m.run_id = g.run_id AND (m.trace_game_seq = g.game_seq OR (m.trace_game_seq IS NULL AND m.seq = g.game_seq)) \
-         WHERE g.run_id = ?1 \
+         WHERE g.run_id = ?1 AND (?2 IS NULL OR m.cell_id = ?2) \
          GROUP BY g.game_seq, m.seq, m.cell_id, m.seed, m.metrics, m.strategy_a, m.strategy_b, m.outcome, m.winner \
          ORDER BY g.game_seq DESC",
     );
@@ -1439,7 +1566,7 @@ async fn get_run_games(
 
     let mut stmt = db.prepare(&sql)?;
     let rows: Vec<GameSummary> = stmt
-        .query_map(duckdb::params![&run_id], |row| {
+        .query_map(duckdb::params![&run_id, params.cell_id.as_deref()], |row| {
             Ok(GameSummary {
                 game_seq: row.get(0)?,
                 match_seq: row.get(1)?,
@@ -1466,10 +1593,9 @@ async fn get_run_games(
 /// One traced ply, as reported by `GET
 /// /api/bench/runs/{run_id}/games/{game_seq}/moves` -- `state`/`mv` are the
 /// same wire-JSON shape `GameAdapter::ai_move` already produces for
-/// round-robin traces, so the UI's existing per-game renderer (Session 4)
-/// can draw them with no new code. SMAC3 traces store `state` as a
-/// `Display`-text JSON string instead (see plan/spectator.md Session 2b) --
-/// not renderer-ready, but still fine to tail as text.
+/// round-robin traces, so the UI's existing per-game renderer can draw them
+/// with no new code. SMAC3 traces store `state` as a `Display`-text JSON
+/// string instead -- not renderer-ready, but still fine to tail as text.
 #[derive(Serialize)]
 pub struct MoveRow {
     pub ply: i64,
@@ -1529,9 +1655,10 @@ async fn get_run_cells(
             message: "run not found".into(),
         });
     }
-    let mut stmt = db.prepare("SELECT cell_id, game, CAST(game_config AS TEXT), variant_id, variant_label, CAST(candidate_config AS TEXT), baseline_id, baseline_label, CAST(baseline_config AS TEXT), CAST(budget AS TEXT), rounds, planned_games, completed_games, status, CAST(started_at AS TEXT), CAST(ended_at AS TEXT), error FROM experiment_cells WHERE run_id = ?1 ORDER BY cell_id")?;
+    let mut stmt = db.prepare("SELECT cell_id, cell_seed, game, CAST(game_config AS TEXT), variant_id, variant_label, CAST(candidate_config AS TEXT), baseline_id, baseline_label, CAST(baseline_config AS TEXT), CAST(budget AS TEXT), rounds, planned_games, completed_games, status, CAST(started_at AS TEXT), CAST(ended_at AS TEXT), error FROM experiment_cells WHERE run_id = ?1 ORDER BY cell_id")?;
     let rows: Vec<(
         String,
+        Option<u64>,
         String,
         Value,
         String,
@@ -1553,21 +1680,22 @@ async fn get_run_cells(
             Ok((
                 row.get(0)?,
                 row.get(1)?,
-                serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(Value::Null),
-                row.get(3)?,
+                row.get(2)?,
+                serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Value::Null),
                 row.get(4)?,
-                serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or(Value::Null),
-                row.get(6)?,
+                row.get(5)?,
+                serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(Value::Null),
                 row.get(7)?,
-                serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or(Value::Null),
+                row.get(8)?,
                 serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or(Value::Null),
-                row.get(10)?,
+                serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or(Value::Null),
                 row.get(11)?,
                 row.get(12)?,
                 row.get(13)?,
                 row.get(14)?,
                 row.get(15)?,
                 row.get(16)?,
+                row.get(17)?,
             ))
         })?
         .filter_map(Result::ok)
@@ -1575,6 +1703,7 @@ async fn get_run_cells(
     let mut result = Vec::with_capacity(rows.len());
     for (
         cell_id,
+        cell_seed,
         game,
         game_config,
         variant_id,
@@ -1630,6 +1759,7 @@ async fn get_run_cells(
         };
         result.push(CellResponse {
             cell_id,
+            cell_seed,
             game,
             game_config,
             variant_id,
@@ -1677,8 +1807,8 @@ struct LiveMoveEvent {
 ///
 /// Polls `game_moves` every 750ms for plies newer than the last one sent,
 /// on whichever `game_seq` is currently the highest for this run (the
-/// "in-flight" game, per plan/spectator.md Session 3) -- a fresh game
-/// starting under the same run (next round-robin match / SMAC3 trial) is
+/// "in-flight" game -- a fresh game starting under the same run (next
+/// round-robin match / SMAC3 trial) is
 /// picked up automatically by the `MAX(game_seq)` jumping, no restart
 /// needed. Ends when the client disconnects (the spawned polling task's
 /// `tx.send` starts failing once the `Sse` response's stream is dropped).
@@ -1791,9 +1921,8 @@ async fn live_run_moves(
 /// Removes a run's rows from every table (`game_moves`, `incumbents`,
 /// `trials`, `match_results`, `runs`, in FK-safe child-before-parent order)
 /// plus its `_ingest_cursor` entries and its `bench-runs/<run_id>/`
-/// directory (`log.jsonl`/`moves.jsonl`/`stdout.log`) -- per
-/// plan/spectator.md's scope decision, this is the *only* deletion path
-/// (no automatic retention/pruning of traces). Refuses a still-`running`
+/// directory (`log.jsonl`/`moves.jsonl`/`stdout.log`). This is the only
+/// deletion path; there is no automatic retention/pruning of traces. Refuses a still-`running`
 /// run with 409 rather than deleting out from under a live process; stop it
 /// first.
 async fn delete_run(
@@ -2853,12 +2982,12 @@ struct StopOutcome {
 /// run that isn't `running` is left untouched -- the caller's
 /// `prior_status` tells it so.
 async fn stop_run_impl(state: &Arc<BenchState>, run_id: &str) -> Result<StopOutcome, BenchError> {
-    let (pid, status): (Option<i64>, String) = {
+    let (pid, status, kind): (Option<i64>, String, String) = {
         let db = state.db.lock().unwrap();
         match db.query_row(
-            "SELECT pid, status FROM runs WHERE run_id = ?1",
+            "SELECT pid, status, kind FROM runs WHERE run_id = ?1",
             duckdb::params![run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ) {
             Ok(row) => row,
             Err(duckdb::Error::QueryReturnedNoRows) => {
@@ -2918,11 +3047,19 @@ async fn stop_run_impl(state: &Arc<BenchState>, run_id: &str) -> Result<StopOutc
     // Update the database.
     let now = iso_timestamp_now();
     {
-        let db = state.db.lock().unwrap();
-        db.execute(
+        let mut db = state.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        transaction.execute(
             "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
             duckdb::params![&now, run_id],
         )?;
+        if kind == "experiment" {
+            transaction.execute(
+                "UPDATE experiment_cells SET status = 'cancelled', ended_at = ?1, error = COALESCE(error, 'run stopped') WHERE run_id = ?2 AND status IN ('pending', 'running')",
+                duckdb::params![&now, run_id],
+            )?;
+        }
+        transaction.commit()?;
     }
 
     // Append a stop event to the registry log so the ingest loop sees it
@@ -3171,6 +3308,23 @@ fn build_command(
     }
 }
 
+fn build_experiment_command(spec: &ExperimentSpecV1, run_id: &str) -> Result<Vec<String>, String> {
+    spec.expand().map_err(|error| error.to_string())?;
+    let spec_json = serde_json::to_string(spec).map_err(|error| error.to_string())?;
+    Ok(vec![
+        find_bench_binary().to_string_lossy().into_owned(),
+        "experiment".into(),
+        "--spec-json".into(),
+        spec_json,
+        "--trace-path".into(),
+        Path::new(launch::BENCH_RUNS_DIR)
+            .join(run_id)
+            .join("moves.jsonl")
+            .to_string_lossy()
+            .into_owned(),
+    ])
+}
+
 /// Find the `bench` binary, preferring a sibling of the current executable
 /// (standard Cargo convention for sibling bins), falling back to a bare
 /// `"bench"` on PATH.
@@ -3264,6 +3418,27 @@ mod tests {
     /// connection into the `BenchState`.  Returns the Router and the temp
     /// dir (kept alive for the test's duration).
     fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
+        seeded_app_with(
+            seed_fn,
+            Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+            Arc::new(|run_id, command, kind, game, label| {
+                launch::launch_with_run_id(
+                    run_id,
+                    command,
+                    &kind,
+                    &game,
+                    label.as_deref(),
+                    crate::BUILD_INFO,
+                )
+            }),
+        )
+    }
+
+    fn seeded_app_with(
+        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+        experiment_validator: ExperimentValidator,
+        experiment_launcher: ExperimentLauncher,
+    ) -> (Router, PathBuf) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_dir =
             std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -3280,6 +3455,8 @@ mod tests {
         let state = Arc::new(BenchState {
             db: Mutex::new(conn),
             bench_runs_dir,
+            experiment_validator,
+            experiment_launcher,
         });
 
         (bench_router(state), tmp_dir)
@@ -3754,6 +3931,25 @@ mod tests {
         assert_eq!(games[0]["strategy_a"], "strong");
         assert_eq!(games[0]["strategy_b"], "master");
         assert_eq!(games[0]["winner"], "strong");
+    }
+
+    #[tokio::test]
+    async fn test_get_run_games_filters_by_cell_without_leaking_other_cells() {
+        let app = seeded_app(|conn, _| {
+            conn.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('grid-games', 'experiment', NULL, 'test', false, 'test', '2026-01-01T00:00:00Z', 'running', '/tmp/grid.log')", []).unwrap();
+            for (seq, cell) in [(1, "cell-000001"), (2, "cell-000002")] {
+                conn.execute("INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner, cell_id) VALUES ('grid-games', ?1, '2026-01-01T00:00:01Z', 'candidate', 'baseline', 'win_a', 'candidate', ?2)", duckdb::params![seq, cell]).unwrap();
+                conn.execute("INSERT INTO game_moves (run_id, game_seq, ply, ts, state) VALUES ('grid-games', ?1, 0, '2026-01-01T00:00:01Z', '{}')", duckdb::params![seq]).unwrap();
+            }
+        }).0;
+        let (status, body) =
+            http_get(app, "/api/bench/runs/grid-games/games?cell_id=cell-000002").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        let games = body.as_array().unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0]["cell_id"], "cell-000002");
+        assert_eq!(games[0]["game_seq"], 2);
     }
 
     #[tokio::test]
@@ -4312,6 +4508,128 @@ mod tests {
             cmd[idx + 1],
             "bench-runs/rr-druid-20260101T000000-abcdef/moves.jsonl"
         );
+    }
+
+    #[test]
+    fn test_build_experiment_command_detaches_foreground_coordinator() {
+        let spec = ExperimentSpecV1 {
+            version: 1,
+            games: vec![mcts_bench::experiment::ExperimentGame {
+                game: "nim".into(),
+                game_config: Value::Null,
+            }],
+            baseline: mcts_bench::experiment::NamedStrategyConfig {
+                id: "baseline".into(),
+                label: "Baseline".into(),
+                config: json!({"family": "ucb1"}),
+            },
+            variants: vec![mcts_bench::experiment::NamedStrategyConfig {
+                id: "variant".into(),
+                label: "Variant".into(),
+                config: json!({"family": "rave"}),
+            }],
+            budgets: vec![mcts_bench::experiment::Budget::Iterations { value: 1 }],
+            rounds_per_cell: 1,
+            base_seed: 42,
+            max_parallel_cells: 1,
+        };
+        let cmd = build_experiment_command(&spec, "experiment-run").unwrap();
+        assert_eq!(cmd[0], find_bench_binary().to_string_lossy());
+        assert_eq!(
+            &cmd[1..],
+            &[
+                "experiment".to_string(),
+                "--spec-json".to_string(),
+                serde_json::to_string(&spec).unwrap(),
+                "--trace-path".to_string(),
+                "bench-runs/experiment-run/moves.jsonl".to_string(),
+            ]
+        );
+        assert_ne!(cmd[1], "game-nim");
+        assert!(serde_json::from_str::<ExperimentSpecV1>(&cmd[3]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_launch_experiment_materializes_full_grid_and_uses_coordinator() {
+        let spec = ExperimentSpecV1 {
+            version: 1,
+            games: vec![
+                mcts_bench::experiment::ExperimentGame {
+                    game: "game-a".into(),
+                    game_config: json!({"a": 1}),
+                },
+                mcts_bench::experiment::ExperimentGame {
+                    game: "game-b".into(),
+                    game_config: json!({"b": 2}),
+                },
+            ],
+            baseline: mcts_bench::experiment::NamedStrategyConfig {
+                id: "base".into(),
+                label: "Base".into(),
+                config: json!({"family": "ucb1"}),
+            },
+            variants: vec![
+                mcts_bench::experiment::NamedStrategyConfig {
+                    id: "v1".into(),
+                    label: "V1".into(),
+                    config: json!({"family": "rave"}),
+                },
+                mcts_bench::experiment::NamedStrategyConfig {
+                    id: "v2".into(),
+                    label: "V2".into(),
+                    config: json!({"family": "flat_mc"}),
+                },
+                mcts_bench::experiment::NamedStrategyConfig {
+                    id: "v3".into(),
+                    label: "V3".into(),
+                    config: json!({"family": "random"}),
+                },
+            ],
+            budgets: vec![
+                mcts_bench::experiment::Budget::Iterations { value: 10 },
+                mcts_bench::experiment::Budget::TimePerMoveMs { value: 20 },
+            ],
+            rounds_per_cell: 2,
+            base_seed: 42,
+            max_parallel_cells: 2,
+        };
+        let commands = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let captured = commands.clone();
+        let app = seeded_app_with(
+            |conn, _| {
+                conn.execute("INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-grid', 'Grid', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", []).unwrap();
+                conn.execute("INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-grid', 'p-grid', 'Grid experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", duckdb::params![serde_json::to_string(&spec).unwrap()]).unwrap();
+            },
+            Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+            Arc::new(move |run_id, command, _kind, _game, _label| {
+                captured.lock().unwrap().push(command);
+                Ok(LaunchedRun { run_id, pid: 123, log_path: PathBuf::from("bench-runs/fake/log.jsonl"), log_dir: PathBuf::from("bench-runs/fake") })
+            }),
+        ).0;
+        let (status, body) =
+            http_post_json(app.clone(), "/api/bench/experiments/e-grid/runs", json!({})).await;
+        assert_eq!(
+            status,
+            HttpStatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let run_id = body_json(&body)["run_id"].as_str().unwrap().to_string();
+        let (status, cells_body) = http_get(app, &format!("/api/bench/runs/{run_id}/cells")).await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let cells = body_json(&cells_body).as_array().unwrap().to_vec();
+        assert_eq!(cells.len(), 12);
+        assert_eq!(cells[0]["cell_id"], "cell-000001");
+        assert_eq!(cells[11]["cell_id"], "cell-000012");
+        assert!(cells
+            .iter()
+            .all(|cell| cell["planned_games"] == 4 && cell["cell_seed"].is_number()));
+        let captured = commands.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0][1], "experiment");
+        assert!(!captured[0]
+            .iter()
+            .any(|arg| arg == "game-game-a" || arg == "game-game-b"));
     }
 
     // -------------------------------------------------------------------

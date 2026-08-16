@@ -38,9 +38,9 @@ pub enum LogRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metrics: Option<serde_json::Value>,
     },
-    /// A one-cell experiment has begun execution.
+    /// An experiment cell has begun execution.
     CellStarted { cell_id: String },
-    /// A one-cell experiment completed successfully.
+    /// An experiment cell completed successfully.
     CellFinished {
         cell_id: String,
         completed_games: u64,

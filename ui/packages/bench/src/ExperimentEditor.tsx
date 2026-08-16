@@ -1,142 +1,70 @@
 import { createEffect, createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
+import { expandExperimentSpec } from "./experiment-grid.js";
 import type { ExperimentSpecV1 } from "./types.js";
 
-type JsonField = "gameConfig" | "baselineConfig" | "variantConfig";
-
+type JsonKey = string;
 const prettyJson = (value: unknown): string => JSON.stringify(value ?? null, null, 2);
-
 const friendlyStatus = (status: string): string => status.replaceAll("_", " ");
 
 export const ExperimentEditor: Component<{ store: Store<BenchState, BenchAction> }> = (props) => {
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
   const draft = createMemo(() => state().experimentDraft);
-  const [gameConfigText, setGameConfigText] = createSignal("");
-  const [baselineConfigText, setBaselineConfigText] = createSignal("");
-  const [variantConfigText, setVariantConfigText] = createSignal("");
-  const [jsonErrors, setJsonErrors] = createSignal<Partial<Record<JsonField, string>>>({});
-  let lastLoadedKey = "";
+  const [jsonText, setJsonText] = createSignal<Record<JsonKey, string>>({});
+  const [jsonErrors, setJsonErrors] = createSignal<Record<JsonKey, string>>({});
+  let loadedKey = "";
 
   createEffect(() => {
     const current = draft();
-    const spec = current?.spec;
-    const key = current ? `${state().selectedExperimentId ?? "new"}:draft` : "empty";
-    if (key === lastLoadedKey) return;
-    lastLoadedKey = key;
-    setGameConfigText(spec ? prettyJson(spec.games[0]?.game_config) : "");
-    setBaselineConfigText(spec ? prettyJson(spec.baseline.config) : "");
-    setVariantConfigText(spec ? prettyJson(spec.variants[0]?.config) : "");
-    setJsonErrors({});
+    const key = current ? `${state().selectedExperimentId ?? "new"}:${JSON.stringify(current.spec)}` : "empty";
+    if (key === loadedKey) return;
+    loadedKey = key;
+    const next: Record<string, string> = { baseline: current ? prettyJson(current.spec.baseline.config) : "" };
+    current?.spec.games.forEach((game, index) => { next[`game-${index}`] = prettyJson(game.game_config); });
+    current?.spec.variants.forEach((variant, index) => { next[`variant-${index}`] = prettyJson(variant.config); });
+    setJsonText(next); setJsonErrors({});
   });
 
   const update = (change: (spec: ExperimentSpecV1) => void) => {
-    const current = draft();
-    if (!current) return;
-    const spec = structuredClone(current.spec);
-    change(spec);
+    const current = draft(); if (!current) return;
+    const spec = structuredClone(current.spec); change(spec);
     dispatch({ tag: "experimentDraft", draft: { ...current, spec } });
   };
-
-  const updateText = (field: JsonField, text: string) => {
-    if (field === "gameConfig") setGameConfigText(text);
-    if (field === "baselineConfig") setBaselineConfigText(text);
-    if (field === "variantConfig") setVariantConfigText(text);
+  const editJson = (key: JsonKey, text: string, apply: (spec: ExperimentSpecV1, value: unknown) => void, objectOnly: boolean) => {
+    setJsonText((old) => ({ ...old, [key]: text }));
     try {
       const value: unknown = JSON.parse(text);
-      if ((field === "baselineConfig" || field === "variantConfig") && (!value || typeof value !== "object" || Array.isArray(value))) {
-        setJsonErrors((errors) => ({ ...errors, [field]: "Strategy configuration must be a JSON object." }));
-        return;
-      }
-      setJsonErrors((errors) => { const next = { ...errors }; delete next[field]; return next; });
-      update((spec) => {
-        if (field === "gameConfig") spec.games[0]!.game_config = value;
-        if (field === "baselineConfig") spec.baseline.config = value as Record<string, unknown>;
-        if (field === "variantConfig") spec.variants[0]!.config = value as Record<string, unknown>;
-      });
-    } catch {
-      setJsonErrors((errors) => ({ ...errors, [field]: "Enter valid JSON." }));
-    }
+      if (objectOnly && (!value || typeof value !== "object" || Array.isArray(value))) throw new Error("Strategy configuration must be a JSON object.");
+      setJsonErrors((old) => { const next = { ...old }; delete next[key]; return next; });
+      update((spec) => apply(spec, value));
+    } catch (error) { setJsonErrors((old) => ({ ...old, [key]: error instanceof SyntaxError ? "Enter valid JSON." : error instanceof Error ? error.message : "Enter valid JSON." })); }
   };
-
-  const gameOptions = createMemo(() => {
-    const options = [...(state().smac3Kinds.result ?? [])];
-    const current = draft()?.spec.games[0]?.game;
-    return current && !options.some((item) => item.game === current) ? [{ game: current, tuner: { id: "", baselines: [], eval_rounds: 0, parameters: [], conditions: [], game_config: draft()?.spec.games[0]?.game_config } }, ...options] : options;
-  });
-  const currentBudget = () => draft()?.spec.budgets[0] ?? { kind: "iterations" as const, value: 25 };
-  const dirty = () => {
-    const current = draft();
-    return current !== null && JSON.stringify(current) !== JSON.stringify(state().experimentSavedDraft);
-  };
-  const localJsonInvalid = () => Object.keys(jsonErrors()).length > 0;
-  const saveDisabled = () => state().experimentSaveStatus === "saving" || localJsonInvalid();
-  const launchDisabled = () => !state().selectedExperimentId || state().experimentSaveStatus === "saving" || state().experimentLaunchStatus === "launching" || dirty() || localJsonInvalid();
+  const gameOptions = createMemo(() => state().smac3Kinds.result ?? []);
+  const dirty = () => { const current = draft(); return current !== null && JSON.stringify(current) !== JSON.stringify(state().experimentSavedDraft); };
+  const localInvalid = () => Object.keys(jsonErrors()).length > 0;
   const fieldError = (path: string) => state().experimentFieldErrors[path];
-  const combinedError = (path: string, localField?: JsonField) => fieldError(path) ?? (localField ? jsonErrors()[localField] : undefined);
+  const errorFor = (path: string, key?: string) => fieldError(path) ?? (key ? jsonErrors()[key] : undefined);
+  const saveDisabled = () => state().experimentSaveStatus === "saving" || localInvalid();
+  const launchDisabled = () => !state().selectedExperimentId || state().experimentSaveStatus === "saving" || state().experimentLaunchStatus === "launching" || dirty() || localInvalid();
+  const preview = createMemo(() => { const current = draft(); return current ? expandExperimentSpec(current.spec) : null; });
+  const budgetSummary = (kind: string, value: number) => kind === "iterations" ? `${value} iterations` : `${value} ms per move`;
+  const nextGame = () => gameOptions().find((item) => !(draft()?.spec.games ?? []).some((game) => game.game === item.game));
 
   return <Show when={draft()} fallback={<div class="projects-state projects-state-error" role={state().experimentError ? "alert" : undefined}><span class="projects-state-title">{state().experimentError ? "Experiment could not be loaded" : "Select or create an experiment"}</span><span>{state().experimentError ?? "Return to the project to choose a saved definition."}</span></div>}>
     <form class="projects-editor" onSubmit={(event) => event.preventDefault()}>
-      <header class="projects-page-header projects-editor-header">
-        <div>
-          <button class="projects-back-link" type="button" onClick={() => dispatch({ tag: "openProject", projectId: state().selectedProjectId ?? "" })}><span aria-hidden="true">←</span> Project</button>
-          <p class="projects-eyebrow">{state().selectedExperimentId ? "Saved experiment" : "New experiment"}</p>
-          <h1>{draft()?.name || "Untitled experiment"}</h1>
-          <p class="projects-lede">Define one candidate-versus-baseline game cell, save it, and then launch an exact saved snapshot.</p>
-        </div>
-      </header>
+      <header class="projects-page-header projects-editor-header"><div><button class="projects-back-link" type="button" onClick={() => dispatch({ tag: "openProject", projectId: state().selectedProjectId ?? "" })}>← Project</button><p class="projects-eyebrow">{state().selectedExperimentId ? "Saved experiment" : "New experiment"}</p><h1>{draft()?.name || "Untitled experiment"}</h1><p class="projects-lede">Define a repeatable grid of candidate-versus-baseline cells and launch an exact saved snapshot.</p></div></header>
+      <section class="projects-panel" aria-labelledby="identity-heading"><div class="projects-panel-heading"><div><h2 id="identity-heading">Identity</h2><p>Name the experiment and record the question it is meant to answer.</p></div></div><div class="projects-form-grid projects-form-grid-two"><div class="projects-field"><label for="experiment-name">Experiment name</label><input id="experiment-name" value={draft()?.name} onInput={(e) => dispatch({ tag: "experimentDraft", draft: { ...draft()!, name: e.currentTarget.value } })} /> <Show when={fieldError("name")}><span class="projects-field-error">{fieldError("name")}</span></Show></div><div class="projects-field"><label for="experiment-description">Description <span class="projects-optional">Optional</span></label><textarea id="experiment-description" rows="2" value={draft()?.description} onInput={(e) => dispatch({ tag: "experimentDraft", draft: { ...draft()!, description: e.currentTarget.value } })} /></div></div></section>
 
-      <section class="projects-panel" aria-labelledby="identity-heading">
-        <div class="projects-panel-heading"><div><h2 id="identity-heading">Identity</h2><p>Name the experiment and record the question it is meant to answer.</p></div></div>
-        <div class="projects-form-grid projects-form-grid-two">
-          <div class="projects-field"><label for="experiment-name">Experiment name</label><input id="experiment-name" aria-invalid={Boolean(fieldError("name"))} aria-describedby={fieldError("name") ? "experiment-name-error" : undefined} value={draft()?.name} onInput={(e) => dispatch({ tag: "experimentDraft", draft: { ...draft()!, name: e.currentTarget.value } })} /> <Show when={fieldError("name")}><span id="experiment-name-error" class="projects-field-error">{fieldError("name")}</span></Show></div>
-          <div class="projects-field"><label for="experiment-description">Description <span class="projects-optional">Optional</span></label><textarea id="experiment-description" rows="2" value={draft()?.description} onInput={(e) => dispatch({ tag: "experimentDraft", draft: { ...draft()!, description: e.currentTarget.value } })} /></div>
-        </div>
-      </section>
+      <section class="projects-panel" aria-labelledby="game-heading"><div class="projects-panel-heading"><div><h2 id="game-heading">Games</h2><p>Every game is expanded against every budget and variant.</p></div><button class="projects-button projects-button-secondary" type="button" disabled={!nextGame()} onClick={() => { const item = nextGame(); if (item) dispatch({ tag: "experimentGameAdded", game: item.game, gameConfig: JSON.parse(JSON.stringify(item.tuner.game_config ?? null)) }); }}>Add game</button></div><For each={draft()?.spec.games ?? []}>{(game, index) => <fieldset class="projects-grid-item"><legend>Game {index() + 1}</legend><div class="projects-form-grid projects-form-grid-two"><div class="projects-field"><label for={`game-${index()}`}>Game</label><select id={`game-${index()}`} value={game.game} onChange={(e) => { const item = gameOptions().find((candidate) => candidate.game === e.currentTarget.value); const config = item?.tuner.game_config ?? null; dispatch({ tag: "experimentGameEdited", index: index(), game: e.currentTarget.value, gameConfig: JSON.parse(JSON.stringify(config)) }); }}><option value={game.game}>{game.game}</option><For each={gameOptions().filter((item) => item.game !== game.game && !(draft()?.spec.games ?? []).some((other, otherIndex) => otherIndex !== index() && other.game === item.game))}>{(item) => <option value={item.game}>{item.game}</option>}</For></select><Show when={fieldError(`spec.games[${index()}].game`)}><span class="projects-field-error">{fieldError(`spec.games[${index()}].game`)}</span></Show></div><div class="projects-field"><label for={`game-config-${index()}`}>Game configuration</label><textarea id={`game-config-${index()}`} class="projects-json-editor" rows="5" value={jsonText()[`game-${index()}`] ?? prettyJson(game.game_config)} onInput={(e) => editJson(`game-${index()}`, e.currentTarget.value, (spec, value) => { spec.games[index()]!.game_config = value; }, false)} /><Show when={errorFor(`spec.games[${index()}].game_config`, `game-${index()}`)}><span class="projects-field-error">{errorFor(`spec.games[${index()}].game_config`, `game-${index()}`)}</span></Show></div></div><button class="projects-button projects-button-secondary" type="button" disabled={(draft()?.spec.games.length ?? 0) <= 1} onClick={() => dispatch({ tag: "experimentGameRemoved", index: index() })}>Remove game</button></fieldset>}</For></section>
 
-      <section class="projects-panel" aria-labelledby="game-heading">
-        <div class="projects-panel-heading"><div><h2 id="game-heading">Game</h2><p>Choose from the SMAC3-compatible game catalog. Changing games restores that game's default setup.</p></div></div>
-        <div class="projects-form-grid projects-form-grid-two">
-          <div class="projects-field"><label for="experiment-game">Game</label><select id="experiment-game" value={draft()?.spec.games[0]?.game} onChange={(e) => { const selected = gameOptions().find((item) => item.game === e.currentTarget.value); const gameConfig = selected?.tuner.game_config ?? null; dispatch({ tag: "experimentGameChanged", game: e.currentTarget.value, gameConfig }); setGameConfigText(prettyJson(gameConfig)); setJsonErrors((errors) => { const next = { ...errors }; delete next.gameConfig; return next; }); }}><For each={gameOptions()}>{(item) => <option value={item.game}>{item.game}</option>}</For></select><span class="projects-help">Available games come from the loaded Bench metadata.</span></div>
-          <div class="projects-field"><label for="game-config">Game configuration</label><textarea id="game-config" class="projects-json-editor" rows="6" value={gameConfigText()} aria-invalid={Boolean(combinedError("spec.games[0].game_config", "gameConfig"))} aria-describedby="game-config-help game-config-error" onInput={(e) => updateText("gameConfig", e.currentTarget.value)} /><span id="game-config-help" class="projects-help">Any valid JSON value is accepted by the game contract.</span><Show when={combinedError("spec.games[0].game_config", "gameConfig")}><span id="game-config-error" class="projects-field-error" role="alert">{combinedError("spec.games[0].game_config", "gameConfig")}</span></Show></div>
-        </div>
-      </section>
+      <section class="projects-panel" aria-labelledby="comparison-heading"><div class="projects-panel-heading"><div><h2 id="comparison-heading">Comparison</h2><p>The baseline is shared by every cell; each variant creates another candidate row.</p></div></div><fieldset class="projects-strategy-panel"><legend>Baseline</legend><div class="projects-form-grid projects-form-grid-two"><div class="projects-field"><label for="baseline-id">Strategy ID</label><input id="baseline-id" value={draft()?.spec.baseline.id} onInput={(e) => update((spec) => { spec.baseline.id = e.currentTarget.value; })} /></div><div class="projects-field"><label for="baseline-label">Label</label><input id="baseline-label" value={draft()?.spec.baseline.label} onInput={(e) => update((spec) => { spec.baseline.label = e.currentTarget.value; })} /></div></div><div class="projects-field"><label for="baseline-config">Raw strategy JSON</label><textarea id="baseline-config" class="projects-json-editor" rows="6" value={jsonText().baseline ?? prettyJson(draft()?.spec.baseline.config)} onInput={(e) => editJson("baseline", e.currentTarget.value, (spec, value) => { spec.baseline.config = value as Record<string, unknown>; }, true)} /><Show when={errorFor("spec.baseline.config", "baseline")}><span class="projects-field-error">{errorFor("spec.baseline.config", "baseline")}</span></Show></div></fieldset><For each={draft()?.spec.variants ?? []}>{(variant, index) => <fieldset class="projects-strategy-panel"><legend>Variant {index() + 1}</legend><div class="projects-form-grid projects-form-grid-two"><div class="projects-field"><label for={`variant-id-${index()}`}>Strategy ID</label><input id={`variant-id-${index()}`} value={variant.id} onInput={(e) => dispatch({ tag: "experimentVariantEdited", index: index(), field: "id", value: e.currentTarget.value })} /></div><div class="projects-field"><label for={`variant-label-${index()}`}>Label</label><input id={`variant-label-${index()}`} value={variant.label} onInput={(e) => dispatch({ tag: "experimentVariantEdited", index: index(), field: "label", value: e.currentTarget.value })} /></div></div><div class="projects-field"><label for={`variant-config-${index()}`}>Raw strategy JSON</label><textarea id={`variant-config-${index()}`} class="projects-json-editor" rows="6" value={jsonText()[`variant-${index()}`] ?? prettyJson(variant.config)} onInput={(e) => editJson(`variant-${index()}`, e.currentTarget.value, (spec, value) => { spec.variants[index()]!.config = value as Record<string, unknown>; }, true)} /><Show when={errorFor(`spec.variants[${index()}].config`, `variant-${index()}`)}><span class="projects-field-error">{errorFor(`spec.variants[${index()}].config`, `variant-${index()}`)}</span></Show></div><div class="projects-action-row"><Show when={(draft()?.spec.variants.length ?? 0) > 1}><button class="projects-button projects-button-secondary" type="button" onClick={() => dispatch({ tag: "experimentVariantRemoved", index: index() })}>Remove variant</button></Show></div></fieldset>}</For><button class="projects-button projects-button-secondary" type="button" onClick={() => dispatch({ tag: "experimentVariantAdded" })}>Add variant</button></section>
 
-      <section class="projects-panel" aria-labelledby="comparison-heading">
-        <div class="projects-panel-heading"><div><h2 id="comparison-heading">Comparison</h2><p>Both strategies play the same paired rounds, switching sides to keep the comparison balanced.</p></div></div>
-        <div class="projects-strategy-grid">
-          <fieldset class="projects-strategy-panel"><legend>Baseline</legend><div class="projects-field"><label for="baseline-label">Human-readable label</label><input id="baseline-label" value={draft()?.spec.baseline.label} onInput={(e) => update((spec) => { spec.baseline.label = e.currentTarget.value; })} aria-invalid={Boolean(fieldError("spec.baseline.label"))} /><Show when={fieldError("spec.baseline.label")}><span class="projects-field-error">{fieldError("spec.baseline.label")}</span></Show></div><div class="projects-field"><label for="baseline-config">Opaque strategy configuration</label><textarea id="baseline-config" class="projects-json-editor" rows="7" value={baselineConfigText()} aria-invalid={Boolean(combinedError("spec.baseline.config", "baselineConfig"))} aria-describedby="baseline-config-help baseline-config-error" onInput={(e) => updateText("baselineConfig", e.currentTarget.value)} /><span id="baseline-config-help" class="projects-help">A JSON object supplied to the baseline strategy.</span><Show when={combinedError("spec.baseline.config", "baselineConfig")}><span id="baseline-config-error" class="projects-field-error" role="alert">{combinedError("spec.baseline.config", "baselineConfig")}</span></Show></div></fieldset>
-          <fieldset class="projects-strategy-panel"><legend>Variant</legend><div class="projects-field"><label for="variant-label">Human-readable label</label><input id="variant-label" value={draft()?.spec.variants[0]?.label} onInput={(e) => update((spec) => { spec.variants[0]!.label = e.currentTarget.value; })} aria-invalid={Boolean(fieldError("spec.variants[0].label"))} /><Show when={fieldError("spec.variants[0].label")}><span class="projects-field-error">{fieldError("spec.variants[0].label")}</span></Show></div><div class="projects-field"><label for="variant-config">Opaque strategy configuration</label><textarea id="variant-config" class="projects-json-editor" rows="7" value={variantConfigText()} aria-invalid={Boolean(combinedError("spec.variants[0].config", "variantConfig"))} aria-describedby="variant-config-help variant-config-error" onInput={(e) => updateText("variantConfig", e.currentTarget.value)} /><span id="variant-config-help" class="projects-help">A JSON object supplied to the candidate strategy.</span><Show when={combinedError("spec.variants[0].config", "variantConfig")}><span id="variant-config-error" class="projects-field-error" role="alert">{combinedError("spec.variants[0].config", "variantConfig")}</span></Show></div></fieldset>
-        </div>
-      </section>
+      <section class="projects-panel" aria-labelledby="execution-heading"><div class="projects-panel-heading"><div><h2 id="execution-heading">Execution grid</h2><p>Each budget is paired with every game and variant.</p></div><button class="projects-button projects-button-secondary" type="button" onClick={() => dispatch({ tag: "experimentBudgetAdded" })}>Add budget</button></div><For each={draft()?.spec.budgets ?? []}>{(budget, index) => <div class="projects-grid-item projects-form-grid projects-execution-grid"><div class="projects-field"><label for={`budget-kind-${index()}`}>Budget kind</label><select id={`budget-kind-${index()}`} aria-label="Budget kind" value={budget.kind} onChange={(e) => dispatch({ tag: "experimentBudgetEdited", index: index(), field: "kind", value: e.currentTarget.value })}><option value="iterations">Iterations</option><option value="time_per_move_ms">Time per move</option></select></div><div class="projects-field projects-field-number"><label for={`budget-value-${index()}`}>Budget value</label><input id={`budget-value-${index()}`} aria-label="Budget value" type="number" min="1" step="1" value={budget.value} onInput={(e) => dispatch({ tag: "experimentBudgetEdited", index: index(), field: "value", value: Number(e.currentTarget.value) })} /><Show when={fieldError(`spec.budgets[${index()}].value`)}><span class="projects-field-error">{fieldError(`spec.budgets[${index()}].value`)}</span></Show></div><Show when={(draft()?.spec.budgets.length ?? 0) > 1}><button class="projects-button projects-button-secondary" type="button" onClick={() => dispatch({ tag: "experimentBudgetRemoved", index: index() })}>Remove budget</button></Show></div>}</For><div class="projects-form-grid projects-execution-grid"><div class="projects-field projects-field-number"><label for="rounds-per-cell">Paired rounds</label><input id="rounds-per-cell" type="number" min="1" step="1" value={draft()?.spec.rounds_per_cell} onInput={(e) => update((spec) => { spec.rounds_per_cell = Number(e.currentTarget.value); })} /></div><div class="projects-field projects-field-number"><label for="base-seed">Base seed</label><input id="base-seed" type="number" min="0" step="1" value={draft()?.spec.base_seed} onInput={(e) => update((spec) => { spec.base_seed = Number(e.currentTarget.value); })} /></div><div class="projects-field projects-field-number"><label for="max-parallel-cells">Max parallel cells</label><input id="max-parallel-cells" type="number" min="1" step="1" value={draft()?.spec.max_parallel_cells} onInput={(e) => update((spec) => { spec.max_parallel_cells = Number(e.currentTarget.value); })} /></div></div></section>
 
-      <section class="projects-panel" aria-labelledby="execution-heading">
-        <div class="projects-panel-heading"><div><h2 id="execution-heading">Execution</h2><p>Choose the per-move budget and how many paired rounds to run.</p></div></div>
-        <div class="projects-form-grid projects-execution-grid">
-          <div class="projects-field"><label for="budget-kind">Budget kind</label><select id="budget-kind" value={currentBudget().kind} onChange={(e) => update((spec) => { const value = Math.max(1, spec.budgets[0]?.value ?? 25); spec.budgets[0] = e.currentTarget.value === "iterations" ? { kind: "iterations", value } : { kind: "time_per_move_ms", value }; })}><option value="iterations">Iterations</option><option value="time_per_move_ms">Time per move</option></select><span class="projects-help">Iterations count search steps; time uses milliseconds per move.</span></div>
-          <div class="projects-field projects-field-number"><label for="budget-value">Budget value</label><input id="budget-value" type="number" min="1" step="1" value={currentBudget().value} onInput={(e) => update((spec) => { spec.budgets[0]!.value = Number(e.currentTarget.value); })} aria-invalid={Boolean(fieldError("spec.budgets[0].value"))} /><Show when={fieldError("spec.budgets[0].value")}><span class="projects-field-error">{fieldError("spec.budgets[0].value")}</span></Show></div>
-          <div class="projects-field projects-field-number"><label for="rounds-per-cell">Paired rounds</label><input id="rounds-per-cell" type="number" min="1" step="1" value={draft()?.spec.rounds_per_cell} onInput={(e) => update((spec) => { spec.rounds_per_cell = Number(e.currentTarget.value); })} aria-invalid={Boolean(fieldError("spec.rounds_per_cell"))} /><span class="projects-help">Each round produces two games.</span></div>
-          <div class="projects-field projects-field-number"><label for="base-seed">Base seed</label><input id="base-seed" type="number" step="1" value={draft()?.spec.base_seed} onInput={(e) => update((spec) => { spec.base_seed = Number(e.currentTarget.value); })} /><span class="projects-help">Seeds are advanced for each paired game.</span></div>
-        </div>
-      </section>
-
-      <section class="projects-panel projects-plan-panel" aria-labelledby="plan-heading">
-        <div class="projects-panel-heading"><div><h2 id="plan-heading">Plan summary and actions</h2><p>One cell compares the variant against the baseline across the planned paired games.</p></div></div>
-        <div class="projects-plan-summary"><span class="projects-plan-number">{2 * (draft()?.spec.rounds_per_cell ?? 0)}</span><span><strong>planned games</strong><small>1 cell · {draft()?.spec.rounds_per_cell} paired rounds</small></span></div>
-        <Show when={state().experimentError}><p class="projects-form-error" role="alert">{state().experimentError}</p></Show>
-        <Show when={state().experimentRunError}><p class="projects-form-error" role="alert">{state().experimentRunError}</p></Show>
-        <div class="projects-action-row"><button class="projects-button projects-button-secondary" type="button" disabled={saveDisabled()} onClick={() => dispatch({ tag: "saveExperiment" })}>{state().experimentSaveStatus === "saving" ? "Saving…" : "Save"}</button><button class="projects-button projects-button-primary" type="button" disabled={launchDisabled()} onClick={() => dispatch({ tag: "launchExperiment" })}>{state().experimentLaunchStatus === "launching" ? "Launching…" : "Launch"}</button><Show when={dirty()}><span class="projects-dirty-note">Unsaved changes</span></Show><Show when={!dirty() && state().selectedExperimentId}><span class="projects-saved-note">Saved and ready to launch</span></Show></div>
-      </section>
-
-      <section class="projects-panel" aria-labelledby="run-history-heading">
-        <div class="projects-panel-heading"><div><h2 id="run-history-heading">Run history</h2><p>Runs for this experiment are loaded from the filtered Bench history.</p></div></div>
-        <Show when={state().runs.status === "done"} fallback={<Show when={state().runs.status === "error"} fallback={<div class="projects-state"><span class="projects-state-title">Loading run history</span><span>Checking for previous launches…</span></div>}><div class="projects-state projects-state-error" role="alert"><span class="projects-state-title">Run history unavailable</span><span>{state().runs.error ?? "Try opening the experiment again."}</span></div></Show>}>
-          <Show when={(state().runs.result ?? []).length > 0} fallback={<div class="projects-state"><span class="projects-state-title">No runs yet</span><span>Save this definition, then Launch to create its first run.</span></div>}>
-            <div class="projects-run-list"><For each={state().runs.result ?? []}>{(run) => <button class="projects-run-row" type="button" onClick={() => dispatch({ tag: "openRun", runId: run.run_id })} aria-label={`Open run ${run.label ?? run.run_id}`}><span class="projects-run-main"><strong>{run.label ?? "Experiment run"}</strong><code>{run.run_id}</code></span><span class={`status-badge badge-${run.status}`}>{friendlyStatus(run.status)}</span><span class="projects-run-matches">{run.match_count} matches</span><time datetime={run.started_at}>{new Date(run.started_at).toLocaleString()}</time></button>}</For></div>
-          </Show>
-        </Show>
-      </section>
+      <section class="projects-panel projects-plan-panel" aria-labelledby="plan-heading"><div class="projects-panel-heading"><div><h2 id="plan-heading">Exact grid preview</h2><p>Cells expand in game, budget, variant order with deterministic identifiers and seeds.</p></div></div><Show when={preview()}>{(plan) => <><div class="projects-plan-summary"><span class="projects-plan-number">{plan().total_planned_games}</span><span><strong>planned games</strong><small>{plan().cells.length} cells · {draft()?.spec.rounds_per_cell} paired rounds</small></span></div><div class="projects-cell-preview" aria-label="Grid preview"><For each={plan().cells}>{(cell) => <div class="projects-cell-preview-row"><code>{cell.cell_id}</code><span>{cell.game}</span><span>{cell.variant_label}</span><span>{budgetSummary(cell.budget.kind, cell.budget.value)}</span><span>{cell.planned_games} games</span></div>}</For></div></>}</Show><Show when={state().experimentError}><p class="projects-form-error" role="alert">{state().experimentError}</p></Show><Show when={state().experimentRunError}><p class="projects-form-error" role="alert">{state().experimentRunError}</p></Show><div class="projects-action-row"><button class="projects-button projects-button-secondary" type="button" disabled={saveDisabled()} onClick={() => dispatch({ tag: "saveExperiment" })}>{state().experimentSaveStatus === "saving" ? "Saving…" : "Save"}</button><button class="projects-button projects-button-primary" type="button" disabled={launchDisabled()} onClick={() => dispatch({ tag: "launchExperiment" })}>{state().experimentLaunchStatus === "launching" ? "Launching…" : "Launch"}</button><Show when={dirty()}><span class="projects-dirty-note">Unsaved changes</span></Show><Show when={!dirty() && state().selectedExperimentId}><span class="projects-saved-note">Saved and ready to launch</span></Show></div></section>
+      <section class="projects-panel" aria-labelledby="run-history-heading"><div class="projects-panel-heading"><div><h2 id="run-history-heading">Run history</h2><p>Recent launches for this project and experiment.</p></div></div><Show when={state().runs.status === "done"} fallback={<div class="projects-state">Loading run history…</div>}><div class="projects-run-list"><For each={state().runs.result ?? []}>{(run) => <button class="projects-run-row" type="button" onClick={() => dispatch({ tag: "openRun", runId: run.run_id })}><span class="projects-run-main"><strong>{run.label ?? "Experiment run"}</strong><code>{run.run_id}</code></span><span class={`status-badge badge-${run.status}`}>{friendlyStatus(run.status)}</span><span>{run.match_count} matches</span><time datetime={run.started_at}>{new Date(run.started_at).toLocaleString()}</time></button>}</For></div></Show></section>
     </form>
   </Show>;
 };

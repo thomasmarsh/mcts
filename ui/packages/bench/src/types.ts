@@ -9,7 +9,7 @@
  * src/bench/schema.rs: running | completed | crashed | stopped). The open
  * `string` union member keeps a status added server-side later from
  * failing to deserialize here. */
-export type RunStatus = "running" | "completed" | "crashed" | "stopped" | (string & {});
+export type RunStatus = "running" | "completed" | "completed_with_errors" | "crashed" | "stopped" | (string & {});
 
 export type Budget =
   | { kind: "iterations"; value: number }
@@ -31,7 +31,7 @@ export interface ValidationField { path: string; message: string }
 export interface Project { project_id: string; name: string; description: string; archived: boolean; created_at: string; updated_at: string }
 export interface Experiment { experiment_id: string; project_id: string; name: string; description: string; spec: ExperimentSpecV1; created_at: string; updated_at: string }
 export interface ExperimentCell {
-  cell_id: string; game: string; game_config: unknown; variant_id: string; variant_label: string;
+  cell_id: string; cell_seed: number | null; game: string; game_config: unknown; variant_id: string; variant_label: string;
   candidate_config: Record<string, unknown>; baseline_id: string; baseline_label: string;
   baseline_config: Record<string, unknown>; budget: Budget; rounds: number; planned_games: number;
   completed_games: number; status: string; started_at: string | null; ended_at: string | null; error: string | null;

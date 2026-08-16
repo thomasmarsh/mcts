@@ -285,6 +285,17 @@ async fn main() {
     let bench_state = Arc::new(bench::BenchState {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
+        experiment_validator: Arc::new(bench::validate_experiment_spec),
+        experiment_launcher: Arc::new(|run_id, command, kind, game, label| {
+            mcts_bench::launch::launch_with_run_id(
+                run_id,
+                command,
+                &kind,
+                &game,
+                label.as_deref(),
+                crate::BUILD_INFO,
+            )
+        }),
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads
@@ -355,9 +366,14 @@ mod tests {
     use std::time::Instant;
     use tower::ServiceExt;
 
+    static TEST_GAMES: std::sync::OnceLock<Arc<HashMap<&'static str, Arc<dyn GameAdapter>>>> =
+        std::sync::OnceLock::new();
+
     fn test_app() -> Router {
         api_router(Arc::new(AppState {
-            games: Arc::new(adapter::registry()),
+            games: TEST_GAMES
+                .get_or_init(|| Arc::new(adapter::registry()))
+                .clone(),
         }))
     }
 

@@ -90,7 +90,7 @@ describe("persisted experiment components", () => {
       created_at: project.created_at, updated_at: project.updated_at,
     };
     const cell: ExperimentCell = {
-      cell_id: "cell-1", game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
+      cell_id: "cell-1", cell_seed: 7294331206661666, game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
       candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {},
       budget: { kind: "iterations", value: 1 }, rounds: 1, planned_games: 2, completed_games: 1,
       status: "running", started_at: project.created_at, ended_at: null, error: null,
