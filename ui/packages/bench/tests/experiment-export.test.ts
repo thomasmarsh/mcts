@@ -23,18 +23,40 @@ describe("experiment exports", () => {
   it("sorts JSON cells, retains native configs and raw rates, and emits stable bytes", () => {
     const first = serializeExperimentRunJson(detail, [cell("z"), cell("a")]);
     const second = serializeExperimentRunJson(detail, [cell("a"), cell("z")]);
+    const expected = {
+      version: 1,
+      run: {
+        run_id: "run/export",
+        project_id: null,
+        experiment_id: "exp-1",
+        label: null,
+        status: "completed",
+        git_sha: "sha",
+        git_dirty: true,
+        host: "host",
+        started_at: "2026-01-01T00:00:00Z",
+        ended_at: null,
+        experiment_spec: detail.experiment_spec,
+      },
+      cells: [cell("a"), cell("z")],
+    };
+    expect(first).toBe(`${JSON.stringify(expected, null, 2)}\n`);
     expect(first).toBe(second);
     const parsed = JSON.parse(first) as { version: number; run: { experiment_spec: unknown }; cells: ExperimentCell[] };
     expect(parsed.version).toBe(1);
     expect(parsed.run.experiment_spec).toEqual(detail.experiment_spec);
     expect(parsed.cells.map((value) => value.cell_id)).toEqual(["a", "z"]);
     expect(parsed.cells[0]!.win_rate).toBe(0.5);
+    expect(parsed.cells[0]!.game_config).toEqual({ text: "a,b" });
+    expect(parsed.cells[0]!.cell_seed).toBeNull();
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(expected));
   });
 
   it("uses the frozen CSV header, CRLF rows, null blanks, and RFC 4180 escaping", () => {
     const csv = serializeExperimentRunCsv(detail, [cell("cell-1")]);
-    expect(csv.split("\r\n")[0]).toBe("run_id,run_status,cell_id,cell_status,game,game_config_json,budget_kind,budget_value,rounds,cell_seed,planned_games,completed_games,variant_id,variant_label,candidate_config_json,baseline_id,baseline_label,baseline_config_json,wins,losses,draws,win_rate,ci_lower,ci_upper,started_at,ended_at,error");
-    expect(csv).toContain('run/export,completed,cell-1,pending,nim,"{""text"":""a,b""}",iterations,5,1,,2,0,v1,"Variant, ""quoted""","{""lines"":""one\\ntwo""}",base,Base,"{""quote"":""yes""}",0,0,0,0.5,0,1,,,"bad,""line""\nnext"\r\n');
-    expect(csv.endsWith("\r\n")).toBe(true);
+    const expected = "run_id,run_status,cell_id,cell_status,game,game_config_json,budget_kind,budget_value,rounds,cell_seed,planned_games,completed_games,variant_id,variant_label,candidate_config_json,baseline_id,baseline_label,baseline_config_json,wins,losses,draws,win_rate,ci_lower,ci_upper,started_at,ended_at,error\r\n"
+      + "run/export,completed,cell-1,pending,nim,\"{\"\"text\"\":\"\"a,b\"\"}\",iterations,5,1,,2,0,v1,\"Variant, \"\"quoted\"\"\",\"{\"\"lines\"\":\"\"one\\ntwo\"\"}\",base,Base,\"{\"\"quote\"\":\"\"yes\"\"}\",0,0,0,0.5,0,1,,,\"bad,\"\"line\"\"\nnext\"\r\n";
+    expect(csv).toBe(expected);
+    expect(csv.split("\r\n")).toHaveLength(3);
   });
 });

@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, type Component, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, type Component, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
@@ -56,19 +56,29 @@ export const ExperimentRunDetail: Component<{
   const dispatch = props.store.dispatch;
   const open = createMemo(() => state().openRun);
   const detail = createMemo(() => open()?.detail ?? null);
+  const matrix = createMemo(() => {
+    const spec = detail()?.experiment_spec;
+    return spec ? buildExperimentMatrix(spec, open()?.cells ?? []) : null;
+  });
+  const populatedMatrixCells = createMemo(() =>
+    matrix()?.sections.flatMap((section) => section.rows.flatMap((row) =>
+      row.cells.flatMap((entry) => entry.cell ? [entry.cell] : []),
+    )) ?? [],
+  );
   const selected = createMemo(() => {
-    const run = open();
-    return run?.cells.find((cell) => cell.cell_id === state().selectedCellId) ?? run?.cells[0] ?? null;
+    const cells = populatedMatrixCells();
+    return cells.find((cell) => cell.cell_id === state().selectedCellId) ?? cells[0] ?? null;
   });
   const selectedGames = createMemo(() => {
     const cellId = selected()?.cell_id;
     return cellId ? (open()?.games.filter((game) => game.cell_id === cellId) ?? []) : [];
   });
-  const matrix = createMemo(() => {
-    const spec = detail()?.experiment_spec;
-    return spec ? buildExperimentMatrix(spec, open()?.cells ?? []) : null;
-  });
   const [replayGameSeq, setReplayGameSeq] = createSignal<number | null>(null);
+  const replayContextKey = createMemo(() => `${open()?.runId ?? ""}:${selected()?.cell_id ?? ""}`);
+  createEffect(() => {
+    replayContextKey();
+    setReplayGameSeq(null);
+  });
   const totalCompleted = createMemo(() => (open()?.cells ?? []).reduce((sum, cell) => sum + cell.completed_games, 0));
   const totalPlanned = createMemo(() => (open()?.cells ?? []).reduce((sum, cell) => sum + cell.planned_games, 0));
   const statusCount = (status: string) => (open()?.cells ?? []).filter((cell) => cell.status === status).length;
@@ -121,7 +131,7 @@ export const ExperimentRunDetail: Component<{
               <table class="projects-matrix-table">
                 <caption>{budgetLabel(section.budget)} results by game and variant</caption>
                 <thead><tr><th scope="col">Game</th><For each={section.columns}>{(variant) => <th scope="col">{variant.label}</th>}</For></tr></thead>
-                <tbody><For each={section.rows}>{(row) => <tr><th scope="row">{row.game.game}</th><For each={row.cells}>{(entry) => <td><CellResult cell={entry.cell} budgetText={budgetLabel(entry.coordinate.budget)} selected={entry.cell?.cell_id === state().selectedCellId} onOpen={openCell} /></td>}</For></tr>}</For></tbody>
+                <tbody><For each={section.rows}>{(row) => <tr><th scope="row">{row.game.game}</th><For each={row.cells}>{(entry) => <td><CellResult cell={entry.cell} budgetText={budgetLabel(entry.coordinate.budget)} selected={entry.cell?.cell_id === selected()?.cell_id} onOpen={openCell} /></td>}</For></tr>}</For></tbody>
               </table>
             </div>
           </section>}</For>

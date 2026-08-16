@@ -25,6 +25,7 @@ export const SpectatorPanel: Component<{ runId: string; game: string; kind: stri
   const [currentPly, setCurrentPly] = createSignal(0);
   const [liveError, setLiveError] = createSignal<string | null>(null);
   const [appliedInitialKey, setAppliedInitialKey] = createSignal<string | null>(null);
+  const traceRequestKey = createMemo(() => JSON.stringify([props.runId, props.cellId ?? null, props.initialGameSeq ?? null]));
   const [module] = createResource(() => props.game, async (game): Promise<GameKindModule<unknown, unknown, unknown> | null> => {
     const load = GAME_MODULES[game];
     return load ? load() : null;
@@ -45,15 +46,17 @@ export const SpectatorPanel: Component<{ runId: string; game: string; kind: stri
   const isRendererTrace = createMemo(() => currentMove() !== null && typeof currentMove()!.state !== "string");
 
   createEffect(() => {
+    traceRequestKey();
     setAppliedInitialKey(null);
-    setSelectedSeq(props.initialGameSeq ?? null);
+    setSelectedSeq(null);
     setMoves([]);
     setCurrentPly(0);
     setMoveError(null);
+    setLiveError(null);
   });
 
   createEffect(() => {
-    const key = `${props.runId}:${props.cellId ?? ""}:${props.initialGameSeq ?? ""}`;
+    const key = traceRequestKey();
     const requested = props.initialGameSeq;
     const available = games() ?? [];
     if (games.loading || appliedInitialKey() === key) return;
@@ -64,13 +67,16 @@ export const SpectatorPanel: Component<{ runId: string; game: string; kind: stri
   });
 
   async function selectGame(gameSeq: number): Promise<void> {
+    const requestKey = traceRequestKey();
     setSelectedSeq(gameSeq);
     setMoveError(null);
     try {
       const rows = await api.getRunGameMoves(props.runId, gameSeq);
+      if (requestKey !== traceRequestKey()) return;
       setMoves(rows);
       setCurrentPly(0);
     } catch (e: unknown) {
+      if (requestKey !== traceRequestKey()) return;
       setMoves([]);
       setMoveError(String(e));
     }
