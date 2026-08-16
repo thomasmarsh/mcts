@@ -3,12 +3,24 @@ use std::sync::Arc;
 
 use mcts_bench::projects_attempt::{ProjectsError, ProjectsRepository};
 
-use super::{iso_timestamp_now, process, BenchError, BenchState};
+use super::{process, BenchError, BenchState};
 
 pub(super) struct StopOutcome {
     pub(super) pid: Option<i64>,
     pub(super) prior_status: String,
     pub(super) signal_sent: bool,
+}
+
+pub(super) trait Clock: Send + Sync {
+    fn now(&self) -> String;
+}
+
+pub(super) struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> String {
+        super::iso_timestamp_now()
+    }
 }
 
 #[derive(Debug)]
@@ -29,24 +41,25 @@ pub(super) fn launch_projects(
     process: &dyn process::ProcessController,
     request: &mcts_bench::projects_attempt::StartRequest,
     spawn: process::SpawnRequest,
-    failure_at: &str,
-    observed_at: &str,
+    clock: &dyn Clock,
 ) -> Result<process::SpawnedProcess, LaunchError> {
     repo.create_and_request_start(request)
         .map_err(LaunchError::Attempt)?;
     let launched = match process.spawn(spawn) {
         Ok(launched) => launched,
         Err(process::ProcessError::Failed(message)) => {
-            repo.observe_spawn_failure(&request.run_id, &message, failure_at)
+            let observed_at = clock.now();
+            repo.observe_spawn_failure(&request.run_id, &message, &observed_at)
                 .map_err(LaunchError::Attempt)?;
             return Err(LaunchError::Spawn(message));
         }
     };
+    let observed_at = clock.now();
     repo.observe_process(
         &request.run_id,
         launched.pid as i64,
         &launched.log_path.to_string_lossy(),
-        observed_at,
+        &observed_at,
     )
     .map_err(LaunchError::Attempt)?;
     Ok(launched)
@@ -56,9 +69,7 @@ pub(super) fn stop_projects(
     repo: &dyn ProjectsRepository,
     process: &dyn process::ProcessController,
     run_id: &str,
-    requested_at: &str,
-    signal_at: &str,
-    ended_at: &str,
+    clock: &dyn Clock,
 ) -> Result<StopOutcome, StopError> {
     let target = repo.load_stop_target(run_id).map_err(StopError::Attempt)?;
     if !target.typed {
@@ -74,8 +85,9 @@ pub(super) fn stop_projects(
         });
     }
 
+    let requested_at = clock.now();
     let should_signal = repo
-        .request_operator_stop(run_id, requested_at)
+        .request_operator_stop(run_id, &requested_at)
         .map_err(StopError::Attempt)?
         .signal_process_group;
     let signal_sent = if should_signal {
@@ -83,7 +95,8 @@ pub(super) fn stop_projects(
             None => false,
             Some(pid) => match process.signal_group(pid) {
                 Ok(process::SignalOutcome::Sent) => {
-                    repo.observe_signal(run_id, signal_at)
+                    let signal_at = clock.now();
+                    repo.observe_signal(run_id, &signal_at)
                         .map_err(StopError::Attempt)?;
                     true
                 }
@@ -96,7 +109,8 @@ pub(super) fn stop_projects(
     } else {
         false
     };
-    repo.project_stop(run_id, ended_at)
+    let ended_at = clock.now();
+    repo.project_stop(run_id, &ended_at)
         .map_err(StopError::Attempt)?;
     Ok(StopOutcome {
         pid: target.pid,
@@ -108,14 +122,14 @@ pub(super) fn stop_projects(
 pub(super) async fn stop_run_impl(
     state: &Arc<BenchState>,
     run_id: &str,
+    clock: &dyn Clock,
 ) -> Result<StopOutcome, BenchError> {
     let target = state
         .db
         .load_stop_target(run_id)
         .map_err(super::attempt_bench_error)?;
     if target.typed {
-        let now = iso_timestamp_now();
-        return stop_projects(&state.db, state.as_ref(), run_id, &now, &now, &now)
+        return stop_projects(&state.db, state.as_ref(), run_id, clock)
             .map_err(|error| stop_error(run_id, error));
     }
     if target.status != "running" {
@@ -200,14 +214,16 @@ mod tests {
 
     struct FakeRepository {
         events: Arc<Mutex<Vec<&'static str>>>,
+        timestamps: Arc<Mutex<Vec<String>>>,
         status: Mutex<String>,
         authorize_signal: Mutex<bool>,
     }
 
     impl FakeRepository {
-        fn new(events: Arc<Mutex<Vec<&'static str>>>) -> Self {
+        fn new(events: Arc<Mutex<Vec<&'static str>>>, timestamps: Arc<Mutex<Vec<String>>>) -> Self {
             Self {
                 events,
+                timestamps,
                 status: Mutex::new("running".into()),
                 authorize_signal: Mutex::new(true),
             }
@@ -215,6 +231,10 @@ mod tests {
 
         fn mark(&self, event: &'static str) {
             self.events.lock().unwrap().push(event);
+        }
+
+        fn record_timestamp(&self, timestamp: &str) {
+            self.timestamps.lock().unwrap().push(timestamp.to_owned());
         }
 
         fn receipt() -> Receipt {
@@ -256,9 +276,10 @@ mod tests {
             _run_id: &str,
             _pid: i64,
             _log_path: &str,
-            _observed_at: &str,
+            observed_at: &str,
         ) -> Result<Receipt, ProjectsError> {
             self.mark("process");
+            self.record_timestamp(observed_at);
             Ok(Self::receipt())
         }
 
@@ -266,18 +287,20 @@ mod tests {
             &self,
             _run_id: &str,
             _message: &str,
-            _observed_at: &str,
+            observed_at: &str,
         ) -> Result<Receipt, ProjectsError> {
             self.mark("spawn-failure");
+            self.record_timestamp(observed_at);
             Ok(Self::receipt())
         }
 
         fn request_operator_stop(
             &self,
             _run_id: &str,
-            _observed_at: &str,
+            observed_at: &str,
         ) -> Result<StopAuthorization, ProjectsError> {
             self.mark("stop");
+            self.record_timestamp(observed_at);
             let mut authorized = self.authorize_signal.lock().unwrap();
             let signal_process_group = *authorized;
             *authorized = false;
@@ -289,9 +312,10 @@ mod tests {
         fn observe_signal(
             &self,
             _run_id: &str,
-            _observed_at: &str,
+            observed_at: &str,
         ) -> Result<Receipt, ProjectsError> {
             self.mark("observed");
+            self.record_timestamp(observed_at);
             Ok(Self::receipt())
         }
 
@@ -315,10 +339,35 @@ mod tests {
             Ok(Self::receipt())
         }
 
-        fn project_stop(&self, _run_id: &str, _ended_at: &str) -> Result<(), ProjectsError> {
+        fn project_stop(&self, _run_id: &str, ended_at: &str) -> Result<(), ProjectsError> {
             self.mark("project");
+            self.record_timestamp(ended_at);
             *self.status.lock().unwrap() = "stopped".into();
             Ok(())
+        }
+    }
+
+    struct FakeClock {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        values: Vec<&'static str>,
+        next: Mutex<usize>,
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> String {
+            self.events.lock().unwrap().push("clock");
+            let mut next = self.next.lock().unwrap();
+            let value = self.values[*next];
+            *next += 1;
+            value.into()
+        }
+    }
+
+    fn fake_clock(events: Arc<Mutex<Vec<&'static str>>>, values: Vec<&'static str>) -> FakeClock {
+        FakeClock {
+            events,
+            values,
+            next: Mutex::new(0),
         }
     }
 
@@ -369,12 +418,14 @@ mod tests {
     #[test]
     fn launch_commits_before_spawn_and_records_process() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let repo = FakeRepository::new(events.clone());
+        let timestamps = Arc::new(Mutex::new(Vec::new()));
+        let repo = FakeRepository::new(events.clone(), timestamps.clone());
         let process = FakeProcess {
             events: events.clone(),
             signal: Ok(process::SignalOutcome::Sent),
             spawn: Ok(()),
         };
+        let clock = fake_clock(events.clone(), vec!["process"]);
         launch_projects(
             &repo,
             &process,
@@ -386,22 +437,27 @@ mod tests {
                 game: "nim".into(),
                 label: None,
             },
-            "failure",
-            "observed",
+            &clock,
         )
         .unwrap();
-        assert_eq!(*events.lock().unwrap(), ["create", "spawn", "process"]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["create", "spawn", "clock", "process"]
+        );
+        assert_eq!(*timestamps.lock().unwrap(), ["process"]);
     }
 
     #[test]
     fn launch_failure_records_spawn_failure_after_effect() {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let repo = FakeRepository::new(events.clone());
+        let timestamps = Arc::new(Mutex::new(Vec::new()));
+        let repo = FakeRepository::new(events.clone(), timestamps.clone());
         let process = FakeProcess {
             events: events.clone(),
             signal: Ok(process::SignalOutcome::Sent),
             spawn: Err("spawn failed".into()),
         };
+        let clock = fake_clock(events.clone(), vec!["spawn-failure"]);
         assert!(matches!(
             launch_projects(
                 &repo,
@@ -414,15 +470,15 @@ mod tests {
                     game: "nim".into(),
                     label: None,
                 },
-                "failure",
-                "observed",
+                &clock,
             ),
             Err(LaunchError::Spawn(message)) if message == "spawn failed"
         ));
         assert_eq!(
             *events.lock().unwrap(),
-            ["create", "spawn", "spawn-failure"]
+            ["create", "spawn", "clock", "spawn-failure"]
         );
+        assert_eq!(*timestamps.lock().unwrap(), ["spawn-failure"]);
     }
 
     #[test]
@@ -433,23 +489,35 @@ mod tests {
             Err("signal failed".into()),
         ] {
             let events = Arc::new(Mutex::new(Vec::new()));
-            let repo = FakeRepository::new(events.clone());
+            let timestamps = Arc::new(Mutex::new(Vec::new()));
+            let repo = FakeRepository::new(events.clone(), timestamps.clone());
             let process = FakeProcess {
                 events: events.clone(),
                 signal: signal.clone(),
                 spawn: Ok(()),
             };
-            let result = stop_projects(&repo, &process, "run", "requested", "signal", "ended");
+            let clock_values = match &signal {
+                Ok(process::SignalOutcome::Sent) => vec!["request", "signal", "projection"],
+                Ok(process::SignalOutcome::NotFound) => vec!["request", "projection"],
+                Err(_) => vec!["request"],
+            };
+            let clock = fake_clock(events.clone(), clock_values);
+            let result = stop_projects(&repo, &process, "run", &clock);
             match signal {
                 Ok(process::SignalOutcome::Sent) => {
                     assert!(result.is_ok());
                     assert_eq!(
                         *events.lock().unwrap(),
-                        ["load", "stop", "signal", "observed", "project"]
+                        [
+                            "load", "clock", "stop", "signal", "clock", "observed", "clock",
+                            "project"
+                        ]
                     );
-                    let second =
-                        stop_projects(&repo, &process, "run", "requested", "signal", "ended")
-                            .unwrap();
+                    assert_eq!(
+                        *timestamps.lock().unwrap(),
+                        ["request", "signal", "projection"]
+                    );
+                    let second = stop_projects(&repo, &process, "run", &clock).unwrap();
                     assert!(!second.signal_sent);
                     assert_eq!(
                         events
@@ -465,12 +533,14 @@ mod tests {
                     assert!(result.is_ok());
                     assert_eq!(
                         *events.lock().unwrap(),
-                        ["load", "stop", "signal", "project"]
+                        ["load", "clock", "stop", "signal", "clock", "project"]
                     );
+                    assert_eq!(*timestamps.lock().unwrap(), ["request", "projection"]);
                 }
                 Err(_) => {
                     assert!(result.is_err());
-                    assert_eq!(*events.lock().unwrap(), ["load", "stop", "signal"]);
+                    assert_eq!(*events.lock().unwrap(), ["load", "clock", "stop", "signal"]);
+                    assert_eq!(*timestamps.lock().unwrap(), ["request"]);
                 }
             }
         }

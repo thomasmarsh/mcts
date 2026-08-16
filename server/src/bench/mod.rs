@@ -1032,8 +1032,7 @@ async fn launch_experiment(
             game: run_game_segment.into(),
             label: Some(name.clone()),
         },
-        &now,
-        &iso_timestamp_now(),
+        &lifecycle::SystemClock,
     ) {
         Ok(value) => value,
         Err(lifecycle::LaunchError::Attempt(error)) => {
@@ -2827,16 +2826,19 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
         // budget is exhausted. Stop and reap the process before resuming:
         // `--resume` reads the parent's runhistory from disk, so launching
         // while the old process is still flushing could read a torn file.
-        let outcome = match lifecycle::stop_run_impl(state, &advance.parent_run_id).await {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                eprintln!(
-                    "ladder driver: failed to stop run {}: {}",
-                    advance.parent_run_id, e.message
-                );
-                continue;
-            }
-        };
+        let outcome =
+            match lifecycle::stop_run_impl(state, &advance.parent_run_id, &lifecycle::SystemClock)
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    eprintln!(
+                        "ladder driver: failed to stop run {}: {}",
+                        advance.parent_run_id, e.message
+                    );
+                    continue;
+                }
+            };
         if outcome.prior_status == "running" {
             if let Some(pid_val) = outcome.pid {
                 let pid = pid_val as u32;
@@ -3025,7 +3027,7 @@ async fn advance_baseline(
         });
     }
 
-    let outcome = lifecycle::stop_run_impl(&state, &run_id).await?;
+    let outcome = lifecycle::stop_run_impl(&state, &run_id, &lifecycle::SystemClock).await?;
     if outcome.prior_status == "running" {
         if let Some(pid_val) = outcome.pid {
             let pid = pid_val as u32;
@@ -3087,7 +3089,7 @@ async fn stop_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<Value>, BenchError> {
-    let outcome = lifecycle::stop_run_impl(&state, &run_id).await?;
+    let outcome = lifecycle::stop_run_impl(&state, &run_id, &lifecycle::SystemClock).await?;
 
     if outcome.prior_status != "running" {
         return Ok(Json(json!({
