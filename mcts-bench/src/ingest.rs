@@ -11,6 +11,9 @@ use duckdb::{params, Connection};
 use crate::identity;
 use crate::launch::{is_alive, iso_timestamp};
 use crate::log::{LogRecord, RegistryEvent};
+use crate::orchestration::ExitObservation;
+use crate::projects_attempt::{self, ProjectsRepository};
+use crate::projects_attempt_duckdb;
 
 #[derive(Debug)]
 pub enum IngestError {
@@ -18,6 +21,7 @@ pub enum IngestError {
     Io(std::io::Error),
     Json(serde_json::Error),
     OrphanCell { run_id: String, cell_id: String },
+    Attempt(projects_attempt::ProjectsError),
 }
 
 impl std::fmt::Display for IngestError {
@@ -29,6 +33,7 @@ impl std::fmt::Display for IngestError {
             IngestError::OrphanCell { run_id, cell_id } => {
                 write!(f, "cell '{cell_id}' does not belong to run '{run_id}'")
             }
+            IngestError::Attempt(error) => write!(f, "typed attempt ingest error: {error}"),
         }
     }
 }
@@ -50,6 +55,12 @@ impl From<std::io::Error> for IngestError {
 impl From<serde_json::Error> for IngestError {
     fn from(e: serde_json::Error) -> Self {
         IngestError::Json(e)
+    }
+}
+
+impl From<projects_attempt::ProjectsError> for IngestError {
+    fn from(error: projects_attempt::ProjectsError) -> Self {
+        Self::Attempt(error)
     }
 }
 
@@ -80,6 +91,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
     file.seek(SeekFrom::Start(offset))?;
     let reader = BufReader::new(file);
 
+    let mut events = Vec::new();
     for line_result in reader.lines() {
         let line = line_result?;
 
@@ -87,7 +99,24 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
             Ok(e) => e,
             Err(_) => continue,
         };
+        let priority = match &event {
+            RegistryEvent::Stop { run_id, .. } => u8::from(
+                projects_attempt_duckdb::Repository::new(conn)
+                    .load_if_initialized(run_id)?
+                    .is_some(),
+            ),
+            RegistryEvent::Start { .. } => 0,
+        };
+        events.push((priority, event));
+    }
+    // A very short child can be reaped before launcher's registry Start write
+    // reaches the file. For an already initialized Projects row, process its
+    // Start fact first so the typed attempt cannot wedge in Finalizing before
+    // process observation arrives. Legacy registry-only rows retain file
+    // order and behavior.
+    events.sort_by_key(|(priority, _)| *priority);
 
+    for (_, event) in events {
         match event {
             RegistryEvent::Start {
                 run_id,
@@ -118,12 +147,34 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                         .map_err(|error| duckdb::Error::ToSqlConversionFailure(Box::new(error)))?;
                 }
                 tx.commit()?;
+                if inserted == 0
+                    && kind == "experiment"
+                    && projects_attempt_duckdb::Repository::new(conn)
+                        .load_if_initialized(&run_id)?
+                        .is_some()
+                {
+                    projects_attempt_duckdb::Repository::new(conn).observe_process(
+                        &run_id,
+                        pid as i64,
+                        &log_path,
+                        &started_at,
+                    )?;
+                }
             }
             RegistryEvent::Stop {
                 run_id,
                 exit_code,
                 ended_at,
             } => {
+                let repo = projects_attempt_duckdb::Repository::new(conn);
+                if repo.load_if_initialized(&run_id)?.is_some() {
+                    let exit = match exit_code {
+                        Some(code) => ExitObservation::Exited { code: Some(code) },
+                        None => ExitObservation::Exited { code: None },
+                    };
+                    repo.observe_exit(&run_id, exit, &ended_at)?;
+                    continue;
+                }
                 // Guard on `status = 'running'` so this can't clobber an
                 // already-terminal status set by another path -- e.g.
                 // `launch_and_record`'s own synchronous early-crash check
@@ -184,6 +235,7 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
         .collect();
 
     for (run_id, log_path_str) in &running_runs {
+        validate_typed_projects_attempt(conn, run_id)?;
         process_one_log_file(conn, run_id, Path::new(log_path_str))?;
 
         // Move-trace lines land in a dedicated `moves.jsonl` next to
@@ -195,8 +247,30 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
         // file here is normal, not an error.
         let moves_path = Path::new(log_path_str).with_file_name("moves.jsonl");
         process_one_log_file(conn, run_id, &moves_path)?;
+        finalize_projects_attempt(conn, run_id)?;
     }
 
+    Ok(())
+}
+
+fn validate_typed_projects_attempt(conn: &Connection, run_id: &str) -> Result<(), IngestError> {
+    projects_attempt_duckdb::Repository::new(conn).load_if_initialized(run_id)?;
+    Ok(())
+}
+
+/// Complete a typed Projects attempt only after both ordinary log cursors have
+/// advanced successfully. Compatibility cells remain the source of the
+/// completed-with-errors distinction; the typed phase itself never changes
+/// after this event.
+fn finalize_projects_attempt(conn: &Connection, run_id: &str) -> Result<(), IngestError> {
+    let repo = projects_attempt_duckdb::Repository::new(conn);
+    let Some(receipt) = repo.load_if_initialized(run_id)? else {
+        return Ok(());
+    };
+    if !receipt.needs_final_output() {
+        return Ok(());
+    }
+    repo.finalize_output(run_id, &iso_timestamp())?;
     Ok(())
 }
 
@@ -439,27 +513,44 @@ fn mark_experiment_crashed(
 }
 
 fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt =
-        conn.prepare("SELECT run_id, pid FROM runs WHERE status = 'running' AND pid IS NOT NULL")?;
-    let maybe_dead: Vec<(String, i64)> = stmt
+    let typed_targets = projects_attempt_duckdb::Repository::new(conn).typed_liveness_targets()?;
+    for target in typed_targets {
+        if !is_alive(target.pid as u32) {
+            let ended_at = iso_timestamp();
+            projects_attempt_duckdb::Repository::new(conn).observe_exit(
+                &target.run_id,
+                ExitObservation::Lost,
+                &ended_at,
+            )?;
+        }
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT run_id, pid, kind FROM runs WHERE pid IS NOT NULL AND status = 'running'",
+    )?;
+    let maybe_dead: Vec<(String, i64, String)> = stmt
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
-    for (run_id, pid) in &maybe_dead {
-        if !is_alive(*pid as u32) {
+    for (run_id, pid, kind) in maybe_dead {
+        if kind == "experiment"
+            && projects_attempt_duckdb::Repository::new(conn)
+                .load_if_initialized(&run_id)?
+                .is_some()
+        {
+            continue;
+        }
+        if !is_alive(pid as u32) {
             let ended_at = iso_timestamp();
-            let kind: Option<String> = conn
-                .query_row(
-                    "SELECT kind FROM runs WHERE run_id = ?1",
-                    params![run_id],
-                    |row| row.get(0),
-                )
-                .ok();
-            if kind.as_deref() == Some("experiment") {
-                mark_experiment_crashed(conn, run_id, &ended_at, "coordinator disappeared")?;
+            if kind == "experiment" {
+                mark_experiment_crashed(conn, &run_id, &ended_at, "coordinator disappeared")?;
             } else {
                 conn.execute(
                     "UPDATE runs SET ended_at = ?1, status = 'crashed' \
@@ -512,88 +603,19 @@ fn hostname() -> String {
 }
 
 #[cfg(test)]
+#[path = "ingest_test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
+#[path = "ingest_projects_tests.rs"]
+mod projects_tests;
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use crate::schema::ensure_schema;
     use std::io::Write;
-
-    static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    struct TestFixture {
-        _dir: std::path::PathBuf,
-        bench_runs: std::path::PathBuf,
-        db: Connection,
-    }
-
-    impl TestFixture {
-        fn new(registry_events: &[RegistryEvent]) -> Self {
-            let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!(
-                "mcts_bench_ingest_test_{}_{}",
-                std::process::id(),
-                n,
-            ));
-            let _ = fs::remove_dir_all(&dir);
-            let bench_runs = dir.join("bench-runs");
-            fs::create_dir_all(&bench_runs).unwrap();
-
-            let mut content = String::new();
-            for ev in registry_events {
-                content.push_str(&ev.to_json_line());
-                content.push('\n');
-            }
-            fs::write(bench_runs.join("registry.log"), &content).unwrap();
-
-            let db = duckdb::Connection::open_in_memory().unwrap();
-            ensure_schema(&db).unwrap();
-
-            TestFixture {
-                _dir: dir,
-                bench_runs,
-                db,
-            }
-        }
-
-        fn count(&self, table: &str) -> i64 {
-            self.db
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .unwrap()
-        }
-
-        fn query_string(&self, sql: &str) -> String {
-            self.db.query_row(sql, [], |row| row.get(0)).unwrap()
-        }
-    }
-
-    fn start_event(
-        run_id: &str,
-        kind: &str,
-        game: &str,
-        pid: u32,
-        log_path: &str,
-    ) -> RegistryEvent {
-        RegistryEvent::Start {
-            run_id: run_id.to_owned(),
-            kind: kind.to_owned(),
-            game: game.to_owned(),
-            pid,
-            cmd: vec!["bench".into(), "round-robin".into()],
-            log_path: log_path.to_owned(),
-            git_sha: "abc1234".into(),
-            git_dirty: false,
-            started_at: "2026-01-01T00:00:00Z".into(),
-        }
-    }
-
-    fn stop_event(run_id: &str, exit_code: Option<i32>) -> RegistryEvent {
-        RegistryEvent::Stop {
-            run_id: run_id.to_owned(),
-            exit_code,
-            ended_at: "2026-01-01T01:00:00Z".into(),
-        }
-    }
 
     #[test]
     fn test_registry_start_creates_run_row() {

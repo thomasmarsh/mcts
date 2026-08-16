@@ -296,6 +296,7 @@ async fn main() {
                 crate::BUILD_INFO,
             )
         }),
+        process_group_signaller: Arc::new(bench::signal_process_group),
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

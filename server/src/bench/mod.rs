@@ -34,8 +34,12 @@ use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
+use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
+
+mod lifecycle;
+mod process;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -49,6 +53,7 @@ pub struct BenchState {
     pub bench_runs_dir: PathBuf,
     pub experiment_validator: ExperimentValidator,
     pub run_launcher: RunLauncher,
+    pub process_group_signaller: ProcessGroupSignaller,
 }
 
 pub type ExperimentValidator = Arc<
@@ -61,6 +66,12 @@ pub type RunLauncher = Arc<
         + Send
         + Sync,
 >;
+pub type ProcessGroupSignaller = Arc<dyn Fn(i64) -> std::io::Result<()> + Send + Sync>;
+
+/// Signal one detached run's process group through the process adapter.
+pub fn signal_process_group(pid: i64) -> std::io::Result<()> {
+    process::signal_process_group(pid)
+}
 
 // ---------------------------------------------------------------------------
 // Query parameter types
@@ -355,6 +366,12 @@ impl From<duckdb::Error> for BenchError {
     }
 }
 
+impl From<ProjectsError> for BenchError {
+    fn from(error: ProjectsError) -> Self {
+        attempt_bench_error(error)
+    }
+}
+
 impl From<std::io::Error> for BenchError {
     fn from(e: std::io::Error) -> Self {
         BenchError {
@@ -386,6 +403,18 @@ fn identity_bench_error(error: identity::IdentityError) -> BenchError {
     }
 }
 
+fn attempt_bench_error(error: ProjectsError) -> BenchError {
+    let status = match &error {
+        ProjectsError::Conflict(_) => StatusCode::CONFLICT,
+        ProjectsError::NotFound => StatusCode::NOT_FOUND,
+        ProjectsError::Corrupt(_) | ProjectsError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    BenchError {
+        status,
+        message: error.to_string(),
+    }
+}
+
 enum ExperimentRouteError {
     Bench(BenchError),
     Validation(ValidationError),
@@ -400,6 +429,12 @@ impl From<BenchError> for ExperimentRouteError {
 impl From<duckdb::Error> for ExperimentRouteError {
     fn from(error: duckdb::Error) -> Self {
         Self::Bench(error.into())
+    }
+}
+
+impl From<ProjectsError> for ExperimentRouteError {
+    fn from(error: ProjectsError) -> Self {
+        Self::Bench(attempt_bench_error(error))
     }
 }
 
@@ -954,56 +989,63 @@ async fn launch_experiment(
         })
     })?;
     let now = iso_timestamp_now();
-    {
-        let mut db = state.db.lock().unwrap();
-        let transaction = db.transaction()?;
-        let spec_json = serde_json::to_string(&spec).unwrap();
-        transaction.execute("INSERT INTO runs (run_id, kind, game, project_id, experiment_id, experiment_spec, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES (?1, 'experiment', ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, ?10, 'running', ?11)", duckdb::params![run_id, run_game, project_id, experiment_id, spec_json, name, crate::BUILD_INFO.git_sha, crate::BUILD_INFO.git_dirty, hostname(), now, log_path.to_string_lossy().to_string()])?;
-        identity::create_root_identity(
-            &transaction,
-            &run_id,
-            "experiment",
-            Some(&project_id),
-            Some(&experiment_id),
-            &now,
-        )
-        .map_err(|error| ExperimentRouteError::Bench(identity_bench_error(error)))?;
-        for cell in &plan.cells {
-            transaction.execute("INSERT INTO experiment_cells (run_id, cell_id, cell_seed, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'pending')", duckdb::params![run_id, cell.cell_id, cell.cell_seed, cell.game, cell.game_config.to_string(), cell.variant_id, cell.variant_label, cell.candidate_config.to_string(), cell.baseline_id, cell.baseline_label, cell.baseline_config.to_string(), serde_json::to_string(&cell.budget).unwrap(), cell.rounds, cell.planned_games])?;
-        }
-        transaction.commit()?;
-    }
-    let launched = match (state.run_launcher)(
-        run_id.clone(),
-        command,
-        "experiment".into(),
-        run_game_segment.into(),
-        Some(name.clone()),
+    let start_request = StartRequest {
+        run_id: run_id.clone(),
+        game: run_game.clone(),
+        project_id,
+        experiment_id,
+        spec_json: serde_json::to_string(&spec).unwrap(),
+        label: name.clone(),
+        git_sha: crate::BUILD_INFO.git_sha.into(),
+        git_dirty: crate::BUILD_INFO.git_dirty,
+        host: hostname(),
+        started_at: now.clone(),
+        log_path: log_path.to_string_lossy().into_owned(),
+        cells: plan
+            .cells
+            .iter()
+            .map(|cell| CellRequest {
+                cell_id: cell.cell_id.clone(),
+                cell_seed: cell.cell_seed,
+                game: cell.game.clone(),
+                game_config: cell.game_config.to_string(),
+                variant_id: cell.variant_id.clone(),
+                variant_label: cell.variant_label.clone(),
+                candidate_config: cell.candidate_config.to_string(),
+                baseline_id: cell.baseline_id.clone(),
+                baseline_label: cell.baseline_label.clone(),
+                baseline_config: cell.baseline_config.to_string(),
+                budget: serde_json::to_string(&cell.budget).unwrap(),
+                rounds: cell.rounds,
+                planned_games: cell.planned_games as u32,
+            })
+            .collect(),
+    };
+    let launched = match lifecycle::launch_projects(
+        &state.db,
+        state.as_ref(),
+        &start_request,
+        process::SpawnRequest {
+            run_id: run_id.clone(),
+            command,
+            kind: "experiment".into(),
+            game: run_game_segment.into(),
+            label: Some(name.clone()),
+        },
+        &now,
+        &iso_timestamp_now(),
     ) {
         Ok(value) => value,
-        Err(error) => {
-            let now = iso_timestamp_now();
-            let db = state.db.lock().unwrap();
-            let _ = db.execute(
-                "UPDATE runs SET status = 'crashed', ended_at = ?1 WHERE run_id = ?2",
-                duckdb::params![now, run_id],
-            );
-            let _ = db.execute("UPDATE experiment_cells SET status = 'failed', error = ?1, ended_at = ?2 WHERE run_id = ?3", duckdb::params![error.to_string(), now, run_id]);
+        Err(lifecycle::LaunchError::Attempt(error)) => {
+            return Err(ExperimentRouteError::Bench(attempt_bench_error(error)));
+        }
+        Err(lifecycle::LaunchError::Spawn(error)) => {
             return Err(ExperimentRouteError::Bench(BenchError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: format!("failed to launch experiment: {error}"),
             }));
         }
     };
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE runs SET pid = ?1, log_path = ?2 WHERE run_id = ?3",
-        duckdb::params![
-            launched.pid as i64,
-            launched.log_path.to_string_lossy().to_string(),
-            run_id
-        ],
-    )?;
     Ok(Json(LaunchResponse {
         run_id,
         pid: launched.pid,
@@ -2785,7 +2827,7 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
         // budget is exhausted. Stop and reap the process before resuming:
         // `--resume` reads the parent's runhistory from disk, so launching
         // while the old process is still flushing could read a torn file.
-        let outcome = match stop_run_impl(state, &advance.parent_run_id).await {
+        let outcome = match lifecycle::stop_run_impl(state, &advance.parent_run_id).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!(
@@ -2983,7 +3025,7 @@ async fn advance_baseline(
         });
     }
 
-    let outcome = stop_run_impl(&state, &run_id).await?;
+    let outcome = lifecycle::stop_run_impl(&state, &run_id).await?;
     if outcome.prior_status == "running" {
         if let Some(pid_val) = outcome.pid {
             let pid = pid_val as u32;
@@ -3040,140 +3082,12 @@ async fn advance_baseline(
     Ok(Json(resp))
 }
 
-/// Outcome of [`stop_run_impl`] — enough for a caller to build its own
-/// response (`stop_run`'s JSON body) or decide whether to wait for the
-/// process to actually exit (`advance_baseline`).
-struct StopOutcome {
-    pid: Option<i64>,
-    /// The run's status *before* this call — `"running"` means a signal was
-    /// (attempted to be) sent; anything else means this was a no-op.
-    prior_status: String,
-    signal_sent: bool,
-}
-
-/// Shared by `stop_run` and `advance_baseline`: sends SIGTERM to the
-/// recorded PID's whole process group (`kill -TERM -<pid>`) and marks the
-/// run as `stopped` in the database.  `launch::launch` puts every run in its
-/// own process group (`process_group(0)`), so the recorded PID is that
-/// group's leader -- signalling just that one PID would leave descendants
-/// (e.g. the `uv`/python child under `bench smac3`) orphaned instead of
-/// terminated.  If the PID is no longer alive, updates the status anyway
-/// (the process exited on its own between the list and the stop request). A
-/// run that isn't `running` is left untouched -- the caller's
-/// `prior_status` tells it so.
-async fn stop_run_impl(state: &Arc<BenchState>, run_id: &str) -> Result<StopOutcome, BenchError> {
-    let (pid, status, kind): (Option<i64>, String, String) = {
-        let db = state.db.lock().unwrap();
-        match db.query_row(
-            "SELECT pid, status, kind FROM runs WHERE run_id = ?1",
-            duckdb::params![run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ) {
-            Ok(row) => row,
-            Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(BenchError {
-                    status: StatusCode::NOT_FOUND,
-                    message: format!("run '{run_id}' not found"),
-                });
-            }
-            Err(e) => return Err(BenchError::from(e)),
-        }
-    };
-
-    if status != "running" {
-        return Ok(StopOutcome {
-            pid,
-            prior_status: status,
-            signal_sent: false,
-        });
-    }
-
-    let mut signal_sent = false;
-
-    if let Some(pid_val) = pid {
-        #[cfg(unix)]
-        {
-            // Negative PID = signal the whole process group, not just its
-            // leader (see doc comment above).
-            match std::process::Command::new("kill")
-                .arg("-TERM")
-                .arg(format!("-{pid_val}"))
-                .status()
-            {
-                Ok(status_result) if status_result.success() => {
-                    signal_sent = true;
-                }
-                Ok(_) => {
-                    // PID not found — that's fine, it means the run exited
-                    // on its own.  We'll still mark it stopped below.
-                }
-                Err(e) => {
-                    return Err(BenchError {
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: format!("failed to signal run '{run_id}' (PID {pid_val}): {e}"),
-                    });
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(BenchError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "process signalling is not supported on this platform".into(),
-            });
-        }
-    }
-
-    // Update the database.
-    let now = iso_timestamp_now();
-    {
-        let mut db = state.db.lock().unwrap();
-        let transaction = db.transaction()?;
-        transaction.execute(
-            "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
-            duckdb::params![&now, run_id],
-        )?;
-        if kind == "experiment" {
-            transaction.execute(
-                "UPDATE experiment_cells SET status = 'cancelled', ended_at = ?1, error = COALESCE(error, 'run stopped') WHERE run_id = ?2 AND status IN ('pending', 'running')",
-                duckdb::params![&now, run_id],
-            )?;
-        }
-        transaction.commit()?;
-    }
-
-    // Append a stop event to the registry log so the ingest loop sees it
-    // if it runs after us.
-    let event = RegistryEvent::Stop {
-        run_id: run_id.to_owned(),
-        exit_code: None,
-        ended_at: now,
-    };
-    let registry_path = state.bench_runs_dir.join("registry.log");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&registry_path)
-    {
-        use std::io::Write;
-        let mut line = event.to_json_line();
-        line.push('\n');
-        let _ = file.write_all(line.as_bytes());
-    }
-
-    Ok(StopOutcome {
-        pid,
-        prior_status: status,
-        signal_sent,
-    })
-}
-
 /// `POST /api/bench/runs/{run_id}/stop` — best-effort SIGTERM
 async fn stop_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<Value>, BenchError> {
-    let outcome = stop_run_impl(&state, &run_id).await?;
+    let outcome = lifecycle::stop_run_impl(&state, &run_id).await?;
 
     if outcome.prior_status != "running" {
         return Ok(Json(json!({
@@ -3203,6 +3117,28 @@ async fn stop_run(
 // ---------------------------------------------------------------------------
 // Command construction
 // ---------------------------------------------------------------------------
+
+fn project_legacy_stop(
+    state: &Arc<BenchState>,
+    run_id: &str,
+    kind: &str,
+) -> Result<String, BenchError> {
+    let ended_at = iso_timestamp_now();
+    let mut db = state.db.lock().unwrap();
+    let tx = db.transaction()?;
+    tx.execute(
+        "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
+        duckdb::params![&ended_at, run_id],
+    )?;
+    if kind == "experiment" {
+        tx.execute(
+            "UPDATE experiment_cells SET status = 'cancelled', ended_at = ?1, error = COALESCE(error, 'run stopped') WHERE run_id = ?2 AND status IN ('pending', 'running')",
+            duckdb::params![&ended_at, run_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(ended_at)
+}
 
 /// Build the launch `config` JSON for a resumed SMAC3 run: clones the old
 /// run's config *wholesale* and patches only `overrides` (old entries plus
@@ -3478,6 +3414,9 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 
 #[cfg(test)]
 mod tests {
+    #[path = "bench_projects_tests.rs"]
+    mod projects_tests;
+
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode as HttpStatusCode};
@@ -3528,6 +3467,25 @@ mod tests {
         experiment_validator: ExperimentValidator,
         run_launcher: RunLauncher,
     ) -> (Router, PathBuf, Arc<BenchState>) {
+        seeded_app_with_state_and_signaller(
+            seed_fn,
+            experiment_validator,
+            run_launcher,
+            Arc::new(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "injected missing process",
+                ))
+            }),
+        )
+    }
+
+    fn seeded_app_with_state_and_signaller(
+        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+        experiment_validator: ExperimentValidator,
+        run_launcher: RunLauncher,
+        process_group_signaller: ProcessGroupSignaller,
+    ) -> (Router, PathBuf, Arc<BenchState>) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_dir =
             std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -3546,6 +3504,7 @@ mod tests {
             bench_runs_dir,
             experiment_validator,
             run_launcher,
+            process_group_signaller,
         });
 
         (bench_router(state.clone()), tmp_dir, state)
@@ -4923,6 +4882,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(identity, (run_id.clone(), None, 1, run_id.clone()));
+        let typed: (String, u64, i64) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT attempt_phase, attempt_version, (SELECT COUNT(*) FROM attempt_events WHERE attempt_id = ?1) FROM runs WHERE run_id = ?1",
+                duckdb::params![&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(typed, ("running".into(), 2, 2));
         let (status, cells_body) = http_get(app, &format!("/api/bench/runs/{run_id}/cells")).await;
         assert_eq!(status, HttpStatusCode::OK);
         let cells = body_json(&cells_body).as_array().unwrap().to_vec();
@@ -4939,7 +4909,6 @@ mod tests {
             .iter()
             .any(|arg| arg == "game-game-a" || arg == "game-game-b"));
     }
-
     // -------------------------------------------------------------------
     // POST /api/bench/launch
     // -------------------------------------------------------------------
@@ -5882,7 +5851,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_returns_ok_for_non_running_run_without_signalling() {
-        let app = seeded_app(default_seed).0;
+        let signal_calls = Arc::new(Mutex::new(0_u32));
+        let signal_calls_for_handler = signal_calls.clone();
+        let app = seeded_app_with_state_and_signaller(
+            default_seed,
+            Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+            injected_general_launcher(),
+            Arc::new(move |_| {
+                *signal_calls_for_handler.lock().unwrap() += 1;
+                Ok(())
+            }),
+        )
+        .0;
         let (status, body) = http_post_json(
             app,
             &format!("/api/bench/runs/{DEFAULT_RUN_ID}/stop"),
@@ -5893,6 +5873,7 @@ mod tests {
         let body = body_json(&body);
         // Completed run — no signal sent, but still succeeds.
         assert_eq!(body["status"], "completed");
+        assert_eq!(*signal_calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]
@@ -5975,86 +5956,6 @@ mod tests {
             vec!["completed", "failed", "cancelled", "cancelled"]
         );
     }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn test_stop_kills_the_whole_process_group_not_just_the_leader() {
-        use std::io::BufRead as _;
-        use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
-
-        // Mirror `launch::launch`'s isolation (`process_group(0)`): spawn a
-        // shell that backgrounds a long-lived `sleep` child and waits on it.
-        // The child inherits the shell's (new) process group since this is
-        // a non-interactive shell with no job control. Recording only the
-        // shell's PID and single-PID `kill`ing it (the pre-fix behavior)
-        // would leave `sleep` running as an orphan.
-        let mut leader = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 60 & echo $!; wait")
-            .stdout(Stdio::piped())
-            .process_group(0)
-            .spawn()
-            .expect("failed to spawn test process group leader");
-        let leader_pid = leader.id() as i64;
-
-        let mut reader = std::io::BufReader::new(leader.stdout.take().unwrap());
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .expect("failed to read child sleep PID");
-        let sleep_pid: i64 = line.trim().parse().expect("child PID should be numeric");
-
-        let is_alive = |pid: i64| {
-            std::process::Command::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        };
-        assert!(is_alive(sleep_pid), "sleep child should start out alive");
-
-        let app = seeded_app(|conn, bench_runs_dir| {
-            let run_dir = bench_runs_dir.join("group-stoppable-run");
-            std::fs::create_dir_all(&run_dir).unwrap();
-            let log_path = run_dir.join("log.jsonl");
-            std::fs::write(&log_path, "").unwrap();
-            conn.execute(
-                "INSERT INTO runs \
-                 (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
-                 VALUES ('group-stoppable-run', 'smac3', 'traffic-lights', 'abc', false, 'h', ?1, \
-                         '2026-03-01T00:00:00Z', 'running', ?2)",
-                duckdb::params![leader_pid, log_path.to_string_lossy().to_string()],
-            )
-            .unwrap();
-        })
-        .0;
-
-        let (status, _) =
-            http_post_json(app, "/api/bench/runs/group-stoppable-run/stop", json!({})).await;
-        assert_eq!(status, HttpStatusCode::OK);
-
-        let _ = leader.wait();
-
-        // SIGTERM's default action is immediate termination, but poll
-        // briefly rather than asserting instantaneously to absorb
-        // scheduling jitter.
-        let mut still_alive = is_alive(sleep_pid);
-        for _ in 0..20 {
-            if !still_alive {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            still_alive = is_alive(sleep_pid);
-        }
-        assert!(
-            !still_alive,
-            "sleep child (PID {sleep_pid}) should have been killed along with its process group leader"
-        );
-    }
-
-    // -------------------------------------------------------------------
     // Error formatting
     // -------------------------------------------------------------------
 

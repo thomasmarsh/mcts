@@ -15,8 +15,14 @@ pub mod attempt_store;
 pub mod identity;
 #[cfg(feature = "duckdb")]
 pub mod ingest;
+pub mod projects_attempt;
+#[cfg(feature = "duckdb")]
+pub mod projects_attempt_duckdb;
 #[cfg(feature = "duckdb")]
 pub mod schema;
+
+#[cfg(all(test, feature = "duckdb"))]
+mod projects_attempt_duckdb_tests;
 
 use std::collections::HashMap;
 
