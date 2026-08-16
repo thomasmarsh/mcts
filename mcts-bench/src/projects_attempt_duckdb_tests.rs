@@ -1,7 +1,8 @@
 use crate::orchestration::{AttemptPhase, ExitObservation};
-use crate::projects_attempt::{ProjectsError, ProjectsRepository, StartRequest};
+use crate::projects_attempt::{LaunchResult, ProjectsError, ProjectsRepository, StartRequest};
 use crate::projects_attempt_duckdb::Repository;
 use crate::schema::ensure_schema;
+use crate::supervised_launch::{LaunchDescriptor, WrapperIdentity};
 use duckdb::Connection;
 
 fn repository() -> Repository<'static> {
@@ -27,26 +28,120 @@ fn request() -> StartRequest {
     }
 }
 
+fn descriptor() -> LaunchDescriptor {
+    LaunchDescriptor {
+        supervisor: "bench".into(),
+        logical_run_id: "a".into(),
+        attempt_id: "a".into(),
+        parent_attempt_id: None,
+        launch_nonce: "nonce".into(),
+        workload_argv: vec!["work".into()],
+        journal_path: "/tmp/a.lifecycle".into(),
+        stdout_path: "/tmp/a.jsonl".into(),
+        stderr_path: "/tmp/a.err".into(),
+    }
+}
+
 #[test]
 fn first_start_and_replay_are_distinct() {
     let repository = repository();
-    repository.create_and_request_start(&request()).unwrap();
+    repository
+        .authorize_start(&request(), &descriptor())
+        .unwrap();
     let first = repository
-        .observe_process("a", 42, "/tmp/a.jsonl", "2026-01-01T00:00:01Z")
+        .record_launch(
+            "a",
+            &LaunchResult::Ready(WrapperIdentity {
+                pid: 42,
+                process_group_id: 42,
+            }),
+            "2026-01-01T00:00:01Z",
+        )
         .unwrap();
-    assert!(!first.replay);
+    assert_eq!(first.token, crate::projects_attempt::LaunchToken::Ready);
+    assert!(matches!(
+        repository
+            .authorize_start(&request(), &descriptor())
+            .unwrap(),
+        crate::projects_attempt::StartAuthorization::Replay(_)
+    ));
+}
+
+#[test]
+fn launch_observation_replays_exactly_and_conflicts_on_differences() {
+    let repository = repository();
+    repository
+        .authorize_start(&request(), &descriptor())
+        .unwrap();
+    let result = LaunchResult::Pending {
+        wrapper: WrapperIdentity {
+            pid: 42,
+            process_group_id: 43,
+        },
+        diagnostic: "waiting".into(),
+    };
+    repository
+        .record_launch("a", &result, "2026-01-01T00:00:01Z")
+        .unwrap();
     let replay = repository
-        .observe_process("a", 42, "/tmp/a.jsonl", "2026-01-01T00:00:02Z")
+        .record_launch("a", &result, "2026-01-01T00:00:02Z")
         .unwrap();
-    assert!(replay.replay);
+    assert_eq!(replay.token, crate::projects_attempt::LaunchToken::Pending);
+    for changed in [
+        LaunchResult::Pending {
+            wrapper: WrapperIdentity {
+                pid: 99,
+                process_group_id: 43,
+            },
+            diagnostic: "waiting".into(),
+        },
+        LaunchResult::Pending {
+            wrapper: WrapperIdentity {
+                pid: 42,
+                process_group_id: 43,
+            },
+            diagnostic: "changed".into(),
+        },
+        LaunchResult::Ready(WrapperIdentity {
+            pid: 42,
+            process_group_id: 43,
+        }),
+    ] {
+        assert!(matches!(
+            repository.record_launch("a", &changed, "2026-01-01T00:00:03Z"),
+            Err(ProjectsError::Conflict(_))
+        ));
+    }
+}
+
+#[test]
+fn launch_observation_requires_prior_authorization() {
+    let repository = repository();
+    assert_eq!(
+        repository.record_launch(
+            "missing",
+            &LaunchResult::SpawnFailed("failed".into()),
+            "2026-01-01T00:00:01Z",
+        ),
+        Err(ProjectsError::NotFound)
+    );
 }
 
 #[test]
 fn stop_authorization_and_exit_conflicts_are_durable() {
     let repository = repository();
-    repository.create_and_request_start(&request()).unwrap();
     repository
-        .observe_process("a", 42, "/tmp/a.jsonl", "2026-01-01T00:00:01Z")
+        .authorize_start(&request(), &descriptor())
+        .unwrap();
+    repository
+        .record_launch(
+            "a",
+            &LaunchResult::Ready(WrapperIdentity {
+                pid: 42,
+                process_group_id: 42,
+            }),
+            "2026-01-01T00:00:01Z",
+        )
         .unwrap();
     assert!(
         repository

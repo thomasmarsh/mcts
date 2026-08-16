@@ -1,28 +1,29 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use mcts_bench::projects_attempt::{ProjectsError, ProjectsRepository};
+#[cfg(test)]
+use mcts_bench::projects_attempt::LaunchResult;
+use mcts_bench::projects_attempt::{
+    LaunchToken, ProjectsError, ProjectsRepository, StartAuthorization, StartRequest,
+};
+use mcts_bench::supervised_launch::LaunchDescriptor;
 
-use super::{process, BenchError, BenchState};
+use super::{process, supervisor_runtime::SupervisorPort, BenchError, BenchState};
 
 pub(super) struct StopOutcome {
     pub(super) pid: Option<i64>,
     pub(super) prior_status: String,
     pub(super) signal_sent: bool,
 }
-
-pub(super) trait Clock: Send + Sync {
+pub(crate) trait Clock: Send + Sync {
     fn now(&self) -> String;
 }
-
-pub(super) struct SystemClock;
-
+pub(crate) struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> String {
         super::iso_timestamp_now()
     }
 }
-
 #[derive(Debug)]
 pub(super) enum StopError {
     Attempt(ProjectsError),
@@ -30,39 +31,65 @@ pub(super) enum StopError {
     NotTyped,
 }
 
-#[derive(Debug)]
-pub(super) enum LaunchError {
-    Attempt(ProjectsError),
-    Spawn(String),
+pub(crate) struct BenchRuntime {
+    repository: Arc<dyn ProjectsRepository + Send + Sync>,
+    supervisor: Arc<dyn SupervisorPort>,
+    clock: Arc<dyn Clock>,
+}
+pub(super) struct RuntimeLaunch {
+    pub(super) pid: u32,
+    pub(super) diagnostic: Option<String>,
+}
+impl BenchRuntime {
+    pub(crate) fn new(
+        repository: Arc<dyn ProjectsRepository + Send + Sync>,
+        supervisor: Arc<dyn SupervisorPort>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            repository,
+            supervisor,
+            clock,
+        }
+    }
+    pub(super) fn start_projects(
+        &self,
+        request: StartRequest,
+        descriptor: LaunchDescriptor,
+    ) -> Result<RuntimeLaunch, ProjectsError> {
+        match self.repository.authorize_start(&request, &descriptor)? {
+            StartAuthorization::New => {}
+            StartAuthorization::Replay(previous) => return recorded_launch(previous.result),
+        }
+        let result = self.supervisor.launch(&descriptor);
+        let observed_at = self.clock.now();
+        let recorded = self
+            .repository
+            .record_launch(&request.run_id, &result, &observed_at)?;
+        recorded_launch(Some(recorded))
+    }
 }
 
-pub(super) fn launch_projects(
-    repo: &dyn ProjectsRepository,
-    process: &dyn process::ProcessController,
-    request: &mcts_bench::projects_attempt::StartRequest,
-    spawn: process::SpawnRequest,
-    clock: &dyn Clock,
-) -> Result<process::SpawnedProcess, LaunchError> {
-    repo.create_and_request_start(request)
-        .map_err(LaunchError::Attempt)?;
-    let launched = match process.spawn(spawn) {
-        Ok(launched) => launched,
-        Err(process::ProcessError::Failed(message)) => {
-            let observed_at = clock.now();
-            repo.observe_spawn_failure(&request.run_id, &message, &observed_at)
-                .map_err(LaunchError::Attempt)?;
-            return Err(LaunchError::Spawn(message));
-        }
+fn recorded_launch(
+    previous: Option<mcts_bench::projects_attempt::LaunchRecord>,
+) -> Result<RuntimeLaunch, ProjectsError> {
+    let Some(previous) = previous else {
+        return Ok(RuntimeLaunch {
+            pid: 0,
+            diagnostic: Some("launch outcome remains pending".into()),
+        });
     };
-    let observed_at = clock.now();
-    repo.observe_process(
-        &request.run_id,
-        launched.pid as i64,
-        &launched.log_path.to_string_lossy(),
-        &observed_at,
-    )
-    .map_err(LaunchError::Attempt)?;
-    Ok(launched)
+    match previous.token {
+        LaunchToken::SpawnFailed => Err(ProjectsError::Storage(
+            previous
+                .diagnostic
+                .unwrap_or_else(|| "supervisor spawn failed".into()),
+        )),
+        LaunchToken::Ready | LaunchToken::Pending | LaunchToken::Conflict => Ok(RuntimeLaunch {
+            pid: previous.wrapper.map_or(0, |wrapper| wrapper.pid as u32),
+            diagnostic: previous.diagnostic,
+        }),
+    }
 }
 
 pub(super) fn stop_projects(
@@ -84,33 +111,29 @@ pub(super) fn stop_projects(
             signal_sent: false,
         });
     }
-
-    let requested_at = clock.now();
     let should_signal = repo
-        .request_operator_stop(run_id, &requested_at)
+        .request_operator_stop(run_id, &clock.now())
         .map_err(StopError::Attempt)?
         .signal_process_group;
     let signal_sent = if should_signal {
         match target.pid {
-            None => false,
             Some(pid) => match process.signal_group(pid) {
                 Ok(process::SignalOutcome::Sent) => {
-                    let signal_at = clock.now();
-                    repo.observe_signal(run_id, &signal_at)
+                    repo.observe_signal(run_id, &clock.now())
                         .map_err(StopError::Attempt)?;
                     true
                 }
                 Ok(process::SignalOutcome::NotFound) => false,
                 Err(process::ProcessError::Failed(message)) => {
-                    return Err(StopError::Process(message));
+                    return Err(StopError::Process(message))
                 }
             },
+            None => false,
         }
     } else {
         false
     };
-    let ended_at = clock.now();
-    repo.project_stop(run_id, &ended_at)
+    repo.project_stop(run_id, &clock.now())
         .map_err(StopError::Attempt)?;
     Ok(StopOutcome {
         pid: target.pid,
@@ -129,7 +152,7 @@ pub(super) async fn stop_run_impl(
         .load_stop_target(run_id)
         .map_err(super::attempt_bench_error)?;
     if target.typed {
-        return stop_projects(&state.db, state.as_ref(), run_id, clock)
+        return stop_projects(state.db.as_ref(), state.as_ref(), run_id, clock)
             .map_err(|error| stop_error(run_id, error));
     }
     if target.status != "running" {
@@ -139,7 +162,6 @@ pub(super) async fn stop_run_impl(
             signal_sent: false,
         });
     }
-
     let signal_sent = match target.pid {
         Some(pid) => match process::ProcessController::signal_group(state.as_ref(), pid) {
             Ok(process::SignalOutcome::Sent) => true,
@@ -156,7 +178,6 @@ pub(super) async fn stop_run_impl(
         signal_sent,
     })
 }
-
 fn process_error(run_id: &str, error: process::ProcessError) -> BenchError {
     BenchError {
         status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -167,7 +188,6 @@ fn process_error(run_id: &str, error: process::ProcessError) -> BenchError {
         },
     }
 }
-
 fn stop_error(run_id: &str, error: StopError) -> BenchError {
     match error {
         StopError::Attempt(error) => super::attempt_bench_error(error),
@@ -181,20 +201,19 @@ fn stop_error(run_id: &str, error: StopError) -> BenchError {
         },
     }
 }
-
 fn append_legacy_stop(state: &Arc<BenchState>, run_id: &str, ended_at: String) {
-    let event = mcts_bench::log::RegistryEvent::Stop {
-        run_id: run_id.to_owned(),
-        exit_code: None,
-        ended_at,
-    };
     let path = state.bench_runs_dir.join("registry.log");
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
     {
-        let mut line = event.to_json_line();
+        let mut line = mcts_bench::log::RegistryEvent::Stop {
+            run_id: run_id.to_owned(),
+            exit_code: None,
+            ended_at,
+        }
+        .to_json_line();
         line.push('\n');
         let _ = file.write_all(line.as_bytes());
     }
@@ -202,53 +221,276 @@ fn append_legacy_stop(state: &Arc<BenchState>, run_id: &str, ended_at: String) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
+    use super::*;
     use mcts_bench::orchestration::{AttemptState, ExitObservation};
     use mcts_bench::projects_attempt::{
-        ExitAuthorization, LivenessTarget, ProjectsError, ProjectsRepository, Receipt,
-        StartRequest, StopAuthorization, StopTarget,
+        ExitAuthorization, LivenessTarget, Receipt, StartAuthorization, StopAuthorization,
+        StopTarget,
     };
+    use mcts_bench::supervised_launch::WrapperIdentity;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
-    use super::*;
-
-    struct FakeRepository {
+    struct FakeRepo {
         events: Arc<Mutex<Vec<&'static str>>>,
+        replay: bool,
+        result: Mutex<Option<LaunchResult>>,
         timestamps: Arc<Mutex<Vec<String>>>,
-        status: Mutex<String>,
-        authorize_signal: Mutex<bool>,
+    }
+    impl ProjectsRepository for FakeRepo {
+        fn authorize_start(
+            &self,
+            _: &StartRequest,
+            _: &LaunchDescriptor,
+        ) -> Result<StartAuthorization, ProjectsError> {
+            self.events.lock().unwrap().push("authorize");
+            if self.replay {
+                Ok(StartAuthorization::Replay(
+                    mcts_bench::projects_attempt::PreviousLaunch {
+                        result: Some(mcts_bench::projects_attempt::LaunchRecord {
+                            token: LaunchToken::Ready,
+                            wrapper: Some(WrapperIdentity {
+                                pid: 7,
+                                process_group_id: 7,
+                            }),
+                            diagnostic: Some("prior".into()),
+                        }),
+                    },
+                ))
+            } else {
+                Ok(StartAuthorization::New)
+            }
+        }
+        fn record_launch(
+            &self,
+            _: &str,
+            result: &LaunchResult,
+            at: &str,
+        ) -> Result<mcts_bench::projects_attempt::LaunchRecord, ProjectsError> {
+            self.events.lock().unwrap().push("record");
+            *self.result.lock().unwrap() = Some(result.clone());
+            self.timestamps.lock().unwrap().push(at.into());
+            Ok(match result {
+                LaunchResult::Ready(wrapper) => mcts_bench::projects_attempt::LaunchRecord {
+                    token: LaunchToken::Ready,
+                    wrapper: Some(*wrapper),
+                    diagnostic: None,
+                },
+                LaunchResult::SpawnFailed(message) => mcts_bench::projects_attempt::LaunchRecord {
+                    token: LaunchToken::SpawnFailed,
+                    wrapper: None,
+                    diagnostic: Some(message.clone()),
+                },
+                LaunchResult::Pending {
+                    wrapper,
+                    diagnostic,
+                } => mcts_bench::projects_attempt::LaunchRecord {
+                    token: LaunchToken::Pending,
+                    wrapper: Some(*wrapper),
+                    diagnostic: Some(diagnostic.clone()),
+                },
+                LaunchResult::Conflict {
+                    wrapper,
+                    diagnostic,
+                } => mcts_bench::projects_attempt::LaunchRecord {
+                    token: LaunchToken::Conflict,
+                    wrapper: Some(*wrapper),
+                    diagnostic: Some(format!("{diagnostic:?}")),
+                },
+            })
+        }
+        fn load_stop_target(
+            &self,
+            _: &str,
+        ) -> Result<mcts_bench::projects_attempt::StopTarget, ProjectsError> {
+            unreachable!()
+        }
+        fn load_if_initialized(&self, _: &str) -> Result<Option<Receipt>, ProjectsError> {
+            unreachable!()
+        }
+        fn typed_liveness_targets(
+            &self,
+        ) -> Result<Vec<mcts_bench::projects_attempt::LivenessTarget>, ProjectsError> {
+            unreachable!()
+        }
+        fn request_operator_stop(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mcts_bench::projects_attempt::StopAuthorization, ProjectsError> {
+            unreachable!()
+        }
+        fn observe_signal(&self, _: &str, _: &str) -> Result<Receipt, ProjectsError> {
+            unreachable!()
+        }
+        fn observe_exit(
+            &self,
+            _: &str,
+            _: mcts_bench::orchestration::ExitObservation,
+            _: &str,
+        ) -> Result<mcts_bench::projects_attempt::ExitAuthorization, ProjectsError> {
+            unreachable!()
+        }
+        fn finalize_output(&self, _: &str, _: &str) -> Result<Receipt, ProjectsError> {
+            unreachable!()
+        }
+        fn project_stop(&self, _: &str, _: &str) -> Result<(), ProjectsError> {
+            unreachable!()
+        }
+    }
+    fn request() -> StartRequest {
+        StartRequest {
+            run_id: "run".into(),
+            game: None,
+            project_id: "p".into(),
+            experiment_id: "e".into(),
+            spec_json: "{}".into(),
+            label: "x".into(),
+            git_sha: "s".into(),
+            git_dirty: false,
+            host: "h".into(),
+            started_at: "start".into(),
+            log_path: "log".into(),
+            cells: vec![],
+        }
+    }
+    fn descriptor() -> LaunchDescriptor {
+        LaunchDescriptor {
+            supervisor: "bench".into(),
+            logical_run_id: "run".into(),
+            attempt_id: "run".into(),
+            parent_attempt_id: None,
+            launch_nonce: "n".into(),
+            workload_argv: vec!["work".into()],
+            journal_path: "journal".into(),
+            stdout_path: "out".into(),
+            stderr_path: "err".into(),
+        }
+    }
+    #[test]
+    fn start_orders_effect_clock_and_each_result() {
+        for result in [
+            LaunchResult::Ready(WrapperIdentity {
+                pid: 4,
+                process_group_id: 4,
+            }),
+            LaunchResult::SpawnFailed("no".into()),
+            LaunchResult::Pending {
+                wrapper: WrapperIdentity {
+                    pid: 4,
+                    process_group_id: 4,
+                },
+                diagnostic: "wait".into(),
+            },
+            LaunchResult::Conflict {
+                wrapper: WrapperIdentity {
+                    pid: 4,
+                    process_group_id: 4,
+                },
+                diagnostic: mcts_bench::supervised_launch::ReadinessFailure::Conflict,
+            },
+        ] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let timestamps = Arc::new(Mutex::new(Vec::new()));
+            let repo = Arc::new(FakeRepo {
+                events: events.clone(),
+                replay: false,
+                result: Mutex::new(None),
+                timestamps: timestamps.clone(),
+            });
+            let launch_result = result.clone();
+            let launch_events = events.clone();
+            let runtime = BenchRuntime::new(
+                repo.clone(),
+                Arc::new(move |_: &LaunchDescriptor| {
+                    launch_events.lock().unwrap().push("launch");
+                    launch_result.clone()
+                }),
+                Arc::new(FakeClock {
+                    events: events.clone(),
+                }),
+            );
+            let returned = runtime.start_projects(request(), descriptor());
+            assert_eq!(
+                *events.lock().unwrap(),
+                ["authorize", "launch", "clock", "record"]
+            );
+            assert_eq!(*timestamps.lock().unwrap(), ["after"]);
+            assert_eq!(*repo.result.lock().unwrap(), Some(result.clone()));
+            assert!(matches!(
+                (result, returned),
+                (LaunchResult::SpawnFailed(_), Err(_)) | (_, Ok(_))
+            ));
+        }
+    }
+    #[test]
+    fn replay_returns_persisted_identity_without_launch() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let repo = Arc::new(FakeRepo {
+            events: events.clone(),
+            replay: true,
+            result: Mutex::new(None),
+            timestamps: Arc::new(Mutex::new(Vec::new())),
+        });
+        let runtime = BenchRuntime::new(
+            repo,
+            Arc::new(|_: &LaunchDescriptor| panic!("must not launch")),
+            Arc::new(FakeClock {
+                events: events.clone(),
+            }),
+        );
+        assert_eq!(
+            runtime.start_projects(request(), descriptor()).unwrap().pid,
+            7
+        );
+        assert_eq!(*events.lock().unwrap(), ["authorize"]);
+    }
+    struct FakeClock {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+    impl Clock for FakeClock {
+        fn now(&self) -> String {
+            self.events.lock().unwrap().push("clock");
+            "after".into()
+        }
     }
 
-    impl FakeRepository {
-        fn new(events: Arc<Mutex<Vec<&'static str>>>, timestamps: Arc<Mutex<Vec<String>>>) -> Self {
+    struct FakeStopRepo {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        status: Mutex<String>,
+        timestamps: Mutex<Vec<(&'static str, String)>>,
+    }
+
+    impl FakeStopRepo {
+        fn new(events: Arc<Mutex<Vec<&'static str>>>) -> Self {
             Self {
                 events,
-                timestamps,
                 status: Mutex::new("running".into()),
-                authorize_signal: Mutex::new(true),
-            }
-        }
-
-        fn mark(&self, event: &'static str) {
-            self.events.lock().unwrap().push(event);
-        }
-
-        fn record_timestamp(&self, timestamp: &str) {
-            self.timestamps.lock().unwrap().push(timestamp.to_owned());
-        }
-
-        fn receipt() -> Receipt {
-            Receipt {
-                state: AttemptState::planned(),
-                version: 0,
-                replay: false,
+                timestamps: Mutex::new(Vec::new()),
             }
         }
     }
 
-    impl ProjectsRepository for FakeRepository {
-        fn load_stop_target(&self, _run_id: &str) -> Result<StopTarget, ProjectsError> {
-            self.mark("load");
+    impl ProjectsRepository for FakeStopRepo {
+        fn authorize_start(
+            &self,
+            _: &StartRequest,
+            _: &LaunchDescriptor,
+        ) -> Result<StartAuthorization, ProjectsError> {
+            unreachable!()
+        }
+
+        fn record_launch(
+            &self,
+            _: &str,
+            _: &LaunchResult,
+            _: &str,
+        ) -> Result<mcts_bench::projects_attempt::LaunchRecord, ProjectsError> {
+            unreachable!()
+        }
+
+        fn load_stop_target(&self, _: &str) -> Result<StopTarget, ProjectsError> {
+            self.events.lock().unwrap().push("load");
             Ok(StopTarget {
                 pid: Some(42),
                 status: self.status.lock().unwrap().clone(),
@@ -257,292 +499,183 @@ mod tests {
             })
         }
 
-        fn load_if_initialized(&self, _run_id: &str) -> Result<Option<Receipt>, ProjectsError> {
-            self.mark("validate");
-            Ok(Some(Self::receipt()))
+        fn load_if_initialized(&self, _: &str) -> Result<Option<Receipt>, ProjectsError> {
+            self.events.lock().unwrap().push("initialized");
+            Ok(Some(receipt()))
         }
 
         fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError> {
-            Ok(Vec::new())
-        }
-
-        fn create_and_request_start(&self, _request: &StartRequest) -> Result<(), ProjectsError> {
-            self.mark("create");
-            Ok(())
-        }
-
-        fn observe_process(
-            &self,
-            _run_id: &str,
-            _pid: i64,
-            _log_path: &str,
-            observed_at: &str,
-        ) -> Result<Receipt, ProjectsError> {
-            self.mark("process");
-            self.record_timestamp(observed_at);
-            Ok(Self::receipt())
-        }
-
-        fn observe_spawn_failure(
-            &self,
-            _run_id: &str,
-            _message: &str,
-            observed_at: &str,
-        ) -> Result<Receipt, ProjectsError> {
-            self.mark("spawn-failure");
-            self.record_timestamp(observed_at);
-            Ok(Self::receipt())
+            unreachable!()
         }
 
         fn request_operator_stop(
             &self,
-            _run_id: &str,
-            observed_at: &str,
+            _: &str,
+            at: &str,
         ) -> Result<StopAuthorization, ProjectsError> {
-            self.mark("stop");
-            self.record_timestamp(observed_at);
-            let mut authorized = self.authorize_signal.lock().unwrap();
-            let signal_process_group = *authorized;
-            *authorized = false;
+            self.events.lock().unwrap().push("stop");
+            self.timestamps.lock().unwrap().push(("request", at.into()));
             Ok(StopAuthorization {
-                signal_process_group,
+                signal_process_group: true,
             })
         }
 
-        fn observe_signal(
-            &self,
-            _run_id: &str,
-            observed_at: &str,
-        ) -> Result<Receipt, ProjectsError> {
-            self.mark("observed");
-            self.record_timestamp(observed_at);
-            Ok(Self::receipt())
+        fn observe_signal(&self, _: &str, at: &str) -> Result<Receipt, ProjectsError> {
+            self.events.lock().unwrap().push("observed");
+            self.timestamps.lock().unwrap().push(("signal", at.into()));
+            Ok(receipt())
         }
 
         fn observe_exit(
             &self,
-            _run_id: &str,
-            _exit: ExitObservation,
-            _ended_at: &str,
+            _: &str,
+            _: ExitObservation,
+            _: &str,
         ) -> Result<ExitAuthorization, ProjectsError> {
-            Ok(ExitAuthorization {
-                finalize_output: true,
-                state: AttemptState::planned(),
-            })
+            unreachable!()
         }
 
-        fn finalize_output(
-            &self,
-            _run_id: &str,
-            _observed_at: &str,
-        ) -> Result<Receipt, ProjectsError> {
-            Ok(Self::receipt())
+        fn finalize_output(&self, _: &str, _: &str) -> Result<Receipt, ProjectsError> {
+            unreachable!()
         }
 
-        fn project_stop(&self, _run_id: &str, ended_at: &str) -> Result<(), ProjectsError> {
-            self.mark("project");
-            self.record_timestamp(ended_at);
+        fn project_stop(&self, _: &str, at: &str) -> Result<(), ProjectsError> {
+            self.events.lock().unwrap().push("project");
+            self.timestamps
+                .lock()
+                .unwrap()
+                .push(("projection", at.into()));
             *self.status.lock().unwrap() = "stopped".into();
             Ok(())
         }
     }
 
-    struct FakeClock {
-        events: Arc<Mutex<Vec<&'static str>>>,
-        values: Vec<&'static str>,
-        next: Mutex<usize>,
+    fn receipt() -> Receipt {
+        Receipt {
+            state: AttemptState::planned(),
+            version: 1,
+            replay: false,
+        }
     }
 
-    impl Clock for FakeClock {
+    struct SequenceClock {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        values: Mutex<VecDeque<String>>,
+    }
+
+    impl SequenceClock {
+        fn new(events: Arc<Mutex<Vec<&'static str>>>, values: &[&str]) -> Self {
+            Self {
+                events,
+                values: Mutex::new(values.iter().map(|value| (*value).into()).collect()),
+            }
+        }
+    }
+
+    impl Clock for SequenceClock {
         fn now(&self) -> String {
             self.events.lock().unwrap().push("clock");
-            let mut next = self.next.lock().unwrap();
-            let value = self.values[*next];
-            *next += 1;
-            value.into()
+            self.values.lock().unwrap().pop_front().unwrap()
         }
     }
 
-    fn fake_clock(events: Arc<Mutex<Vec<&'static str>>>, values: Vec<&'static str>) -> FakeClock {
-        FakeClock {
-            events,
-            values,
-            next: Mutex::new(0),
-        }
+    enum FakeSignal {
+        Sent,
+        NotFound,
+        Failed,
     }
 
     struct FakeProcess {
         events: Arc<Mutex<Vec<&'static str>>>,
-        signal: Result<process::SignalOutcome, String>,
-        spawn: Result<(), String>,
+        result: FakeSignal,
     }
 
     impl process::ProcessController for FakeProcess {
-        fn spawn(
-            &self,
-            _request: process::SpawnRequest,
-        ) -> Result<process::SpawnedProcess, process::ProcessError> {
-            self.events.lock().unwrap().push("spawn");
-            self.spawn
-                .clone()
-                .map(|()| process::SpawnedProcess {
-                    pid: 42,
-                    log_path: "log".into(),
-                })
-                .map_err(process::ProcessError::Failed)
-        }
-
-        fn signal_group(&self, _pid: i64) -> Result<process::SignalOutcome, process::ProcessError> {
+        fn signal_group(&self, pid: i64) -> Result<process::SignalOutcome, process::ProcessError> {
+            assert_eq!(pid, 42);
             self.events.lock().unwrap().push("signal");
-            self.signal.clone().map_err(process::ProcessError::Failed)
+            match self.result {
+                FakeSignal::Sent => Ok(process::SignalOutcome::Sent),
+                FakeSignal::NotFound => Ok(process::SignalOutcome::NotFound),
+                FakeSignal::Failed => Err(process::ProcessError::Failed("denied".into())),
+            }
         }
-    }
-
-    fn start_request() -> StartRequest {
-        StartRequest {
-            run_id: "run".into(),
-            game: Some("nim".into()),
-            project_id: "project".into(),
-            experiment_id: "experiment".into(),
-            spec_json: "{}".into(),
-            label: "Run".into(),
-            git_sha: "sha".into(),
-            git_dirty: false,
-            host: "host".into(),
-            started_at: "start".into(),
-            log_path: "log".into(),
-            cells: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn launch_commits_before_spawn_and_records_process() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let timestamps = Arc::new(Mutex::new(Vec::new()));
-        let repo = FakeRepository::new(events.clone(), timestamps.clone());
-        let process = FakeProcess {
-            events: events.clone(),
-            signal: Ok(process::SignalOutcome::Sent),
-            spawn: Ok(()),
-        };
-        let clock = fake_clock(events.clone(), vec!["process"]);
-        launch_projects(
-            &repo,
-            &process,
-            &start_request(),
-            process::SpawnRequest {
-                run_id: "run".into(),
-                command: vec!["coordinator".into()],
-                kind: "experiment".into(),
-                game: "nim".into(),
-                label: None,
-            },
-            &clock,
-        )
-        .unwrap();
-        assert_eq!(
-            *events.lock().unwrap(),
-            ["create", "spawn", "clock", "process"]
-        );
-        assert_eq!(*timestamps.lock().unwrap(), ["process"]);
-    }
-
-    #[test]
-    fn launch_failure_records_spawn_failure_after_effect() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let timestamps = Arc::new(Mutex::new(Vec::new()));
-        let repo = FakeRepository::new(events.clone(), timestamps.clone());
-        let process = FakeProcess {
-            events: events.clone(),
-            signal: Ok(process::SignalOutcome::Sent),
-            spawn: Err("spawn failed".into()),
-        };
-        let clock = fake_clock(events.clone(), vec!["spawn-failure"]);
-        assert!(matches!(
-            launch_projects(
-                &repo,
-                &process,
-                &start_request(),
-                process::SpawnRequest {
-                    run_id: "run".into(),
-                    command: vec![],
-                    kind: "experiment".into(),
-                    game: "nim".into(),
-                    label: None,
-                },
-                &clock,
-            ),
-            Err(LaunchError::Spawn(message)) if message == "spawn failed"
-        ));
-        assert_eq!(
-            *events.lock().unwrap(),
-            ["create", "spawn", "clock", "spawn-failure"]
-        );
-        assert_eq!(*timestamps.lock().unwrap(), ["spawn-failure"]);
     }
 
     #[test]
     fn stop_signals_once_and_preserves_not_found_and_error_semantics() {
-        for signal in [
-            Ok(process::SignalOutcome::Sent),
-            Ok(process::SignalOutcome::NotFound),
-            Err("signal failed".into()),
-        ] {
-            let events = Arc::new(Mutex::new(Vec::new()));
-            let timestamps = Arc::new(Mutex::new(Vec::new()));
-            let repo = FakeRepository::new(events.clone(), timestamps.clone());
-            let process = FakeProcess {
-                events: events.clone(),
-                signal: signal.clone(),
-                spawn: Ok(()),
-            };
-            let clock_values = match &signal {
-                Ok(process::SignalOutcome::Sent) => vec!["request", "signal", "projection"],
-                Ok(process::SignalOutcome::NotFound) => vec!["request", "projection"],
-                Err(_) => vec!["request"],
-            };
-            let clock = fake_clock(events.clone(), clock_values);
-            let result = stop_projects(&repo, &process, "run", &clock);
-            match signal {
-                Ok(process::SignalOutcome::Sent) => {
-                    assert!(result.is_ok());
-                    assert_eq!(
-                        *events.lock().unwrap(),
-                        [
-                            "load", "clock", "stop", "signal", "clock", "observed", "clock",
-                            "project"
-                        ]
-                    );
-                    assert_eq!(
-                        *timestamps.lock().unwrap(),
-                        ["request", "signal", "projection"]
-                    );
-                    let second = stop_projects(&repo, &process, "run", &clock).unwrap();
-                    assert!(!second.signal_sent);
-                    assert_eq!(
-                        events
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .filter(|event| **event == "signal")
-                            .count(),
-                        1
-                    );
-                }
-                Ok(process::SignalOutcome::NotFound) => {
-                    assert!(result.is_ok());
-                    assert_eq!(
-                        *events.lock().unwrap(),
-                        ["load", "clock", "stop", "signal", "clock", "project"]
-                    );
-                    assert_eq!(*timestamps.lock().unwrap(), ["request", "projection"]);
-                }
-                Err(_) => {
-                    assert!(result.is_err());
-                    assert_eq!(*events.lock().unwrap(), ["load", "clock", "stop", "signal"]);
-                    assert_eq!(*timestamps.lock().unwrap(), ["request"]);
-                }
-            }
-        }
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let repo = FakeStopRepo::new(events.clone());
+        let process = FakeProcess {
+            events: events.clone(),
+            result: FakeSignal::Sent,
+        };
+        let clock = SequenceClock::new(events.clone(), &["request", "signal", "projection"]);
+        let outcome = stop_projects(&repo, &process, "run", &clock).unwrap();
+        assert!(outcome.signal_sent);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["load", "clock", "stop", "signal", "clock", "observed", "clock", "project"]
+        );
+        assert_eq!(
+            *repo.timestamps.lock().unwrap(),
+            [
+                ("request", "request".into()),
+                ("signal", "signal".into()),
+                ("projection", "projection".into())
+            ]
+        );
+        assert!(
+            !stop_projects(&repo, &process, "run", &clock)
+                .unwrap()
+                .signal_sent
+        );
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| **event == "signal")
+                .count(),
+            1
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let repo = FakeStopRepo::new(events.clone());
+        let process = FakeProcess {
+            events: events.clone(),
+            result: FakeSignal::NotFound,
+        };
+        let clock = SequenceClock::new(events.clone(), &["request", "projection"]);
+        let outcome = stop_projects(&repo, &process, "run", &clock).unwrap();
+        assert!(!outcome.signal_sent);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["load", "clock", "stop", "signal", "clock", "project"]
+        );
+        assert_eq!(
+            *repo.timestamps.lock().unwrap(),
+            [
+                ("request", "request".into()),
+                ("projection", "projection".into())
+            ]
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let repo = FakeStopRepo::new(events.clone());
+        let process = FakeProcess {
+            events: events.clone(),
+            result: FakeSignal::Failed,
+        };
+        let clock = SequenceClock::new(events.clone(), &["request"]);
+        assert!(matches!(
+            stop_projects(&repo, &process, "run", &clock),
+            Err(StopError::Process(message)) if message == "denied"
+        ));
+        assert_eq!(*events.lock().unwrap(), ["load", "clock", "stop", "signal"]);
+        assert_eq!(
+            *repo.timestamps.lock().unwrap(),
+            [("request", "request".into())]
+        );
     }
 }

@@ -109,11 +109,10 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
         };
         events.push((priority, event));
     }
-    // A very short child can be reaped before launcher's registry Start write
-    // reaches the file. For an already initialized Projects row, process its
-    // Start fact first so the typed attempt cannot wedge in Finalizing before
-    // process observation arrives. Legacy registry-only rows retain file
-    // order and behavior.
+    // A very short process can be reaped before its registry Start write
+    // reaches the file. Process Starts before typed Stops so compatibility
+    // rows exist; lifecycle launch evidence remains authoritative for typed
+    // attempts. Legacy registry-only rows retain file order and behavior.
     events.sort_by_key(|(priority, _)| *priority);
 
     for (_, event) in events {
@@ -147,19 +146,6 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                         .map_err(|error| duckdb::Error::ToSqlConversionFailure(Box::new(error)))?;
                 }
                 tx.commit()?;
-                if inserted == 0
-                    && kind == "experiment"
-                    && projects_attempt_duckdb::Repository::new(conn)
-                        .load_if_initialized(&run_id)?
-                        .is_some()
-                {
-                    projects_attempt_duckdb::Repository::new(conn).observe_process(
-                        &run_id,
-                        pid as i64,
-                        &log_path,
-                        &started_at,
-                    )?;
-                }
             }
             RegistryEvent::Stop {
                 run_id,

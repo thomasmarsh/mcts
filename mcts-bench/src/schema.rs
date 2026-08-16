@@ -139,6 +139,20 @@ pub const CREATE_TABLES: &[&str] = &[
         PRIMARY KEY (attempt_id, event_key),
         UNIQUE (attempt_id, attempt_version)
     )",
+    "CREATE TABLE IF NOT EXISTS projects_launches (
+        attempt_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+        logical_run_id TEXT NOT NULL,
+        parent_attempt_id TEXT,
+        launch_nonce TEXT NOT NULL,
+        workload_argv JSON NOT NULL,
+        lifecycle_path TEXT NOT NULL,
+        stdout_path TEXT NOT NULL,
+        stderr_path TEXT NOT NULL,
+        wrapper_pid UBIGINT,
+        process_group_id UBIGINT,
+        launch_result TEXT,
+        launch_diagnostic TEXT
+    )",
 ];
 
 pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {

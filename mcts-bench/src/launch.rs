@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::unix::process::CommandExt;
 
 use crate::log::RegistryEvent;
+use crate::supervised_launch::{SupervisorCommand, WrapperIdentity};
 
 /// Source revision attached to a launched benchmark run.
 #[derive(Clone, Copy)]
@@ -67,6 +68,71 @@ pub fn launch(
         label,
         build_info,
     )
+}
+
+/// Detach a supervisor wrapper without giving it the workload's output file
+/// descriptors. The wrapper records closure of those files itself.
+pub fn launch_supervisor(
+    run_id: &str,
+    command: &SupervisorCommand,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    workload_log_path: &Path,
+    registry_path: &Path,
+    build_info: BuildInfo<'_>,
+) -> std::io::Result<WrapperIdentity> {
+    if let Some(parent) = stdout_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = stderr_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut child = Command::new(&command.executable);
+    child.args(&command.arguments);
+    child.stdout(fs::File::create(stdout_path)?);
+    child.stderr(fs::File::create(stderr_path)?);
+    #[cfg(unix)]
+    child.process_group(0);
+    let mut child = child.spawn()?;
+    let pid = child.id() as u64;
+    let _ = append_registry_event(
+        &RegistryEvent::Start {
+            run_id: run_id.into(),
+            kind: "experiment".into(),
+            game: "experiment-grid".into(),
+            pid: pid as u32,
+            cmd: std::iter::once(command.executable.to_string_lossy().into_owned())
+                .chain(
+                    command
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.to_string_lossy().into_owned()),
+                )
+                .collect(),
+            log_path: workload_log_path.to_string_lossy().into_owned(),
+            git_sha: build_info.git_sha.into(),
+            git_dirty: build_info.git_dirty,
+            started_at: iso_timestamp(),
+        },
+        registry_path,
+    );
+    let reaper_run_id = run_id.to_owned();
+    let registry_path = registry_path.to_path_buf();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = append_registry_event(
+            &RegistryEvent::Stop {
+                run_id: reaper_run_id,
+                exit_code: status.ok().and_then(|status| status.code()),
+                ended_at: iso_timestamp(),
+            },
+            &registry_path,
+        );
+    });
+    Ok(WrapperIdentity {
+        pid,
+        process_group_id: pid,
+    })
 }
 
 /// Like [`launch`], but with a caller-supplied `run_id` instead of one
@@ -138,7 +204,10 @@ pub fn launch_with_run_id(
             exit_code: status.ok().and_then(|s| s.code()),
             ended_at: iso_timestamp(),
         };
-        let _ = append_registry_event(&stop);
+        let _ = append_registry_event(
+            &stop,
+            Path::new(BENCH_RUNS_DIR).join("registry.log").as_path(),
+        );
     });
 
     let event = RegistryEvent::Start {
@@ -152,7 +221,10 @@ pub fn launch_with_run_id(
         git_dirty: build_info.git_dirty,
         started_at: iso_timestamp(),
     };
-    append_registry_event(&event)?;
+    append_registry_event(
+        &event,
+        Path::new(BENCH_RUNS_DIR).join("registry.log").as_path(),
+    )?;
 
     Ok(LaunchedRun {
         run_id,
@@ -241,8 +313,7 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 // Registry log
 // ---------------------------------------------------------------------------
 
-fn append_registry_event(event: &RegistryEvent) -> std::io::Result<()> {
-    let registry_path = Path::new(BENCH_RUNS_DIR).join("registry.log");
+fn append_registry_event(event: &RegistryEvent, registry_path: &Path) -> std::io::Result<()> {
     if let Some(parent) = registry_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -462,6 +533,56 @@ mod tests {
             serde_json::from_str(lines[1]).expect("failed to parse second line");
         assert!(matches!(parsed_stop, RegistryEvent::Stop { ref run_id, .. } if run_id == "run-1"));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_uses_distinct_outputs_and_records_exit() {
+        static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mcts_supervisor_test_{}_{}",
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stdout = dir.join("outer.stdout");
+        let stderr = dir.join("outer.stderr");
+        let workload = dir.join("workload.log");
+        let registry = dir.join("registry.log");
+        let command = SupervisorCommand {
+            executable: "sh".into(),
+            arguments: vec!["-c".into(), "printf out; printf err >&2; exit 7".into()],
+        };
+        launch_supervisor(
+            "test-supervisor",
+            &command,
+            &stdout,
+            &stderr,
+            &workload,
+            &registry,
+            BuildInfo {
+                git_sha: "test",
+                git_dirty: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..10_000 {
+            if let Ok(contents) = fs::read_to_string(&registry) {
+                if contents.lines().any(|line| {
+                    line.contains("\"type\":\"stop\"") && line.contains("\"exit_code\":7")
+                }) {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let contents = fs::read_to_string(&registry).unwrap();
+        assert!(contents.contains("\"exit_code\":7"));
+        assert_eq!(fs::read_to_string(&stdout).unwrap(), "out");
+        assert_eq!(fs::read_to_string(&stderr).unwrap(), "err");
+        assert!(!workload.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

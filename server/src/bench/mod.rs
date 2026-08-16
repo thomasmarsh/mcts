@@ -35,11 +35,15 @@ use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::supervised_launch::LaunchDescriptor;
+#[cfg(test)]
+use mcts_bench::supervised_launch::WrapperIdentity;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
 
-mod lifecycle;
+pub(crate) mod lifecycle;
 mod process;
+pub(crate) mod supervisor_runtime;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -49,11 +53,12 @@ mod process;
 /// `Mutex`-guarded because `duckdb::Connection` is `Send` but not `Sync`;
 /// the ingest loop and API routes all share the same in-process connection.
 pub struct BenchState {
-    pub db: Mutex<duckdb::Connection>,
+    pub db: Arc<Mutex<duckdb::Connection>>,
     pub bench_runs_dir: PathBuf,
     pub experiment_validator: ExperimentValidator,
     pub run_launcher: RunLauncher,
     pub process_group_signaller: ProcessGroupSignaller,
+    pub runtime: Arc<lifecycle::BenchRuntime>,
 }
 
 pub type ExperimentValidator = Arc<
@@ -1021,35 +1026,32 @@ async fn launch_experiment(
             })
             .collect(),
     };
-    let launched = match lifecycle::launch_projects(
-        &state.db,
-        state.as_ref(),
-        &start_request,
-        process::SpawnRequest {
-            run_id: run_id.clone(),
-            command,
-            kind: "experiment".into(),
-            game: run_game_segment.into(),
-            label: Some(name.clone()),
-        },
-        &lifecycle::SystemClock,
-    ) {
+    let descriptor = LaunchDescriptor {
+        supervisor: find_bench_binary().into_os_string(),
+        logical_run_id: run_id.clone(),
+        attempt_id: run_id.clone(),
+        parent_attempt_id: None,
+        launch_nonce: format!("{run_id}-{}", now),
+        workload_argv: command,
+        journal_path: run_dir.join("lifecycle.jsonl"),
+        stdout_path: log_path.clone(),
+        stderr_path: run_dir.join("stdout.log"),
+    };
+    let launched = match state.runtime.start_projects(start_request, descriptor) {
         Ok(value) => value,
-        Err(lifecycle::LaunchError::Attempt(error)) => {
-            return Err(ExperimentRouteError::Bench(attempt_bench_error(error)));
-        }
-        Err(lifecycle::LaunchError::Spawn(error)) => {
+        Err(ProjectsError::Storage(message)) => {
             return Err(ExperimentRouteError::Bench(BenchError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("failed to launch experiment: {error}"),
+                message: format!("failed to launch experiment: {message}"),
             }));
         }
+        Err(error) => return Err(ExperimentRouteError::Bench(attempt_bench_error(error))),
     };
     Ok(Json(LaunchResponse {
         run_id,
         pid: launched.pid,
-        log_path: launched.log_path.to_string_lossy().into_owned(),
-        launch_error: None,
+        log_path: log_path.to_string_lossy().into_owned(),
+        launch_error: launched.diagnostic,
     }))
 }
 
@@ -3501,12 +3503,37 @@ mod tests {
         ensure_schema(&conn).unwrap();
         seed_fn(&conn, &bench_runs_dir);
 
+        let db = Arc::new(Mutex::new(conn));
+        let test_launcher = run_launcher.clone();
+        let supervisor = Arc::new(move |descriptor: &LaunchDescriptor| {
+            match test_launcher(
+                descriptor.logical_run_id.clone(),
+                descriptor.workload_argv.clone(),
+                "experiment".into(),
+                "experiment-grid".into(),
+                None,
+            ) {
+                Ok(run) => mcts_bench::projects_attempt::LaunchResult::Ready(WrapperIdentity {
+                    pid: run.pid as u64,
+                    process_group_id: run.pid as u64,
+                }),
+                Err(error) => {
+                    mcts_bench::projects_attempt::LaunchResult::SpawnFailed(error.to_string())
+                }
+            }
+        });
+        let runtime = Arc::new(lifecycle::BenchRuntime::new(
+            db.clone(),
+            supervisor,
+            Arc::new(lifecycle::SystemClock),
+        ));
         let state = Arc::new(BenchState {
-            db: Mutex::new(conn),
+            db,
             bench_runs_dir,
             experiment_validator,
             run_launcher,
             process_group_signaller,
+            runtime,
         });
 
         (bench_router(state.clone()), tmp_dir, state)

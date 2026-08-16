@@ -282,8 +282,16 @@ async fn main() {
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
     let bench_conn = schema::open(&bench_db_path).expect("failed to open benchmark database");
+    let bench_db = Arc::new(std::sync::Mutex::new(bench_conn));
+    let bench_runtime = Arc::new(bench::lifecycle::BenchRuntime::new(
+        bench_db.clone(),
+        Arc::new(bench::supervisor_runtime::SupervisorRuntime::new(
+            std::path::Path::new(mcts_bench::launch::BENCH_RUNS_DIR).join("registry.log"),
+        )),
+        Arc::new(bench::lifecycle::SystemClock),
+    ));
     let bench_state = Arc::new(bench::BenchState {
-        db: std::sync::Mutex::new(bench_conn),
+        db: bench_db,
         bench_runs_dir,
         experiment_validator: Arc::new(bench::validate_experiment_spec),
         run_launcher: Arc::new(|run_id, command, kind, game, label| {
@@ -297,6 +305,7 @@ async fn main() {
             )
         }),
         process_group_signaller: Arc::new(bench::signal_process_group),
+        runtime: bench_runtime,
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

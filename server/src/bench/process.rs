@@ -1,7 +1,5 @@
-use std::io;
-use std::path::PathBuf;
-
 use mcts_bench::launch;
+use std::io;
 
 use super::BenchState;
 
@@ -14,19 +12,6 @@ pub enum ProcessError {
 pub enum SignalOutcome {
     Sent,
     NotFound,
-}
-
-pub struct SpawnRequest {
-    pub run_id: String,
-    pub command: Vec<String>,
-    pub kind: String,
-    pub game: String,
-    pub label: Option<String>,
-}
-
-pub struct SpawnedProcess {
-    pub pid: u32,
-    pub log_path: PathBuf,
 }
 
 pub fn signal_process_group(pid: i64) -> std::io::Result<()> {
@@ -54,26 +39,10 @@ pub(super) fn process_group_signal_command(pid: i64) -> std::process::Command {
 }
 
 pub(super) trait ProcessController {
-    fn spawn(&self, request: SpawnRequest) -> Result<SpawnedProcess, ProcessError>;
     fn signal_group(&self, pid: i64) -> Result<SignalOutcome, ProcessError>;
 }
 
 impl ProcessController for BenchState {
-    fn spawn(&self, request: SpawnRequest) -> Result<SpawnedProcess, ProcessError> {
-        (self.run_launcher)(
-            request.run_id,
-            request.command,
-            request.kind,
-            request.game,
-            request.label,
-        )
-        .map(|run| SpawnedProcess {
-            pid: run.pid,
-            log_path: run.log_path,
-        })
-        .map_err(|error| ProcessError::Failed(error.to_string()))
-    }
-
     fn signal_group(&self, pid: i64) -> Result<SignalOutcome, ProcessError> {
         #[cfg(unix)]
         {

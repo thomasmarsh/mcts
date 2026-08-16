@@ -9,9 +9,13 @@ use crate::orchestration::{
     AttemptAction, AttemptEvent, AttemptState, ExitObservation, StopReason,
 };
 use crate::projects_attempt::{
-    self, CellSummary, CompatibilityStatus, ExitAuthorization, LivenessTarget, ProjectsError,
-    ProjectsRepository, Receipt, StartRequest, StopAuthorization, StopTarget,
+    self, CellSummary, CompatibilityStatus, ExitAuthorization, LaunchRecord, LaunchResult,
+    LivenessTarget, ProjectsError, ProjectsRepository, Receipt, StartAuthorization, StartRequest,
+    StopAuthorization, StopTarget,
 };
+use crate::supervised_launch::LaunchDescriptor;
+
+mod launch;
 
 pub struct Repository<'a> {
     conn: &'a Connection,
@@ -132,6 +136,23 @@ fn terminal_projection(
 }
 
 impl ProjectsRepository for Repository<'_> {
+    fn authorize_start(
+        &self,
+        request: &StartRequest,
+        descriptor: &LaunchDescriptor,
+    ) -> Result<StartAuthorization, ProjectsError> {
+        launch::authorize_start(self, request, descriptor)
+    }
+
+    fn record_launch(
+        &self,
+        run_id: &str,
+        result: &LaunchResult,
+        observed_at: &str,
+    ) -> Result<LaunchRecord, ProjectsError> {
+        launch::record_launch(self, run_id, result, observed_at)
+    }
+
     fn load_stop_target(&self, run_id: &str) -> Result<StopTarget, ProjectsError> {
         let tx = self.tx()?;
         let target = tx
@@ -219,86 +240,6 @@ impl ProjectsRepository for Repository<'_> {
         drop(statement);
         tx.commit().map_err(db_error)?;
         Ok(targets)
-    }
-
-    fn create_and_request_start(&self, request: &StartRequest) -> Result<(), ProjectsError> {
-        let tx = self.tx()?;
-        tx.execute("INSERT INTO runs (run_id, kind, game, project_id, experiment_id, experiment_spec, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES (?1, 'experiment', ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, ?10, 'running', ?11)", params![request.run_id, request.game, request.project_id, request.experiment_id, request.spec_json, request.label, request.git_sha, request.git_dirty, request.host, request.started_at, request.log_path])?;
-        identity::create_root_identity(
-            &tx,
-            &request.run_id,
-            "experiment",
-            Some(&request.project_id),
-            Some(&request.experiment_id),
-            &request.started_at,
-        )
-        .map_err(identity_error)?;
-        for cell in &request.cells {
-            tx.execute("INSERT INTO experiment_cells (run_id, cell_id, cell_seed, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'pending')", params![request.run_id, cell.cell_id, cell.cell_seed, cell.game, cell.game_config, cell.variant_id, cell.variant_label, cell.candidate_config, cell.baseline_id, cell.baseline_label, cell.baseline_config, cell.budget, cell.rounds, cell.planned_games])?;
-        }
-        attempt_store::initialize_attempt(&tx, &request.run_id).map_err(store_error)?;
-        let receipt = record(
-            &tx,
-            &request.run_id,
-            projects_attempt::START_REQUESTED_KEY,
-            AttemptEvent::StartRequested,
-            &request.started_at,
-            &[AttemptAction::SpawnProcess],
-        )?;
-        if receipt.replay {
-            return Err(ProjectsError::Conflict(
-                "start request was already recorded".into(),
-            ));
-        }
-        tx.commit().map_err(db_error)
-    }
-
-    fn observe_process(
-        &self,
-        run_id: &str,
-        pid: i64,
-        log_path: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError> {
-        let tx = self.tx()?;
-        let receipt = record(
-            &tx,
-            run_id,
-            projects_attempt::PROCESS_OBSERVED_KEY,
-            AttemptEvent::ProcessObserved,
-            observed_at,
-            &[],
-        )?;
-        tx.execute(
-            "UPDATE runs SET pid = ?1, log_path = ?2 WHERE run_id = ?3",
-            params![pid, log_path, run_id],
-        )?;
-        tx.commit().map_err(db_error)?;
-        Ok(receipt)
-    }
-
-    fn observe_spawn_failure(
-        &self,
-        run_id: &str,
-        message: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError> {
-        let tx = self.tx()?;
-        let receipt = record(
-            &tx,
-            run_id,
-            projects_attempt::SPAWN_FAILED_KEY,
-            AttemptEvent::SpawnFailed,
-            observed_at,
-            &[],
-        )?;
-        tx.execute("UPDATE experiment_cells SET status = 'failed', error = ?1, ended_at = ?2 WHERE run_id = ?3 AND status IN ('pending', 'running')", params![message, observed_at, run_id])?;
-        tx.execute(
-            "UPDATE runs SET status = 'crashed', ended_at = ?1 WHERE run_id = ?2",
-            params![observed_at, run_id],
-        )?;
-        tx.commit().map_err(db_error)?;
-        Ok(receipt)
     }
 
     fn request_operator_stop(
@@ -413,6 +354,25 @@ fn locked_connection(
 }
 
 impl ProjectsRepository for Mutex<Connection> {
+    fn authorize_start(
+        &self,
+        request: &StartRequest,
+        descriptor: &LaunchDescriptor,
+    ) -> Result<StartAuthorization, ProjectsError> {
+        let connection = locked_connection(self)?;
+        Repository::new(&connection).authorize_start(request, descriptor)
+    }
+
+    fn record_launch(
+        &self,
+        run_id: &str,
+        result: &LaunchResult,
+        observed_at: &str,
+    ) -> Result<LaunchRecord, ProjectsError> {
+        let connection = locked_connection(self)?;
+        Repository::new(&connection).record_launch(run_id, result, observed_at)
+    }
+
     fn load_stop_target(&self, run_id: &str) -> Result<StopTarget, ProjectsError> {
         let connection = locked_connection(self)?;
         Repository::new(&connection).load_stop_target(run_id)
@@ -426,32 +386,6 @@ impl ProjectsRepository for Mutex<Connection> {
     fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError> {
         let connection = locked_connection(self)?;
         Repository::new(&connection).typed_liveness_targets()
-    }
-
-    fn create_and_request_start(&self, request: &StartRequest) -> Result<(), ProjectsError> {
-        let connection = locked_connection(self)?;
-        Repository::new(&connection).create_and_request_start(request)
-    }
-
-    fn observe_process(
-        &self,
-        run_id: &str,
-        pid: i64,
-        log_path: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError> {
-        let connection = locked_connection(self)?;
-        Repository::new(&connection).observe_process(run_id, pid, log_path, observed_at)
-    }
-
-    fn observe_spawn_failure(
-        &self,
-        run_id: &str,
-        message: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError> {
-        let connection = locked_connection(self)?;
-        Repository::new(&connection).observe_spawn_failure(run_id, message, observed_at)
     }
 
     fn request_operator_stop(

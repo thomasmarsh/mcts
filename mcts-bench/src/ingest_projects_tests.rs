@@ -11,7 +11,7 @@ use crate::projects_attempt::{self, ProjectsRepository};
 use crate::projects_attempt_duckdb;
 
 #[test]
-fn typed_projects_registry_start_replays_process_observation() {
+fn registry_start_does_not_overwrite_projects_process_observation() {
     let (fix, log_path) = typed_projects_fixture("typed-start");
     fs::write(
         fix.bench_runs.join("registry.log"),
@@ -79,7 +79,7 @@ fn typed_projects_short_child_stop_before_start_is_reordered_safely() {
         fix.query_string("SELECT attempt_phase FROM runs WHERE run_id = 'typed-short'"),
         "completed"
     );
-    assert_eq!(fix.count("attempt_events"), 4);
+    assert_eq!(fix.count("attempt_events"), 3);
     assert_eq!(
         fix.query_string("SELECT status FROM runs WHERE run_id = 'typed-short'"),
         "completed"

@@ -35,17 +35,7 @@ pub enum InvalidInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SpawnFailure {
-    Unsupported,
-    Failed { message: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadinessFailure {
-    StartupFailure,
-    EarlyExit,
-    Timeout,
-    UnavailableEvidence,
     Conflict,
     AttemptMismatch {
         expected: String,
@@ -180,37 +170,6 @@ pub fn classify_readiness(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadySupervisor {
-    pub wrapper: WrapperIdentity,
-    pub launch_nonce: String,
-    pub journal_path: PathBuf,
-    pub workload_argv: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LaunchOutcome {
-    Invalid(InvalidInput),
-    SpawnFailed(SpawnFailure),
-    Ready(ReadySupervisor),
-    Unready {
-        wrapper: WrapperIdentity,
-        failure: ReadinessFailure,
-    },
-}
-
-pub trait DetachedSupervisorPort {
-    fn spawn_detached(
-        &mut self,
-        command: &SupervisorCommand,
-    ) -> Result<WrapperIdentity, SpawnFailure>;
-    fn observe_readiness(
-        &mut self,
-        descriptor: &LaunchDescriptor,
-        wrapper: WrapperIdentity,
-    ) -> Result<ReadinessEvidence, ReadinessFailure>;
-}
-
 fn non_empty_os(value: &OsString, field: &'static str) -> Result<(), InvalidInput> {
     if value.is_empty() {
         Err(InvalidInput::Empty { field })
@@ -279,61 +238,6 @@ pub fn supervisor_command(
         executable: descriptor.supervisor.clone(),
         arguments,
     })
-}
-
-pub fn launch<P: DetachedSupervisorPort>(
-    descriptor: &LaunchDescriptor,
-    port: &mut P,
-) -> LaunchOutcome {
-    let command = match supervisor_command(descriptor) {
-        Ok(command) => command,
-        Err(error) => return LaunchOutcome::Invalid(error),
-    };
-    let wrapper = match port.spawn_detached(&command) {
-        Ok(wrapper) => wrapper,
-        Err(error) => return LaunchOutcome::SpawnFailed(error),
-    };
-    match port.observe_readiness(descriptor, wrapper) {
-        Ok(evidence) if evidence.attempt_id != descriptor.attempt_id => LaunchOutcome::Unready {
-            wrapper,
-            failure: ReadinessFailure::AttemptMismatch {
-                expected: descriptor.attempt_id.clone(),
-                observed: evidence.attempt_id,
-            },
-        },
-        Ok(evidence) if evidence.launch_nonce != descriptor.launch_nonce => {
-            LaunchOutcome::Unready {
-                wrapper,
-                failure: ReadinessFailure::NonceMismatch {
-                    expected: descriptor.launch_nonce.clone(),
-                    observed: evidence.launch_nonce,
-                },
-            }
-        }
-        Ok(evidence) if evidence.wrapper.pid != wrapper.pid => LaunchOutcome::Unready {
-            wrapper,
-            failure: ReadinessFailure::WrapperPidMismatch {
-                expected: wrapper.pid,
-                observed: evidence.wrapper.pid,
-            },
-        },
-        Ok(evidence) if evidence.wrapper.process_group_id != wrapper.process_group_id => {
-            LaunchOutcome::Unready {
-                wrapper,
-                failure: ReadinessFailure::ProcessGroupMismatch {
-                    expected: wrapper.process_group_id,
-                    observed: evidence.wrapper.process_group_id,
-                },
-            }
-        }
-        Ok(_) => LaunchOutcome::Ready(ReadySupervisor {
-            wrapper,
-            launch_nonce: descriptor.launch_nonce.clone(),
-            journal_path: descriptor.journal_path.clone(),
-            workload_argv: descriptor.workload_argv.clone(),
-        }),
-        Err(failure) => LaunchOutcome::Unready { wrapper, failure },
-    }
 }
 
 #[cfg(test)]

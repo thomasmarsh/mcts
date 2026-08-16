@@ -1,6 +1,7 @@
 //! Backend-neutral protocol and compatibility rules for typed Projects attempts.
 
 use crate::orchestration::{AttemptPhase, AttemptState, ExitObservation};
+use crate::supervised_launch::{LaunchDescriptor, ReadinessFailure, WrapperIdentity};
 
 pub const START_REQUESTED_KEY: &str = "projects.start-requested";
 pub const PROCESS_OBSERVED_KEY: &str = "projects.process-observed";
@@ -31,7 +32,7 @@ impl std::fmt::Display for ProjectsError {
 
 impl std::error::Error for ProjectsError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     pub state: AttemptState,
     pub version: u64,
@@ -67,6 +68,46 @@ pub struct LivenessTarget {
 pub struct ExitAuthorization {
     pub finalize_output: bool,
     pub state: AttemptState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartAuthorization {
+    New,
+    Replay(PreviousLaunch),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviousLaunch {
+    pub result: Option<LaunchRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchRecord {
+    pub token: LaunchToken,
+    pub wrapper: Option<WrapperIdentity>,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchToken {
+    Ready,
+    SpawnFailed,
+    Pending,
+    Conflict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchResult {
+    Ready(WrapperIdentity),
+    SpawnFailed(String),
+    Pending {
+        wrapper: WrapperIdentity,
+        diagnostic: String,
+    },
+    Conflict {
+        wrapper: WrapperIdentity,
+        diagnostic: ReadinessFailure,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,23 +159,20 @@ pub fn compatibility_outcome(
 }
 
 pub trait ProjectsRepository {
+    fn authorize_start(
+        &self,
+        request: &StartRequest,
+        descriptor: &LaunchDescriptor,
+    ) -> Result<StartAuthorization, ProjectsError>;
+    fn record_launch(
+        &self,
+        run_id: &str,
+        result: &LaunchResult,
+        observed_at: &str,
+    ) -> Result<LaunchRecord, ProjectsError>;
     fn load_stop_target(&self, run_id: &str) -> Result<StopTarget, ProjectsError>;
     fn load_if_initialized(&self, run_id: &str) -> Result<Option<Receipt>, ProjectsError>;
     fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError>;
-    fn create_and_request_start(&self, request: &StartRequest) -> Result<(), ProjectsError>;
-    fn observe_process(
-        &self,
-        run_id: &str,
-        pid: i64,
-        log_path: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError>;
-    fn observe_spawn_failure(
-        &self,
-        run_id: &str,
-        message: &str,
-        observed_at: &str,
-    ) -> Result<Receipt, ProjectsError>;
     fn request_operator_stop(
         &self,
         run_id: &str,
