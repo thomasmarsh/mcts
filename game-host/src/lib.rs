@@ -132,6 +132,59 @@ pub struct Analysis {
     pub suggested_move: Option<Value>,
 }
 
+/// Which side the candidate configuration played in one configured match.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfiguredCandidateSide {
+    First,
+    Second,
+}
+
+/// The result of one configured candidate-versus-baseline game.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ConfiguredMatchResult {
+    #[serde(rename = "type")]
+    pub record_type: String,
+    pub seq: u64,
+    pub round: u32,
+    pub seed: u64,
+    pub candidate_side: ConfiguredCandidateSide,
+    pub outcome: ConfiguredOutcome,
+    pub trace_game_seq: Option<u64>,
+    pub plies: u32,
+    pub elapsed_ms: u64,
+    pub candidate: ConfiguredStrategyMetrics,
+    pub baseline: ConfiguredStrategyMetrics,
+}
+
+/// One configured strategy's aggregate work in a completed game.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ConfiguredStrategyMetrics {
+    pub iterations_total: u64,
+    pub iterations_first_half: u64,
+    pub move_time_ms: u64,
+}
+
+/// A configured match outcome from the candidate's perspective.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfiguredOutcome {
+    CandidateWin,
+    BaselineWin,
+    Draw,
+}
+
+/// Aggregate result for a completed configured comparison.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ConfiguredComparisonSummary {
+    #[serde(rename = "type")]
+    pub record_type: String,
+    pub games: u32,
+    pub wins: u32,
+    pub losses: u32,
+    pub draws: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Tuner metadata (SMAC3-style hyperparameter search)
 // ---------------------------------------------------------------------------
@@ -301,7 +354,9 @@ pub trait GameAdapter: Send + Sync {
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
+        max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))
     }
@@ -488,6 +543,24 @@ where
                 0
             }
         },
+        Some("compare") => match args.next().as_deref() {
+            Some("describe") => match adapter.tuner() {
+                Some(info) => {
+                    let json = serde_json::to_string(&info).expect("TunerInfo always serializes");
+                    let _ = writeln!(writer, "{json}");
+                    0
+                }
+                None => {
+                    eprintln!("tuning not supported");
+                    1
+                }
+            },
+            Some("eval") => run_compare_eval(args, &mut writer, &adapter),
+            _ => {
+                run_host(reader, writer, adapter);
+                0
+            }
+        },
         Some("book") => match args.next().as_deref() {
             Some("describe") => match adapter.book() {
                 Some(info) => {
@@ -574,6 +647,7 @@ where
                     .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
             })
             .transpose()?;
+        let mut on_game = |_result: ConfiguredMatchResult| Ok(());
         adapter.tune_eval(
             params,
             rounds,
@@ -582,7 +656,9 @@ where
             baseline_config,
             game_config,
             max_iterations,
+            None,
             trace_path.map(std::path::PathBuf::from),
+            &mut on_game,
         )
     })();
 
@@ -592,6 +668,155 @@ where
             let _ = writeln!(writer, "{json}");
             0
         }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// Parses and runs the foreground configured comparison command. Validation
+/// is completed before invoking the adapter so malformed invocations cannot
+/// start a game or write partial output.
+fn run_compare_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
+where
+    I: Iterator<Item = String>,
+    W: Write,
+    A: GameAdapter,
+{
+    let mut args = args;
+    let mut candidate_config: Option<String> = None;
+    let mut baseline_config: Option<String> = None;
+    let mut rounds: Option<u32> = None;
+    let mut seed: Option<u64> = None;
+    let mut max_iterations: Option<usize> = None;
+    let mut max_time_ms: Option<u64> = None;
+    let mut game_config: Option<String> = None;
+    let mut trace_path: Option<String> = None;
+
+    let result = (|| -> Result<(), HostError> {
+        while let Some(flag) = args.next() {
+            let value = |name: &str, args: &mut I| {
+                args.next()
+                    .ok_or_else(|| HostError::bad_request(format!("missing value for {name}")))
+            };
+            match flag.as_str() {
+                "--candidate-config" => candidate_config = Some(value(&flag, &mut args)?),
+                "--baseline-config" => baseline_config = Some(value(&flag, &mut args)?),
+                "--rounds" => {
+                    let raw = value(&flag, &mut args)?;
+                    rounds = Some(
+                        raw.parse()
+                            .map_err(|_| HostError::bad_request("invalid --rounds"))?,
+                    );
+                }
+                "--seed" => {
+                    let raw = value(&flag, &mut args)?;
+                    seed = Some(
+                        raw.parse()
+                            .map_err(|_| HostError::bad_request("invalid --seed"))?,
+                    );
+                }
+                "--max-iterations" => {
+                    let raw = value(&flag, &mut args)?;
+                    max_iterations = Some(
+                        raw.parse()
+                            .map_err(|_| HostError::bad_request("invalid --max-iterations"))?,
+                    );
+                }
+                "--max-time-ms" => {
+                    let raw = value(&flag, &mut args)?;
+                    max_time_ms = Some(
+                        raw.parse()
+                            .map_err(|_| HostError::bad_request("invalid --max-time-ms"))?,
+                    );
+                }
+                "--game-config" => game_config = Some(value(&flag, &mut args)?),
+                "--trace-path" => trace_path = Some(value(&flag, &mut args)?),
+                _ => return Err(HostError::bad_request(format!("unknown flag: {flag}"))),
+            }
+        }
+
+        let candidate_config =
+            candidate_config.ok_or_else(|| HostError::bad_request("missing --candidate-config"))?;
+        let baseline_config =
+            baseline_config.ok_or_else(|| HostError::bad_request("missing --baseline-config"))?;
+        let rounds = rounds.ok_or_else(|| HostError::bad_request("missing --rounds"))?;
+        if rounds == 0 {
+            return Err(HostError::bad_request("--rounds must be positive"));
+        }
+        let seed = seed.ok_or_else(|| HostError::bad_request("missing --seed"))?;
+        if max_iterations.is_some() == max_time_ms.is_some() {
+            return Err(HostError::bad_request(
+                "exactly one of --max-iterations and --max-time-ms is required",
+            ));
+        }
+        if max_iterations == Some(0) {
+            return Err(HostError::bad_request("--max-iterations must be positive"));
+        }
+        if max_time_ms == Some(0) {
+            return Err(HostError::bad_request("--max-time-ms must be positive"));
+        }
+        let candidate_config: Value = serde_json::from_str(&candidate_config)
+            .map_err(|e| HostError::bad_request(format!("invalid --candidate-config JSON: {e}")))?;
+        let baseline_config: Value = serde_json::from_str(&baseline_config)
+            .map_err(|e| HostError::bad_request(format!("invalid --baseline-config JSON: {e}")))?;
+        let game_config = game_config
+            .map(|raw| {
+                serde_json::from_str(&raw)
+                    .map_err(|e| HostError::bad_request(format!("invalid --game-config JSON: {e}")))
+            })
+            .transpose()?;
+
+        let mut on_game = |record: ConfiguredMatchResult| -> Result<(), HostError> {
+            let json = serde_json::to_string(&record).map_err(|e| {
+                HostError::internal(format!("failed to serialize match result: {e}"))
+            })?;
+            writeln!(writer, "{json}")
+                .and_then(|_| writer.flush())
+                .map_err(|e| HostError::internal(format!("failed to write match result: {e}")))
+        };
+        let value = adapter.tune_eval(
+            candidate_config,
+            rounds,
+            Some(seed),
+            None,
+            Some(baseline_config),
+            game_config,
+            max_iterations,
+            max_time_ms,
+            trace_path.map(std::path::PathBuf::from),
+            &mut on_game,
+        )?;
+        let wins = value["wins"]
+            .as_u64()
+            .ok_or_else(|| HostError::internal("configured comparison returned invalid wins"))?
+            as u32;
+        let losses = value["losses"]
+            .as_u64()
+            .ok_or_else(|| HostError::internal("configured comparison returned invalid losses"))?
+            as u32;
+        let draws = value["draws"]
+            .as_u64()
+            .ok_or_else(|| HostError::internal("configured comparison returned invalid draws"))?
+            as u32;
+        let summary = ConfiguredComparisonSummary {
+            record_type: "configured_comparison_summary".into(),
+            games: wins.saturating_add(losses).saturating_add(draws),
+            wins,
+            losses,
+            draws,
+        };
+        let json = serde_json::to_string(&summary)
+            .map_err(|e| HostError::internal(format!("failed to serialize summary: {e}")))?;
+        writeln!(writer, "{json}")
+            .and_then(|_| writer.flush())
+            .map_err(|e| HostError::internal(format!("failed to write summary: {e}")))?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
             1
@@ -1221,9 +1446,39 @@ mod tests {
             baseline_config: Option<Value>,
             game_config: Option<Value>,
             max_iterations: Option<usize>,
+            max_time_ms: Option<u64>,
             trace_path: Option<std::path::PathBuf>,
+            on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
         ) -> Result<Value, HostError> {
-            let _ = (max_iterations, trace_path);
+            let _ = (max_iterations, max_time_ms, trace_path);
+            for round in 1..=rounds {
+                on_game(ConfiguredMatchResult {
+                    record_type: "configured_match_result".into(),
+                    seq: (round * 2 - 1) as u64,
+                    round,
+                    seed: seed.unwrap_or(0),
+                    candidate_side: ConfiguredCandidateSide::First,
+                    outcome: ConfiguredOutcome::CandidateWin,
+                    trace_game_seq: None,
+                    plies: 0,
+                    elapsed_ms: 0,
+                    candidate: ConfiguredStrategyMetrics::default(),
+                    baseline: ConfiguredStrategyMetrics::default(),
+                })?;
+                on_game(ConfiguredMatchResult {
+                    record_type: "configured_match_result".into(),
+                    seq: (round * 2) as u64,
+                    round,
+                    seed: seed.unwrap_or(0),
+                    candidate_side: ConfiguredCandidateSide::Second,
+                    outcome: ConfiguredOutcome::BaselineWin,
+                    trace_game_seq: None,
+                    plies: 0,
+                    elapsed_ms: 0,
+                    candidate: ConfiguredStrategyMetrics::default(),
+                    baseline: ConfiguredStrategyMetrics::default(),
+                })?;
+            }
             Ok(serde_json::json!({
                 "cost": 0.25,
                 "params": params,
@@ -1232,6 +1487,9 @@ mod tests {
                 "baseline": baseline,
                 "baseline_config": baseline_config,
                 "game_config": game_config,
+                "wins": rounds,
+                "losses": rounds,
+                "draws": 0,
             }))
         }
     }
@@ -1329,6 +1587,130 @@ mod tests {
         assert_eq!(info.eval_rounds, 5);
         assert_eq!(info.parameters.len(), 1);
         assert_eq!(info.parameters[0].name, "c");
+    }
+
+    #[test]
+    fn test_run_cli_compare_describe_matches_tune_describe() {
+        let (tune, tune_code) = run_cli_capture_with(TunableFakeAdapter, &["tune", "describe"], "");
+        let (compare, compare_code) =
+            run_cli_capture_with(TunableFakeAdapter, &["compare", "describe"], "");
+        assert_eq!(tune_code, 0);
+        assert_eq!(compare_code, 0);
+        assert_eq!(compare, tune);
+    }
+
+    #[test]
+    fn test_run_cli_compare_eval_streams_games_then_summary() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "compare",
+                "eval",
+                "--candidate-config",
+                "{}",
+                "--baseline-config",
+                "{}",
+                "--rounds",
+                "1",
+                "--seed",
+                "42",
+                "--max-iterations",
+                "1",
+            ],
+            "",
+        );
+        assert_eq!(code, 0);
+        let lines: Vec<Value> = out
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["type"], "configured_match_result");
+        assert_eq!(lines[0]["seq"], 1);
+        assert_eq!(lines[0]["candidate_side"], "first");
+        assert_eq!(lines[1]["seq"], 2);
+        assert_eq!(lines[1]["candidate_side"], "second");
+        assert_eq!(lines[2]["type"], "configured_comparison_summary");
+        assert_eq!(lines[2]["games"], 2);
+        assert_eq!(lines[2]["wins"], 1);
+        assert_eq!(lines[2]["losses"], 1);
+    }
+
+    #[test]
+    fn test_run_cli_compare_eval_rejects_invalid_invocations_before_play() {
+        let base = [
+            "compare",
+            "eval",
+            "--candidate-config",
+            "{}",
+            "--baseline-config",
+            "{}",
+            "--rounds",
+            "1",
+            "--seed",
+            "42",
+        ];
+        let mut invalid = vec![base.to_vec()];
+        let mut zero_rounds = base.to_vec();
+        zero_rounds[7] = "0";
+        zero_rounds.extend(["--max-iterations", "1"]);
+        invalid.push(zero_rounds);
+        let mut malformed_candidate = base.to_vec();
+        malformed_candidate[3] = "not json";
+        malformed_candidate.extend(["--max-iterations", "1"]);
+        invalid.push(malformed_candidate);
+        let mut missing_value = base.to_vec();
+        missing_value.push("--max-iterations");
+        invalid.push(missing_value);
+        for extra in [
+            vec!["--max-iterations", "0"],
+            vec!["--max-time-ms", "0"],
+            vec!["--max-iterations", "1", "--max-time-ms", "1"],
+            vec!["--max-iterations", "1", "--unknown"],
+        ] {
+            let mut args = base.to_vec();
+            args.extend(extra);
+            invalid.push(args);
+        }
+        for extra in invalid {
+            let (out, code) = run_cli_capture_with(TunableFakeAdapter, &extra, "");
+            assert_eq!(code, 1);
+            assert!(out.is_empty());
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("write failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("flush failed"))
+        }
+    }
+
+    #[test]
+    fn test_run_cli_compare_eval_sink_failure_stops_without_summary() {
+        let args = [
+            "compare",
+            "eval",
+            "--candidate-config",
+            "{}",
+            "--baseline-config",
+            "{}",
+            "--rounds",
+            "2",
+            "--seed",
+            "42",
+            "--max-iterations",
+            "1",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+        let code = run_cli_with(args, Cursor::new(""), FailingWriter, TunableFakeAdapter);
+        assert_eq!(code, 1);
     }
 
     #[test]

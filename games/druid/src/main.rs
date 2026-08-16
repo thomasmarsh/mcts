@@ -570,7 +570,9 @@ impl GameAdapter for DruidAdapter {
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
+        max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Druid has one, so merging transposed nodes during the
@@ -585,6 +587,7 @@ impl GameAdapter for DruidAdapter {
             // (see `SearchBudget`'s and `build_search`'s doc comments).
             let budget = mcts_tune::SearchBudget {
                 max_iterations,
+                max_time: max_time_ms.map(Duration::from_millis),
                 ..Default::default()
             };
             // Fail fast on an invalid baseline config, before any games are
@@ -604,6 +607,7 @@ impl GameAdapter for DruidAdapter {
                 },
                 initial_state,
                 trace_path.as_deref(),
+                on_game,
             )?
         } else {
             let baseline = baseline.as_deref().unwrap_or("strong");
@@ -648,6 +652,7 @@ impl GameAdapter for DruidAdapter {
                 || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg, 1),
                 initial_state,
                 trace_path.as_deref(),
+                on_game,
             )?
         };
         Ok(serde_json::json!({
@@ -682,7 +687,18 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = DruidAdapter::default()
-            .tune_eval(params, 1, Some(0), None, None, None, None, None)
+            .tune_eval(
+                params,
+                1,
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &mut |_| Ok(()),
+            )
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }
@@ -717,6 +733,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                &mut |_| Ok(()),
             )
             .expect("tune_eval should round-trip against a config-built opponent");
         assert!(result["cost"].as_f64().is_some());
@@ -753,6 +771,8 @@ mod tests {
                 Some(game_config),
                 None,
                 None,
+                None,
+                &mut |_| Ok(()),
             )
             .expect("tune_eval should round-trip on a non-default board size");
         assert!(result["cost"].as_f64().is_some());
@@ -782,6 +802,8 @@ mod tests {
                 Some(game_config),
                 None,
                 None,
+                None,
+                &mut |_| Ok(()),
             )
             .expect_err("an unsupported board size should error before any games are played");
         assert_eq!(err.code, 400);
@@ -799,6 +821,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                &mut |_| Ok(()),
             )
             .expect_err("an unrecognized baseline id should error before any games are played");
         assert_eq!(err.code, 400);

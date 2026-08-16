@@ -336,7 +336,9 @@ impl GameAdapter for CongoAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // Congo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
@@ -350,6 +352,7 @@ impl GameAdapter for CongoAdapter {
             // (see `SearchBudget`'s and `build_search`'s doc comments).
             let budget = mcts_tune::SearchBudget {
                 max_iterations,
+                max_time: max_time_ms.map(std::time::Duration::from_millis),
                 ..Default::default()
             };
             mcts_tune::build_search::<Congo>(&cfg, baseline_seed, false, &budget)?;
@@ -365,6 +368,7 @@ impl GameAdapter for CongoAdapter {
                 },
                 Default::default(),
                 trace_path.as_deref(),
+                on_game,
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -374,11 +378,13 @@ impl GameAdapter for CongoAdapter {
                 false,
                 mcts_tune::SearchBudget {
                     max_iterations,
+                    max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
                 },
                 build_strong,
                 Default::default(),
                 trace_path.as_deref(),
+                on_game,
             )?
         };
         Ok(serde_json::json!({

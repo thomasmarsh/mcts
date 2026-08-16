@@ -41,7 +41,10 @@ use std::str::FromStr;
 
 pub mod trace;
 
-use game_host::{HostError, TunerCondition, TunerInfo, TunerParameter};
+use game_host::{
+    ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
+    HostError, TunerCondition, TunerInfo, TunerParameter,
+};
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
 use mcts::strategies::mcts::simulate::SimulateStrategy;
@@ -147,8 +150,9 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
 ) -> Result<SearchConfig<G, S>, HostError> {
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
+    let max_iterations = budget.iteration_limit();
     let mut config = SearchConfig::new()
-        .max_iterations(budget.max_iterations.unwrap_or(MAX_ITER))
+        .max_iterations(max_iterations)
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
         .q_init(q_init)
@@ -217,6 +221,14 @@ impl Default for SearchBudget {
             threads: 1,
             max_iterations: None,
         }
+    }
+}
+
+impl SearchBudget {
+    fn iteration_limit(self) -> usize {
+        self.max_iterations
+            .or_else(|| self.max_time.map(|_| usize::MAX))
+            .unwrap_or(MAX_ITER)
     }
 }
 
@@ -785,6 +797,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
     initial_state: G::S,
     trace_path: Option<&std::path::Path>,
+    on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<TuneEvalOutcome, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
         .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
@@ -796,36 +809,49 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         .map_err(|e| HostError::bad_request(format!("failed to open --trace-path: {e}")))?;
 
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
-    for _ in 0..rounds {
+    let mut seq = 0u64;
+    for round in 1..=rounds {
         let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
 
-        let (c, b, d) = play_one(
+        seq += 1;
+        let result = play_one(
             candidate.as_mut(),
             baseline.as_mut(),
             initial_state.clone(),
             tracer.as_mut(),
-            "candidate",
-            "baseline",
-        );
-        wins += c;
-        losses += b;
-        draws += d;
+            round,
+            seq,
+            seed,
+            ConfiguredCandidateSide::First,
+        )?;
+        match result.outcome {
+            ConfiguredOutcome::CandidateWin => wins += 1,
+            ConfiguredOutcome::BaselineWin => losses += 1,
+            ConfiguredOutcome::Draw => draws += 1,
+        }
+        on_game(result)?;
 
         // Swap move order so the candidate plays second half the time.
         let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
-        let (b, c, d) = play_one(
+        seq += 1;
+        let result = play_one(
             baseline.as_mut(),
             candidate.as_mut(),
             initial_state.clone(),
             tracer.as_mut(),
-            "baseline",
-            "candidate",
-        );
-        wins += c;
-        losses += b;
-        draws += d;
+            round,
+            seq,
+            seed,
+            ConfiguredCandidateSide::Second,
+        )?;
+        match result.outcome {
+            ConfiguredOutcome::CandidateWin => wins += 1,
+            ConfiguredOutcome::BaselineWin => losses += 1,
+            ConfiguredOutcome::Draw => draws += 1,
+        }
+        on_game(result)?;
     }
 
     Ok(TuneEvalOutcome {
@@ -862,12 +888,16 @@ fn play_one<G: Game>(
     second: &mut dyn Search<G = G>,
     initial_state: G::S,
     mut tracer: Option<&mut trace::MoveTracer>,
-    first_label: &str,
-    second_label: &str,
-) -> (u32, u32, u32) {
+    round: u32,
+    seq: u64,
+    seed: u64,
+    candidate_side: ConfiguredCandidateSide,
+) -> Result<ConfiguredMatchResult, HostError> {
+    let started = std::time::Instant::now();
     let game_seq = tracer.as_mut().map(|t| t.start_game());
     let mut state = initial_state;
     let mut ply = 0u32;
+    let mut measurements = Vec::new();
 
     if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
         t.write_ply::<G::S, G::A>(seq, ply, &state, None, None);
@@ -875,28 +905,76 @@ fn play_one<G: Game>(
 
     while !G::is_terminal(&state) {
         let mover = G::player_to_move(&state).to_index();
+        let pre_move_state = state.clone();
+        let move_started = std::time::Instant::now();
         let action = if mover == 0 {
             first.choose_action(&state)
         } else {
             second.choose_action(&state)
         };
+        let visits = if mover == 0 {
+            first.root_report(&pre_move_state).total_visits
+        } else {
+            second.root_report(&pre_move_state).total_visits
+        };
         state = G::apply(state, &action);
         ply += 1;
+        measurements.push((mover, visits as u64, move_started.elapsed()));
 
         if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
             let player = if mover == 0 {
-                first_label
+                if candidate_side == ConfiguredCandidateSide::First {
+                    "candidate"
+                } else {
+                    "baseline"
+                }
             } else {
-                second_label
+                if candidate_side == ConfiguredCandidateSide::Second {
+                    "candidate"
+                } else {
+                    "baseline"
+                }
             };
             t.write_ply(seq, ply, &state, Some(&action), Some(player));
         }
     }
-    match G::winner(&state) {
-        None => (0, 0, 1),
-        Some(p) if p.to_index() == 0 => (1, 0, 0),
-        Some(_) => (0, 1, 0),
+    let outcome = match G::winner(&state) {
+        None => ConfiguredOutcome::Draw,
+        Some(p) if (p.to_index() == 0) == (candidate_side == ConfiguredCandidateSide::First) => {
+            ConfiguredOutcome::CandidateWin
+        }
+        Some(_) => ConfiguredOutcome::BaselineWin,
+    };
+    let first_half = ply / 2;
+    let mut candidate = ConfiguredStrategyMetrics::default();
+    let mut baseline = ConfiguredStrategyMetrics::default();
+    for (index, (mover, visits, elapsed)) in measurements.into_iter().enumerate() {
+        let metrics = if (mover == 0) == (candidate_side == ConfiguredCandidateSide::First) {
+            &mut candidate
+        } else {
+            &mut baseline
+        };
+        metrics.iterations_total = metrics.iterations_total.saturating_add(visits);
+        metrics.move_time_ms = metrics
+            .move_time_ms
+            .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
+        if (index as u32 + 1) <= first_half {
+            metrics.iterations_first_half = metrics.iterations_first_half.saturating_add(visits);
+        }
     }
+    Ok(ConfiguredMatchResult {
+        record_type: "configured_match_result".into(),
+        seq,
+        round,
+        seed,
+        candidate_side,
+        outcome,
+        trace_game_seq: game_seq,
+        plies: ply,
+        elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        candidate,
+        baseline,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,6 +1193,131 @@ mod tests {
         })
     }
 
+    fn comparison_params() -> Value {
+        json!({
+            "family": "ucb1",
+            "c": 1.4,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+        })
+    }
+
+    #[test]
+    fn configured_eval_streams_alternating_results_and_matches_aggregate() {
+        let params = comparison_params();
+        let budget = SearchBudget {
+            max_iterations: Some(3),
+            ..Default::default()
+        };
+        let mut records = Vec::new();
+        let mut sink = |record| {
+            records.push(record);
+            Ok(())
+        };
+        let outcome = strategy_tune_eval::<Nim>(
+            &params,
+            2,
+            Some(42),
+            false,
+            budget,
+            || build_search::<Nim>(&params, 0, false, &budget).unwrap(),
+            <Nim as Game>::S::default(),
+            None,
+            &mut sink,
+        )
+        .unwrap();
+
+        assert_eq!(records.len(), 4);
+        assert_eq!(
+            records.iter().map(|record| record.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.candidate_side)
+                .collect::<Vec<_>>(),
+            vec![
+                ConfiguredCandidateSide::First,
+                ConfiguredCandidateSide::Second,
+                ConfiguredCandidateSide::First,
+                ConfiguredCandidateSide::Second,
+            ]
+        );
+        let wins = records
+            .iter()
+            .filter(|record| record.outcome == ConfiguredOutcome::CandidateWin)
+            .count() as u32;
+        let losses = records
+            .iter()
+            .filter(|record| record.outcome == ConfiguredOutcome::BaselineWin)
+            .count() as u32;
+        let draws = records
+            .iter()
+            .filter(|record| record.outcome == ConfiguredOutcome::Draw)
+            .count() as u32;
+        assert_eq!(
+            (wins, losses, draws),
+            (outcome.wins, outcome.losses, outcome.draws)
+        );
+        for record in records {
+            assert!(record.candidate.iterations_total > 0);
+            assert!(record.baseline.iterations_total > 0);
+            assert!(record.candidate.iterations_first_half <= record.candidate.iterations_total);
+            assert!(record.baseline.iterations_first_half <= record.baseline.iterations_total);
+        }
+    }
+
+    #[test]
+    fn configured_eval_sink_error_stops_before_later_games() {
+        let params = comparison_params();
+        let budget = SearchBudget {
+            max_iterations: Some(3),
+            ..Default::default()
+        };
+        let mut seen = 0;
+        let mut sink = |_record| {
+            seen += 1;
+            Err(HostError::internal("stop streaming"))
+        };
+        let err = strategy_tune_eval::<Nim>(
+            &params,
+            2,
+            Some(42),
+            false,
+            budget,
+            || build_search::<Nim>(&params, 0, false, &budget).unwrap(),
+            <Nim as Game>::S::default(),
+            None,
+            &mut sink,
+        )
+        .expect_err("sink failure should abort the comparison");
+        assert_eq!(seen, 1);
+        assert_eq!(err.message, "stop streaming");
+    }
+
+    #[test]
+    fn search_budget_time_and_default_iteration_limits_are_distinct() {
+        assert_eq!(SearchBudget::default().iteration_limit(), MAX_ITER);
+        assert_eq!(
+            SearchBudget {
+                max_time: Some(std::time::Duration::from_millis(1)),
+                ..Default::default()
+            }
+            .iteration_limit(),
+            usize::MAX
+        );
+        assert_eq!(
+            SearchBudget {
+                max_iterations: Some(7),
+                max_time: Some(std::time::Duration::from_millis(1)),
+                ..Default::default()
+            }
+            .iteration_limit(),
+            7
+        );
+    }
+
     #[test]
     fn test_tune_eval_rejects_params_missing_required_field() {
         // "schedule": "threshold" requires "rave", which is absent -- this
@@ -1131,6 +1334,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("missing `rave` must be rejected");
         assert!(err.message.contains("rave"));
@@ -1149,6 +1353,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("unknown schedule must be rejected");
         assert!(err.message.contains("schedule"));
@@ -1167,6 +1372,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("unknown final_action must be rejected");
         assert!(err.message.contains("final_action"));
@@ -1185,6 +1391,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("unknown contempt must be rejected");
         assert!(err.message.contains("contempt"));
@@ -1204,6 +1411,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("contempt=on without contempt_factor must be rejected");
         assert!(err.message.contains("contempt_factor"));
@@ -1222,6 +1430,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect_err("unknown family must be rejected");
         assert!(err.message.contains("family"));
@@ -1243,6 +1452,7 @@ mod tests {
             baseline,
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .unwrap_or_else(|e| {
             panic!(
@@ -1387,6 +1597,7 @@ mod tests {
             },
             <Nim as Game>::S::default(),
             None,
+            &mut |_| Ok(()),
         )
         .expect("candidate vs config-built baseline should round-trip");
         assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);

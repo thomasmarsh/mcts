@@ -414,7 +414,9 @@ impl GameAdapter for TakAdapter {
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
+        max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Tak has one, so merging transposed nodes during the
@@ -428,6 +430,7 @@ impl GameAdapter for TakAdapter {
             // (see `SearchBudget`'s and `build_search`'s doc comments).
             let budget = mcts_tune::SearchBudget {
                 max_iterations,
+                max_time: max_time_ms.map(std::time::Duration::from_millis),
                 ..Default::default()
             };
             // Fail fast on an invalid baseline config, before any games are
@@ -447,6 +450,7 @@ impl GameAdapter for TakAdapter {
                 },
                 Default::default(),
                 trace_path.as_deref(),
+                on_game,
             )?
         } else {
             mcts_tune::strategy_tune_eval(
@@ -456,11 +460,13 @@ impl GameAdapter for TakAdapter {
                 true,
                 mcts_tune::SearchBudget {
                     max_iterations,
+                    max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
                 },
                 build_strong,
                 Default::default(),
                 trace_path.as_deref(),
+                on_game,
             )?
         };
         Ok(serde_json::json!({
@@ -565,7 +571,18 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let result = TakAdapter
-            .tune_eval(params, 1, Some(0), None, None, None, None, None)
+            .tune_eval(
+                params,
+                1,
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &mut |_| Ok(()),
+            )
             .expect("tune_eval should round-trip with a minimal RAVE config");
         assert!(result["cost"].as_f64().is_some());
     }
