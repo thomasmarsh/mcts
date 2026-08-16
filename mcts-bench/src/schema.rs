@@ -32,7 +32,14 @@ pub const CREATE_TABLES: &[&str] = &[
         exit_code   INTEGER,
         logical_run_id TEXT,
         parent_attempt_id TEXT,
-        attempt_ordinal UINTEGER
+        attempt_ordinal UINTEGER,
+        attempt_phase TEXT,
+        attempt_stop_reason TEXT,
+        attempt_process_observed BOOLEAN,
+        attempt_signal_observed BOOLEAN,
+        attempt_exit_kind TEXT,
+        attempt_exit_code INTEGER,
+        attempt_version UINTEGER
     )",
     "CREATE TABLE IF NOT EXISTS match_results (
         run_id      TEXT NOT NULL REFERENCES runs(run_id),
@@ -120,6 +127,18 @@ pub const CREATE_TABLES: &[&str] = &[
         byte_offset BIGINT NOT NULL DEFAULT 0,
         updated_at  TIMESTAMP NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS attempt_events (
+        attempt_id TEXT NOT NULL REFERENCES runs(run_id),
+        attempt_version UINTEGER NOT NULL,
+        event_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        stop_reason TEXT,
+        exit_kind TEXT,
+        exit_code INTEGER,
+        observed_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (attempt_id, event_key),
+        UNIQUE (attempt_id, attempt_version)
+    )",
 ];
 
 pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
@@ -141,6 +160,13 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE runs ADD COLUMN logical_run_id TEXT",
         "ALTER TABLE runs ADD COLUMN parent_attempt_id TEXT",
         "ALTER TABLE runs ADD COLUMN attempt_ordinal UINTEGER",
+        "ALTER TABLE runs ADD COLUMN attempt_phase TEXT",
+        "ALTER TABLE runs ADD COLUMN attempt_stop_reason TEXT",
+        "ALTER TABLE runs ADD COLUMN attempt_process_observed BOOLEAN",
+        "ALTER TABLE runs ADD COLUMN attempt_signal_observed BOOLEAN",
+        "ALTER TABLE runs ADD COLUMN attempt_exit_kind TEXT",
+        "ALTER TABLE runs ADD COLUMN attempt_exit_code INTEGER",
+        "ALTER TABLE runs ADD COLUMN attempt_version UINTEGER",
     ] {
         let _ = conn.execute_batch(ddl);
     }
@@ -156,6 +182,24 @@ pub fn open(path: impl AsRef<std::path::Path>) -> duckdb::Result<duckdb::Connect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type LegacyShape = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<u64>,
+        Option<u64>,
+        Option<String>,
+    );
+    type TypedProjection = (
+        Option<String>,
+        Option<String>,
+        Option<bool>,
+        Option<bool>,
+        Option<String>,
+        Option<i32>,
+        Option<u64>,
+    );
 
     #[test]
     fn fresh_in_memory_db_creates_all_tables() {
@@ -181,6 +225,7 @@ mod tests {
             "incumbents",
             "game_moves",
             "_ingest_cursor",
+            "attempt_events",
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }
@@ -207,6 +252,49 @@ mod tests {
                 ("attempt_ordinal".into(), "YES".into()),
                 ("logical_run_id".into(), "YES".into()),
                 ("parent_attempt_id".into(), "YES".into()),
+            ]
+        );
+        let attempt_columns: Vec<String> = conn
+            .prepare(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'runs' AND column_name IN ('attempt_phase', 'attempt_stop_reason', 'attempt_process_observed', 'attempt_signal_observed', 'attempt_exit_kind', 'attempt_exit_code', 'attempt_version') ORDER BY column_name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            attempt_columns,
+            vec![
+                "attempt_exit_code",
+                "attempt_exit_kind",
+                "attempt_phase",
+                "attempt_process_observed",
+                "attempt_signal_observed",
+                "attempt_stop_reason",
+                "attempt_version",
+            ]
+        );
+        let event_columns: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'attempt_events' ORDER BY ordinal_position",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            event_columns,
+            vec![
+                ("attempt_id".into(), "NO".into()),
+                ("attempt_version".into(), "NO".into()),
+                ("event_key".into(), "NO".into()),
+                ("event_type".into(), "NO".into()),
+                ("stop_reason".into(), "YES".into()),
+                ("exit_kind".into(), "YES".into()),
+                ("exit_code".into(), "YES".into()),
+                ("observed_at".into(), "NO".into()),
             ]
         );
     }
@@ -255,7 +343,7 @@ mod tests {
 
         ensure_schema(&conn).unwrap();
 
-        let row: (String, Option<String>, Option<String>, Option<u64>, Option<u64>, Option<String>) = conn
+        let row: LegacyShape = conn
             .query_row(
                 "SELECT game, project_id, experiment_id, seed, trace_game_seq, metrics FROM runs LEFT JOIN match_results USING (run_id)",
                 [],
@@ -277,6 +365,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(linkage, (None, None, None));
+        let typed: TypedProjection = conn
+            .query_row(
+                "SELECT attempt_phase, attempt_stop_reason, attempt_process_observed, attempt_signal_observed, attempt_exit_kind, attempt_exit_code, attempt_version FROM runs WHERE run_id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            )
+            .unwrap();
+        assert_eq!(typed, (None, None, None, None, None, None, None));
     }
 
     #[test]
