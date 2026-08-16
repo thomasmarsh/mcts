@@ -8,6 +8,7 @@ pub mod launch;
 pub mod lifecycle;
 pub mod log;
 pub mod orchestration;
+pub mod supervised_launch;
 pub mod supervisor;
 pub mod tournament;
 
