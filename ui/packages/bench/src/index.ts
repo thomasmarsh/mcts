@@ -22,6 +22,14 @@ export type {
   GameTraceSummary,
   GameMove,
   LiveGameMove,
+  Budget,
+  NamedStrategyConfig,
+  ExperimentGame,
+  ExperimentSpecV1,
+  ValidationField,
+  Project,
+  Experiment,
+  ExperimentCell,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 
@@ -43,6 +51,7 @@ export {
   TAIL_BACKOFF_START_MS,
   TAIL_BACKOFF_MAX_MS,
   TAIL_MAX_FAILURES,
+  emptyExperimentSpec,
 } from "./reducer.js";
 
 export type { BenchApiClient } from "./api-client.js";
@@ -57,3 +66,8 @@ export { LeaderboardTable } from "./LeaderboardTable.js";
 export { WinRateChart } from "./WinRateChart.js";
 export { CommitComparison } from "./CommitComparison.js";
 export { BenchApp } from "./BenchApp.js";
+export { ProjectsApp } from "./ProjectsApp.js";
+export { ProjectsLanding } from "./ProjectsLanding.js";
+export { ProjectDetail } from "./ProjectDetail.js";
+export { ExperimentEditor } from "./ExperimentEditor.js";
+export { ExperimentRunDetail } from "./ExperimentRunDetail.js";

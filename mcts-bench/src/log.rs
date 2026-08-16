@@ -29,6 +29,27 @@ pub enum LogRecord {
         /// Arbitrary extra metadata (moves list, timing, etc.).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         extra: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_game_seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metrics: Option<serde_json::Value>,
+    },
+    /// A one-cell experiment has begun execution.
+    CellStarted { cell_id: String },
+    /// A one-cell experiment completed successfully.
+    CellFinished {
+        cell_id: String,
+        completed_games: u64,
+    },
+    /// A cell failed after preserving any already completed matches.
+    CellFailed {
+        cell_id: String,
+        completed_games: u64,
+        error: String,
     },
     /// A single trial from a hyperparameter-optimization run (SMAC3, etc.).
     Trial {
@@ -141,6 +162,10 @@ mod tests {
             outcome: "win_a".into(),
             winner: Some("strong".into()),
             extra: None,
+            cell_id: None,
+            seed: None,
+            trace_game_seq: None,
+            metrics: None,
         };
         let json = rec.to_json_line();
         let parsed: LogRecord = serde_json::from_str(&json).unwrap();

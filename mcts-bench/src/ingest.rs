@@ -16,6 +16,7 @@ pub enum IngestError {
     DuckDb(duckdb::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
+    OrphanCell { run_id: String, cell_id: String },
 }
 
 impl std::fmt::Display for IngestError {
@@ -24,6 +25,9 @@ impl std::fmt::Display for IngestError {
             IngestError::DuckDb(e) => write!(f, "DuckDB error: {e}"),
             IngestError::Io(e) => write!(f, "I/O error: {e}"),
             IngestError::Json(e) => write!(f, "JSON error: {e}"),
+            IngestError::OrphanCell { run_id, cell_id } => {
+                write!(f, "cell '{cell_id}' does not belong to run '{run_id}'")
+            }
         }
     }
 }
@@ -135,7 +139,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
 }
 
 fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status = 'running'")?;
+    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('running', 'completed', 'crashed', 'stopped')")?;
     let running_runs: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -197,6 +201,10 @@ fn process_one_log_file(
                 outcome,
                 winner,
                 extra,
+                cell_id,
+                seed,
+                trace_game_seq,
+                metrics,
             } => {
                 let ts = iso_timestamp();
                 let extra_json = extra
@@ -205,13 +213,73 @@ fn process_one_log_file(
                 conn.execute(
                     "INSERT INTO match_results \
                          (run_id, seq, ts, strategy_a, strategy_b, \
-                          outcome, winner, extra) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                          outcome, winner, extra, cell_id, seed, trace_game_seq, metrics) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
                          ON CONFLICT (run_id, seq) DO NOTHING",
                     params![
-                        run_id, seq as i64, ts, strategy_a, strategy_b, outcome, winner,
+                        run_id,
+                        seq as i64,
+                        ts,
+                        strategy_a,
+                        strategy_b,
+                        outcome,
+                        winner,
                         extra_json,
+                        cell_id,
+                        seed,
+                        trace_game_seq,
+                        metrics
+                            .as_ref()
+                            .map(|v| serde_json::to_string(v).expect("Value -> String")),
                     ],
+                )?;
+                if let Some(ref cell_id) = cell_id {
+                    conn.execute(
+                        "UPDATE experiment_cells SET completed_games = (SELECT COUNT(*) FROM match_results WHERE run_id = ?1 AND cell_id = ?2) WHERE run_id = ?1 AND cell_id = ?2",
+                        params![run_id, cell_id],
+                    )?;
+                }
+            }
+            LogRecord::CellStarted { cell_id } => {
+                let belongs: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM experiment_cells WHERE run_id = ?1 AND cell_id = ?2",
+                    params![run_id, cell_id],
+                    |row| row.get(0),
+                )?;
+                if belongs == 0 {
+                    return Err(IngestError::OrphanCell {
+                        run_id: run_id.to_owned(),
+                        cell_id,
+                    });
+                }
+                conn.execute(
+                    "UPDATE experiment_cells SET status = 'running', started_at = COALESCE(started_at, ?1) WHERE run_id = ?2 AND cell_id = ?3",
+                    params![iso_timestamp(), run_id, cell_id],
+                )?;
+            }
+            LogRecord::CellFinished {
+                cell_id,
+                completed_games,
+            } => {
+                ensure_cell_belongs(conn, run_id, &cell_id)?;
+                conn.execute(
+                    "UPDATE experiment_cells SET status = 'completed', completed_games = ?1, ended_at = ?2 WHERE run_id = ?3 AND cell_id = ?4",
+                    params![completed_games, iso_timestamp(), run_id, cell_id],
+                )?;
+            }
+            LogRecord::CellFailed {
+                cell_id,
+                completed_games,
+                error,
+            } => {
+                ensure_cell_belongs(conn, run_id, &cell_id)?;
+                conn.execute(
+                    "UPDATE experiment_cells SET status = 'failed', completed_games = ?1, error = ?2, ended_at = ?3 WHERE run_id = ?4 AND cell_id = ?5",
+                    params![completed_games, error, iso_timestamp(), run_id, cell_id],
+                )?;
+                conn.execute(
+                    "UPDATE runs SET status = 'crashed', ended_at = ?1 WHERE run_id = ?2 AND status IN ('running', 'completed')",
+                    params![iso_timestamp(), run_id],
                 )?;
             }
             LogRecord::Trial {
@@ -295,6 +363,21 @@ fn process_one_log_file(
 
     set_cursor(conn, &cursor_key, file_len)?;
 
+    Ok(())
+}
+
+fn ensure_cell_belongs(conn: &Connection, run_id: &str, cell_id: &str) -> Result<(), IngestError> {
+    let belongs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM experiment_cells WHERE run_id = ?1 AND cell_id = ?2",
+        params![run_id, cell_id],
+        |row| row.get(0),
+    )?;
+    if belongs == 0 {
+        return Err(IngestError::OrphanCell {
+            run_id: run_id.to_owned(),
+            cell_id: cell_id.to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -577,6 +660,10 @@ mod tests {
                     outcome: "win_a".into(),
                     winner: Some("strong".into()),
                     extra: None,
+                    cell_id: None,
+                    seed: None,
+                    trace_game_seq: None,
+                    metrics: None,
                 },
                 LogRecord::MatchResult {
                     seq: 2,
@@ -585,6 +672,10 @@ mod tests {
                     outcome: "win_b".into(),
                     winner: Some("strong".into()),
                     extra: None,
+                    cell_id: None,
+                    seed: None,
+                    trace_game_seq: None,
+                    metrics: None,
                 },
                 LogRecord::MatchResult {
                     seq: 3,
@@ -593,6 +684,10 @@ mod tests {
                     outcome: "draw".into(),
                     winner: None,
                     extra: None,
+                    cell_id: None,
+                    seed: None,
+                    trace_game_seq: None,
+                    metrics: None,
                 },
             ];
             let mut log_content = String::new();
@@ -662,6 +757,10 @@ mod tests {
                 outcome: "win_a".into(),
                 winner: Some("a".into()),
                 extra: None,
+                cell_id: None,
+                seed: None,
+                trace_game_seq: None,
+                metrics: None,
             }];
             let mut log_content = String::new();
             for rec in &records {
@@ -736,6 +835,10 @@ mod tests {
                 outcome: "draw".into(),
                 winner: None,
                 extra: None,
+                cell_id: None,
+                seed: None,
+                trace_game_seq: None,
+                metrics: None,
             };
             let mut log_content = String::new();
             log_content.push_str(&good.to_json_line());
@@ -817,6 +920,10 @@ mod tests {
                     outcome: "win_a".into(),
                     winner: Some("a".into()),
                     extra: None,
+                    cell_id: None,
+                    seed: None,
+                    trace_game_seq: None,
+                    metrics: None,
                 },
                 LogRecord::Heartbeat { games_played: 20 },
             ];
@@ -1057,6 +1164,10 @@ mod tests {
                 outcome: "win_a".into(),
                 winner: Some("a".into()),
                 extra: None,
+                cell_id: None,
+                seed: None,
+                trace_game_seq: None,
+                metrics: None,
             };
             fs::write(&log_path, format!("{}\n", match_result.to_json_line())).unwrap();
 
@@ -1207,6 +1318,168 @@ mod tests {
             db.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             1,
+        );
+    }
+
+    #[test]
+    fn test_experiment_cell_ingestion_is_idempotent_and_keeps_trace_mapping() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcts_bench_experiment_ingest_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("experiment-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n",
+                start_event(
+                    "experiment-run",
+                    "experiment",
+                    "nim",
+                    99991,
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        let records = [
+            LogRecord::CellStarted {
+                cell_id: "cell-1".into(),
+            },
+            LogRecord::MatchResult {
+                seq: 1,
+                strategy_a: "Candidate".into(),
+                strategy_b: "Baseline".into(),
+                outcome: "win_a".into(),
+                winner: Some("Candidate".into()),
+                extra: None,
+                cell_id: Some("cell-1".into()),
+                seed: Some(42),
+                trace_game_seq: Some(177),
+                metrics: Some(serde_json::json!({"outcome":"candidate_win","plies":3})),
+            },
+            LogRecord::MatchResult {
+                seq: 2,
+                strategy_a: "Baseline".into(),
+                strategy_b: "Candidate".into(),
+                outcome: "draw".into(),
+                winner: None,
+                extra: None,
+                cell_id: Some("cell-1".into()),
+                seed: Some(43),
+                trace_game_seq: Some(178),
+                metrics: Some(serde_json::json!({"outcome":"draw","plies":4})),
+            },
+            LogRecord::CellFinished {
+                cell_id: "cell-1".into(),
+                completed_games: 2,
+            },
+        ];
+        fs::write(
+            &log_path,
+            records
+                .iter()
+                .map(|record| format!("{}\n", record.to_json_line()))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        db.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES ('experiment-run', 'experiment', 'nim', 'test', false, 'test', NULL, CURRENT_TIMESTAMP, 'running', ?1)", [&log_path.to_string_lossy()]).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('experiment-run', 'cell-1', 'nim', 'null', 'candidate', 'Candidate', '{}', 'base', 'Baseline', '{}', '{\"kind\":\"iterations\",\"value\":1}', 1, 2)", []).unwrap();
+        ingest_once(&db, &bench_runs).unwrap();
+        ingest_once(&db, &bench_runs).unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM match_results", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT completed_games FROM experiment_cells WHERE run_id = 'experiment-run'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT trace_game_seq FROM match_results WHERE seq = 1",
+                [],
+                |row| row.get::<_, u64>(0)
+            )
+            .unwrap(),
+            177
+        );
+    }
+
+    #[test]
+    fn test_cell_failure_is_ingested_after_registry_stop() {
+        let dir =
+            std::env::temp_dir().join(format!("mcts_bench_cell_failure_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("failed-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(
+            &log_path,
+            format!(
+                "{}\n",
+                LogRecord::CellFailed {
+                    cell_id: "cell-1".into(),
+                    completed_games: 1,
+                    error: "child failed".into()
+                }
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n{}\n",
+                start_event(
+                    "failed-run",
+                    "experiment",
+                    "nim",
+                    99991,
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line(),
+                stop_event("failed-run", Some(1)).to_json_line()
+            ),
+        )
+        .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        process_registry(&db, &bench_runs.join("registry.log")).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('failed-run', 'cell-1', 'nim', 'null', 'variant', 'Variant', '{}', 'baseline', 'Baseline', '{}', '{\"kind\":\"iterations\",\"value\":1}', 1, 2)", []).unwrap();
+        process_run_logs(&db).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'failed-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "crashed"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM experiment_cells WHERE run_id = 'failed-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "failed"
         );
     }
 }

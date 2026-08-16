@@ -19,6 +19,11 @@ import type {
   RunSummary,
   Smac3GameInfo,
   TrialRow,
+  Project,
+  Experiment,
+  ExperimentCell,
+  ExperimentSpecV1,
+  GameTraceSummary,
 } from "./types.js";
 
 /** One trial, tagged with which rung of the open run's ladder chain it came
@@ -75,6 +80,8 @@ export interface OpenRunState {
    * tradeoff `trials` already makes (see reducer.ts). Empty for a
    * non-`"smac3"` run. */
   chainedTrials: ChainedTrial[];
+  cells: ExperimentCell[];
+  games: GameTraceSummary[];
 }
 
 /** Win-rate-over-commits trend data: one leaderboard snapshot per git SHA. */
@@ -87,6 +94,20 @@ export interface CommitTrendsState {
 }
 
 export interface BenchState {
+  activeTab: "projects" | "runs" | "leaderboard";
+  projects: JobPollState<Project[]>;
+  selectedProjectId: string | null;
+  selectedExperimentId: string | null;
+  selectedCellId: string | null;
+  selectedProject: Project | null;
+  selectedExperiment: Experiment | null;
+  experiments: JobPollState<Experiment[]>;
+  cells: JobPollState<ExperimentCell[]>;
+  projectDraft: { name: string; description: string };
+  experimentDraft: { name: string; description: string; spec: ExperimentSpecV1 } | null;
+  projectError: string | null;
+  experimentError: string | null;
+  experimentRunError: string | null;
   runs: JobPollState<RunSummary[]>;
   runFilters: RunFilters;
   openRun: OpenRunState | null;
@@ -119,6 +140,20 @@ export interface BenchState {
 
 export function initialBenchState(): BenchState {
   return {
+    activeTab: "projects",
+    projects: initialJobPollState<Project[]>(),
+    selectedProjectId: null,
+    selectedExperimentId: null,
+    selectedCellId: null,
+    selectedProject: null,
+    selectedExperiment: null,
+    experiments: initialJobPollState<Experiment[]>(),
+    cells: initialJobPollState<ExperimentCell[]>(),
+    projectDraft: { name: "", description: "" },
+    experimentDraft: null,
+    projectError: null,
+    experimentError: null,
+    experimentRunError: null,
     runs: initialJobPollState<RunSummary[]>(),
     runFilters: { status: null, game: null },
     openRun: null,

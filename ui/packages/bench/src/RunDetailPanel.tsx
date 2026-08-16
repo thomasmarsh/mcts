@@ -304,7 +304,7 @@ export const RunDetailPanel: Component<{
         </div>
 
         <Show when={spectatorVisible() && Spectator && detail()}>
-          {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
+          {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game ?? ""} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
         </Show>
 
         <div id="log-panel">

@@ -25,6 +25,8 @@ export const fakeRunSummaries: RunSummary[] = [
   {
     run_id: FAKE_RUN_ID,
     kind: "round_robin",
+    project_id: null,
+    experiment_id: null,
     game: "druid",
     label: null,
     git_sha: "abc1234def5678",
@@ -40,6 +42,8 @@ export const fakeRunSummaries: RunSummary[] = [
   {
     run_id: "rr-druid-20260201T000000-def5678",
     kind: "round_robin",
+    project_id: null,
+    experiment_id: null,
     game: "druid",
     label: "test run",
     git_sha: "def5678abc1234",
@@ -57,6 +61,9 @@ export const fakeRunSummaries: RunSummary[] = [
 export const fakeRunDetail: RunDetail = {
   run_id: FAKE_RUN_ID,
   kind: "round_robin",
+  project_id: null,
+  experiment_id: null,
+  experiment_spec: null,
   game: "druid",
   label: null,
   config: { strategies: ["strong", "master"], rounds: 1 },
@@ -276,6 +283,16 @@ export const fakeKinds: BenchKindInfo[] = [
 
 export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
   const base: BenchEnv = {
+    listProjects: () => Effect.send([]),
+    createProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
+    getProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
+    updateProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
+    listExperiments: () => Effect.send([]),
+    createExperiment: (_projectId, body) => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: body.name, description: body.description, spec: body.spec, created_at: "", updated_at: "" }),
+    getExperiment: () => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: "Experiment", description: "", spec: { version: 1, games: [{ game: "nim", game_config: null }], baseline: { id: "base", label: "Base", config: {} }, variants: [{ id: "variant", label: "Variant", config: {} }], budgets: [{ kind: "iterations", value: 25 }], rounds_per_cell: 1, base_seed: 42, max_parallel_cells: 1 }, created_at: "", updated_at: "" }),
+    updateExperiment: (_id, body) => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: body.name, description: body.description, spec: body.spec, created_at: "", updated_at: "" }),
+    launchExperiment: () => Effect.send({ run_id: FAKE_RUN_ID, pid: 1, log_path: "" }),
+    getRunCells: () => Effect.send([]),
     listRuns: () => Effect.send(fakeRunSummaries),
     getRun: (runId: string) =>
       Effect.send(

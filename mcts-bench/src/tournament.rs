@@ -144,6 +144,10 @@ fn write_match_result<W: Write>(
         outcome: outcome.to_owned(),
         winner,
         extra,
+        cell_id: None,
+        seed: None,
+        trace_game_seq: None,
+        metrics: None,
     };
     let mut line = rec.to_json_line();
     line.push('\n');

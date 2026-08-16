@@ -264,7 +264,14 @@ fn play_match_inner(
     play_match_inner(adapter, result.state, preset_a, preset_b, turn + 1, on_ply)
 }
 
-fn find_game_binary(pkg_name: &str) -> Option<PathBuf> {
+/// Locate a sibling game binary using the same convention as the existing
+/// registry and describe commands.
+pub fn find_game_binary(kind: &str) -> Option<PathBuf> {
+    let pkg_name = GAME_KINDS
+        .iter()
+        .find(|(registered, _)| *registered == kind)
+        .map(|(_, package)| *package)
+        .unwrap_or(kind);
     let exe_name = exe_name_for(pkg_name);
 
     if let Ok(exe) = std::env::current_exe() {

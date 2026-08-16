@@ -11,6 +11,33 @@
  * failing to deserialize here. */
 export type RunStatus = "running" | "completed" | "crashed" | "stopped" | (string & {});
 
+export type Budget =
+  | { kind: "iterations"; value: number }
+  | { kind: "time_per_move_ms"; value: number };
+
+export interface NamedStrategyConfig { id: string; label: string; config: Record<string, unknown> }
+export interface ExperimentGame { game: string; game_config: unknown }
+export interface ExperimentSpecV1 {
+  version: 1;
+  games: ExperimentGame[];
+  baseline: NamedStrategyConfig;
+  variants: NamedStrategyConfig[];
+  budgets: Budget[];
+  rounds_per_cell: number;
+  base_seed: number;
+  max_parallel_cells: number;
+}
+export interface ValidationField { path: string; message: string }
+export interface Project { project_id: string; name: string; description: string; archived: boolean; created_at: string; updated_at: string }
+export interface Experiment { experiment_id: string; project_id: string; name: string; description: string; spec: ExperimentSpecV1; created_at: string; updated_at: string }
+export interface ExperimentCell {
+  cell_id: string; game: string; game_config: unknown; variant_id: string; variant_label: string;
+  candidate_config: Record<string, unknown>; baseline_id: string; baseline_label: string;
+  baseline_config: Record<string, unknown>; budget: Budget; rounds: number; planned_games: number;
+  completed_games: number; status: string; started_at: string | null; ended_at: string | null; error: string | null;
+  wins: number; losses: number; draws: number; win_rate: number; ci_lower: number; ci_upper: number;
+}
+
 /** A run is finished once its status leaves "running". Its log file is
  * complete at that point — the run process writes it directly, so process
  * exit means fully flushed — which is what lets a log tail stop polling
@@ -23,7 +50,9 @@ export function isTerminalStatus(status: RunStatus): boolean {
 export interface RunSummary {
   run_id: string;
   kind: string;
-  game: string;
+  game: string | null;
+  project_id: string | null;
+  experiment_id: string | null;
   label: string | null;
   git_sha: string;
   git_dirty: boolean;
@@ -41,7 +70,10 @@ export interface RunSummary {
 export interface RunDetail {
   run_id: string;
   kind: string;
-  game: string;
+  game: string | null;
+  project_id: string | null;
+  experiment_id: string | null;
+  experiment_spec: ExperimentSpecV1 | null;
   label: string | null;
   config: unknown;
   git_sha: string;
@@ -79,6 +111,10 @@ export interface RunLogResponse {
 /** One traced game, newest first, from `GET /api/bench/runs/{run_id}/games`. */
 export interface GameTraceSummary {
   game_seq: number;
+  match_seq?: number | null;
+  cell_id?: string | null;
+  seed?: number | null;
+  metrics?: unknown | null;
   ply_count: number;
   started_at: string;
   ended_at: string;
@@ -159,6 +195,8 @@ export interface StopResponse {
 export interface RunFilters {
   status: string | null;
   game: string | null;
+  project_id?: string | null;
+  experiment_id?: string | null;
 }
 
 export interface LeaderboardFilters {

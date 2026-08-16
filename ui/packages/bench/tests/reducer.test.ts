@@ -18,11 +18,12 @@ import {
   TAIL_BACKOFF_MAX_MS,
   TAIL_BACKOFF_START_MS,
   TAIL_MAX_FAILURES,
+  emptyExperimentSpec,
   type BenchAction,
   type BenchEnv,
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
-import type { ChainRung, LaunchResponse, LeaderboardEntry, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
+import type { ChainRung, Experiment, ExperimentCell, LaunchResponse, LeaderboardEntry, Project, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,8 @@ const summary: RunSummary = {
   run_id: "rr-druid-20260101T000000-abc1234",
   kind: "round_robin",
   game: "druid",
+  project_id: null,
+  experiment_id: null,
   label: null,
   git_sha: "abc1234",
   git_dirty: false,
@@ -47,6 +50,9 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
     run_id: summary.run_id,
     kind: "round_robin",
     game: "druid",
+    project_id: null,
+    experiment_id: null,
+    experiment_spec: null,
     label: null,
     config: null,
     git_sha: "abc1234",
@@ -76,6 +82,16 @@ const smac3TerminalDetail = makeDetail({
 });
 
 const mockEnv: BenchEnv = {
+  listProjects: () => Effect.none(),
+  createProject: () => Effect.none(),
+  getProject: () => Effect.none(),
+  updateProject: () => Effect.none(),
+  listExperiments: () => Effect.none(),
+  createExperiment: () => Effect.none(),
+  getExperiment: () => Effect.none(),
+  updateExperiment: () => Effect.none(),
+  launchExperiment: () => Effect.none(),
+  getRunCells: () => Effect.send([]),
   listRuns: () => Effect.none(),
   getRun: () => Effect.none(),
   getRunLog: () => Effect.none(),
@@ -92,7 +108,7 @@ const mockEnv: BenchEnv = {
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
   getRunTrials: () => Effect.send([]),
-  getRunGames: () => Effect.none(),
+  getRunGames: () => Effect.send([]),
   getRunGameMoves: () => Effect.none(),
   deleteRun: () => Effect.none(),
   // Same reasoning as getRunTrials above: every tick fetches the chain too.
@@ -147,6 +163,79 @@ describe("benchReducer / runs", () => {
   });
 });
 
+describe("benchReducer / persisted experiments", () => {
+  const project: Project = {
+    project_id: "project-1", name: "Nim study", description: "small", archived: false,
+    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+  };
+  const experiment: Experiment = {
+    experiment_id: "experiment-1", project_id: project.project_id, name: "Baseline", description: "one cell",
+    spec: emptyExperimentSpec(), created_at: project.created_at, updated_at: project.updated_at,
+  };
+  const cell: ExperimentCell = {
+    cell_id: "cell-1", game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
+    candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {},
+    budget: { kind: "iterations", value: 1 }, rounds: 1, planned_games: 2, completed_games: 1,
+    status: "running", started_at: project.created_at, ended_at: null, error: null,
+    wins: 1, losses: 0, draws: 0, win_rate: 1, ci_lower: 0.2, ci_upper: 1,
+  };
+
+  it("keeps project, experiment, launch, run, and cell transitions in reducer state", async () => {
+    const env: BenchEnv = {
+      ...mockEnv,
+      createProject: () => Effect.send(project),
+      listProjects: () => Effect.none(),
+      listExperiments: () => Effect.none(),
+      createExperiment: () => Effect.send(experiment),
+      launchExperiment: () => Effect.send({ run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" }),
+      getRunCells: () => Effect.send([cell]),
+      getRunLog: () => Effect.send({ lines: [], next_offset: 0 }),
+      getRun: () => Effect.send({ ...terminalDetail, run_id: "experiment-run", kind: "experiment", game: "nim", experiment_id: experiment.experiment_id, project_id: project.project_id, experiment_spec: experiment.spec }),
+      listRuns: () => Effect.none(),
+    };
+    const ts = createTestStore(benchReducer, env, initialBenchState());
+
+    ts.send({ tag: "projectDraft", name: project.name, description: project.description });
+    ts.send({ tag: "createProject" });
+    await ts.drain();
+    ts.receive({ tag: "projectCreated", project });
+    ts.send({ tag: "newExperiment" }, (s) => {
+      s.experimentDraft = { name: "", description: "", spec: emptyExperimentSpec() };
+    });
+    ts.send({ tag: "experimentDraft", draft: { name: experiment.name, description: experiment.description, spec: experiment.spec } });
+    ts.send({ tag: "saveExperiment" });
+    await ts.drain();
+    ts.receive({ tag: "experimentSaved", experiment }, (s) => {
+      s.selectedExperimentId = experiment.experiment_id;
+      s.selectedExperiment = experiment;
+      s.experimentDraft = { name: experiment.name, description: experiment.description, spec: experiment.spec };
+    });
+    ts.send({ tag: "launchExperiment" });
+    await ts.drain();
+    ts.receive({ tag: "experimentLaunched", response: { run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" } }, (s) => {
+      s.activeTab = "runs";
+    });
+    ts.receive({ tag: "openRun", runId: "experiment-run" });
+    ts.receive({ tag: "tailTick", generation: 1 });
+    await ts.drain();
+    ts.receive({ tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: { ...terminalDetail, run_id: "experiment-run", kind: "experiment", game: "nim", experiment_id: experiment.experiment_id, project_id: project.project_id, experiment_spec: experiment.spec }, trials: [], chain: [], chainedTrials: [], cells: [cell] });
+    ts.send({ tag: "openCell", cellId: "cell-1" }, (s) => { s.selectedCellId = "cell-1"; });
+    expect(ts.getState().selectedCellId).toBe("cell-1");
+    expect(ts.getState().openRun?.cells[0]?.completed_games).toBe(1);
+  });
+
+  it("surfaces one-cell validation errors before calling the API", () => {
+    let called = false;
+    const env: BenchEnv = { ...mockEnv, createExperiment: () => { called = true; return Effect.send(experiment); } };
+    const draft = initialBenchState();
+    draft.selectedProjectId = project.project_id;
+    draft.experimentDraft = { name: "bad", description: "", spec: { ...emptyExperimentSpec(), variants: [] } };
+    benchReducer(draft, { tag: "saveExperiment" }, env);
+    expect(called).toBe(false);
+    expect(draft.experimentError).toContain("spec.variants");
+  });
+});
+
 // ── Log tail ────────────────────────────────────────────────────────────────
 
 describe("benchReducer / log tail", () => {
@@ -178,6 +267,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
 
@@ -236,6 +327,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -302,6 +395,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -335,6 +430,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -348,6 +445,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 2 });
@@ -405,6 +504,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -481,6 +582,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -549,6 +652,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -577,6 +682,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 2 });
@@ -605,6 +712,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -644,6 +753,8 @@ describe("benchReducer / log tail", () => {
         trials: [],
         chain: [],
         chainedTrials: [],
+        cells: [],
+        games: [],
       };
     });
 
@@ -943,10 +1054,12 @@ describe("benchReducer / advanceBaseline", () => {
       runId: "root-1",
       detail: null,
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
-      trials: [],
-      chain: [],
-      chainedTrials: [],
-    };
+        trials: [],
+        chain: [],
+        chainedTrials: [],
+        cells: [],
+        games: [],
+      };
     // listRuns left at mockEnv's Effect.none() default -- the runs-list
     // refresh half of the merge is irrelevant here (already covered below
     // and by the resumeRun tests' identical shape) and Effect.none()

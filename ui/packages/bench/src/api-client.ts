@@ -28,10 +28,24 @@ import type {
   TrialRow,
   GameTraceSummary,
   GameMove,
+  Project,
+  Experiment,
+  ExperimentSpecV1,
+  ExperimentCell,
 } from "./types.js";
 
 export interface BenchApiClient {
-  listRuns(filters?: { status?: string | null; game?: string | null; limit?: number }): Promise<RunSummary[]>;
+  listRuns(filters?: { status?: string | null; game?: string | null; limit?: number; project_id?: string | null; experiment_id?: string | null }): Promise<RunSummary[]>;
+  listProjects(): Promise<Project[]>;
+  createProject(name: string, description: string): Promise<Project>;
+  getProject(projectId: string): Promise<Project>;
+  updateProject(projectId: string, body: { name?: string; description?: string; archived?: boolean }): Promise<Project>;
+  listExperiments(projectId: string): Promise<Experiment[]>;
+  createExperiment(projectId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Promise<Experiment>;
+  getExperiment(experimentId: string): Promise<Experiment>;
+  updateExperiment(experimentId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Promise<Experiment>;
+  launchExperiment(experimentId: string): Promise<LaunchResponse>;
+  getRunCells(runId: string): Promise<ExperimentCell[]>;
   getRun(runId: string): Promise<RunDetail>;
   getRunLog(runId: string, since?: number): Promise<RunLogResponse>;
   /** Fetch the full raw content of the run's stdout.log file (stderr
@@ -123,8 +137,18 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
   const url = (path: string): string => baseUrl + path;
   return {
     async listRuns(filters = {}): Promise<RunSummary[]> {
-      return fetchJson(url(`/api/bench/runs${queryString({ status: filters.status, game: filters.game, limit: filters.limit })}`));
+      return fetchJson(url(`/api/bench/runs${queryString({ status: filters.status, game: filters.game, limit: filters.limit, project_id: filters.project_id, experiment_id: filters.experiment_id })}`));
     },
+    async listProjects(): Promise<Project[]> { return fetchJson(url("/api/bench/projects")); },
+    async createProject(name: string, description: string): Promise<Project> { return postJson(url("/api/bench/projects"), { name, description }); },
+    async getProject(projectId: string): Promise<Project> { return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}`)); },
+    async updateProject(projectId: string, body): Promise<Project> { const r = await fetch(url(`/api/bench/projects/${encodeURIComponent(projectId)}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(await errorMessage(r)); return r.json() as Promise<Project>; },
+    async listExperiments(projectId: string): Promise<Experiment[]> { return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`)); },
+    async createExperiment(projectId: string, body): Promise<Experiment> { return postJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`), body); },
+    async getExperiment(experimentId: string): Promise<Experiment> { return fetchJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`)); },
+    async updateExperiment(experimentId: string, body): Promise<Experiment> { const r = await fetch(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(await errorMessage(r)); return r.json() as Promise<Experiment>; },
+    async launchExperiment(experimentId: string): Promise<LaunchResponse> { return postJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}/runs`), {}); },
+    async getRunCells(runId: string): Promise<ExperimentCell[]> { return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/cells`)); },
     async getRun(runId: string): Promise<RunDetail> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}`));
     },
@@ -205,6 +229,16 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
   const lift = <T>(thunk: () => Promise<T>): Effect<T> => Effect.fromPromise(thunk);
   return {
     listRuns: (filters: RunFilters) => lift(() => api.listRuns(filters)),
+    listProjects: () => lift(() => api.listProjects()),
+    createProject: (name: string, description: string) => lift(() => api.createProject(name, description)),
+    getProject: (projectId: string) => lift(() => api.getProject(projectId)),
+    updateProject: (projectId: string, body) => lift(() => api.updateProject(projectId, body)),
+    listExperiments: (projectId: string) => lift(() => api.listExperiments(projectId)),
+    createExperiment: (projectId: string, body) => lift(() => api.createExperiment(projectId, body)),
+    getExperiment: (experimentId: string) => lift(() => api.getExperiment(experimentId)),
+    updateExperiment: (experimentId: string, body) => lift(() => api.updateExperiment(experimentId, body)),
+    launchExperiment: (experimentId: string) => lift(() => api.launchExperiment(experimentId)),
+    getRunCells: (runId: string) => lift(() => api.getRunCells(runId)),
     getRun: (runId: string) => lift(() => api.getRun(runId)),
     getRunLog: (runId: string, since: number) => lift(() => api.getRunLog(runId, since)),
     getRunStdout: (runId: string) => lift(() => api.getRunStdout(runId)),

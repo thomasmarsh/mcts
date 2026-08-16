@@ -16,6 +16,7 @@ use std::process::{Command as StdCommand, Stdio};
 use clap::{Parser, Subcommand};
 
 use mcts::util::Verbosity;
+use mcts_bench::experiment::{self, ExperimentSpecV1};
 use mcts_bench::ingest;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::registry;
@@ -168,6 +169,15 @@ enum Command {
         #[arg(long, default_value = "bench-runs/bench.duckdb")]
         db: String,
     },
+
+    /// Run one saved experiment cell in the foreground and translate the
+    /// configured game stream into experiment log events.
+    Experiment {
+        #[arg(long)]
+        spec_json: String,
+        #[arg(long)]
+        trace_path: Option<String>,
+    },
 }
 
 fn main() {
@@ -216,6 +226,26 @@ fn main() {
         Command::Games => cmd_games(),
 
         Command::Ingest { db } => cmd_ingest_once(&db),
+        Command::Experiment {
+            spec_json,
+            trace_path,
+        } => cmd_experiment(&spec_json, trace_path.as_deref()),
+    }
+}
+
+fn cmd_experiment(spec_json: &str, trace_path: Option<&str>) {
+    let spec: ExperimentSpecV1 = match serde_json::from_str(spec_json) {
+        Ok(spec) => spec,
+        Err(error) => {
+            eprintln!("error: invalid --spec-json: {error}");
+            std::process::exit(1);
+        }
+    };
+    let path = trace_path.map(std::path::Path::new);
+    let mut writer = stdout().lock();
+    if let Err(error) = experiment::run_experiment(&spec, path, &mut writer) {
+        eprintln!("error: experiment failed: {error}");
+        std::process::exit(1);
     }
 }
 

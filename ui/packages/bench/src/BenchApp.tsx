@@ -5,7 +5,7 @@
 // Creates its own `createStore(benchReducer, benchEnv)` independent of the
 // game store. Fetches available kinds and the runs list on mount.
 
-import { createSignal, onMount, Show, type Component } from "solid-js";
+import { onMount, Show, type Component } from "solid-js";
 import { createStore, type Store } from "@mcts/core";
 import {
   benchReducer,
@@ -21,8 +21,8 @@ import { LaunchForm } from "./LaunchForm.js";
 import { LeaderboardTable } from "./LeaderboardTable.js";
 import { WinRateChart } from "./WinRateChart.js";
 import { CommitComparison } from "./CommitComparison.js";
-
-type BenchTab = "runs" | "leaderboard";
+import { ProjectsApp } from "./ProjectsApp.js";
+import { ExperimentRunDetail } from "./ExperimentRunDetail.js";
 
 export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: string; kind: string; live: boolean }> }> = (props) => {
   const api = createBenchApiClient();
@@ -34,7 +34,7 @@ export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: 
   );
   const state = store.getState();
 
-  const [activeTab, setActiveTab] = createSignal<BenchTab>("runs");
+  const activeTab = () => state().activeTab;
 
   // Fetch kinds metadata and the run list on mount.
   onMount(() => {
@@ -42,6 +42,7 @@ export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: 
     store.dispatch({ tag: "smac3Kinds", action: { tag: "request" } });
     store.dispatch({ tag: "runs", action: { tag: "request" } });
     store.dispatch({ tag: "leaderboard", action: { tag: "request" } });
+    store.dispatch({ tag: "projectsRequest" });
   });
 
   return (
@@ -50,18 +51,21 @@ export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: 
         <button
           class="sub-tab-btn"
           classList={{ active: activeTab() === "runs" }}
-          onClick={() => setActiveTab("runs")}
+          onClick={() => store.dispatch({ tag: "setTab", tab: "runs" })}
         >
           Runs
         </button>
         <button
           class="sub-tab-btn"
           classList={{ active: activeTab() === "leaderboard" }}
-          onClick={() => setActiveTab("leaderboard")}
+          onClick={() => store.dispatch({ tag: "setTab", tab: "leaderboard" })}
         >
           Leaderboard
         </button>
+        <button class="sub-tab-btn" classList={{ active: activeTab() === "projects" }} onClick={() => store.dispatch({ tag: "setTab", tab: "projects" })}>Projects</button>
       </div>
+
+      <Show when={activeTab() === "projects"}><ProjectsApp store={store} /></Show>
 
       <Show when={activeTab() === "runs"}>
         <div id="bench-runs-layout">
@@ -70,7 +74,7 @@ export const BenchApp: Component<{ Spectator?: Component<{ runId: string; game: 
             <RunList store={store} />
           </div>
           <Show when={state().openRun !== null}>
-            <RunDetailPanel store={store} Spectator={props.Spectator} />
+            <Show when={state().openRun?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} /></Show>
           </Show>
         </div>
       </Show>
