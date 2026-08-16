@@ -11,9 +11,9 @@ use duckdb::{params, Connection};
 use crate::identity;
 use crate::launch::{is_alive, iso_timestamp};
 use crate::log::{LogRecord, RegistryEvent};
-use crate::orchestration::ExitObservation;
 use crate::projects_attempt::{self, ProjectsRepository};
 use crate::projects_attempt_duckdb;
+use crate::supervised_launch::{classify_observation, ObservationDecision};
 
 #[derive(Debug)]
 pub enum IngestError {
@@ -68,8 +68,12 @@ pub fn ingest_once(conn: &Connection, bench_runs_dir: &Path) -> Result<(), Inges
     let registry_path = bench_runs_dir.join("registry.log");
 
     process_registry(conn, &registry_path)?;
+    let observation_error = observe_projects(conn).err();
     process_run_logs(conn)?;
     reconcile_liveness(conn)?;
+    if let Some(error) = observation_error {
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -99,23 +103,9 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
             Ok(e) => e,
             Err(_) => continue,
         };
-        let priority = match &event {
-            RegistryEvent::Stop { run_id, .. } => u8::from(
-                projects_attempt_duckdb::Repository::new(conn)
-                    .load_if_initialized(run_id)?
-                    .is_some(),
-            ),
-            RegistryEvent::Start { .. } => 0,
-        };
-        events.push((priority, event));
+        events.push(event);
     }
-    // A very short process can be reaped before its registry Start write
-    // reaches the file. Process Starts before typed Stops so compatibility
-    // rows exist; lifecycle launch evidence remains authoritative for typed
-    // attempts. Legacy registry-only rows retain file order and behavior.
-    events.sort_by_key(|(priority, _)| *priority);
-
-    for (_, event) in events {
+    for event in events {
         match event {
             RegistryEvent::Start {
                 run_id,
@@ -152,13 +142,10 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                 exit_code,
                 ended_at,
             } => {
-                let repo = projects_attempt_duckdb::Repository::new(conn);
-                if repo.load_if_initialized(&run_id)?.is_some() {
-                    let exit = match exit_code {
-                        Some(code) => ExitObservation::Exited { code: Some(code) },
-                        None => ExitObservation::Exited { code: None },
-                    };
-                    repo.observe_exit(&run_id, exit, &ended_at)?;
+                if projects_attempt_duckdb::Repository::new(conn)
+                    .load_if_initialized(&run_id)?
+                    .is_some()
+                {
                     continue;
                 }
                 // Guard on `status = 'running'` so this can't clobber an
@@ -212,7 +199,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
 }
 
 fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('running', 'completed', 'completed_with_errors', 'crashed', 'stopped')")?;
+    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('starting', 'running', 'completed', 'completed_with_errors', 'crashed', 'stopped')")?;
     let running_runs: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -499,18 +486,6 @@ fn mark_experiment_crashed(
 }
 
 fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
-    let typed_targets = projects_attempt_duckdb::Repository::new(conn).typed_liveness_targets()?;
-    for target in typed_targets {
-        if !is_alive(target.pid as u32) {
-            let ended_at = iso_timestamp();
-            projects_attempt_duckdb::Repository::new(conn).observe_exit(
-                &target.run_id,
-                ExitObservation::Lost,
-                &ended_at,
-            )?;
-        }
-    }
-
     let mut stmt = conn.prepare(
         "SELECT run_id, pid, kind FROM runs WHERE pid IS NOT NULL AND status = 'running'",
     )?;
@@ -548,6 +523,44 @@ fn reconcile_liveness(conn: &Connection) -> Result<(), IngestError> {
     }
 
     Ok(())
+}
+
+fn observe_projects(conn: &Connection) -> Result<(), IngestError> {
+    let repo = projects_attempt_duckdb::Repository::new(conn);
+    let mut first_error = None;
+    for target in repo.observation_targets()? {
+        let decision = classify_observation(
+            &target,
+            crate::lifecycle::read_journal(&target.journal_path),
+        );
+        match decision {
+            ObservationDecision::Pending => {}
+            ObservationDecision::Terminal(exit) => {
+                let exit = match exit {
+                    crate::lifecycle::ExitEvidence::Code { code } => {
+                        crate::orchestration::ExitObservation::Exited { code: Some(code) }
+                    }
+                    crate::lifecycle::ExitEvidence::Signal { signal } => {
+                        crate::orchestration::ExitObservation::Signaled { signal }
+                    }
+                    crate::lifecycle::ExitEvidence::WaitFailed { .. } => {
+                        crate::orchestration::ExitObservation::Unavailable
+                    }
+                };
+                if let Err(error) = repo.observe_exit(&target.attempt_id, exit, &iso_timestamp()) {
+                    first_error.get_or_insert(IngestError::Attempt(error));
+                }
+            }
+            ObservationDecision::Invalid(reason) => {
+                first_error.get_or_insert(IngestError::Attempt(
+                    projects_attempt::ProjectsError::Conflict(format!(
+                        "invalid lifecycle observation: {reason:?}"
+                    )),
+                ));
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn get_cursor(conn: &Connection, log_path: &str) -> Result<u64, IngestError> {

@@ -34,7 +34,8 @@ pub enum StopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitObservation {
     Exited { code: Option<i32> },
-    Lost,
+    Signaled { signal: i32 },
+    Unavailable,
 }
 
 /// Domain fact delivered to the attempt transition kernel.
@@ -412,7 +413,7 @@ mod tests {
         for exit in [
             ExitObservation::Exited { code: Some(1) },
             ExitObservation::Exited { code: None },
-            ExitObservation::Lost,
+            ExitObservation::Unavailable,
         ] {
             assert_eq!(
                 apply(natural(exit), AttemptEvent::FinalOutputIngested).phase(),
@@ -531,13 +532,13 @@ mod tests {
         let finalizing = apply(
             awaiting,
             AttemptEvent::ExitObserved {
-                exit: ExitObservation::Lost,
+                exit: ExitObservation::Unavailable,
             },
         );
         assert_replay(
             finalizing,
             AttemptEvent::ExitObserved {
-                exit: ExitObservation::Lost,
+                exit: ExitObservation::Unavailable,
             },
         );
         let stopped = apply(finalizing, AttemptEvent::FinalOutputIngested);
@@ -581,7 +582,7 @@ mod tests {
         let finalizing = apply(
             stopping,
             AttemptEvent::ExitObserved {
-                exit: ExitObservation::Lost,
+                exit: ExitObservation::Unavailable,
             },
         );
         assert!(matches!(

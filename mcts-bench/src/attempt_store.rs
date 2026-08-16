@@ -181,10 +181,16 @@ fn encode_event(event: AttemptEvent) -> EncodedEvent {
                 exit_kind: Some("exited"),
                 exit_code: code,
             },
-            ExitObservation::Lost => EncodedEvent {
+            ExitObservation::Signaled { signal } => EncodedEvent {
                 event_type: "exit_observed",
                 stop_reason: None,
-                exit_kind: Some("lost"),
+                exit_kind: Some("signaled"),
+                exit_code: Some(signal),
+            },
+            ExitObservation::Unavailable => EncodedEvent {
+                event_type: "exit_observed",
+                stop_reason: None,
+                exit_kind: Some("unavailable"),
                 exit_code: None,
             },
         },
@@ -345,7 +351,10 @@ fn validate_projection(
         .ok_or_else(|| corrupt(attempt_id, "signal observation is null"))?;
     let _exit = match projection.exit_kind.as_deref() {
         None if projection.exit_code.is_none() => None,
-        Some("lost") if projection.exit_code.is_none() => Some(ExitObservation::Lost),
+        Some("unavailable") if projection.exit_code.is_none() => Some(ExitObservation::Unavailable),
+        Some("signaled") if projection.exit_code.is_some() => Some(ExitObservation::Signaled {
+            signal: projection.exit_code.unwrap(),
+        }),
         Some("exited") => Some(ExitObservation::Exited {
             code: projection.exit_code,
         }),
@@ -384,8 +393,13 @@ fn parse_event(
             Ok(AttemptEvent::StopRequested { reason })
         }
         "exit_observed" if stop_reason.is_none() => match exit_kind.as_deref() {
-            Some("lost") if exit_code.is_none() => Ok(AttemptEvent::ExitObserved {
-                exit: ExitObservation::Lost,
+            Some("unavailable") if exit_code.is_none() => Ok(AttemptEvent::ExitObserved {
+                exit: ExitObservation::Unavailable,
+            }),
+            Some("signaled") if exit_code.is_some() => Ok(AttemptEvent::ExitObserved {
+                exit: ExitObservation::Signaled {
+                    signal: exit_code.unwrap(),
+                },
             }),
             Some("exited") => Ok(AttemptEvent::ExitObserved {
                 exit: ExitObservation::Exited { code: exit_code },
@@ -465,7 +479,12 @@ fn state_matches_projection(
         projection.exit_code,
     ) {
         (None, None, None) => Ok(()),
-        (Some(ExitObservation::Lost), Some("lost"), None) => Ok(()),
+        (Some(ExitObservation::Unavailable), Some("unavailable"), None) => Ok(()),
+        (Some(ExitObservation::Signaled { signal }), Some("signaled"), Some(projected))
+            if signal == projected =>
+        {
+            Ok(())
+        }
         (Some(ExitObservation::Exited { code }), Some("exited"), projected)
             if code == projected =>
         {
@@ -642,7 +661,8 @@ pub fn record_attempt_event(
     let next_exit = next.exit_observation();
     let (exit_kind, exit_code) = match next_exit {
         None => (None, None),
-        Some(ExitObservation::Lost) => (Some("lost"), None),
+        Some(ExitObservation::Signaled { signal }) => (Some("signaled"), Some(signal)),
+        Some(ExitObservation::Unavailable) => (Some("unavailable"), None),
         Some(ExitObservation::Exited { code }) => (Some("exited"), code),
     };
     let changed = match tx.execute(
@@ -1085,7 +1105,12 @@ mod tests {
                 "exited",
                 None,
             ),
-            ("lost", ExitObservation::Lost, "lost", None),
+            (
+                "unavailable",
+                ExitObservation::Unavailable,
+                "unavailable",
+                None,
+            ),
         ] {
             let mut conn = database();
             initialize(&mut conn, "attempt");

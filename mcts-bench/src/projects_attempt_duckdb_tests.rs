@@ -170,6 +170,7 @@ fn stop_authorization_and_exit_conflicts_are_durable() {
         .finalize_output("a", "2026-01-01T00:00:06Z")
         .unwrap();
     assert_eq!(final_output.state.phase(), AttemptPhase::Stopped);
-    let conflict = repository.observe_exit("a", ExitObservation::Lost, "2026-01-01T00:00:06Z");
+    let conflict =
+        repository.observe_exit("a", ExitObservation::Unavailable, "2026-01-01T00:00:06Z");
     assert!(matches!(conflict, Err(ProjectsError::Conflict(_))));
 }

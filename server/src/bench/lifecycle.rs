@@ -224,8 +224,7 @@ mod tests {
     use super::*;
     use mcts_bench::orchestration::{AttemptState, ExitObservation};
     use mcts_bench::projects_attempt::{
-        ExitAuthorization, LivenessTarget, Receipt, StartAuthorization, StopAuthorization,
-        StopTarget,
+        ExitAuthorization, Receipt, StartAuthorization, StopAuthorization, StopTarget,
     };
     use mcts_bench::supervised_launch::WrapperIdentity;
     use std::collections::VecDeque;
@@ -308,9 +307,9 @@ mod tests {
         fn load_if_initialized(&self, _: &str) -> Result<Option<Receipt>, ProjectsError> {
             unreachable!()
         }
-        fn typed_liveness_targets(
+        fn observation_targets(
             &self,
-        ) -> Result<Vec<mcts_bench::projects_attempt::LivenessTarget>, ProjectsError> {
+        ) -> Result<Vec<mcts_bench::supervised_launch::ObservationTarget>, ProjectsError> {
             unreachable!()
         }
         fn request_operator_stop(
@@ -504,7 +503,9 @@ mod tests {
             Ok(Some(receipt()))
         }
 
-        fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError> {
+        fn observation_targets(
+            &self,
+        ) -> Result<Vec<mcts_bench::supervised_launch::ObservationTarget>, ProjectsError> {
             unreachable!()
         }
 

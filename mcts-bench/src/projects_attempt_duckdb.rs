@@ -10,10 +10,10 @@ use crate::orchestration::{
 };
 use crate::projects_attempt::{
     self, CellSummary, CompatibilityStatus, ExitAuthorization, LaunchRecord, LaunchResult,
-    LivenessTarget, ProjectsError, ProjectsRepository, Receipt, StartAuthorization, StartRequest,
+    ProjectsError, ProjectsRepository, Receipt, StartAuthorization, StartRequest,
     StopAuthorization, StopTarget,
 };
-use crate::supervised_launch::LaunchDescriptor;
+use crate::supervised_launch::{LaunchDescriptor, ObservationTarget, WrapperIdentity};
 
 mod launch;
 
@@ -100,7 +100,7 @@ fn terminal_projection(
     };
     let exit_code = match state.exit_observation() {
         Some(ExitObservation::Exited { code }) => code.map(i64::from),
-        Some(ExitObservation::Lost) | None => None,
+        Some(ExitObservation::Signaled { .. } | ExitObservation::Unavailable) | None => None,
     };
     match outcome.status {
         CompatibilityStatus::Completed | CompatibilityStatus::CompletedWithErrors => {}
@@ -204,37 +204,78 @@ impl ProjectsRepository for Repository<'_> {
         }))
     }
 
-    fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError> {
+    fn observation_targets(&self) -> Result<Vec<ObservationTarget>, ProjectsError> {
         let tx = self.tx()?;
         let mut statement = tx
             .prepare(
-                "SELECT run_id, pid, attempt_phase FROM runs
-                 WHERE kind = 'experiment' AND pid IS NOT NULL",
+                "SELECT launches.attempt_id, launches.logical_run_id, launches.parent_attempt_id,
+                        launches.launch_nonce, launches.workload_argv, launches.lifecycle_path,
+                        launches.stdout_path, launches.stderr_path, launches.wrapper_pid,
+                        launches.process_group_id, runs.attempt_phase
+                 FROM projects_launches launches JOIN runs ON runs.run_id = launches.attempt_id
+                 WHERE launches.wrapper_pid IS NOT NULL AND launches.process_group_id IS NOT NULL",
             )
             .map_err(db_error)?;
         let rows = statement
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, u64>(8)?,
+                    row.get::<_, u64>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })
             .map_err(db_error)?;
         let mut targets = Vec::new();
         for row in rows {
-            let (run_id, pid, phase) = row.map_err(db_error)?;
+            let (
+                run_id,
+                logical_run_id,
+                parent_attempt_id,
+                launch_nonce,
+                workload_json,
+                journal_path,
+                stdout_path,
+                stderr_path,
+                pid,
+                process_group_id,
+                phase,
+            ) = row.map_err(db_error)?;
             if phase.is_none() {
                 continue;
             }
             let snapshot = attempt_store::load_attempt(&tx, &run_id).map_err(store_error)?;
             if matches!(
                 snapshot.state().phase(),
-                crate::orchestration::AttemptPhase::Running
+                crate::orchestration::AttemptPhase::Starting
+                    | crate::orchestration::AttemptPhase::Running
                     | crate::orchestration::AttemptPhase::StopRequested
                     | crate::orchestration::AttemptPhase::AwaitingExit
             ) {
-                targets.push(LivenessTarget { run_id, pid });
+                let workload_argv = serde_json::from_str(&workload_json).map_err(|error| {
+                    ProjectsError::Corrupt(format!("invalid persisted workload argv: {error}"))
+                })?;
+                targets.push(ObservationTarget {
+                    logical_run_id,
+                    attempt_id: run_id,
+                    parent_attempt_id,
+                    launch_nonce,
+                    workload_argv,
+                    journal_path: journal_path.into(),
+                    stdout_path: stdout_path.into(),
+                    stderr_path: stderr_path.into(),
+                    wrapper: WrapperIdentity {
+                        pid,
+                        process_group_id,
+                    },
+                });
             }
         }
         drop(statement);
@@ -299,7 +340,7 @@ impl ProjectsRepository for Repository<'_> {
                 ended_at,
                 match exit {
                     ExitObservation::Exited { code } => code.map(i64::from),
-                    ExitObservation::Lost => None,
+                    ExitObservation::Signaled { .. } | ExitObservation::Unavailable => None,
                 },
                 run_id
             ],
@@ -383,9 +424,9 @@ impl ProjectsRepository for Mutex<Connection> {
         Repository::new(&connection).load_if_initialized(run_id)
     }
 
-    fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError> {
+    fn observation_targets(&self) -> Result<Vec<ObservationTarget>, ProjectsError> {
         let connection = locked_connection(self)?;
-        Repository::new(&connection).typed_liveness_targets()
+        Repository::new(&connection).observation_targets()
     }
 
     fn request_operator_stop(

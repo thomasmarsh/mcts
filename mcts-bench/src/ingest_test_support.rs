@@ -62,10 +62,6 @@ pub(crate) fn typed_projects_fixture(run_id: &str) -> (TestFixture, std::path::P
     typed_projects_fixture_with_process(run_id, true)
 }
 
-pub(crate) fn typed_projects_starting_fixture(run_id: &str) -> (TestFixture, std::path::PathBuf) {
-    typed_projects_fixture_with_process(run_id, false)
-}
-
 fn typed_projects_fixture_with_process(
     run_id: &str,
     process_observed: bool,

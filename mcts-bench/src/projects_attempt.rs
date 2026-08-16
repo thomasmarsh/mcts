@@ -1,7 +1,9 @@
 //! Backend-neutral protocol and compatibility rules for typed Projects attempts.
 
 use crate::orchestration::{AttemptPhase, AttemptState, ExitObservation};
-use crate::supervised_launch::{LaunchDescriptor, ReadinessFailure, WrapperIdentity};
+use crate::supervised_launch::{
+    LaunchDescriptor, ObservationTarget, ReadinessFailure, WrapperIdentity,
+};
 
 pub const START_REQUESTED_KEY: &str = "projects.start-requested";
 pub const PROCESS_OBSERVED_KEY: &str = "projects.process-observed";
@@ -56,12 +58,6 @@ pub struct StopTarget {
     pub status: String,
     pub kind: String,
     pub typed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LivenessTarget {
-    pub run_id: String,
-    pub pid: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,8 +146,10 @@ pub fn compatibility_outcome(
         AttemptPhase::Crashed => Some(CompatibilityOutcome {
             status: CompatibilityStatus::Crashed,
             crash_message: Some(match state.exit_observation() {
-                Some(ExitObservation::Lost) => "coordinator disappeared",
-                Some(ExitObservation::Exited { .. }) | None => "coordinator exited",
+                Some(ExitObservation::Unavailable) => "coordinator exit unavailable",
+                Some(ExitObservation::Exited { .. } | ExitObservation::Signaled { .. }) | None => {
+                    "coordinator exited"
+                }
             }),
         }),
         _ => None,
@@ -172,7 +170,7 @@ pub trait ProjectsRepository {
     ) -> Result<LaunchRecord, ProjectsError>;
     fn load_stop_target(&self, run_id: &str) -> Result<StopTarget, ProjectsError>;
     fn load_if_initialized(&self, run_id: &str) -> Result<Option<Receipt>, ProjectsError>;
-    fn typed_liveness_targets(&self) -> Result<Vec<LivenessTarget>, ProjectsError>;
+    fn observation_targets(&self) -> Result<Vec<ObservationTarget>, ProjectsError>;
     fn request_operator_stop(
         &self,
         run_id: &str,
@@ -258,7 +256,7 @@ mod tests {
         let state = transition_attempt(
             &state,
             AttemptEvent::ExitObserved {
-                exit: ExitObservation::Lost,
+                exit: ExitObservation::Unavailable,
             },
         )
         .unwrap()
@@ -270,6 +268,6 @@ mod tests {
             .to_owned();
         let outcome = compatibility_outcome(state, CellSummary { failed: 0 }).unwrap();
         assert_eq!(outcome.status, CompatibilityStatus::Crashed);
-        assert_eq!(outcome.crash_message, Some("coordinator disappeared"));
+        assert_eq!(outcome.crash_message, Some("coordinator exit unavailable"));
     }
 }
