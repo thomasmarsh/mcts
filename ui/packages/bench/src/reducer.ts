@@ -182,6 +182,7 @@ export type BenchAction =
   | { tag: "openExperiment"; experimentId: string }
   | { tag: "experimentLoaded"; experiment: Experiment }
   | { tag: "experimentDraft"; draft: { name: string; description: string; spec: ExperimentSpecV1 } }
+  | { tag: "experimentGameChanged"; game: string; gameConfig: unknown }
   | { tag: "saveExperiment" }
   | { tag: "experimentSaved"; experiment: Experiment }
   | { tag: "experimentFailed"; error: string }
@@ -278,7 +279,7 @@ function validateExperimentSpec(spec: ExperimentSpecV1): string | null {
   if (spec.games.length !== 1) errors.push("spec.games: must contain exactly one game");
   if (spec.variants.length !== 1) errors.push("spec.variants: must contain exactly one variant");
   if (spec.budgets.length !== 1) errors.push("spec.budgets: must contain exactly one budget");
-  if (spec.rounds_per_cell <= 0) errors.push("spec.rounds_per_cell: must be positive");
+  if (!Number.isFinite(spec.rounds_per_cell) || spec.rounds_per_cell <= 0) errors.push("spec.rounds_per_cell: must be positive");
   if (spec.max_parallel_cells !== 1) errors.push("spec.max_parallel_cells: must be 1 in the one-cell slice");
   if (!spec.games[0]?.game.trim()) errors.push("spec.games[0].game: must not be empty");
   if (!spec.baseline.id.trim()) errors.push("spec.baseline.id: must not be empty");
@@ -290,8 +291,51 @@ function validateExperimentSpec(spec: ExperimentSpecV1): string | null {
   if (!spec.baseline.config || typeof spec.baseline.config !== "object" || Array.isArray(spec.baseline.config)) errors.push("spec.baseline.config: must be a JSON object");
   if (!spec.variants[0]?.config || typeof spec.variants[0].config !== "object" || Array.isArray(spec.variants[0].config)) errors.push("spec.variants[0].config: must be a JSON object");
   const budget = spec.budgets[0];
-  if (budget && budget.value <= 0) errors.push("spec.budgets[0].value: must be positive");
+  if (budget && (!Number.isFinite(budget.value) || budget.value <= 0)) errors.push("spec.budgets[0].value: must be positive");
   return errors.length > 0 ? errors.join("; ") : null;
+}
+
+type ExperimentDraft = { name: string; description: string; spec: ExperimentSpecV1 };
+
+function cloneExperimentDraft(value: ExperimentDraft): ExperimentDraft {
+  return JSON.parse(JSON.stringify(value)) as ExperimentDraft;
+}
+
+function sameExperimentDraft(left: ExperimentDraft | null, right: ExperimentDraft | null): boolean {
+  return left !== null && right !== null && JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validationErrors(message: string): { fields: Record<string, string>; form: string | null } {
+  const fields: Record<string, string> = {};
+  const parts = message.split(/;\s*/);
+  const pathPattern = /^(spec\.[^:]+|name|description):\s*(.*)$/;
+  const formParts: string[] = [];
+  for (const part of parts) {
+    const match = pathPattern.exec(part);
+    if (!match) {
+      formParts.push(part);
+      continue;
+    }
+    const path = match[1]!;
+    const messageText = match[2]!;
+    const friendlyPath = path
+      .replace("spec.games[0].game", "game")
+      .replace("spec.games[0].game_config", "game configuration")
+      .replace("spec.baseline.label", "baseline label")
+      .replace("spec.baseline.config", "baseline configuration")
+      .replace("spec.variants[0].label", "variant label")
+      .replace("spec.variants[0].config", "variant configuration")
+      .replace("spec.variants", "strategy variants")
+      .replace("spec.games", "games")
+      .replace("spec.budgets", "budgets")
+      .replace("spec.max_parallel_cells", "parallel cells")
+      .replace("spec.budgets[0].value", "budget value")
+      .replace("spec.rounds_per_cell", "paired rounds")
+      .replace("spec.base_seed", "base seed")
+      .replace(/^spec\./, "");
+    fields[path] = `${friendlyPath}: ${messageText}`;
+  }
+  return { fields, form: formParts.length > 0 ? formParts.join("; ") : null };
 }
 
 export function benchReducer(
@@ -315,6 +359,8 @@ export function benchReducer(
   }
   if (action.tag === "projectCreated") {
     draft.selectedProjectId = action.project.project_id; draft.selectedProject = action.project; draft.projectDraft = { name: "", description: "" };
+    draft.selectedExperimentId = null; draft.selectedExperiment = null; draft.experimentDraft = null; draft.experimentSavedDraft = null;
+    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle"; draft.experimentFieldErrors = {};
     return Effect.merge(requestProjects(env), env.listExperiments(action.project.project_id).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
   }
   if (action.tag === "openProject") {
@@ -329,35 +375,77 @@ export function benchReducer(
     const first = draft.smac3Kinds.result?.[0];
     const spec = emptyExperimentSpec(first?.game ?? "nim");
     if (first) spec.games[0]!.game_config = first.tuner.game_config;
-    draft.experimentDraft = { name: "", description: "", spec }; draft.selectedExperimentId = null; draft.experimentError = null; return null;
+    draft.experimentDraft = { name: "", description: "", spec }; draft.experimentSavedDraft = null;
+    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {}; draft.selectedExperimentId = null; draft.experimentError = null; return null;
   }
   if (action.tag === "openExperiment") {
-    draft.selectedExperimentId = action.experimentId; draft.experimentError = null;
+    draft.selectedExperimentId = action.experimentId; draft.selectedExperiment = null; draft.experimentDraft = null;
+    draft.experimentSavedDraft = null; draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {}; draft.experimentError = null;
     draft.runFilters = { status: null, game: null, project_id: null, experiment_id: action.experimentId };
     const experimentEffect = env.getExperiment(action.experimentId).map((experiment): BenchAction => ({ tag: "experimentLoaded", experiment })).catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
     const runsEffect = startRunsFetch(draft, env);
     return runsEffect ? Effect.merge(experimentEffect, runsEffect) : experimentEffect;
   }
-  if (action.tag === "experimentLoaded") { draft.selectedExperiment = action.experiment; draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec }; return null; }
-  if (action.tag === "experimentDraft") { draft.experimentDraft = action.draft; return null; }
+  if (action.tag === "experimentLoaded") {
+    draft.selectedExperiment = action.experiment;
+    draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec };
+    draft.experimentSavedDraft = cloneExperimentDraft(draft.experimentDraft);
+    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {}; draft.experimentError = null; return null;
+  }
+  if (action.tag === "experimentDraft") { draft.experimentDraft = action.draft; draft.experimentFieldErrors = {}; draft.experimentError = null; return null; }
+  if (action.tag === "experimentGameChanged") {
+    if (!draft.experimentDraft) return null;
+    const spec = JSON.parse(JSON.stringify(draft.experimentDraft.spec)) as ExperimentSpecV1;
+    if (!spec.games[0]) spec.games[0] = { game: action.game, game_config: action.gameConfig };
+    else { spec.games[0].game = action.game; spec.games[0].game_config = action.gameConfig; }
+    draft.experimentDraft = { ...draft.experimentDraft, spec };
+    draft.experimentFieldErrors = {};
+    draft.experimentError = null;
+    return null;
+  }
   if (action.tag === "saveExperiment") {
     const draftValue = draft.experimentDraft;
-    if (!draftValue || !draftValue.name.trim()) { draft.experimentError = "name: must not be empty"; return null; }
+    if (draft.experimentSaveStatus === "saving") return null;
+    if (!draftValue || !draftValue.name.trim()) { draft.experimentError = "Enter an experiment name."; draft.experimentFieldErrors = { name: "Experiment name is required." }; return null; }
     const specError = validateExperimentSpec(draftValue.spec);
-    if (specError) { draft.experimentError = specError; return null; }
+    if (specError) {
+      const parsed = validationErrors(specError);
+      draft.experimentError = parsed.form ?? "Review the highlighted experiment settings.";
+      draft.experimentFieldErrors = parsed.fields;
+      return null;
+    }
     const method = draft.selectedExperimentId ? env.updateExperiment(draft.selectedExperimentId, draftValue) : (draft.selectedProjectId ? env.createExperiment(draft.selectedProjectId, draftValue) : null);
     if (!method) { draft.experimentError = "select a project first"; return null; }
-    draft.experimentError = null;
+    draft.experimentError = null; draft.experimentFieldErrors = {}; draft.experimentSaveStatus = "saving";
     return method.map((experiment): BenchAction => ({ tag: "experimentSaved", experiment })).catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
   }
-  if (action.tag === "experimentSaved") { draft.selectedExperiment = action.experiment; draft.selectedExperimentId = action.experiment.experiment_id; draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec }; draft.experimentError = null; return draft.selectedProjectId ? env.listExperiments(draft.selectedProjectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })) : null; }
+  if (action.tag === "experimentSaved") {
+    draft.selectedExperiment = action.experiment; draft.selectedExperimentId = action.experiment.experiment_id;
+    draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec };
+    draft.experimentSavedDraft = cloneExperimentDraft(draft.experimentDraft);
+    draft.experimentSaveStatus = "idle"; draft.experimentError = null; draft.experimentFieldErrors = {};
+    return draft.selectedProjectId ? env.listExperiments(draft.selectedProjectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })) : null;
+  }
   if (action.tag === "launchExperiment") {
-    if (!draft.selectedExperimentId) { draft.experimentRunError = "save the experiment before launching"; return null; }
-    draft.experimentRunError = null;
+    if (draft.experimentLaunchStatus === "launching") return null;
+    if (!draft.selectedExperimentId || !draft.experimentDraft || !sameExperimentDraft(draft.experimentDraft, draft.experimentSavedDraft)) { draft.experimentRunError = "Save the current experiment before launching."; return null; }
+    const specError = validateExperimentSpec(draft.experimentDraft.spec);
+    if (specError) { draft.experimentRunError = "Review the experiment settings before launching."; return null; }
+    draft.experimentRunError = null; draft.experimentLaunchStatus = "launching";
     return env.launchExperiment(draft.selectedExperimentId).map((response): BenchAction => ({ tag: "experimentLaunched", response })).catch((error): BenchAction => ({ tag: "experimentRunFailed", error: String(error) }));
   }
-  if (action.tag === "experimentLaunched") { draft.activeTab = "runs"; draft.experimentRunError = null; return Effect.send({ tag: "openRun", runId: action.response.run_id }); }
-  if (action.tag === "experimentRunFailed") { draft.experimentRunError = action.error; return null; }
+  if (action.tag === "experimentLaunched") { draft.experimentLaunchStatus = "idle"; draft.activeTab = "runs"; draft.experimentRunError = null; return Effect.send({ tag: "openRun", runId: action.response.run_id }); }
+  if (action.tag === "experimentRunFailed") { draft.experimentLaunchStatus = "idle"; draft.experimentRunError = action.error; return null; }
+  if (action.tag === "experimentFailed") {
+    draft.experimentSaveStatus = "idle";
+    const parsed = validationErrors(action.error);
+    draft.experimentError = parsed.form ?? "The experiment could not be saved.";
+    draft.experimentFieldErrors = parsed.fields;
+    return null;
+  }
   if (action.tag === "openCell") { draft.selectedCellId = action.cellId; return null; }
   if (action.tag === "runs") {
     const ra = action.action;

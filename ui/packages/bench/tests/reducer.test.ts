@@ -209,11 +209,15 @@ describe("benchReducer / persisted experiments", () => {
       s.selectedExperimentId = experiment.experiment_id;
       s.selectedExperiment = experiment;
       s.experimentDraft = { name: experiment.name, description: experiment.description, spec: experiment.spec };
+      s.experimentSavedDraft = { name: experiment.name, description: experiment.description, spec: experiment.spec };
+      s.experimentSaveStatus = "idle";
+      s.experimentFieldErrors = {};
     });
     ts.send({ tag: "launchExperiment" });
     await ts.drain();
     ts.receive({ tag: "experimentLaunched", response: { run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" } }, (s) => {
       s.activeTab = "runs";
+      s.experimentLaunchStatus = "idle";
     });
     ts.receive({ tag: "openRun", runId: "experiment-run" });
     ts.receive({ tag: "tailTick", generation: 1 });
@@ -232,7 +236,46 @@ describe("benchReducer / persisted experiments", () => {
     draft.experimentDraft = { name: "bad", description: "", spec: { ...emptyExperimentSpec(), variants: [] } };
     benchReducer(draft, { tag: "saveExperiment" }, env);
     expect(called).toBe(false);
-    expect(draft.experimentError).toContain("spec.variants");
+    expect(draft.experimentFieldErrors["spec.variants"]).toContain("variants");
+  });
+
+  it("launches only the last successfully saved draft and rejects edits until they are saved", () => {
+    let createCalls = 0;
+    let launchCalls = 0;
+    const saved = { ...experiment, name: "Saved definition" };
+    const env: BenchEnv = {
+      ...mockEnv,
+      createExperiment: () => { createCalls++; return Effect.none(); },
+      launchExperiment: () => { launchCalls++; return Effect.none(); },
+    };
+    const state = initialBenchState();
+    state.selectedProjectId = project.project_id;
+    state.experimentDraft = { name: saved.name, description: saved.description, spec: saved.spec };
+
+    benchReducer(state, { tag: "saveExperiment" }, env);
+    expect(state.experimentSaveStatus).toBe("saving");
+    benchReducer(state, { tag: "saveExperiment" }, env);
+    expect(createCalls).toBe(1);
+
+    benchReducer(state, { tag: "experimentSaved", experiment: saved }, env);
+    expect(state.experimentSaveStatus).toBe("idle");
+    expect(state.experimentSavedDraft).toEqual(state.experimentDraft);
+    benchReducer(state, { tag: "launchExperiment" }, env);
+    expect(state.experimentLaunchStatus).toBe("launching");
+    expect(launchCalls).toBe(1);
+
+    state.experimentLaunchStatus = "idle";
+    benchReducer(state, { tag: "experimentDraft", draft: { ...state.experimentDraft!, description: "changed" } }, env);
+    benchReducer(state, { tag: "launchExperiment" }, env);
+    expect(state.experimentRunError).toContain("Save the current experiment");
+    expect(launchCalls).toBe(1);
+  });
+
+  it("changes a game and installs the metadata-provided default configuration", () => {
+    const state = initialBenchState();
+    state.experimentDraft = { name: "Game change", description: "", spec: emptyExperimentSpec("nim") };
+    benchReducer(state, { tag: "experimentGameChanged", game: "druid", gameConfig: { size: 7 } }, mockEnv);
+    expect(state.experimentDraft?.spec.games[0]).toEqual({ game: "druid", game_config: { size: 7 } });
   });
 });
 

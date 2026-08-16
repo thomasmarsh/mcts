@@ -114,4 +114,11 @@ describe("createBenchApiClient", () => {
 
     await expect(client.getRun("nope")).rejects.toThrow("run 'nope' not found");
   });
+
+  it("preserves structured validation paths for reducer field mapping", async () => {
+    stubFetch({ error: "validation failed", fields: [{ path: "spec.baseline.config", message: "must be an object" }] }, { ok: false, status: 422 });
+    const client = createBenchApiClient();
+
+    await expect(client.getRun("invalid")).rejects.toThrow("spec.baseline.config: must be an object");
+  });
 });

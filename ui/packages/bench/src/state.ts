@@ -105,6 +105,13 @@ export interface BenchState {
   cells: JobPollState<ExperimentCell[]>;
   projectDraft: { name: string; description: string };
   experimentDraft: { name: string; description: string; spec: ExperimentSpecV1 } | null;
+  /** The last server-confirmed experiment value. A draft is launchable only
+   * when it is equal to this snapshot, so editing after a save cannot launch
+   * an older or merely selected definition by accident. */
+  experimentSavedDraft: { name: string; description: string; spec: ExperimentSpecV1 } | null;
+  experimentSaveStatus: "idle" | "saving";
+  experimentLaunchStatus: "idle" | "launching";
+  experimentFieldErrors: Record<string, string>;
   projectError: string | null;
   experimentError: string | null;
   experimentRunError: string | null;
@@ -151,6 +158,10 @@ export function initialBenchState(): BenchState {
     cells: initialJobPollState<ExperimentCell[]>(),
     projectDraft: { name: "", description: "" },
     experimentDraft: null,
+    experimentSavedDraft: null,
+    experimentSaveStatus: "idle",
+    experimentLaunchStatus: "idle",
+    experimentFieldErrors: {},
     projectError: null,
     experimentError: null,
     experimentRunError: null,

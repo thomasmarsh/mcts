@@ -90,6 +90,16 @@ async function errorMessage(r: Response): Promise<string> {
     try {
       const body: unknown = JSON.parse(text);
       if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+        const fields = (body as { fields?: unknown }).fields;
+        if (Array.isArray(fields)) {
+          const fieldMessages = fields.flatMap((field): string[] => {
+            if (!field || typeof field !== "object") return [];
+            const path = (field as { path?: unknown }).path;
+            const message = (field as { message?: unknown }).message;
+            return typeof path === "string" && typeof message === "string" ? [`${path}: ${message}`] : [];
+          });
+          if (fieldMessages.length > 0) return fieldMessages.join("; ");
+        }
         return (body as { error: string }).error;
       }
     } catch {

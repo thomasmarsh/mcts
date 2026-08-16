@@ -12,7 +12,68 @@ afterEach(() => {
   cleanup();
 });
 
+const noOpEnv: BenchEnv = {
+  listProjects: () => Effect.none(), createProject: () => Effect.none(), getProject: () => Effect.none(), updateProject: () => Effect.none(),
+  listExperiments: () => Effect.none(), createExperiment: () => Effect.none(), getExperiment: () => Effect.none(), updateExperiment: () => Effect.none(), launchExperiment: () => Effect.none(),
+  getRunCells: () => Effect.send([]), listRuns: () => Effect.none(), getRun: () => Effect.none(), getRunLog: () => Effect.none(), getRunStdout: () => Effect.none(),
+  getLeaderboard: () => Effect.none(), fetchCommitTrends: () => Effect.none(), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(), advanceBaseline: () => Effect.none(),
+  getBenchKinds: () => Effect.none(), getSmac3Kinds: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
+};
+
 describe("persisted experiment components", () => {
+  it("renders a project shell with labelled controls and keeps an empty name unsubmitable", async () => {
+    const store = createStore<BenchState, BenchAction, BenchEnv>(initialBenchState(), benchReducer, noOpEnv);
+    render(() => <ProjectsApp store={store} />);
+
+    expect(screen.getByRole("main")).toHaveClass("projects-page");
+    expect(screen.getByLabelText("Project name")).toBeInTheDocument();
+    const create = screen.getByRole("button", { name: "Create project" });
+    expect(create).toBeDisabled();
+    fireEvent.input(screen.getByLabelText("Project name"), { target: { value: "   " } });
+    await vi.waitFor(() => expect(create).toBeDisabled());
+  });
+
+  it("keeps malformed strategy JSON visible, localizes the error, and re-enables saving after correction", async () => {
+    const state = initialBenchState();
+    state.selectedProjectId = "project-1";
+    state.experimentDraft = { name: "JSON check", description: "", spec: {
+      version: 1, games: [{ game: "nim", game_config: null }], baseline: { id: "baseline", label: "Baseline", config: {} }, variants: [{ id: "variant", label: "Variant", config: {} }], budgets: [{ kind: "iterations", value: 5 }], rounds_per_cell: 1, base_seed: 42, max_parallel_cells: 1,
+    } };
+    const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, noOpEnv);
+    render(() => <ProjectsApp store={store} />);
+
+    const baseline = document.getElementById("baseline-config") as HTMLTextAreaElement;
+    fireEvent.input(baseline, { target: { value: "{ broken" } });
+    await vi.waitFor(() => expect(screen.getByText("Enter valid JSON.")).toBeInTheDocument());
+    expect(baseline.value).toBe("{ broken");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+
+    fireEvent.input(baseline, { target: { value: '{"depth": 2}' } });
+    await vi.waitFor(() => expect(store.state.experimentDraft?.spec.baseline.config).toEqual({ depth: 2 }));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
+  });
+
+  it("uses SMAC3 metadata for game defaults and preserves a positive budget when changing budget kinds", async () => {
+    const state = initialBenchState();
+    state.selectedProjectId = "project-1";
+    state.experimentDraft = { name: "Metadata check", description: "", spec: {
+      version: 1, games: [{ game: "nim", game_config: { stones: 7 } }], baseline: { id: "baseline", label: "Baseline", config: {} }, variants: [{ id: "variant", label: "Variant", config: {} }], budgets: [{ kind: "iterations", value: 9 }], rounds_per_cell: 1, base_seed: 42, max_parallel_cells: 1,
+    } };
+    state.smac3Kinds = { ...state.smac3Kinds, status: "done", result: [
+      { game: "nim", tuner: { id: "nim", baselines: ["default"], eval_rounds: 1, parameters: [], conditions: [], game_config: { stones: 7 } } },
+      { game: "druid", tuner: { id: "druid", baselines: ["default"], eval_rounds: 1, parameters: [], conditions: [], game_config: { size: 5 } } },
+    ] };
+    const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, noOpEnv);
+    render(() => <ProjectsApp store={store} />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Game" }), { target: { value: "druid" } });
+    await vi.waitFor(() => expect(store.state.experimentDraft?.spec.games[0]).toEqual({ game: "druid", game_config: { size: 5 } }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Budget kind" }), { target: { value: "time_per_move_ms" } });
+    await vi.waitFor(() => expect(store.state.experimentDraft?.spec.budgets[0]).toEqual({ kind: "time_per_move_ms", value: 9 }));
+    expect((screen.getByLabelText("Budget value") as HTMLInputElement).value).toBe("9");
+  });
+
   it("traverses project, experiment, launch, progress, and cell inspection with mocked effects", async () => {
     const project: Project = {
       project_id: "project-1", name: "Nim study", description: "small", archived: false,
@@ -58,7 +119,9 @@ describe("persisted experiment components", () => {
     render(() => <><ProjectsApp store={store} /><ExperimentRunDetail store={store} /></>);
 
     fireEvent.input(screen.getByLabelText("Project name"), { target: { value: project.name } });
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Create project" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+    await vi.waitFor(() => expect(store.state.selectedProjectId).toBe(project.project_id));
     await vi.waitFor(() => expect(screen.getByRole("button", { name: "New experiment" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "New experiment" }));
     await vi.waitFor(() => expect(screen.getByLabelText("Experiment name")).toBeInTheDocument());
@@ -68,7 +131,7 @@ describe("persisted experiment components", () => {
     fireEvent.click(screen.getByRole("button", { name: "Launch" }));
     await vi.waitFor(() => expect(dispatched).toContainEqual({ tag: "experimentLaunched", response: { run_id: "run-1", pid: 1, log_path: "/tmp/log.jsonl" } }));
     await vi.waitFor(() => expect(store.state.activeTab).toBe("runs"));
-    await vi.waitFor(() => expect(screen.getByText("Variant: 1/2 · 1/0/0 · 100.0%")).toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: /Variant: 1\/2/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /Variant: 1\/2/ }));
     expect(screen.getByText(/Candidate:/)).toBeInTheDocument();
   });

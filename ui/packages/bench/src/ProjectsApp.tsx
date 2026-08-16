@@ -7,5 +7,9 @@ import { ExperimentEditor } from "./ExperimentEditor.js";
 
 export const ProjectsApp: Component<{ store: Store<BenchState, BenchAction> }> = (props) => {
   const state = props.store.getState();
-  return <Show when={state().selectedExperimentId || state().experimentDraft} fallback={<Show when={state().selectedProjectId} fallback={<ProjectsLanding store={props.store} />}><ProjectDetail store={props.store} /></Show>}><ExperimentEditor store={props.store} /></Show>;
+  return <main class="projects-page">
+    <Show when={state().selectedExperimentId || state().experimentDraft} fallback={<Show when={state().selectedProjectId} fallback={<ProjectsLanding store={props.store} />}><ProjectDetail store={props.store} /></Show>}>
+      <ExperimentEditor store={props.store} />
+    </Show>
+  </main>;
 };
