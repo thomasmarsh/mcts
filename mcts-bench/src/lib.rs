@@ -10,6 +10,8 @@ pub mod orchestration;
 pub mod tournament;
 
 #[cfg(feature = "duckdb")]
+pub mod identity;
+#[cfg(feature = "duckdb")]
 pub mod ingest;
 #[cfg(feature = "duckdb")]
 pub mod schema;

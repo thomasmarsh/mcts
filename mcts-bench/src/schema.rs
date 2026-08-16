@@ -3,6 +3,15 @@
 //! `bin/bench` and the Python SMAC3 harness never link against DuckDB at all.
 
 pub const CREATE_TABLES: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS logical_runs (
+        logical_run_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        project_id TEXT,
+        experiment_id TEXT,
+        created_at TIMESTAMP NOT NULL,
+        current_attempt_id TEXT NOT NULL,
+        version UINTEGER NOT NULL DEFAULT 0
+    )",
     "CREATE TABLE IF NOT EXISTS runs (
         run_id      TEXT PRIMARY KEY,
         kind        TEXT NOT NULL,
@@ -20,7 +29,10 @@ pub const CREATE_TABLES: &[&str] = &[
         ended_at    TIMESTAMP,
         status      TEXT NOT NULL DEFAULT 'running',
         log_path    TEXT NOT NULL,
-        exit_code   INTEGER
+        exit_code   INTEGER,
+        logical_run_id TEXT,
+        parent_attempt_id TEXT,
+        attempt_ordinal UINTEGER
     )",
     "CREATE TABLE IF NOT EXISTS match_results (
         run_id      TEXT NOT NULL REFERENCES runs(run_id),
@@ -126,6 +138,9 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE match_results ADD COLUMN trace_game_seq UBIGINT",
         "ALTER TABLE match_results ADD COLUMN metrics JSON",
         "ALTER TABLE experiment_cells ADD COLUMN cell_seed UBIGINT",
+        "ALTER TABLE runs ADD COLUMN logical_run_id TEXT",
+        "ALTER TABLE runs ADD COLUMN parent_attempt_id TEXT",
+        "ALTER TABLE runs ADD COLUMN attempt_ordinal UINTEGER",
     ] {
         let _ = conn.execute_batch(ddl);
     }
@@ -157,6 +172,7 @@ mod tests {
 
         for want in &[
             "runs",
+            "logical_runs",
             "projects",
             "experiments",
             "experiment_cells",
@@ -176,6 +192,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cell_seed, ("cell_seed".into(), true));
+        let identity_columns: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'runs' AND column_name IN ('logical_run_id', 'parent_attempt_id', 'attempt_ordinal') ORDER BY column_name",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            identity_columns,
+            vec![
+                ("attempt_ordinal".into(), "YES".into()),
+                ("logical_run_id".into(), "YES".into()),
+                ("parent_attempt_id".into(), "YES".into()),
+            ]
+        );
     }
 
     #[test]
@@ -235,6 +268,15 @@ mod tests {
         assert_eq!(row.3, None);
         assert_eq!(row.4, None);
         assert_eq!(row.5, None);
+
+        let linkage: (Option<String>, Option<String>, Option<u64>) = conn
+            .query_row(
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(linkage, (None, None, None));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::path::Path;
 
 use duckdb::{params, Connection};
 
+use crate::identity;
 use crate::launch::{is_alive, iso_timestamp};
 use crate::log::{LogRecord, RegistryEvent};
 
@@ -100,7 +101,8 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                 started_at,
             } => {
                 let host = hostname();
-                conn.execute(
+                let tx = conn.unchecked_transaction()?;
+                let inserted = tx.execute(
                     "INSERT INTO runs \
                      (run_id, kind, game, config, git_sha, git_dirty, \
                       host, pid, started_at, status, log_path) \
@@ -111,6 +113,11 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                         log_path,
                     ],
                 )?;
+                if inserted > 0 {
+                    identity::create_registry_root_identity(&tx, &run_id, &kind, &started_at)
+                        .map_err(|error| duckdb::Error::ToSqlConversionFailure(Box::new(error)))?;
+                }
+                tx.commit()?;
             }
             RegistryEvent::Stop {
                 run_id,
@@ -610,6 +617,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_replay_does_not_clobber_server_identity() {
+        let ev = start_event("child-run", "smac3", "nim", 99996, "/tmp/child/log.jsonl");
+        let fix = TestFixture::new(&[ev]);
+        fix.db
+            .execute(
+                "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-root', 'smac3', CURRENT_TIMESTAMP, 'child-run');
+                 INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, parent_attempt_id, attempt_ordinal) VALUES ('child-run', 'smac3', 'nim', 'server', false, 'server', CURRENT_TIMESTAMP, 'running', '/tmp/server/log.jsonl', 'logical-root', 'parent-run', 2)",
+                [],
+            )
+            .unwrap();
+
+        ingest_once(&fix.db, &fix.bench_runs).unwrap();
+
+        let identity: (String, String, u64) = fix
+            .db
+            .query_row(
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id = 'child-run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, ("logical-root".into(), "parent-run".into(), 2));
+    }
+
+    #[test]
     fn test_registry_start_stop_marks_completed() {
         let ev_start = start_event(
             "run-2",
@@ -636,6 +668,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exit_code, 0);
+        let identity: (String, Option<String>, u64, String) = fix
+            .db
+            .query_row(
+                "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = 'run-2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, ("run-2".into(), None, 1, "run-2".into()));
     }
 
     #[test]

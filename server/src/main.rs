@@ -286,7 +286,7 @@ async fn main() {
         db: std::sync::Mutex::new(bench_conn),
         bench_runs_dir,
         experiment_validator: Arc::new(bench::validate_experiment_spec),
-        experiment_launcher: Arc::new(|run_id, command, kind, game, label| {
+        run_launcher: Arc::new(|run_id, command, kind, game, label| {
             mcts_bench::launch::launch_with_run_id(
                 run_id,
                 command,

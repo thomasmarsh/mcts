@@ -31,6 +31,7 @@ use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
 use mcts_bench::experiment::ExperimentSpecV1;
+use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::tournament::wilson_interval;
@@ -47,7 +48,7 @@ pub struct BenchState {
     pub db: Mutex<duckdb::Connection>,
     pub bench_runs_dir: PathBuf,
     pub experiment_validator: ExperimentValidator,
-    pub experiment_launcher: ExperimentLauncher,
+    pub run_launcher: RunLauncher,
 }
 
 pub type ExperimentValidator = Arc<
@@ -55,7 +56,7 @@ pub type ExperimentValidator = Arc<
         + Send
         + Sync,
 >;
-pub type ExperimentLauncher = Arc<
+pub type RunLauncher = Arc<
     dyn Fn(String, Vec<String>, String, String, Option<String>) -> std::io::Result<LaunchedRun>
         + Send
         + Sync,
@@ -369,6 +370,19 @@ impl From<serde_json::Error> for BenchError {
             status: StatusCode::BAD_REQUEST,
             message: format!("JSON error: {e}"),
         }
+    }
+}
+
+fn identity_bench_error(error: identity::IdentityError) -> BenchError {
+    let status = match &error {
+        identity::IdentityError::MissingRun(_) => StatusCode::NOT_FOUND,
+        identity::IdentityError::Contradiction(_) => StatusCode::CONFLICT,
+        identity::IdentityError::InvalidLinkage(_) => StatusCode::BAD_REQUEST,
+        identity::IdentityError::DuckDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    BenchError {
+        status,
+        message: error.to_string(),
     }
 }
 
@@ -945,12 +959,21 @@ async fn launch_experiment(
         let transaction = db.transaction()?;
         let spec_json = serde_json::to_string(&spec).unwrap();
         transaction.execute("INSERT INTO runs (run_id, kind, game, project_id, experiment_id, experiment_spec, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES (?1, 'experiment', ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, NULL, ?10, 'running', ?11)", duckdb::params![run_id, run_game, project_id, experiment_id, spec_json, name, crate::BUILD_INFO.git_sha, crate::BUILD_INFO.git_dirty, hostname(), now, log_path.to_string_lossy().to_string()])?;
+        identity::create_root_identity(
+            &transaction,
+            &run_id,
+            "experiment",
+            Some(&project_id),
+            Some(&experiment_id),
+            &now,
+        )
+        .map_err(|error| ExperimentRouteError::Bench(identity_bench_error(error)))?;
         for cell in &plan.cells {
             transaction.execute("INSERT INTO experiment_cells (run_id, cell_id, cell_seed, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'pending')", duckdb::params![run_id, cell.cell_id, cell.cell_seed, cell.game, cell.game_config.to_string(), cell.variant_id, cell.variant_label, cell.candidate_config.to_string(), cell.baseline_id, cell.baseline_label, cell.baseline_config.to_string(), serde_json::to_string(&cell.budget).unwrap(), cell.rounds, cell.planned_games])?;
         }
         transaction.commit()?;
     }
-    let launched = match (state.experiment_launcher)(
+    let launched = match (state.run_launcher)(
         run_id.clone(),
         command,
         "experiment".into(),
@@ -2282,6 +2305,12 @@ async fn launch_and_record(
     } else {
         config
     };
+    let parent_identity = if let Some(parent_id) = resume_from {
+        let db = state.db.lock().unwrap();
+        Some(identity::prepare_continuation(&db, parent_id).map_err(identity_bench_error)?)
+    } else {
+        None
+    };
     let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
@@ -2297,33 +2326,50 @@ async fn launch_and_record(
         }
     }
 
+    // Preserve the existing launch ordering: the process is spawned before
+    // the immediate bookkeeping insert. Parent identity was already
+    // validated/anchored above, so a contradictory continuation cannot
+    // create an orphan process.
     let LaunchedRun {
         run_id,
         pid,
         log_path,
         log_dir,
-    } = launch::launch_with_run_id(run_id, cmd, kind, game, label, crate::BUILD_INFO).map_err(
-        |e| BenchError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("failed to launch run: {e}"),
-        },
-    )?;
+    } = match (state.run_launcher)(
+        run_id.clone(),
+        cmd,
+        kind.to_owned(),
+        game.to_owned(),
+        label.map(str::to_owned),
+    ) {
+        Ok(launched) => launched,
+        Err(error) => {
+            return Err(BenchError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to launch run: {error}"),
+            });
+        }
+    };
 
     let started_at = iso_timestamp_now();
+    let config_str = config
+        .as_ref()
+        .map(|c| serde_json::to_string(c).unwrap_or_default());
 
-    // Insert the run into the runs table so it appears immediately in
-    // the runs list (no ingest loop dependency).
+    // Insert the run and its identity in one transaction. If the registry
+    // ingestion loop won the race, the identity helper adopts only its
+    // provisional self-root for a server continuation; a server-recorded
+    // child identity is never overwritten by replay.
     {
-        let db = state.db.lock().unwrap();
-        let config_str = config
-            .as_ref()
-            .map(|c| serde_json::to_string(c).unwrap_or_default());
-        let hostname = hostname();
-        db.execute(
+        let mut db = state.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let launched_log_path = log_path.to_string_lossy().to_string();
+        let inserted = transaction.execute(
             "INSERT INTO runs \
              (run_id, kind, game, label, config, git_sha, git_dirty, \
               host, pid, started_at, status, log_path) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', ?11) \
+             ON CONFLICT (run_id) DO NOTHING",
             duckdb::params![
                 &run_id,
                 kind,
@@ -2332,12 +2378,42 @@ async fn launch_and_record(
                 config_str,
                 crate::BUILD_INFO.git_sha,
                 crate::BUILD_INFO.git_dirty,
-                hostname,
+                hostname(),
                 pid as i64,
                 &started_at,
-                log_path.to_string_lossy().to_string(),
+                &launched_log_path,
             ],
         )?;
+        if inserted == 0 {
+            let existing: (String, String, Option<i64>, String) = transaction.query_row(
+                "SELECT kind, game, pid, log_path FROM runs WHERE run_id = ?1",
+                duckdb::params![&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            if existing
+                != (
+                    kind.to_owned(),
+                    game.to_owned(),
+                    Some(pid as i64),
+                    launched_log_path,
+                )
+            {
+                return Err(BenchError {
+                    status: StatusCode::CONFLICT,
+                    message: format!(
+                        "run id '{run_id}' is already assigned to a different process"
+                    ),
+                });
+            }
+        }
+        if let Some(parent) = &parent_identity {
+            identity::create_child_identity(&transaction, &run_id, parent)
+                .map_err(identity_bench_error)?;
+        } else {
+            identity::create_root_identity(&transaction, &run_id, kind, None, None, &started_at)
+                .map_err(identity_bench_error)?;
+        }
+        transaction.commit()?;
     }
 
     // Store config in the runs table so it survives server restarts.
@@ -3441,8 +3517,17 @@ mod tests {
     fn seeded_app_with(
         seed_fn: impl FnOnce(&duckdb::Connection, &Path),
         experiment_validator: ExperimentValidator,
-        experiment_launcher: ExperimentLauncher,
+        run_launcher: RunLauncher,
     ) -> (Router, PathBuf) {
+        let (app, path, _) = seeded_app_with_state(seed_fn, experiment_validator, run_launcher);
+        (app, path)
+    }
+
+    fn seeded_app_with_state(
+        seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+        experiment_validator: ExperimentValidator,
+        run_launcher: RunLauncher,
+    ) -> (Router, PathBuf, Arc<BenchState>) {
         let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tmp_dir =
             std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -3460,10 +3545,21 @@ mod tests {
             db: Mutex::new(conn),
             bench_runs_dir,
             experiment_validator,
-            experiment_launcher,
+            run_launcher,
         });
 
-        (bench_router(state), tmp_dir)
+        (bench_router(state.clone()), tmp_dir, state)
+    }
+
+    fn injected_general_launcher() -> RunLauncher {
+        Arc::new(|run_id, _command, _kind, _game, _label| {
+            Ok(LaunchedRun {
+                run_id,
+                pid: 999_999_999,
+                log_path: PathBuf::from("bench-runs/injected/log.jsonl"),
+                log_dir: PathBuf::from("bench-runs/injected"),
+            })
+        })
     }
 
     /// Default seed: one completed run with two match results and one trial.
@@ -4791,7 +4887,7 @@ mod tests {
         };
         let commands = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
         let captured = commands.clone();
-        let app = seeded_app_with(
+        let (app, _, state) = seeded_app_with_state(
             |conn, _| {
                 conn.execute("INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-grid', 'Grid', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", []).unwrap();
                 conn.execute("INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-grid', 'p-grid', 'Grid experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", duckdb::params![serde_json::to_string(&spec).unwrap()]).unwrap();
@@ -4799,9 +4895,14 @@ mod tests {
             Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
             Arc::new(move |run_id, command, _kind, _game, _label| {
                 captured.lock().unwrap().push(command);
-                Ok(LaunchedRun { run_id, pid: 123, log_path: PathBuf::from("bench-runs/fake/log.jsonl"), log_dir: PathBuf::from("bench-runs/fake") })
+                Ok(LaunchedRun {
+                    run_id,
+                    pid: 123,
+                    log_path: PathBuf::from("bench-runs/fake/log.jsonl"),
+                    log_dir: PathBuf::from("bench-runs/fake"),
+                })
             }),
-        ).0;
+        );
         let (status, body) =
             http_post_json(app.clone(), "/api/bench/experiments/e-grid/runs", json!({})).await;
         assert_eq!(
@@ -4811,6 +4912,17 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
         let run_id = body_json(&body)["run_id"].as_str().unwrap().to_string();
+        let identity: (String, Option<String>, u64, String) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = ?1",
+                duckdb::params![&run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, (run_id.clone(), None, 1, run_id.clone()));
         let (status, cells_body) = http_get(app, &format!("/api/bench/runs/{run_id}/cells")).await;
         assert_eq!(status, HttpStatusCode::OK);
         let cells = body_json(&cells_body).as_array().unwrap().to_vec();
@@ -4930,6 +5042,150 @@ mod tests {
             "smac3 launch returned unexpected status {status}: body={}",
             String::from_utf8_lossy(&body),
         );
+    }
+
+    #[tokio::test]
+    async fn test_fresh_round_robin_and_smac3_launches_create_identity_roots() {
+        let (app, _, state) = seeded_app_with_state(
+            |_, _| {},
+            Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+            injected_general_launcher(),
+        );
+
+        for (kind, game, config) in [
+            ("round_robin", "druid", json!({"rounds": 1})),
+            ("smac3", "traffic-lights", json!({"overrides": []})),
+        ] {
+            let (status, body) = http_post_json(
+                app.clone(),
+                "/api/bench/launch",
+                json!({"kind": kind, "game": game, "config": config}),
+            )
+            .await;
+            assert_eq!(
+                status,
+                HttpStatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&body)
+            );
+            let run_id = body_json(&body)["run_id"].as_str().unwrap().to_owned();
+            let identity: (String, Option<String>, u64, String) = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = ?1",
+                    duckdb::params![&run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(identity, (run_id.clone(), None, 1, run_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resume_and_manual_promotion_link_children_to_parent_identity() {
+        let (app, _, state) = seeded_app_with_state(
+            |conn, _| {
+                conn.execute(
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('resume-parent', 'smac3', 'traffic-lights', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/resume.log')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('promotion-parent', 'smac3', 'druid', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/promotion.log')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO incumbents (run_id, ts, config, cost) VALUES ('promotion-parent', CURRENT_TIMESTAMP, '{\"family\":\"ucb1\"}', 0.02)",
+                    [],
+                )
+                .unwrap();
+            },
+            Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+            injected_general_launcher(),
+        );
+
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/bench/runs/resume-parent/resume",
+            json!({"n_trials": 500}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let resume_child = body_json(&body)["run_id"].as_str().unwrap().to_owned();
+        let (logical, parent, ordinal): (String, String, u64) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id = ?1",
+                duckdb::params![&resume_child],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (logical, parent, ordinal),
+            ("resume-parent".into(), "resume-parent".into(), 2)
+        );
+
+        let (status, body) = http_post_json(
+            app,
+            "/api/bench/runs/promotion-parent/advance-baseline",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let promotion_child = body_json(&body)["run_id"].as_str().unwrap().to_owned();
+        let linkage: (String, String, u64) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id = ?1",
+                duckdb::params![&promotion_child],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            linkage,
+            ("promotion-parent".into(), "promotion-parent".into(), 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_automatic_promotion_links_child_to_parent_identity() {
+        let (_, _, state) = seeded_app_with_state(
+            |conn, _| {
+                conn.execute(
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) VALUES ('auto-parent', 'smac3', 'traffic-lights', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[\"optimizer.n_trials=10\"],\"ladder\":{\"max_rungs\":2,\"saturation_threshold\":0.1},\"ladder_root\":\"auto-parent\"}', 'sha', false, 'host', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/auto.log')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO incumbents (run_id, ts, config, cost) VALUES ('auto-parent', CURRENT_TIMESTAMP, '{\"family\":\"ucb1\"}', 0.02)",
+                    [],
+                )
+                .unwrap();
+            },
+            Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+            injected_general_launcher(),
+        );
+
+        advance_ladders_once(&state).await;
+
+        let linkage: (String, String, u64) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id <> 'auto-parent' AND kind = 'smac3' ORDER BY started_at DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(linkage, ("auto-parent".into(), "auto-parent".into(), 2));
     }
 
     // -------------------------------------------------------------------
