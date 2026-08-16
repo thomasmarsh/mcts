@@ -594,6 +594,44 @@ describe("RunDetailPanel / smac3", () => {
     expect(screen.getByText("new baseline")).toBeInTheDocument();
   });
 
+  it("shows the new-baseline flagpost before the new rung has scored a trial", async () => {
+    const rootRunId = "smac3-traffic-lights-root";
+    const rootTrials: TrialRow[] = [
+      { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1" }, seed: 0, cost: 0.025, extra: null },
+    ];
+    const chain: ChainRung[] = [
+      {
+        run_id: rootRunId,
+        label: null,
+        status: "stopped",
+        started_at: "2026-02-01T00:00:00Z",
+        ended_at: "2026-02-01T00:10:00Z",
+        trial_count: 1,
+        incumbent: null,
+      },
+      {
+        run_id: FAKE_SMAC3_RUN_ID,
+        label: "ladder rung 2 of " + rootRunId,
+        status: "running",
+        started_at: "2026-02-01T00:10:01Z",
+        ended_at: null,
+        trial_count: 0,
+        incumbent: { config: { family: "ucb1" }, cost: 0.025 },
+      },
+    ];
+    const { store } = createTestStore({
+      getRunChain: () => Effect.send(chain),
+      getRunTrials: (runId) => Effect.send(runId === rootRunId ? rootTrials : []),
+    });
+    render(() => <RunDetailPanel store={store} />);
+
+    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    await screen.findByText("Best cost (loss rate)");
+
+    expect(document.querySelectorAll(".smac3-rung-boundary").length).toBe(1);
+    expect(screen.getByText("new baseline")).toBeInTheDocument();
+  });
+
   it("diffs the incumbent/lowest-trial tables against the latest rung's recorded baseline", async () => {
     const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
     const rootTrials: TrialRow[] = [

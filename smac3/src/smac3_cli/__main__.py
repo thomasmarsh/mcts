@@ -245,11 +245,42 @@ def build_optimizer(
     # actually distinguishes the two kinds of instance id when dispatching
     # to the game binary.
     instances = [*cfg.target.baselines, *cfg.target.baseline_configs]
+
+    # A normal resume keeps the same objective instances, so its completed
+    # observations remain valid training data.  A ladder rung deliberately
+    # changes the opponent, however: importing costs measured against the
+    # old baseline both poisons the new surrogate and is rejected by SMAC's
+    # intensifier because those instance ids are absent from the new
+    # Scenario.  In that case start a fresh runhistory and express the
+    # logical-run budget as the number of evaluations still owed.  Count
+    # only finished trials; workers interrupted during the rung transition
+    # are saved as RUNNING entries but produced no sample.
+    prior = load_prior_runhistory(resume, cs) if resume else None
+    merge_prior = False
+    scenario_n_trials = cfg.optimizer.n_trials
+    if prior is not None:
+        prior_instances = {key.instance for key in prior.keys()}
+        merge_prior = prior_instances.issubset(set(instances))
+        if not merge_prior:
+            scenario_n_trials -= prior.finished
+            if scenario_n_trials <= 0:
+                raise ValueError(
+                    f"run {resume} already used its {cfg.optimizer.n_trials}-trial budget"
+                )
+            logger.info(
+                "Resuming from run %s with changed instances: %d finished "
+                "prior trial(s) consume the logical budget; starting a fresh "
+                "runhistory with %d trial(s)",
+                resume,
+                prior.finished,
+                scenario_n_trials,
+            )
+
     scenario = Scenario(
         cs,
         name=run_id,
         deterministic=cfg.optimizer.deterministic,
-        n_trials=cfg.optimizer.n_trials,
+        n_trials=scenario_n_trials,
         n_workers=n_workers,
         seed=cfg.optimizer.seed,
         instances=instances,
@@ -269,8 +300,7 @@ def build_optimizer(
         overwrite=False,
     )
 
-    if resume:
-        prior = load_prior_runhistory(resume, cs)
+    if prior is not None and merge_prior:
         logger.info(
             "Resuming from run %s: merging %d prior trial(s) into runhistory",
             resume,

@@ -306,8 +306,16 @@ export const Smac3RunDetail: Component<{
         if (p.rungIndex === k - 1) prevLastX = p.x;
         if (p.rungIndex === k && curFirstX === null) curFirstX = p.x;
       }
-      if (curFirstX === null) continue;
-      boundaries.push({ x: prevLastX === null ? curFirstX : (prevLastX + curFirstX) / 2, rung });
+      // Establish the flagpost as soon as the rung exists. Before its first
+      // scored trial there is no right-hand point to bisect against, so pin
+      // the marker to the prior rung's last point.
+      if (curFirstX === null && prevLastX === null) continue;
+      const x = curFirstX === null
+        ? prevLastX!
+        : prevLastX === null
+          ? curFirstX
+          : (prevLastX + curFirstX) / 2;
+      boundaries.push({ x, rung });
     }
     return boundaries;
   });

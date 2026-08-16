@@ -333,7 +333,8 @@ async fn list_runs(
                 CAST(r.started_at AS TEXT), \
                 CAST(r.ended_at AS TEXT), \
                 r.status, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
+                CAST(r.config AS TEXT) \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
@@ -345,43 +346,72 @@ async fn list_runs(
     // Build optional WHERE clauses by interpolating values directly into
     // the SQL.  These are internal API query params (status/game strings,
     // integer limit), not user-submitted SQL — injection is not a concern.
-    if let Some(ref status) = params.status {
-        sql.push_str(&format!(" AND r.status = '{}'", status.replace('\'', "''")));
-    }
     if let Some(ref game) = params.game {
         sql.push_str(&format!(" AND r.game = '{}'", game.replace('\'', "''")));
     }
 
     sql.push_str(" ORDER BY CAST(r.started_at AS TEXT) DESC");
 
-    if let Some(limit) = params.limit {
-        sql.push_str(&format!(" LIMIT {limit}"));
-    }
-
     let mut stmt = db.prepare(&sql)?;
 
-    let runs: Vec<RunSummary> = stmt
+    let physical_runs: Vec<(RunSummary, Option<Value>)> = stmt
         .query_map([], |row| {
-            Ok(RunSummary {
-                run_id: row.get(0)?,
-                kind: row.get(1)?,
-                game: row.get(2)?,
-                label: row.get(3)?,
-                git_sha: row.get(4)?,
-                git_dirty: row.get(5)?,
-                host: row.get(6)?,
-                pid: row.get(7)?,
-                started_at: row.get(8)?,
-                ended_at: row.get(9)?,
-                status: row.get(10)?,
-                match_count: row.get(11)?,
-                trial_count: row.get(12)?,
-            })
+            let run_id: String = row.get(0)?;
+            let config = row
+                .get::<_, Option<String>>(13)?
+                .and_then(|text| serde_json::from_str(&text).ok());
+            Ok((
+                RunSummary {
+                    run_id,
+                    kind: row.get(1)?,
+                    game: row.get(2)?,
+                    label: row.get(3)?,
+                    git_sha: row.get(4)?,
+                    git_dirty: row.get(5)?,
+                    host: row.get(6)?,
+                    pid: row.get(7)?,
+                    started_at: row.get(8)?,
+                    ended_at: row.get(9)?,
+                    status: row.get(10)?,
+                    match_count: row.get(11)?,
+                    trial_count: row.get(12)?,
+                },
+                config,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
-    Ok(Json(runs))
+    // A ladder is one logical run even though each baseline change needs a
+    // fresh SMAC3 process and therefore a fresh storage row. Rows arrive
+    // newest-first, so retain the newest rung's identity/status while
+    // accumulating work from all of its physical rungs.
+    let mut logical_runs: Vec<RunSummary> = Vec::new();
+    let mut logical_indexes: HashMap<String, usize> = HashMap::new();
+    for (run, config) in physical_runs {
+        let logical_id = config
+            .as_ref()
+            .and_then(|value| value.get("ladder_root"))
+            .and_then(Value::as_str)
+            .unwrap_or(&run.run_id)
+            .to_owned();
+        if let Some(index) = logical_indexes.get(&logical_id).copied() {
+            logical_runs[index].match_count += run.match_count;
+            logical_runs[index].trial_count += run.trial_count;
+            logical_runs[index].started_at = run.started_at;
+        } else {
+            logical_indexes.insert(logical_id, logical_runs.len());
+            logical_runs.push(run);
+        }
+    }
+    if let Some(ref status) = params.status {
+        logical_runs.retain(|run| run.status == *status);
+    }
+    if let Some(limit) = params.limit {
+        logical_runs.truncate(limit.max(0) as usize);
+    }
+
+    Ok(Json(logical_runs))
 }
 
 /// `GET /api/bench/runs/{run_id}`
@@ -1606,6 +1636,19 @@ fn replace_baseline_with_incumbent(widened: &mut Value, next_id: &str, incumbent
     widened["overrides"] = json!(overrides);
 }
 
+/// The last `optimizer.n_trials` override is the effective total budget.
+/// Baseline changes resume the same logical optimization and must preserve
+/// that total rather than allocating a fresh batch for every physical rung.
+fn configured_n_trials(config: &Value) -> Option<i64> {
+    config
+        .get("overrides")?
+        .as_array()?
+        .iter()
+        .rev()
+        .filter_map(Value::as_str)
+        .find_map(|text| text.strip_prefix("optimizer.n_trials=")?.parse().ok())
+}
+
 /// Scans every active or completed SMAC3 run for a ladder-enabled rung that hasn't
 /// been widened yet and decides whether it saturated its current baseline
 /// set -- the decision half of an automated stop -> extract incumbent ->
@@ -1679,21 +1722,23 @@ fn plan_ladder_advances(
             continue; // not saturated -- ladder is done here
         }
 
-        // Per-rung trial budget: bump by however many trials the *root*
-        // rung of this ladder actually completed, rather than a second,
-        // separately-configured "trials per rung" knob. `optimizer.n_trials`
-        // is cumulative once a runhistory is seeded via `--resume` -- a
-        // resumed run only performs `n_trials` minus however many trials
-        // are already in the seeded runhistory -- so reusing the same
-        // value the previous rung was launched with would give the next
-        // rung zero new budget.
+        // `optimizer.n_trials` is the logical run's total budget. A resumed
+        // rung inherits the accumulated runhistory and consumes only the
+        // remaining trials; increasing the value here would silently grow
+        // the run whenever its baseline changed.
         let root_trial_count = *trial_counts.get(ladder_root).unwrap_or(&0);
         let cumulative_trials: i64 = runs
             .iter()
             .filter(|r| ladder_root_of(r) == Some(ladder_root))
             .map(|r| *trial_counts.get(&r.run_id).unwrap_or(&0))
             .sum();
-        let next_n_trials = cumulative_trials + root_trial_count;
+        let next_n_trials = runs
+            .iter()
+            .find(|r| r.run_id == ladder_root)
+            .and_then(|r| r.config.as_ref())
+            .and_then(configured_n_trials)
+            .or_else(|| configured_n_trials(config))
+            .unwrap_or(cumulative_trials + root_trial_count);
 
         let next_rung = rung_count + 1;
         let next_id = format!("ladder{next_rung}");
@@ -1935,7 +1980,9 @@ fn plan_manual_advance(
         .map(|r| *trial_counts.get(&r.run_id).unwrap_or(&0))
         .sum();
     let root_trial_count = *trial_counts.get(&effective_root).unwrap_or(&0);
-    let next_n_trials = requested_n_trials.unwrap_or(cumulative_trials + root_trial_count);
+    let next_n_trials = requested_n_trials
+        .or_else(|| run.config.as_ref().and_then(configured_n_trials))
+        .unwrap_or(cumulative_trials + root_trial_count);
 
     let root_patch = if ladder_root_of(run).is_none() {
         let mut root_config = run.config.clone().unwrap_or_else(|| json!({}));
@@ -2575,6 +2622,23 @@ mod tests {
         ).unwrap();
     }
 
+    fn ladder_runs_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+        conn.execute_batch(
+            "INSERT INTO runs
+             (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path)
+             VALUES
+             ('root-1', 'smac3', 'druid', '{\"ladder_root\":\"root-1\"}', 'abc', false, 'host', NULL,
+              '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z', 'stopped', '/tmp/root/log.jsonl'),
+             ('rung-2', 'smac3', 'druid', '{\"ladder_root\":\"root-1\",\"resumed_from\":\"root-1\"}', 'abc', false, 'host', 42,
+              '2026-01-01T00:10:01Z', NULL, 'running', '/tmp/rung2/log.jsonl');
+             INSERT INTO trials (run_id, trial_id, ts, config, cost) VALUES
+             ('root-1', 1, '2026-01-01T00:00:01Z', '{}', 0.1),
+             ('root-1', 2, '2026-01-01T00:00:02Z', '{}', 0.1),
+             ('rung-2', 3, '2026-01-01T00:10:02Z', '{}', 0.2);",
+        )
+        .unwrap();
+    }
+
     /// Default seed plus a two-ply trace for `match_results.seq = 1` (game
     /// 1: "strong" beats "master") -- exercises the join between
     /// `game_moves` and `match_results` on `(run_id, seq == game_seq)`.
@@ -2676,6 +2740,24 @@ mod tests {
         assert_eq!(run["match_count"], 2);
         assert_eq!(run["trial_count"], 1);
         assert!(run.get("label").and_then(|v| v.as_str()).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_runs_collapses_ladder_rungs_into_latest_logical_run() {
+        let app = seeded_app(ladder_runs_seed).0;
+        let (status, body) = http_get(app.clone(), "/api/bench/runs").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let runs = body_json(&body).as_array().unwrap().clone();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["run_id"], "rung-2");
+        assert_eq!(runs[0]["status"], "running");
+        assert_eq!(runs[0]["trial_count"], 3);
+        assert_eq!(runs[0]["started_at"], "2026-01-01 00:00:00");
+
+        let (_, body) = http_get(app.clone(), "/api/bench/runs?status=running").await;
+        assert_eq!(body_json(&body).as_array().unwrap().len(), 1);
+        let (_, body) = http_get(app, "/api/bench/runs?status=stopped").await;
+        assert!(body_json(&body).as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3800,7 +3882,7 @@ mod tests {
             advance.widened_config["overrides"],
             json!([
                 "optimizer.n_trials=10",
-                "optimizer.n_trials=20",
+                "optimizer.n_trials=10",
                 "target.baselines=[]"
             ])
         );
@@ -3829,7 +3911,7 @@ mod tests {
             advances[0].widened_config["overrides"],
             json!([
                 "optimizer.n_trials=10",
-                "optimizer.n_trials=6",
+                "optimizer.n_trials=10",
                 "target.baselines=[]"
             ])
         );
@@ -3990,14 +4072,12 @@ mod tests {
         // No pre-existing "ladder" block -- this is a manual-only chain,
         // so the automated driver must never pick it up.
         assert!(advance.widened_config.get("ladder").is_none());
-        // Cumulative budget defaults to root's own trials + another batch,
-        // plus the trailing `target.baselines=[]` reset (see
-        // `replace_baseline_with_incumbent`).
+        // The baseline changes within the original total trial budget.
         assert_eq!(
             advance.widened_config["overrides"],
             json!([
                 "optimizer.n_trials=10",
-                "optimizer.n_trials=20",
+                "optimizer.n_trials=10",
                 "target.baselines=[]"
             ])
         );
@@ -4070,12 +4150,12 @@ mod tests {
             advance.widened_config["baseline_configs"]["ladder3"],
             json!({"family": "ucb1"})
         );
-        // Cumulative: root's 10 + rung2's 10 + another batch of root's 10.
+        // A later baseline change still preserves the logical run's budget.
         assert_eq!(
             advance.widened_config["overrides"],
             json!([
                 "optimizer.n_trials=10",
-                "optimizer.n_trials=30",
+                "optimizer.n_trials=10",
                 "target.baselines=[]"
             ])
         );

@@ -320,6 +320,13 @@ export function benchReducer(
     open.trials = action.trials;
     open.chain = action.chain;
     open.chainedTrials = action.chainedTrials;
+    const newestRung = action.chain.at(-1);
+    if (newestRung && newestRung.run_id !== open.runId) {
+      // Automated laddering creates the next physical SMAC3 process behind
+      // the UI's back. Follow it while retaining the chain as the logical
+      // run, just as the explicit advance-baseline action does.
+      return Effect.send<BenchAction>({ tag: "openRun", runId: newestRung.run_id });
+    }
     if (isTerminalStatus(action.detail.status)) {
       // The run's log file is complete once the process is done — one last
       // append (this tick's lines) and the loop stops. The runs list just

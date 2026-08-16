@@ -85,3 +85,21 @@ def test_resume_seeds_prior_trials_and_skips_reevaluation(game_nim_binary: Path,
 def test_resume_without_prior_run_raises(game_nim_binary: Path, run_id: str):
     with pytest.raises(FileNotFoundError):
         build_optimizer(_cfg(game_nim_binary, n_trials=2), resume="no-such-run")
+
+
+def test_resume_with_changed_instance_uses_remaining_budget_without_old_costs(
+    game_nim_binary: Path, run_id: str
+):
+    first = build_optimizer(_cfg(game_nim_binary, n_trials=2), run_id=run_id)
+    first.optimize()
+
+    changed = _cfg(game_nim_binary, n_trials=4)
+    changed.target.baselines = ["weak"]
+    second = build_optimizer(changed, resume=run_id)
+
+    assert second.scenario.n_trials == 2
+    assert len(second.runhistory) == 0
+
+    second.optimize()
+    assert second.runhistory.finished == 2
+    assert {key.instance for key in second.runhistory.keys()} == {"weak"}

@@ -518,6 +518,70 @@ describe("benchReducer / log tail", () => {
     );
   });
 
+  it("follows an automatically-created newest rung instead of freezing on its terminal parent", () => {
+    const ts = createTestStore(benchReducer, mockEnv, initialBenchState());
+    const chain: ChainRung[] = [
+      {
+        run_id: "root-1",
+        label: null,
+        status: "stopped",
+        started_at: "2026-01-01T00:00:00Z",
+        ended_at: "2026-01-01T00:10:00Z",
+        trial_count: 20,
+        incumbent: null,
+      },
+      {
+        run_id: "rung-2",
+        label: "ladder rung 2 of root-1",
+        status: "running",
+        started_at: "2026-01-01T00:10:01Z",
+        ended_at: null,
+        trial_count: 0,
+        incumbent: { config: { family: "ucb1" }, cost: 0.025 },
+      },
+    ];
+    ts.send({ tag: "openRun", runId: "root-1" }, (s) => {
+      s.openGeneration = 1;
+      s.openRun = {
+        runId: "root-1",
+        detail: null,
+        tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
+        trials: [],
+        chain: [],
+        chainedTrials: [],
+      };
+    });
+    ts.receive({ tag: "tailTick", generation: 1 });
+    ts.send(
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: [],
+        nextOffset: 0,
+        detail: { ...smac3TerminalDetail, run_id: "root-1", status: "stopped" },
+        trials: [],
+        chain,
+        chainedTrials: [],
+      },
+      (s) => {
+        s.openRun!.detail = { ...smac3TerminalDetail, run_id: "root-1", status: "stopped" };
+        s.openRun!.chain = chain;
+      },
+    );
+    ts.receive({ tag: "openRun", runId: "rung-2" }, (s) => {
+      s.openGeneration = 2;
+      s.openRun = {
+        runId: "rung-2",
+        detail: null,
+        tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
+        trials: [],
+        chain: [],
+        chainedTrials: [],
+      };
+    });
+    ts.receive({ tag: "tailTick", generation: 2 });
+  });
+
   it("also fetches (empty) trials for a non-smac3 run, harmlessly", async () => {
     let trialsCalls = 0;
     const env: BenchEnv = {
