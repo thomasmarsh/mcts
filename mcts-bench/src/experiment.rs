@@ -981,20 +981,101 @@ mod tests {
     }
 
     #[test]
-    fn command_forwards_budget_and_game_config_rules() {
-        let iterations_spec = spec(Value::Null, Budget::Iterations { value: 4 });
-        let iterations_plan = iterations_spec.expand().unwrap();
-        let iterations =
-            cell_command_for_binary(&iterations_plan.cells[0], None, Path::new("game-nim"));
-        assert!(iterations
-            .windows(2)
-            .any(|pair| pair == ["--max-iterations", "4"]));
-        assert!(!iterations.contains(&"--game-config".into()));
-        let time_spec = spec(serde_json::json!({}), Budget::TimePerMoveMs { value: 5 });
-        let time_plan = time_spec.expand().unwrap();
-        let time = cell_command_for_binary(&time_plan.cells[0], None, Path::new("game-nim"));
-        assert!(time.windows(2).any(|pair| pair == ["--max-time-ms", "5"]));
-        assert!(time.contains(&"--game-config".into()));
+    fn cell_command_for_binary_forwards_exact_iteration_argv() {
+        let mut value = spec(
+            serde_json::json!({"board": "distinct-board", "size": 17}),
+            Budget::Iterations { value: 37 },
+        );
+        value.baseline.config = serde_json::json!({"c": 1.75, "family": "ucb1"});
+        value.variants[0].config = serde_json::json!({"family": "rave", "threshold": 913});
+        value.rounds_per_cell = 13;
+        value.base_seed = 8_765;
+        let plan = value.expand().unwrap();
+        let cell = &plan.cells[0];
+        let actual = cell_command_for_binary(
+            cell,
+            Some(Path::new("bench-runs/distinct/moves.jsonl")),
+            Path::new("game-distinct"),
+        );
+        let expected = vec![
+            "game-distinct".into(),
+            "compare".into(),
+            "eval".into(),
+            "--candidate-config".into(),
+            cell.candidate_config.to_string(),
+            "--baseline-config".into(),
+            cell.baseline_config.to_string(),
+            "--rounds".into(),
+            "13".into(),
+            "--seed".into(),
+            cell.cell_seed.to_string(),
+            "--max-iterations".into(),
+            "37".into(),
+            "--game-config".into(),
+            cell.game_config.to_string(),
+            "--trace-path".into(),
+            "bench-runs/distinct/moves.jsonl".into(),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cell_command_for_binary_forwards_exact_time_argv() {
+        let mut value = spec(Value::Null, Budget::TimePerMoveMs { value: 4_321 });
+        value.rounds_per_cell = 29;
+        value.base_seed = 1_234;
+        let plan = value.expand().unwrap();
+        let cell = &plan.cells[0];
+        let actual = cell_command_for_binary(cell, None, Path::new("game-time"));
+        let expected = vec![
+            "game-time".into(),
+            "compare".into(),
+            "eval".into(),
+            "--candidate-config".into(),
+            cell.candidate_config.to_string(),
+            "--baseline-config".into(),
+            cell.baseline_config.to_string(),
+            "--rounds".into(),
+            "29".into(),
+            "--seed".into(),
+            cell.cell_seed.to_string(),
+            "--max-time-ms".into(),
+            "4321".into(),
+        ];
+        assert_eq!(actual, expected);
+        assert!(!actual.iter().any(|argument| argument == "--max-iterations"));
+    }
+
+    #[test]
+    fn cell_command_for_binary_omits_only_null_game_config() {
+        let value = spec(Value::Null, Budget::Iterations { value: 97 });
+        let plan = value.expand().unwrap();
+        let actual = cell_command_for_binary(
+            &plan.cells[0],
+            Some(Path::new("trace/null-game.jsonl")),
+            Path::new("game-null-config"),
+        );
+        assert_eq!(
+            actual,
+            vec![
+                "game-null-config".into(),
+                "compare".into(),
+                "eval".into(),
+                "--candidate-config".into(),
+                plan.cells[0].candidate_config.to_string(),
+                "--baseline-config".into(),
+                plan.cells[0].baseline_config.to_string(),
+                "--rounds".into(),
+                "1".into(),
+                "--seed".into(),
+                plan.cells[0].cell_seed.to_string(),
+                "--max-iterations".into(),
+                "97".into(),
+                "--trace-path".into(),
+                "trace/null-game.jsonl".into(),
+            ]
+        );
+        assert!(!actual.iter().any(|argument| argument == "--game-config"));
     }
 
     #[test]

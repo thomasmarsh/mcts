@@ -31,9 +31,10 @@ export const ExperimentRunDetail: Component<{ store: Store<BenchState, BenchActi
     <section class="projects-run-view">
       <header class="projects-page-header projects-run-header">
         <div><p class="projects-eyebrow">Experiment run</p><h1>{open()?.detail?.label ?? "Experiment run"}</h1><code class="projects-run-id">{open()?.detail?.run_id}</code></div>
-        <StatusBadge status={open()?.detail?.status ?? "pending"} />
+        <div class="projects-run-actions"><StatusBadge status={open()?.detail?.status ?? "pending"} /><Show when={open()?.detail?.status === "running"}><button id="stop-experiment-run-btn" type="button" onClick={() => dispatch({ tag: "stopRun", runId: open()!.runId })}>Stop</button></Show></div>
       </header>
-      <section class="projects-panel projects-result-metrics" aria-label="Run summary"><span><strong>{totalCompleted()} / {totalPlanned()}</strong><small>completed games</small></span><span><strong>{statusCount("pending")}</strong><small>pending cells</small></span><span><strong>{statusCount("running")}</strong><small>running cells</small></span><span><strong>{statusCount("completed")}</strong><small>completed cells</small></span><span><strong>{statusCount("failed") + statusCount("cancelled")}</strong><small>failed/cancelled</small></span></section>
+      <Show when={state().stopError}><p class="projects-form-error" role="alert">{state().stopError}</p></Show>
+      <section class="projects-panel projects-result-metrics" aria-label="Run summary"><span><strong>{totalCompleted()} / {totalPlanned()}</strong><small>completed games</small></span><span><strong>{statusCount("pending")}</strong><small>pending cells</small></span><span><strong>{statusCount("running")}</strong><small>running cells</small></span><span><strong>{statusCount("completed")}</strong><small>completed cells</small></span><span><strong>{statusCount("failed")}</strong><small>failed cells</small></span><span><strong>{statusCount("cancelled")}</strong><small>cancelled cells</small></span></section>
 
         <Show when={selected()} fallback={<section class="projects-panel projects-state"><span class="projects-state-title">Waiting for cell results</span><span>The run has not reported a cell result yet.</span></section>}>
         <Show when={(open()?.cells.length ?? 0) > 1}>

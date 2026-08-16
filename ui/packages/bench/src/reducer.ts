@@ -337,6 +337,11 @@ function validationErrors(message: string): { fields: Record<string, string>; fo
     }
     const path = match[1]!;
     const messageText = match[2]!;
+    const knownPath = /^(name|description|spec\.(games|variants|budgets)(\[\d+\])?(\.(game|game_config|id|label|config|kind|value))?|spec\.(baseline\.(id|label|config)|rounds_per_cell|base_seed|max_parallel_cells))$/.test(path);
+    if (!knownPath) {
+      formParts.push(`${path}: ${messageText}`);
+      continue;
+    }
     const friendlyPath = path
       .replace("spec.games[0].game", "game")
       .replace("spec.games[0].game_config", "game configuration")

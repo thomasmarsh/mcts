@@ -168,7 +168,7 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
 }
 
 fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('running', 'completed', 'crashed', 'stopped')")?;
+    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('running', 'completed', 'completed_with_errors', 'crashed', 'stopped')")?;
     let running_runs: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -307,7 +307,7 @@ fn process_one_log_file(
                     params![completed_games, error, iso_timestamp(), run_id, cell_id],
                 )?;
                 conn.execute(
-                    "UPDATE runs SET status = 'completed_with_errors', ended_at = ?1 WHERE kind = 'experiment' AND run_id = ?2 AND status IN ('running', 'completed')",
+                    "UPDATE runs SET status = 'completed_with_errors', ended_at = ?1 WHERE kind = 'experiment' AND run_id = ?2 AND status = 'completed'",
                     params![iso_timestamp(), run_id],
                 )?;
             }
@@ -1480,6 +1480,218 @@ mod tests {
             .unwrap(),
             177
         );
+    }
+
+    #[test]
+    fn live_cell_failure_waits_for_coordinator_and_later_logs_are_ingested() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcts_bench_live_cell_failure_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("live-failure-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(
+            &log_path,
+            format!(
+                "{}\n",
+                LogRecord::CellFailed {
+                    cell_id: "cell-000001".into(),
+                    completed_games: 3,
+                    error: "candidate rejected".into(),
+                }
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n",
+                start_event(
+                    "live-failure-run",
+                    "experiment",
+                    "nim",
+                    std::process::id(),
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        process_registry(&db, &bench_runs.join("registry.log")).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES ('live-failure-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 2, 4, 'pending'), ('live-failure-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 2, 4, 'pending')", []).unwrap();
+
+        ingest_once(&db, &bench_runs).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'live-failure-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "running"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM experiment_cells WHERE cell_id = 'cell-000001'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "failed"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT completed_games FROM experiment_cells WHERE cell_id = 'cell-000001'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            3
+        );
+
+        let successful_match = LogRecord::MatchResult {
+            seq: 1,
+            strategy_a: "V2".into(),
+            strategy_b: "B".into(),
+            outcome: "win_a".into(),
+            winner: Some("V2".into()),
+            extra: None,
+            cell_id: Some("cell-000002".into()),
+            seed: Some(7),
+            trace_game_seq: None,
+            metrics: None,
+        };
+        let successful_finish = LogRecord::CellFinished {
+            cell_id: "cell-000002".into(),
+            completed_games: 1,
+        };
+        let mut log = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
+        writeln!(log, "{}", successful_match.to_json_line()).unwrap();
+        writeln!(log, "{}", successful_finish.to_json_line()).unwrap();
+        let mut registry = fs::OpenOptions::new()
+            .append(true)
+            .open(bench_runs.join("registry.log"))
+            .unwrap();
+        writeln!(
+            registry,
+            "{}",
+            stop_event("live-failure-run", Some(0)).to_json_line()
+        )
+        .unwrap();
+
+        ingest_once(&db, &bench_runs).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'live-failure-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed_with_errors"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM match_results WHERE run_id = 'live-failure-run'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM experiment_cells WHERE cell_id = 'cell-000002'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed"
+        );
+    }
+
+    #[test]
+    fn late_cell_events_do_not_change_stopped_or_cancelled_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcts_bench_stopped_late_cell_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let bench_runs = dir.join("bench-runs");
+        let run_dir = bench_runs.join("stopped-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let log_path = run_dir.join("log.jsonl");
+        fs::write(&log_path, "").unwrap();
+        fs::write(
+            bench_runs.join("registry.log"),
+            format!(
+                "{}\n",
+                start_event(
+                    "stopped-run",
+                    "experiment",
+                    "nim",
+                    std::process::id(),
+                    &log_path.to_string_lossy()
+                )
+                .to_json_line()
+            ),
+        )
+        .unwrap();
+        let db = duckdb::Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        process_registry(&db, &bench_runs.join("registry.log")).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, completed_games, status) VALUES ('stopped-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 1, 2, 2, 'completed'), ('stopped-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 1, 2, 1, 'failed'), ('stopped-run', 'cell-000003', 'nim', '{}', 'v3', 'V3', '{}', 'b', 'B', '{}', '{}', 1, 2, 0, 'cancelled')", []).unwrap();
+        db.execute(
+            "UPDATE runs SET status = 'stopped' WHERE run_id = 'stopped-run'",
+            [],
+        )
+        .unwrap();
+
+        let late = [
+            LogRecord::CellFinished {
+                cell_id: "cell-000003".into(),
+                completed_games: 2,
+            },
+            LogRecord::CellFailed {
+                cell_id: "cell-000001".into(),
+                completed_games: 2,
+                error: "late failure".into(),
+            },
+        ];
+        fs::write(
+            &log_path,
+            late.iter()
+                .map(|record| format!("{}\n", record.to_json_line()))
+                .collect::<String>(),
+        )
+        .unwrap();
+        ingest_once(&db, &bench_runs).unwrap();
+
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM runs WHERE run_id = 'stopped-run'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "stopped"
+        );
+        let statuses: Vec<String> = db
+            .prepare(
+                "SELECT status FROM experiment_cells WHERE run_id = 'stopped-run' ORDER BY cell_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(statuses, vec!["completed", "failed", "cancelled"]);
     }
 
     #[test]

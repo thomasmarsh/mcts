@@ -530,62 +530,66 @@ pub fn validate_experiment_spec(
             });
             continue;
         };
-        for (variant_index, variant) in spec.variants.iter().enumerate() {
-            let mut command = vec![
-                binary.to_string_lossy().into_owned(),
-                "compare".into(),
-                "validate".into(),
-                "--candidate-config".into(),
-                variant.config.to_string(),
-                "--baseline-config".into(),
-                spec.baseline.config.to_string(),
-            ];
-            if !game.game_config.is_null() {
-                command.extend(["--game-config".into(), game.game_config.to_string()]);
+        let mut command = vec![
+            binary.to_string_lossy().into_owned(),
+            "compare".into(),
+            "validate".into(),
+        ];
+        for variant in &spec.variants {
+            command.extend(["--candidate-config".into(), variant.config.to_string()]);
+        }
+        command.extend(["--baseline-config".into(), spec.baseline.config.to_string()]);
+        if !game.game_config.is_null() {
+            command.extend(["--game-config".into(), game.game_config.to_string()]);
+        }
+        let output = match std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                fields.push(mcts_bench::experiment::ValidationField {
+                    path: format!("spec.games[{game_index}].game"),
+                    message: error.to_string(),
+                });
+                continue;
             }
-            let output = match std::process::Command::new(&command[0])
-                .args(&command[1..])
-                .output()
-            {
-                Ok(output) => output,
-                Err(error) => {
-                    fields.push(mcts_bench::experiment::ValidationField {
-                        path: format!("spec.games[{game_index}].game"),
-                        message: error.to_string(),
-                    });
-                    continue;
-                }
+        };
+        let response = serde_json::from_slice::<Value>(&output.stdout).ok();
+        let errors = response
+            .as_ref()
+            .and_then(|value| value.get("errors"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if errors.is_empty() && !output.status.success() {
+            fields.push(mcts_bench::experiment::ValidationField {
+                path: format!("spec.games[{game_index}].game"),
+                message: "configured validation failed".into(),
+            });
+        }
+        for error in errors {
+            let field = error.get("field").and_then(Value::as_str).unwrap_or("");
+            let candidate_index = error
+                .get("candidate_index")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < spec.variants.len())
+                .unwrap_or(0);
+            let path = match field {
+                "game_config" => format!("spec.games[{game_index}].game_config"),
+                "candidate_config" => format!("spec.variants[{candidate_index}].config"),
+                "baseline_config" => "spec.baseline.config".into(),
+                _ => format!("spec.games[{game_index}].game"),
             };
-            let response = serde_json::from_slice::<Value>(&output.stdout).ok();
-            let errors = response
-                .as_ref()
-                .and_then(|value| value.get("errors"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if errors.is_empty() && !output.status.success() {
-                fields.push(mcts_bench::experiment::ValidationField {
-                    path: format!("spec.variants[{variant_index}].config"),
-                    message: "configured validation failed".into(),
-                });
-            }
-            for error in errors {
-                let field = error.get("field").and_then(Value::as_str).unwrap_or("");
-                let path = match field {
-                    "game_config" => format!("spec.games[{game_index}].game_config"),
-                    "candidate_config" => format!("spec.variants[{variant_index}].config"),
-                    "baseline_config" => "spec.baseline.config".into(),
-                    _ => format!("spec.variants[{variant_index}].config"),
-                };
-                fields.push(mcts_bench::experiment::ValidationField {
-                    path,
-                    message: error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("invalid configuration")
-                        .into(),
-                });
-            }
+            fields.push(mcts_bench::experiment::ValidationField {
+                path,
+                message: error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("invalid configuration")
+                    .into(),
+            });
         }
     }
     if fields.is_empty() {
@@ -3490,6 +3494,47 @@ mod tests {
         .unwrap();
     }
 
+    fn route_test_spec() -> ExperimentSpecV1 {
+        ExperimentSpecV1 {
+            version: 1,
+            games: vec![mcts_bench::experiment::ExperimentGame {
+                game: "route-game".into(),
+                game_config: json!({"board": 5}),
+            }],
+            baseline: mcts_bench::experiment::NamedStrategyConfig {
+                id: "baseline".into(),
+                label: "Baseline".into(),
+                config: json!({"family": "base"}),
+            },
+            variants: vec![mcts_bench::experiment::NamedStrategyConfig {
+                id: "candidate".into(),
+                label: "Candidate".into(),
+                config: json!({"family": "candidate"}),
+            }],
+            budgets: vec![mcts_bench::experiment::Budget::Iterations { value: 1 }],
+            rounds_per_cell: 1,
+            base_seed: 7,
+            max_parallel_cells: 1,
+        }
+    }
+
+    fn route_validation_fields() -> Vec<mcts_bench::experiment::ValidationField> {
+        vec![
+            mcts_bench::experiment::ValidationField {
+                path: "spec.games[0].game_config".into(),
+                message: "invalid game configuration".into(),
+            },
+            mcts_bench::experiment::ValidationField {
+                path: "spec.variants[0].config".into(),
+                message: "invalid candidate configuration".into(),
+            },
+            mcts_bench::experiment::ValidationField {
+                path: "spec.baseline.config".into(),
+                message: "invalid baseline configuration".into(),
+            },
+        ]
+    }
+
     /// Seed a run that is still `running` (no ended_at, no stop event).
     fn running_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
         conn.execute(
@@ -3587,6 +3632,27 @@ mod tests {
         (status, body)
     }
 
+    async fn http_put_json(
+        app: Router,
+        uri: &str,
+        json: Value,
+    ) -> (HttpStatusCode, axum::body::Bytes) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, body)
+    }
+
     async fn http_delete(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
         let resp = app
             .oneshot(
@@ -3601,6 +3667,136 @@ mod tests {
         let status = resp.status();
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         (status, body)
+    }
+
+    #[tokio::test]
+    async fn experiment_create_reports_injected_game_candidate_and_baseline_errors() {
+        let expected_fields = route_validation_fields();
+        let validator_fields = expected_fields.clone();
+        let app = seeded_app_with(
+            |conn, _| {
+                conn.execute(
+                    "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            },
+            Arc::new(move |_| Err(validator_fields.clone())),
+            Arc::new(|_, _, _, _, _| -> std::io::Result<LaunchedRun> {
+                panic!("validation failure must prevent launching")
+            }),
+        )
+        .0;
+        let body = json!({
+            "name": "Route experiment",
+            "description": "",
+            "spec": route_test_spec(),
+        });
+        let (status, response) =
+            http_post_json(app.clone(), "/api/bench/projects/p-route/experiments", body).await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(&response),
+            json!({"error": "validation failed", "fields": expected_fields})
+        );
+        let (status, response) = http_get(app, "/api/bench/projects/p-route/experiments").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert!(body_json(&response).as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn experiment_update_reports_injected_errors_without_mutating_saved_spec() {
+        let original = route_test_spec();
+        let seeded_spec = original.clone();
+        let expected_fields = route_validation_fields();
+        let validator_fields = expected_fields.clone();
+        let app = seeded_app_with(
+            move |conn, _| {
+                conn.execute(
+                    "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-route', 'p-route', 'Saved experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    duckdb::params![serde_json::to_string(&seeded_spec).unwrap()],
+                )
+                .unwrap();
+            },
+            Arc::new(move |_| Err(validator_fields.clone())),
+            Arc::new(|_, _, _, _, _| -> std::io::Result<LaunchedRun> {
+                panic!("validation failure must prevent launching")
+            }),
+        )
+        .0;
+        let body = json!({
+            "name": "Updated experiment",
+            "description": "updated",
+            "spec": route_test_spec(),
+        });
+        let (status, response) =
+            http_put_json(app.clone(), "/api/bench/experiments/e-route", body).await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(&response),
+            json!({"error": "validation failed", "fields": expected_fields})
+        );
+        let (status, response) = http_get(app, "/api/bench/experiments/e-route").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let saved = body_json(&response);
+        assert_eq!(saved["name"], "Saved experiment");
+        assert_eq!(saved["spec"], serde_json::to_value(original).unwrap());
+    }
+
+    #[tokio::test]
+    async fn experiment_launch_validates_saved_snapshot_before_persisting_or_launching() {
+        let original = route_test_spec();
+        let seeded_spec = original.clone();
+        let expected_fields = route_validation_fields();
+        let validator_fields = expected_fields.clone();
+        let validated_specs = Arc::new(Mutex::new(Vec::<ExperimentSpecV1>::new()));
+        let captured_specs = validated_specs.clone();
+        let launcher_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called = launcher_called.clone();
+        let app = seeded_app_with(
+            move |conn, _| {
+                conn.execute(
+                    "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-route', 'p-route', 'Saved experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    duckdb::params![serde_json::to_string(&seeded_spec).unwrap()],
+                )
+                .unwrap();
+            },
+            Arc::new(move |spec| {
+                captured_specs.lock().unwrap().push(spec.clone());
+                Err(validator_fields.clone())
+            }),
+            Arc::new(move |_, _, _, _, _| {
+                called.store(true, std::sync::atomic::Ordering::Relaxed);
+                panic!("validation failure must prevent launching")
+            }),
+        )
+        .0;
+        let (status, response) = http_post_json(
+            app.clone(),
+            "/api/bench/experiments/e-route/runs",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(&response),
+            json!({"error": "validation failed", "fields": expected_fields})
+        );
+        assert_eq!(validated_specs.lock().unwrap().as_slice(), &[original]);
+        assert!(!launcher_called.load(std::sync::atomic::Ordering::Relaxed));
+        let (status, response) = http_get(app, "/api/bench/runs?experiment_id=e-route").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        assert!(body_json(&response).as_array().unwrap().is_empty());
     }
 
     // -------------------------------------------------------------------
@@ -5482,6 +5678,46 @@ mod tests {
         let detail = body_json(&check_body);
         assert_eq!(detail["status"], "stopped");
         assert!(detail["ended_at"].as_str().unwrap_or("").len() >= 10);
+    }
+
+    #[tokio::test]
+    async fn test_stop_preserves_terminal_cells_and_cancels_pending_and_running_cells() {
+        let app = seeded_app(|conn, bench_runs_dir| {
+            let run_dir = bench_runs_dir.join("stoppable-experiment");
+            std::fs::create_dir_all(&run_dir).unwrap();
+            let log_path = run_dir.join("log.jsonl");
+            std::fs::write(&log_path, "").unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, project_id, experiment_id, experiment_spec, label, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES ('stoppable-experiment', 'experiment', 'p-route', 'e-route', '{}', 'Grid', 'abc', false, 'h', 999999999, '2026-03-01T00:00:00Z', 'running', ?1)",
+                duckdb::params![log_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, completed_games, status, error) VALUES ('stoppable-experiment', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 1, 2, 2, 'completed', NULL), ('stoppable-experiment', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 1, 2, 1, 'failed', 'child failed'), ('stoppable-experiment', 'cell-000003', 'nim', '{}', 'v3', 'V3', '{}', 'b', 'B', '{}', '{}', 1, 2, 0, 'pending', NULL), ('stoppable-experiment', 'cell-000004', 'nim', '{}', 'v4', 'V4', '{}', 'b', 'B', '{}', '{}', 1, 2, 1, 'running', NULL)",
+                [],
+            )
+            .unwrap();
+        })
+        .0;
+
+        let (status, _) = http_post_json(
+            app.clone(),
+            "/api/bench/runs/stoppable-experiment/stop",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let (status, body) = http_get(app, "/api/bench/runs/stoppable-experiment/cells").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let response = body_json(&body);
+        let cells = response.as_array().unwrap();
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["completed", "failed", "cancelled", "cancelled"]
+        );
     }
 
     #[tokio::test]
