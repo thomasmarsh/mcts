@@ -13,7 +13,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Battle royale
 - [x] Round robin
 - [x] SMAC3 ad hoc integration
-- [ ] Automatic SMAC3 tuning
+- [x] Automatic SMAC3 tuning
 - [ ] Generalize benchmarking (TBD)
 
 ### Selection
