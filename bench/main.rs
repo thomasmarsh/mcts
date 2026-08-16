@@ -23,6 +23,8 @@ use mcts_bench::registry;
 use mcts_bench::schema;
 use mcts_bench::tournament::round_robin_bench_multiple;
 
+mod supervise;
+
 const BUILD_INFO: launch::BuildInfo<'static> = launch::BuildInfo {
     git_sha: env!("GIT_SHA"),
     git_dirty: matches!(env!("GIT_DIRTY").as_bytes(), b"true"),
@@ -37,6 +39,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Supervise(supervise::Args),
     /// Run a round-robin tournament in the foreground, streaming JSONL
     /// match results to stdout.  Progress bars and final summary tables
     /// go to stderr.
@@ -184,6 +188,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Supervise(args) => supervise::run(args),
         Command::RoundRobin {
             game,
             strategies,
