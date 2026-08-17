@@ -1,9 +1,12 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::strategies::mcts::config::GraphSearch;
+use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::stack::NodeStack;
+use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::ActionReport;
 use crate::strategies::RootReport;
 use crate::strategies::Search;
@@ -24,6 +27,16 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
+        if matches!(self.config.graph_search, GraphSearch::Dag(_)) {
+            assert!(
+                !self.config.use_transpositions,
+                "graph_search replaces the legacy use_transpositions setting"
+            );
+            assert!(
+                !self.config.reuse_tree,
+                "explicit graph search does not yet support tree reuse"
+            );
+        }
         // Order matters for hybrid root+tree parallelism: `num_threads`
         // (trees) is checked first so `choose_action_root_parallel` gets a
         // chance to spawn its independent trees; each of *those* then
@@ -42,7 +55,19 @@ where
 
         let hash = G::zobrist_hash(state);
         let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
-        if self.config.use_transpositions {
+        if matches!(self.config.graph_search, GraphSearch::Dag(_)) {
+            assert!(
+                !self.config.reuse_tree,
+                "explicit graph search does not yet support tree reuse"
+            );
+            self.table.insert_graph(
+                TranspositionKey {
+                    position_hash: hash,
+                    ply: 0,
+                },
+                root_id,
+            );
+        } else if self.config.use_transpositions {
             self.table.insert(hash, root_id);
         }
 
@@ -166,13 +191,19 @@ where
         let actions = (0..children.len())
             .filter(|&i| children.is_explored(i))
             .map(|i| {
+                let child_id = children.node_id(i).unwrap();
                 let is_proven = children
                     .node_id(i)
                     .is_some_and(|id| self.index.get(id).proven() != Proven::Unproven);
+                let snap = if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
+                    self.index.get(child_id).stats.snapshot(player)
+                } else {
+                    children.snapshot(i, player)
+                };
                 ActionReport {
                     action: children.action(i).clone(),
-                    visits: children.num_visits(i),
-                    mean_value: children.expected_score(i, player),
+                    visits: snap.num_visits,
+                    mean_value: snap.expected_score(),
                     is_proven,
                 }
             })
@@ -180,7 +211,15 @@ where
         RootReport {
             actions,
             principal_variation: self.pv.clone(),
-            total_visits: self.root_stats.num_visits(),
+            total_visits: if self
+                .config
+                .graph_stats()
+                .is_some_and(GraphStats::uses_nodes)
+            {
+                self.index.get(self.root_id).stats.num_visits()
+            } else {
+                self.root_stats.num_visits()
+            },
         }
     }
 

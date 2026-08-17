@@ -21,6 +21,7 @@ pub use rave::RaveUcb;
 pub use ucb::Ucb1;
 pub use ucb::Ucb1Tuned;
 
+use super::config::GraphStats;
 use super::index::Id;
 use super::node::{self, ChildArray, NodeStats, Proven, StatsRef};
 use super::search::shared::TreeStats;
@@ -44,6 +45,7 @@ pub struct SelectContext<'a, G: Game> {
     pub grave: &'a FxHashMap<u64, Vec<FxHashMap<G::A, node::ActionStats>>>,
     pub global: &'a TreeStats<G>,
     pub use_transpositions: bool,
+    pub graph_stats: Option<GraphStats>,
     /// MCTS-Solver's proven-loss selection threshold `T` -- see
     /// `SearchConfig::solver_loss_threshold`'s doc comment. `0` when the
     /// solver is off, same as everywhere else `Proven` never leaves
@@ -53,7 +55,21 @@ pub struct SelectContext<'a, G: Game> {
 
 impl<'a, G: Game> SelectContext<'a, G> {
     fn current_stats(&self) -> StatsRef<'_, G::A> {
-        self.stack.current_stats(self.index, self.root_stats)
+        self.stack
+            .current_stats(self.index, self.root_stats, self.graph_stats)
+    }
+
+    pub fn child_snapshot(
+        &self,
+        child_id: Id,
+        children: &ChildArray<G::A>,
+        idx: usize,
+    ) -> node::ChildSnapshot {
+        if matches!(self.graph_stats, Some(GraphStats::Nodes)) {
+            self.index.get(child_id).stats.snapshot(self.player)
+        } else {
+            children.snapshot(idx, self.player)
+        }
     }
 }
 
@@ -207,7 +223,7 @@ pub(super) fn is_proven_loss<G: Game>(
 ) -> bool {
     children.node_id(idx).is_some_and(|child_id| {
         matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
-            && children.num_visits(idx) > ctx.solver_loss_threshold
+            && ctx.child_snapshot(child_id, children, idx).num_visits > ctx.solver_loss_threshold
     })
 }
 

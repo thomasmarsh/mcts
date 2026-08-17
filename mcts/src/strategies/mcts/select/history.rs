@@ -88,7 +88,7 @@ impl<G: Game> SelectStrategy<G> for ProgressiveHistory {
             return ucb;
         };
         let history_score = stats.score / stats.num_visits as f64;
-        let n = children.snapshot(idx, ctx.player).total_visits();
+        let n = ctx.child_snapshot(child_id, children, idx).total_visits();
 
         ucb + self.weight * history_score / (n as f64 + 1.)
     }

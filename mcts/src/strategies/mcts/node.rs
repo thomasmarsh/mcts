@@ -238,6 +238,18 @@ impl NodeStats {
         amaf.score += utility;
     }
 
+    pub fn snapshot(&self, player_index: usize) -> ChildSnapshot {
+        let data = self.data.read().unwrap();
+        let p = &data.player[player_index];
+        ChildSnapshot {
+            num_visits: data.num_visits,
+            num_visits_virtual: self.num_visits_virtual.load(Relaxed),
+            score: p.score,
+            sum_squared_score: p.sum_squared_score,
+            amaf: p.amaf,
+        }
+    }
+
     // NOTE: needs to be overridden for score bounded search
     pub fn expected_score(&self, player_index: usize) -> f64 {
         let data = self.data.read().unwrap();
@@ -590,27 +602,30 @@ impl<A: Action> ChildArray<A> {
 /// child case just to unify them.
 pub enum StatsRef<'a, A: Action> {
     Root(&'a NodeStats),
+    Node(&'a NodeStats),
     Child(&'a ChildArray<A>, usize),
 }
 
 impl<A: Action> StatsRef<'_, A> {
     pub fn num_visits(&self) -> u32 {
         match self {
-            StatsRef::Root(s) => s.num_visits(),
+            StatsRef::Root(s) | StatsRef::Node(s) => s.num_visits(),
             StatsRef::Child(c, i) => c.num_visits(*i),
         }
     }
 
     pub fn total_visits(&self) -> u32 {
         match self {
-            StatsRef::Root(s) => s.total_visits(),
+            StatsRef::Root(s) | StatsRef::Node(s) => s.total_visits(),
             StatsRef::Child(c, i) => c.total_visits(*i),
         }
     }
 
     pub fn value_estimate_unvisited(&self, player_index: usize, q_init: QInit) -> f64 {
         match self {
-            StatsRef::Root(s) => s.value_estimate_unvisited(player_index, q_init),
+            StatsRef::Root(s) | StatsRef::Node(s) => {
+                s.value_estimate_unvisited(player_index, q_init)
+            }
             StatsRef::Child(c, i) => c.value_estimate_unvisited(*i, player_index, q_init),
         }
     }
@@ -626,7 +641,10 @@ pub enum NodeState<A: Action> {
 pub struct Node<A: Action> {
     pub player_idx: usize,
     pub hash: u64,
+    pub ply: u32,
     pub is_root: bool,
+    pub stats: NodeStats,
+    incoming_edges: AtomicU32,
     // Unset == not yet expanded ("leaf"). `expand` resolves this exactly
     // once via `get_or_init`, so concurrent threads landing on the same
     // unexpanded node race for free: only the winner runs `G::is_terminal`/
@@ -663,7 +681,10 @@ impl<A: Action> Clone for Node<A> {
         Self {
             player_idx: self.player_idx,
             hash: self.hash,
+            ply: self.ply,
             is_root: self.is_root,
+            stats: self.stats.clone(),
+            incoming_edges: AtomicU32::new(self.incoming_edges.load(Relaxed)),
             state: self.state.clone(),
             proven: AtomicU8::new(self.proven.load(Relaxed)),
             pn: AtomicU32::new(self.pn.load(Relaxed)),
@@ -679,10 +700,17 @@ where
     A: Clone + std::hash::Hash,
 {
     pub fn new(player_idx: usize, hash: u64) -> Self {
+        Self::new_at_ply(player_idx, hash, 0, 2)
+    }
+
+    pub fn new_at_ply(player_idx: usize, hash: u64, ply: u32, num_players: usize) -> Self {
         Self {
             player_idx,
             hash,
+            ply,
             is_root: false,
+            stats: NodeStats::new(num_players),
+            incoming_edges: AtomicU32::new(0),
             state: OnceLock::new(),
             proven: AtomicU8::new(Proven::UNPROVEN_U8),
             pn: AtomicU32::new(1),
@@ -690,6 +718,21 @@ where
             pn2: AtomicU32::new(1),
             dpn2: AtomicU32::new(1),
         }
+    }
+
+    #[inline]
+    pub fn add_incoming_edge(&self) {
+        self.incoming_edges.fetch_add(1, Relaxed);
+    }
+
+    #[inline]
+    pub fn incoming_edges(&self) -> u32 {
+        self.incoming_edges.load(Relaxed)
+    }
+
+    #[inline]
+    pub fn is_transposition(&self) -> bool {
+        self.incoming_edges() > 1
     }
 
     #[inline]
@@ -864,7 +907,7 @@ where
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
         Self {
             is_root: true,
-            ..Self::new(player, hash)
+            ..Self::new_at_ply(player, hash, 0, num_players)
         }
     }
 

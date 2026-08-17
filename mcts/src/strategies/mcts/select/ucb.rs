@@ -45,7 +45,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
         idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(_child_id, children, idx);
         let exploit = snap.exploitation_score();
         let explore = (parent_log / snap.total_visits() as f64).sqrt();
         exploit + self.exploration_constant * explore
@@ -116,7 +116,7 @@ impl<G: Game> SelectStrategy<G> for Ucb1Tuned {
         idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(_child_id, children, idx);
         let exploit = snap.exploitation_score();
         let num_visits = snap.total_visits();
         let sample_variance =

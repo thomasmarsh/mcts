@@ -5,6 +5,6 @@ pub mod util;
 pub mod zobrist;
 
 pub use strategies::mcts::{
-    backprop, index, node, search, select, simulate, stack, strategy, table, SearchConfig,
-    SearchContext, Shared, TreeSearch,
+    backprop, index, node, search, select, simulate, stack, strategy, table, GraphSearch,
+    GraphStats, SearchConfig, SearchContext, Shared, TreeSearch,
 };

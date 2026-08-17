@@ -57,12 +57,12 @@ impl<G: Game> SelectStrategy<G> for Amaf {
     fn score_child(
         &self,
         ctx: &SelectContext<'_, G>,
-        _child_id: Id,
+        child_id: Id,
         children: &ChildArray<G::A>,
         idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(child_id, children, idx);
         let amaf_n = 1.max(snap.amaf.num_visits) as f64;
         let amaf_q = snap.amaf.score;
         let amaf = amaf_q / amaf_n;

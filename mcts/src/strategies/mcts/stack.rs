@@ -1,3 +1,4 @@
+use super::config::GraphStats;
 use super::index::Id;
 use super::node::NodeStats;
 use super::node::StatsRef;
@@ -76,11 +77,21 @@ impl<A: Action> NodeStack<A> {
         &self,
         index: &'a TreeIndex<A>,
         root_stats: &'a NodeStats,
+        graph_stats: Option<GraphStats>,
     ) -> StatsRef<'a, A> {
+        if graph_stats.is_some_and(GraphStats::uses_nodes) {
+            return StatsRef::Node(&index.get(self.current_id()).stats);
+        }
         if index.get(self.current_id()).is_root() {
             StatsRef::Root(root_stats)
         } else {
-            self.get_stats(index, root_stats, self.parent_id(), self.current_id())
+            self.get_stats(
+                index,
+                root_stats,
+                graph_stats,
+                self.parent_id(),
+                self.current_id(),
+            )
         }
     }
 
@@ -88,11 +99,14 @@ impl<A: Action> NodeStack<A> {
         &self,
         index: &'a TreeIndex<A>,
         root_stats: &'a NodeStats,
+        graph_stats: Option<GraphStats>,
         parent_id: Id,
         child_id: Id,
     ) -> StatsRef<'a, A> {
         if index.get(child_id).is_root() {
             StatsRef::Root(root_stats)
+        } else if graph_stats.is_some_and(GraphStats::uses_nodes) {
+            StatsRef::Node(&index.get(child_id).stats)
         } else {
             debug_assert_ne!(parent_id, child_id);
             let parent = index.get(parent_id);

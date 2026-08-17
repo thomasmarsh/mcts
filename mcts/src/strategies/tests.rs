@@ -138,6 +138,54 @@ fn test_transposition_table_trusts_the_hash_first_write_wins() {
 }
 
 #[test]
+fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
+    use crate::strategies::mcts::node::Node;
+    use crate::strategies::mcts::search::TreeIndex;
+    use crate::strategies::mcts::table::{TranspositionKey, TranspositionTable};
+
+    let index = TreeIndex::<u32>::new();
+    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2));
+    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2));
+    let table = TranspositionTable::default();
+
+    assert_eq!(
+        table.get_or_insert_graph(
+            TranspositionKey {
+                position_hash: 42,
+                ply: 1,
+            },
+            || shallow,
+        ),
+        shallow
+    );
+    assert_eq!(
+        table.get_or_insert_graph(
+            TranspositionKey {
+                position_hash: 42,
+                ply: 3,
+            },
+            || deep,
+        ),
+        deep
+    );
+    assert_eq!(table.len(), 2);
+}
+
+#[test]
+fn test_node_incoming_edge_count_marks_transpositions() {
+    use crate::strategies::mcts::node::Node;
+
+    let node = Node::<u32>::new_at_ply(0, 7, 2, 2);
+    assert!(!node.is_transposition());
+    node.add_incoming_edge();
+    assert_eq!(node.incoming_edges(), 1);
+    assert!(!node.is_transposition());
+    node.add_incoming_edge();
+    assert_eq!(node.incoming_edges(), 2);
+    assert!(node.is_transposition());
+}
+
+#[test]
 fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     use crate::strategies::mcts::index::Id;
     use crate::strategies::mcts::node::{ChildArray, Node};

@@ -18,6 +18,39 @@ pub const AMAF: usize = 0b100;
 /// `flags.nst()` block).
 pub const NST: usize = 0b1000;
 
+/// Controls whether a search owns a tree or shares positions reached by
+/// distinct move orders. `Dag` uses a root-relative ply in addition to the
+/// position hash, so its transposition graph cannot contain a cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphSearch {
+    #[default]
+    Tree,
+    Dag(GraphStats),
+}
+
+/// The owner of MCTS visit and value statistics in graph search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphStats {
+    /// Each parent action has independent statistics. This is the historic
+    /// transposition-table behavior.
+    Edges,
+    /// A shared position owns its statistics, regardless of its parent.
+    Nodes,
+    /// Keep local action statistics as well as the shared position estimate.
+    #[default]
+    Both,
+}
+
+impl GraphStats {
+    pub(crate) fn uses_edges(self) -> bool {
+        matches!(self, Self::Edges | Self::Both)
+    }
+
+    pub(crate) fn uses_nodes(self) -> bool {
+        matches!(self, Self::Nodes | Self::Both)
+    }
+}
+
 pub struct BackpropFlags(pub usize);
 
 impl BackpropFlags {
@@ -78,6 +111,9 @@ where
     pub max_playout_depth: usize,
     pub max_iterations: usize,
     pub max_time: std::time::Duration,
+    /// Explicit graph-search mode. `use_transpositions(true)` remains a
+    /// compatibility alias for the old edge-statistics table behavior.
+    pub graph_search: GraphSearch,
     pub use_transpositions: bool,
 
     /// MCTS-Solver (Winands et al.): backprop derives and propagates proven
@@ -198,6 +234,7 @@ where
             max_playout_depth: usize::MAX,
             max_iterations: usize::MAX,
             max_time: Default::default(),
+            graph_search: GraphSearch::Tree,
             use_transpositions: false,
             use_mcts_solver: false,
             contempt_factor: None,
@@ -219,6 +256,18 @@ where
     G: Game,
     S: Strategy<G> + Default,
 {
+    pub(crate) fn graph_stats(&self) -> Option<GraphStats> {
+        match self.graph_search {
+            GraphSearch::Tree if self.use_transpositions => Some(GraphStats::Edges),
+            GraphSearch::Tree => None,
+            GraphSearch::Dag(stats) => Some(stats),
+        }
+    }
+
+    pub(crate) fn uses_transpositions(&self) -> bool {
+        self.graph_stats().is_some()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -275,6 +324,11 @@ where
 
     pub fn use_transpositions(mut self, use_transpositions: bool) -> Self {
         self.use_transpositions = use_transpositions;
+        self
+    }
+
+    pub fn graph_search(mut self, graph_search: GraphSearch) -> Self {
+        self.graph_search = graph_search;
         self
     }
 

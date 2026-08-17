@@ -163,7 +163,13 @@ impl Rave {
         // TODO: we can push this down during select descent rather than walking back up.
         for (parent_id, child_id) in rev_pairs {
             if stack
-                .get_stats(ctx.index, ctx.root_stats, *parent_id, *child_id)
+                .get_stats(
+                    ctx.index,
+                    ctx.root_stats,
+                    ctx.graph_stats,
+                    *parent_id,
+                    *child_id,
+                )
                 .total_visits()
                 >= self.threshold
             {
@@ -213,7 +219,7 @@ impl<G: Game> SelectStrategy<G> for Rave {
         let amaf_n = grave_stats.num_visits;
         let amaf_q = grave_stats.score;
 
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(child_id, children, idx);
         let n = snap.total_visits();
         let exploit = snap.exploitation_score();
         let explore = self

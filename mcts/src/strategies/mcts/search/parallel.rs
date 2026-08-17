@@ -1,5 +1,6 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::shared::{
@@ -10,6 +11,7 @@ use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::SimulateStrategy;
 use crate::strategies::mcts::stack::NodeStack;
+use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -33,10 +35,19 @@ where
         (0..children.len())
             .filter(|&i| children.is_explored(i))
             .map(|i| {
-                let scores = (0..G::num_players())
-                    .map(|p| children.score(i, p))
-                    .collect();
-                (children.action(i).clone(), children.num_visits(i), scores)
+                let child_id = children.node_id(i).unwrap();
+                if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
+                    let child = self.index.get(child_id);
+                    let scores = (0..G::num_players())
+                        .map(|p| child.stats.score(p))
+                        .collect();
+                    (children.action(i).clone(), child.stats.num_visits(), scores)
+                } else {
+                    let scores = (0..G::num_players())
+                        .map(|p| children.score(i, p))
+                        .collect();
+                    (children.action(i).clone(), children.num_visits(i), scores)
+                }
             })
             .collect()
     }
@@ -110,7 +121,19 @@ where
 
         let hash = G::zobrist_hash(state);
         let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
-        if self.config.use_transpositions {
+        if matches!(self.config.graph_search, GraphSearch::Dag(_)) {
+            assert!(
+                !self.config.reuse_tree,
+                "explicit graph search does not yet support tree reuse"
+            );
+            self.table.insert_graph(
+                TranspositionKey {
+                    position_hash: hash,
+                    ply: 0,
+                },
+                root_id,
+            );
+        } else if self.config.use_transpositions {
             self.table.insert(hash, root_id);
         }
 
@@ -123,7 +146,9 @@ where
             global: &self.stats,
             expand_threshold: self.config.expand_threshold,
             q_init: self.config.q_init,
-            use_transpositions: self.config.use_transpositions,
+            use_transpositions: self.config.uses_transpositions(),
+            graph_stats: self.config.graph_stats(),
+            explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
             use_mcts_solver: self.config.use_mcts_solver,
             max_playout_depth: self.config.max_playout_depth,
             solver_loss_threshold: self.config.solver_loss_threshold,
@@ -173,7 +198,12 @@ where
 
                         let node_stack = NodeStack::<G::A>::new(stack.clone());
                         if k > 1 {
-                            add_path_virtual_loss(shared.index, &node_stack, k - 1);
+                            add_path_virtual_loss(
+                                shared.index,
+                                &node_stack,
+                                k - 1,
+                                shared.graph_stats,
+                            );
                         }
                         let prev_action = last_tree_action::<G>(shared.index, &stack);
                         for _ in 0..k {

@@ -1,5 +1,6 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
@@ -47,10 +48,10 @@ pub struct MemoryStats {
     pub child_array_heap_bytes: usize,
     /// Total entry count in the transposition table.
     pub table_entries: usize,
-    /// `table_entries * (size_of::<u64>() + size_of::<index::Id>())` --
-    /// the table stores only a hash-to-node-id mapping (see `table.rs`),
-    /// no game state, so unlike `node_bytes`/`child_array_heap_bytes` this
-    /// is an exact accounting, not an estimate.
+    /// Entries keyed by root-relative `(position_hash, ply)` in explicit DAG
+    /// search, as opposed to the legacy hash-only table.
+    pub graph_table_entries: usize,
+    /// Approximate key/value payload bytes for both transposition tables.
     pub table_bytes: usize,
 }
 
@@ -72,7 +73,9 @@ where
                 global: &self.stats,
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
-                use_transpositions: self.config.use_transpositions,
+                use_transpositions: self.config.uses_transpositions(),
+                graph_stats: self.config.graph_stats(),
+                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
@@ -101,7 +104,16 @@ where
         // worse than the configured threshold -- take a known draw over
         // gambling on whatever `final_action` would otherwise pick.
         if let Some(cf) = self.config.contempt_factor {
-            if self.root_stats.expected_score(player) < cf {
+            let root_score = if self
+                .config
+                .graph_stats()
+                .is_some_and(GraphStats::uses_nodes)
+            {
+                self.index.get(self.root_id).stats.expected_score(player)
+            } else {
+                self.root_stats.expected_score(player)
+            };
+            if root_score < cf {
                 if let Some(idx) = proven_draw_child::<G>(
                     self.config.use_mcts_solver,
                     self.index.get(self.root_id),
@@ -125,7 +137,8 @@ where
                 table: &self.table,
                 grave: &grave,
                 global: &self.stats,
-                use_transpositions: self.config.use_transpositions,
+                use_transpositions: self.config.uses_transpositions(),
+                graph_stats: self.config.graph_stats(),
                 solver_loss_threshold: self.config.solver_loss_threshold,
             },
             &mut self.config.rng,
@@ -185,7 +198,7 @@ where
     }
 
     pub(crate) fn add_extra_virtual_loss(&self, stack: &NodeStack<G::A>, extra: usize) {
-        add_path_virtual_loss(&self.index, stack, extra);
+        add_path_virtual_loss(&self.index, stack, extra, self.config.graph_stats());
     }
 
     #[inline]
@@ -200,7 +213,9 @@ where
                 global: &self.stats,
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
-                use_transpositions: self.config.use_transpositions,
+                use_transpositions: self.config.uses_transpositions(),
+                graph_stats: self.config.graph_stats(),
+                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
@@ -237,8 +252,13 @@ where
             }
         });
         stats.table_entries = self.table.len();
-        stats.table_bytes =
-            stats.table_entries * (std::mem::size_of::<u64>() + std::mem::size_of::<Id>());
+        stats.graph_table_entries = self.table.graph_len();
+        let legacy_entries = self.table.legacy_len();
+        stats.table_bytes = legacy_entries
+            * (std::mem::size_of::<u64>() + std::mem::size_of::<Id>())
+            + stats.graph_table_entries
+                * (std::mem::size_of::<crate::strategies::mcts::table::TranspositionKey>()
+                    + std::mem::size_of::<Id>());
         stats
     }
 
@@ -248,7 +268,15 @@ where
         }
 
         let root = self.index.get(self.root_id);
-        let total_visits = self.root_stats.num_visits();
+        let total_visits = if self
+            .config
+            .graph_stats()
+            .is_some_and(GraphStats::uses_nodes)
+        {
+            root.stats.num_visits()
+        } else {
+            self.root_stats.num_visits()
+        };
         let rate = total_visits as f64 / num_threads as f64 / self.timer.elapsed().as_secs_f64();
         eprintln!(
             "Using {} threads, did {} total simulations with {:.1} rollouts/sec/core",
@@ -261,11 +289,21 @@ where
         let mut summaries = (0..children.len())
             .filter(|&i| children.is_explored(i))
             .map(|i| {
-                (
-                    children.num_visits(i),
-                    children.score(i, player.to_index()),
-                    children.action(i).clone(),
-                )
+                let child_id = children.node_id(i).unwrap();
+                if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
+                    let child = self.index.get(child_id);
+                    (
+                        child.stats.num_visits(),
+                        child.stats.score(player.to_index()),
+                        children.action(i).clone(),
+                    )
+                } else {
+                    (
+                        children.num_visits(i),
+                        children.score(i, player.to_index()),
+                        children.action(i).clone(),
+                    )
+                }
             })
             .collect::<Vec<_>>();
 
@@ -319,7 +357,8 @@ where
                 table: &self.table,
                 grave: &grave,
                 global: &self.stats,
-                use_transpositions: self.config.use_transpositions,
+                use_transpositions: self.config.uses_transpositions(),
+                graph_stats: self.config.graph_stats(),
                 solver_loss_threshold: self.config.solver_loss_threshold,
             };
 

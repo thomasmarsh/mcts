@@ -29,7 +29,7 @@ impl<G: Game> SelectStrategy<G> for RobustChild {
         idx: usize,
         _: Self::Aux,
     ) -> (i64, f64) {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(_child_id, children, idx);
         (snap.num_visits as i64, snap.expected_score())
     }
 
@@ -65,7 +65,8 @@ impl<G: Game> SelectStrategy<G> for MaxAvgScore {
         idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        children.expected_score(idx, ctx.player)
+        ctx.child_snapshot(_child_id, children, idx)
+            .expected_score()
     }
 
     #[inline(always)]
@@ -110,7 +111,8 @@ impl MaxRobustChild {
             if children.node_id(idx).is_none() {
                 continue;
             }
-            let snap = children.snapshot(idx, ctx.player);
+            let child_id = children.node_id(idx).unwrap();
+            let snap = ctx.child_snapshot(child_id, children, idx);
             let visits = snap.total_visits();
             let score = snap.expected_score();
             if most_visited.is_none_or(|(_, v)| visits > v) {
@@ -146,7 +148,9 @@ impl<G: Game> SelectStrategy<G> for MaxRobustChild {
         idx: usize,
         dominant: Self::Aux,
     ) -> (bool, f64) {
-        let score = children.expected_score(idx, ctx.player);
+        let score = ctx
+            .child_snapshot(_child_id, children, idx)
+            .expected_score();
         (dominant == Some(idx), score)
     }
 
@@ -190,7 +194,7 @@ impl<G: Game> SelectStrategy<G> for SecureChild {
         idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(_child_id, children, idx);
         let q = snap.expected_score();
         let n = snap.total_visits();
 
@@ -254,7 +258,7 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
         idx: usize,
         _: Self::Aux,
     ) -> f64 {
-        let snap = children.snapshot(idx, ctx.player);
+        let snap = ctx.child_snapshot(_child_id, children, idx);
         let q = snap.expected_score();
         let n = snap.total_visits();
 

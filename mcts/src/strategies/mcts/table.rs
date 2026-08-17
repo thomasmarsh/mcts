@@ -6,6 +6,15 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::RwLock;
 
+/// A root-relative key for explicit graph search. Including ply means every
+/// graph edge advances strictly forward and a repeated board position cannot
+/// introduce a cycle into the search structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TranspositionKey {
+    pub position_hash: u64,
+    pub ply: u32,
+}
+
 /// Maps a Zobrist hash to the arena node for that position. Stores no state
 /// at all -- a same-hash lookup is trusted outright rather than verified
 /// against a stored clone. This is sound because the table already buckets
@@ -21,6 +30,7 @@ use std::sync::RwLock;
 #[derive(Debug)]
 pub struct TranspositionTable {
     table: RwLock<ZobristHashMap<index::Id>>,
+    graph_table: RwLock<FxHashMap<TranspositionKey, index::Id>>,
     pub reads: AtomicUsize,
     pub writes: AtomicUsize,
     pub hits: AtomicUsize,
@@ -30,6 +40,7 @@ impl Default for TranspositionTable {
     fn default() -> Self {
         Self {
             table: RwLock::new(ZobristHashMap::default()),
+            graph_table: RwLock::new(FxHashMap::default()),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),
             hits: AtomicUsize::new(0),
@@ -41,6 +52,7 @@ impl Clone for TranspositionTable {
     fn clone(&self) -> Self {
         Self {
             table: RwLock::new(self.table.read().unwrap().clone()),
+            graph_table: RwLock::new(self.graph_table.read().unwrap().clone()),
             reads: AtomicUsize::new(self.reads.load(Relaxed)),
             writes: AtomicUsize::new(self.writes.load(Relaxed)),
             hits: AtomicUsize::new(self.hits.load(Relaxed)),
@@ -52,6 +64,7 @@ impl TranspositionTable {
     #[inline]
     pub fn clear(&mut self) {
         self.table.get_mut().unwrap().clear();
+        self.graph_table.get_mut().unwrap().clear();
         self.reads = AtomicUsize::new(0);
         self.writes = AtomicUsize::new(0);
         self.hits = AtomicUsize::new(0);
@@ -64,7 +77,15 @@ impl TranspositionTable {
 
     /// Number of entries currently in the table (diagnostics only).
     pub fn len(&self) -> usize {
+        self.table.read().unwrap().0.len() + self.graph_table.read().unwrap().len()
+    }
+
+    pub fn legacy_len(&self) -> usize {
         self.table.read().unwrap().0.len()
+    }
+
+    pub fn graph_len(&self) -> usize {
+        self.graph_table.read().unwrap().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -88,6 +109,32 @@ impl TranspositionTable {
         table.insert(k, node_id);
         self.writes.fetch_add(1, Relaxed);
         node_id
+    }
+
+    /// The explicit MCGS table has a compound key, so it cannot use the
+    /// legacy Zobrist-only map. The entire check and insertion stays under
+    /// one lock just like `get_or_insert`.
+    #[inline]
+    pub fn get_or_insert_graph(
+        &self,
+        key: TranspositionKey,
+        create: impl FnOnce() -> index::Id,
+    ) -> index::Id {
+        self.reads.fetch_add(1, Relaxed);
+        let mut table = self.graph_table.write().unwrap();
+        if let Some(&id) = table.get(&key) {
+            self.hits.fetch_add(1, Relaxed);
+            return id;
+        }
+        let id = create();
+        table.insert(key, id);
+        self.writes.fetch_add(1, Relaxed);
+        id
+    }
+
+    #[inline]
+    pub fn insert_graph(&self, key: TranspositionKey, node_id: index::Id) {
+        self.get_or_insert_graph(key, || node_id);
     }
 
     /// Unconditional insert-if-absent for callers that already have a node
@@ -121,5 +168,15 @@ impl TranspositionTable {
             }
             None => false,
         });
+        self.graph_table
+            .get_mut()
+            .unwrap()
+            .retain(|_, id| match old_to_new.get(id) {
+                Some(&new_id) => {
+                    *id = new_id;
+                    true
+                }
+                None => false,
+            });
     }
 }

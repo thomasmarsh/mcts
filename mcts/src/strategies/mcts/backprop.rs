@@ -1,3 +1,4 @@
+use super::config::GraphStats;
 use super::node::{self, NodeState, NodeStats, Proven};
 use super::stack::NodeStack;
 use super::*;
@@ -246,6 +247,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         trial: simulate::Trial<G>,
         flags: BackpropFlags,
         use_mcts_solver: bool,
+        graph_stats: Option<GraphStats>,
     ) where
         G: Game,
     {
@@ -272,15 +274,26 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     || (parent_id_opt.is_none() && index.get(*node_id).is_root())
             );
             if index.get(*node_id).is_root() {
-                root_stats.update(&utilities);
+                if graph_stats.is_some_and(GraphStats::uses_nodes) {
+                    index.get(*node_id).stats.update(&utilities);
+                } else {
+                    root_stats.update(&utilities);
+                }
             } else {
                 let parent_id = parent_id_opt.cloned().unwrap();
                 debug_assert_ne!(parent_id, *node_id);
                 let parent = index.get(parent_id);
                 let idx = parent.child_index(*node_id);
                 let children = parent.children();
-                children.update(idx, &utilities);
-                children.remove_virtual_loss(idx);
+                if graph_stats.is_none_or(GraphStats::uses_edges) {
+                    children.update(idx, &utilities);
+                    children.remove_virtual_loss(idx);
+                }
+                if graph_stats.is_some_and(GraphStats::uses_nodes) {
+                    let node = index.get(*node_id);
+                    node.stats.update(&utilities);
+                    node.stats.remove_virtual_loss();
+                }
             }
 
             // MCTS-Solver: derive/propagate proven status for this node.

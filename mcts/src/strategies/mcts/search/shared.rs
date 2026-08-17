@@ -3,6 +3,7 @@ use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
 use crate::strategies::mcts::backprop::BackpropStrategy;
 use crate::strategies::mcts::config::BackpropFlags;
+use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
@@ -16,6 +17,7 @@ use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::SimulateStrategy;
 use crate::strategies::mcts::simulate::Trial;
 use crate::strategies::mcts::stack::NodeStack;
+use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::mcts::table::TranspositionTable;
 
 use rand::rngs::SmallRng;
@@ -151,6 +153,12 @@ pub struct Shared<'a, G: Game> {
     pub expand_threshold: u32,
     pub q_init: node::QInit,
     pub use_transpositions: bool,
+    /// `Some` for every statistics-owning graph mode, including the legacy
+    /// edge-only compatibility path.
+    pub graph_stats: Option<GraphStats>,
+    /// Only explicit `GraphSearch::Dag`: legacy transpositions deliberately
+    /// retain their historic hash-only key and reuse behavior.
+    pub explicit_dag: bool,
     pub use_mcts_solver: bool,
     pub max_playout_depth: usize,
     pub solver_loss_threshold: u32,
@@ -206,16 +214,41 @@ pub fn new_child<G: Game>(
     let parent = shared.index.get(current_id);
     let children = parent.children();
     children.get_or_create_child(best_idx, || {
-        if shared.use_transpositions {
-            // TODO: the following won't work with symmetries
+        let child_id = if shared.explicit_dag {
+            let ply = parent.ply + 1;
+            shared.table.get_or_insert_graph(
+                TranspositionKey {
+                    position_hash: hash,
+                    ply,
+                },
+                || {
+                    shared.index.insert(Node::new_at_ply(
+                        G::player_to_move(state).to_index(),
+                        hash,
+                        ply,
+                        G::num_players(),
+                    ))
+                },
+            )
+        } else if shared.use_transpositions {
             shared.table.get_or_insert(hash, || {
-                let child = Node::new(G::player_to_move(state).to_index(), hash);
-                shared.index.insert(child)
+                shared.index.insert(Node::new_at_ply(
+                    G::player_to_move(state).to_index(),
+                    hash,
+                    parent.ply + 1,
+                    G::num_players(),
+                ))
             })
         } else {
-            let child_node = Node::new(G::player_to_move(state).to_index(), hash);
-            shared.index.insert(child_node)
-        }
+            shared.index.insert(Node::new_at_ply(
+                G::player_to_move(state).to_index(),
+                hash,
+                parent.ply + 1,
+                G::num_players(),
+            ))
+        };
+        shared.index.get(child_id).add_incoming_edge();
+        child_id
     })
 }
 
@@ -292,7 +325,7 @@ pub fn select_step<G: Game>(
 
         let node_stack = NodeStack::new(stack.clone());
         let num_visits = node_stack
-            .current_stats(shared.index, shared.root_stats)
+            .current_stats(shared.index, shared.root_stats, shared.graph_stats)
             .num_visits();
         let node = shared.index.get(ctx.current_id);
         let player = node.player_idx;
@@ -341,6 +374,7 @@ pub fn select_step<G: Game>(
                         grave: &grave,
                         global: shared.global,
                         use_transpositions: shared.use_transpositions,
+                        graph_stats: shared.graph_stats,
                         solver_loss_threshold: shared.solver_loss_threshold,
                     };
 
@@ -354,9 +388,14 @@ pub fn select_step<G: Game>(
         // tree-parallel threads see it as less attractive until `backprop`
         // removes the virtual loss again -- this is what keeps concurrent
         // descents from all piling onto the same path.
-        children.add_virtual_loss(best_idx);
+        if shared.graph_stats.is_none_or(GraphStats::uses_edges) {
+            children.add_virtual_loss(best_idx);
+        }
 
         if let Some(child_id) = children.node_id(best_idx) {
+            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
+                shared.index.get(child_id).stats.add_virtual_loss();
+            }
             ctx.traverse_apply(child_id, children.action(best_idx));
         } else {
             {
@@ -369,6 +408,10 @@ pub fn select_step<G: Game>(
             let state = G::apply(ctx.state.clone(), action);
 
             let child_id = new_child::<G>(shared, &state, best_idx, ctx.current_id);
+
+            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
+                shared.index.get(child_id).stats.add_virtual_loss();
+            }
 
             ctx.traverse(child_id);
             ctx.state = state;
@@ -428,13 +471,19 @@ pub fn add_path_virtual_loss<A: crate::game::Action>(
     index: &TreeIndex<A>,
     stack: &NodeStack<A>,
     extra: usize,
+    graph_stats: Option<GraphStats>,
 ) {
     for (parent_id, child_id) in stack.pairs() {
         let parent = index.get(*parent_id);
         let idx = parent.child_index(*child_id);
         let children = parent.children();
         for _ in 0..extra {
-            children.add_virtual_loss(idx);
+            if graph_stats.is_none_or(GraphStats::uses_edges) {
+                children.add_virtual_loss(idx);
+            }
+            if graph_stats.is_some_and(GraphStats::uses_nodes) {
+                index.get(*child_id).stats.add_virtual_loss();
+            }
         }
     }
 }
@@ -460,5 +509,6 @@ pub fn backprop_step<G: Game>(
         trial,
         flags,
         shared.use_mcts_solver,
+        shared.graph_stats,
     );
 }
