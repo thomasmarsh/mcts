@@ -194,7 +194,8 @@ pub struct ConfiguredComparisonSummary {
 /// CLI consumer can render/validate fields without a per-game hardcoded
 /// schema. `spec` carries the type-specific keys verbatim (`type`/`bounds`/
 /// `default` for `float`/`int`, `type`/`choices`/`default` for
-/// `categorical`, `type`/`value` for `constant`).
+/// `categorical`, `type`/`default` for `bool`, or `type`/`value` for
+/// `constant`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TunerParameter {
     pub name: String,

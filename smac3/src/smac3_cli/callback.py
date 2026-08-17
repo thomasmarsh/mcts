@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 
@@ -10,6 +9,8 @@ from smac import Callback
 from smac.main.smbo import SMBO
 from smac.runhistory.dataclasses import TrialInfo, TrialValue
 from smac.utils.configspace import get_config_hash
+
+from .config import json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class IncumbentTracker(Callback):
                 dict(incumbent),
             )
             print(
-                json.dumps({"type": "incumbent", "config": dict(incumbent), "cost": cost}),
+                json_dumps({"type": "incumbent", "config": dict(incumbent), "cost": cost}),
                 flush=True,
             )
             self._last_hash = h
@@ -141,5 +142,5 @@ class TrialTracker(Callback):
         }
         if info.instance is not None:
             trial_record["extra"] = {"instance": info.instance}
-        print(json.dumps(trial_record), flush=True)
+        print(json_dumps(trial_record), flush=True)
         return None

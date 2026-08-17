@@ -4,14 +4,33 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def json_default(value: Any) -> Any:
+    """Convert scalar types from ConfigSpace's NumPy-backed configurations.
+
+    ConfigSpace exposes categorical boolean choices as ``numpy.bool_``.
+    Those values look like ordinary booleans in logs, but Python's standard
+    JSON encoder does not serialize them. NumPy scalar types provide
+    ``item()`` to recover the corresponding built-in Python scalar.
+    """
+    item = getattr(value, "item", None)
+    if callable(item):
+        scalar = item()
+        if isinstance(scalar, (bool, int, float, str)) or scalar is None:
+            return scalar
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def json_dumps(value: Any) -> str:
+    """Serialize protocol values, including NumPy scalars from ConfigSpace."""
+    return json.dumps(value, default=json_default)
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +98,7 @@ class ParamDef:
     """Definition of one hyperparameter in the search space."""
 
     name: str
-    type: str  # "float" | "int" | "categorical" | "constant"
+    type: str  # "float" | "int" | "categorical" | "bool" | "constant"
     bounds: tuple[float, float] | None = None  # float/int only
     choices: list[str] | None = None  # categorical only
     default: Any = None
@@ -191,6 +210,8 @@ class SearchConfig:
             elif typ == "categorical":
                 p.choices = list(pd["choices"])
                 p.default = pd.get("default", p.choices[0])
+            elif typ == "bool":
+                p.default = pd.get("default", False)
             elif typ == "constant":
                 p.value = pd["value"]
             params.append(p)

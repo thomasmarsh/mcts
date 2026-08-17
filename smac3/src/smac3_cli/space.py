@@ -39,6 +39,8 @@ def build_space(cfg: SearchConfig) -> ConfigurationSpace:
                 p.choices,
                 default=p.default or p.choices[0],
             )
+        elif p.type == "bool":
+            hp = Categorical(p.name, [False, True], default=bool(p.default))
         else:
             raise ValueError(f"Unknown parameter type '{p.type}' for '{p.name}'")
         hyperparams.append(hp)

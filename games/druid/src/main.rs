@@ -557,7 +557,11 @@ impl GameAdapter for DruidAdapter {
         // win rate against "strong" alone.
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info(&["strong", "master"], TUNE_EVAL_ROUNDS)
+            ..mcts_tune::strategy_tuner_info_with_mcgs(
+                &["strong", "master"],
+                TUNE_EVAL_ROUNDS,
+                true,
+            )
         })
     }
 

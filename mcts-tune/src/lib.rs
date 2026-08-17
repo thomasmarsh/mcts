@@ -49,7 +49,9 @@ use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
 use mcts::strategies::mcts::simulate::SimulateStrategy;
 use mcts::strategies::mcts::strategy::{self, Compose};
-use mcts::strategies::mcts::{backprop, node::QInit, simulate, SearchConfig, Strategy, TreeSearch};
+use mcts::strategies::mcts::{
+    backprop, node::QInit, simulate, GraphSearch, GraphStats, SearchConfig, Strategy, TreeSearch,
+};
 use mcts::strategies::Search;
 use serde_json::{json, Value};
 
@@ -156,7 +158,7 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
         .max_playout_depth(PLAYOUT_DEPTH)
         .expand_threshold(EXPAND_THRESHOLD)
         .q_init(q_init)
-        .use_transpositions(use_transpositions)
+        .use_transpositions(use_transpositions && !p.mcgs.unwrap_or(false))
         // Every hand-built preset in every game turns both of these on --
         // a tuned candidate that doesn't is being measured under search
         // conditions nothing actually deployed ever runs with. Only the PN
@@ -164,11 +166,19 @@ fn base_config<G: Game, S: Strategy<G> + Default>(
         // both to be meaningful at all); there's no reason every other
         // family shouldn't get the same tactical sharpness and continuity.
         .use_mcts_solver(true)
-        .reuse_tree(true)
+        .reuse_tree(!p.mcgs.unwrap_or(false))
         .num_tree_threads(budget.threads)
         .seed(seed);
     if let Some(max_time) = budget.max_time {
         config = config.max_time(max_time);
+    }
+    if p.mcgs.unwrap_or(false) {
+        if !use_transpositions {
+            return Err(HostError::bad_request(
+                "mcgs requires a game with a zobrist hash",
+            ));
+        }
+        config = config.graph_search(GraphSearch::Dag(GraphStats::Both));
     }
     Ok(config)
 }
@@ -260,6 +270,7 @@ pub struct TrialParams {
     solver_loss_threshold: Option<u32>,
     contempt: Option<String>,
     contempt_factor: Option<f64>,
+    mcgs: Option<bool>,
 }
 
 /// Builds a candidate for any family whose `strategy.rs` counterpart leaves
@@ -1004,7 +1015,18 @@ fn play_one<G: Game>(
 /// the field on the returned value via struct-update syntax; see
 /// `GameAdapter::tuner()` on e.g. `games/druid/src/main.rs`.
 pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
-    TunerInfo {
+    strategy_tuner_info_with_mcgs(baselines, eval_rounds, false)
+}
+
+/// Tuning schema for a game with a sound Zobrist hash. The `mcgs` boolean
+/// selects the combined edge-and-node statistics graph mode; it is omitted
+/// entirely for games that cannot safely create transposition tables.
+pub fn strategy_tuner_info_with_mcgs(
+    baselines: &[&str],
+    eval_rounds: u32,
+    supports_mcgs: bool,
+) -> TunerInfo {
+    let mut info = TunerInfo {
         id: "strategy".into(),
         baselines: baselines.iter().map(|s| s.to_string()).collect(),
         game_config: json!({}),
@@ -1125,7 +1147,12 @@ pub fn strategy_tuner_info(baselines: &[&str], eval_rounds: u32) -> TunerInfo {
             ),
             condition(json!({"contempt": "on"}), &["contempt_factor"]),
         ],
+    };
+    if supports_mcgs {
+        info.parameters
+            .push(param("mcgs", json!({"type": "bool", "default": false})));
     }
+    info
 }
 
 fn param(name: &str, spec: Value) -> TunerParameter {
@@ -1210,6 +1237,42 @@ mod tests {
             "q_init": "Infinity",
             "final_action": "robust_child",
         })
+    }
+
+    #[test]
+    fn mcgs_schema_is_available_only_to_hashing_games() {
+        let plain = strategy_tuner_info(&["strong"], 1);
+        assert!(!plain.parameters.iter().any(|p| p.name == "mcgs"));
+
+        let graph = strategy_tuner_info_with_mcgs(&["strong"], 1, true);
+        let mcgs = graph
+            .parameters
+            .iter()
+            .find(|p| p.name == "mcgs")
+            .expect("hashing games expose the MCGS switch");
+        assert_eq!(mcgs.spec["type"], json!("bool"));
+        assert_eq!(mcgs.spec["default"], json!(false));
+    }
+
+    #[test]
+    fn mcgs_trial_selects_combined_graph_statistics() {
+        let mut params = comparison_params();
+        params["mcgs"] = json!(true);
+        let trial: TrialParams = serde_json::from_value(params).unwrap();
+        let config = base_config::<Nim, strategy::Ucb1>(
+            &trial,
+            0,
+            true,
+            &SearchBudget {
+                max_iterations: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.graph_search, GraphSearch::Dag(GraphStats::Both));
+        assert!(!config.use_transpositions);
+        assert!(!config.reuse_tree);
     }
 
     #[test]

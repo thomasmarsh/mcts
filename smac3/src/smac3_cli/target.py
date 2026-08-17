@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ConfigSpace import Configuration
 
-from .config import SearchConfig
+from .config import SearchConfig, json_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
             "tune",
             "eval",
             "--config",
-            json.dumps(dict(config)),
+            json_dumps(dict(config)),
             "--rounds",
             str(cfg.target.rounds),
             "--seed",

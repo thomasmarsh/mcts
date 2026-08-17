@@ -15,6 +15,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from smac3_cli.__main__ import _parse_baseline_configs
@@ -68,6 +69,24 @@ def test_train_dispatches_named_baseline_as_dash_dash_baseline(monkeypatch, tmp_
     assert "--baseline" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--baseline") + 1] == "strong"
     assert "--baseline-config" not in captured["cmd"]
+
+
+def test_train_serializes_numpy_scalar_config_values(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.25}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    train = make_target(SearchConfig(target=TargetConfig(binary=binary)))
+
+    assert train({"mcgs": np.bool_(True)}, seed=0) == pytest.approx(0.25)
+    sent = json.loads(captured["cmd"][captured["cmd"].index("--config") + 1])
+    assert sent == {"mcgs": True}
 
 
 def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(

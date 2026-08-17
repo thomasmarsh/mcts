@@ -173,10 +173,20 @@ def test_binary_sourced_space_matches_legacy_yaml_space(legacy_space, binary_spa
 
 def test_parameters_from_binary_reports_baselines(game_nim_binary: Path):
     """`baselines` rides along with `parameters`/`conditions` in the same
-    `tune describe` call -- nim has a single "strong" baseline preset, same
+    `tune describe` call -- nim has a single "strong" named preset, same
     as every tunable game except druid (which lists a second, "master")."""
     _parameters, _conditions, baselines = SearchConfig.parameters_from_binary(game_nim_binary)
     assert baselines == ["strong"]
+
+
+def test_bool_parameter_round_trips_as_a_false_or_true_configuration():
+    cfg = SearchConfig._from_dict(
+        {"parameters": {"mcgs": {"type": "bool", "default": False}}}
+    )
+    space = build_space(cfg)
+
+    assert dict(space.get_default_configuration()) == {"mcgs": False}
+    assert dict(Configuration(space, values={"mcgs": True})) == {"mcgs": True}
 
 
 def test_build_optimizer_preserves_explicit_baseline_instances(

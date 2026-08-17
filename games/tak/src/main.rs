@@ -401,7 +401,7 @@ impl GameAdapter for TakAdapter {
     fn tuner(&self) -> Option<TunerInfo> {
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info(&["strong"], TUNE_EVAL_ROUNDS)
+            ..mcts_tune::strategy_tuner_info_with_mcgs(&["strong"], TUNE_EVAL_ROUNDS, true)
         })
     }
 
