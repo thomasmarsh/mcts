@@ -1,3 +1,7 @@
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
     TunerInfo,
@@ -9,12 +13,29 @@ use game_tak::{
     cell_color_at, cell_height, cell_kind, make_cell, Move, Player, State, Tak, CAP, FLAT, WALL,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
+
+/// Fixed seed for every `ai_move`/`analyze`/fallback-baseline search built
+/// through [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed
+/// argument, so this is the only seed available to
+/// `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`strong` preset table -- `games/tak/presets.json`'s
+/// embedded defaults, or an operator-supplied override file named by
+/// `TAK_PRESETS_PATH` (see `PresetTable::load`'s doc comment).
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("TAK_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/tak/presets.json must parse")
+    })
+}
 
 fn player_name(p: Player) -> &'static str {
     match p {
@@ -237,45 +258,6 @@ fn value_to_state(v: &Value) -> Result<State<5>, HostError> {
     Ok(s)
 }
 
-fn build_easy() -> Box<dyn Search<G = Tak<5>>> {
-    Box::new(
-        TreeSearch::<Tak<5>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("tak/easy")
-                .expand_threshold(1)
-                .max_iterations(100)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-fn build_strong() -> Box<dyn Search<G = Tak<5>>> {
-    Box::new(
-        TreeSearch::<Tak<5>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("tak/strong")
-                .expand_threshold(0)
-                .max_iterations(5000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-
-const PRESETS: &[PresetEntry] = &[
-    PresetEntry {
-        id: "easy",
-        build: build_easy,
-    },
-    PresetEntry {
-        id: "strong",
-        build: build_strong,
-    },
-];
-struct PresetEntry {
-    id: &'static str,
-    build: fn() -> Box<dyn Search<G = Tak<5>>>,
-}
-
 struct TakAdapter;
 
 impl GameAdapter for TakAdapter {
@@ -335,25 +317,14 @@ impl GameAdapter for TakAdapter {
         .expect("GameView serializes"))
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESETS
-            .iter()
-            .map(|p| AiPresetInfo {
-                id: p.id.into(),
-                label: p.id.into(),
-                description: "".into(),
-            })
-            .collect()
+        presets().ai_presets()
     }
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
         if Tak::<5>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<Tak<5>>(preset, PRESET_SEED)?;
         let action = ai.choose_action(&s);
         let next = Tak::<5>::apply(s, &action);
         Ok(AiMoveResult {
@@ -363,14 +334,10 @@ impl GameAdapter for TakAdapter {
     }
     fn analyze(&self, state: &Value, preset: &str, _: Option<u64>) -> Result<Analysis, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
         if Tak::<5>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<Tak<5>>(preset, PRESET_SEED)?;
         let _ = ai.choose_action(&s);
         let report = ai.root_report(&s);
         let suggested = report
@@ -463,7 +430,11 @@ impl GameAdapter for TakAdapter {
                     max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
                 },
-                build_strong,
+                move || {
+                    presets()
+                        .build::<Tak<5>>("strong", PRESET_SEED)
+                        .expect("games/tak/presets.json's \"strong\" preset must build")
+                },
                 Default::default(),
                 trace_path.as_deref(),
                 on_game,
