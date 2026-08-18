@@ -131,6 +131,38 @@ describe("appReducer / aiMove", () => {
 
     expect(seen).toEqual([customStrategy]);
   });
+
+  // Regression test: `GameShell`'s autoplay effect re-fires whenever the
+  // store updates and it's still an AI-controlled seat's turn -- a failure
+  // (bad custom config, a crashing subprocess, any transport error) flips
+  // `aiMove.status` from "pending" to "error", which by itself looks
+  // identical to "safe to try again" from that effect's point of view.
+  // `aiMoveFailedNodeId` is the state this reducer owns so `GameShell` can
+  // tell "already failed at this exact node" apart from "a fresh node,
+  // worth trying" without re-deriving it locally -- see `AppState.
+  // aiMoveFailedNodeId`'s doc comment.
+  it("a failed aiMove records the node it failed at, in aiMoveFailedNodeId", async () => {
+    const env: Env = {
+      ...mockEnv,
+      aiMove: () => Effect.fromPromise(() => Promise.reject(new Error("subprocess crashed"))),
+    };
+    const init = initialAppState<S, M>("druid", 7);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+    const rootId = init.tree.rootId;
+
+    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } }, (s) => {
+      s.aiMove.status = "pending";
+    });
+    await ts.drain();
+    ts.receive(
+      { tag: "aiMove", action: { tag: "job", action: { tag: "failed", error: "Error: subprocess crashed" } }, epoch: 0 },
+      (s) => {
+        s.aiMove.status = "error";
+        s.aiMove.error = "Error: subprocess crashed";
+        s.aiMoveFailedNodeId = rootId;
+      },
+    );
+  });
 });
 
 describe("appReducer / analysis", () => {

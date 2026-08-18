@@ -68,6 +68,17 @@ export interface AppState<S, M, V = unknown> {
   newGame: JobPollState<StateAndView<S, V>>;
   move: JobPollState<StateAndView<S, V>>;
   aiMove: JobPollState<AiMoveResult<S, M, V>>;
+  /** `tree.currentId` at the moment `aiMove` last failed, or `null` --
+   * lets `GameShell`'s autoplay effect (fire an aiMove whenever it's an
+   * AI-controlled seat's turn) tell "this exact node's aiMove already
+   * failed, don't retry" apart from "a different node, worth trying."
+   * Without this, a failure (bad custom config, a crashing subprocess,
+   * any transport error) flips `aiMove.status` to `"error"`, which clears
+   * `busy()` -- and since nothing about the tree changed, the autoplay
+   * effect refired the identical doomed request immediately, forever, with
+   * no visible error (see `reducer.ts`'s `aiMove` handling for where this
+   * gets set/cleared). */
+  aiMoveFailedNodeId: string | null;
   analysis: JobPollState<Analysis<M>>;
   seats: SeatsState;
   ui: UiState;
@@ -85,6 +96,7 @@ export function initialAppState<S, M, V = unknown>(gameKind: string, rootState: 
     newGame: initialJobPollState<StateAndView<S, V>>(),
     move: initialJobPollState<StateAndView<S, V>>(),
     aiMove: initialJobPollState<AiMoveResult<S, M, V>>(),
+    aiMoveFailedNodeId: null,
     analysis: initialJobPollState<Analysis<M>>(),
     seats: {},
     ui: { selectedPreset: null },

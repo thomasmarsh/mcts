@@ -61,6 +61,11 @@ function buildDefaultVariantValue(variant: AxisVariantSchema, schema: AxisSchema
 
 function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unknown {
   if (field.type === "enum") {
+    // A `bare` enum's value *is* the plain variant-name string -- see
+    // `AxisFieldSchema`'s doc comment. Only a real tagged union
+    // (`RaveSchedule`/`RaveUcb`) needs the `{kind, ...fields}` shape
+    // `buildDefaultVariantValue` builds.
+    if (field.bare) return field.default;
     return buildDefaultVariantValue(findVariant(field.variants, field.default), schema);
   }
   return field.default;
@@ -68,11 +73,22 @@ function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unk
 
 /** A freshly-defaulted `CustomStrategySpec` -- each axis seeded from its
  * schema's first listed variant (`buildDefaultVariantValue`, the same
- * defaulting this editor uses when a variant is newly selected), with a
- * 10,000-iteration budget so the seeded value already satisfies the "at
- * least one budget field" invariant `StrategyConfigEditor` enforces. The one
- * shared place callers (e.g. `GameShell`'s New Game dialog) seed a new
- * seat's "Custom…" config, so that shape isn't hand-duplicated per caller. */
+ * defaulting this editor uses when a variant is newly selected), budgeted by
+ * *time* rather than iteration count, and running on all cores. This
+ * mirrors every real preset in each game's `presets.json` (`easy`/`medium`/
+ * `strong`/`master` -- all `max_time_ms`, never `max_iterations`, and
+ * `threads: 0` for the NST-based `strong`/`master`), for the same reason:
+ * a user-composed axis combination's per-iteration cost is unknowable ahead
+ * of time (`decisive_move_nst`'s bigram lookups alone are ~15x a plain
+ * `uniform` simulate's cost per iteration, measured against Druid), so an
+ * iteration cap can turn into an unpredictable, effectively unbounded wall-
+ * clock wait -- which is exactly what "Custom…" used to do at its own
+ * defaults (10,000 iterations, single-threaded) before this default
+ * existed. `1000`ms matches this editor's own fallback when a user
+ * manually re-checks "Time limit" with no prior value (see `timeMs` below)
+ * -- the same "reasonable first guess" used in both places. The one shared
+ * place callers (e.g. `GameShell`'s New Game dialog) seed a new seat's
+ * "Custom…" config, so that shape isn't hand-duplicated per caller. */
 export function defaultCustomStrategySpec(schema: AxisSchema): CustomStrategySpec {
   return {
     search: {
@@ -81,7 +97,8 @@ export function defaultCustomStrategySpec(schema: AxisSchema): CustomStrategySpe
       backprop: buildDefaultVariantValue(schema.backprop.variants[0]!, schema) as unknown as BackpropSpec,
       final_action: buildDefaultVariantValue(schema.final_action.variants[0]!, schema) as unknown as FinalActionSpec,
     },
-    max_iterations: 10_000,
+    max_time_ms: 1000,
+    threads: 0,
   };
 }
 
@@ -123,23 +140,34 @@ const VariantPicker: Component<{
         <For each={current().fields}>
           {(field) => (
             <Show
-              when={field.type === "enum"}
+              when={field.type === "enum" && (field as Extract<AxisFieldSchema, { type: "enum" }>).bare}
               fallback={
-                <ScalarField
-                  field={field as Extract<AxisFieldSchema, { type: "float" | "int" | "bool" }>}
-                  value={props.value[field.name]}
-                  onChange={(v) => setField(field.name, v)}
-                />
+                <Show
+                  when={field.type === "enum"}
+                  fallback={
+                    <ScalarField
+                      field={field as Extract<AxisFieldSchema, { type: "float" | "int" | "bool" }>}
+                      value={props.value[field.name]}
+                      onChange={(v) => setField(field.name, v)}
+                    />
+                  }
+                >
+                  <VariantPicker
+                    label={field.name}
+                    variants={(field as Extract<AxisFieldSchema, { type: "enum" }>).variants}
+                    schema={props.schema}
+                    value={
+                      (props.value[field.name] as VariantValue | undefined) ??
+                      buildDefaultFieldValue(field, props.schema) as VariantValue
+                    }
+                    onChange={(v) => setField(field.name, v)}
+                  />
+                </Show>
               }
             >
-              <VariantPicker
-                label={field.name}
-                variants={(field as Extract<AxisFieldSchema, { type: "enum" }>).variants}
-                schema={props.schema}
-                value={
-                  (props.value[field.name] as VariantValue | undefined) ??
-                  buildDefaultFieldValue(field, props.schema) as VariantValue
-                }
+              <BareEnumField
+                field={field as Extract<AxisFieldSchema, { type: "enum" }>}
+                value={props.value[field.name]}
                 onChange={(v) => setField(field.name, v)}
               />
             </Show>
@@ -162,6 +190,28 @@ const VariantPicker: Component<{
         )}
       </Show>
     </div>
+  );
+};
+
+/** A `bare` enum field (`DecisiveMoveMode` -- see `AxisFieldSchema`'s doc
+ * comment): a plain `<select>` whose value *is* the chosen variant's `kind`
+ * string, not a `{kind, ...fields}` object -- there are no fields to carry,
+ * every `bare` variant's `fields` array is empty by construction. */
+const BareEnumField: Component<{
+  field: Extract<AxisFieldSchema, { type: "enum" }>;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}> = (props) => {
+  return (
+    <label>
+      {props.field.name}
+      <select
+        value={(props.value as string | undefined) ?? props.field.default}
+        onChange={(e) => props.onChange(e.currentTarget.value)}
+      >
+        <For each={props.field.variants}>{(v) => <option value={v.kind}>{v.kind}</option>}</For>
+      </select>
+    </label>
   );
 };
 

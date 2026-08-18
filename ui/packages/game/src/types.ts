@@ -154,12 +154,25 @@ export interface CustomStrategySpec {
 export type AiStrategyRef = { kind: "preset"; id: string } | { kind: "custom"; spec: CustomStrategySpec };
 
 /** A field's leaf shape in `AxisSchema` -- mirrors
- * `mcts_tune::config_ir_schema::axis_schema()`'s per-field JSON. */
+ * `mcts_tune::config_ir_schema::axis_schema()`'s per-field JSON. `bare`
+ * (only ever `true`, only ever on an `"enum"` field) marks a field whose
+ * Rust type has no `#[serde(tag = "kind")]` -- `DecisiveMoveMode` is the
+ * one example (see `mcts::simulate::DecisiveMoveMode`'s own derive): its
+ * wire form is a plain string (`"win"`), not `{kind, ...fields}` the way
+ * `RaveSchedule`/`RaveUcb` (real tagged unions, ordinary `"enum"` fields
+ * with no `bare`) are. A field with `bare: true` always has every variant's
+ * `fields` empty (there is nothing to carry -- see `bare_en`'s doc comment
+ * on the Rust side), so rendering/storing it as a plain string loses
+ * nothing. Getting this distinction wrong is exactly what produced
+ * `CustomStrategySpec` deserialization's "unknown variant `kind`, expected
+ * one of `win`, `win_loss`, `win_loss_draw`" error in production: `mode`
+ * was being sent as `{"kind":"win"}`, and `serde` read the object's own key
+ * as if it were the variant name. */
 export type AxisFieldSchema =
   | { name: string; type: "float"; bounds: [number, number]; default: number }
   | { name: string; type: "int"; bounds: [number, number]; default: number }
   | { name: string; type: "bool"; default: boolean }
-  | { name: string; type: "enum"; default: string; variants: AxisVariantSchema[] };
+  | { name: string; type: "enum"; default: string; variants: AxisVariantSchema[]; bare?: boolean };
 
 /** One variant's schema entry -- `wraps` is present only on variants that
  * recurse into another axis's base variant set (`epsilon_greedy`/
