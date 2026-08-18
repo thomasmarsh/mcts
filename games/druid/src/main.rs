@@ -7,11 +7,13 @@
 //! This binary embeds the full Druid adapter tier -- the `EngineCache`,
 //! the four time-budgeted AI presets (easy/medium/strong/master), and the
 //! linear-sub-action `ai_move` loop -- so the server no longer needs to
-//! compile any Druid-specific code. Preset scalar knobs are hardcoded here
-//! (the server's `druid-presets.yaml` used to live at `server/config/`; the
-//! binary keeps the same four presets with the same defaults).
+//! compile any Druid-specific code. Presets are loaded from
+//! `games/druid/presets.json` (or an operator override, see [`presets`])
+//! through `mcts_tune::presets::PresetTable`, not hardcoded `match` arms.
 
-use std::sync::Mutex;
+use std::env;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use game_host::{
@@ -25,196 +27,42 @@ use serde_json::Value;
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
 
+/// Fixed seed for every `ai_move`/`analyze`/fallback-baseline search built
+/// through [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed
+/// argument, so this is the only seed available to
+/// `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
 use game_druid::{
     apply_placed, Druid, HashedState, Move, Orientation, Piece, PieceKind, PlacedPiece, Player,
     Size, Square, State,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 // ---------------------------------------------------------------------------
-// Preset knobs
+// Presets
 // ---------------------------------------------------------------------------
 
-/// Scalar knobs for one AI preset. `select_c`, `epsilon`, and
-/// `backoff_threshold` may be unused by a preset's strategy shape (None).
-#[derive(Debug, Clone, Copy)]
-struct PresetConfig {
-    label: &'static str,
-    description: &'static str,
-    time_budget_ms: u64,
-    select_c: Option<f64>,
-    num_threads: usize,
-    epsilon: Option<f64>,
-    backoff_threshold: Option<u32>,
-}
-
-/// Available CPU cores for the auto-thread-count presets.
-fn ai_thread_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-}
-
-/// `preset`'s own deployed tree-parallelism thread count -- `0` means
-/// "auto" (every available core). Real gameplay/analysis callers use this;
-/// `tune_eval` deliberately does not (see its own call site).
-fn preset_threads(cfg: &PresetConfig) -> usize {
-    if cfg.num_threads == 0 {
-        ai_thread_count()
-    } else {
-        cfg.num_threads
-    }
-}
-
-const PRESET_CONFIGS: [(&str, PresetConfig); 4] = [
-    (
-        "easy",
-        PresetConfig {
-            label: "Easy",
-            description: "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
-            time_budget_ms: 1000,
-            select_c: Some(1.414),
-            num_threads: 1,
-            epsilon: None,
-            backoff_threshold: None,
-        },
-    ),
-    (
-        "medium",
-        PresetConfig {
-            label: "Medium",
-            description: "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
-            time_budget_ms: 2000,
-            select_c: Some(1.625),
-            num_threads: 1,
-            epsilon: Some(0.1),
-            backoff_threshold: None,
-        },
-    ),
-    (
-        "strong",
-        PresetConfig {
-            label: "Strong",
-            description: "N-gram-guided (NST) decisive-move search with MCTS-Solver for tactical \
-                 sharpness, ~3s per move, searching one shared tree across all available CPU cores.",
-            time_budget_ms: 3000,
-            select_c: Some(1.414),
-            num_threads: 0, // 0 = Auto (all cores)
-            epsilon: Some(0.3),
-            backoff_threshold: Some(5),
-        },
-    ),
-    (
-        "master",
-        PresetConfig {
-            label: "Master",
-            description: "Same search as Strong, parallelized the same way, with a longer ~8s \
-                 thinking budget.",
-            time_budget_ms: 8000,
-            select_c: Some(1.414),
-            num_threads: 0, // 0 = Auto (all cores)
-            epsilon: Some(0.3),
-            backoff_threshold: Some(5),
-        },
-    ),
-];
-
-fn preset_cfg(id: &str) -> Option<&'static PresetConfig> {
-    PRESET_CONFIGS
-        .iter()
-        .find(|(name, _)| *name == id)
-        .map(|(_, c)| c)
-}
-
-// ---------------------------------------------------------------------------
-// Strategy-shape type aliases
-// ---------------------------------------------------------------------------
-
-// `Strong`/`Master`'s strategy shape: `Ucb1` select (no RAVE/GRAVE) +
-// `DecisiveMove<EpsilonGreedy<Nst>>` simulate.
-type Ucb1DmNst = strategy::Compose<
-    select::Ucb1,
-    simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
->;
-
-/// Build a fresh `TreeSearch` for `preset` with the given time budget and
-/// tree-parallelism thread count. Real gameplay/analysis callers pass
-/// `preset_threads(cfg)` (the preset's own deployed thread count); `tune_eval`
-/// pins this to `1` instead -- see its own call site for why.
-fn build_ai(
-    preset: &str,
-    budget: Duration,
-    cfg: &PresetConfig,
-    threads: usize,
-) -> Box<dyn Search<G = Druid>> {
-    match preset {
-        "easy" => Box::new(
-            TreeSearch::<Druid, strategy::Ucb1>::new().config(
-                SearchConfig::new()
-                    .name("ai/easy")
-                    .expand_threshold(1)
-                    .use_transpositions(true)
-                    .use_mcts_solver(true)
-                    .reuse_tree(true)
-                    .q_init(QInit::Infinity)
-                    .max_time(budget)
-                    .select(select::Ucb1::with_c(cfg.select_c.unwrap_or(1.414))),
-            ),
-        ),
-        "medium" => Box::new(
-            TreeSearch::<Druid, strategy::Ucb1Mast>::new().config(
-                SearchConfig::new()
-                    .name("ai/medium")
-                    .expand_threshold(1)
-                    .use_transpositions(true)
-                    .use_mcts_solver(true)
-                    .reuse_tree(true)
-                    .q_init(QInit::Infinity)
-                    .max_time(budget)
-                    .select(select::Ucb1::with_c(cfg.select_c.unwrap_or(1.625)))
-                    .simulate(simulate::EpsilonGreedy::with_epsilon(
-                        cfg.epsilon.unwrap_or(0.1),
-                    )),
-            ),
-        ),
-        "strong" | "master" => Box::new(
-            TreeSearch::<Druid, Ucb1DmNst>::new().config(
-                SearchConfig::new()
-                    .name(if preset == "strong" {
-                        "ai/strong"
-                    } else {
-                        "ai/master"
-                    })
-                    .expand_threshold(1)
-                    .use_transpositions(true)
-                    .use_mcts_solver(true)
-                    .reuse_tree(true)
-                    .q_init(QInit::Infinity)
-                    .max_time(budget)
-                    .num_tree_threads(threads)
-                    .simulate(
-                        simulate::DecisiveMove::new().inner(
-                            simulate::EpsilonGreedy::default()
-                                .epsilon(cfg.epsilon.unwrap_or(0.3))
-                                .inner(
-                                    simulate::Nst::new()
-                                        .backoff_threshold(cfg.backoff_threshold.unwrap_or(5)),
-                                ),
-                        ),
-                    ),
-            ),
-        ),
-        _ => unreachable!("validated preset id"),
-    }
+/// The parsed `easy`/`medium`/`strong`/`master` preset table --
+/// `games/druid/presets.json`'s embedded defaults, or an operator-supplied
+/// override file named by `DRUID_PRESETS_PATH` (see `PresetTable::load`'s
+/// doc comment).
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("DRUID_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/druid/presets.json must parse")
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Engine cache
 // ---------------------------------------------------------------------------
 
-type CacheEntry = (&'static str, u64, Box<dyn Search<G = Druid>>);
+type CacheEntry = (String, u64, Box<dyn Search<G = Druid>>);
 
 /// A small LRU cache of `(preset, state-hash) -> search`, so repeated
 /// `ai_move`/`analyze` calls on the same position (e.g. a long UCT ponder
@@ -233,24 +81,24 @@ impl EngineCache {
         }
     }
 
-    fn take(&self, preset: &'static str, hash: u64) -> Option<Box<dyn Search<G = Druid>>> {
+    fn take(&self, preset: &str, hash: u64) -> Option<Box<dyn Search<G = Druid>>> {
         let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pos = entries
             .iter()
-            .position(|(p, h, _)| *p == preset && *h == hash)?;
+            .position(|(p, h, _)| p == preset && *h == hash)?;
         Some(entries.remove(pos).2)
     }
 
-    fn put(&self, preset: &'static str, hash: u64, engine: Box<dyn Search<G = Druid>>) {
+    fn put(&self, preset: &str, hash: u64, engine: Box<dyn Search<G = Druid>>) {
         let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        entries.retain(|(p, h, _)| !(*p == preset && *h == hash));
-        entries.insert(0, (preset, hash, engine));
+        entries.retain(|(p, h, _)| !(p == preset && *h == hash));
+        entries.insert(0, (preset.to_string(), hash, engine));
         entries.truncate(self.capacity);
     }
 }
@@ -420,37 +268,20 @@ impl GameAdapter for DruidAdapter {
     }
 
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESET_CONFIGS
-            .iter()
-            .map(|(id, c)| AiPresetInfo {
-                id: (*id).to_string(),
-                label: c.label.to_string(),
-                description: c.description.to_string(),
-            })
-            .collect()
+        presets().ai_presets()
     }
 
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let state = value_to_state(state)?;
-        let cfg = preset_cfg(preset)
-            .ok_or_else(|| HostError::bad_request(format!("unknown preset {preset:?}")))?;
+        presets().preset(preset)?;
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
-        let static_preset: &'static str = PRESET_CONFIGS
-            .iter()
-            .find(|(id, _)| *id == preset)
-            .unwrap()
-            .0;
         let hash = Druid::zobrist_hash(&state);
-        let mut ai = self.cache.take(static_preset, hash).unwrap_or_else(|| {
-            build_ai(
-                static_preset,
-                Duration::from_millis(cfg.time_budget_ms),
-                cfg,
-                preset_threads(cfg),
-            )
-        });
+        let mut ai = match self.cache.take(preset, hash) {
+            Some(ai) => ai,
+            None => presets().build::<Druid>(preset, PRESET_SEED)?,
+        };
 
         let mut chosen_kind: Option<PieceKind> = None;
         let mut chosen_orientation: Option<Orientation> = None;
@@ -471,7 +302,7 @@ impl GameAdapter for DruidAdapter {
                         _ => unreachable!("Cell action without prior Piece"),
                     };
                     let result = PlacedPiece(piece, idx);
-                    self.cache.put(static_preset, hash, ai);
+                    self.cache.put(preset, hash, ai);
                     return Ok(AiMoveResult {
                         mv: serde_json::to_value(result).expect("PlacedPiece always serializes"),
                         state: state_to_value(&ai_state),
@@ -488,40 +319,27 @@ impl GameAdapter for DruidAdapter {
         budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
         let state = value_to_state(state)?;
-        let cfg = preset_cfg(preset)
-            .ok_or_else(|| HostError::bad_request(format!("unknown preset {preset:?}")))?;
+        presets().preset(preset)?;
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
-        let static_preset: &'static str = PRESET_CONFIGS
-            .iter()
-            .find(|(id, _)| *id == preset)
-            .unwrap()
-            .0;
         let hash = Druid::zobrist_hash(&state);
 
         let mut ai = match budget_ms {
-            Some(ms) => build_ai(
-                static_preset,
-                Duration::from_millis(clamp_budget_ms(ms)),
-                cfg,
-                preset_threads(cfg),
-            ),
-            None => self.cache.take(static_preset, hash).unwrap_or_else(|| {
-                build_ai(
-                    static_preset,
-                    Duration::from_millis(cfg.time_budget_ms),
-                    cfg,
-                    preset_threads(cfg),
-                )
-            }),
+            Some(ms) => presets().build_with::<Druid>(preset, PRESET_SEED, |b| {
+                b.max_time = Some(Duration::from_millis(clamp_budget_ms(ms)));
+            })?,
+            None => match self.cache.take(preset, hash) {
+                Some(ai) => ai,
+                None => presets().build::<Druid>(preset, PRESET_SEED)?,
+            },
         };
 
         let _ = ai.choose_action(&state);
         let report = ai.root_report(&state);
 
         if budget_ms.is_none() {
-            self.cache.put(static_preset, hash, ai);
+            self.cache.put(preset, hash, ai);
         }
 
         let suggested_move = report
@@ -615,10 +433,14 @@ impl GameAdapter for DruidAdapter {
             )?
         } else {
             let baseline = baseline.as_deref().unwrap_or("strong");
-            let cfg = preset_cfg(baseline)
-                .ok_or_else(|| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
+            let cfg = presets()
+                .preset(baseline)
+                .map_err(|_| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
+            let time_budget_ms = cfg
+                .max_time_ms
+                .expect("games/druid/presets.json presets always declare max_time_ms");
             // Match the candidate's *time* budget to this named preset's own
-            // -- `build_ai` runs it on a wall-clock time budget, not
+            // -- the preset itself runs on a wall-clock time budget, not
             // `mcts-tune`'s default fixed-iteration one, and leaving the
             // candidate on the default here would pit a fixed-iteration
             // search against a time-budgeted one, a mismatch severe enough
@@ -627,8 +449,8 @@ impl GameAdapter for DruidAdapter {
             //
             // Deliberately *not* matching thread count, though -- pin both
             // sides to a single thread instead of this preset's own
-            // deployed `preset_threads(cfg)` (all cores, for strong/
-            // master). SMAC3 already runs `n_workers` trials concurrently
+            // deployed thread count (all cores, for strong/master). SMAC3
+            // already runs `n_workers` trials concurrently
             // (`smac3/config/default.yaml`'s `optimizer.n_workers`, sized
             // assuming ~1 core per worker); every trial subprocess also
             // claiming every core for its own tree search means
@@ -643,7 +465,7 @@ impl GameAdapter for DruidAdapter {
             // noise -- a strictly better property for an optimizer that's
             // trying to compare many trials' costs against each other.
             let budget = mcts_tune::SearchBudget {
-                max_time: Some(Duration::from_millis(cfg.time_budget_ms)),
+                max_time: Some(Duration::from_millis(time_budget_ms)),
                 threads: 1,
                 max_iterations,
             };
@@ -653,7 +475,11 @@ impl GameAdapter for DruidAdapter {
                 seed,
                 true,
                 budget,
-                || build_ai(baseline, Duration::from_millis(cfg.time_budget_ms), cfg, 1),
+                || {
+                    presets()
+                        .build_with::<Druid>(baseline, PRESET_SEED, |b| b.threads = 1)
+                        .expect("games/druid/presets.json's baseline preset must build")
+                },
                 initial_state,
                 trace_path.as_deref(),
                 on_game,
