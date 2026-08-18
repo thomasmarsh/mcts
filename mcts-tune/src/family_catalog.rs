@@ -11,7 +11,7 @@
 //! which is what this table exists to cover.
 
 use crate::config_ir::{BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
-use game_host::{HostError, TunerParameter};
+use game_host::{HostError, TunerCondition, TunerParameter};
 use mcts::select::{RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
 use serde_json::{json, Value};
@@ -23,6 +23,19 @@ pub(crate) fn param(name: &str, spec: Value) -> TunerParameter {
     TunerParameter {
         name: name.into(),
         spec,
+    }
+}
+
+/// Builds one `TunerCondition` from an `if_` predicate and the field names
+/// it activates -- shared by `family_conditions()` below and the
+/// hand-written conditions `strategy_tuner_info_with_mcgs` appends for
+/// child-value-gated fields (`final_action`'s own `a`, RAVE's
+/// schedule/`rave_ucb`-gated fields) that don't fit `register_family!`'s
+/// per-family shape.
+pub(crate) fn condition(if_: Value, then: &[&str]) -> TunerCondition {
+    TunerCondition {
+        if_,
+        then: then.iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -172,12 +185,26 @@ pub(crate) struct FamilySpec {
 /// need for a row's `$ctor` to share identifier context with code written in
 /// this macro's own definition.
 ///
+/// Each row also names the subset of table 1's fields that family's own
+/// `$ctor` actually reads (including `final_action` for every family whose
+/// own named type leaves it configurable) -- this is what generates
+/// `family_choices()`'s `family` categorical and `family_conditions()`'s
+/// per-(family, field) `TunerCondition` rows, replacing the hand-maintained
+/// `C_FAMILIES`/`EPSILON_FAMILIES`/`FINAL_ACTION_FAMILIES`/`PN_FAMILIES`
+/// grouping constants that used to describe the same thing. Fields gated by
+/// another *field's own value* rather than by `family` directly (`a` under
+/// `final_action: secure_child`, RAVE's schedule/`rave_ucb`-gated fields,
+/// `contempt_factor` under `contempt: on`) are not listed here -- those stay
+/// hand-written extra conditions in `strategy_tuner_info_with_mcgs`, since
+/// they're a different kind of condition than "this family always needs
+/// this field".
+///
 /// `"random"`/`"flat_mc"` are not rows here -- see `make_candidate`'s own
 /// comment on why those two stay permanently outside this table.
 macro_rules! register_family {
     (
         $(
-            $name:literal => $ctor:expr
+            $name:literal => [$($field:ident),* $(,)?] => $ctor:expr
         ),+ $(,)?
     ) => {
         /// Dispatches `family` to the row constructing the matching
@@ -192,18 +219,38 @@ macro_rules! register_family {
                 other => Err(HostError::bad_request(format!("unknown family: {other}"))),
             }
         }
+
+        /// The `family` categorical's `choices` list -- every row's name, in
+        /// declaration order. Deliberately excludes `"random"`/`"flat_mc"`
+        /// (not rows in this table -- see this macro's doc comment).
+        pub(crate) fn family_choices() -> Vec<&'static str> {
+            vec![$( $name ),+]
+        }
+
+        /// One `TunerCondition` per (family, field) pair a row's `$ctor`
+        /// reads -- the generated replacement for the hand-written grouped
+        /// conditions this macro's doc comment describes.
+        pub(crate) fn family_conditions() -> Vec<TunerCondition> {
+            let mut conditions = Vec::new();
+            $(
+                $(
+                    conditions.push(condition(json!({"family": $name}), &[stringify!($field)]));
+                )*
+            )+
+            conditions
+        }
     };
 }
 
 register_family! {
-    "ucb1" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_dm" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {
             mode: DecisiveMoveMode::Win,
@@ -213,7 +260,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_mast" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -223,7 +270,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_nst" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -237,7 +284,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_progressive_history" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_progressive_history" => [c, ph_weight, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::ProgressiveHistory {
             c: c(p)?,
             ph_weight: p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
@@ -247,7 +294,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "amaf" => |p: &TrialParams| Ok(FamilySpec {
+    "amaf" => [amaf_alpha, c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Amaf {
             alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
             c: c(p)?,
@@ -257,7 +304,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "amaf_mast" => |p: &TrialParams| Ok(FamilySpec {
+    "amaf_mast" => [amaf_alpha, c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Amaf {
             alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
             c: c(p)?,
@@ -270,21 +317,21 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_tuned" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_tuned" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_tuned_mast" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_tuned_mast" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Mast {},
         final_action: to_final_action_spec(p)?,
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_tuned_dm" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_tuned_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {
             mode: DecisiveMoveMode::Win,
@@ -294,7 +341,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "ucb1_tuned_dm_mast" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_tuned_dm_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::DecisiveMoveMast {
             mode: DecisiveMoveMode::Win,
@@ -304,7 +351,7 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "rave" => |p: &TrialParams| {
+    "rave" => [threshold, schedule, rave_ucb, epsilon, final_action] => |p: &TrialParams| {
         let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
             "hand_selected" => RaveSchedule::HandSelected {
                 k: p.k.ok_or_else(|| missing("k"))?,
@@ -342,7 +389,7 @@ register_family! {
             contempt_factor: None,
         })
     },
-    "ucb1_pn" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_pn" => [c, c_pn, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::UctPn {
             c: c(p)?,
             c_pn: c_pn(p)?,
@@ -352,7 +399,7 @@ register_family! {
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
     }),
-    "ucb1_pn_mast" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_pn_mast" => [c, c_pn, epsilon, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::UctPn {
             c: c(p)?,
             c_pn: c_pn(p)?,
@@ -365,14 +412,14 @@ register_family! {
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
     }),
-    "ucb1_max_robust" => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_max_robust" => [c] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: FinalActionSpec::MaxRobustChild {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
-    "meta_mcts" => |p: &TrialParams| Ok(FamilySpec {
+    "meta_mcts" => [c] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::MetaMcts {
             iterations: crate::META_MCTS_INNER_ITERATIONS,

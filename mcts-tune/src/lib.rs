@@ -43,10 +43,13 @@ pub mod config_ir;
 mod family_catalog;
 pub mod trace;
 
-use family_catalog::{dispatch_family, param, tunable_field_parameters, FamilySpec, TrialParams};
+use family_catalog::{
+    condition, dispatch_family, family_choices, family_conditions, param, tunable_field_parameters,
+    FamilySpec, TrialParams,
+};
 use game_host::{
     ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
-    HostError, TunerCondition, TunerInfo,
+    HostError, TunerInfo,
 };
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats};
@@ -75,79 +78,6 @@ const EXPAND_THRESHOLD: u32 = 1;
 /// other family's. Still real work, though -- see `tests/stress.rs` for why
 /// its round-trip test doesn't live in this file's fast suite.
 const META_MCTS_INNER_ITERATIONS: usize = 50;
-
-/// PN-MCTS families (Kowalski, Doe, Winands, Górski & Soemers, "Proof
-/// Number Based Monte-Carlo Tree Search", 2023): `select::UctPn` wraps plain
-/// UCB1 with a rank-based bonus from proof/disproof numbers, only meaningful
-/// with MCTS-Solver on (see `select::UctPn`'s doc comment) -- so both arms
-/// below force `use_mcts_solver(true)` and `reuse_tree(true)` rather than
-/// exposing either as a tunable (PNS-style search always wants its
-/// proof/disproof numbers carried across moves, not rebuilt from scratch
-/// every `choose_action` call), and expose the paper's own per-game knobs
-/// (`c_pn`, the proven-loss selection threshold `T` as
-/// `solver_loss_threshold`, and the final-move-selection contempt factor)
-/// as tunable params instead of assuming the paper's published values
-/// transfer to this repo's games.
-const PN_FAMILIES: &[&str] = &["ucb1_pn", "ucb1_pn_mast"];
-
-/// Families whose own named `strategy.rs` type leaves `final_action`
-/// configurable (the common `RobustChild`/`SecureChild` slot) rather than
-/// fixing something else -- these are the ones `tune eval`'s `final_action`
-/// param applies to.
-const FINAL_ACTION_FAMILIES: &[&str] = &[
-    "ucb1",
-    "ucb1_dm",
-    "ucb1_mast",
-    "ucb1_nst",
-    "ucb1_progressive_history",
-    "amaf",
-    "amaf_mast",
-    "ucb1_tuned",
-    "ucb1_tuned_mast",
-    "ucb1_tuned_dm",
-    "ucb1_tuned_dm_mast",
-    "rave",
-    "ucb1_pn",
-    "ucb1_pn_mast",
-];
-
-/// Families that share the plain exploration-constant `c` parameter (every
-/// family whose `Select` is `select::Ucb1`, `select::Ucb1Tuned`, or
-/// `select::Amaf`/`select::ProgressiveHistory`, all of which wrap one).
-/// `rave`'s own `c` is gated separately, by `rave_ucb`, since it's only
-/// meaningful for two of `rave`'s three UCB modes.
-const C_FAMILIES: &[&str] = &[
-    "ucb1",
-    "ucb1_dm",
-    "ucb1_mast",
-    "ucb1_nst",
-    "ucb1_progressive_history",
-    "amaf",
-    "amaf_mast",
-    "ucb1_tuned",
-    "ucb1_tuned_mast",
-    "ucb1_tuned_dm",
-    "ucb1_tuned_dm_mast",
-    "ucb1_max_robust",
-    "meta_mcts",
-    "ucb1_pn",
-    "ucb1_pn_mast",
-];
-
-/// Families whose simulate step is (or wraps) an epsilon-greedy policy.
-/// `rave`'s own simulate step (`DecisiveMove<EpsilonGreedy<Mast>>`, see its
-/// `make_candidate` arm) wraps one too, same as `ucb1_tuned_dm_mast`'s, so
-/// it belongs here: `make_candidate`'s `rave` arm requires `epsilon`
-/// unconditionally, and this list is what makes that requirement visible to
-/// callers (SMAC3's ConfigSpace, the launch-form UI) as an active parameter.
-const EPSILON_FAMILIES: &[&str] = &[
-    "ucb1_mast",
-    "ucb1_nst",
-    "amaf_mast",
-    "ucb1_tuned_dm_mast",
-    "rave",
-    "ucb1_pn_mast",
-];
 
 /// A candidate's search-effort ceiling -- orthogonal to `TrialParams`
 /// (which family/hyperparameters to run), this is *how much compute* that
@@ -599,13 +529,7 @@ pub fn strategy_tuner_info_with_mcgs(
             let mut parameters = vec![
                 param(
                     "family",
-                    json!({"type": "categorical", "choices": [
-                        "ucb1", "ucb1_dm", "ucb1_mast", "ucb1_nst",
-                        "ucb1_progressive_history", "ucb1_max_robust",
-                        "amaf", "amaf_mast",
-                        "ucb1_tuned", "ucb1_tuned_mast", "ucb1_tuned_dm", "ucb1_tuned_dm_mast",
-                        "meta_mcts", "rave", "ucb1_pn", "ucb1_pn_mast",
-                    ], "default": "rave"}),
+                    json!({"type": "categorical", "choices": family_choices(), "default": "rave"}),
                 ),
                 param(
                     "q_init",
@@ -615,44 +539,28 @@ pub fn strategy_tuner_info_with_mcgs(
             parameters.extend(tunable_field_parameters());
             parameters
         },
-        conditions: vec![
-            condition(json!({"family": FINAL_ACTION_FAMILIES}), &["final_action"]),
-            condition(json!({"final_action": "secure_child"}), &["a"]),
-            condition(json!({"family": C_FAMILIES}), &["c"]),
-            condition(json!({"family": EPSILON_FAMILIES}), &["epsilon"]),
-            condition(json!({"family": ["amaf", "amaf_mast"]}), &["amaf_alpha"]),
-            condition(
-                json!({"family": "ucb1_progressive_history"}),
-                &["ph_weight"],
-            ),
-            condition(json!({"family": "ucb1_nst"}), &["nst_backoff_threshold"]),
-            condition(
-                json!({"family": "rave"}),
-                &["threshold", "schedule", "rave_ucb"],
-            ),
-            condition(json!({"schedule": "hand_selected"}), &["k"]),
-            condition(json!({"schedule": "min_mse"}), &["bias"]),
-            condition(json!({"schedule": "threshold"}), &["rave"]),
-            condition(json!({"rave_ucb": ["ucb1", "tuned"]}), &["c"]),
-            condition(
-                json!({"family": PN_FAMILIES}),
-                &["c_pn", "solver_loss_threshold", "contempt"],
-            ),
-            condition(json!({"contempt": "on"}), &["contempt_factor"]),
-        ],
+        conditions: {
+            let mut conditions = family_conditions();
+            // Gated by another field's own sampled value (`final_action`,
+            // `schedule`, `rave_ucb`, `contempt`), not by `family` directly --
+            // see `register_family!`'s doc comment in `family_catalog.rs` for
+            // why these stay hand-written instead of per-row table entries.
+            conditions.extend([
+                condition(json!({"final_action": "secure_child"}), &["a"]),
+                condition(json!({"schedule": "hand_selected"}), &["k"]),
+                condition(json!({"schedule": "min_mse"}), &["bias"]),
+                condition(json!({"schedule": "threshold"}), &["rave"]),
+                condition(json!({"rave_ucb": ["ucb1", "tuned"]}), &["c"]),
+                condition(json!({"contempt": "on"}), &["contempt_factor"]),
+            ]);
+            conditions
+        },
     };
     if supports_mcgs {
         info.parameters
             .push(param("mcgs", json!({"type": "bool", "default": false})));
     }
     info
-}
-
-fn condition(if_: Value, then: &[&str]) -> TunerCondition {
-    TunerCondition {
-        if_,
-        then: then.iter().map(|s| s.to_string()).collect(),
-    }
 }
 
 // ---------------------------------------------------------------------------
