@@ -122,6 +122,16 @@ impl PresetTable {
         self.presets.iter().map(PresetSpec::to_info).collect()
     }
 
+    /// Looks up `id`'s full spec -- for a caller that needs one of its
+    /// declared knobs (e.g. `max_time_ms`) directly, not just a built
+    /// search.
+    pub fn preset(&self, id: &str) -> Result<&PresetSpec, HostError> {
+        self.presets
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| HostError::not_found("unknown preset"))
+    }
+
     /// Resolves `id` to a runnable search, seeded and budgeted per that
     /// preset's own declared `params`/budget -- `GameAdapter::ai_move`/
     /// `analyze`'s replacement for `PRESETS.iter().find(...).build()`.
@@ -130,17 +140,31 @@ impl PresetTable {
         id: &str,
         seed: u64,
     ) -> Result<Box<dyn Search<G = G>>, HostError> {
-        let preset = self
-            .presets
-            .iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
+        let preset = self.preset(id)?;
         build_search::<G>(
             &preset.params,
             seed,
             preset.use_transpositions,
             &preset.budget(),
         )
+    }
+
+    /// [`Self::build`], but with `f` applied to `preset`'s own resolved
+    /// budget first -- for a caller that needs the same strategy shape as
+    /// a named preset with one budget knob overridden, e.g.
+    /// `GameAdapter::analyze`'s `budget_ms` argument (override `max_time`)
+    /// or a `tune_eval` baseline that must run single-threaded regardless
+    /// of what the preset itself deploys with (override `threads`).
+    pub fn build_with<G: Game + 'static>(
+        &self,
+        id: &str,
+        seed: u64,
+        f: impl FnOnce(&mut SearchBudget),
+    ) -> Result<Box<dyn Search<G = G>>, HostError> {
+        let preset = self.preset(id)?;
+        let mut budget = preset.budget();
+        f(&mut budget);
+        build_search::<G>(&preset.params, seed, preset.use_transpositions, &budget)
     }
 }
 
