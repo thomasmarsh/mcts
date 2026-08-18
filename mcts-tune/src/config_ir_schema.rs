@@ -538,8 +538,10 @@ mod tests {
 
         // The actual wire shape a client honoring `bare` sends: a plain
         // string, not `{"kind": "win"}`.
-        let json = r#"{"kind":"decisive_move_nst","mode":"win","epsilon":0.1,"nst_backoff_threshold":5}"#;
-        let spec: SimulateSpec = serde_json::from_str(json).expect("bare-string mode must deserialize");
+        let json =
+            r#"{"kind":"decisive_move_nst","mode":"win","epsilon":0.1,"nst_backoff_threshold":5}"#;
+        let spec: SimulateSpec =
+            serde_json::from_str(json).expect("bare-string mode must deserialize");
         assert_eq!(
             spec,
             SimulateSpec::DecisiveMoveNst {
