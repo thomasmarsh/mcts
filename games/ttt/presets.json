@@ -1,0 +1,26 @@
+[
+    {
+        "id": "easy",
+        "label": "Easy",
+        "description": "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 30
+    },
+    {
+        "id": "strong",
+        "label": "Strong",
+        "description": "UCB1 with MCTS-Solver, deep enough to solve the tree from most positions -- plays perfectly (win or draw).",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Loss",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 5000
+    }
+]

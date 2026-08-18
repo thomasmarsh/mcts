@@ -4,6 +4,10 @@
 //! Built by `cargo build -p game-ttt` and used by the server/bench crates
 //! via `game_host::SubprocessAdapter`.
 
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
     TunerInfo,
@@ -13,12 +17,29 @@ use serde_json::Value;
 
 use game_ttt::{HashedPosition, Move, Piece, Position, TicTacToe};
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
+
+/// Fixed seed for every `ai_move`/`analyze`/fallback-baseline search built
+/// through [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed
+/// argument, so this is the only seed available to
+/// `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`strong` preset table -- `games/ttt/presets.json`'s
+/// embedded defaults, or an operator-supplied override file named by
+/// `TTT_PRESETS_PATH` (see `PresetTable::load`'s doc comment).
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("TTT_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/ttt/presets.json must parse")
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Wire format types
@@ -72,54 +93,6 @@ fn value_to_state(v: &Value) -> Result<HashedPosition, HostError> {
 // ---------------------------------------------------------------------------
 // AI presets
 // ---------------------------------------------------------------------------
-
-fn build_easy() -> Box<dyn Search<G = TicTacToe>> {
-    Box::new(
-        TreeSearch::<TicTacToe, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("ttt/easy")
-                .expand_threshold(1)
-                .max_iterations(30)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-
-fn build_strong() -> Box<dyn Search<G = TicTacToe>> {
-    Box::new(
-        TreeSearch::<TicTacToe, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("ttt/strong")
-                .expand_threshold(0)
-                .max_iterations(5000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-
-struct PresetEntry {
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    build: fn() -> Box<dyn Search<G = TicTacToe>>,
-}
-
-const PRESETS: &[PresetEntry] = &[
-    PresetEntry {
-        id: "easy",
-        label: "Easy",
-        description: "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
-        build: build_easy,
-    },
-    PresetEntry {
-        id: "strong",
-        label: "Strong",
-        description: "UCB1 with MCTS-Solver, deep enough to solve the tree from most positions -- \
-             plays perfectly (win or draw).",
-        build: build_strong,
-    },
-];
 
 // ---------------------------------------------------------------------------
 // GameAdapter implementation
@@ -188,28 +161,17 @@ impl GameAdapter for TttAdapter {
     }
 
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESETS
-            .iter()
-            .map(|p| AiPresetInfo {
-                id: p.id.to_string(),
-                label: p.label.to_string(),
-                description: p.description.to_string(),
-            })
-            .collect()
+        presets().ai_presets()
     }
 
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found(format!("unknown preset: {preset}")))?;
 
         if TicTacToe::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
 
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<TicTacToe>(preset, PRESET_SEED)?;
         let action = ai.choose_action(&s);
         let next = TicTacToe::apply(s, &action);
 
@@ -226,16 +188,12 @@ impl GameAdapter for TttAdapter {
         _budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found(format!("unknown preset: {preset}")))?;
 
         if TicTacToe::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
 
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<TicTacToe>(preset, PRESET_SEED)?;
         let _ = ai.choose_action(&s);
         let report = ai.root_report(&s);
 
@@ -330,7 +288,11 @@ impl GameAdapter for TttAdapter {
                     max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
                 },
-                build_strong,
+                move || {
+                    presets()
+                        .build::<TicTacToe>("strong", PRESET_SEED)
+                        .expect("games/ttt/presets.json's \"strong\" preset must build")
+                },
                 Default::default(),
                 trace_path.as_deref(),
                 on_game,
