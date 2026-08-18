@@ -36,6 +36,7 @@
 //! -- higher-rank polymorphism via a trait with a generic method, standing
 //! in for a boxed trait object.
 
+use mcts::backprop::{self, BackpropStrategy};
 use mcts::game::Game;
 use mcts::select::{self, SelectStrategy};
 use mcts::simulate::{self, SimulateStrategy};
@@ -449,6 +450,134 @@ pub fn requirements_of_simulate<G: Game>(spec: &SimulateSpec) -> Requirements {
     with_simulate::<G, _>(spec, SimulateRequirementsCont(std::marker::PhantomData))
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+/// The `backprop`-axis counterpart of `SelectCont`/`SimulateCont`. Unlike
+/// those two, `BackpropStrategy` (`mcts/src/strategies/mcts/backprop.rs`) is
+/// not generic over `G: Game` -- its methods take `G` as a per-call type
+/// parameter instead -- so this dispatcher needs no `G` of its own either.
+pub trait BackpropCont {
+    type Output;
+    fn call<B: BackpropStrategy>(self, backprop: B) -> Self::Output;
+}
+
+/// `register_backprop!`'s table. `backprop::Classic` is, as of this writing,
+/// the *only* type in the whole workspace implementing `BackpropStrategy`
+/// (`grep -rn "impl.*BackpropStrategy for"` turns up exactly one hit), so
+/// this table starts with one row -- a macro rather than a hand-written enum
+/// mainly so a second `BackpropStrategy` impl slots in the same way a new
+/// `select`/`simulate` family does, without inventing a new pattern.
+///
+/// There is no `Base.../...` recursive-wrapper split here (contrast
+/// `register_select!`/`register_simulate!`): nothing wraps a
+/// `BackpropStrategy` anywhere in the codebase.
+///
+/// There is also no `requirements_of_backprop` -- `BackpropStrategy` itself
+/// declares no `requirements()`/`backprop_flags()` method
+/// (`SearchConfig::requirements()` only unions `Select`/`Simulate`/
+/// `FinalAction`, never `Backprop`), so there is nothing real for such a
+/// function to call through to.
+macro_rules! register_backprop {
+    (
+        $(
+            $variant:ident { $($field:ident : $ty:ty),* $(,)? } => $ctor:expr
+        ),+ $(,)?
+    ) => {
+        /// The config-IR node for the `backprop` axis.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        pub enum BackpropSpec {
+            $(
+                $variant { $($field: $ty),* },
+            )+
+        }
+
+        /// Dispatches `spec` to the concrete `BackpropStrategy` it names by
+        /// invoking `cont` with it -- see `with_base_select` above.
+        pub fn with_backprop<C>(spec: &BackpropSpec, cont: C) -> C::Output
+        where
+            C: BackpropCont,
+        {
+            match spec.clone() {
+                $(
+                    BackpropSpec::$variant { $($field),* } => {
+                        let backprop = $ctor;
+                        cont.call(backprop)
+                    }
+                )+
+            }
+        }
+    };
+}
+
+register_backprop! {
+    Classic {} => backprop::Classic,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// The config-IR node for the `final_action` axis. `Strategy::FinalAction`
+/// is bound by the exact same `select::SelectStrategy<G>` trait as `Select`
+/// (`mcts/src/strategies/mcts/config.rs`'s `Strategy` trait), so this reuses
+/// `SelectCont`'s dispatch machinery rather than inventing a parallel trait
+/// -- but it is a deliberately *separate*, smaller table from `SelectSpec`/
+/// `register_select!`, not new rows added to it: `final_action` only ever
+/// picks a root child once search ends, and `mcts-tune`'s existing
+/// `TrialParams::final_action` field only ever names one of
+/// `RobustChild`/`MaxAvgScore`/`MaxRobustChild`/`SecureChild`
+/// (`build_with_final_action`/`build_pn_with_final_action` in
+/// `mcts-tune/src/lib.rs`), never an in-tree exploration strategy like
+/// `Ucb1`/`Rave`/`UctPn`. None of the `select`-axis wrapper concerns
+/// (recursive `EpsilonGreedy`, unbounded monomorphization) apply here since
+/// none of these four types are themselves generic over an inner strategy,
+/// so this needs no `Base.../...` split -- one flat enum, one dispatcher.
+macro_rules! register_final_action {
+    (
+        $(
+            $variant:ident { $($field:ident : $ty:ty),* $(,)? } => $ctor:expr
+        ),+ $(,)?
+    ) => {
+        /// The config-IR node for the `final_action` axis.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        pub enum FinalActionSpec {
+            $(
+                $variant { $($field: $ty),* },
+            )+
+        }
+
+        /// Dispatches `spec` to the concrete `SelectStrategy<G>` it names by
+        /// invoking `cont` with it -- see `with_base_select` above.
+        pub fn with_final_action<G, C>(spec: &FinalActionSpec, cont: C) -> C::Output
+        where
+            G: Game,
+            C: SelectCont<G>,
+        {
+            match spec.clone() {
+                $(
+                    FinalActionSpec::$variant { $($field),* } => {
+                        let final_action = $ctor;
+                        cont.call(final_action)
+                    }
+                )+
+            }
+        }
+    };
+}
+
+register_final_action! {
+    RobustChild {} => select::RobustChild,
+    MaxAvg {} => select::MaxAvgScore,
+    MaxRobustChild {} => select::MaxRobustChild,
+    SecureChild { a: f64 } => select::SecureChild { a },
+}
+
+/// Reuses `RequirementsCont` (defined above for the `select` axis) since
+/// `final_action`'s dispatch resolves to the same `SelectStrategy<G>` trait.
+pub fn requirements_of_final_action<G: Game>(spec: &FinalActionSpec) -> Requirements {
+    with_final_action::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,6 +849,102 @@ mod tests {
         assert!(
             legal.contains(&action),
             "the action chosen by a JSON-configured MetaMcts search must be legal"
+        );
+    }
+
+    #[test]
+    fn backprop_spec_round_trips_through_json() {
+        let json = r#"{"kind":"classic"}"#;
+        let spec: BackpropSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, BackpropSpec::Classic {});
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    /// A `BackpropCont` whose `Output` is just a marker proving `with_backprop`
+    /// actually resolved to a real `BackpropStrategy` -- there's no
+    /// `requirements()` to check (see `register_backprop!`'s doc comment on
+    /// why), so this is the `backprop`-axis analogue of the `select`/
+    /// `simulate` "build a working search" tests, minus the search: any
+    /// `BackpropStrategy` is usable in a `Compose<..>` without further
+    /// per-type configuration.
+    struct ResolvedCont;
+
+    impl BackpropCont for ResolvedCont {
+        type Output = &'static str;
+
+        fn call<B: BackpropStrategy>(self, _backprop: B) -> &'static str {
+            "resolved"
+        }
+    }
+
+    #[test]
+    fn with_backprop_resolves_a_real_backprop_strategy() {
+        let spec = BackpropSpec::Classic {};
+        assert_eq!(with_backprop(&spec, ResolvedCont), "resolved");
+    }
+
+    #[test]
+    fn final_action_spec_round_trips_through_json() {
+        let json = r#"{"kind":"secure_child","a":2.5}"#;
+        let spec: FinalActionSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, FinalActionSpec::SecureChild { a: 2.5 });
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    #[test]
+    fn requirements_of_final_action_matches_the_real_components_own_answer() {
+        // None of the four `final_action` families override `requirements()`
+        // beyond the `SelectStrategy` default, unlike `UctPn` on the `select`
+        // axis -- so this just pins that they all resolve to
+        // `Requirements::none()` rather than silently picking up some future
+        // override without a test noticing.
+        for spec in [
+            FinalActionSpec::RobustChild {},
+            FinalActionSpec::MaxAvg {},
+            FinalActionSpec::MaxRobustChild {},
+            FinalActionSpec::SecureChild { a: 4.0 },
+        ] {
+            assert_eq!(
+                requirements_of_final_action::<Nim>(&spec),
+                Requirements::default()
+            );
+        }
+    }
+
+    /// Builds and runs a `TreeSearch<Nim, Compose<select::Ucb1, simulate::Uniform,
+    /// backprop::Classic, S>>` for whatever concrete `S` `with_final_action`
+    /// resolves -- the `final_action`-axis counterpart of `RunCont`/
+    /// `RunSimulateCont` above.
+    struct RunFinalActionCont<'a, G: Game> {
+        state: &'a G::S,
+    }
+
+    impl<'a, G: Game> SelectCont<G> for RunFinalActionCont<'a, G> {
+        type Output = G::A;
+
+        fn call<S: SelectStrategy<G>>(self, final_action: S) -> G::A {
+            let mut ts = TreeSearch::<G, Compose<select::Ucb1, simulate::Uniform, backprop::Classic, S>>::default()
+                .config(
+                    SearchConfig::default()
+                        .final_action(final_action)
+                        .max_iterations(200)
+                        .seed(1),
+                );
+            ts.choose_action(self.state)
+        }
+    }
+
+    #[test]
+    fn with_final_action_builds_a_working_tree_search_from_a_json_spec() {
+        let spec: FinalActionSpec =
+            serde_json::from_str(r#"{"kind":"robust_child"}"#).unwrap();
+        let state = <Nim as Game>::S::default();
+        let action = with_final_action::<Nim, _>(&spec, RunFinalActionCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured search must be legal"
         );
     }
 }
