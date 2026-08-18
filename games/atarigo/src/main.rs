@@ -1,3 +1,7 @@
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
     TunerInfo,
@@ -8,12 +12,32 @@ use serde_json::Value;
 use game_atarigo::{AtariGo, Move, Player, State};
 use game_core::bigbitboard::BigBitBoard;
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
+
+/// Fixed seed for every `ai_move`/`analyze`/fallback-baseline search built
+/// through [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed
+/// argument, so this is the only seed available to
+/// `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`strong` preset table -- `games/atarigo/presets.json`'s
+/// embedded defaults, or an operator-supplied override file named by
+/// `ATARIGO_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
+/// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
+/// `WORDS`, only by which `Game<N, WORDS>` `PresetTable::build` is
+/// monomorphized for at each call site.
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("ATARIGO_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/atarigo/presets.json must parse")
+    })
+}
 
 /// `(N, WORDS)` pairs this binary serves. Each is a distinct
 /// `State<N, WORDS>` monomorphization -- see `dispatch_size!` below -- so
@@ -148,41 +172,6 @@ fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N
     }
 }
 
-fn build_easy<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = AtariGo<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<AtariGo<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("atarigo/easy")
-                .expand_threshold(1)
-                .max_iterations(100)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-fn build_strong<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = AtariGo<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<AtariGo<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("atarigo/strong")
-                .expand_threshold(0)
-                .max_iterations(5000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-fn build_preset<const N: usize, const WORDS: usize>(
-    id: &str,
-) -> Result<Box<dyn Search<G = AtariGo<N, WORDS>>>, HostError> {
-    match id {
-        "easy" => Ok(build_easy::<N, WORDS>()),
-        "strong" => Ok(build_strong::<N, WORDS>()),
-        _ => Err(HostError::not_found("unknown preset")),
-    }
-}
-
-const PRESET_IDS: &[&str] = &["easy", "strong"];
-
 struct AtarigoAdapter;
 
 impl GameAdapter for AtarigoAdapter {
@@ -256,14 +245,7 @@ impl GameAdapter for AtarigoAdapter {
         })
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESET_IDS
-            .iter()
-            .map(|id| AiPresetInfo {
-                id: (*id).into(),
-                label: (*id).into(),
-                description: "".into(),
-            })
-            .collect()
+        presets().ai_presets()
     }
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let w = parse_wire_state(state)?;
@@ -273,7 +255,7 @@ impl GameAdapter for AtarigoAdapter {
             if AtariGo::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = presets().build::<AtariGo<N, WORDS>>(preset, PRESET_SEED)?;
             let action = ai.choose_action(&s);
             let next = AtariGo::<N, WORDS>::apply(s, &action);
             Ok(AiMoveResult {
@@ -290,7 +272,7 @@ impl GameAdapter for AtarigoAdapter {
             if AtariGo::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = presets().build::<AtariGo<N, WORDS>>(preset, PRESET_SEED)?;
             let _ = ai.choose_action(&s);
             let report = ai.root_report(&s);
             let suggested = report
@@ -398,7 +380,11 @@ impl GameAdapter for AtarigoAdapter {
                         max_time: max_time_ms.map(std::time::Duration::from_millis),
                         ..Default::default()
                     },
-                    build_strong::<N, WORDS>,
+                    move || {
+                        presets()
+                            .build::<AtariGo<N, WORDS>>("strong", PRESET_SEED)
+                            .expect("games/atarigo/presets.json's \"strong\" preset must build")
+                    },
                     Default::default(),
                     trace_path.as_deref(),
                     on_game,
