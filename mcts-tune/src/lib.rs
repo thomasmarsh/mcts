@@ -166,6 +166,7 @@ fn to_search_spec(
         select,
         simulate,
         final_action,
+        backprop,
         solver_loss_threshold: solver_loss_threshold_setting,
         contempt_factor: contempt_factor_setting,
     } = dispatch_family(&p.family, p)?;
@@ -173,7 +174,7 @@ fn to_search_spec(
     let spec = config_ir::SearchSpec {
         select,
         simulate,
-        backprop: config_ir::BackpropSpec::Classic {},
+        backprop,
         final_action,
     };
     let settings = config_ir::SearchSettings {
@@ -268,6 +269,7 @@ fn make_candidate<G: Game + 'static>(
         )),
         _ => {
             let (spec, settings) = to_search_spec(p, seed, use_transpositions, budget)?;
+            config_ir::validate_search_spec::<G>(&spec).map_err(HostError::bad_request)?;
             Ok(config_ir::build_search(&spec, &settings))
         }
     }
@@ -1785,6 +1787,21 @@ mod tests {
                     "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
                     "final_action": "robust_child", "solver_loss_threshold": 5,
                     "contempt": "on", "contempt_factor": -0.5,
+                }),
+            ),
+            (
+                "bayes_uct1_gaussian",
+                json!({
+                    "family": "bayes_uct1_gaussian", "c": 1.0, "prior_variance": 1.0,
+                    "obs_variance": 1.0, "final_action": "robust_child",
+                }),
+            ),
+            (
+                "bayes_uct2_numeric",
+                json!({
+                    "family": "bayes_uct2_numeric", "c": 1.0, "prior_variance": 1.0,
+                    "obs_variance": 1.0, "value_lo": -1.0, "value_hi": 1.0,
+                    "final_action": "robust_child",
                 }),
             ),
         ]

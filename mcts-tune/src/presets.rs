@@ -254,6 +254,7 @@ pub fn build_custom<G: Game + 'static>(
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
     let q_init = QInit::from_str(&spec.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", spec.q_init)))?;
+    config_ir::validate_search_spec::<G>(&spec.search).map_err(HostError::bad_request)?;
     let budget = spec.budget();
     let (use_transpositions, reuse_tree, graph_search) =
         crate::resolve_graph_search(spec.mcgs, spec.use_transpositions)?;

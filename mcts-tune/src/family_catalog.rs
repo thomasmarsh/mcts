@@ -10,7 +10,7 @@
 //! of the three is "a field some family's `conditions` entry activates",
 //! which is what this table exists to cover.
 
-use crate::config_ir::{BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
+use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
 use game_host::{HostError, TunerCondition, TunerParameter};
 use mcts::select::{RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
@@ -106,6 +106,16 @@ register_field! {
     // Compared against `Node::expected_score`, whose default range
     // (`Game::compute_utilities`'s default) is [-1, 1].
     contempt_factor: f64 => json!({"type": "float", "bounds": [-1, 1], "default": 0.0}),
+    // `backprop::BayesGaussian`/`BayesNumeric`'s conjugate-update
+    // hyperparameters -- see `backprop.rs`'s `conjugate_leaf_posterior` doc
+    // comment.
+    prior_variance: f64 => json!({"type": "float", "bounds": [0.0, 10.0], "default": 1.0}),
+    obs_variance: f64 => json!({"type": "float", "bounds": [1e-6, 10.0], "default": 1.0}),
+    // `backprop::BayesNumeric`'s grid bounds -- must cover the game's real
+    // utility range, defaulting to this codebase's symmetric [-1, 1]
+    // convention.
+    value_lo: f64 => json!({"type": "float", "bounds": [-10.0, 10.0], "default": -1.0}),
+    value_hi: f64 => json!({"type": "float", "bounds": [-10.0, 10.0], "default": 1.0}),
 }
 
 fn missing(field: &str) -> HostError {
@@ -118,6 +128,22 @@ fn c(p: &TrialParams) -> Result<f64, HostError> {
 
 fn epsilon(p: &TrialParams) -> Result<f64, HostError> {
     p.epsilon.ok_or_else(|| missing("epsilon"))
+}
+
+fn prior_variance(p: &TrialParams) -> Result<f64, HostError> {
+    p.prior_variance.ok_or_else(|| missing("prior_variance"))
+}
+
+fn obs_variance(p: &TrialParams) -> Result<f64, HostError> {
+    p.obs_variance.ok_or_else(|| missing("obs_variance"))
+}
+
+fn value_lo(p: &TrialParams) -> Result<f64, HostError> {
+    p.value_lo.ok_or_else(|| missing("value_lo"))
+}
+
+fn value_hi(p: &TrialParams) -> Result<f64, HostError> {
+    p.value_hi.ok_or_else(|| missing("value_hi"))
 }
 
 fn c_pn(p: &TrialParams) -> Result<f64, HostError> {
@@ -172,6 +198,13 @@ pub(crate) struct FamilySpec {
     pub select: SelectSpec,
     pub simulate: SimulateSpec,
     pub final_action: FinalActionSpec,
+    /// Every pre-Bayes family sets this to `BackpropSpec::Classic {}` --
+    /// `backprop` had no per-family axis at all until `BayesUct1`/
+    /// `BayesUct2`'s `bayes_uct1_gaussian`/`bayes_uct2_numeric` rows needed
+    /// to name a non-`Classic` backprop (see `config_ir.rs`'s
+    /// `needs_posterior` doc comment for why the two have to travel
+    /// together).
+    pub backprop: BackpropSpec,
     pub solver_loss_threshold: Option<u32>,
     pub contempt_factor: Option<f64>,
 }
@@ -247,6 +280,7 @@ register_family! {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -257,6 +291,7 @@ register_family! {
             inner: BaseSimulateSpec::Uniform {},
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -267,6 +302,7 @@ register_family! {
             inner: BaseSimulateSpec::Mast {},
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -281,6 +317,7 @@ register_family! {
             },
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -297,6 +334,7 @@ register_family! {
                 .ok_or_else(|| missing("nst_backoff_threshold"))?,
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -307,6 +345,7 @@ register_family! {
         },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -317,6 +356,7 @@ register_family! {
         },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -330,6 +370,7 @@ register_family! {
             inner: BaseSimulateSpec::Mast {},
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -337,6 +378,7 @@ register_family! {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -344,6 +386,7 @@ register_family! {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Mast {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -354,6 +397,7 @@ register_family! {
             inner: BaseSimulateSpec::Uniform {},
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -364,6 +408,7 @@ register_family! {
             epsilon: epsilon(p)?,
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -401,6 +446,7 @@ register_family! {
                 epsilon: epsilon(p)?,
             },
             final_action: to_final_action_spec(p)?,
+            backprop: BackpropSpec::Classic {},
             solver_loss_threshold: None,
             contempt_factor: None,
         })
@@ -412,6 +458,7 @@ register_family! {
         },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
     }),
@@ -425,6 +472,7 @@ register_family! {
             inner: BaseSimulateSpec::Mast {},
         },
         final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
     }),
@@ -432,6 +480,7 @@ register_family! {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: FinalActionSpec::MaxRobustChild {},
+        backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
@@ -441,6 +490,36 @@ register_family! {
             iterations: crate::META_MCTS_INNER_ITERATIONS,
         },
         final_action: FinalActionSpec::MaxAvg {},
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
+    // Tesauro/Rajan/Segal 2010's Bayesian MCTS: `select`/`backprop` have to
+    // travel together (`config_ir.rs`'s `needs_posterior`), so these two
+    // families each pin one concrete pairing for SMAC3 to tune rather than
+    // leaving the select<->backprop choice free (only `build_custom`'s
+    // Custom-UI path composes those two axes independently).
+    "bayes_uct1_gaussian" => [c, prior_variance, obs_variance, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::BayesUct1 { c: c(p)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::BayesGaussian {
+            prior_variance: prior_variance(p)?,
+            obs_variance: obs_variance(p)?,
+        },
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
+    "bayes_uct2_numeric" => [c, prior_variance, obs_variance, value_lo, value_hi, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::BayesUct2 { c: c(p)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::BayesNumeric {
+            prior_variance: prior_variance(p)?,
+            obs_variance: obs_variance(p)?,
+            value_lo: value_lo(p)?,
+            value_hi: value_hi(p)?,
+        },
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
