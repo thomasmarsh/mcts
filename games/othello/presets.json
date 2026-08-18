@@ -1,0 +1,38 @@
+[
+    {
+        "id": "easy",
+        "label": "Easy",
+        "description": "Shallow budget — obvious mistakes.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 30
+    },
+    {
+        "id": "medium",
+        "label": "Medium",
+        "description": "Moderate budget — plays competently.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 1000
+    },
+    {
+        "id": "strong",
+        "label": "Strong",
+        "description": "Deep MCTS-Solver — plays strongly.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Loss",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 10000
+    }
+]

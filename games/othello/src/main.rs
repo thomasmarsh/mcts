@@ -1,3 +1,7 @@
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
     TunerInfo,
@@ -8,12 +12,30 @@ use serde_json::Value;
 use game_core::bitboard::BitBoard;
 use game_othello::{Move, Othello, Player, State};
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
+
+/// Fixed seed for every `ai_move`/`analyze`/fallback-baseline search built
+/// through [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed
+/// argument, so this is the only seed available to
+/// `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`medium`/`strong` preset table --
+/// `games/othello/presets.json`'s embedded defaults, or an
+/// operator-supplied override file named by `OTHELLO_PRESETS_PATH` (see
+/// `PresetTable::load`'s doc comment).
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("OTHELLO_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/othello/presets.json must parse")
+    })
+}
 
 #[derive(Serialize, Deserialize)]
 struct WireState {
@@ -65,68 +87,6 @@ fn value_to_state(v: &Value) -> Result<State, HostError> {
         last_pass: w.last_pass,
         hashes: [0u64; 8],
     })
-}
-
-fn build_easy() -> Box<dyn Search<G = Othello>> {
-    Box::new(
-        TreeSearch::<Othello, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("othello/easy")
-                .expand_threshold(1)
-                .max_iterations(30)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-fn build_medium() -> Box<dyn Search<G = Othello>> {
-    Box::new(
-        TreeSearch::<Othello, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("othello/medium")
-                .expand_threshold(1)
-                .max_iterations(1000)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-fn build_strong() -> Box<dyn Search<G = Othello>> {
-    Box::new(
-        TreeSearch::<Othello, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("othello/strong")
-                .expand_threshold(0)
-                .max_iterations(10000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-
-const PRESETS: &[PresetEntry] = &[
-    PresetEntry {
-        id: "easy",
-        label: "Easy",
-        description: "Shallow budget — obvious mistakes.",
-        build: build_easy,
-    },
-    PresetEntry {
-        id: "medium",
-        label: "Medium",
-        description: "Moderate budget — plays competently.",
-        build: build_medium,
-    },
-    PresetEntry {
-        id: "strong",
-        label: "Strong",
-        description: "Deep MCTS-Solver — plays strongly.",
-        build: build_strong,
-    },
-];
-struct PresetEntry {
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    build: fn() -> Box<dyn Search<G = Othello>>,
 }
 
 struct OthAdapter;
@@ -200,25 +160,14 @@ impl GameAdapter for OthAdapter {
         .map_err(|e| HostError::internal(e.to_string()))
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESETS
-            .iter()
-            .map(|p| AiPresetInfo {
-                id: p.id.into(),
-                label: p.label.into(),
-                description: p.description.into(),
-            })
-            .collect()
+        presets().ai_presets()
     }
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
         if Othello::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<Othello>(preset, PRESET_SEED)?;
         let action = ai.choose_action(&s);
         let next = Othello::apply(s, &action);
         Ok(AiMoveResult {
@@ -228,14 +177,10 @@ impl GameAdapter for OthAdapter {
     }
     fn analyze(&self, state: &Value, preset: &str, _: Option<u64>) -> Result<Analysis, HostError> {
         let s = value_to_state(state)?;
-        let spec = PRESETS
-            .iter()
-            .find(|p| p.id == preset)
-            .ok_or_else(|| HostError::not_found("unknown preset"))?;
         if Othello::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
-        let mut ai = (spec.build)();
+        let mut ai = presets().build::<Othello>(preset, PRESET_SEED)?;
         let _ = ai.choose_action(&s);
         let report = ai.root_report(&s);
         let suggested = report
@@ -328,7 +273,11 @@ impl GameAdapter for OthAdapter {
                     max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
                 },
-                build_strong,
+                move || {
+                    presets()
+                        .build::<Othello>("strong", PRESET_SEED)
+                        .expect("games/othello/presets.json's \"strong\" preset must build")
+                },
                 Default::default(),
                 trace_path.as_deref(),
                 on_game,
