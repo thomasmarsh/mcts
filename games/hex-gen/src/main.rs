@@ -10,6 +10,10 @@
 //! `gdl/src/codegen/hex.rs`'s doc comment for why), so one generated crate
 //! serves every size below rather than needing one generated crate per size.
 
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
 };
@@ -18,8 +22,27 @@ use serde_json::Value;
 
 use game_hex_gen::{HashedPosition, Hex, Move, Player, Position};
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
+
+/// Fixed seed for every `ai_move`/`analyze` search built through [`presets`]
+/// -- `GameAdapter::ai_move`/`analyze` take no seed argument, so this is the
+/// only seed available to `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`strong` preset table -- `games/hex-gen/presets.json`'s
+/// embedded defaults, or an operator-supplied override file named by
+/// `HEX_GEN_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
+/// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
+/// `WORDS`, only by which `Hex<N, WORDS>` `PresetTable::build` is
+/// monomorphized for at each call site.
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("HEX_GEN_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/hex-gen/presets.json must parse")
+    })
+}
 
 /// `(N, WORDS)` pairs this binary serves. Each is a distinct
 /// `HashedPosition<N, WORDS>` monomorphization -- see `dispatch_size!` below
@@ -153,67 +176,6 @@ fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
 }
 
 // ---------------------------------------------------------------------------
-// AI presets
-// ---------------------------------------------------------------------------
-
-fn build_easy<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Hex<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<Hex<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("hex-gen/easy")
-                .expand_threshold(1)
-                .max_iterations(30)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-
-fn build_strong<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Hex<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<Hex<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("hex-gen/strong")
-                .expand_threshold(0)
-                .max_iterations(50000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-
-fn build_preset<const N: usize, const WORDS: usize>(
-    id: &str,
-) -> Result<Box<dyn Search<G = Hex<N, WORDS>>>, HostError> {
-    match id {
-        "easy" => Ok(build_easy::<N, WORDS>()),
-        "strong" => Ok(build_strong::<N, WORDS>()),
-        _ => Err(HostError::not_found(format!("unknown preset: {id}"))),
-    }
-}
-
-const PRESET_IDS: &[&str] = &["easy", "strong"];
-
-fn preset_label(id: &str) -> &'static str {
-    match id {
-        "easy" => "Easy",
-        "strong" => "Strong",
-        _ => "",
-    }
-}
-
-fn preset_description(id: &str) -> &'static str {
-    match id {
-        "easy" => "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
-        "strong" => {
-            "UCB1 with MCTS-Solver and a deeper iteration budget -- meaningfully \
-             stronger than Easy, though larger boards are far too large for MCTS-Solver to prove \
-             (let alone solve) from the opening."
-        }
-        _ => "",
-    }
-}
-
-// ---------------------------------------------------------------------------
 // GameAdapter implementation
 // ---------------------------------------------------------------------------
 
@@ -302,14 +264,7 @@ impl GameAdapter for HexGenAdapter {
     }
 
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESET_IDS
-            .iter()
-            .map(|id| AiPresetInfo {
-                id: (*id).into(),
-                label: preset_label(id).into(),
-                description: preset_description(id).into(),
-            })
-            .collect()
+        presets().ai_presets()
     }
 
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
@@ -321,7 +276,7 @@ impl GameAdapter for HexGenAdapter {
             if Hex::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = presets().build::<Hex<N, WORDS>>(preset, PRESET_SEED)?;
             let action = ai.choose_action(&s);
             let next = Hex::<N, WORDS>::apply(s, &action);
             Ok(AiMoveResult {
@@ -345,7 +300,7 @@ impl GameAdapter for HexGenAdapter {
             if Hex::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = build_preset::<N, WORDS>(preset)?;
+            let mut ai = presets().build::<Hex<N, WORDS>>(preset, PRESET_SEED)?;
             let _ = ai.choose_action(&s);
             let report = ai.root_report(&s);
 

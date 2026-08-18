@@ -1,0 +1,26 @@
+[
+    {
+        "id": "easy",
+        "label": "Easy",
+        "description": "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 30
+    },
+    {
+        "id": "strong",
+        "label": "Strong",
+        "description": "UCB1 with MCTS-Solver and a deeper iteration budget -- meaningfully stronger than Easy, though larger boards are far too large for MCTS-Solver to prove (let alone solve) from the opening.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Loss",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 50000
+    }
+]
