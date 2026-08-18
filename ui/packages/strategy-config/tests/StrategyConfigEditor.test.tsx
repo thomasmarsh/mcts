@@ -108,6 +108,28 @@ describe("StrategyConfigEditor", () => {
     expect(getLatest()).toBe(before);
   });
 
+  it("MCGS checkbox is disabled until transpositions are enabled, and unchecking transpositions clears mcgs", () => {
+    const { getLatest } = renderEditor(fixtureDefaultConfig() as unknown as CustomStrategySpec);
+
+    const transpositionsCheckbox = screen.getByLabelText("Use transpositions") as HTMLInputElement;
+    const mcgsCheckbox = screen.getByLabelText("Graph search (MCGS)") as HTMLInputElement;
+    expect(transpositionsCheckbox.checked).toBe(false);
+    expect(mcgsCheckbox.disabled).toBe(true);
+
+    fireEvent.click(transpositionsCheckbox);
+    expect(mcgsCheckbox.disabled).toBe(false);
+
+    fireEvent.click(mcgsCheckbox);
+    expect(getLatest().mcgs).toBe(true);
+
+    // Turning transpositions back off must clear `mcgs` too -- the server
+    // (`mcts_tune::presets::build_custom`) rejects `mcgs && !use_transpositions`,
+    // so this editor must never be able to produce that combination.
+    fireEvent.click(transpositionsCheckbox);
+    expect(getLatest().mcgs).toBe(false);
+    expect(getLatest().use_transpositions).toBe(false);
+  });
+
   it("checking both budget boxes simultaneously is accepted", () => {
     const { getLatest } = renderEditor(fixtureDefaultConfig() as unknown as CustomStrategySpec);
 

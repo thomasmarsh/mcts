@@ -159,11 +159,8 @@ fn to_search_spec(
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
     let mcgs = p.mcgs.unwrap_or(false);
-    if mcgs && !use_transpositions {
-        return Err(HostError::bad_request(
-            "mcgs requires a game with a zobrist hash",
-        ));
-    }
+    let (use_transpositions, reuse_tree, graph_search) =
+        resolve_graph_search(mcgs, use_transpositions)?;
 
     let FamilySpec {
         select,
@@ -184,17 +181,43 @@ fn to_search_spec(
         max_playout_depth: PLAYOUT_DEPTH,
         expand_threshold: EXPAND_THRESHOLD,
         q_init,
-        use_transpositions: use_transpositions && !mcgs,
+        use_transpositions,
         use_mcts_solver: true,
-        reuse_tree: !mcgs,
+        reuse_tree,
         num_tree_threads: budget.threads,
         seed,
         max_time: budget.max_time,
-        graph_search: mcgs.then_some(GraphSearch::Dag(GraphStats::Both)),
+        graph_search,
         solver_loss_threshold: solver_loss_threshold_setting,
         contempt_factor: contempt_factor_setting,
     };
     Ok((spec, settings))
+}
+
+/// Derives `SearchSettings`'s `use_transpositions`/`reuse_tree`/
+/// `graph_search` from a requested `mcgs` flag and whether the game supports
+/// transpositions at all -- the one place "`mcgs` implies `Dag(Both)`, turns
+/// off the plain transposition table and tree reuse, and requires a real
+/// zobrist hash" is decided. Both [`to_search_spec`] and
+/// [`presets::build_custom`] call this rather than each re-deriving the same
+/// three fields from `mcgs`, so that mapping can't drift into two different
+/// answers as either caller changes independently -- see this repo's
+/// `AGENTS.md` on why config axes like this one need to be correct by
+/// construction rather than duplicated by convention.
+pub(crate) fn resolve_graph_search(
+    mcgs: bool,
+    use_transpositions: bool,
+) -> Result<(bool, bool, Option<GraphSearch>), HostError> {
+    if mcgs && !use_transpositions {
+        return Err(HostError::bad_request(
+            "mcgs requires a game with a zobrist hash",
+        ));
+    }
+    Ok((
+        use_transpositions && !mcgs,
+        !mcgs,
+        mcgs.then_some(GraphSearch::Dag(GraphStats::Both)),
+    ))
 }
 
 /// Builds a `Box<dyn Search<G>>` from a raw params JSON object, the same

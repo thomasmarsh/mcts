@@ -417,9 +417,31 @@ export const StrategyConfigEditor: Component<{
           <input
             type="checkbox"
             checked={props.config.use_transpositions ?? false}
-            onChange={(e) => props.onChange({ ...props.config, use_transpositions: e.currentTarget.checked })}
+            onChange={(e) => {
+              const use_transpositions = e.currentTarget.checked;
+              // `mcgs` requires `use_transpositions` (see the field below
+              // and `CustomStrategySpec::mcgs`'s doc comment) -- clearing
+              // transpositions clears it too, so this editor can never
+              // produce the rejected `mcgs && !use_transpositions`
+              // combination in the first place.
+              props.onChange({
+                ...props.config,
+                use_transpositions,
+                mcgs: use_transpositions ? props.config.mcgs : false,
+              });
+            }}
           />
           Use transpositions
+        </label>
+
+        <label class="strategy-checkbox-field">
+          <input
+            type="checkbox"
+            disabled={!(props.config.use_transpositions ?? false)}
+            checked={props.config.mcgs ?? false}
+            onChange={(e) => props.onChange({ ...props.config, mcgs: e.currentTarget.checked })}
+          />
+          Graph search (MCGS)
         </label>
 
         <label>
