@@ -378,6 +378,102 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     })
 }
 
+/// Implements the common shape of `GameAdapter::tune_eval` directly, for a
+/// game whose board is fixed at compile time -- it ignores `game_config` and
+/// always starts from `G::S::default()` -- and whose only named baseline is
+/// a single preset (`baseline_preset`, e.g. `"strong"`). That covers every
+/// current game except the handful with a runtime-configurable board (e.g.
+/// `games/druid`, whose `tune_eval` builds `initial_state` from its own
+/// `game_config` argument instead) or a `tuner()` with more than one
+/// baseline; those keep writing out `strategy_tune_eval`/`build_search`
+/// directly, matching what this function does internally.
+///
+/// `presets_source` names the preset file in the panic message if
+/// `baseline_preset` fails to build (e.g. `"games/ttt/presets.json"`) --
+/// this only fires if that file's own baseline preset is broken, which
+/// should never happen since it ships with the crate.
+#[allow(clippy::too_many_arguments)]
+pub fn generic_tune_eval<G: Game + 'static>(
+    presets: &presets::PresetTable,
+    baseline_preset: &str,
+    presets_source: &str,
+    use_transpositions: bool,
+    preset_seed: u64,
+    params: Value,
+    rounds: u32,
+    seed: Option<u64>,
+    baseline_config: Option<Value>,
+    max_iterations: Option<usize>,
+    max_time_ms: Option<u64>,
+    trace_path: Option<std::path::PathBuf>,
+    on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
+) -> Result<Value, HostError> {
+    // `use_transpositions: true` requires a real `Game::zobrist_hash`
+    // override -- the caller is responsible for only passing `true` when `G`
+    // has one, so merging transposed nodes during the candidate's search is
+    // safe here (see `strategy_tune_eval`'s doc comment).
+    let outcome = if let Some(cfg) = baseline_config {
+        let baseline_seed = seed.unwrap_or(0);
+        // This opponent is itself a `build_search`-built config, on the
+        // same iteration-based footing as the candidate -- both sides get
+        // the *same* budget (an operator's `max_iterations` override
+        // included) so there's nothing to match asymmetrically (see
+        // `SearchBudget`'s and `build_search`'s doc comments).
+        let budget = SearchBudget {
+            max_iterations,
+            max_time: max_time_ms.map(std::time::Duration::from_millis),
+            ..Default::default()
+        };
+        // Fail fast on an invalid baseline config, before any games are
+        // played -- mirrors how a bad candidate `params` is already
+        // rejected during `TrialParams` deserialization inside
+        // `strategy_tune_eval` itself.
+        build_search::<G>(&cfg, baseline_seed, use_transpositions, &budget)?;
+        strategy_tune_eval::<G>(
+            &params,
+            rounds,
+            seed,
+            use_transpositions,
+            budget,
+            move || {
+                build_search::<G>(&cfg, baseline_seed, use_transpositions, &budget)
+                    .expect("baseline_config already validated above")
+            },
+            Default::default(),
+            trace_path.as_deref(),
+            on_game,
+        )?
+    } else {
+        strategy_tune_eval::<G>(
+            &params,
+            rounds,
+            seed,
+            use_transpositions,
+            SearchBudget {
+                max_iterations,
+                max_time: max_time_ms.map(std::time::Duration::from_millis),
+                ..Default::default()
+            },
+            move || {
+                presets
+                    .build::<G>(baseline_preset, preset_seed)
+                    .unwrap_or_else(|e| {
+                        panic!("{presets_source}'s {baseline_preset:?} preset must build: {e}")
+                    })
+            },
+            Default::default(),
+            trace_path.as_deref(),
+            on_game,
+        )?
+    };
+    Ok(json!({
+        "cost": outcome.cost,
+        "wins": outcome.wins,
+        "losses": outcome.losses,
+        "draws": outcome.draws,
+    }))
+}
+
 /// `cost = losses / (2*rounds)`: the candidate's loss rate across the
 /// `2*rounds` games it plays (moving first and second each round), the
 /// quantity SMAC3 minimizes. Draws and wins both count as "not a loss" --

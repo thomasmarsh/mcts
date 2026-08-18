@@ -217,66 +217,23 @@ impl GameAdapter for NimAdapter {
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // Nim's `Game::zobrist_hash` is the default constant `0`, so
-        // transpositions must stay off -- see `mcts-tune`'s
-        // `strategy_tune_eval` doc comment.
-        let outcome = if let Some(cfg) = baseline_config {
-            let baseline_seed = seed.unwrap_or(0);
-            // This opponent is itself a `build_search`-built config, on
-            // the same iteration-based footing as the candidate -- both
-            // sides get the *same* budget (an operator's `max_iterations`
-            // override included) so there's nothing to match asymmetrically
-            // (see `SearchBudget`'s and `build_search`'s doc comments).
-            let budget = mcts_tune::SearchBudget {
-                max_iterations,
-                max_time: max_time_ms.map(std::time::Duration::from_millis),
-                ..Default::default()
-            };
-            // Fail fast on an invalid baseline config, before any games are
-            // played -- mirrors how a bad candidate `params` is already
-            // rejected during `TrialParams` deserialization inside
-            // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<Nim>(&cfg, baseline_seed, false, &budget)?;
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                false,
-                budget,
-                move || {
-                    mcts_tune::build_search::<Nim>(&cfg, baseline_seed, false, &budget)
-                        .expect("baseline_config already validated above")
-                },
-                Default::default(),
-                trace_path.as_deref(),
-                on_game,
-            )?
-        } else {
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                false,
-                mcts_tune::SearchBudget {
-                    max_iterations,
-                    max_time: max_time_ms.map(std::time::Duration::from_millis),
-                    ..Default::default()
-                },
-                move || {
-                    presets()
-                        .build::<Nim>("strong", PRESET_SEED)
-                        .expect("games/nim/presets.json's \"strong\" preset must build")
-                },
-                Default::default(),
-                trace_path.as_deref(),
-                on_game,
-            )?
-        };
-        Ok(serde_json::json!({
-            "cost": outcome.cost,
-            "wins": outcome.wins,
-            "losses": outcome.losses,
-            "draws": outcome.draws,
-        }))
+        // transpositions must stay off -- see `generic_tune_eval`'s doc
+        // comment.
+        mcts_tune::generic_tune_eval::<Nim>(
+            presets(),
+            "strong",
+            "games/nim/presets.json",
+            false,
+            PRESET_SEED,
+            params,
+            rounds,
+            seed,
+            baseline_config,
+            max_iterations,
+            max_time_ms,
+            trace_path,
+            on_game,
+        )
     }
 }
 
