@@ -456,6 +456,7 @@ pub trait GameAdapter: Send + Sync {
     /// sanity-checking a SMAC3 run in progress. `None` disables tracing
     /// entirely (no file opened, no per-ply overhead).
     #[allow(unused_variables)]
+    #[allow(clippy::too_many_arguments)]
     fn tune_eval(
         &self,
         params: Value,

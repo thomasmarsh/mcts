@@ -1709,6 +1709,31 @@ async fn get_run_game_moves(
     Ok(Json(rows))
 }
 
+/// One `experiment_cells` row, as `get_run_cells`'s query returns it --
+/// named so the query's `Vec<(...)>` annotation and the `for (...) in rows`
+/// destructure both point at one spelled-out tuple shape instead of two
+/// independently-drifting 18-tuples.
+type ExperimentCellRow = (
+    String,
+    Option<u64>,
+    String,
+    Value,
+    String,
+    String,
+    Value,
+    String,
+    String,
+    Value,
+    Value,
+    i64,
+    u64,
+    u64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 async fn get_run_cells(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
@@ -1726,26 +1751,7 @@ async fn get_run_cells(
         });
     }
     let mut stmt = db.prepare("SELECT cell_id, cell_seed, game, CAST(game_config AS TEXT), variant_id, variant_label, CAST(candidate_config AS TEXT), baseline_id, baseline_label, CAST(baseline_config AS TEXT), CAST(budget AS TEXT), rounds, planned_games, completed_games, status, CAST(started_at AS TEXT), CAST(ended_at AS TEXT), error FROM experiment_cells WHERE run_id = ?1 ORDER BY cell_id")?;
-    let rows: Vec<(
-        String,
-        Option<u64>,
-        String,
-        Value,
-        String,
-        String,
-        Value,
-        String,
-        String,
-        Value,
-        Value,
-        i64,
-        u64,
-        u64,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = stmt
+    let rows: Vec<ExperimentCellRow> = stmt
         .query_map(duckdb::params![run_id], |row| {
             Ok((
                 row.get(0)?,
@@ -1935,7 +1941,9 @@ async fn live_run_moves(
                 last_ply = -1;
             }
 
-            let new_rows: Vec<(i64, String, String, Option<String>, Option<String>)> = {
+            // (ply, ts, state, mv, player)
+            type GameMoveRow = (i64, String, String, Option<String>, Option<String>);
+            let new_rows: Vec<GameMoveRow> = {
                 let db = state.db.lock().unwrap();
                 let stmt = db.prepare(
                     "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player \

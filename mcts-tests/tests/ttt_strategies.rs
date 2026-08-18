@@ -1882,3 +1882,53 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         "MaxRobustChild should defer to average score once visits and score disagree"
     );
 }
+
+#[test]
+fn test_requirements_union_composes_and_survives_wrapping() {
+    // `config::Requirements` (see its doc comment) is the union algebra
+    // that resolves a composed strategy's storage needs/constraints without
+    // a per-pair-of-features match arm. `select::UctPn` is the one
+    // `SelectStrategy` that overrides `requirements()` beyond what
+    // `backprop_flags()` alone can express (`solver`/`max_players`); wrap it
+    // in `select::EpsilonGreedy` to prove that override survives
+    // composition instead of silently reverting to the
+    // `from_backprop_flags` default.
+    use game_ttt::*;
+    use mcts::select::{EpsilonGreedy, UctPn};
+    type G = TicTacToe;
+
+    let plain = <UctPn as mcts::select::SelectStrategy<G>>::requirements(&UctPn::default());
+    assert!(plain.solver, "UctPn requires the solver's proof bookkeeping");
+    assert_eq!(
+        plain.max_players,
+        Some(2),
+        "UctPn's Proven representation is only sound for <= 2 players"
+    );
+
+    let wrapped = <EpsilonGreedy<G, UctPn> as mcts::select::SelectStrategy<G>>::requirements(
+        &EpsilonGreedy::new(),
+    );
+    assert_eq!(
+        wrapped, plain,
+        "wrapping in EpsilonGreedy must not lose UctPn's requirements"
+    );
+
+    // Composing with an unrelated Requirements-bearing component (AMAF) is
+    // a plain union: both sides' bits/constraints survive.
+    let amaf = mcts::Requirements {
+        amaf: true,
+        ..mcts::Requirements::none()
+    };
+    let combined = plain.union(amaf);
+    assert!(combined.solver && combined.amaf && combined.max_players == Some(2));
+
+    // And the whole thing is exactly what `SearchConfig::requirements()`
+    // reports for a real composed strategy, wired end to end.
+    type Strat = mcts::strategies::mcts::strategy::Compose<UctPn, mcts::simulate::Uniform>;
+    let cfg = mcts::SearchConfig::<G, Strat>::default();
+    assert_eq!(cfg.requirements(), plain);
+    assert!(
+        cfg.validate().is_ok(),
+        "tic-tac-toe is a 2-player game, so UctPn's max_players constraint is satisfied"
+    );
+}

@@ -116,6 +116,13 @@ where
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(0)
     }
+
+    /// See `select::SelectStrategy::requirements`'s doc comment -- same
+    /// default-from-`backprop_flags` reasoning, mirrored here since
+    /// `SimulateStrategy` is a separate trait.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements::from_backprop_flags(self.backprop_flags())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -207,6 +214,15 @@ where
 
     fn backprop_flags(&self) -> BackpropFlags {
         self.inner.backprop_flags()
+    }
+
+    /// Delegates to `inner.requirements()` directly (not the default's
+    /// `from_backprop_flags(self.backprop_flags())`) -- a wrapped component
+    /// whose `requirements()` carries something `backprop_flags` can't
+    /// express (e.g. `select::UctPn`'s `solver`/`max_players`) needs that to
+    /// survive being wrapped, not just its backprop bits.
+    fn requirements(&self) -> config::Requirements {
+        self.inner.requirements()
     }
 }
 
@@ -342,6 +358,11 @@ where
 
     fn backprop_flags(&self) -> BackpropFlags {
         self.inner.backprop_flags()
+    }
+
+    /// See `EpsilonGreedy::requirements`'s doc comment above -- same reason.
+    fn requirements(&self) -> config::Requirements {
+        self.inner.requirements()
     }
 }
 

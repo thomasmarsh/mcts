@@ -39,6 +39,7 @@
 
 use std::str::FromStr;
 
+pub mod config_ir;
 pub mod trace;
 
 use game_host::{
@@ -363,6 +364,7 @@ struct PnSolverParams {
     contempt_factor: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_pn_with_final_action<G, Sim>(
     c: f64,
     c_pn: f64,
@@ -799,6 +801,7 @@ pub struct TuneEvalOutcome {
 /// pass a budget mirroring the opponent's own compute when `baseline_build`
 /// wraps a named, wall-clock/thread-budgeted preset instead (see
 /// `games/druid/src/main.rs`'s `tune_eval`).
+#[allow(clippy::too_many_arguments)]
 pub fn strategy_tune_eval<G: Game + 'static>(
     params: &Value,
     rounds: u32,
@@ -904,6 +907,7 @@ fn cost_from_losses(losses: u32, rounds: u32) -> f64 {
 /// Assumes a 2-player, win/loss/draw game (`G::winner() -> Option<P>` with
 /// indices 0/1) -- every current caller is, but a 3+-player game would need
 /// this generalized first.
+#[allow(clippy::too_many_arguments)]
 fn play_one<G: Game>(
     first: &mut dyn Search<G = G>,
     second: &mut dyn Search<G = G>,

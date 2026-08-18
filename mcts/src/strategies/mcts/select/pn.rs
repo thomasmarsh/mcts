@@ -126,6 +126,22 @@ impl<G: Game> SelectStrategy<G> for UctPn {
             ucb1_score + c_pn * (1.0 - ranks[idx] as f64 / max_rank)
         })
     }
+
+    /// `UctPn`'s rank bonus only means something with MCTS-Solver's proof/
+    /// disproof bookkeeping on (`solver: true`, advisory -- see this trait
+    /// method's doc comment), and `node::Proven`'s representation is only
+    /// sound for `num_players() <= 2` (`node::Proven`'s doc comment) --
+    /// neither of which `backprop_flags` (a plain storage bitset) can
+    /// express, hence the override rather than relying on the default.
+    fn requirements(&self) -> super::config::Requirements {
+        super::config::Requirements {
+            solver: true,
+            max_players: Some(2),
+            ..super::config::Requirements::from_backprop_flags(
+                <Self as SelectStrategy<G>>::backprop_flags(self),
+            )
+        }
+    }
 }
 
 /// PNS-style "competition ranking" (1, 2, 2, 4, ...) over `n` children by

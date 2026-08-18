@@ -320,7 +320,7 @@ fn append_registry_event(event: &RegistryEvent, registry_path: &Path) -> std::io
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&registry_path)?;
+        .open(registry_path)?;
     let mut line = event.to_json_line();
     line.push('\n');
     file.write_all(line.as_bytes())?;

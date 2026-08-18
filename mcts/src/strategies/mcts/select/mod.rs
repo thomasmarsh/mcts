@@ -105,6 +105,17 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(0)
     }
+
+    /// This component's `config::Requirements` -- storage it needs and any
+    /// hard constraints it places on the game. Defaults to whatever
+    /// `backprop_flags` already reports, so every existing `SelectStrategy`
+    /// gets a correct answer with no code change; override only when a
+    /// component needs to report something `backprop_flags` can't express
+    /// (e.g. `UctPn`'s `solver`/`max_players`) -- see `config::Requirements`'s
+    /// doc comment.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements::from_backprop_flags(self.backprop_flags())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -189,6 +200,13 @@ where
 
     fn backprop_flags(&self) -> BackpropFlags {
         self.inner.backprop_flags()
+    }
+
+    /// Delegates to `inner.requirements()` directly, not the default's
+    /// `from_backprop_flags(self.backprop_flags())` -- see
+    /// `simulate::EpsilonGreedy::requirements`'s doc comment for why.
+    fn requirements(&self) -> config::Requirements {
+        self.inner.requirements()
     }
 }
 

@@ -80,6 +80,129 @@ impl std::ops::BitOr for BackpropFlags {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// Declarative summary of what one component (a `Select`/`Simulate`/
+/// `Backprop` instance) needs from shared tree storage, and what hard
+/// constraints it places on the game it's paired with. This generalizes
+/// `BackpropFlags` (which only ever covered the four backprop bit flags) to
+/// also cover the "do these two choices even make sense together" axis --
+/// PLAN.md's Composable Algebra section calls this "resolution of how
+/// different algorithms interact". Composing two components is `union`;
+/// the union *is* the resolved interaction (storage requirements only ever
+/// grow, never conflict), which is why this needs no per-pair-of-features
+/// match arm the way a naive interaction table would.
+///
+/// Deliberately flat and `Copy`: every field here is either "some shared
+/// table must exist" (safe to over-provision -- an unused table costs
+/// nothing but its own allocation) or "this component only makes sense
+/// under constraint X" (`max_players`, checked by `validate`). Nothing here
+/// yet changes actual `Node`/`ChildArray` layout -- see this struct's use
+/// as the seed of a future storage-quantization pass, not a claim that one
+/// already exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Requirements {
+    /// GRAVE's ancestor-lookup table (`select::Rave`'s `get_ref` walk).
+    pub grave: bool,
+    /// The MAST unigram action-value table (`simulate::Mast`,
+    /// `select::ProgressiveHistory`).
+    pub global: bool,
+    /// Per-child AMAF stats (`node::PlayerStats::amaf`), read by
+    /// `select::Amaf`/`select::Rave`.
+    pub amaf: bool,
+    /// NST's bigram table, on top of `global` (see `simulate::Nst`'s doc
+    /// comment on why it needs its own bit).
+    pub nst: bool,
+    /// This component's own scoring only means something once
+    /// `use_mcts_solver` is on -- e.g. `select::UctPn`'s proof/disproof rank
+    /// bonus degenerates to a harmless constant with the solver off (see its
+    /// doc comment), so this is advisory, not enforced by `validate`.
+    pub solver: bool,
+    /// Upper bound this component places on `Game::num_players()` -- e.g.
+    /// MCTS-Solver's `Proven` representation (`node::Proven`'s doc comment)
+    /// is only sound for <= 2 players. `None` means unconstrained.
+    pub max_players: Option<usize>,
+}
+
+impl Requirements {
+    pub const fn none() -> Self {
+        Self {
+            grave: false,
+            global: false,
+            amaf: false,
+            nst: false,
+            solver: false,
+            max_players: None,
+        }
+    }
+
+    /// Combines two components' requirements. Associative and commutative,
+    /// so a composition of N components can fold this over all of them in
+    /// any order -- what makes union the whole "interaction resolution"
+    /// mechanism instead of a per-pair table.
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            grave: self.grave || other.grave,
+            global: self.global || other.global,
+            amaf: self.amaf || other.amaf,
+            nst: self.nst || other.nst,
+            solver: self.solver || other.solver,
+            max_players: match (self.max_players, other.max_players) {
+                (None, x) | (x, None) => x,
+                (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+            },
+        }
+    }
+
+    /// Lifts the existing `BackpropFlags` bitset into `Requirements` --
+    /// every `SelectStrategy`/`SimulateStrategy`'s default `requirements()`
+    /// is defined in terms of this, so components that only ever needed
+    /// `backprop_flags()` (the large majority) get a correct `requirements()`
+    /// for free with no code change.
+    pub fn from_backprop_flags(flags: BackpropFlags) -> Self {
+        Self {
+            grave: flags.grave(),
+            global: flags.global(),
+            amaf: flags.amaf(),
+            nst: flags.nst(),
+            ..Self::none()
+        }
+    }
+
+    pub fn backprop_flags(&self) -> BackpropFlags {
+        let mut bits = 0;
+        if self.grave {
+            bits |= GRAVE;
+        }
+        if self.global {
+            bits |= GLOBAL;
+        }
+        if self.amaf {
+            bits |= AMAF;
+        }
+        if self.nst {
+            bits |= NST;
+        }
+        BackpropFlags(bits)
+    }
+
+    /// Checks this composition's hard constraints against a game's player
+    /// count -- the one interaction that has to actually be rejected, as
+    /// opposed to merely unioned into a shared table. Everything else two
+    /// components need from each other is either a storage union (harmless
+    /// to over-provision) or advisory (`solver`).
+    pub fn validate(&self, num_players: usize) -> Result<(), String> {
+        if let Some(max) = self.max_players {
+            if num_players > max {
+                return Err(format!(
+                    "composed strategy requires num_players() <= {max}, got {num_players}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
     type Select: select::SelectStrategy<G>;
     type Simulate: simulate::SimulateStrategy<G>;
@@ -268,6 +391,27 @@ where
         self.graph_stats().is_some()
     }
 
+    /// This configuration's resolved `Requirements`: the union of every
+    /// component's own `requirements()`. `select`/`simulate` carry the
+    /// interesting cases today (`final_action`/`backprop` are `SelectStrategy`/
+    /// `BackpropStrategy` too, so they're included for completeness, not
+    /// because any current impl needs it).
+    pub fn requirements(&self) -> Requirements {
+        <S::Select as select::SelectStrategy<G>>::requirements(&self.select)
+            .union(<S::Simulate as simulate::SimulateStrategy<G>>::requirements(&self.simulate))
+            .union(<S::FinalAction as select::SelectStrategy<G>>::requirements(&self.final_action))
+    }
+
+    /// Validates this configuration's resolved `Requirements` against `G`,
+    /// e.g. rejecting `select::UctPn` (MCTS-Solver's `max_players: Some(2)`)
+    /// paired with a >2-player game. Doesn't (yet) check `use_mcts_solver`
+    /// itself is on -- a component whose `requirements().solver` is `true`
+    /// but the config leaves the solver off just degenerates to a no-op (see
+    /// e.g. `UctPn`'s doc comment), which isn't an error worth rejecting.
+    pub fn validate(&self) -> Result<(), String> {
+        self.requirements().validate(G::num_players())
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -390,5 +534,64 @@ where
     pub fn max_arena_len(mut self, max_arena_len: Option<usize>) -> Self {
         self.max_arena_len = max_arena_len;
         self
+    }
+}
+
+#[cfg(test)]
+mod requirements_tests {
+    use super::*;
+
+    #[test]
+    fn union_is_a_bitwise_or_over_flags_and_a_min_over_max_players() {
+        let a = Requirements {
+            amaf: true,
+            max_players: Some(4),
+            ..Requirements::none()
+        };
+        let b = Requirements {
+            global: true,
+            max_players: Some(2),
+            ..Requirements::none()
+        };
+        let combined = a.union(b);
+        assert!(combined.amaf && combined.global);
+        assert!(!combined.grave && !combined.nst && !combined.solver);
+        assert_eq!(
+            combined.max_players,
+            Some(2),
+            "the tighter of two player-count bounds wins"
+        );
+    }
+
+    #[test]
+    fn union_with_unconstrained_max_players_keeps_the_other_side() {
+        let unconstrained = Requirements::none();
+        let bounded = Requirements {
+            max_players: Some(2),
+            ..Requirements::none()
+        };
+        assert_eq!(unconstrained.union(bounded).max_players, Some(2));
+        assert_eq!(bounded.union(unconstrained).max_players, Some(2));
+    }
+
+    #[test]
+    fn backprop_flags_round_trip_through_requirements() {
+        let flags = BackpropFlags(GRAVE | GLOBAL | AMAF | NST);
+        let reqs = Requirements::from_backprop_flags(flags);
+        assert!(reqs.grave && reqs.global && reqs.amaf && reqs.nst);
+        let round_tripped = reqs.backprop_flags();
+        assert!(round_tripped.grave() && round_tripped.global());
+        assert!(round_tripped.amaf() && round_tripped.nst());
+    }
+
+    #[test]
+    fn validate_rejects_exceeding_max_players_and_accepts_within_bound() {
+        let reqs = Requirements {
+            max_players: Some(2),
+            ..Requirements::none()
+        };
+        assert!(reqs.validate(2).is_ok());
+        assert!(reqs.validate(1).is_ok());
+        assert!(reqs.validate(3).is_err());
     }
 }

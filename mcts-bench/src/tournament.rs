@@ -597,7 +597,7 @@ mod tests {
 
     /// A fake game whose `play_match` emits a two-ply trace (initial state
     /// + one move) via `on_ply` before returning a draw, so `play_one_match`
-    /// / `write_move`'s wiring can be exercised without a real MCTS search.
+    ///   / `write_move`'s wiring can be exercised without a real MCTS search.
     struct TracedDraw;
 
     impl BenchGame for TracedDraw {
