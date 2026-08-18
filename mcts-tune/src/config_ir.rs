@@ -1,25 +1,20 @@
-//! Prototype: a JSON-serializable config IR for the `select` axis, plus a
-//! `register_select!`-generated dispatcher that turns a runtime `SelectSpec`
-//! into a compile-time-monomorphized `mcts::select::SelectStrategy<G>`.
-//!
-//! This is a proof of concept for one axis of the "config algebra" PLAN.md's
-//! Composable Algebra section asks for -- not a replacement for
-//! `make_candidate`'s existing four-axis dispatch (which this file doesn't
-//! touch). Two things it demonstrates that `make_candidate`'s
-//! `match p.family.as_str()` can't:
+//! A JSON-serializable config IR covering every `Strategy<G>` axis
+//! (`select`/`simulate`/`backprop`/`final_action`), plus `register_*!`-
+//! generated dispatchers that turn a runtime spec into a
+//! compile-time-monomorphized `mcts` strategy component. `mcts-tune::
+//! make_candidate` converts its `TrialParams` into this IR via
+//! `to_search_spec` and builds it with `build_search` below, for every
+//! family except `"random"`/`"flat_mc"`. Two things this table-driven
+//! approach gives that a hand-written `match p.family.as_str()` doesn't:
 //!
 //! - **A single source of truth.** `register_select!`'s table is the only
 //!   place that names a `select::*` type; the `SelectSpec` enum, the runtime
 //!   dispatcher, and the `Requirements` computation are all generated from
-//!   it, so they can't drift apart the way `TrialParams`/the `match`
-//!   arms/`strategy_tuner_info`'s conditions can today (three independently
-//!   hand-maintained descriptions of the same thing).
+//!   it, so they can't drift apart the way three independently
+//!   hand-maintained descriptions of the same thing could.
 //! - **Recursive composition.** `SelectSpec::EpsilonGreedy` wraps an
 //!   arbitrary inner `SelectSpec`, matching `select::EpsilonGreedy<G, S>`'s
-//!   own genericity -- `make_candidate` has no equivalent (its
-//!   `TrialParams` is a single flat struct), which is exactly the gap that
-//!   keeps e.g. nested-MCTS's inner strategy from being independently
-//!   configurable.
+//!   own genericity.
 //!
 //! ## Why continuation-passing, not `Box<dyn SelectStrategy<G>>`
 //!
@@ -161,9 +156,8 @@ register_select! {
     Ucb1 { c: f64 } => select::Ucb1::with_c(c),
     Ucb1Tuned { c: f64 } => select::Ucb1Tuned::with_c(c),
     Amaf { alpha: f64, c: f64 } => select::Amaf::new().alpha(alpha).exploration_constant(c),
-    Rave { threshold: u32, c: f64 } => select::Rave::default()
-        .threshold(threshold)
-        .ucb(select::RaveUcb::Ucb1 { exploration_constant: c }),
+    Rave { threshold: u32, schedule: select::RaveSchedule, ucb: select::RaveUcb } =>
+        select::Rave::new(threshold, schedule, ucb),
     UctPn { c: f64, c_pn: f64 } => select::UctPn::with_c(c, c_pn),
     ProgressiveHistory { c: f64, ph_weight: f64 } =>
         select::ProgressiveHistory::new(select::Ucb1::with_c(c), ph_weight),
@@ -301,13 +295,29 @@ macro_rules! register_simulate {
                 mode: simulate::DecisiveMoveMode,
                 inner: BaseSimulateSpec,
             },
+            /// `simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>`
+            /// -- a `DecisiveMove` wrapping an `EpsilonGreedy`, two wrapper
+            /// levels deep. Not representable as `DecisiveMove { inner:
+            /// BaseSimulateSpec }` (that only reaches one level), and not
+            /// given a general recursive `inner: SimulateSpec` either, for
+            /// the same unbounded-monomorphization reason `MetaMcts` above
+            /// stays fixed-shape rather than reusing this table's general
+            /// `EpsilonGreedy`/`DecisiveMove` machinery: `mcts-tune`'s
+            /// `rave`/`ucb1_tuned_dm_mast` families are the only two real
+            /// callers of this exact composition, and neither has ever
+            /// varied the `Mast` leaf, so it's named and fixed here instead.
+            DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode,
+                epsilon: f64,
+            },
             MetaMcts {
                 iterations: usize,
             },
         }
 
         /// Dispatches `spec` the same way `with_base_simulate` does, plus
-        /// the `EpsilonGreedy`/`DecisiveMove`/`MetaMcts` wrappers.
+        /// the `EpsilonGreedy`/`DecisiveMove`/`DecisiveMoveMast`/`MetaMcts`
+        /// wrappers.
         pub fn with_simulate<G, C>(spec: &SimulateSpec, cont: C) -> C::Output
         where
             G: Game + 'static,
@@ -325,6 +335,15 @@ macro_rules! register_simulate {
                 }
                 SimulateSpec::DecisiveMove { mode, inner } => {
                     with_base_simulate::<G, _>(&inner, DecisiveMoveSimulateCont { mode, cont })
+                }
+                SimulateSpec::DecisiveMoveMast { mode, epsilon } => {
+                    let simulate =
+                        simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Mast>>::new()
+                            .mode(mode)
+                            .inner(simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(
+                                epsilon,
+                            ));
+                    cont.call(simulate)
                 }
                 SimulateSpec::MetaMcts { iterations } => {
                     let inner = TreeSearch::<G, Compose<select::Ucb1, simulate::Uniform>>::default()
@@ -597,8 +616,8 @@ register_backprop! {
 /// picks a root child once search ends, and `mcts-tune`'s existing
 /// `TrialParams::final_action` field only ever names one of
 /// `RobustChild`/`MaxAvgScore`/`MaxRobustChild`/`SecureChild`
-/// (`build_with_final_action`/`build_pn_with_final_action` in
-/// `mcts-tune/src/lib.rs`), never an in-tree exploration strategy like
+/// (`to_final_action_spec` in `mcts-tune/src/lib.rs`), never an in-tree
+/// exploration strategy like
 /// `Ucb1`/`Rave`/`UctPn`. None of the `select`-axis wrapper concerns
 /// (recursive `EpsilonGreedy`, unbounded monomorphization) apply here since
 /// none of these four types are themselves generic over an inner strategy,
@@ -758,11 +777,10 @@ pub fn resolve_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> DynFin
 
 /// The full four-axis config-IR node: one spec per `Strategy<G>` axis, the
 /// same four names `mcts::strategy::Compose<Sel, Sim, Bp, FA>` takes as type
-/// parameters. This is a second, independent entry point alongside
-/// `mcts-tune::build_search`/`make_candidate`'s `match p.family.as_str()`
-/// dispatch -- it doesn't touch or replace that function, which stays the
-/// dispatch path every existing caller (SMAC3, the ladder driver,
-/// `strategy_tune_eval`) actually uses.
+/// parameters. `mcts-tune::make_candidate` converts a `TrialParams` into one
+/// of these via `to_search_spec` and builds it with `build_search` below, for
+/// every family except `"random"`/`"flat_mc"` (not a `Compose<..>`
+/// `Strategy`, so those two stay direct arms in `make_candidate` instead).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchSpec {
     pub select: SelectSpec,
@@ -772,8 +790,8 @@ pub struct SearchSpec {
 }
 
 /// The non-strategy `SearchConfig` knobs a `SearchSpec` needs alongside
-/// itself -- this module's counterpart of `mcts-tune::base_config`'s generic
-/// settings (iteration/time budget, `q_init`, threading, ...), factored out
+/// itself -- this module's counterpart of `mcts-tune::to_search_spec`'s
+/// generic settings (iteration/time budget, `q_init`, threading, ...), factored out
 /// because they're orthogonal to which axis families are chosen and don't
 /// belong inside any one `*Spec` enum.
 #[derive(Clone)]
@@ -897,12 +915,11 @@ where
     }
 }
 
-/// Builds a runnable `Box<dyn Search<G = G>>` from a `SearchSpec` -- the
-/// config-IR equivalent of `mcts-tune::build_search`, but driven entirely by
-/// this file's registry-generated dispatch instead of `TrialParams`/
-/// `make_candidate`'s hand-written `match p.family.as_str()`. Nothing calls
-/// this yet: it's a second, independently-tested entry point sitting next to
-/// the existing one, not a replacement for it.
+/// Builds a runnable `Box<dyn Search<G = G>>` from a `SearchSpec` --
+/// `mcts-tune::make_candidate`'s dispatch for every family except
+/// `"random"`/`"flat_mc"`: convert `TrialParams` via `to_search_spec`, then
+/// call this, driven entirely by this file's registry-generated dispatch
+/// rather than a hand-written `match p.family.as_str()`.
 pub fn build_search<G>(spec: &SearchSpec, settings: &SearchSettings) -> Box<dyn Search<G = G>>
 where
     G: Game + 'static,
@@ -950,13 +967,16 @@ mod tests {
 
     #[test]
     fn select_spec_round_trips_through_json() {
-        let json = r#"{"kind":"rave","threshold":700,"c":1.5}"#;
+        let json = r#"{"kind":"rave","threshold":700,"schedule":{"kind":"threshold","rave":700},"ucb":{"kind":"ucb1","exploration_constant":1.5}}"#;
         let spec: SelectSpec = serde_json::from_str(json).unwrap();
         assert_eq!(
             spec,
             SelectSpec::Rave {
                 threshold: 700,
-                c: 1.5
+                schedule: select::RaveSchedule::Threshold { rave: 700 },
+                ucb: select::RaveUcb::Ucb1 {
+                    exploration_constant: 1.5
+                },
             }
         );
         assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
@@ -1007,7 +1027,10 @@ mod tests {
         // hand-guessed answer instead of calling the real component.
         let rave = SelectSpec::Rave {
             threshold: 700,
-            c: 1.4,
+            schedule: select::RaveSchedule::Threshold { rave: 700 },
+            ucb: select::RaveUcb::Ucb1 {
+                exploration_constant: 1.4,
+            },
         };
         assert!(requirements_of::<Nim>(&rave).grave);
 
@@ -1191,6 +1214,36 @@ mod tests {
         assert!(
             legal.contains(&action),
             "the action chosen by a JSON-configured MetaMcts search must be legal"
+        );
+    }
+
+    #[test]
+    fn decisive_move_mast_spec_round_trips_through_json() {
+        let json = r#"{"kind":"decisive_move_mast","mode":"win_loss","epsilon":0.2}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            SimulateSpec::DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode::WinLoss,
+                epsilon: 0.2,
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+    }
+
+    #[test]
+    fn with_simulate_builds_a_working_search_for_decisive_move_mast() {
+        let spec = SimulateSpec::DecisiveMoveMast {
+            mode: simulate::DecisiveMoveMode::WinLoss,
+            epsilon: 0.2,
+        };
+        let state = <Nim as Game>::S::default();
+        let action = with_simulate::<Nim, _>(&spec, RunSimulateCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured DecisiveMoveMast search must be legal"
         );
     }
 

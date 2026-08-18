@@ -47,14 +47,15 @@ use game_host::{
     HostError, TunerCondition, TunerInfo, TunerParameter,
 };
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::select::{self, RaveSchedule, RaveUcb, SelectStrategy};
-use mcts::strategies::mcts::simulate::SimulateStrategy;
-use mcts::strategies::mcts::strategy::{self, Compose};
-use mcts::strategies::mcts::{
-    backprop, node::QInit, simulate, GraphSearch, GraphStats, SearchConfig, Strategy, TreeSearch,
-};
+use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
+use mcts::strategies::mcts::{node::QInit, simulate, GraphSearch, GraphStats};
 use mcts::strategies::Search;
 use serde_json::{json, Value};
+
+#[cfg(test)]
+use mcts::strategies::mcts::strategy;
+#[cfg(test)]
+use mcts::strategies::mcts::{SearchConfig, TreeSearch};
 
 const PLAYOUT_DEPTH: usize = 200;
 const MAX_ITER: usize = 10_000;
@@ -144,45 +145,6 @@ const EPSILON_FAMILIES: &[&str] = &[
     "rave",
     "ucb1_pn_mast",
 ];
-
-fn base_config<G: Game, S: Strategy<G> + Default>(
-    p: &TrialParams,
-    seed: u64,
-    use_transpositions: bool,
-    budget: &SearchBudget,
-) -> Result<SearchConfig<G, S>, HostError> {
-    let q_init = QInit::from_str(&p.q_init)
-        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
-    let max_iterations = budget.iteration_limit();
-    let mut config = SearchConfig::new()
-        .max_iterations(max_iterations)
-        .max_playout_depth(PLAYOUT_DEPTH)
-        .expand_threshold(EXPAND_THRESHOLD)
-        .q_init(q_init)
-        .use_transpositions(use_transpositions && !p.mcgs.unwrap_or(false))
-        // Every hand-built preset in every game turns both of these on --
-        // a tuned candidate that doesn't is being measured under search
-        // conditions nothing actually deployed ever runs with. Only the PN
-        // families used to force these (their own `select::UctPn` needs
-        // both to be meaningful at all); there's no reason every other
-        // family shouldn't get the same tactical sharpness and continuity.
-        .use_mcts_solver(true)
-        .reuse_tree(!p.mcgs.unwrap_or(false))
-        .num_tree_threads(budget.threads)
-        .seed(seed);
-    if let Some(max_time) = budget.max_time {
-        config = config.max_time(max_time);
-    }
-    if p.mcgs.unwrap_or(false) {
-        if !use_transpositions {
-            return Err(HostError::bad_request(
-                "mcgs requires a game with a zobrist hash",
-            ));
-        }
-        config = config.graph_search(GraphSearch::Dag(GraphStats::Both));
-    }
-    Ok(config)
-}
 
 /// A candidate's search-effort ceiling -- orthogonal to `TrialParams`
 /// (which family/hyperparameters to run), this is *how much compute* that
@@ -274,218 +236,257 @@ pub struct TrialParams {
     mcgs: Option<bool>,
 }
 
-/// Builds a candidate for any family whose `strategy.rs` counterpart leaves
-/// `final_action` configurable: dispatches on `p.final_action` and
-/// monomorphizes `Compose<Sel, Sim, backprop::Classic, FA>` for whichever of
-/// `SecureChild`/`RobustChild` was chosen, mirroring the three-arm dispatch
-/// `rave`'s own `make_candidate` used before other families existed.
-fn build_with_final_action<G, Sel, Sim>(
-    sel: Sel,
-    sim: Sim,
-    p: &TrialParams,
-    seed: u64,
-    use_transpositions: bool,
-    budget: &SearchBudget,
-) -> Result<Box<dyn Search<G = G>>, HostError>
-where
-    G: Game + 'static,
-    Sel: SelectStrategy<G> + 'static,
-    Sim: SimulateStrategy<G> + 'static,
-{
+/// `final_action` resolution shared by every family whose own named type
+/// leaves it configurable -- the `config_ir::FinalActionSpec` counterpart of
+/// the three-way match on `p.final_action` every such family needs.
+fn to_final_action_spec(p: &TrialParams) -> Result<config_ir::FinalActionSpec, HostError> {
+    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
     let fa = p
         .final_action
         .as_deref()
-        .ok_or_else(|| HostError::bad_request("missing param: final_action"))?;
+        .ok_or_else(|| missing("final_action"))?;
     match fa {
-        "max_avg" => {
-            let config =
-                base_config::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>(
-                    p,
-                    seed,
-                    use_transpositions,
-                    budget,
-                )?
-                .select(sel)
-                .simulate(sim);
-            Ok(Box::new(
-                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>::new()
-                    .config(config),
-            ))
-        }
-        "secure_child" => {
-            let a =
-                p.a.ok_or_else(|| HostError::bad_request("missing param: a"))?;
-            let mut config = base_config::<
-                G,
-                Compose<Sel, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions, budget)?
-            .select(sel)
-            .simulate(sim);
-            config.final_action.a = a;
-            Ok(Box::new(
-                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::SecureChild>>::new()
-                    .config(config),
-            ))
-        }
-        "robust_child" => {
-            let config =
-                base_config::<G, Compose<Sel, Sim, backprop::Classic, select::RobustChild>>(
-                    p,
-                    seed,
-                    use_transpositions,
-                    budget,
-                )?
-                .select(sel)
-                .simulate(sim);
-            Ok(Box::new(
-                TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, select::RobustChild>>::new()
-                    .config(config),
-            ))
-        }
+        "max_avg" => Ok(config_ir::FinalActionSpec::MaxAvg {}),
+        "secure_child" => Ok(config_ir::FinalActionSpec::SecureChild {
+            a: p.a.ok_or_else(|| missing("a"))?,
+        }),
+        "robust_child" => Ok(config_ir::FinalActionSpec::RobustChild {}),
         other => Err(HostError::bad_request(format!(
             "unknown final_action: {other}"
         ))),
     }
 }
 
-/// Builds a candidate for one of the PN-MCTS families (`ucb1_pn`/
-/// `ucb1_pn_mast`): like `build_with_final_action`, `final_action` stays
-/// configurable. `use_mcts_solver`/`reuse_tree` are no longer set here
-/// explicitly -- `base_config` now turns both on unconditionally for every
-/// family (PNS-style search's need for them was always the general case,
-/// not a PN-specific one) -- only the solver's own tunable knobs
-/// (`solver_loss_threshold`, `contempt_factor`) stay applied here, alongside
-/// `UctPn`'s `c_pn`.
-/// The solver-side knobs `build_pn_with_final_action` applies on top of
-/// `select::UctPn` -- grouped into one struct rather than two more bare
-/// arguments to stay under clippy's `too_many_arguments` threshold.
-struct PnSolverParams {
-    solver_loss_threshold: u32,
-    contempt_factor: Option<f64>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_pn_with_final_action<G, Sim>(
-    c: f64,
-    c_pn: f64,
-    sim: Sim,
+/// Converts one trial's `TrialParams` into `config_ir`'s `SearchSpec`/
+/// `SearchSettings` -- the `config_ir`-based counterpart of `make_candidate`'s
+/// `match p.family.as_str()` dispatch, covering every family except
+/// `"random"`/`"flat_mc"` (not a `Compose<..>` `Strategy`, so they stay direct
+/// arms in `make_candidate` permanently; see its own comment on why).
+/// `make_candidate` calls this and then `config_ir::build_search` for every
+/// other family.
+fn to_search_spec(
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
     budget: &SearchBudget,
-    solver: PnSolverParams,
-) -> Result<Box<dyn Search<G = G>>, HostError>
-where
-    G: Game + 'static,
-    Sim: SimulateStrategy<G> + 'static,
-{
-    let sel = select::UctPn::with_c(c, c_pn);
-    let PnSolverParams {
-        solver_loss_threshold,
-        contempt_factor,
-    } = solver;
-    let fa = p
-        .final_action
-        .as_deref()
-        .ok_or_else(|| HostError::bad_request("missing param: final_action"))?;
-    match fa {
-        "max_avg" => {
-            let config = base_config::<
-                G,
-                Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions, budget)?
-            .select(sel)
-            .simulate(sim)
-            .solver_loss_threshold(solver_loss_threshold)
-            .contempt_factor(contempt_factor);
-            Ok(
-                Box::new(
-                    TreeSearch::<
-                        G,
-                        Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-                    >::new()
-                    .config(config),
-                ),
-            )
-        }
-        "secure_child" => {
-            let a =
-                p.a.ok_or_else(|| HostError::bad_request("missing param: a"))?;
-            let mut config = base_config::<
-                G,
-                Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-            >(p, seed, use_transpositions, budget)?
-            .select(sel)
-            .simulate(sim)
-            .solver_loss_threshold(solver_loss_threshold)
-            .contempt_factor(contempt_factor);
-            config.final_action.a = a;
-            Ok(
-                Box::new(
-                    TreeSearch::<
-                        G,
-                        Compose<select::UctPn, Sim, backprop::Classic, select::SecureChild>,
-                    >::new()
-                    .config(config),
-                ),
-            )
-        }
-        "robust_child" => {
-            let config = base_config::<
-                G,
-                Compose<select::UctPn, Sim, backprop::Classic, select::RobustChild>,
-            >(p, seed, use_transpositions, budget)?
-            .select(sel)
-            .simulate(sim)
-            .solver_loss_threshold(solver_loss_threshold)
-            .contempt_factor(contempt_factor);
-            Ok(
-                Box::new(
-                    TreeSearch::<
-                        G,
-                        Compose<select::UctPn, Sim, backprop::Classic, select::RobustChild>,
-                    >::new()
-                    .config(config),
-                ),
-            )
-        }
-        other => Err(HostError::bad_request(format!(
-            "unknown final_action: {other}"
-        ))),
+) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
+    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
+    let c = || p.c.ok_or_else(|| missing("c"));
+    let epsilon = || p.epsilon.ok_or_else(|| missing("epsilon"));
+    let c_pn = || p.c_pn.ok_or_else(|| missing("c_pn"));
+    let solver_loss_threshold = || {
+        p.solver_loss_threshold
+            .ok_or_else(|| missing("solver_loss_threshold"))
+    };
+    let contempt_factor = || match p.contempt.as_deref() {
+        Some("off") => Ok(None),
+        Some("on") => Ok(Some(
+            p.contempt_factor
+                .ok_or_else(|| missing("contempt_factor"))?,
+        )),
+        Some(other) => Err(HostError::bad_request(format!("unknown contempt: {other}"))),
+        None => Err(missing("contempt")),
+    };
+
+    let q_init = QInit::from_str(&p.q_init)
+        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
+    let mcgs = p.mcgs.unwrap_or(false);
+    if mcgs && !use_transpositions {
+        return Err(HostError::bad_request(
+            "mcgs requires a game with a zobrist hash",
+        ));
     }
-}
 
-/// Builds a candidate for a family whose `strategy.rs` counterpart fixes its
-/// own `final_action` (`ucb1_max_robust`, `meta_mcts`) -- `p.final_action` is
-/// ignored (the search-space YAML never activates it for these families, per
-/// `strategy_tuner_info`'s conditions).
-fn build_fixed<G, Sel, Sim, FA>(
-    sel: Sel,
-    sim: Sim,
-    fa: FA,
-    p: &TrialParams,
-    seed: u64,
-    use_transpositions: bool,
-    budget: &SearchBudget,
-) -> Result<Box<dyn Search<G = G>>, HostError>
-where
-    G: Game + 'static,
-    Sel: SelectStrategy<G> + 'static,
-    Sim: SimulateStrategy<G> + 'static,
-    FA: SelectStrategy<G> + 'static,
-{
-    let config = base_config::<G, Compose<Sel, Sim, backprop::Classic, FA>>(
-        p,
+    let mut solver_loss_threshold_setting = None;
+    let mut contempt_factor_setting = None;
+
+    let (select, simulate, final_action) = match p.family.as_str() {
+        "ucb1" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::Uniform {},
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_dm" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::DecisiveMove {
+                mode: simulate::DecisiveMoveMode::Win,
+                inner: config_ir::BaseSimulateSpec::Uniform {},
+            },
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_mast" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: epsilon()?,
+                inner: config_ir::BaseSimulateSpec::Mast {},
+            },
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_nst" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: epsilon()?,
+                inner: config_ir::BaseSimulateSpec::Nst {
+                    backoff_threshold: p
+                        .nst_backoff_threshold
+                        .ok_or_else(|| missing("nst_backoff_threshold"))?,
+                },
+            },
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_progressive_history" => (
+            config_ir::SelectSpec::ProgressiveHistory {
+                c: c()?,
+                ph_weight: p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
+            },
+            config_ir::SimulateSpec::Uniform {},
+            to_final_action_spec(p)?,
+        ),
+        "amaf" => (
+            config_ir::SelectSpec::Amaf {
+                alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
+                c: c()?,
+            },
+            config_ir::SimulateSpec::Uniform {},
+            to_final_action_spec(p)?,
+        ),
+        "amaf_mast" => (
+            config_ir::SelectSpec::Amaf {
+                alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
+                c: c()?,
+            },
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: epsilon()?,
+                inner: config_ir::BaseSimulateSpec::Mast {},
+            },
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_tuned" => (
+            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
+            config_ir::SimulateSpec::Uniform {},
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_tuned_mast" => (
+            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
+            config_ir::SimulateSpec::Mast {},
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_tuned_dm" => (
+            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
+            config_ir::SimulateSpec::DecisiveMove {
+                mode: simulate::DecisiveMoveMode::Win,
+                inner: config_ir::BaseSimulateSpec::Uniform {},
+            },
+            to_final_action_spec(p)?,
+        ),
+        "ucb1_tuned_dm_mast" => (
+            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
+            config_ir::SimulateSpec::DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode::Win,
+                epsilon: epsilon()?,
+            },
+            to_final_action_spec(p)?,
+        ),
+        "rave" => {
+            let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
+                "hand_selected" => RaveSchedule::HandSelected {
+                    k: p.k.ok_or_else(|| missing("k"))?,
+                },
+                "min_mse" => RaveSchedule::MinMSE {
+                    bias: p.bias.ok_or_else(|| missing("bias"))?,
+                },
+                "threshold" => RaveSchedule::Threshold {
+                    rave: p.rave.ok_or_else(|| missing("rave"))?,
+                },
+                other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
+            };
+            let ucb = match p.rave_ucb.as_deref().ok_or_else(|| missing("rave_ucb"))? {
+                "none" => RaveUcb::None,
+                "ucb1" => RaveUcb::Ucb1 {
+                    exploration_constant: c()?,
+                },
+                "tuned" => RaveUcb::Ucb1Tuned {
+                    exploration_constant: c()?,
+                },
+                other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
+            };
+            (
+                config_ir::SelectSpec::Rave {
+                    threshold: p.threshold.ok_or_else(|| missing("threshold"))?,
+                    schedule,
+                    ucb,
+                },
+                config_ir::SimulateSpec::DecisiveMoveMast {
+                    mode: simulate::DecisiveMoveMode::WinLoss,
+                    epsilon: epsilon()?,
+                },
+                to_final_action_spec(p)?,
+            )
+        }
+        "ucb1_pn" => {
+            solver_loss_threshold_setting = Some(solver_loss_threshold()?);
+            contempt_factor_setting = contempt_factor()?;
+            (
+                config_ir::SelectSpec::UctPn {
+                    c: c()?,
+                    c_pn: c_pn()?,
+                },
+                config_ir::SimulateSpec::Uniform {},
+                to_final_action_spec(p)?,
+            )
+        }
+        "ucb1_pn_mast" => {
+            solver_loss_threshold_setting = Some(solver_loss_threshold()?);
+            contempt_factor_setting = contempt_factor()?;
+            (
+                config_ir::SelectSpec::UctPn {
+                    c: c()?,
+                    c_pn: c_pn()?,
+                },
+                config_ir::SimulateSpec::EpsilonGreedy {
+                    epsilon: epsilon()?,
+                    inner: config_ir::BaseSimulateSpec::Mast {},
+                },
+                to_final_action_spec(p)?,
+            )
+        }
+        "ucb1_max_robust" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::Uniform {},
+            config_ir::FinalActionSpec::MaxRobustChild {},
+        ),
+        "meta_mcts" => (
+            config_ir::SelectSpec::Ucb1 { c: c()? },
+            config_ir::SimulateSpec::MetaMcts {
+                iterations: META_MCTS_INNER_ITERATIONS,
+            },
+            config_ir::FinalActionSpec::MaxAvg {},
+        ),
+        other => return Err(HostError::bad_request(format!("unknown family: {other}"))),
+    };
+
+    let spec = config_ir::SearchSpec {
+        select,
+        simulate,
+        backprop: config_ir::BackpropSpec::Classic {},
+        final_action,
+    };
+    let settings = config_ir::SearchSettings {
+        max_iterations: budget.iteration_limit(),
+        max_playout_depth: PLAYOUT_DEPTH,
+        expand_threshold: EXPAND_THRESHOLD,
+        q_init,
+        use_transpositions: use_transpositions && !mcgs,
+        use_mcts_solver: true,
+        reuse_tree: !mcgs,
+        num_tree_threads: budget.threads,
         seed,
-        use_transpositions,
-        budget,
-    )?
-    .select(sel)
-    .simulate(sim)
-    .final_action(fa);
-    Ok(Box::new(
-        TreeSearch::<G, Compose<Sel, Sim, backprop::Classic, FA>>::new().config(config),
-    ))
+        max_time: budget.max_time,
+        graph_search: mcgs.then_some(GraphSearch::Dag(GraphStats::Both)),
+        solver_loss_threshold: solver_loss_threshold_setting,
+        contempt_factor: contempt_factor_setting,
+    };
+    Ok((spec, settings))
 }
 
 /// Builds a `Box<dyn Search<G>>` from a raw params JSON object, the same
@@ -521,29 +522,6 @@ fn make_candidate<G: Game + 'static>(
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
-    let c = || p.c.ok_or_else(|| missing("c"));
-    let epsilon = || p.epsilon.ok_or_else(|| missing("epsilon"));
-    let c_pn = || p.c_pn.ok_or_else(|| missing("c_pn"));
-    let solver_loss_threshold = || {
-        p.solver_loss_threshold
-            .ok_or_else(|| missing("solver_loss_threshold"))
-    };
-    // `contempt` gates `contempt_factor` the same way `rave_ucb`'s
-    // "none"/"ucb1"/"tuned" gates `c` -- an explicit "off" choice rather
-    // than treating the field's mere absence as off, so a trial that forgot
-    // the gate entirely is rejected the same way a missing required field
-    // always is here, not silently treated as "off".
-    let contempt_factor = || match p.contempt.as_deref() {
-        Some("off") => Ok(None),
-        Some("on") => Ok(Some(
-            p.contempt_factor
-                .ok_or_else(|| missing("contempt_factor"))?,
-        )),
-        Some(other) => Err(HostError::bad_request(format!("unknown contempt: {other}"))),
-        None => Err(missing("contempt")),
-    };
-
     match p.family.as_str() {
         // Baseline-only floor families -- deliberately *not* in
         // `strategy_tuner_info`'s searchable `family` choices (a candidate
@@ -551,210 +529,16 @@ fn make_candidate<G: Game + 'static>(
         // forever, wasting SMAC3's trial budget). Reachable only via
         // `build_search`/`--baseline-config`, e.g. as a ladder's floor rung.
         // Neither reads `q_init` or any other `TrialParams` field beyond
-        // `family` itself.
+        // `family` itself. Not a `Compose<..>` `Strategy`, so these two stay
+        // outside `to_search_spec`/`config_ir::build_search` permanently.
         "random" => Ok(Box::new(mcts::strategies::random::Random::<G>::new())),
         "flat_mc" => Ok(Box::new(
             mcts::strategies::flat_mc::FlatMonteCarloStrategy::<G>::new(),
         )),
-        "ucb1" => build_with_final_action(
-            select::Ucb1::with_c(c()?),
-            simulate::Uniform,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_dm" => build_with_final_action(
-            select::Ucb1::with_c(c()?),
-            simulate::DecisiveMove::<G>::new(),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_mast" => build_with_final_action(
-            select::Ucb1::with_c(c()?),
-            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_nst" => {
-            let nst = simulate::Nst::new().backoff_threshold(
-                p.nst_backoff_threshold
-                    .ok_or_else(|| missing("nst_backoff_threshold"))?,
-            );
-            build_with_final_action(
-                select::Ucb1::with_c(c()?),
-                simulate::EpsilonGreedy::<G, simulate::Nst>::with_epsilon(epsilon()?).inner(nst),
-                p,
-                seed,
-                use_transpositions,
-                budget,
-            )
+        _ => {
+            let (spec, settings) = to_search_spec(p, seed, use_transpositions, budget)?;
+            Ok(config_ir::build_search(&spec, &settings))
         }
-        "ucb1_progressive_history" => build_with_final_action(
-            select::ProgressiveHistory::new(
-                select::Ucb1::with_c(c()?),
-                p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
-            ),
-            simulate::Uniform,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "amaf" => build_with_final_action(
-            select::Amaf::new()
-                .alpha(p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?)
-                .exploration_constant(c()?),
-            simulate::Uniform,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "amaf_mast" => build_with_final_action(
-            select::Amaf::new()
-                .alpha(p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?)
-                .exploration_constant(c()?),
-            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_tuned" => build_with_final_action(
-            select::Ucb1Tuned::with_c(c()?),
-            simulate::Uniform,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_tuned_mast" => build_with_final_action(
-            select::Ucb1Tuned::with_c(c()?),
-            simulate::Mast,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_tuned_dm" => build_with_final_action(
-            select::Ucb1Tuned::with_c(c()?),
-            simulate::DecisiveMove::<G>::new(),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "ucb1_tuned_dm_mast" => build_with_final_action(
-            select::Ucb1Tuned::with_c(c()?),
-            simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Mast>>::new().inner(
-                simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
-            ),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "rave" => {
-            let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
-                "hand_selected" => RaveSchedule::HandSelected {
-                    k: p.k.ok_or_else(|| missing("k"))?,
-                },
-                "min_mse" => RaveSchedule::MinMSE {
-                    bias: p.bias.ok_or_else(|| missing("bias"))?,
-                },
-                "threshold" => RaveSchedule::Threshold {
-                    rave: p.rave.ok_or_else(|| missing("rave"))?,
-                },
-                other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
-            };
-            let ucb = match p.rave_ucb.as_deref().ok_or_else(|| missing("rave_ucb"))? {
-                "none" => RaveUcb::None,
-                "ucb1" => RaveUcb::Ucb1 {
-                    exploration_constant: c()?,
-                },
-                "tuned" => RaveUcb::Ucb1Tuned {
-                    exploration_constant: c()?,
-                },
-                other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
-            };
-            build_with_final_action(
-                select::Rave::new(
-                    p.threshold.ok_or_else(|| missing("threshold"))?,
-                    schedule,
-                    ucb,
-                ),
-                simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Mast>>::new()
-                    .mode(simulate::DecisiveMoveMode::WinLoss)
-                    .inner(simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(
-                        epsilon()?,
-                    )),
-                p,
-                seed,
-                use_transpositions,
-                budget,
-            )
-        }
-        "ucb1_pn" => build_pn_with_final_action(
-            c()?,
-            c_pn()?,
-            simulate::Uniform,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-            PnSolverParams {
-                solver_loss_threshold: solver_loss_threshold()?,
-                contempt_factor: contempt_factor()?,
-            },
-        ),
-        "ucb1_pn_mast" => build_pn_with_final_action(
-            c()?,
-            c_pn()?,
-            simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(epsilon()?),
-            p,
-            seed,
-            use_transpositions,
-            budget,
-            PnSolverParams {
-                solver_loss_threshold: solver_loss_threshold()?,
-                contempt_factor: contempt_factor()?,
-            },
-        ),
-        "ucb1_max_robust" => build_fixed(
-            select::Ucb1::with_c(c()?),
-            simulate::Uniform,
-            select::MaxRobustChild,
-            p,
-            seed,
-            use_transpositions,
-            budget,
-        ),
-        "meta_mcts" => {
-            // `simulate::MetaMcts`'s inner search has no default iteration
-            // cap of its own (`TreeSearch::default()`'s `max_iterations` is
-            // `usize::MAX`, meant to be paired with a time budget this
-            // harness doesn't set) -- every simulate step would otherwise
-            // run an effectively unbounded nested search. Cap it explicitly
-            // instead of relying on `Default`.
-            let inner = TreeSearch::<G, strategy::Ucb1>::new().config(
-                SearchConfig::<G, strategy::Ucb1>::new().max_iterations(META_MCTS_INNER_ITERATIONS),
-            );
-            build_fixed(
-                select::Ucb1::with_c(c()?),
-                simulate::MetaMcts { inner },
-                select::MaxAvgScore,
-                p,
-                seed,
-                use_transpositions,
-                budget,
-            )
-        }
-        other => Err(HostError::bad_request(format!("unknown family: {other}"))),
     }
 }
 
@@ -1259,27 +1043,6 @@ mod tests {
     }
 
     #[test]
-    fn mcgs_trial_selects_combined_graph_statistics() {
-        let mut params = comparison_params();
-        params["mcgs"] = json!(true);
-        let trial: TrialParams = serde_json::from_value(params).unwrap();
-        let config = base_config::<Nim, strategy::Ucb1>(
-            &trial,
-            0,
-            true,
-            &SearchBudget {
-                max_iterations: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(config.graph_search, GraphSearch::Dag(GraphStats::Both));
-        assert!(!config.use_transpositions);
-        assert!(!config.reuse_tree);
-    }
-
-    #[test]
     fn configured_eval_streams_alternating_results_and_matches_aggregate() {
         let params = comparison_params();
         let budget = SearchBudget {
@@ -1672,6 +1435,423 @@ mod tests {
             "final_action": "robust_child", "solver_loss_threshold": 5,
             "contempt": "on", "contempt_factor": -0.5,
         }));
+    }
+
+    // -----------------------------------------------------------------
+    // `to_search_spec` -- config_ir conversion (step 4c). Not yet wired
+    // into `make_candidate` (that's step 4d); these tests pin the exact
+    // `SearchSpec`/`SearchSettings` shape each family converts to.
+    // -----------------------------------------------------------------
+
+    fn trial(params: Value) -> TrialParams {
+        serde_json::from_value(params).unwrap()
+    }
+
+    #[test]
+    fn to_search_spec_ucb1() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
+                simulate: config_ir::SimulateSpec::Uniform {},
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::RobustChild {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_dm() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_dm", "c": 1.4, "q_init": "Infinity", "final_action": "max_avg",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
+                simulate: config_ir::SimulateSpec::DecisiveMove {
+                    mode: simulate::DecisiveMoveMode::Win,
+                    inner: config_ir::BaseSimulateSpec::Uniform {},
+                },
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::MaxAvg {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_mast() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Mast {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_nst() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3,
+                "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Nst {
+                    backoff_threshold: 3
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_progressive_history() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_progressive_history", "c": 1.4, "ph_weight": 0.5,
+                "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.select,
+            config_ir::SelectSpec::ProgressiveHistory {
+                c: 1.4,
+                ph_weight: 0.5
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_amaf() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "amaf", "c": 1.4, "amaf_alpha": 0.5, "q_init": "Infinity",
+                "final_action": "secure_child", "a": 4.0,
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Amaf { alpha: 0.5, c: 1.4 },
+                simulate: config_ir::SimulateSpec::Uniform {},
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::SecureChild { a: 4.0 },
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_amaf_mast() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "amaf_mast", "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
+                "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Mast {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_tuned() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_tuned", "c": 1.4, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(spec.select, config_ir::SelectSpec::Ucb1Tuned { c: 1.4 });
+        assert_eq!(spec.simulate, config_ir::SimulateSpec::Uniform {});
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_tuned_mast() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_tuned_mast", "c": 1.4, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(spec.simulate, config_ir::SimulateSpec::Mast {});
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_tuned_dm() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_tuned_dm", "c": 1.4, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::DecisiveMove {
+                mode: simulate::DecisiveMoveMode::Win,
+                inner: config_ir::BaseSimulateSpec::Uniform {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_tuned_dm_mast() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode::Win,
+                epsilon: 0.2,
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_rave() {
+        let (spec, _) =
+            to_search_spec(&trial(rave_params()), 0, false, &SearchBudget::default()).unwrap();
+        assert_eq!(
+            spec.select,
+            config_ir::SelectSpec::Rave {
+                threshold: 700,
+                schedule: RaveSchedule::Threshold { rave: 700 },
+                ucb: RaveUcb::Ucb1Tuned {
+                    exploration_constant: 0.3
+                },
+            }
+        );
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode::WinLoss,
+                epsilon: 0.1,
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_pn() {
+        let (spec, settings) =
+            to_search_spec(&trial(pn_params()), 0, false, &SearchBudget::default()).unwrap();
+        assert_eq!(
+            spec.select,
+            config_ir::SelectSpec::UctPn { c: 1.4, c_pn: 1.0 }
+        );
+        assert_eq!(settings.solver_loss_threshold, Some(5));
+        assert_eq!(settings.contempt_factor, None);
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_pn_mast() {
+        let (spec, settings) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+                "q_init": "Infinity", "final_action": "robust_child",
+                "solver_loss_threshold": 5, "contempt": "on", "contempt_factor": -0.5,
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Mast {},
+            }
+        );
+        assert_eq!(settings.solver_loss_threshold, Some(5));
+        assert_eq!(settings.contempt_factor, Some(-0.5));
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_max_robust() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_max_robust", "c": 1.4, "q_init": "Infinity",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
+                simulate: config_ir::SimulateSpec::Uniform {},
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::MaxRobustChild {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_meta_mcts() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({"family": "meta_mcts", "c": 1.4, "q_init": "Infinity"})),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
+                simulate: config_ir::SimulateSpec::MetaMcts {
+                    iterations: META_MCTS_INNER_ITERATIONS
+                },
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::MaxAvg {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_settings_mirror_base_config() {
+        let (_, settings) = to_search_spec(
+            &trial(comparison_params()),
+            7,
+            true,
+            &SearchBudget {
+                max_iterations: Some(123),
+                threads: 4,
+                max_time: Some(std::time::Duration::from_secs(1)),
+            },
+        )
+        .unwrap();
+        assert_eq!(settings.max_iterations, 123);
+        assert_eq!(settings.max_playout_depth, PLAYOUT_DEPTH);
+        assert_eq!(settings.expand_threshold, EXPAND_THRESHOLD);
+        assert!(matches!(settings.q_init, QInit::Infinity));
+        assert!(settings.use_transpositions);
+        assert!(settings.use_mcts_solver);
+        assert!(settings.reuse_tree);
+        assert_eq!(settings.num_tree_threads, 4);
+        assert_eq!(settings.seed, 7);
+        assert_eq!(settings.max_time, Some(std::time::Duration::from_secs(1)));
+        assert_eq!(settings.graph_search, None);
+    }
+
+    #[test]
+    fn to_search_spec_mcgs_sets_graph_search_and_disables_transpositions_and_reuse() {
+        let mut params = comparison_params();
+        params["mcgs"] = json!(true);
+        let (_, settings) =
+            to_search_spec(&trial(params), 0, true, &SearchBudget::default()).unwrap();
+        assert_eq!(
+            settings.graph_search,
+            Some(GraphSearch::Dag(GraphStats::Both))
+        );
+        assert!(!settings.use_transpositions);
+        assert!(!settings.reuse_tree);
+    }
+
+    #[test]
+    fn to_search_spec_mcgs_without_transpositions_is_rejected() {
+        let mut params = comparison_params();
+        params["mcgs"] = json!(true);
+        // `(SearchSpec, SearchSettings)` isn't `Debug`, so `expect_err` doesn't
+        // apply here -- match instead (see `test_build_search_rejects_unknown_family`).
+        let err = match to_search_spec(&trial(params), 0, false, &SearchBudget::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("mcgs without a zobrist hash must be rejected"),
+        };
+        assert!(err.message.contains("zobrist"));
+    }
+
+    #[test]
+    fn to_search_spec_rejects_missing_required_field() {
+        let mut params = rave_params();
+        params.as_object_mut().unwrap().remove("rave");
+        let err = match to_search_spec(&trial(params), 0, false, &SearchBudget::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("missing `rave` must be rejected"),
+        };
+        assert!(err.message.contains("rave"));
+    }
+
+    #[test]
+    fn to_search_spec_rejects_unknown_family() {
+        let mut params = rave_params();
+        params["family"] = json!("not_a_real_family");
+        let err = match to_search_spec(&trial(params), 0, false, &SearchBudget::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("unknown family must be rejected"),
+        };
+        assert!(err.message.contains("family"));
     }
 
     /// Proves `build_search` (the public entry point `GameAdapter::

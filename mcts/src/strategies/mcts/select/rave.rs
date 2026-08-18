@@ -37,7 +37,8 @@ use crate::game::Game;
 // Information Science. Springer International Publishing, Cham, pp. 75–95.
 // https://doi.org/10.1007/978-3-319-75931-9_6
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RaveSchedule {
     // HandSelected comes from CadiaPlayer
     // MinMSE and CadiaPlayare are both described in Gelly, Silver 2011
@@ -71,7 +72,8 @@ impl RaveSchedule {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RaveUcb {
     None,
     Ucb1 { exploration_constant: f64 },
