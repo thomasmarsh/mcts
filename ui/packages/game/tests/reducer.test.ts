@@ -13,7 +13,7 @@ import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type AppAction, type Env } from "../src/reducer.js";
 import { initialAppState, type AppState } from "../src/state.js";
 import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
-import type { AiMoveResult, Analysis, StateAndView } from "../src/types.js";
+import type { AiMoveResult, AiStrategyRef, Analysis, StateAndView } from "../src/types.js";
 
 // Test-only state/move types -- appReducer never inspects their shape.
 type S = number;
@@ -33,7 +33,7 @@ const mockEnv: Env = {
 describe("appReducer / aiMove", () => {
   it("request -> submitted('done') resolves synchronously, same as a real poll loop's terminal state", () => {
     const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {} };
-    const seen: { kind: string; state: S; preset: string }[] = [];
+    const seen: { kind: string; state: S; strategy: AiStrategyRef }[] = [];
     const env: Env = {
       ...mockEnv,
       // `Env.aiMove` is generic per call (it serves every game kind); this
@@ -41,15 +41,15 @@ describe("appReducer / aiMove", () => {
       // call and returns this test's fixed `result` regardless of what the
       // caller's own S2/M2/V2 happen to be -- sound here because the caller
       // (appReducer, below) is itself instantiated at S/M for this test.
-      aiMove: <S2, M2, V2 = unknown>(kind: string, state: S2, preset: string) => {
-        seen.push({ kind, state: state as unknown as S, preset });
+      aiMove: <S2, M2, V2 = unknown>(kind: string, state: S2, strategy: AiStrategyRef) => {
+        seen.push({ kind, state: state as unknown as S, strategy });
         return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
       },
     };
     const init = initialAppState<S, M>("druid", 7);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "aiMove", action: { tag: "request", preset: "master" } }, (s) => {
+    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } }, (s) => {
       s.aiMove.status = "pending";
     });
     ts.receive(
@@ -73,10 +73,63 @@ describe("appReducer / aiMove", () => {
     );
 
     // env.aiMove is called with the tree's current state and gameKind, not
-    // just the preset -- confirms the dynamic jobEnv construction (reading
+    // just the strategy -- confirms the dynamic jobEnv construction (reading
     // draft.gameKind / draft.tree.nodes[draft.tree.currentId]) actually wires
     // through, not just the job-poll status machinery.
-    expect(seen).toEqual([{ kind: "druid", state: 7, preset: "master" }]);
+    expect(seen).toEqual([{ kind: "druid", state: 7, strategy: { kind: "preset", id: "master" } }]);
+  });
+
+  // A `{kind: "custom", spec}` strategy must reach `env.aiMove` unchanged --
+  // `appReducer` itself never inspects an `AiStrategyRef`'s shape, only
+  // forwards it (the `preset`/`custom` split happens at the `api-client.ts`
+  // HTTP boundary, one layer below this reducer test).
+  it("forwards a custom AiStrategyRef to env.aiMove unchanged", () => {
+    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {} };
+    const customStrategy: AiStrategyRef = {
+      kind: "custom",
+      spec: {
+        search: {
+          select: { kind: "ucb1", c: 1.4 },
+          simulate: { kind: "uniform" },
+          backprop: { kind: "classic" },
+          final_action: { kind: "robust_child" },
+        },
+        max_iterations: 500,
+      },
+    };
+    const seen: AiStrategyRef[] = [];
+    const env: Env = {
+      ...mockEnv,
+      aiMove: <S2, M2, V2 = unknown>(_kind: string, _state: S2, strategy: AiStrategyRef) => {
+        seen.push(strategy);
+        return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
+      },
+    };
+    const init = initialAppState<S, M>("druid", 7);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send({ tag: "aiMove", action: { tag: "request", strategy: customStrategy } }, (s) => {
+      s.aiMove.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "aiMove",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
+      },
+      (s) => {
+        s.aiMove.status = "done";
+        s.aiMove.result = result;
+        const rootId = s.tree.rootId;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: rootId, childIds: [] };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
+      },
+    );
+
+    expect(seen).toEqual([customStrategy]);
   });
 });
 
@@ -90,7 +143,7 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("test-kind", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", preset: "strong", budgetMs: 1000 } }, (s) => {
+    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" }, budgetMs: 1000 } }, (s) => {
       s.analysis.status = "pending";
     });
     ts.receive(
@@ -106,6 +159,49 @@ describe("appReducer / analysis", () => {
     );
   });
 
+  it("forwards a custom AiStrategyRef to env.analyze unchanged", () => {
+    const result: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const customStrategy: AiStrategyRef = {
+      kind: "custom",
+      spec: {
+        search: {
+          select: { kind: "epsilon_greedy", epsilon: 0.1, inner: { kind: "ucb1", c: 1.4 } },
+          simulate: { kind: "mast" },
+          backprop: { kind: "classic" },
+          final_action: { kind: "secure_child", a: 4.0 },
+        },
+        max_time_ms: 2000,
+      },
+    };
+    const seen: { strategy: AiStrategyRef; budgetMs: number | undefined }[] = [];
+    const env: Env = {
+      ...mockEnv,
+      analyze: <M2>(_kind: string, _state: unknown, strategy: AiStrategyRef, budgetMs?: number) => {
+        seen.push({ strategy, budgetMs });
+        return Effect.send(result) as unknown as Effect<Analysis<M2>>;
+      },
+    };
+    const init = initialAppState<S, M>("test-kind", 0);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send({ tag: "analysis", action: { tag: "request", strategy: customStrategy, budgetMs: 1500 } }, (s) => {
+      s.analysis.status = "pending";
+    });
+    ts.receive(
+      {
+        tag: "analysis",
+        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+        epoch: 0,
+      },
+      (s) => {
+        s.analysis.status = "done";
+        s.analysis.result = result;
+      },
+    );
+
+    expect(seen).toEqual([{ strategy: customStrategy, budgetMs: 1500 }]);
+  });
+
   // A stale `analysis` result would otherwise go on labeling a
   // position it was never computed for once the tree moves on -- the
   // heatmap overlay/suggested-move highlight derive straight from this
@@ -119,7 +215,7 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", preset: "strong" } }, (s) => {
+    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
       s.analysis.status = "pending";
     });
     ts.receive(
@@ -154,7 +250,7 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", preset: "strong" } }, (s) => {
+    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
       s.analysis.status = "pending";
     });
     ts.receive(
@@ -275,7 +371,7 @@ describe("appReducer / position", () => {
     const ts = createTestStore(appReducer<S, M>, env, init);
     await loadPosition(ts, "n0");
 
-    ts.send({ tag: "aiMove", action: { tag: "request", preset: "strong" } }, (s) => {
+    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
       s.aiMove.status = "pending";
     });
     ts.receive(
@@ -351,7 +447,7 @@ describe("appReducer / switchGame", () => {
   it("changes gameKind, resets per-kind slices, and drops epoch to 0 until newGame bumps it back up", () => {
     const init = initialAppState<S, M>("druid", 0);
     init.epoch = 2;
-    init.seats = { Black: "strong" };
+    init.seats = { Black: { kind: "preset", id: "strong" } };
     init.aiPresets.status = "done";
     init.aiPresets.result = [];
     init.analysis.status = "done";

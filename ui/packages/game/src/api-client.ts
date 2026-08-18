@@ -14,11 +14,22 @@ import type { Env } from "./reducer.js";
 import type {
   AiMoveResult,
   AiPresetInfo,
+  AiStrategyRef,
   Analysis,
+  AxisSchema,
   GameInfo,
   LegalMovesResult,
   StateAndView,
 } from "./types.js";
+
+/** Flattens an `AiStrategyRef` into `server::main::AiMoveRequest`/
+ * `AnalyzeRequest`'s actual `{preset, custom?}` wire shape -- `preset` stays
+ * a required, non-empty string even for the custom path (a literal
+ * `"custom"` sentinel, kept for server-side logging -- see that struct's doc
+ * comment), with `custom` carrying the real spec alongside it. */
+function strategyBody(strategy: AiStrategyRef): { preset: string; custom?: unknown } {
+  return strategy.kind === "preset" ? { preset: strategy.id } : { preset: "custom", custom: strategy.spec };
+}
 
 export interface ApiClient {
   getGames(): Promise<GameInfo[]>;
@@ -27,8 +38,9 @@ export interface ApiClient {
   view<S, V = unknown>(kind: string, state: S): Promise<V>;
   apply<S, M, V = unknown>(kind: string, state: S, move: M): Promise<StateAndView<S, V>>;
   aiPresets(kind: string): Promise<AiPresetInfo[]>;
-  aiMove<S, M, V = unknown>(kind: string, state: S, preset: string): Promise<AiMoveResult<S, M, V>>;
-  analyze<S, M>(kind: string, state: S, preset: string, budgetMs?: number): Promise<Analysis<M>>;
+  aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Promise<AiMoveResult<S, M, V>>;
+  analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Promise<Analysis<M>>;
+  fetchStrategySchema(): Promise<AxisSchema>;
 }
 
 /** The server (`AdapterError`'s `IntoResponse` impl, `server/adapters/mod.rs`)
@@ -95,15 +107,18 @@ export function createApiClient(baseUrl = ""): ApiClient {
     async aiPresets(kind: string): Promise<AiPresetInfo[]> {
       return fetchJson(url(`/api/games/${encodeURIComponent(kind)}/ai_presets`));
     },
-    async aiMove<S, M, V = unknown>(kind: string, state: S, preset: string): Promise<AiMoveResult<S, M, V>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/ai_move`), { state, preset });
+    async aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Promise<AiMoveResult<S, M, V>> {
+      return postJson(url(`/api/games/${encodeURIComponent(kind)}/ai_move`), { state, ...strategyBody(strategy) });
     },
-    async analyze<S, M>(kind: string, state: S, preset: string, budgetMs?: number): Promise<Analysis<M>> {
+    async analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Promise<Analysis<M>> {
       return postJson(url(`/api/games/${encodeURIComponent(kind)}/analyze`), {
         state,
-        preset,
+        ...strategyBody(strategy),
         budget_ms: budgetMs,
       });
+    },
+    async fetchStrategySchema(): Promise<AxisSchema> {
+      return fetchJson(url("/api/strategy-schema"));
     },
   };
 }
@@ -117,9 +132,9 @@ export function createEnv(api: ApiClient): Env {
     view: <S, V = unknown>(kind: string, state: S) => lift(() => api.view<S, V>(kind, state)),
     apply: <S, M, V = unknown>(kind: string, state: S, move: M) => lift(() => api.apply<S, M, V>(kind, state, move)),
     aiPresets: (kind: string) => lift(() => api.aiPresets(kind)),
-    aiMove: <S, M, V = unknown>(kind: string, state: S, preset: string) =>
-      lift(() => api.aiMove<S, M, V>(kind, state, preset)),
-    analyze: <S, M>(kind: string, state: S, preset: string, budgetMs?: number) =>
-      lift(() => api.analyze<S, M>(kind, state, preset, budgetMs)),
+    aiMove: <S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef) =>
+      lift(() => api.aiMove<S, M, V>(kind, state, strategy)),
+    analyze: <S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number) =>
+      lift(() => api.analyze<S, M>(kind, state, strategy, budgetMs)),
   };
 }

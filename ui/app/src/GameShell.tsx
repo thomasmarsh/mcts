@@ -16,7 +16,7 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, lazy, onCleanup, onMount, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
-import type { AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
+import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
 import { GAME_META, GAME_MODULES } from "./games.js";
 
@@ -29,6 +29,13 @@ const SaveLoadPanel = lazy(() => import("./SaveLoadPanel.js").then((m) => ({ def
 type S = unknown;
 type M = unknown;
 type V = unknown;
+
+/** Wraps a bare preset id as an `AiStrategyRef` -- the New Game dialog's
+ * seat pickers only ever choose a named preset until Phase 5 adds a
+ * "Custom…" option, so this is the one place that boundary is crossed. */
+function presetStrategy(id: string): AiStrategyRef {
+  return { kind: "preset", id };
+}
 
 /** Walks `tree`'s root-to-current path into the `MoveStep[]` shape
  * `GameRendererProps.history` expects — the root itself (whose `move` is
@@ -200,7 +207,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     if (!sum || sum.currentPlayer === null) return;
     const seat = state().seats[sum.currentPlayer] ?? "human";
     if (seat === "human") return;
-    dispatch({ tag: "aiMove", action: { tag: "request", preset: seat } });
+    dispatch({ tag: "aiMove", action: { tag: "request", strategy: seat } });
   });
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -221,10 +228,23 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   onMount(() => window.addEventListener("keydown", onKeyDown));
   onCleanup(() => window.removeEventListener("keydown", onKeyDown));
 
+  // The dialog's own seat pickers only offer "human" or a named preset (see
+  // `presetStrategy`'s doc comment) -- a seat currently set to a
+  // `{kind: "custom", ...}` strategy (not yet reachable via this dialog,
+  // but reachable once Phase 5 adds "Custom…") has no bare-string form to
+  // preselect, so it falls back to "human" here rather than losing the
+  // custom spec (`startNewGame` only ever writes what this dialog offers,
+  // so it can't discard a spec this dialog never set).
+  function seatAsPresetId(player: string): string {
+    const seat = state().seats[player] ?? "human";
+    if (seat === "human") return "human";
+    return seat.kind === "preset" ? seat.id : "human";
+  }
+
   function openDialog(): void {
     setPendingConfig(undefined);
     const seats: Record<string, string> = {};
-    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = state().seats[p] ?? "human";
+    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = seatAsPresetId(p);
     setPendingSeats(seats);
     setDialogOpen(true);
   }
@@ -250,18 +270,18 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
 
   function startNewGame(): void {
     for (const [player, control] of Object.entries(pendingSeats())) {
-      dispatch({ tag: "setSeat", player, control });
+      dispatch({ tag: "setSeat", player, control: control === "human" ? "human" : presetStrategy(control) });
     }
     setAutoplayPaused(false);
     dispatch({ tag: "newGame", action: { tag: "request", config: pendingConfig() } });
     setDialogOpen(false);
   }
 
-  const manualMovePreset = () => {
+  const manualMoveStrategy = (): AiStrategyRef => {
     const sum = summary();
-    if (!sum || sum.currentPlayer === null) return "strong";
+    if (!sum || sum.currentPlayer === null) return presetStrategy("strong");
     const seat = state().seats[sum.currentPlayer] ?? "human";
-    return seat === "human" ? "strong" : seat;
+    return seat === "human" ? presetStrategy("strong") : seat;
   };
 
   const presetOptions = () => (state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : []);
@@ -347,7 +367,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                 </div>
               </Show>
               <div id="actions">
-                <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", preset: manualMovePreset() } })}>
+                <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", strategy: manualMoveStrategy() } })}>
                   AI Move
                 </button>
                 <button id="autoplay-toggle" classList={{ paused: autoplayPaused() }} onClick={() => setAutoplayPaused((v) => !v)}>
@@ -385,7 +405,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
                 busy={busy()}
                 hoveredMove={hoveredMove()}
                 onSelectPreset={(preset) => dispatch({ tag: "setPreset", preset })}
-                onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", preset: analysisPreset() } })}
+                onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", strategy: presetStrategy(analysisPreset()) } })}
                 onHoverMove={setHoveredMove}
               />
             </Show>
