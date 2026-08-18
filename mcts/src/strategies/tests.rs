@@ -59,6 +59,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
 #[test]
 fn test_child_array_explored_len_and_heap_bytes_estimate() {
     use crate::strategies::mcts::index::Id;
+    use crate::strategies::mcts::node::ActionStats;
     use crate::strategies::mcts::node::ChildArray;
     use crate::strategies::mcts::node::PlayerStats;
 
@@ -80,7 +81,8 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
         + explored * (std::mem::size_of::<Id>() + std::mem::size_of::<usize>())
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
         + n * std::mem::size_of::<u32>()
-        + n * 2 * std::mem::size_of::<PlayerStats>();
+        + n * 2 * std::mem::size_of::<PlayerStats>()
+        + n * 2 * std::mem::size_of::<ActionStats>();
     assert_eq!(
         children.heap_bytes_estimate(),
         expected,

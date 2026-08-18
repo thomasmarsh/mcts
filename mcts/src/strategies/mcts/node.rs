@@ -51,21 +51,10 @@ pub struct ActionStats {
     pub score: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlayerStats {
     pub score: f64,
     pub sum_squared_score: f64,
-    pub amaf: ActionStats,
-}
-
-impl Default for PlayerStats {
-    fn default() -> Self {
-        Self {
-            score: 0.,
-            sum_squared_score: 0.,
-            amaf: ActionStats::default(),
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -156,6 +145,9 @@ fn value_estimate_unvisited_from(
 struct NodeStatsData {
     num_visits: u32,
     player: Vec<PlayerStats>,
+    // Side table, parallel to `player`, meant to be populated only when
+    // AMAF tracking is active for the search. Currently always populated.
+    amaf: Vec<ActionStats>,
 }
 
 #[derive(Debug)]
@@ -184,6 +176,7 @@ impl NodeStats {
             data: RwLock::new(NodeStatsData {
                 num_visits: 0,
                 player: vec![PlayerStats::default(); num_players],
+                amaf: vec![ActionStats::default(); num_players],
             }),
         }
     }
@@ -198,10 +191,6 @@ impl NodeStats {
 
     pub fn sum_squared_score(&self, player_index: usize) -> f64 {
         self.data.read().unwrap().player[player_index].sum_squared_score
-    }
-
-    pub fn amaf(&self, player_index: usize) -> ActionStats {
-        self.data.read().unwrap().player[player_index].amaf
     }
 
     pub fn total_visits(&self) -> u32 {
@@ -231,13 +220,6 @@ impl NodeStats {
         });
     }
 
-    pub fn add_amaf(&self, player_index: usize, utility: f64) {
-        let mut data = self.data.write().unwrap();
-        let amaf = &mut data.player[player_index].amaf;
-        amaf.num_visits += 1;
-        amaf.score += utility;
-    }
-
     pub fn snapshot(&self, player_index: usize) -> ChildSnapshot {
         let data = self.data.read().unwrap();
         let p = &data.player[player_index];
@@ -246,7 +228,7 @@ impl NodeStats {
             num_visits_virtual: self.num_visits_virtual.load(Relaxed),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
-            amaf: p.amaf,
+            amaf: data.amaf[player_index],
         }
     }
 
@@ -317,6 +299,9 @@ struct ChildArrayData {
     num_visits: Vec<u32>,
     // len == num_children * num_players, row-major by child
     player: Vec<PlayerStats>,
+    // Side table, parallel to `player`, meant to be populated only when
+    // AMAF tracking is active for the search. Currently always populated.
+    amaf: Vec<ActionStats>,
 }
 
 /// A node's children, stored struct-of-arrays instead of as a
@@ -373,6 +358,7 @@ impl<A: Action> ChildArray<A> {
             data: RwLock::new(ChildArrayData {
                 num_visits: vec![0; n],
                 player: vec![PlayerStats::default(); n * num_players],
+                amaf: vec![ActionStats::default(); n * num_players],
             }),
             actions,
             num_players,
@@ -471,7 +457,7 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn amaf(&self, idx: usize, player_index: usize) -> ActionStats {
-        self.data.read().unwrap().player[self.player_index(idx, player_index)].amaf
+        self.data.read().unwrap().amaf[self.player_index(idx, player_index)]
     }
 
     pub fn expected_score(&self, idx: usize, player_index: usize) -> f64 {
@@ -499,13 +485,14 @@ impl<A: Action> ChildArray<A> {
     /// field that reading through `Edge<A>`'s owned `NodeStats` required.
     pub fn snapshot(&self, idx: usize, player_index: usize) -> ChildSnapshot {
         let data = self.data.read().unwrap();
-        let p = &data.player[self.player_index(idx, player_index)];
+        let i = self.player_index(idx, player_index);
+        let p = &data.player[i];
         ChildSnapshot {
             num_visits: data.num_visits[idx],
             num_visits_virtual: self.virtual_loss(idx),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
-            amaf: p.amaf,
+            amaf: data.amaf[i],
         }
     }
 
@@ -521,7 +508,8 @@ impl<A: Action> ChildArray<A> {
 
     pub fn add_amaf(&self, idx: usize, player_index: usize, utility: f64) {
         let mut data = self.data.write().unwrap();
-        let amaf = &mut data.player[self.player_index(idx, player_index)].amaf;
+        let i = self.player_index(idx, player_index);
+        let amaf = &mut data.amaf[i];
         amaf.num_visits += 1;
         amaf.score += utility;
     }
@@ -550,6 +538,7 @@ impl<A: Action> ChildArray<A> {
             + n * std::mem::size_of::<AtomicU32>()
             + n * std::mem::size_of::<u32>()
             + n * self.num_players * std::mem::size_of::<PlayerStats>()
+            + n * self.num_players * std::mem::size_of::<ActionStats>()
     }
 
     /// Rewrites every resolved child id through `old_to_new`, and rebuilds
@@ -584,11 +573,13 @@ impl<A: Action> ChildArray<A> {
         let data = self.data.read().unwrap();
         let base = idx * self.num_players;
         let player = data.player[base..base + self.num_players].to_vec();
+        let amaf = data.amaf[base..base + self.num_players].to_vec();
         NodeStats {
             num_visits_virtual: AtomicU32::new(self.virtual_loss(idx)),
             data: RwLock::new(NodeStatsData {
                 num_visits: data.num_visits[idx],
                 player,
+                amaf,
             }),
         }
     }
@@ -631,6 +622,12 @@ impl<A: Action> StatsRef<'_, A> {
     }
 }
 
+// `ChildArray<A>` carries its stats inline (behind an `RwLock`, not boxed),
+// so `Terminal` is far smaller than `Expanded` by construction, not by
+// oversight -- boxing `ChildArray<A>` here would ripple into every
+// `NodeState::Expanded` construction site across the crate for a variant
+// that's already the common case once a node has been visited once.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum NodeState<A: Action> {
     Terminal,

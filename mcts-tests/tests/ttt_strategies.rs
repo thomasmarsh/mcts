@@ -719,7 +719,8 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
         + explored * (std::mem::size_of::<mcts::index::Id>() + std::mem::size_of::<usize>())
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
         + n * std::mem::size_of::<u32>()
-        + n * 2 * std::mem::size_of::<mcts::node::PlayerStats>();
+        + n * 2 * std::mem::size_of::<mcts::node::PlayerStats>()
+        + n * 2 * std::mem::size_of::<mcts::node::ActionStats>();
     assert_eq!(
         children.heap_bytes_estimate(),
         expected,
