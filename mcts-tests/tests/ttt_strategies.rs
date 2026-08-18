@@ -561,7 +561,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     let index = mcts::search::TreeIndex::<Move>::new();
 
     // root: O (player 1) to move.
-    let root = Node::new_root(1, 2, 0);
+    let root = Node::new_root(1, 2, 0, true);
     // sibling: reached by playing Move(7) at root -- X (player 0) to
     // move there, the mover *after* root's action.
     let sibling_id = index.insert(Node::new(0, 7));
@@ -569,7 +569,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // of root, irrelevant to the match itself beyond not being root.
     let processed_id = index.insert(Node::new(0, 6));
 
-    let children = ChildArray::new(vec![Move(6), Move(7)], 2);
+    let children = ChildArray::new(vec![Move(6), Move(7)], 2, true);
     children.get_or_create_child(0, || processed_id);
     children.get_or_create_child(1, || sibling_id);
     root.expand(|| NodeState::Expanded(children));
@@ -630,7 +630,7 @@ fn test_child_array_child_index_matches_creation_order() {
     let index = TreeIndex::<u32>::new();
     let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
 
-    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1);
+    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false);
     // Resolve out of creation order to make sure `child_index` isn't
     // secretly relying on id/idx happening to already agree.
     for &idx in &[3usize, 0, 4, 1, 2] {
@@ -676,7 +676,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     for _ in 0..500 {
         let index: Arc<TreeIndex<u32>> = Arc::new(TreeIndex::new());
         let created_id = index.insert(Node::new(0, 0));
-        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1));
+        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false));
 
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -701,7 +701,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
 fn test_child_array_explored_len_and_heap_bytes_estimate() {
     use mcts::node::ChildArray;
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, false);
     assert_eq!(children.explored_len(), 0, "nothing resolved yet");
 
     children.get_or_create_child(1, mcts::index::Id::invalid_id);
@@ -1449,7 +1449,7 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     let new_index = TreeIndex::<u32>::new();
     let new_ids: Vec<Id> = (0..3).map(|i| new_index.insert(Node::new(0, i))).collect();
 
-    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1);
+    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false);
     children.get_or_create_child(0, || old_ids[0]);
     // Slot 1 deliberately left unresolved (never explored).
     children.get_or_create_child(2, || old_ids[2]);
@@ -1709,7 +1709,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false);
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -1727,6 +1727,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         use_mcts_solver: false,
         max_playout_depth: 0,
         solver_loss_threshold: 0,
+        has_amaf: false,
     };
 
     // Children 0 and 1: identical local visit/score stats -- a tie on raw
@@ -1806,7 +1807,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false);
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -1828,6 +1829,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         use_mcts_solver: false,
         max_playout_depth: 0,
         solver_loss_threshold: 0,
+        has_amaf: false,
     };
 
     // Child 0: heavily visited, mediocre average score.

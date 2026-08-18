@@ -152,6 +152,7 @@ where
             use_mcts_solver: self.config.use_mcts_solver,
             max_playout_depth: self.config.max_playout_depth,
             solver_loss_threshold: self.config.solver_loss_threshold,
+            has_amaf: self.config.requirements().amaf,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
         let k = self.config.num_rollouts_per_leaf.max(1);

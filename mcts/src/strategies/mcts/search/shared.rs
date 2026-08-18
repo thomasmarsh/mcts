@@ -162,6 +162,10 @@ pub struct Shared<'a, G: Game> {
     pub use_mcts_solver: bool,
     pub max_playout_depth: usize,
     pub solver_loss_threshold: u32,
+    /// From `SearchConfig::requirements().amaf` -- whether the active
+    /// `Strategy` reads per-child AMAF stats, gating whether newly created
+    /// `Node`/`ChildArray`s allocate their AMAF side table at all.
+    pub has_amaf: bool,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
@@ -176,6 +180,7 @@ pub fn expand<'a, G: Game>(
     node_id: Id,
     state: &G::S,
     use_mcts_solver: bool,
+    has_amaf: bool,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
@@ -184,7 +189,7 @@ pub fn expand<'a, G: Game>(
             let mut actions = Vec::new();
             G::generate_actions(state, &mut actions);
             debug_assert!(!actions.is_empty());
-            NodeState::Expanded(ChildArray::new(actions, G::num_players()))
+            NodeState::Expanded(ChildArray::new(actions, G::num_players(), has_amaf))
         } else {
             if use_mcts_solver {
                 debug_assert!(G::num_players() <= 2);
@@ -227,6 +232,7 @@ pub fn new_child<G: Game>(
                         hash,
                         ply,
                         G::num_players(),
+                        shared.has_amaf,
                     ))
                 },
             )
@@ -237,6 +243,7 @@ pub fn new_child<G: Game>(
                     hash,
                     parent.ply + 1,
                     G::num_players(),
+                    shared.has_amaf,
                 ))
             })
         } else {
@@ -245,6 +252,7 @@ pub fn new_child<G: Game>(
                 hash,
                 parent.ply + 1,
                 G::num_players(),
+                shared.has_amaf,
             ))
         };
         shared.index.get(child_id).add_incoming_edge();
@@ -352,6 +360,7 @@ pub fn select_step<G: Game>(
                     ctx.current_id,
                     &ctx.state,
                     shared.use_mcts_solver,
+                    shared.has_amaf,
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return;

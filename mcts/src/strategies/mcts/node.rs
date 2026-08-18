@@ -145,8 +145,10 @@ fn value_estimate_unvisited_from(
 struct NodeStatsData {
     num_visits: u32,
     player: Vec<PlayerStats>,
-    // Side table, parallel to `player`, meant to be populated only when
-    // AMAF tracking is active for the search. Currently always populated.
+    // Side table, parallel to `player`. Only populated (length
+    // `player.len()`) when `has_amaf` is set on the owning `NodeStats`;
+    // left empty otherwise so a `Strategy` that never requests AMAF doesn't
+    // pay for it.
     amaf: Vec<ActionStats>,
 }
 
@@ -156,6 +158,9 @@ pub struct NodeStats {
     // backprop, the hottest path in tree-parallel search.
     pub num_visits_virtual: AtomicU32,
 
+    // Set once at construction from `Requirements.amaf`; gates whether
+    // `data.amaf` is populated and whether the accessors below read it.
+    has_amaf: bool,
     data: RwLock<NodeStatsData>,
 }
 
@@ -164,19 +169,25 @@ impl Clone for NodeStats {
         let data = self.data.read().unwrap();
         Self {
             num_visits_virtual: AtomicU32::new(self.num_visits_virtual.load(Relaxed)),
+            has_amaf: self.has_amaf,
             data: RwLock::new(data.clone()),
         }
     }
 }
 
 impl NodeStats {
-    pub fn new(num_players: usize) -> Self {
+    pub fn new(num_players: usize, has_amaf: bool) -> Self {
         Self {
             num_visits_virtual: AtomicU32::new(0),
+            has_amaf,
             data: RwLock::new(NodeStatsData {
                 num_visits: 0,
                 player: vec![PlayerStats::default(); num_players],
-                amaf: vec![ActionStats::default(); num_players],
+                amaf: if has_amaf {
+                    vec![ActionStats::default(); num_players]
+                } else {
+                    Vec::new()
+                },
             }),
         }
     }
@@ -228,7 +239,11 @@ impl NodeStats {
             num_visits_virtual: self.num_visits_virtual.load(Relaxed),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
-            amaf: data.amaf[player_index],
+            amaf: if self.has_amaf {
+                data.amaf[player_index]
+            } else {
+                ActionStats::default()
+            },
         }
     }
 
@@ -299,8 +314,11 @@ struct ChildArrayData {
     num_visits: Vec<u32>,
     // len == num_children * num_players, row-major by child
     player: Vec<PlayerStats>,
-    // Side table, parallel to `player`, meant to be populated only when
-    // AMAF tracking is active for the search. Currently always populated.
+    // Side table, parallel to `player`. Only populated (same length as
+    // `player`) when `has_amaf` is set on the owning `ChildArray`; left
+    // empty otherwise so a `Strategy` that never requests AMAF doesn't pay
+    // for it -- this is the actually-multiplied structure (num_children *
+    // num_players), so this is the real payoff of gating on `has_amaf`.
     amaf: Vec<ActionStats>,
 }
 
@@ -327,6 +345,9 @@ pub struct ChildArray<A: Action> {
     num_visits_virtual: Vec<AtomicU32>,
     data: RwLock<ChildArrayData>,
     num_players: usize,
+    // Set once at construction from `Requirements.amaf`; gates whether
+    // `data.amaf` is populated and whether the accessors below read it.
+    has_amaf: bool,
 }
 
 impl<A: Action> Clone for ChildArray<A> {
@@ -344,12 +365,13 @@ impl<A: Action> Clone for ChildArray<A> {
                 .collect(),
             data: RwLock::new(data.clone()),
             num_players: self.num_players,
+            has_amaf: self.has_amaf,
         }
     }
 }
 
 impl<A: Action> ChildArray<A> {
-    pub fn new(actions: Vec<A>, num_players: usize) -> Self {
+    pub fn new(actions: Vec<A>, num_players: usize, has_amaf: bool) -> Self {
         let n = actions.len();
         Self {
             child_ids: (0..n).map(|_| OnceLock::new()).collect(),
@@ -358,10 +380,15 @@ impl<A: Action> ChildArray<A> {
             data: RwLock::new(ChildArrayData {
                 num_visits: vec![0; n],
                 player: vec![PlayerStats::default(); n * num_players],
-                amaf: vec![ActionStats::default(); n * num_players],
+                amaf: if has_amaf {
+                    vec![ActionStats::default(); n * num_players]
+                } else {
+                    Vec::new()
+                },
             }),
             actions,
             num_players,
+            has_amaf,
         }
     }
 
@@ -457,6 +484,9 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn amaf(&self, idx: usize, player_index: usize) -> ActionStats {
+        if !self.has_amaf {
+            return ActionStats::default();
+        }
         self.data.read().unwrap().amaf[self.player_index(idx, player_index)]
     }
 
@@ -492,7 +522,11 @@ impl<A: Action> ChildArray<A> {
             num_visits_virtual: self.virtual_loss(idx),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
-            amaf: data.amaf[i],
+            amaf: if self.has_amaf {
+                data.amaf[i]
+            } else {
+                ActionStats::default()
+            },
         }
     }
 
@@ -507,6 +541,9 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn add_amaf(&self, idx: usize, player_index: usize, utility: f64) {
+        if !self.has_amaf {
+            return;
+        }
         let mut data = self.data.write().unwrap();
         let i = self.player_index(idx, player_index);
         let amaf = &mut data.amaf[i];
@@ -538,7 +575,11 @@ impl<A: Action> ChildArray<A> {
             + n * std::mem::size_of::<AtomicU32>()
             + n * std::mem::size_of::<u32>()
             + n * self.num_players * std::mem::size_of::<PlayerStats>()
-            + n * self.num_players * std::mem::size_of::<ActionStats>()
+            + if self.has_amaf {
+                n * self.num_players * std::mem::size_of::<ActionStats>()
+            } else {
+                0
+            }
     }
 
     /// Rewrites every resolved child id through `old_to_new`, and rebuilds
@@ -573,9 +614,14 @@ impl<A: Action> ChildArray<A> {
         let data = self.data.read().unwrap();
         let base = idx * self.num_players;
         let player = data.player[base..base + self.num_players].to_vec();
-        let amaf = data.amaf[base..base + self.num_players].to_vec();
+        let amaf = if self.has_amaf {
+            data.amaf[base..base + self.num_players].to_vec()
+        } else {
+            Vec::new()
+        };
         NodeStats {
             num_visits_virtual: AtomicU32::new(self.virtual_loss(idx)),
+            has_amaf: self.has_amaf,
             data: RwLock::new(NodeStatsData {
                 num_visits: data.num_visits[idx],
                 player,
@@ -697,16 +743,22 @@ where
     A: Clone + std::hash::Hash,
 {
     pub fn new(player_idx: usize, hash: u64) -> Self {
-        Self::new_at_ply(player_idx, hash, 0, 2)
+        Self::new_at_ply(player_idx, hash, 0, 2, true)
     }
 
-    pub fn new_at_ply(player_idx: usize, hash: u64, ply: u32, num_players: usize) -> Self {
+    pub fn new_at_ply(
+        player_idx: usize,
+        hash: u64,
+        ply: u32,
+        num_players: usize,
+        has_amaf: bool,
+    ) -> Self {
         Self {
             player_idx,
             hash,
             ply,
             is_root: false,
-            stats: NodeStats::new(num_players),
+            stats: NodeStats::new(num_players, has_amaf),
             incoming_edges: AtomicU32::new(0),
             state: OnceLock::new(),
             proven: AtomicU8::new(Proven::UNPROVEN_U8),
@@ -900,11 +952,11 @@ where
         }
     }
 
-    pub fn new_root(player: usize, num_players: usize, hash: u64) -> Self {
+    pub fn new_root(player: usize, num_players: usize, hash: u64, has_amaf: bool) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
         Self {
             is_root: true,
-            ..Self::new_at_ply(player, hash, 0, num_players)
+            ..Self::new_at_ply(player, hash, 0, num_players, has_amaf)
         }
     }
 

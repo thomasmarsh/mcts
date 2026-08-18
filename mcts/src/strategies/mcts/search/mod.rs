@@ -89,18 +89,20 @@ where
     G::S: std::fmt::Display,
 {
     pub fn new() -> Self {
+        let config = S::config();
+        let has_amaf = config.requirements().amaf;
         let index = index::Arena::new();
-        let root_id = index.insert(Node::new_root(0, G::num_players(), 0));
+        let root_id = index.insert(Node::new_root(0, G::num_players(), 0, has_amaf));
         Self {
             root_id,
-            root_stats: NodeStats::new(G::num_players()),
+            root_stats: NodeStats::new(G::num_players(), has_amaf),
             root_state: None,
             pv: vec![],
             stack: vec![],
             table: TranspositionTable::default(),
             trial: None,
             index,
-            config: S::config(),
+            config,
             timer: timer::Timer::new(),
             stats: Default::default(),
         }
@@ -108,7 +110,12 @@ where
 
     #[inline]
     pub fn new_root(&mut self, player_idx: usize, hash: u64) -> Id {
-        let root = Node::new_root(player_idx, G::num_players(), hash);
+        let root = Node::new_root(
+            player_idx,
+            G::num_players(),
+            hash,
+            self.config.requirements().amaf,
+        );
         self.root_id = self.index.insert(root);
         self.root_id
     }

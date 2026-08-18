@@ -12,7 +12,7 @@ fn test_child_array_child_index_matches_creation_order() {
     let index = TreeIndex::<u32>::new();
     let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
 
-    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1);
+    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false);
     for &idx in [3usize, 0, 4, 1, 2].iter() {
         let resolved = children.get_or_create_child(idx, || ids[idx]);
         assert_eq!(resolved, ids[idx]);
@@ -42,7 +42,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     for _ in 0..500 {
         let index: Arc<TreeIndex<u32>> = Arc::new(TreeIndex::new());
         let created_id = index.insert(Node::new(0, 0));
-        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1));
+        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false));
 
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -63,7 +63,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     use crate::strategies::mcts::node::ChildArray;
     use crate::strategies::mcts::node::PlayerStats;
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, true);
     assert_eq!(children.explored_len(), 0, "nothing resolved yet");
 
     children.get_or_create_child(1, Id::invalid_id);
@@ -87,6 +87,41 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
         children.heap_bytes_estimate(),
         expected,
         "heap_bytes_estimate should be exactly the sum of each parallel array's element count * element size"
+    );
+}
+
+// A `Strategy` that never sets `Requirements.amaf` must not pay for the
+// per-(child, player) AMAF side table at all -- not just leave it logically
+// unused. `heap_bytes_estimate` excluding the `ActionStats` term is the
+// observable proxy for "the `Vec` was never allocated" from outside
+// `node.rs`.
+#[test]
+fn test_child_array_amaf_side_table_empty_when_has_amaf_false() {
+    use crate::strategies::mcts::node::ChildArray;
+    use crate::strategies::mcts::node::PlayerStats;
+
+    let n = 4usize;
+    let num_players = 2usize;
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], num_players, false);
+
+    let default_amaf = children.amaf(0, 0);
+    assert_eq!(
+        (default_amaf.num_visits, default_amaf.score),
+        (0, 0.0),
+        "amaf() should return a harmless default when has_amaf is false, not panic on an empty Vec"
+    );
+    let snapshot_amaf = children.snapshot(0, 0).amaf;
+    assert_eq!((snapshot_amaf.num_visits, snapshot_amaf.score), (0, 0.0));
+
+    let expected_without_amaf = n * std::mem::size_of::<u32>()
+        + n * std::mem::size_of::<std::sync::OnceLock<crate::strategies::mcts::index::Id>>()
+        + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
+        + n * std::mem::size_of::<u32>()
+        + n * num_players * std::mem::size_of::<PlayerStats>();
+    assert_eq!(
+        children.heap_bytes_estimate(),
+        expected_without_amaf,
+        "heap_bytes_estimate should exclude the ActionStats side table entirely when has_amaf is false"
     );
 }
 
@@ -146,8 +181,8 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
     use crate::strategies::mcts::table::{TranspositionKey, TranspositionTable};
 
     let index = TreeIndex::<u32>::new();
-    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2));
-    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2));
+    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2, false));
+    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2, false));
     let table = TranspositionTable::default();
 
     assert_eq!(
@@ -177,7 +212,7 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
 fn test_node_incoming_edge_count_marks_transpositions() {
     use crate::strategies::mcts::node::Node;
 
-    let node = Node::<u32>::new_at_ply(0, 7, 2, 2);
+    let node = Node::<u32>::new_at_ply(0, 7, 2, 2, false);
     assert!(!node.is_transposition());
     node.add_incoming_edge();
     assert_eq!(node.incoming_edges(), 1);
@@ -199,7 +234,7 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     let new_index = TreeIndex::<u32>::new();
     let new_ids: Vec<Id> = (0..3).map(|i| new_index.insert(Node::new(0, i))).collect();
 
-    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1);
+    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false);
     children.get_or_create_child(0, || old_ids[0]);
     children.get_or_create_child(2, || old_ids[2]);
 
@@ -252,7 +287,7 @@ fn test_derive_pn_dpn_negamax_recurrence_hand_verified() {
     let unvisited_child = Node::new(1, 0);
     let unvisited_id = index.insert(unvisited_child);
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
     children.get_or_create_child(1, || proven_win_id);
     children.get_or_create_child(2, || unvisited_id);
     // idx 0 deliberately left unresolved (no `get_or_create_child` call).
@@ -309,7 +344,7 @@ fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
     let unvisited_child = Node::new(1, 0);
     let unvisited_id = index.insert(unvisited_child);
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
     children.get_or_create_child(1, || proven_draw_id);
     children.get_or_create_child(2, || unvisited_id);
     // idx 0 deliberately left unresolved (no `get_or_create_child` call).

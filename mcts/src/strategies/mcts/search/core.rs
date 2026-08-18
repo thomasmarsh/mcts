@@ -79,6 +79,7 @@ where
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
+                has_amaf: self.config.requirements().amaf,
             },
             ctx,
             &mut self.stack,
@@ -219,6 +220,7 @@ where
                 use_mcts_solver: self.config.use_mcts_solver,
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
+                has_amaf: self.config.requirements().amaf,
             },
             &self.stack,
             &self.config.backprop,
@@ -334,7 +336,7 @@ where
         self.table.clear();
         self.stats.accum_depth.store(0, Relaxed);
         self.stats.iter_count.store(0, Relaxed);
-        self.root_stats = NodeStats::new(G::num_players());
+        self.root_stats = NodeStats::new(G::num_players(), self.config.requirements().amaf);
         self.new_root(player_idx, hash)
     }
 
