@@ -181,8 +181,8 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
     use crate::strategies::mcts::table::{TranspositionKey, TranspositionTable};
 
     let index = TreeIndex::<u32>::new();
-    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2, false));
-    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2, false));
+    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2, false, false));
+    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2, false, false));
     let table = TranspositionTable::default();
 
     assert_eq!(
@@ -212,7 +212,7 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
 fn test_node_incoming_edge_count_marks_transpositions() {
     use crate::strategies::mcts::node::Node;
 
-    let node = Node::<u32>::new_at_ply(0, 7, 2, 2, false);
+    let node = Node::<u32>::new_at_ply(0, 7, 2, 2, false, false);
     assert!(!node.is_transposition());
     node.add_incoming_edge();
     assert_eq!(node.incoming_edges(), 1);
@@ -220,6 +220,37 @@ fn test_node_incoming_edge_count_marks_transpositions() {
     node.add_incoming_edge();
     assert_eq!(node.incoming_edges(), 2);
     assert!(node.is_transposition());
+}
+
+// Guards `Node::solver`'s "no allocation when the solver is off" storage
+// split the same way `test_child_array_amaf_side_table_empty_when_has_amaf_false`
+// guards the AMAF side table: a future regression that unconditionally
+// allocates `SolverState` again wouldn't be caught by any behavioral test,
+// since `try_prove`/`set_pn_dpn`/`set_pn_dpn2` are already no-ops and
+// `proven`/`pn`/`dpn`/`pn2`/`dpn2` already return the same sentinels
+// whether the block is absent or merely never written to.
+#[test]
+fn test_node_solver_state_absent_when_has_solver_false() {
+    use crate::strategies::mcts::node::{Node, Proven};
+
+    let node = Node::<u32>::new_at_ply(0, 0, 0, 2, false, false);
+    assert!(!node.has_solver());
+
+    // Exercise every solver-mutating accessor to confirm they no-op rather
+    // than panicking on the absent block, and never move off their
+    // solver-off sentinels.
+    node.try_prove(Proven::Win(0));
+    node.set_pn_dpn(0, 0);
+    node.set_pn_dpn2(0, 0);
+
+    assert_eq!(node.proven(), Proven::Unproven);
+    assert_eq!(node.pn(), 1);
+    assert_eq!(node.dpn(), 1);
+    assert_eq!(node.pn2(), 1);
+    assert_eq!(node.dpn2(), 1);
+
+    let solver_node = Node::<u32>::new_at_ply(0, 0, 0, 2, false, true);
+    assert!(solver_node.has_solver());
 }
 
 #[test]

@@ -680,6 +680,56 @@ pub enum NodeState<A: Action> {
     Expanded(ChildArray<A>),
 }
 
+// MCTS-Solver proof status plus PN-MCTS (Kowalski et al. 2023) proof/
+// disproof numbers, split out of `Node` into their own boxed, optional block
+// (`Node::solver`) so a search with `use_mcts_solver` off doesn't pay for
+// them on every node -- only the pointer-width `None` tag. `pn`/`dpn` are
+// seeded at `1` (PNS's "unknown leaf" case) rather than `0 = Unproven`; see
+// `Node::pn`/`Node::dpn`'s doc comments for why these fields are only read
+// directly while `proven` is still `Unproven`. `proven` itself is write-once
+// (`Node::try_prove` only ever transitions away from `Unproven`), but
+// `pn`/`dpn`/`pn2`/`dpn2` are not: `set_pn_dpn`/`set_pn_dpn2` (called from
+// `derive_pn_dpn`/`derive_pn_dpn2` in backprop.rs) overwrite them every time
+// this node's children's counts change, only settling once `proven` itself
+// resolves. `pn2`/`dpn2` are the second-layer numbers (Kowalski et al. 2023,
+// Section VII "Double-Layer PN-MCTS"), tracking "not lost" (won or drawn)
+// instead of `pn`/`dpn`'s "won" -- see `Node::pn2`/`Node::dpn2`'s doc
+// comments. `Relaxed` throughout, matching `num_visits_virtual` on
+// `NodeStats`.
+#[derive(Debug)]
+struct SolverState {
+    proven: AtomicU8,
+    pn: AtomicU32,
+    dpn: AtomicU32,
+    pn2: AtomicU32,
+    dpn2: AtomicU32,
+}
+
+impl SolverState {
+    fn unproven() -> Self {
+        Self {
+            proven: AtomicU8::new(Proven::UNPROVEN_U8),
+            pn: AtomicU32::new(1),
+            dpn: AtomicU32::new(1),
+            pn2: AtomicU32::new(1),
+            dpn2: AtomicU32::new(1),
+        }
+    }
+}
+
+// Manual impl: `AtomicU8`/`AtomicU32` aren't `Clone`.
+impl Clone for SolverState {
+    fn clone(&self) -> Self {
+        Self {
+            proven: AtomicU8::new(self.proven.load(Relaxed)),
+            pn: AtomicU32::new(self.pn.load(Relaxed)),
+            dpn: AtomicU32::new(self.dpn.load(Relaxed)),
+            pn2: AtomicU32::new(self.pn2.load(Relaxed)),
+            dpn2: AtomicU32::new(self.dpn2.load(Relaxed)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Node<A: Action> {
     pub player_idx: usize,
@@ -693,28 +743,10 @@ pub struct Node<A: Action> {
     // unexpanded node race for free: only the winner runs `G::is_terminal`/
     // `generate_actions`, the rest block and read its result.
     state: OnceLock<NodeState<A>>,
-    // MCTS-Solver proof status, `0 = Unproven` by default. Not a `OnceLock`:
-    // unlike `state`, there's no real init work to gate behind "first caller
-    // wins" -- concurrent derivations of the same node can't disagree, so a
-    // plain compare-exchange-from-Unproven is simpler and sufficient.
-    // `Relaxed` throughout, matching
-    // `num_visits_virtual` on `NodeStats` above.
-    proven: AtomicU8,
-    // PN-MCTS (Kowalski et al. 2023) proof/disproof numbers, seeded at `1`
-    // (PNS's "unknown leaf" case) rather than `0 = Unproven` -- see `pn()`/
-    // `dpn()`'s doc comments for why these fields are only read directly
-    // while `proven` is still `Unproven`. Not write-once like `proven`:
-    // `set_pn_dpn` (called from `derive_pn_dpn` in backprop.rs) overwrites
-    // them every time this node's children's counts change, only settling
-    // once `proven` itself resolves.
-    pn: AtomicU32,
-    dpn: AtomicU32,
-    // Second-layer proof/disproof numbers (Kowalski et al. 2023, Section VII
-    // "Double-Layer PN-MCTS"), tracking "not lost" (won or drawn) instead of
-    // `pn`/`dpn`'s "won" -- see `pn2()`/`dpn2()`'s doc comments. Otherwise
-    // identical bookkeeping to `pn`/`dpn` above.
-    pn2: AtomicU32,
-    dpn2: AtomicU32,
+    // `None` when `SearchConfig::use_mcts_solver` is off for the active
+    // search -- see `SolverState`'s doc comment. Decided once at
+    // construction from that same flag, never populated afterward.
+    solver: Option<Box<SolverState>>,
 }
 
 // Manual impl: `AtomicU8`/`AtomicU32` aren't `Clone`, so this can no longer
@@ -729,11 +761,7 @@ impl<A: Action> Clone for Node<A> {
             stats: self.stats.clone(),
             incoming_edges: AtomicU32::new(self.incoming_edges.load(Relaxed)),
             state: self.state.clone(),
-            proven: AtomicU8::new(self.proven.load(Relaxed)),
-            pn: AtomicU32::new(self.pn.load(Relaxed)),
-            dpn: AtomicU32::new(self.dpn.load(Relaxed)),
-            pn2: AtomicU32::new(self.pn2.load(Relaxed)),
-            dpn2: AtomicU32::new(self.dpn2.load(Relaxed)),
+            solver: self.solver.clone(),
         }
     }
 }
@@ -743,7 +771,7 @@ where
     A: Clone + std::hash::Hash,
 {
     pub fn new(player_idx: usize, hash: u64) -> Self {
-        Self::new_at_ply(player_idx, hash, 0, 2, true)
+        Self::new_at_ply(player_idx, hash, 0, 2, true, true)
     }
 
     pub fn new_at_ply(
@@ -752,6 +780,7 @@ where
         ply: u32,
         num_players: usize,
         has_amaf: bool,
+        has_solver: bool,
     ) -> Self {
         Self {
             player_idx,
@@ -761,11 +790,7 @@ where
             stats: NodeStats::new(num_players, has_amaf),
             incoming_edges: AtomicU32::new(0),
             state: OnceLock::new(),
-            proven: AtomicU8::new(Proven::UNPROVEN_U8),
-            pn: AtomicU32::new(1),
-            dpn: AtomicU32::new(1),
-            pn2: AtomicU32::new(1),
-            dpn2: AtomicU32::new(1),
+            solver: has_solver.then(|| Box::new(SolverState::unproven())),
         }
     }
 
@@ -786,7 +811,9 @@ where
 
     #[inline]
     pub fn proven(&self) -> Proven {
-        Proven::from_u8(self.proven.load(Relaxed))
+        self.solver.as_ref().map_or(Proven::Unproven, |s| {
+            Proven::from_u8(s.proven.load(Relaxed))
+        })
     }
 
     /// Writes `status`, but only if this node is still `Unproven` -- once
@@ -794,12 +821,18 @@ where
     /// multiple threads deriving the same (correct) status concurrently: a
     /// CAS that loses the race is a harmless no-op, not a conflict --
     /// concurrent derivations of a fixed, real set of children can't
-    /// disagree.
+    /// disagree. No-ops when the solver is off for this search (`solver` is
+    /// `None`) -- callers only reach here from code already gated on
+    /// `use_mcts_solver`, so this is a defensive fallback, not a live path.
     pub fn try_prove(&self, status: Proven) {
         debug_assert_ne!(status, Proven::Unproven);
-        let _ = self
-            .proven
-            .compare_exchange(Proven::UNPROVEN_U8, status.to_u8(), Relaxed, Relaxed);
+        let Some(solver) = self.solver.as_ref() else {
+            return;
+        };
+        let _ =
+            solver
+                .proven
+                .compare_exchange(Proven::UNPROVEN_U8, status.to_u8(), Relaxed, Relaxed);
     }
 
     /// Proof number: PN-MCTS's (Kowalski et al. 2023) generalization of
@@ -818,7 +851,7 @@ where
         match self.proven() {
             Proven::Win(w) if w == self.player_idx => 0,
             Proven::Win(_) | Proven::Draw => u32::MAX,
-            Proven::Unproven => self.pn.load(Relaxed),
+            Proven::Unproven => self.solver.as_ref().map_or(1, |s| s.pn.load(Relaxed)),
         }
     }
 
@@ -830,17 +863,21 @@ where
         match self.proven() {
             Proven::Win(w) if w == self.player_idx => u32::MAX,
             Proven::Win(_) | Proven::Draw => 0,
-            Proven::Unproven => self.dpn.load(Relaxed),
+            Proven::Unproven => self.solver.as_ref().map_or(1, |s| s.dpn.load(Relaxed)),
         }
     }
 
     /// Overwrites the live proof/disproof counts. Called only from
     /// `derive_pn_dpn` (backprop.rs); see the `pn`/`dpn` fields' doc comment
-    /// for why this isn't write-once like `try_prove`.
+    /// for why this isn't write-once like `try_prove`. No-ops when the
+    /// solver is off, same as `try_prove`.
     #[inline]
     pub fn set_pn_dpn(&self, pn: u32, dpn: u32) {
-        self.pn.store(pn, Relaxed);
-        self.dpn.store(dpn, Relaxed);
+        let Some(solver) = self.solver.as_ref() else {
+            return;
+        };
+        solver.pn.store(pn, Relaxed);
+        solver.dpn.store(dpn, Relaxed);
     }
 
     /// Second-layer proof number (Kowalski et al. 2023, Section VII): the
@@ -861,7 +898,7 @@ where
             Proven::Win(w) if w == self.player_idx => 0,
             Proven::Draw => 0,
             Proven::Win(_) => u32::MAX,
-            Proven::Unproven => self.pn2.load(Relaxed),
+            Proven::Unproven => self.solver.as_ref().map_or(1, |s| s.pn2.load(Relaxed)),
         }
     }
 
@@ -873,16 +910,20 @@ where
             Proven::Win(w) if w == self.player_idx => u32::MAX,
             Proven::Draw => u32::MAX,
             Proven::Win(_) => 0,
-            Proven::Unproven => self.dpn2.load(Relaxed),
+            Proven::Unproven => self.solver.as_ref().map_or(1, |s| s.dpn2.load(Relaxed)),
         }
     }
 
     /// Overwrites the live second-layer proof/disproof counts. Called only
-    /// from `derive_pn_dpn2` (backprop.rs); mirrors `set_pn_dpn`.
+    /// from `derive_pn_dpn2` (backprop.rs); mirrors `set_pn_dpn`, including
+    /// the solver-off no-op case.
     #[inline]
     pub fn set_pn_dpn2(&self, pn2: u32, dpn2: u32) {
-        self.pn2.store(pn2, Relaxed);
-        self.dpn2.store(dpn2, Relaxed);
+        let Some(solver) = self.solver.as_ref() else {
+            return;
+        };
+        solver.pn2.store(pn2, Relaxed);
+        solver.dpn2.store(dpn2, Relaxed);
     }
 
     #[inline]
@@ -952,15 +993,31 @@ where
         }
     }
 
-    pub fn new_root(player: usize, num_players: usize, hash: u64, has_amaf: bool) -> Self {
+    pub fn new_root(
+        player: usize,
+        num_players: usize,
+        hash: u64,
+        has_amaf: bool,
+        has_solver: bool,
+    ) -> Self {
         debug_assert!((num_players == 0 && player == 0) || player < num_players);
         Self {
             is_root: true,
-            ..Self::new_at_ply(player, hash, 0, num_players, has_amaf)
+            ..Self::new_at_ply(player, hash, 0, num_players, has_amaf, has_solver)
         }
     }
 
     pub fn is_root(&self) -> bool {
         self.is_root
+    }
+
+    /// Test-only introspection hook: whether the solver side block was
+    /// actually allocated, mirroring `ChildArray`/`NodeStats`'s
+    /// `heap_bytes_estimate`-based check for the AMAF side table -- there's
+    /// no per-node heap-bytes accounting to piggyback on here, so this is a
+    /// direct (but crate-private) look at `solver` instead.
+    #[cfg(test)]
+    pub(crate) fn has_solver(&self) -> bool {
+        self.solver.is_some()
     }
 }

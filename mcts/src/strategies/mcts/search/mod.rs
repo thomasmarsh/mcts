@@ -92,7 +92,13 @@ where
         let config = S::config();
         let has_amaf = config.requirements().amaf;
         let index = index::Arena::new();
-        let root_id = index.insert(Node::new_root(0, G::num_players(), 0, has_amaf));
+        let root_id = index.insert(Node::new_root(
+            0,
+            G::num_players(),
+            0,
+            has_amaf,
+            config.use_mcts_solver,
+        ));
         Self {
             root_id,
             root_stats: NodeStats::new(G::num_players(), has_amaf),
@@ -115,6 +121,7 @@ where
             G::num_players(),
             hash,
             self.config.requirements().amaf,
+            self.config.use_mcts_solver,
         );
         self.root_id = self.index.insert(root);
         self.root_id

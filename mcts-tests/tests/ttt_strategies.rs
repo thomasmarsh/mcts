@@ -561,7 +561,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     let index = mcts::search::TreeIndex::<Move>::new();
 
     // root: O (player 1) to move.
-    let root = Node::new_root(1, 2, 0, true);
+    let root = Node::new_root(1, 2, 0, true, true);
     // sibling: reached by playing Move(7) at root -- X (player 0) to
     // move there, the mover *after* root's action.
     let sibling_id = index.insert(Node::new(0, 7));

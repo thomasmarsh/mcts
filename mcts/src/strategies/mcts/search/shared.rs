@@ -233,6 +233,7 @@ pub fn new_child<G: Game>(
                         ply,
                         G::num_players(),
                         shared.has_amaf,
+                        shared.use_mcts_solver,
                     ))
                 },
             )
@@ -244,6 +245,7 @@ pub fn new_child<G: Game>(
                     parent.ply + 1,
                     G::num_players(),
                     shared.has_amaf,
+                    shared.use_mcts_solver,
                 ))
             })
         } else {
@@ -253,6 +255,7 @@ pub fn new_child<G: Game>(
                 parent.ply + 1,
                 G::num_players(),
                 shared.has_amaf,
+                shared.use_mcts_solver,
             ))
         };
         shared.index.get(child_id).add_incoming_edge();
