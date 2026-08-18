@@ -40,6 +40,7 @@
 use std::str::FromStr;
 
 pub mod config_ir;
+pub mod config_ir_schema;
 mod family_catalog;
 pub mod presets;
 pub mod trace;
