@@ -176,6 +176,8 @@ async fn get_ai_presets(
 struct AiMoveRequest {
     state: Value,
     preset: String,
+    #[serde(default)]
+    custom: Option<Value>,
 }
 
 // Runs on a blocking thread -- the search is CPU-bound for its whole
@@ -191,10 +193,11 @@ async fn post_ai_move(
 ) -> Result<Json<Value>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let search_adapter = adapter.clone();
-    let result =
-        tokio::task::spawn_blocking(move || search_adapter.ai_move(&req.state, &req.preset))
-            .await
-            .map_err(|e| AdapterError::internal(e.to_string()))??;
+    let result = tokio::task::spawn_blocking(move || {
+        search_adapter.ai_move(&req.state, &req.preset, req.custom.as_ref())
+    })
+    .await
+    .map_err(|e| AdapterError::internal(e.to_string()))??;
     let view = adapter.view(&result.state)?;
     Ok(Json(
         json!({ "move": result.mv, "state": result.state, "view": view }),
@@ -206,6 +209,8 @@ struct AnalyzeRequest {
     state: Value,
     preset: String,
     #[serde(default)]
+    custom: Option<Value>,
+    #[serde(default)]
     budget_ms: Option<u64>,
 }
 
@@ -216,11 +221,15 @@ async fn post_analyze(
 ) -> Result<Json<Analysis>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let analysis = tokio::task::spawn_blocking(move || {
-        adapter.analyze(&req.state, &req.preset, req.budget_ms)
+        adapter.analyze(&req.state, &req.preset, req.custom.as_ref(), req.budget_ms)
     })
     .await
     .map_err(|e| AdapterError::internal(e.to_string()))??;
     Ok(Json(analysis))
+}
+
+async fn get_strategy_schema() -> Json<Value> {
+    Json(mcts_tune::config_ir_schema::axis_schema())
 }
 
 // Split out from `main` so tests can exercise the API surface directly
@@ -244,6 +253,7 @@ fn api_router(app_state: Arc<AppState>) -> Router {
 
     let other_routes = Router::new()
         .route("/api/games", get(get_games))
+        .route("/api/strategy-schema", get(get_strategy_schema))
         .route("/api/games/{kind}/new", post(post_new))
         .route("/api/games/{kind}/legal_moves", post(post_legal_moves))
         .route("/api/games/{kind}/view", post(post_view))

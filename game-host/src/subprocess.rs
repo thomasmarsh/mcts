@@ -206,11 +206,17 @@ impl GameAdapter for SubprocessAdapter {
             .unwrap_or_default()
     }
 
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
-        let result = self.request(
-            "ai_move",
-            serde_json::json!({"state": state, "preset": preset}),
-        )?;
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
+        let mut params = serde_json::json!({"state": state, "preset": preset});
+        if let Some(custom) = custom {
+            params["custom"] = custom.clone();
+        }
+        let result = self.request("ai_move", params)?;
         serde_json::from_value(result)
             .map_err(|e| HostError::internal(format!("parse ai_move: {e}")))
     }
@@ -219,9 +225,13 @@ impl GameAdapter for SubprocessAdapter {
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
         let mut params = serde_json::json!({"state": state, "preset": preset});
+        if let Some(custom) = custom {
+            params["custom"] = custom.clone();
+        }
         if let Some(ms) = budget_ms {
             params["budget_ms"] = serde_json::json!(ms);
         }
@@ -443,7 +453,7 @@ mod tests {
     fn test_ai_move() {
         let adapter = SubprocessAdapter::new(test_host_binary());
         let state = adapter.new_state(serde_json::json!({})).unwrap();
-        let result = adapter.ai_move(&state, "easy").unwrap();
+        let result = adapter.ai_move(&state, "easy", None).unwrap();
         assert!(result.mv.as_u64().is_some_and(|i| i < 9));
         assert_eq!(result.state.get("turn").and_then(|t| t.as_str()), Some("O"));
     }
@@ -452,7 +462,7 @@ mod tests {
     fn test_ai_move_unknown_preset() {
         let adapter = SubprocessAdapter::new(test_host_binary());
         let state = adapter.new_state(serde_json::json!({})).unwrap();
-        let err = adapter.ai_move(&state, "nonexistent").unwrap_err();
+        let err = adapter.ai_move(&state, "nonexistent", None).unwrap_err();
         assert_eq!(err.code, 404);
     }
 
@@ -460,7 +470,7 @@ mod tests {
     fn test_analyze() {
         let adapter = SubprocessAdapter::new(test_host_binary());
         let state = adapter.new_state(serde_json::json!({})).unwrap();
-        let analysis = adapter.analyze(&state, "easy", None).unwrap();
+        let analysis = adapter.analyze(&state, "easy", None, None).unwrap();
         assert_eq!(analysis.actions.len(), 9);
         assert!(analysis.suggested_move.is_some());
     }
@@ -469,7 +479,9 @@ mod tests {
     fn test_analyze_unknown_preset() {
         let adapter = SubprocessAdapter::new(test_host_binary());
         let state = adapter.new_state(serde_json::json!({})).unwrap();
-        let err = adapter.analyze(&state, "nonexistent", None).unwrap_err();
+        let err = adapter
+            .analyze(&state, "nonexistent", None, None)
+            .unwrap_err();
         assert_eq!(err.code, 404);
     }
 

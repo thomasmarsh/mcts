@@ -152,11 +152,17 @@ pub trait GameAdapter: Send + Sync {
     fn view(&self, state: &Value) -> Result<Value, AdapterError>;
 
     fn ai_presets(&self) -> Vec<AiPresetInfo>;
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, AdapterError>;
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, AdapterError>;
     fn analyze(
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, AdapterError>;
 }
@@ -222,9 +228,14 @@ impl GameAdapter for SubprocessGameAdapter {
             .collect()
     }
 
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, AdapterError> {
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, AdapterError> {
         self.inner
-            .ai_move(state, preset)
+            .ai_move(state, preset, custom)
             .map(|r| AiMoveResult {
                 mv: r.mv,
                 state: r.state,
@@ -236,10 +247,11 @@ impl GameAdapter for SubprocessGameAdapter {
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, AdapterError> {
         self.inner
-            .analyze(state, preset, budget_ms)
+            .analyze(state, preset, custom, budget_ms)
             .map(|r| Analysis {
                 actions: r
                     .actions

@@ -284,7 +284,9 @@ pub fn build_strategy<G: Game + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_ir::{BackpropSpec, BaseSelectSpec, FinalActionSpec, SelectSpec, SimulateSpec};
+    use crate::config_ir::{
+        BackpropSpec, BaseSelectSpec, FinalActionSpec, SelectSpec, SimulateSpec,
+    };
     use game_nim::Nim;
 
     fn sample_custom_spec() -> CustomStrategySpec {

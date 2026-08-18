@@ -226,11 +226,17 @@ impl GonnectAdapter {
     fn augmented_preset<const N: usize, const WORDS: usize>(
         &self,
         preset: &str,
+        custom: Option<&mcts_tune::presets::CustomStrategySpec>,
     ) -> Result<Box<dyn Search<G = Gonnect<N, WORDS>> + '_>, HostError>
     where
         Self: BookFor<N, WORDS>,
     {
-        let inner = presets().build::<Gonnect<N, WORDS>>(preset, PRESET_SEED)?;
+        let inner = mcts_tune::presets::build_strategy::<Gonnect<N, WORDS>>(
+            presets(),
+            preset,
+            custom,
+            PRESET_SEED,
+        )?;
         Ok(match (preset, self.book_index()) {
             ("strong", Some(book)) => Box::new(book::BookAugmented::new(inner, book)),
             _ => inner,
@@ -335,7 +341,16 @@ impl GameAdapter for GonnectAdapter {
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
         presets().ai_presets()
     }
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
         dispatch_size!(size, N, WORDS, {
@@ -343,7 +358,7 @@ impl GameAdapter for GonnectAdapter {
             if Gonnect::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = self.augmented_preset::<N, WORDS>(preset)?;
+            let mut ai = self.augmented_preset::<N, WORDS>(preset, custom_spec.as_ref())?;
             let action = ai.choose_action(&s);
             let next = Gonnect::<N, WORDS>::apply(s, &action);
             Ok(AiMoveResult {
@@ -352,7 +367,17 @@ impl GameAdapter for GonnectAdapter {
             })
         })
     }
-    fn analyze(&self, state: &Value, preset: &str, _: Option<u64>) -> Result<Analysis, HostError> {
+    fn analyze(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+        _: Option<u64>,
+    ) -> Result<Analysis, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
         dispatch_size!(size, N, WORDS, {
@@ -360,7 +385,7 @@ impl GameAdapter for GonnectAdapter {
             if Gonnect::<N, WORDS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = self.augmented_preset::<N, WORDS>(preset)?;
+            let mut ai = self.augmented_preset::<N, WORDS>(preset, custom_spec.as_ref())?;
             let _ = ai.choose_action(&s);
             let report = ai.root_report(&s);
             let suggested = report
