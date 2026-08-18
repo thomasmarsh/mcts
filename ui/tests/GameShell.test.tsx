@@ -30,10 +30,10 @@
 // `@solidjs/testing-library` + happy-dom.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { Effect } from "@mcts/core";
 import type { AiMoveResult, Env, LegalMovesResult, StateAndView } from "@mcts/game";
-import { createTestStore, mockEnv } from "./helpers.js";
+import { createTestStore, fixtureAxisSchema, mockEnv, mockFetchStrategySchema } from "./helpers.js";
 import { mountLog, resetMountLog, TERMINAL_AT, viewFor } from "./fixtures/fake-game.js";
 
 vi.mock("../app/src/games.js", () => import("./fixtures/fake-games-registry.js"));
@@ -93,7 +93,7 @@ beforeEach(() => {
 describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
   it("never remounts the board renderer across autoplay moves or history navigation", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
 
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
     expect(mountLog).toEqual(["mount"]);
@@ -118,7 +118,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
 
   it("undo (ArrowLeft) moves back one ply and holds -- it used to immediately snap forward again", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     makeBothSeatsAi(store);
@@ -135,7 +135,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
 
   it("clicking a move in the history panel jumps there and holds -- it used to go nowhere the user could see", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     makeBothSeatsAi(store);
@@ -150,5 +150,43 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
     // way back to n6 within a couple of reactive ticks, making the click
     // look like it did nothing.
     await holdsSteadyAt(() => store.state.tree.currentId, "n0");
+  });
+});
+
+describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real server)", () => {
+  it("builds an AiStrategyRef from the schema-driven editor and dispatches it as that seat's control", async () => {
+    const { store, captured } = createTestStore("fake", makeFakeEnv());
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("New Game"));
+    const seatASelect = await vi.waitFor(() => {
+      const el = screen.getByLabelText("A") as HTMLSelectElement;
+      expect(el.querySelector('option[value="custom"]')).not.toBeDisabled();
+      return el;
+    });
+    fireEvent.change(seatASelect, { target: { value: "custom" } });
+
+    // Selecting "custom" seeds the seat's editor from the schema's own
+    // first-listed variant per axis (`defaultCustomStrategySpec`) -- "ucb1"
+    // in this fixture (see helpers.ts's `fixtureAxisSchema`).
+    const selectAxis = await screen.findByLabelText("Select");
+    expect((selectAxis as HTMLSelectElement).value).toBe(fixtureAxisSchema.select.variants[0]!.kind);
+
+    // Switching to the wrapper variant reveals the nested `select_base`
+    // picker -- the one real level of recursion `config_ir.rs` allows.
+    fireEvent.change(selectAxis, { target: { value: "epsilon_greedy" } });
+    const innerAxis = await screen.findByLabelText("wraps");
+    expect((innerAxis as HTMLSelectElement).value).toBe(fixtureAxisSchema.select_base.variants[0]!.kind);
+
+    fireEvent.click(document.getElementById("new-game-start")!);
+
+    const setSeatA = captured.findLast(
+      (a) => a.tag === "setSeat" && "player" in a && a.player === "A",
+    ) as { tag: "setSeat"; player: string; control: unknown } | undefined;
+    expect(setSeatA?.control).toMatchObject({
+      kind: "custom",
+      spec: { search: { select: { kind: "epsilon_greedy", inner: { kind: "ucb1" } } } },
+    });
   });
 });

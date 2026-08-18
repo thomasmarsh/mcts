@@ -79,7 +79,7 @@ const App = () => {
       </div>
 
       <Show when={activeTab() === "game"}>
-        <GameShell store={store} />
+        <GameShell store={store} fetchStrategySchema={() => api.fetchStrategySchema()} />
       </Show>
 
       <Show when={activeTab() === "bench"}>

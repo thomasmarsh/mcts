@@ -1,2 +1,2 @@
-export { StrategyConfigEditor } from "./StrategyConfigEditor.js";
+export { defaultCustomStrategySpec, StrategyConfigEditor } from "./StrategyConfigEditor.js";
 export type { VariantValue } from "./StrategyConfigEditor.js";
