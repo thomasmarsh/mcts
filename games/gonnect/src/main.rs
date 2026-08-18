@@ -1,3 +1,7 @@
+use std::env;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use game_host::{
     run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, BookInfo, GameAdapter,
     HostError, TunerInfo,
@@ -9,12 +13,32 @@ use game_core::bigbitboard::BigBitBoard;
 use game_gonnect::book::{self, BookBuildConfig};
 use game_gonnect::{Gonnect, Move, Player, State};
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
+use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
 const TUNE_EVAL_ROUNDS: u32 = 20;
+
+/// Fixed seed for every `ai_move`/`analyze` search built through
+/// [`presets`] -- `GameAdapter::ai_move`/`analyze` take no seed argument, so
+/// this is the only seed available to `mcts_tune::presets::PresetTable::build`.
+const PRESET_SEED: u64 = 0;
+
+/// The parsed `easy`/`strong` preset table -- `games/gonnect/presets.json`'s
+/// embedded defaults, or an operator-supplied override file named by
+/// `GONNECT_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
+/// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
+/// `WORDS`, only by which `Gonnect<N, WORDS>` `PresetTable::build` is
+/// monomorphized for at each call site.
+fn presets() -> &'static PresetTable {
+    static PRESETS: OnceLock<PresetTable> = OnceLock::new();
+    PRESETS.get_or_init(|| {
+        let override_path = env::var("GONNECT_PRESETS_PATH").ok().map(PathBuf::from);
+        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+            .expect("games/gonnect/presets.json must parse")
+    })
+}
 
 /// `(N, WORDS)` pairs this binary serves. Each is a distinct
 /// `State<N, WORDS>` monomorphization -- see `dispatch_size!` below -- so
@@ -168,41 +192,6 @@ fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N
     )
 }
 
-fn build_easy<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("gonnect/easy")
-                .expand_threshold(1)
-                .max_iterations(100)
-                .q_init(QInit::Infinity),
-        ),
-    )
-}
-fn build_strong<const N: usize, const WORDS: usize>() -> Box<dyn Search<G = Gonnect<N, WORDS>>> {
-    Box::new(
-        TreeSearch::<Gonnect<N, WORDS>, strategy::Ucb1>::new().config(
-            SearchConfig::new()
-                .name("gonnect/strong")
-                .expand_threshold(0)
-                .max_iterations(5000)
-                .use_mcts_solver(true)
-                .q_init(QInit::Loss),
-        ),
-    )
-}
-fn build_preset<const N: usize, const WORDS: usize>(
-    id: &str,
-) -> Result<Box<dyn Search<G = Gonnect<N, WORDS>>>, HostError> {
-    match id {
-        "easy" => Ok(build_easy::<N, WORDS>()),
-        "strong" => Ok(build_strong::<N, WORDS>()),
-        _ => Err(HostError::not_found("unknown preset")),
-    }
-}
-
-const PRESET_IDS: &[&str] = &["easy", "strong"];
-
 /// Path convention for a size-`N` opening book, matching what `book build`
 /// (`examples/build_book.rs`'s default `--out`) writes.
 fn book_path(n: usize) -> std::path::PathBuf {
@@ -241,7 +230,7 @@ impl GonnectAdapter {
     where
         Self: BookFor<N, WORDS>,
     {
-        let inner = build_preset::<N, WORDS>(preset)?;
+        let inner = presets().build::<Gonnect<N, WORDS>>(preset, PRESET_SEED)?;
         Ok(match (preset, self.book_index()) {
             ("strong", Some(book)) => Box::new(book::BookAugmented::new(inner, book)),
             _ => inner,
@@ -344,14 +333,7 @@ impl GameAdapter for GonnectAdapter {
         })
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        PRESET_IDS
-            .iter()
-            .map(|id| AiPresetInfo {
-                id: (*id).into(),
-                label: (*id).into(),
-                description: "".into(),
-            })
-            .collect()
+        presets().ai_presets()
     }
     fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
         let w = parse_wire_state(state)?;
@@ -486,7 +468,11 @@ impl GameAdapter for GonnectAdapter {
                         max_time: max_time_ms.map(std::time::Duration::from_millis),
                         ..Default::default()
                     },
-                    build_strong::<N, WORDS>,
+                    move || {
+                        presets()
+                            .build::<Gonnect<N, WORDS>>("strong", PRESET_SEED)
+                            .expect("\"strong\" preset must be buildable")
+                    },
                     Default::default(),
                     trace_path.as_deref(),
                     on_game,
