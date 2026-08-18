@@ -43,19 +43,20 @@ pub mod config_ir;
 mod family_catalog;
 pub mod trace;
 
-use family_catalog::{param, tunable_field_parameters, TrialParams};
+use family_catalog::{dispatch_family, param, tunable_field_parameters, FamilySpec, TrialParams};
 use game_host::{
     ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
     HostError, TunerCondition, TunerInfo,
 };
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
-use mcts::strategies::mcts::{node::QInit, simulate, GraphSearch, GraphStats};
+use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats};
 use mcts::strategies::Search;
 use serde_json::{json, Value};
 
 #[cfg(test)]
-use mcts::strategies::mcts::strategy;
+use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
+#[cfg(test)]
+use mcts::strategies::mcts::{simulate, strategy};
 #[cfg(test)]
 use mcts::strategies::mcts::{SearchConfig, TreeSearch};
 
@@ -207,32 +208,14 @@ impl SearchBudget {
     }
 }
 
-/// `final_action` resolution shared by every family whose own named type
-/// leaves it configurable -- the `config_ir::FinalActionSpec` counterpart of
-/// the three-way match on `p.final_action` every such family needs.
-fn to_final_action_spec(p: &TrialParams) -> Result<config_ir::FinalActionSpec, HostError> {
-    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
-    let fa = p
-        .final_action
-        .as_deref()
-        .ok_or_else(|| missing("final_action"))?;
-    match fa {
-        "max_avg" => Ok(config_ir::FinalActionSpec::MaxAvg {}),
-        "secure_child" => Ok(config_ir::FinalActionSpec::SecureChild {
-            a: p.a.ok_or_else(|| missing("a"))?,
-        }),
-        "robust_child" => Ok(config_ir::FinalActionSpec::RobustChild {}),
-        other => Err(HostError::bad_request(format!(
-            "unknown final_action: {other}"
-        ))),
-    }
-}
-
 /// Converts one trial's `TrialParams` into `config_ir`'s `SearchSpec`/
 /// `SearchSettings` -- the `config_ir`-based counterpart of `make_candidate`'s
 /// `match p.family.as_str()` dispatch, covering every family except
 /// `"random"`/`"flat_mc"` (not a `Compose<..>` `Strategy`, so they stay direct
-/// arms in `make_candidate` permanently; see its own comment on why).
+/// arms in `make_candidate` permanently; see its own comment on why). Per-
+/// family construction is `family_catalog::dispatch_family`'s
+/// `register_family!` table; this function only handles what's common to
+/// every family (`q_init`, `mcgs`, the fixed `SearchSettings` knobs).
 /// `make_candidate` calls this and then `config_ir::build_search` for every
 /// other family.
 fn to_search_spec(
@@ -241,24 +224,6 @@ fn to_search_spec(
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
-    let missing = |field: &str| HostError::bad_request(format!("missing param: {field}"));
-    let c = || p.c.ok_or_else(|| missing("c"));
-    let epsilon = || p.epsilon.ok_or_else(|| missing("epsilon"));
-    let c_pn = || p.c_pn.ok_or_else(|| missing("c_pn"));
-    let solver_loss_threshold = || {
-        p.solver_loss_threshold
-            .ok_or_else(|| missing("solver_loss_threshold"))
-    };
-    let contempt_factor = || match p.contempt.as_deref() {
-        Some("off") => Ok(None),
-        Some("on") => Ok(Some(
-            p.contempt_factor
-                .ok_or_else(|| missing("contempt_factor"))?,
-        )),
-        Some(other) => Err(HostError::bad_request(format!("unknown contempt: {other}"))),
-        None => Err(missing("contempt")),
-    };
-
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
     let mcgs = p.mcgs.unwrap_or(false);
@@ -268,173 +233,13 @@ fn to_search_spec(
         ));
     }
 
-    let mut solver_loss_threshold_setting = None;
-    let mut contempt_factor_setting = None;
-
-    let (select, simulate, final_action) = match p.family.as_str() {
-        "ucb1" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::Uniform {},
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_dm" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::DecisiveMove {
-                mode: simulate::DecisiveMoveMode::Win,
-                inner: config_ir::BaseSimulateSpec::Uniform {},
-            },
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_mast" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::EpsilonGreedy {
-                epsilon: epsilon()?,
-                inner: config_ir::BaseSimulateSpec::Mast {},
-            },
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_nst" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::EpsilonGreedy {
-                epsilon: epsilon()?,
-                inner: config_ir::BaseSimulateSpec::Nst {
-                    backoff_threshold: p
-                        .nst_backoff_threshold
-                        .ok_or_else(|| missing("nst_backoff_threshold"))?,
-                },
-            },
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_progressive_history" => (
-            config_ir::SelectSpec::ProgressiveHistory {
-                c: c()?,
-                ph_weight: p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
-            },
-            config_ir::SimulateSpec::Uniform {},
-            to_final_action_spec(p)?,
-        ),
-        "amaf" => (
-            config_ir::SelectSpec::Amaf {
-                alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
-                c: c()?,
-            },
-            config_ir::SimulateSpec::Uniform {},
-            to_final_action_spec(p)?,
-        ),
-        "amaf_mast" => (
-            config_ir::SelectSpec::Amaf {
-                alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
-                c: c()?,
-            },
-            config_ir::SimulateSpec::EpsilonGreedy {
-                epsilon: epsilon()?,
-                inner: config_ir::BaseSimulateSpec::Mast {},
-            },
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_tuned" => (
-            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
-            config_ir::SimulateSpec::Uniform {},
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_tuned_mast" => (
-            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
-            config_ir::SimulateSpec::Mast {},
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_tuned_dm" => (
-            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
-            config_ir::SimulateSpec::DecisiveMove {
-                mode: simulate::DecisiveMoveMode::Win,
-                inner: config_ir::BaseSimulateSpec::Uniform {},
-            },
-            to_final_action_spec(p)?,
-        ),
-        "ucb1_tuned_dm_mast" => (
-            config_ir::SelectSpec::Ucb1Tuned { c: c()? },
-            config_ir::SimulateSpec::DecisiveMoveMast {
-                mode: simulate::DecisiveMoveMode::Win,
-                epsilon: epsilon()?,
-            },
-            to_final_action_spec(p)?,
-        ),
-        "rave" => {
-            let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
-                "hand_selected" => RaveSchedule::HandSelected {
-                    k: p.k.ok_or_else(|| missing("k"))?,
-                },
-                "min_mse" => RaveSchedule::MinMSE {
-                    bias: p.bias.ok_or_else(|| missing("bias"))?,
-                },
-                "threshold" => RaveSchedule::Threshold {
-                    rave: p.rave.ok_or_else(|| missing("rave"))?,
-                },
-                other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
-            };
-            let ucb = match p.rave_ucb.as_deref().ok_or_else(|| missing("rave_ucb"))? {
-                "none" => RaveUcb::None,
-                "ucb1" => RaveUcb::Ucb1 {
-                    exploration_constant: c()?,
-                },
-                "tuned" => RaveUcb::Ucb1Tuned {
-                    exploration_constant: c()?,
-                },
-                other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
-            };
-            (
-                config_ir::SelectSpec::Rave {
-                    threshold: p.threshold.ok_or_else(|| missing("threshold"))?,
-                    schedule,
-                    ucb,
-                },
-                config_ir::SimulateSpec::DecisiveMoveMast {
-                    mode: simulate::DecisiveMoveMode::WinLoss,
-                    epsilon: epsilon()?,
-                },
-                to_final_action_spec(p)?,
-            )
-        }
-        "ucb1_pn" => {
-            solver_loss_threshold_setting = Some(solver_loss_threshold()?);
-            contempt_factor_setting = contempt_factor()?;
-            (
-                config_ir::SelectSpec::UctPn {
-                    c: c()?,
-                    c_pn: c_pn()?,
-                },
-                config_ir::SimulateSpec::Uniform {},
-                to_final_action_spec(p)?,
-            )
-        }
-        "ucb1_pn_mast" => {
-            solver_loss_threshold_setting = Some(solver_loss_threshold()?);
-            contempt_factor_setting = contempt_factor()?;
-            (
-                config_ir::SelectSpec::UctPn {
-                    c: c()?,
-                    c_pn: c_pn()?,
-                },
-                config_ir::SimulateSpec::EpsilonGreedy {
-                    epsilon: epsilon()?,
-                    inner: config_ir::BaseSimulateSpec::Mast {},
-                },
-                to_final_action_spec(p)?,
-            )
-        }
-        "ucb1_max_robust" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::Uniform {},
-            config_ir::FinalActionSpec::MaxRobustChild {},
-        ),
-        "meta_mcts" => (
-            config_ir::SelectSpec::Ucb1 { c: c()? },
-            config_ir::SimulateSpec::MetaMcts {
-                iterations: META_MCTS_INNER_ITERATIONS,
-            },
-            config_ir::FinalActionSpec::MaxAvg {},
-        ),
-        other => return Err(HostError::bad_request(format!("unknown family: {other}"))),
-    };
+    let FamilySpec {
+        select,
+        simulate,
+        final_action,
+        solver_loss_threshold: solver_loss_threshold_setting,
+        contempt_factor: contempt_factor_setting,
+    } = dispatch_family(&p.family, p)?;
 
     let spec = config_ir::SearchSpec {
         select,
