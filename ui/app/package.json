@@ -16,6 +16,7 @@
     "@mcts/tak": "workspace:*",
     "@mcts/tanbo": "workspace:*",
     "@mcts/traffic-lights": "workspace:*",
+    "@mcts/strategy-config": "workspace:*",
     "@mcts/ttt": "workspace:*",
     "solid-js": "^1.9.0",
     "three": "^0.185.0"

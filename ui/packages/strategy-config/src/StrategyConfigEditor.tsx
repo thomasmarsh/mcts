@@ -19,7 +19,16 @@
 // `VariantPicker` terminates without needing an explicit depth guard.
 
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
-import type { AxisFieldSchema, AxisSchema, AxisVariantSchema, CustomStrategySpec } from "@mcts/game";
+import type {
+  AxisFieldSchema,
+  AxisSchema,
+  AxisVariantSchema,
+  BackpropSpec,
+  CustomStrategySpec,
+  FinalActionSpec,
+  SelectSpec,
+  SimulateSpec,
+} from "@mcts/game";
 
 /** A variant value as this editor manipulates it -- `kind` plus whatever
  * fields that variant's schema entry declares, generically. Each concrete
@@ -55,6 +64,25 @@ function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unk
     return buildDefaultVariantValue(findVariant(field.variants, field.default), schema);
   }
   return field.default;
+}
+
+/** A freshly-defaulted `CustomStrategySpec` -- each axis seeded from its
+ * schema's first listed variant (`buildDefaultVariantValue`, the same
+ * defaulting this editor uses when a variant is newly selected), with a
+ * 10,000-iteration budget so the seeded value already satisfies the "at
+ * least one budget field" invariant `StrategyConfigEditor` enforces. The one
+ * shared place callers (e.g. `GameShell`'s New Game dialog) seed a new
+ * seat's "Custom…" config, so that shape isn't hand-duplicated per caller. */
+export function defaultCustomStrategySpec(schema: AxisSchema): CustomStrategySpec {
+  return {
+    search: {
+      select: buildDefaultVariantValue(schema.select.variants[0]!, schema) as unknown as SelectSpec,
+      simulate: buildDefaultVariantValue(schema.simulate.variants[0]!, schema) as unknown as SimulateSpec,
+      backprop: buildDefaultVariantValue(schema.backprop.variants[0]!, schema) as unknown as BackpropSpec,
+      final_action: buildDefaultVariantValue(schema.final_action.variants[0]!, schema) as unknown as FinalActionSpec,
+    },
+    max_iterations: 10_000,
+  };
 }
 
 /** Recursive variant-kind picker: a `<select>` over `variants`, the chosen

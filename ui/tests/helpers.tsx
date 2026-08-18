@@ -11,7 +11,35 @@
 import { cleanup } from "@solidjs/testing-library";
 import { afterEach } from "vitest";
 import { Effect, createStore, type Store } from "@mcts/core";
-import { appReducer, initialAppState, type AppAction, type AppState, type Env } from "@mcts/game";
+import { appReducer, initialAppState, type AppAction, type AppState, type AxisSchema, type Env } from "@mcts/game";
+
+// A minimal but real-shaped `AxisSchema` fixture -- one variant per axis
+// (`ucb1`/`uniform`/`classic`/`robust_child`), plus an `epsilon_greedy`
+// select variant wrapping `select_base` so tests exercising the New Game
+// dialog's "Custom…" option can drive a wrapper's nested picker without
+// pulling in `axis_schema()`'s full ~20-variant shape. Mirrors
+// `packages/strategy-config/tests/schema-fixture.ts`.
+export const fixtureAxisSchema: AxisSchema = {
+  select: {
+    variants: [
+      { kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] },
+      {
+        kind: "epsilon_greedy",
+        fields: [{ name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 }],
+        wraps: "select_base",
+      },
+    ],
+  },
+  select_base: {
+    variants: [{ kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] }],
+  },
+  simulate: { variants: [{ kind: "uniform", fields: [] }] },
+  simulate_base: { variants: [{ kind: "uniform", fields: [] }] },
+  backprop: { variants: [{ kind: "classic", fields: [] }] },
+  final_action: { variants: [{ kind: "robust_child", fields: [] }] },
+};
+
+export const mockFetchStrategySchema = (): Promise<AxisSchema> => Promise.resolve(fixtureAxisSchema);
 
 // Every `Env` method stubbed to a no-op effect -- individual tests override
 // just the methods their scenario needs (same shape as pb's `mockEnv`).

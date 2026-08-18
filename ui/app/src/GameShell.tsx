@@ -16,8 +16,9 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, lazy, onCleanup, onMount, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
-import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, GameTreeNode, MoveStep } from "@mcts/game";
+import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, AxisSchema, GameTreeNode, MoveStep } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
+import { defaultCustomStrategySpec, StrategyConfigEditor } from "@mcts/strategy-config";
 import { GAME_META, GAME_MODULES } from "./games.js";
 
 // Panels are lazy-loaded so they only pull in their own dependencies when
@@ -58,9 +59,20 @@ function historyPath(tree: AppState<S, M, V>["tree"]): MoveStep<S, M>[] {
   return steps;
 }
 
-export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S, M, V>> }> = (props) => {
+export const GameShell: Component<{
+  store: Store<AppState<S, M, V>, AppAction<S, M, V>>;
+  fetchStrategySchema: () => Promise<AxisSchema>;
+}> = (props) => {
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
+
+  // Fetched once, game-independent (`config_ir`'s shape doesn't depend on
+  // which game kind is selected) -- fed to every seat's "Custom…" editor
+  // below, not re-fetched per seat or per game-kind switch. Injected as a
+  // prop rather than read via `env`/dispatch because it's a one-shot static
+  // read with no job-poll/error-retry semantics worth the `AppState` slice
+  // `aiPresets` has; `App.tsx` fetches `GET /api/games` the same way.
+  const [schema] = createResource(props.fetchStrategySchema);
 
   // Asynchronously load the game-kind module. The resource's source tracks
   // `state().gameKind`, so switching kinds (via the new-game dialog) triggers
@@ -96,7 +108,7 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   const [autoplayPaused, setAutoplayPaused] = createSignal(false);
   const [dialogOpen, setDialogOpen] = createSignal(false);
   const [pendingConfig, setPendingConfig] = createSignal<unknown>(undefined);
-  const [pendingSeats, setPendingSeats] = createSignal<Record<string, string>>({});
+  const [pendingSeats, setPendingSeats] = createSignal<Record<string, "human" | AiStrategyRef>>({});
 
   // `state().position` goes `null` for one reduction after *every* move/nav
   // (reducer.ts nulls it to preserve the "position matches currentId"
@@ -228,23 +240,19 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
   onMount(() => window.addEventListener("keydown", onKeyDown));
   onCleanup(() => window.removeEventListener("keydown", onKeyDown));
 
-  // The dialog's own seat pickers only offer "human" or a named preset (see
-  // `presetStrategy`'s doc comment) -- a seat currently set to a
-  // `{kind: "custom", ...}` strategy (not yet reachable via this dialog,
-  // but reachable once Phase 5 adds "Custom…") has no bare-string form to
-  // preselect, so it falls back to "human" here rather than losing the
-  // custom spec (`startNewGame` only ever writes what this dialog offers,
-  // so it can't discard a spec this dialog never set).
-  function seatAsPresetId(player: string): string {
-    const seat = state().seats[player] ?? "human";
-    if (seat === "human") return "human";
-    return seat.kind === "preset" ? seat.id : "human";
+  /** Selects a `<select>` option value for `pendingSeats()[player]`'s current
+   * control -- "human", a preset id, or the "custom" sentinel (the actual
+   * spec, if any, is rendered by the `StrategyConfigEditor` block below the
+   * select, not carried in the option value itself). */
+  function seatSelectValue(control: "human" | AiStrategyRef): string {
+    if (control === "human") return "human";
+    return control.kind === "preset" ? control.id : "custom";
   }
 
   function openDialog(): void {
     setPendingConfig(undefined);
-    const seats: Record<string, string> = {};
-    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = seatAsPresetId(p);
+    const seats: Record<string, "human" | AiStrategyRef> = {};
+    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = state().seats[p] ?? "human";
     setPendingSeats(seats);
     setDialogOpen(true);
   }
@@ -263,14 +271,14 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
     dispatch({ tag: "switchGame", gameKind: kind });
     dispatch({ tag: "aiPresets", action: { tag: "request" } });
     setPendingConfig(undefined);
-    const seats: Record<string, string> = {};
+    const seats: Record<string, "human" | AiStrategyRef> = {};
     for (const p of GAME_META[kind]?.players ?? []) seats[p] = "human";
     setPendingSeats(seats);
   }
 
   function startNewGame(): void {
     for (const [player, control] of Object.entries(pendingSeats())) {
-      dispatch({ tag: "setSeat", player, control: control === "human" ? "human" : presetStrategy(control) });
+      dispatch({ tag: "setSeat", player, control });
     }
     setAutoplayPaused(false);
     dispatch({ tag: "newGame", action: { tag: "request", config: pendingConfig() } });
@@ -446,16 +454,48 @@ export const GameShell: Component<{ store: Store<AppState<S, M, V>, AppAction<S,
             </Show>
             <For each={GAME_META[state().gameKind]?.players ?? []}>
               {(player) => (
-                <label>
-                  {player}
-                  <select
-                    value={pendingSeats()[player] ?? "human"}
-                    onChange={(e) => setPendingSeats((s) => ({ ...s, [player]: e.currentTarget.value }))}
-                  >
-                    <option value="human">Human</option>
-                    <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
-                  </select>
-                </label>
+                <>
+                  <label>
+                    {player}
+                    <select
+                      value={seatSelectValue(pendingSeats()[player] ?? "human")}
+                      onChange={(e) => {
+                        const value = e.currentTarget.value;
+                        setPendingSeats((s) => {
+                          if (value === "human") return { ...s, [player]: "human" };
+                          if (value === "custom") {
+                            const sch = schema();
+                            if (!sch) return s;
+                            return { ...s, [player]: { kind: "custom", spec: defaultCustomStrategySpec(sch) } };
+                          }
+                          return { ...s, [player]: { kind: "preset", id: value } };
+                        });
+                      }}
+                    >
+                      <option value="human">Human</option>
+                      <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
+                      <option value="custom" disabled={!schema()}>
+                        Custom…
+                      </option>
+                    </select>
+                  </label>
+                  <Show when={(() => {
+                    const control = pendingSeats()[player];
+                    return control !== "human" && control?.kind === "custom" ? control : undefined;
+                  })()}>
+                    {(custom) => (
+                      <Show when={schema()}>
+                        {(sch) => (
+                          <StrategyConfigEditor
+                            schema={sch()}
+                            config={custom().spec}
+                            onChange={(spec) => setPendingSeats((s) => ({ ...s, [player]: { kind: "custom", spec } }))}
+                          />
+                        )}
+                      </Show>
+                    )}
+                  </Show>
+                </>
               )}
             </For>
             <div class="dialog-actions">
