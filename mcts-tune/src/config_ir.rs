@@ -39,7 +39,8 @@
 use mcts::game::Game;
 use mcts::select::{self, SelectStrategy};
 use mcts::simulate::{self, SimulateStrategy};
-use mcts::Requirements;
+use mcts::strategies::mcts::strategy::Compose;
+use mcts::{Requirements, SearchConfig, TreeSearch};
 use serde::{Deserialize, Serialize};
 
 /// A continuation that can be invoked with any concrete `S: SelectStrategy<G>`
@@ -219,6 +220,17 @@ pub trait SimulateCont<G: Game> {
 /// explains -- e.g. `EpsilonGreedy(DecisiveMove(EpsilonGreedy(...)))` stops
 /// being representable, matching the fact that real configs only ever nest
 /// one wrapper deep.
+///
+/// `MetaMcts` is also not a row here -- `simulate::MetaMcts<G, S: Strategy<G>>`
+/// wraps a whole nested `TreeSearch`, not a `SimulateStrategy`, so its inner
+/// spec is a *pair* of specs (one per axis of that nested search's
+/// `Compose<InnerSel, InnerSim>`) rather than a `BaseSimulateSpec`. The inner
+/// `select` field is a full `SelectSpec` (select has no `MetaMcts` variant of
+/// its own, so nothing there can recurse); the inner `simulate` field is a
+/// `BaseSimulateSpec`, not a full `SimulateSpec`, specifically so it *can't*
+/// name another `MetaMcts` -- both because that would hit the same
+/// unbounded-monomorphization trap and because nested-nested MCTS isn't a
+/// realistic configuration anyway.
 macro_rules! register_simulate {
     (
         $(
@@ -270,10 +282,15 @@ macro_rules! register_simulate {
                 mode: simulate::DecisiveMoveMode,
                 inner: BaseSimulateSpec,
             },
+            MetaMcts {
+                iterations: usize,
+                select: SelectSpec,
+                simulate: BaseSimulateSpec,
+            },
         }
 
         /// Dispatches `spec` the same way `with_base_simulate` does, plus
-        /// the `EpsilonGreedy`/`DecisiveMove` wrappers.
+        /// the `EpsilonGreedy`/`DecisiveMove`/`MetaMcts` wrappers.
         pub fn with_simulate<G, C>(spec: &SimulateSpec, cont: C) -> C::Output
         where
             G: Game,
@@ -291,6 +308,12 @@ macro_rules! register_simulate {
                 }
                 SimulateSpec::DecisiveMove { mode, inner } => {
                     with_base_simulate::<G, _>(&inner, DecisiveMoveSimulateCont { mode, cont })
+                }
+                SimulateSpec::MetaMcts { iterations, select, simulate } => {
+                    with_select::<G, _>(
+                        &select,
+                        MetaMctsCont { iterations, simulate_spec: simulate, cont },
+                    )
                 }
             }
         }
@@ -344,6 +367,68 @@ where
             .mode(self.mode)
             .inner(simulate);
         self.cont.call(wrapped)
+    }
+}
+
+/// The second stage of `SimulateSpec::MetaMcts`'s two-stage CPS dispatch:
+/// once the nested search's `select` spec has resolved to a concrete `S1`,
+/// this resolves its `simulate` spec, builds the actual nested
+/// `TreeSearch<G, Compose<S1, S2>>`, and wraps it in `simulate::MetaMcts`
+/// before forwarding to the outer `cont`.
+struct MetaMctsInnerCont<G, S1, C> {
+    iterations: usize,
+    select: S1,
+    cont: C,
+    marker: std::marker::PhantomData<G>,
+}
+
+impl<G, S1, C> SimulateCont<G> for MetaMctsInnerCont<G, S1, C>
+where
+    G: Game,
+    S1: SelectStrategy<G>,
+    C: SimulateCont<G>,
+{
+    type Output = C::Output;
+
+    fn call<S2: SimulateStrategy<G>>(self, simulate: S2) -> C::Output {
+        let inner = TreeSearch::<G, Compose<S1, S2>>::default().config(
+            SearchConfig::<G, Compose<S1, S2>>::new()
+                .select(self.select)
+                .simulate(simulate)
+                .max_iterations(self.iterations),
+        );
+        self.cont.call(simulate::MetaMcts { inner })
+    }
+}
+
+/// The first stage of `SimulateSpec::MetaMcts`'s CPS dispatch -- resolves the
+/// nested search's `select` spec (a full `SelectSpec`, not
+/// `BaseSelectSpec`: select has no `MetaMcts` variant of its own, so nothing
+/// here can recurse), then hands off to `MetaMctsInnerCont` for the
+/// `simulate` spec.
+struct MetaMctsCont<C> {
+    iterations: usize,
+    simulate_spec: BaseSimulateSpec,
+    cont: C,
+}
+
+impl<G, C> SelectCont<G> for MetaMctsCont<C>
+where
+    G: Game,
+    C: SimulateCont<G>,
+{
+    type Output = C::Output;
+
+    fn call<S1: SelectStrategy<G>>(self, select: S1) -> C::Output {
+        with_base_simulate::<G, _>(
+            &self.simulate_spec,
+            MetaMctsInnerCont {
+                iterations: self.iterations,
+                select,
+                cont: self.cont,
+                marker: std::marker::PhantomData,
+            },
+        )
     }
 }
 
@@ -495,7 +580,12 @@ mod tests {
     fn simulate_spec_round_trips_through_json() {
         let json = r#"{"kind":"nst","backoff_threshold":10}"#;
         let spec: SimulateSpec = serde_json::from_str(json).unwrap();
-        assert_eq!(spec, SimulateSpec::Nst { backoff_threshold: 10 });
+        assert_eq!(
+            spec,
+            SimulateSpec::Nst {
+                backoff_threshold: 10
+            }
+        );
         assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
     }
 
@@ -515,7 +605,12 @@ mod tests {
             panic!("expected DecisiveMove");
         };
         assert_eq!(*mode, simulate::DecisiveMoveMode::WinLoss);
-        assert_eq!(*inner, BaseSimulateSpec::Nst { backoff_threshold: 5 });
+        assert_eq!(
+            *inner,
+            BaseSimulateSpec::Nst {
+                backoff_threshold: 5
+            }
+        );
     }
 
     #[test]
@@ -525,7 +620,9 @@ mod tests {
         // bigram one) -- asserting only `nst` here would have passed
         // silently if this table dropped `global` from the real
         // `backprop_flags()` answer.
-        let nst = SimulateSpec::Nst { backoff_threshold: 5 };
+        let nst = SimulateSpec::Nst {
+            backoff_threshold: 5,
+        };
         let reqs = requirements_of_simulate::<Nim>(&nst);
         assert!(reqs.global);
         assert!(reqs.nst);
@@ -547,13 +644,17 @@ mod tests {
         // layer too.
         let wrapped_eg = SimulateSpec::EpsilonGreedy {
             epsilon: 0.1,
-            inner: BaseSimulateSpec::Nst { backoff_threshold: 5 },
+            inner: BaseSimulateSpec::Nst {
+                backoff_threshold: 5,
+            },
         };
         assert_eq!(requirements_of_simulate::<Nim>(&wrapped_eg), reqs);
 
         let wrapped_dm = SimulateSpec::DecisiveMove {
             mode: simulate::DecisiveMoveMode::Win,
-            inner: BaseSimulateSpec::Nst { backoff_threshold: 5 },
+            inner: BaseSimulateSpec::Nst {
+                backoff_threshold: 5,
+            },
         };
         assert_eq!(requirements_of_simulate::<Nim>(&wrapped_dm), reqs);
     }
@@ -568,6 +669,57 @@ mod tests {
         assert!(
             legal.contains(&action),
             "the action chosen by a JSON-configured search must be legal"
+        );
+    }
+
+    #[test]
+    fn meta_mcts_spec_round_trips_through_json() {
+        let json = r#"{"kind":"meta_mcts","iterations":50,"select":{"kind":"ucb1","c":1.4},"simulate":{"kind":"uniform"}}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            SimulateSpec::MetaMcts {
+                iterations: 50,
+                select: SelectSpec::Ucb1 { c: 1.4 },
+                simulate: BaseSimulateSpec::Uniform {},
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+    }
+
+    #[test]
+    fn meta_mcts_inner_select_can_itself_be_wrapped_in_epsilon_greedy() {
+        // The inner `select` field is a full `SelectSpec`, not a
+        // `BaseSelectSpec` -- unlike `simulate`, nothing on the select side
+        // can recurse into `MetaMcts`, so there's no reason to forbid its
+        // own `EpsilonGreedy` wrapper here.
+        let json = r#"{
+            "kind": "meta_mcts",
+            "iterations": 25,
+            "select": {"kind": "epsilon_greedy", "epsilon": 0.1, "inner": {"kind": "ucb1", "c": 1.4}},
+            "simulate": {"kind": "mast"}
+        }"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        let SimulateSpec::MetaMcts { select, .. } = &spec else {
+            panic!("expected MetaMcts");
+        };
+        assert!(matches!(select, SelectSpec::EpsilonGreedy { .. }));
+    }
+
+    #[test]
+    fn with_simulate_builds_a_working_nested_search_for_meta_mcts() {
+        let spec = SimulateSpec::MetaMcts {
+            iterations: 25,
+            select: SelectSpec::Ucb1 { c: 1.4 },
+            simulate: BaseSimulateSpec::Uniform {},
+        };
+        let state = <Nim as Game>::S::default();
+        let action = with_simulate::<Nim, _>(&spec, RunSimulateCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured MetaMcts search must be legal"
         );
     }
 }

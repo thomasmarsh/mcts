@@ -1898,7 +1898,10 @@ fn test_requirements_union_composes_and_survives_wrapping() {
     type G = TicTacToe;
 
     let plain = <UctPn as mcts::select::SelectStrategy<G>>::requirements(&UctPn::default());
-    assert!(plain.solver, "UctPn requires the solver's proof bookkeeping");
+    assert!(
+        plain.solver,
+        "UctPn requires the solver's proof bookkeeping"
+    );
     assert_eq!(
         plain.max_players,
         Some(2),

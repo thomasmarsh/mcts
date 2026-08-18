@@ -399,7 +399,9 @@ where
     pub fn requirements(&self) -> Requirements {
         <S::Select as select::SelectStrategy<G>>::requirements(&self.select)
             .union(<S::Simulate as simulate::SimulateStrategy<G>>::requirements(&self.simulate))
-            .union(<S::FinalAction as select::SelectStrategy<G>>::requirements(&self.final_action))
+            .union(<S::FinalAction as select::SelectStrategy<G>>::requirements(
+                &self.final_action,
+            ))
     }
 
     /// Validates this configuration's resolved `Requirements` against `G`,
