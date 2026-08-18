@@ -5,13 +5,16 @@
 
 import { initialJobPollState, type JobPollState } from "@mcts/core";
 import { initialGameTree, type GameTree } from "./game-tree.js";
-import type { AiMoveResult, AiPresetInfo, Analysis, GameInfo, StateAndView } from "./types.js";
+import type { AiMoveResult, AiPresetInfo, AiStrategyRef, Analysis, GameInfo, StateAndView } from "./types.js";
 
 /** Who controls each player -- keyed by the game's own player id (e.g.
  * Druid's "Black"/"White", tic-tac-toe's "X"/"O") rather than a
  * fixed two-seat shape, so this stays game-agnostic. A missing entry means
- * "human" (the default seat for any player nothing has set yet). */
-export type SeatsState = Record<string, "human" | string>;
+ * "human" (the default seat for any player nothing has set yet). An AI seat
+ * carries a full `AiStrategyRef` (named preset id or inline
+ * `CustomStrategySpec`), not just a bare preset string -- see `types.ts`'s
+ * `AiStrategyRef` doc comment. */
+export type SeatsState = Record<string, "human" | AiStrategyRef>;
 
 /** Misc UI-only state that doesn't belong to the tree or a job-poll slice.
  * Placeholder for the preset picker; grows as needed,

@@ -69,8 +69,8 @@ function makeFakeEnv(): Env {
 /** Both seats AI-controlled -- lets autoplay alone drive the game to
  * TERMINAL_AT, deterministically, one linear branch (n0..n6, no forks). */
 function makeBothSeatsAi(store: ReturnType<typeof createTestStore>["store"]): void {
-  store.dispatch({ tag: "setSeat", player: "A", control: "ai" });
-  store.dispatch({ tag: "setSeat", player: "B", control: "ai" });
+  store.dispatch({ tag: "setSeat", player: "A", control: { kind: "preset", id: "ai" } });
+  store.dispatch({ tag: "setSeat", player: "B", control: { kind: "preset", id: "ai" } });
 }
 
 /** Polls `getValue()` for `ms` of real wall-clock time, asserting it equals

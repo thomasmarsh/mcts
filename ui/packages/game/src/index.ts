@@ -9,6 +9,21 @@ export type {
   StateAndView,
   AiMoveResult,
   LegalMovesResult,
+  RaveSchedule,
+  RaveUcb,
+  DecisiveMoveMode,
+  BaseSelectSpec,
+  SelectSpec,
+  BaseSimulateSpec,
+  SimulateSpec,
+  BackpropSpec,
+  FinalActionSpec,
+  SearchSpec,
+  CustomStrategySpec,
+  AiStrategyRef,
+  AxisFieldSchema,
+  AxisVariantSchema,
+  AxisSchema,
 } from "./types.js";
 
 export type { ApiClient } from "./api-client.js";

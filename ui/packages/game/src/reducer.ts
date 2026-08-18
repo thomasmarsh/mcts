@@ -24,6 +24,7 @@ import type { AppState } from "./state.js";
 import type {
   AiMoveResult,
   AiPresetInfo,
+  AiStrategyRef,
   Analysis,
   GameInfo,
   LegalMovesResult,
@@ -43,8 +44,8 @@ export interface Env {
   view<S, V = unknown>(kind: string, state: S): Effect<V>;
   apply<S, M, V = unknown>(kind: string, state: S, move: M): Effect<StateAndView<S, V>>;
   aiPresets(kind: string): Effect<AiPresetInfo[]>;
-  aiMove<S, M, V = unknown>(kind: string, state: S, preset: string): Effect<AiMoveResult<S, M, V>>;
-  analyze<S, M>(kind: string, state: S, preset: string, budgetMs?: number): Effect<Analysis<M>>;
+  aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Effect<AiMoveResult<S, M, V>>;
+  analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Effect<Analysis<M>>;
 }
 
 /** Runs an `Effect` for its single value, as a `Promise` -- lets a reducer
@@ -66,11 +67,11 @@ export type MoveJobAction<S, M, V> =
   | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
 
 export type AiMoveJobAction<S, M, V> =
-  | { tag: "request"; preset: string }
+  | { tag: "request"; strategy: AiStrategyRef }
   | { tag: "job"; action: JobPollAction<AiMoveResult<S, M, V>> };
 
 export type AnalysisJobAction<M> =
-  | { tag: "request"; preset: string; budgetMs?: number }
+  | { tag: "request"; strategy: AiStrategyRef; budgetMs?: number }
   | { tag: "job"; action: JobPollAction<Analysis<M>> };
 
 export type PositionAction<V, M> =
@@ -98,7 +99,7 @@ export type AppAction<S, M, V = unknown> =
   | { tag: "move"; action: MoveJobAction<S, M, V>; move?: M }
   | { tag: "aiMove"; action: AiMoveJobAction<S, M, V>; epoch?: number }
   | { tag: "analysis"; action: AnalysisJobAction<M>; epoch?: number }
-  | { tag: "setSeat"; player: string; control: string }
+  | { tag: "setSeat"; player: string; control: "human" | AiStrategyRef }
   | { tag: "setPreset"; preset: string }
   /** Switch which game kind the New Game dialog is about to
    * start, ahead of the actual `newGame` dispatch. Resets everything
@@ -366,12 +367,12 @@ export function appReducer<S, M, V = unknown>(
       const current = draft.tree.nodes[draft.tree.currentId];
       if (!current) return null;
       const { gameKind } = draft;
-      const { preset } = ja;
+      const { strategy } = ja;
       const startEpoch = draft.epoch;
       const jobEnv: JobPollEnv<AiMoveResult<S, M, V>> = {
         submitJob: () =>
           env
-            .aiMove<S, M, V>(gameKind, current.state, preset)
+            .aiMove<S, M, V>(gameKind, current.state, strategy)
             .map((result): JobSubmitResult<AiMoveResult<S, M, V>> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: ai_move resolves synchronously (see submitJob above)");
@@ -419,12 +420,12 @@ export function appReducer<S, M, V = unknown>(
       const current = draft.tree.nodes[draft.tree.currentId];
       if (!current) return null;
       const { gameKind } = draft;
-      const { preset, budgetMs } = ja;
+      const { strategy, budgetMs } = ja;
       const startEpoch = draft.epoch;
       const jobEnv: JobPollEnv<Analysis<M>> = {
         submitJob: () =>
           env
-            .analyze<S, M>(gameKind, current.state, preset, budgetMs)
+            .analyze<S, M>(gameKind, current.state, strategy, budgetMs)
             .map((result): JobSubmitResult<Analysis<M>> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: analyze resolves synchronously (see submitJob above)");
