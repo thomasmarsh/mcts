@@ -259,65 +259,23 @@ impl GameAdapter for OthAdapter {
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
         // override -- Othello has one, so merging transposed nodes during
-        // the candidate's search is safe here.
-        let outcome = if let Some(cfg) = baseline_config {
-            let baseline_seed = seed.unwrap_or(0);
-            // This opponent is itself a `build_search`-built config, on
-            // the same iteration-based footing as the candidate -- both
-            // sides get the *same* budget (an operator's `max_iterations`
-            // override included) so there's nothing to match asymmetrically
-            // (see `SearchBudget`'s and `build_search`'s doc comments).
-            let budget = mcts_tune::SearchBudget {
-                max_iterations,
-                max_time: max_time_ms.map(std::time::Duration::from_millis),
-                ..Default::default()
-            };
-            // Fail fast on an invalid baseline config, before any games are
-            // played -- mirrors how a bad candidate `params` is already
-            // rejected during `TrialParams` deserialization inside
-            // `strategy_tune_eval` itself.
-            mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true, &budget)?;
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                true,
-                budget,
-                move || {
-                    mcts_tune::build_search::<Othello>(&cfg, baseline_seed, true, &budget)
-                        .expect("baseline_config already validated above")
-                },
-                Default::default(),
-                trace_path.as_deref(),
-                on_game,
-            )?
-        } else {
-            mcts_tune::strategy_tune_eval(
-                &params,
-                rounds,
-                seed,
-                true,
-                mcts_tune::SearchBudget {
-                    max_iterations,
-                    max_time: max_time_ms.map(std::time::Duration::from_millis),
-                    ..Default::default()
-                },
-                move || {
-                    presets()
-                        .build::<Othello>("strong", PRESET_SEED)
-                        .expect("games/othello/presets.json's \"strong\" preset must build")
-                },
-                Default::default(),
-                trace_path.as_deref(),
-                on_game,
-            )?
-        };
-        Ok(serde_json::json!({
-            "cost": outcome.cost,
-            "wins": outcome.wins,
-            "losses": outcome.losses,
-            "draws": outcome.draws,
-        }))
+        // the candidate's search is safe here (see `generic_tune_eval`'s
+        // doc comment).
+        mcts_tune::generic_tune_eval::<Othello>(
+            presets(),
+            "strong",
+            "games/othello/presets.json",
+            true,
+            PRESET_SEED,
+            params,
+            rounds,
+            seed,
+            baseline_config,
+            max_iterations,
+            max_time_ms,
+            trace_path,
+            on_game,
+        )
     }
 }
 
