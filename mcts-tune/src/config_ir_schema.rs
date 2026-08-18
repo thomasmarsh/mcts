@@ -160,6 +160,31 @@ fn select_base_variants() -> Vec<Value> {
                 field("ph_weight", float([0.0, 5.0], 1.0)),
             ],
         ),
+        variant("bayes_uct1", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
+        variant("bayes_uct2", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
+    ]
+}
+
+/// `BackpropSpec`'s variants.
+fn backprop_variants() -> Vec<Value> {
+    vec![
+        variant("classic", vec![]),
+        variant(
+            "bayes_gaussian",
+            vec![
+                field("prior_variance", float([0.0, 10.0], 1.0)),
+                field("obs_variance", float([1e-6, 10.0], 1.0)),
+            ],
+        ),
+        variant(
+            "bayes_numeric",
+            vec![
+                field("prior_variance", float([0.0, 10.0], 1.0)),
+                field("obs_variance", float([1e-6, 10.0], 1.0)),
+                field("value_lo", float([-10.0, 10.0], -1.0)),
+                field("value_hi", float([-10.0, 10.0], 1.0)),
+            ],
+        ),
     ]
 }
 
@@ -221,8 +246,6 @@ pub fn axis_schema() -> Value {
         vec![field("iterations", int([1, 100_000], 1000))],
     ));
 
-    let backprop_variants = vec![variant("classic", vec![])];
-
     let final_action_variants = vec![
         variant("robust_child", vec![]),
         variant("max_avg", vec![]),
@@ -235,7 +258,7 @@ pub fn axis_schema() -> Value {
         "select_base": { "variants": select_base_variants() },
         "simulate": { "variants": simulate_variants },
         "simulate_base": { "variants": simulate_base_variants() },
-        "backprop": { "variants": backprop_variants },
+        "backprop": { "variants": backprop_variants() },
         "final_action": { "variants": final_action_variants },
     })
 }
@@ -286,6 +309,8 @@ mod tests {
             SelectSpec::Rave { .. } => "rave",
             SelectSpec::UctPn { .. } => "uct_pn",
             SelectSpec::ProgressiveHistory { .. } => "progressive_history",
+            SelectSpec::BayesUct1 { .. } => "bayes_uct1",
+            SelectSpec::BayesUct2 { .. } => "bayes_uct2",
             SelectSpec::EpsilonGreedy { .. } => "epsilon_greedy",
         };
         let _ = assert_select_variant_named;
@@ -298,6 +323,8 @@ mod tests {
                 "rave",
                 "uct_pn",
                 "progressive_history",
+                "bayes_uct1",
+                "bayes_uct2",
                 "epsilon_greedy",
             ],
         );
@@ -309,6 +336,8 @@ mod tests {
             BaseSelectSpec::Rave { .. } => "rave",
             BaseSelectSpec::UctPn { .. } => "uct_pn",
             BaseSelectSpec::ProgressiveHistory { .. } => "progressive_history",
+            BaseSelectSpec::BayesUct1 { .. } => "bayes_uct1",
+            BaseSelectSpec::BayesUct2 { .. } => "bayes_uct2",
         };
         let _ = assert_base_select_variant_named;
         cover(
@@ -320,6 +349,8 @@ mod tests {
                 "rave",
                 "uct_pn",
                 "progressive_history",
+                "bayes_uct1",
+                "bayes_uct2",
             ],
         );
 
@@ -358,9 +389,11 @@ mod tests {
 
         let assert_backprop_variant_named = |s: &BackpropSpec| match s {
             BackpropSpec::Classic {} => "classic",
+            BackpropSpec::BayesGaussian { .. } => "bayes_gaussian",
+            BackpropSpec::BayesNumeric { .. } => "bayes_numeric",
         };
         let _ = assert_backprop_variant_named;
-        cover("backprop", &["classic"]);
+        cover("backprop", &["classic", "bayes_gaussian", "bayes_numeric"]);
 
         let assert_final_action_variant_named = |s: &FinalActionSpec| match s {
             FinalActionSpec::RobustChild {} => "robust_child",

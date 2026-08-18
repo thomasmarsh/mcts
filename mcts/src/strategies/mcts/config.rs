@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::game::Game;
+use backprop::BackpropStrategy;
 use node::QInit;
 use rand::rngs::SmallRng;
 use rand_core::SeedableRng;
@@ -120,6 +121,14 @@ pub struct Requirements {
     /// MCTS-Solver's `Proven` representation (`node::Proven`'s doc comment)
     /// is only sound for <= 2 players. `None` means unconstrained.
     pub max_players: Option<usize>,
+    /// This component reads `node::PlayerStats::posterior_mean`/
+    /// `posterior_variance` (`select::BayesUct1`/`BayesUct2`), which only a
+    /// `backprop::BayesGaussian`/`BayesNumeric` strategy populates. Unlike
+    /// `solver` above, this *is* enforced by `SearchConfig::validate` --
+    /// reading zeroed posterior fields wouldn't degenerate to a harmless
+    /// no-op the way an unused `solver` bit does, it would silently run a
+    /// select strategy that always sees `(0.0, 0.0)`.
+    pub needs_posterior: bool,
 }
 
 impl Requirements {
@@ -131,6 +140,7 @@ impl Requirements {
             nst: false,
             solver: false,
             max_players: None,
+            needs_posterior: false,
         }
     }
 
@@ -149,6 +159,7 @@ impl Requirements {
                 (None, x) | (x, None) => x,
                 (Some(a), Some(b)) => Some(if a < b { a } else { b }),
             },
+            needs_posterior: self.needs_posterior || other.needs_posterior,
         }
     }
 
@@ -411,7 +422,15 @@ where
     /// but the config leaves the solver off just degenerates to a no-op (see
     /// e.g. `UctPn`'s doc comment), which isn't an error worth rejecting.
     pub fn validate(&self) -> Result<(), String> {
-        self.requirements().validate(G::num_players())
+        self.requirements().validate(G::num_players())?;
+        if self.requirements().needs_posterior && !self.backprop.provides_posterior() {
+            return Err(
+                "select/final_action strategy requires a Bayesian backprop strategy \
+                 (BayesGaussian/BayesNumeric) that provides posterior mean/variance estimates"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     pub fn new() -> Self {

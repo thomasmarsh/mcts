@@ -161,6 +161,8 @@ register_select! {
     UctPn { c: f64, c_pn: f64 } => select::UctPn::with_c(c, c_pn),
     ProgressiveHistory { c: f64, ph_weight: f64 } =>
         select::ProgressiveHistory::new(select::Ucb1::with_c(c), ph_weight),
+    BayesUct1 { c: f64 } => select::BayesUct1::with_c(c),
+    BayesUct2 { c: f64 } => select::BayesUct2::with_c(c),
 }
 
 /// Forwards a resolved `S: SelectStrategy<G>` on to `cont`, wrapped in
@@ -576,12 +578,15 @@ pub trait BackpropCont {
     fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output;
 }
 
-/// `register_backprop!`'s table. `backprop::Classic` is, as of this writing,
-/// the *only* type in the whole workspace implementing `BackpropStrategy`
-/// (`grep -rn "impl.*BackpropStrategy for"` turns up exactly one hit), so
-/// this table starts with one row -- a macro rather than a hand-written enum
-/// mainly so a second `BackpropStrategy` impl slots in the same way a new
-/// `select`/`simulate` family does, without inventing a new pattern.
+/// `register_backprop!`'s table. `backprop::Classic` was, for a long time,
+/// the *only* type in the whole workspace implementing `BackpropStrategy` --
+/// a macro rather than a hand-written enum mainly so a second
+/// `BackpropStrategy` impl slots in the same way a new `select`/`simulate`
+/// family does, without inventing a new pattern. `BayesGaussian`/
+/// `BayesNumeric` are the first strategies to actually exercise that: they
+/// exist specifically to pair with `select::BayesUct1`/`BayesUct2`
+/// (`config::Requirements::needs_posterior`), the first real select<->
+/// backprop coupling this axis has ever had to carry.
 ///
 /// There is no `Base.../...` recursive-wrapper split here (contrast
 /// `register_select!`/`register_simulate!`): nothing wraps a
@@ -591,7 +596,9 @@ pub trait BackpropCont {
 /// declares no `requirements()`/`backprop_flags()` method
 /// (`SearchConfig::requirements()` only unions `Select`/`Simulate`/
 /// `FinalAction`, never `Backprop`), so there is nothing real for such a
-/// function to call through to.
+/// function to call through to. The select<->backprop coupling
+/// `needs_posterior` introduces is instead enforced directly in
+/// `SearchConfig::validate()` against `S::Backprop::provides_posterior()`.
 macro_rules! register_backprop {
     (
         $(
@@ -627,6 +634,10 @@ macro_rules! register_backprop {
 
 register_backprop! {
     Classic {} => backprop::Classic,
+    BayesGaussian { prior_variance: f64, obs_variance: f64 } =>
+        backprop::BayesGaussian::new(prior_variance, obs_variance),
+    BayesNumeric { prior_variance: f64, obs_variance: f64, value_lo: f64, value_hi: f64 } =>
+        backprop::BayesNumeric::new(prior_variance, obs_variance, value_lo, value_hi),
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -691,6 +702,45 @@ register_final_action! {
 /// `final_action`'s dispatch resolves to the same `SelectStrategy<G>` trait.
 pub fn requirements_of_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> Requirements {
     with_final_action::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
+}
+
+/// Whether `spec` resolves to a `BackpropStrategy` that populates
+/// `posterior_mean`/`posterior_variance` (`BayesGaussian`/`BayesNumeric`) --
+/// dispatched through `with_backprop`, same as every other spec->real-type
+/// question in this file, rather than a second hand-matched list of names
+/// that could drift from `register_backprop!`'s table.
+pub fn provides_posterior(spec: &BackpropSpec) -> bool {
+    struct ProvidesPosteriorCont;
+    impl BackpropCont for ProvidesPosteriorCont {
+        type Output = bool;
+        fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> bool {
+            backprop.provides_posterior()
+        }
+    }
+    with_backprop(spec, ProvidesPosteriorCont)
+}
+
+/// Validates a `SearchSpec`'s cross-axis coupling that `register_select!`/
+/// `register_backprop!`'s dispatch alone can't catch: `BayesUct1`/
+/// `BayesUct2` (`select`/`final_action`) set `Requirements::needs_posterior`,
+/// which only `BayesGaussian`/`BayesNumeric` (`backprop`) satisfy. Neither
+/// `config_ir::build_search` nor `TreeSearch` itself calls this
+/// automatically (mirroring `SearchConfig::validate`'s own opt-in status,
+/// see its doc comment) -- callers that build a search from a
+/// caller-supplied `SearchSpec` (`build_custom`, `mcts_tune::build_search`)
+/// call this first so a bad pairing is a rejected config, not a search that
+/// silently runs `BayesUct1`/`BayesUct2` against zeroed posterior fields.
+pub fn validate_search_spec<G: Game + 'static>(spec: &SearchSpec) -> Result<(), String> {
+    let reqs = requirements_of::<G>(&spec.select)
+        .union(requirements_of_final_action::<G>(&spec.final_action));
+    if reqs.needs_posterior && !provides_posterior(&spec.backprop) {
+        return Err(
+            "select/final_action strategy requires a Bayesian backprop strategy \
+             (bayes_gaussian/bayes_numeric) that provides posterior mean/variance estimates"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// The `final_action`-axis counterpart of `ErasedSimulateStrategy` -- a
@@ -854,9 +904,14 @@ pub struct SearchSettings {
 /// step); `simulate` and `final_action` are resolved eagerly via
 /// `resolve_simulate`/`resolve_final_action` into the fixed `DynSimulate<G>`/
 /// `DynFinalAction<G>` types instead, collapsing their ~40x combined
-/// contribution to the monomorphization product down to 1x. `backprop` was
-/// never part of the problem (`register_backprop!`'s table has exactly one
-/// row), so it's left as-is.
+/// contribution to the monomorphization product down to 1x. `backprop`
+/// stays a real generic type parameter too (see `BackpropStage` below) --
+/// with `register_backprop!`'s table now at 3 rows (`Classic`,
+/// `BayesGaussian`, `BayesNumeric`), the full product is `select` (~9) x
+/// `backprop` (3) = ~27 `TreeSearch` monomorphizations, well under the
+/// ~170-280 that caused the original blowup, so no further erasure is
+/// needed at this scale -- revisit if `backprop`'s table grows enough to
+/// make that product a problem again.
 struct SelectStage<'a, G: Game> {
     spec: &'a SearchSpec,
     settings: &'a SearchSettings,
@@ -1018,6 +1073,129 @@ mod tests {
             }
         );
         assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+    }
+
+    #[test]
+    fn bayes_uct_spec_round_trips_through_json() {
+        let json = r#"{"kind":"bayes_uct1","c":1.0}"#;
+        let spec: SelectSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SelectSpec::BayesUct1 { c: 1.0 });
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+
+        let json = r#"{"kind":"bayes_uct2","c":1.0}"#;
+        let spec: SelectSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SelectSpec::BayesUct2 { c: 1.0 });
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    #[test]
+    fn bayes_backprop_spec_round_trips_through_json() {
+        let json = r#"{"kind":"bayes_gaussian","prior_variance":1.0,"obs_variance":1.0}"#;
+        let spec: BackpropSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            BackpropSpec::BayesGaussian {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+
+        let json = r#"{"kind":"bayes_numeric","prior_variance":1.0,"obs_variance":1.0,"value_lo":-1.0,"value_hi":1.0}"#;
+        let spec: BackpropSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            BackpropSpec::BayesNumeric {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+                value_lo: -1.0,
+                value_hi: 1.0,
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    /// The select<->backprop coupling this whole feature exists to exercise:
+    /// `BayesUct1`/`BayesUct2` set `Requirements::needs_posterior`, which
+    /// only `BayesGaussian`/`BayesNumeric` satisfy -- `Classic` (or any other
+    /// backprop) must be rejected, not silently read zeroed posterior
+    /// fields.
+    #[test]
+    fn validate_search_spec_rejects_bayes_select_paired_with_classic_backprop() {
+        let spec = SearchSpec {
+            select: SelectSpec::BayesUct1 { c: 1.0 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::Classic {},
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        let err = validate_search_spec::<Nim>(&spec).unwrap_err();
+        assert!(err.contains("Bayesian backprop"), "{err}");
+    }
+
+    #[test]
+    fn validate_search_spec_accepts_bayes_select_paired_with_bayes_backprop() {
+        let spec = SearchSpec {
+            select: SelectSpec::BayesUct2 { c: 1.0 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::BayesGaussian {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+            },
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        assert!(validate_search_spec::<Nim>(&spec).is_ok());
+
+        let spec = SearchSpec {
+            backprop: BackpropSpec::BayesNumeric {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+                value_lo: -1.0,
+                value_hi: 1.0,
+            },
+            ..spec
+        };
+        assert!(validate_search_spec::<Nim>(&spec).is_ok());
+    }
+
+    /// A non-Bayes select paired with a Bayes backprop is fine -- the
+    /// backprop just does extra work nothing reads, no different from any
+    /// other over-provisioned `Requirements`.
+    #[test]
+    fn validate_search_spec_accepts_classic_select_paired_with_bayes_backprop() {
+        let spec = SearchSpec {
+            select: SelectSpec::Ucb1 { c: 1.4 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::BayesGaussian {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+            },
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        assert!(validate_search_spec::<Nim>(&spec).is_ok());
+    }
+
+    /// End-to-end proof that a `BayesUct1` select paired with a
+    /// `BayesGaussian` backprop, both parsed from JSON via `build_search`,
+    /// runs a real search rather than tripping the `needs_posterior`
+    /// rejection or panicking on the posterior fields it reads.
+    #[test]
+    fn build_search_runs_bayes_uct_paired_with_bayes_backprop() {
+        let spec = SearchSpec {
+            select: SelectSpec::BayesUct1 { c: 1.0 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::BayesGaussian {
+                prior_variance: 1.0,
+                obs_variance: 1.0,
+            },
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        validate_search_spec::<Nim>(&spec).unwrap();
+        let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+        let state = <Nim as Game>::S::default();
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&action));
     }
 
     #[test]

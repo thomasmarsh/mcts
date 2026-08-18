@@ -55,6 +55,22 @@ pub struct ActionStats {
 pub struct PlayerStats {
     pub score: f64,
     pub sum_squared_score: f64,
+    // Bayesian posterior (mean, variance) of this player's true value at
+    // this node/edge -- only written by `BayesGaussian`/`BayesNumeric`
+    // backprop (`backprop.rs`), read by `BayesUct1`/`BayesUct2`
+    // (`select/bayes.rs`). Left at `0.0` (meaningless, never read) for
+    // every other strategy pairing -- `Requirements::needs_posterior` +
+    // `BackpropStrategy::provides_posterior` (`config.rs`) reject any
+    // config where a select strategy that reads these is paired with a
+    // backprop strategy that doesn't write them.
+    pub posterior_mean: f64,
+    pub posterior_variance: f64,
+    // `BayesNumeric` backprop's discretized posterior PDF over
+    // `bayes::BAYES_GRID_SIZE` points, lazily allocated on first write so
+    // every other strategy pairing (including `BayesGaussian`, which only
+    // ever needs `posterior_mean`/`posterior_variance`) pays nothing but
+    // this one pointer-sized `None`.
+    pub posterior_grid: Option<Box<[f64; super::backprop::BAYES_GRID_SIZE]>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -204,6 +220,39 @@ impl NodeStats {
         self.data.read().unwrap().player[player_index].sum_squared_score
     }
 
+    /// Bayesian posterior `(mean, variance)` -- see `PlayerStats::posterior_mean`'s
+    /// doc comment. `(0.0, 0.0)` unless a `BayesGaussian`/`BayesNumeric`
+    /// backprop strategy has written it.
+    pub fn posterior(&self, player_index: usize) -> (f64, f64) {
+        let p = &self.data.read().unwrap().player[player_index];
+        (p.posterior_mean, p.posterior_variance)
+    }
+
+    pub fn set_posterior(&self, player_index: usize, mean: f64, variance: f64) {
+        let mut data = self.data.write().unwrap();
+        let p = &mut data.player[player_index];
+        p.posterior_mean = mean;
+        p.posterior_variance = variance;
+    }
+
+    pub fn posterior_grid(
+        &self,
+        player_index: usize,
+    ) -> Option<[f64; super::backprop::BAYES_GRID_SIZE]> {
+        self.data.read().unwrap().player[player_index]
+            .posterior_grid
+            .as_deref()
+            .copied()
+    }
+
+    pub fn set_posterior_grid(
+        &self,
+        player_index: usize,
+        grid: [f64; super::backprop::BAYES_GRID_SIZE],
+    ) {
+        self.data.write().unwrap().player[player_index].posterior_grid = Some(Box::new(grid));
+    }
+
     pub fn total_visits(&self) -> u32 {
         self.num_visits() + self.num_visits_virtual.load(Relaxed)
     }
@@ -239,6 +288,8 @@ impl NodeStats {
             num_visits_virtual: self.num_visits_virtual.load(Relaxed),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
+            posterior_mean: p.posterior_mean,
+            posterior_variance: p.posterior_variance,
             amaf: if self.has_amaf {
                 data.amaf[player_index]
             } else {
@@ -284,6 +335,8 @@ pub struct ChildSnapshot {
     pub num_visits_virtual: u32,
     pub score: f64,
     pub sum_squared_score: f64,
+    pub posterior_mean: f64,
+    pub posterior_variance: f64,
     pub amaf: ActionStats,
 }
 
@@ -483,6 +536,43 @@ impl<A: Action> ChildArray<A> {
         self.data.read().unwrap().player[self.player_index(idx, player_index)].sum_squared_score
     }
 
+    /// See `NodeStats::posterior`'s doc comment -- same fields, edge-indexed.
+    pub fn posterior(&self, idx: usize, player_index: usize) -> (f64, f64) {
+        let i = self.player_index(idx, player_index);
+        let p = &self.data.read().unwrap().player[i];
+        (p.posterior_mean, p.posterior_variance)
+    }
+
+    pub fn set_posterior(&self, idx: usize, player_index: usize, mean: f64, variance: f64) {
+        let i = self.player_index(idx, player_index);
+        let mut data = self.data.write().unwrap();
+        let p = &mut data.player[i];
+        p.posterior_mean = mean;
+        p.posterior_variance = variance;
+    }
+
+    pub fn posterior_grid(
+        &self,
+        idx: usize,
+        player_index: usize,
+    ) -> Option<[f64; super::backprop::BAYES_GRID_SIZE]> {
+        let i = self.player_index(idx, player_index);
+        self.data.read().unwrap().player[i]
+            .posterior_grid
+            .as_deref()
+            .copied()
+    }
+
+    pub fn set_posterior_grid(
+        &self,
+        idx: usize,
+        player_index: usize,
+        grid: [f64; super::backprop::BAYES_GRID_SIZE],
+    ) {
+        let i = self.player_index(idx, player_index);
+        self.data.write().unwrap().player[i].posterior_grid = Some(Box::new(grid));
+    }
+
     pub fn amaf(&self, idx: usize, player_index: usize) -> ActionStats {
         if !self.has_amaf {
             return ActionStats::default();
@@ -522,6 +612,8 @@ impl<A: Action> ChildArray<A> {
             num_visits_virtual: self.virtual_loss(idx),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
+            posterior_mean: p.posterior_mean,
+            posterior_variance: p.posterior_variance,
             amaf: if self.has_amaf {
                 data.amaf[i]
             } else {

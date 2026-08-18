@@ -91,7 +91,9 @@ export type BaseSelectSpec =
   | { kind: "amaf"; alpha: number; c: number }
   | { kind: "rave"; threshold: number; schedule: RaveSchedule; ucb: RaveUcb }
   | { kind: "uct_pn"; c: number; c_pn: number }
-  | { kind: "progressive_history"; c: number; ph_weight: number };
+  | { kind: "progressive_history"; c: number; ph_weight: number }
+  | { kind: "bayes_uct1"; c: number }
+  | { kind: "bayes_uct2"; c: number };
 
 /** `config_ir::SelectSpec` -- `BaseSelectSpec`'s families plus the
  * `epsilon_greedy` wrapper. */
@@ -116,8 +118,15 @@ export type SimulateSpec =
   | { kind: "decisive_move_nst"; mode: DecisiveMoveMode; epsilon: number; nst_backoff_threshold: number }
   | { kind: "meta_mcts"; iterations: number };
 
-/** `config_ir::BackpropSpec` -- one variant, as of this writing. */
-export type BackpropSpec = { kind: "classic" };
+/** `config_ir::BackpropSpec`. `bayes_gaussian`/`bayes_numeric` are the two
+ * Bayesian posterior-propagation modes `select`'s `bayes_uct1`/`bayes_uct2`
+ * require (see `config_ir.rs`'s `needs_posterior` doc comment) -- pairing
+ * either `select` variant with `classic` here is rejected server-side by
+ * `config_ir::validate_search_spec`. */
+export type BackpropSpec =
+  | { kind: "classic" }
+  | { kind: "bayes_gaussian"; prior_variance: number; obs_variance: number }
+  | { kind: "bayes_numeric"; prior_variance: number; obs_variance: number; value_lo: number; value_hi: number };
 
 /** `config_ir::FinalActionSpec`. */
 export type FinalActionSpec =

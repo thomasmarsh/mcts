@@ -95,16 +95,20 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Tree reuse across moves (re-rooting)
 
 ### DAG
+
+See `plan/mcgs.md` for the full design. Implemented: `GraphSearch::Dag(GraphStats::{Edges,Nodes,Both})`
+opt-in mode (`mcts/src/strategies/mcts/config.rs`), root-relative-ply transposition keying
+(`table.rs`'s `TranspositionKey`) so the graph is acyclic by construction, mode-aware stats
+routing through selection/backprop, and integration coverage in
+`mcts-tests/tests/ttt_strategies.rs`. `GraphSearch::Dag(_)` currently asserts against both the
+legacy `use_transpositions` bool and `reuse_tree`.
+
 - [ ] Persistent transposition table / exact position cache (hash -> NodeStats | (hash,action) -> NodeStats)
 - [x] UCB for DAGs
-- [ ] Structural - configurablue Node|Edge|Node+Edge stat storage
-- [ ] Graph re-rooting (parent-specific stats,  bounded reachability pruning—not the existing tree promotion path)
-- [ ] Symmetry canonicalization
-
-```
-graph_reuse = none | exact_node | exact_edge | both
-history_reuse = off | progressive_history | prior
-```
+- [x] Structural - configurable Node|Edge|Node+Edge stat storage
+- [ ] Residual information-leak correction (`McgsCorrection`, the paper's `Both`-mode descent check)
+- [ ] Graph re-rooting (multi-parent reachability sweep + ply rebase, distinct from the existing single-parent tree promotion path)
+- [ ] Symmetry canonicalization (generalize `D4Symmetry<S>` into a per-game `SymmetryGroup`, canonical key + invertible action transform, per-edge orientation bookkeeping at graph-merge points)
 
 
 ### Paralellization

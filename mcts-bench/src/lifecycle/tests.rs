@@ -13,13 +13,22 @@ impl TempDir {
     }
 }
 fn tempdir() -> TempDir {
+    // A nanosecond timestamp alone isn't always a unique suffix: under this
+    // crate's parallel `#[test]` execution, two threads in the same process
+    // can call `SystemTime::now()` within the same clock tick on some
+    // platforms, producing the same path and a `create_dir` race
+    // ("File exists"). A process-wide atomic counter is unique regardless of
+    // clock resolution.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "mcts-lifecycle-{}-{}",
+        "mcts-lifecycle-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        n
     ));
     fs::create_dir(&path).unwrap();
     TempDir(path)

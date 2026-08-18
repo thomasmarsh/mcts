@@ -1,5 +1,5 @@
 use super::config::GraphStats;
-use super::node::{self, NodeState, NodeStats, Proven};
+use super::node::{self, ChildArray, NodeState, NodeStats, Proven};
 use super::stack::NodeStack;
 use super::*;
 use crate::game::Game;
@@ -165,7 +165,257 @@ pub(crate) fn derive_pn_dpn2<A: crate::game::Action>(node: &node::Node<A>, index
     node.set_pn_dpn2(pn2, dpn2);
 }
 
+/// Where a node's Bayesian posterior is read from and written to during
+/// `BackpropStrategy::update_posterior` -- mirrors the root/edge split
+/// `BackpropStrategy::update`'s score accumulation already has (`NodeStats`
+/// for the root, a row of the parent's `ChildArray` otherwise), since
+/// that's the same representation `SelectContext::child_snapshot`/
+/// `current_stats` read from -- a node's posterior needs to live wherever
+/// its *parent* looks it up as a candidate child, not on the node's own
+/// `NodeStats` field (which, outside MCGS's graph-search mode, isn't what
+/// `select` reads for a non-root node).
+pub enum PosteriorSlot<'a, A: crate::game::Action> {
+    Root(&'a NodeStats),
+    Edge(&'a ChildArray<A>, usize),
+}
+
+impl<A: crate::game::Action> PosteriorSlot<'_, A> {
+    fn own_observation(&self, player: usize) -> (f64, u32) {
+        match self {
+            PosteriorSlot::Root(stats) => (stats.score(player), stats.num_visits()),
+            PosteriorSlot::Edge(children, idx) => {
+                (children.score(*idx, player), children.num_visits(*idx))
+            }
+        }
+    }
+
+    fn set(&self, player: usize, mean: f64, variance: f64) {
+        match self {
+            PosteriorSlot::Root(stats) => stats.set_posterior(player, mean, variance),
+            PosteriorSlot::Edge(children, idx) => {
+                children.set_posterior(*idx, player, mean, variance)
+            }
+        }
+    }
+
+    fn set_grid(&self, player: usize, grid: [f64; BAYES_GRID_SIZE]) {
+        match self {
+            PosteriorSlot::Root(stats) => stats.set_posterior_grid(player, grid),
+            PosteriorSlot::Edge(children, idx) => children.set_posterior_grid(*idx, player, grid),
+        }
+    }
+}
+
+/// Normal-normal conjugate update of a node's *own* observations (its
+/// accumulated `score`/`num_visits`, ignoring any children) into a
+/// posterior `(mean, variance)` -- Tesauro/Rajan/Segal 2010's leaf-node
+/// prior/posterior step, generalized from their 0/1-reward Beta example to
+/// this codebase's real-valued utilities. `prior_variance`/`obs_variance`
+/// are `BayesGaussian`/`BayesNumeric`'s own hyperparameters; the prior mean
+/// is fixed at `0.0`, matching this codebase's symmetric `[-1, 1]` utility
+/// convention. Used both as the posterior for a true leaf (no expanded
+/// children yet) and, inside `numeric_max_of_pdfs`'s caller, as the
+/// per-grid-point PDF an interior node's MAX-of-children combination starts
+/// from for any not-yet-visited child.
+fn conjugate_leaf_posterior<A: crate::game::Action>(
+    slot: &PosteriorSlot<A>,
+    player: usize,
+    prior_variance: f64,
+    obs_variance: f64,
+) -> (f64, f64) {
+    let (score, num_visits) = slot.own_observation(player);
+    if num_visits == 0 {
+        return (0.0, prior_variance);
+    }
+    let n = num_visits as f64;
+    let sample_mean = score / n;
+    let posterior_precision = 1.0 / prior_variance + n / obs_variance;
+    let posterior_variance = 1.0 / posterior_precision;
+    let posterior_mean = posterior_variance * (n * sample_mean / obs_variance);
+    (posterior_mean, posterior_variance)
+}
+
+fn standard_normal_pdf(x: f64) -> f64 {
+    (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt()
+}
+
+// Abramowitz & Stegun 7.1.26, max error ~1.5e-7 -- plenty for a UCB-style
+// exploration bound, and avoids pulling in a stats crate for one function.
+fn erf(x: f64) -> f64 {
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+    const A1: f64 = 0.254829592;
+    const A2: f64 = -0.284496736;
+    const A3: f64 = 1.421413741;
+    const A4: f64 = -1.453152027;
+    const A5: f64 = 1.061405429;
+    const P: f64 = 0.3275911;
+    let t = 1.0 / (1.0 + P * x);
+    let y = 1.0 - (((((A5 * t + A4) * t) + A3) * t + A2) * t + A1) * t * (-x * x).exp();
+    sign * y
+}
+
+fn standard_normal_cdf(x: f64) -> f64 {
+    0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+}
+
+/// Clark (1961)'s closed-form mean/variance of `max(X1, X2)` for two
+/// independent Gaussians -- Tesauro/Rajan/Segal 2010 section 4.1, equations
+/// following "we reduce the computation time by restructuring the equations
+/// above to yield...". `BayesGaussian` folds this pairwise, left to right,
+/// over however many children a node has (the paper's simpler O(K)
+/// alternative to its O(K^2 log K) min-error pairing scheme).
+pub(crate) fn clark_max_of_gaussians(mu1: f64, sigma1: f64, mu2: f64, sigma2: f64) -> (f64, f64) {
+    let sigma_m = (sigma1 * sigma1 + sigma2 * sigma2).sqrt();
+    if sigma_m == 0.0 {
+        return (mu1.max(mu2), 0.0);
+    }
+    let alpha = (mu1 - mu2) / sigma_m;
+    let phi = standard_normal_pdf(alpha);
+    let big_phi = standard_normal_cdf(alpha);
+    let f1 = alpha * big_phi + phi;
+    let f2 =
+        alpha * alpha * big_phi * (1.0 - big_phi) + (1.0 - 2.0 * big_phi) * alpha * phi - phi * phi;
+    let mean = mu2 + sigma_m * f1;
+    let variance =
+        sigma2 * sigma2 + (sigma1 * sigma1 - sigma2 * sigma2) * big_phi + sigma_m * sigma_m * f2;
+    (mean, variance.max(0.0))
+}
+
+/// Grid resolution `BayesNumeric` discretizes each node's posterior PDF
+/// over -- also the fixed-size backing array for `PlayerStats::posterior_grid`.
+pub const BAYES_GRID_SIZE: usize = 64;
+
+fn grid_points(lo: f64, hi: f64) -> [f64; BAYES_GRID_SIZE] {
+    let mut points = [0.0; BAYES_GRID_SIZE];
+    let step = (hi - lo) / (BAYES_GRID_SIZE - 1) as f64;
+    for (i, p) in points.iter_mut().enumerate() {
+        *p = lo + step * i as f64;
+    }
+    points
+}
+
+fn trapezoid_integral(values: &[f64; BAYES_GRID_SIZE], step: f64) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..BAYES_GRID_SIZE - 1 {
+        sum += (values[i] + values[i + 1]) * 0.5 * step;
+    }
+    sum
+}
+
+fn normal_pdf_grid(mean: f64, variance: f64, lo: f64, hi: f64) -> [f64; BAYES_GRID_SIZE] {
+    let sigma = variance.max(1e-12).sqrt();
+    let points = grid_points(lo, hi);
+    let mut pdf = [0.0; BAYES_GRID_SIZE];
+    for i in 0..BAYES_GRID_SIZE {
+        let z = (points[i] - mean) / sigma;
+        pdf[i] = (-0.5 * z * z).exp() / (sigma * (2.0 * std::f64::consts::PI).sqrt());
+    }
+    let step = (hi - lo) / (BAYES_GRID_SIZE - 1) as f64;
+    let mass = trapezoid_integral(&pdf, step);
+    if mass > 0.0 {
+        for v in pdf.iter_mut() {
+            *v /= mass;
+        }
+    }
+    pdf
+}
+
+fn cdf_from_pdf(pdf: &[f64; BAYES_GRID_SIZE], step: f64) -> [f64; BAYES_GRID_SIZE] {
+    let mut cdf = [0.0; BAYES_GRID_SIZE];
+    let mut acc = 0.0;
+    for i in 0..BAYES_GRID_SIZE {
+        if i > 0 {
+            acc += (pdf[i - 1] + pdf[i]) * 0.5 * step;
+        }
+        cdf[i] = acc;
+    }
+    cdf
+}
+
+fn pdf_from_cdf(cdf: &[f64; BAYES_GRID_SIZE], step: f64) -> [f64; BAYES_GRID_SIZE] {
+    let mut pdf = [0.0; BAYES_GRID_SIZE];
+    for i in 0..BAYES_GRID_SIZE {
+        pdf[i] = if i == 0 {
+            (cdf[1] - cdf[0]) / step
+        } else if i == BAYES_GRID_SIZE - 1 {
+            (cdf[i] - cdf[i - 1]) / step
+        } else {
+            (cdf[i + 1] - cdf[i - 1]) / (2.0 * step)
+        }
+        .max(0.0);
+    }
+    pdf
+}
+
+fn mean_variance_from_pdf(pdf: &[f64; BAYES_GRID_SIZE], lo: f64, hi: f64) -> (f64, f64) {
+    let points = grid_points(lo, hi);
+    let step = (hi - lo) / (BAYES_GRID_SIZE - 1) as f64;
+    let mut weighted = [0.0; BAYES_GRID_SIZE];
+    for i in 0..BAYES_GRID_SIZE {
+        weighted[i] = pdf[i] * points[i];
+    }
+    let mean = trapezoid_integral(&weighted, step);
+    let mut sq = [0.0; BAYES_GRID_SIZE];
+    for i in 0..BAYES_GRID_SIZE {
+        sq[i] = pdf[i] * (points[i] - mean) * (points[i] - mean);
+    }
+    let variance = trapezoid_integral(&sq, step).max(0.0);
+    (mean, variance)
+}
+
+/// Numeric MAX distribution of `k` independent grid-discretized PDFs: a
+/// value `v` is `<= max(X1..Xk)` iff every `Xi <= v`, so the parent's CDF is
+/// the elementwise product of the children's CDFs; differentiating that
+/// product back to a PDF (via central differences) gives the parent's
+/// distribution (Tesauro/Rajan/Segal 2010 section 4, "a more convenient
+/// calculation is to first compute the parent CDF... as the product of
+/// child CDFs"). `BayesNumeric`'s exact (non-Gaussian-approximated)
+/// counterpart to `clark_max_of_gaussians`.
+pub(crate) fn numeric_max_of_pdfs(
+    pdfs: &[[f64; BAYES_GRID_SIZE]],
+    lo: f64,
+    hi: f64,
+) -> [f64; BAYES_GRID_SIZE] {
+    let step = (hi - lo) / (BAYES_GRID_SIZE - 1) as f64;
+    let mut cdf_product = [1.0; BAYES_GRID_SIZE];
+    for pdf in pdfs {
+        let cdf = cdf_from_pdf(pdf, step);
+        for i in 0..BAYES_GRID_SIZE {
+            cdf_product[i] *= cdf[i];
+        }
+    }
+    pdf_from_cdf(&cdf_product, step)
+}
+
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
+    /// Whether this strategy populates `PlayerStats::posterior_mean`/
+    /// `posterior_variance` (and, for `BayesNumeric`, `posterior_grid`) via
+    /// `update_posterior` below. `BayesUct1`/`BayesUct2`
+    /// (`select/bayes.rs`) set `Requirements::needs_posterior`, checked
+    /// against this at `SearchConfig::validate()`-time so that pairing is
+    /// caught as a config error rather than silently reading zeroed fields.
+    fn provides_posterior(&self) -> bool {
+        false
+    }
+
+    /// Recomputes and writes one node's Bayesian posterior for `player`:
+    /// the normal-normal conjugate posterior from the node's own
+    /// observations if it has no expanded children yet, otherwise the MAX
+    /// distribution over its (already-updated-this-call, or stale-from-a-
+    /// previous-call for off-path siblings -- tolerated the same way
+    /// `derive_pn_dpn`'s partial recomputation already is) children's
+    /// posteriors. Called once per player, per ancestor node, from the
+    /// default `update` body below -- default no-op, only overridden by
+    /// `BayesGaussian`/`BayesNumeric`.
+    fn update_posterior<A: crate::game::Action>(
+        &self,
+        _player: usize,
+        _slot: &PosteriorSlot<A>,
+        _own_children: Option<&ChildArray<A>>,
+    ) {
+    }
+
     fn update_amaf<G: Game>(
         &self,
         parent_id_opt: Option<index::Id>,
@@ -296,6 +546,31 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 }
             }
 
+            // Bayesian posterior: recompute this node's (mean, variance) for
+            // every player, same leaf-to-root timing as the MCTS-Solver pass
+            // below -- by the time an ancestor is processed here, its
+            // on-path child already has this call's updated posterior.
+            // No-op (the trait default) for every non-Bayesian backprop
+            // strategy, so this costs nothing when unused.
+            if self.provides_posterior() {
+                let node = index.get(*node_id);
+                let own_children = node.is_expanded().then(|| node.children());
+                if node.is_root() {
+                    let slot = PosteriorSlot::Root(root_stats);
+                    for player in 0..G::num_players() {
+                        self.update_posterior(player, &slot, own_children);
+                    }
+                } else {
+                    let parent_id = parent_id_opt.cloned().unwrap();
+                    let parent = index.get(parent_id);
+                    let idx = parent.child_index(*node_id);
+                    let slot = PosteriorSlot::Edge(parent.children(), idx);
+                    for player in 0..G::num_players() {
+                        self.update_posterior(player, &slot, own_children);
+                    }
+                }
+            }
+
             // MCTS-Solver: derive/propagate proven status for this node.
             // Runs unconditionally on every backprop call for every node on
             // the visited path (not gated on the trial having ended at a
@@ -413,3 +688,236 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 pub struct Classic;
 
 impl BackpropStrategy for Classic {}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// Tesauro/Rajan/Segal 2010's Bayesian backprop, Gaussian-approximation
+/// variant ("_g" in the paper): each node's posterior is a Gaussian, and an
+/// interior node's posterior is the MAX-of-children distribution computed
+/// via `clark_max_of_gaussians`. Paired with `select::BayesUct1`/
+/// `BayesUct2` (`select/bayes.rs`), which read the `posterior_mean`/
+/// `posterior_variance` this writes.
+#[derive(Debug, Clone, Copy)]
+pub struct BayesGaussian {
+    /// Prior variance on a node's true value before any observations.
+    pub prior_variance: f64,
+    /// Assumed variance of a single rollout's return, i.e. the conjugate
+    /// update's observation noise.
+    pub obs_variance: f64,
+}
+
+impl Default for BayesGaussian {
+    fn default() -> Self {
+        Self {
+            prior_variance: 1.0,
+            obs_variance: 1.0,
+        }
+    }
+}
+
+impl BayesGaussian {
+    pub fn new(prior_variance: f64, obs_variance: f64) -> Self {
+        Self {
+            prior_variance,
+            obs_variance,
+        }
+    }
+}
+
+impl BackpropStrategy for BayesGaussian {
+    fn provides_posterior(&self) -> bool {
+        true
+    }
+
+    fn update_posterior<A: crate::game::Action>(
+        &self,
+        player: usize,
+        slot: &PosteriorSlot<A>,
+        own_children: Option<&ChildArray<A>>,
+    ) {
+        let combined = own_children.and_then(|children| {
+            (0..children.len())
+                .filter(|&i| children.is_explored(i))
+                .map(|i| {
+                    let (mu, var) = children.posterior(i, player);
+                    (mu, var.max(0.0).sqrt())
+                })
+                .reduce(|(mu0, sigma0), (mu1, sigma1)| {
+                    clark_max_of_gaussians(mu0, sigma0, mu1, sigma1)
+                })
+        });
+        let (mean, variance) = combined
+            .map(|(mu, sigma)| (mu, sigma * sigma))
+            .unwrap_or_else(|| {
+                conjugate_leaf_posterior(slot, player, self.prior_variance, self.obs_variance)
+            });
+        slot.set(player, mean, variance);
+    }
+}
+
+/// Tesauro/Rajan/Segal 2010's Bayesian backprop, numeric-integration
+/// variant ("_n" in the paper): each node's posterior is a discretized PDF
+/// over `BAYES_GRID_SIZE` grid points spanning `[value_lo, value_hi]`, and
+/// an interior node's posterior is the exact (to grid resolution) MAX-of-
+/// children distribution computed via `numeric_max_of_pdfs`.
+#[derive(Debug, Clone, Copy)]
+pub struct BayesNumeric {
+    pub prior_variance: f64,
+    pub obs_variance: f64,
+    /// Grid lower/upper bounds -- must cover the game's real utility range;
+    /// defaults to this codebase's symmetric `[-1, 1]` convention.
+    pub value_lo: f64,
+    pub value_hi: f64,
+}
+
+impl Default for BayesNumeric {
+    fn default() -> Self {
+        Self {
+            prior_variance: 1.0,
+            obs_variance: 1.0,
+            value_lo: -1.0,
+            value_hi: 1.0,
+        }
+    }
+}
+
+impl BayesNumeric {
+    pub fn new(prior_variance: f64, obs_variance: f64, value_lo: f64, value_hi: f64) -> Self {
+        Self {
+            prior_variance,
+            obs_variance,
+            value_lo,
+            value_hi,
+        }
+    }
+
+    fn leaf_pdf<A: crate::game::Action>(
+        &self,
+        slot: &PosteriorSlot<A>,
+        player: usize,
+    ) -> [f64; BAYES_GRID_SIZE] {
+        let (mean, variance) =
+            conjugate_leaf_posterior(slot, player, self.prior_variance, self.obs_variance);
+        normal_pdf_grid(mean, variance, self.value_lo, self.value_hi)
+    }
+}
+
+impl BackpropStrategy for BayesNumeric {
+    fn provides_posterior(&self) -> bool {
+        true
+    }
+
+    fn update_posterior<A: crate::game::Action>(
+        &self,
+        player: usize,
+        slot: &PosteriorSlot<A>,
+        own_children: Option<&ChildArray<A>>,
+    ) {
+        let child_pdfs: Vec<[f64; BAYES_GRID_SIZE]> = own_children
+            .map(|children| {
+                (0..children.len())
+                    .filter(|&i| children.is_explored(i))
+                    .map(|i| {
+                        children.posterior_grid(i, player).unwrap_or_else(|| {
+                            let (mu, var) = children.posterior(i, player);
+                            normal_pdf_grid(mu, var, self.value_lo, self.value_hi)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let pdf = if child_pdfs.is_empty() {
+            self.leaf_pdf(slot, player)
+        } else {
+            numeric_max_of_pdfs(&child_pdfs, self.value_lo, self.value_hi)
+        };
+        let (mean, variance) = mean_variance_from_pdf(&pdf, self.value_lo, self.value_hi);
+        slot.set(player, mean, variance);
+        slot.set_grid(player, pdf);
+    }
+}
+
+#[cfg(test)]
+mod bayes_tests {
+    use super::*;
+
+    #[test]
+    fn conjugate_posterior_matches_prior_when_unvisited() {
+        let stats = NodeStats::new(1, false);
+        let slot: PosteriorSlot<u8> = PosteriorSlot::Root(&stats);
+        let (mean, variance) = conjugate_leaf_posterior(&slot, 0, 2.0, 1.0);
+        assert_eq!(mean, 0.0);
+        assert_eq!(variance, 2.0);
+    }
+
+    #[test]
+    fn conjugate_posterior_shrinks_toward_sample_mean_with_visits() {
+        let stats = NodeStats::new(1, false);
+        // 10 observations averaging 0.5.
+        for _ in 0..10 {
+            stats.update(&[0.5]);
+        }
+        let slot: PosteriorSlot<u8> = PosteriorSlot::Root(&stats);
+        let (mean, variance) = conjugate_leaf_posterior(&slot, 0, 1.0, 1.0);
+        // precision = 1/1 + 10/1 = 11; mean = (10*0.5/1) / 11 = 5/11
+        assert!((mean - 5.0 / 11.0).abs() < 1e-9);
+        assert!((variance - 1.0 / 11.0).abs() < 1e-9);
+        // More visits should pull the posterior mean closer to the sample
+        // mean than a single observation would.
+        assert!(mean > 0.4 && mean < 0.5);
+    }
+
+    #[test]
+    fn clark_max_of_identical_gaussians_is_symmetric() {
+        let (mean, variance) = clark_max_of_gaussians(0.0, 1.0, 0.0, 1.0);
+        // max of two i.i.d. N(0,1): known closed form mean = 1/sqrt(pi).
+        assert!(
+            (mean - std::f64::consts::FRAC_1_SQRT_2 * (2.0 / std::f64::consts::PI).sqrt()).abs()
+                < 1e-6
+        );
+        assert!(variance > 0.0 && variance < 1.0);
+    }
+
+    #[test]
+    fn clark_max_dominated_by_higher_mean_when_variance_tiny() {
+        // With near-zero variance, max(X1, X2) collapses to whichever has
+        // the higher mean.
+        let (mean, variance) = clark_max_of_gaussians(1.0, 1e-6, -1.0, 1e-6);
+        assert!((mean - 1.0).abs() < 1e-3);
+        assert!(variance < 1e-3);
+    }
+
+    #[test]
+    fn numeric_max_of_pdfs_matches_clark_approximately() {
+        let lo = -6.0;
+        let hi = 6.0;
+        let pdf1 = normal_pdf_grid(0.5, 1.0, lo, hi);
+        let pdf2 = normal_pdf_grid(-0.5, 1.5, lo, hi);
+        let combined = numeric_max_of_pdfs(&[pdf1, pdf2], lo, hi);
+        let (numeric_mean, numeric_variance) = mean_variance_from_pdf(&combined, lo, hi);
+        let (clark_mean, clark_variance) = clark_max_of_gaussians(0.5, 1.0, -0.5, 1.5f64.sqrt());
+        assert!(
+            (numeric_mean - clark_mean).abs() < 0.05,
+            "numeric={numeric_mean} clark={clark_mean}"
+        );
+        assert!(
+            (numeric_variance - clark_variance).abs() < 0.1,
+            "numeric={numeric_variance} clark={clark_variance}"
+        );
+    }
+
+    #[test]
+    fn bayes_gaussian_leaf_then_max_combine() {
+        let strategy = BayesGaussian::new(1.0, 1.0);
+        assert!(strategy.provides_posterior());
+
+        // Leaf node: no children, posterior comes from own observations.
+        let leaf_stats = NodeStats::new(1, false);
+        leaf_stats.update(&[1.0]);
+        let leaf_slot = PosteriorSlot::Root(&leaf_stats);
+        strategy.update_posterior::<u8>(0, &leaf_slot, None);
+        let (leaf_mean, _) = leaf_stats.posterior(0);
+        assert!(leaf_mean > 0.0);
+    }
+}

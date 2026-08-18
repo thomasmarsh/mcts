@@ -1,5 +1,6 @@
 pub mod amaf;
 pub mod basic;
+pub mod bayes;
 pub mod history;
 pub mod pn;
 pub mod quasi;
@@ -12,6 +13,8 @@ pub use basic::MaxRobustChild;
 pub use basic::RobustChild;
 pub use basic::SecureChild;
 pub use basic::ThompsonSampling;
+pub use bayes::BayesUct1;
+pub use bayes::BayesUct2;
 pub use history::ProgressiveHistory;
 pub use pn::UctPn;
 pub use quasi::QuasiBestFirst;
