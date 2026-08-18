@@ -1,0 +1,26 @@
+[
+    {
+        "id": "easy",
+        "label": "Easy",
+        "description": "Shallow budget — plays somewhat randomly.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 30
+    },
+    {
+        "id": "strong",
+        "label": "Strong",
+        "description": "Deep MCTS-Solver — plays near-perfectly.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Loss",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 10000
+    }
+]
