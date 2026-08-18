@@ -212,6 +212,17 @@ export const GameShell: Component<{
   // from there, which either replayed the same historical branch (undo
   // looking like it "snapped back" to the last move) or forked a new one
   // (a history click silently going nowhere the user could see).
+  // `state().aiMoveFailedNodeId` (set by reducer.ts's `aiMove` handling)
+  // is what keeps this effect from retrying a doomed request forever: a
+  // failure (bad custom config, a crashing subprocess, any transport
+  // error) flips `aiMove.status` to `"error"`, which clears `busy()` --
+  // and since nothing about the tree changed, this effect reruns on that
+  // same store update. Without the node check below, it fired the
+  // identical request again immediately, with no backoff, forever -- see
+  // `AppState.aiMoveFailedNodeId`'s doc comment. A fresh attempt at a
+  // *different* node, or a deliberate manual retry (which dispatches a
+  // fresh `request`, resetting `error` -- `jobPollReduce`'s `"start"`
+  // case), both still go through normally.
   createEffect(() => {
     if (busy() || autoplayPaused()) return;
     if (!isFrontier(state().tree)) return;
@@ -219,6 +230,7 @@ export const GameShell: Component<{
     if (!sum || sum.currentPlayer === null) return;
     const seat = state().seats[sum.currentPlayer] ?? "human";
     if (seat === "human") return;
+    if (state().aiMove.status === "error" && state().aiMoveFailedNodeId === state().tree.currentId) return;
     dispatch({ tag: "aiMove", action: { tag: "request", strategy: seat } });
   });
 
@@ -396,6 +408,11 @@ export const GameShell: Component<{
               <div id="banner" style={{ color: summary()?.bannerColor }}>
                 {summary()?.bannerText ?? ""}
               </div>
+              <Show when={state().aiMove.status === "error" && state().aiMoveFailedNodeId === state().tree.currentId}>
+                <div id="ai-move-error" style={{ color: "#c0392b" }}>
+                  AI move failed: {state().aiMove.error}
+                </div>
+              </Show>
             </div>
 
             <Show when={state().epoch >= 1}>

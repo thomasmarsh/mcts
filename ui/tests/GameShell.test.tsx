@@ -153,6 +153,34 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
   });
 });
 
+describe("GameShell autoplay: a failing aiMove must not retry forever (fake game, no real server)", () => {
+  it("attempts an AI-controlled seat's move exactly once and surfaces the error, instead of retrying in an unbounded loop", async () => {
+    let aiMoveCalls = 0;
+    const env: Env = {
+      ...makeFakeEnv(),
+      aiMove: () => {
+        aiMoveCalls++;
+        return Effect.fromPromise(() => Promise.reject(new Error("subprocess crashed")));
+      },
+    };
+    const { store } = createTestStore("fake", env);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    makeBothSeatsAi(store);
+    await vi.waitFor(() => expect(store.state.aiMove.status).toBe("error"));
+    await vi.waitFor(() => expect(screen.getByText(/AI move failed/)).toBeInTheDocument());
+
+    // The old autoplay effect re-fired on every store update with no
+    // backoff -- an "error" status clears `busy()`, which let the same
+    // doomed request fire again immediately, forever. Holding steady here
+    // (not just checking the count once) is what actually catches a
+    // regression back to that unbounded loop, the same reasoning
+    // `holdsSteadyAt` documents above.
+    await holdsSteadyAt(() => aiMoveCalls, 1);
+  });
+});
+
 describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real server)", () => {
   it("builds an AiStrategyRef from the schema-driven editor and dispatches it as that seat's control", async () => {
     const { store, captured } = createTestStore("fake", makeFakeEnv());

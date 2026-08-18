@@ -408,6 +408,12 @@ export function appReducer<S, M, V = unknown>(
       // describing the wrong player's turn.
       draft.analysis = initialJobPollState<Analysis<M>>();
       draft.position = null;
+      draft.aiMoveFailedNodeId = null;
+    } else if (draft.aiMove.status === "error") {
+      // Record which node this failure was for -- see `AppState.
+      // aiMoveFailedNodeId`'s doc comment for why `GameShell`'s autoplay
+      // effect needs this instead of just re-checking `aiMove.status`.
+      draft.aiMoveFailedNodeId = draft.tree.currentId;
     }
     return eff
       ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: action.epoch }))

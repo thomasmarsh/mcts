@@ -50,6 +50,28 @@ fn en(default: &str, variants: Vec<Value>) -> Value {
     json!({ "type": "enum", "default": default, "variants": variants })
 }
 
+/// Like `en`, but for an enum whose Rust representation has *no* tag at
+/// all -- every variant is fieldless, and `serde` (with no `#[serde(tag =
+/// "kind")]`, just `rename_all`) writes/reads it as a bare JSON string
+/// (`"win"`), not `{"kind": "win"}`. `DecisiveMoveMode` is the one example
+/// in this schema (see `mcts::simulate::DecisiveMoveMode`'s own derive --
+/// no `tag` attribute, unlike `RaveSchedule`/`RaveUcb`, which carry
+/// per-variant fields and so must stay real tagged unions, i.e. `en`, not
+/// this). A client must read `bare` and render/serialize the field as a
+/// plain string, never `{kind, ...fields}` -- getting this wrong is exactly
+/// what produced `CustomStrategySpec` deserialization's "unknown variant
+/// `kind`, expected one of `win`, `win_loss`, `win_loss_draw`" error: the
+/// object's own key (`"kind"`) was being parsed as if it were one of
+/// `DecisiveMoveMode`'s three variant names.
+fn bare_en(default: &str, choices: &[&str]) -> Value {
+    json!({
+        "type": "enum",
+        "default": default,
+        "bare": true,
+        "variants": choices.iter().map(|c| variant(c, vec![])).collect::<Vec<_>>(),
+    })
+}
+
 fn variant(kind: &str, fields: Vec<Value>) -> Value {
     json!({ "kind": kind, "fields": fields })
 }
@@ -98,14 +120,7 @@ fn rave_ucb_enum() -> Value {
 }
 
 fn decisive_move_mode_enum() -> Value {
-    en(
-        "win",
-        vec![
-            variant("win", vec![]),
-            variant("win_loss", vec![]),
-            variant("win_loss_draw", vec![]),
-        ],
-    )
+    bare_en("win", &["win", "win_loss", "win_loss_draw"])
 }
 
 /// `BaseSelectSpec`'s variants -- every `select` family except
@@ -485,5 +500,53 @@ mod tests {
         let mut legal = Vec::new();
         Nim::generate_actions(&state, &mut legal);
         assert!(legal.contains(&action));
+    }
+
+    /// Regression test for a live bug: `decisive_move`/`decisive_move_mast`/
+    /// `decisive_move_nst`'s `mode` field used plain `en` (the same
+    /// object-tagged `{"kind": ..., ...fields}` shape as `RaveSchedule`/
+    /// `RaveUcb`), but `DecisiveMoveMode` has no `#[serde(tag = "kind")]` --
+    /// it's a bare-string enum. A UI following the schema's own advertised
+    /// shape (before `bare_en` existed) sent `{"kind":"win"}` for `mode`,
+    /// which failed with exactly the error a real user hit: "unknown
+    /// variant `kind`, expected one of `win`, `win_loss`, `win_loss_draw`"
+    /// (`serde` reading the object's own key as if it were the variant
+    /// name). This asserts the schema now tells a client `mode` is `bare`,
+    /// and that the bare-string wire shape a client following that
+    /// actually round-trips.
+    #[test]
+    fn decisive_move_mode_field_is_marked_bare_and_round_trips_as_a_plain_string() {
+        let schema = axis_schema();
+        let simulate_variants = schema["simulate"]["variants"].as_array().unwrap();
+        for kind in ["decisive_move", "decisive_move_mast", "decisive_move_nst"] {
+            let v = simulate_variants
+                .iter()
+                .find(|v| v["kind"] == kind)
+                .unwrap_or_else(|| panic!("simulate schema is missing variant {kind:?}"));
+            let mode_field = v["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == "mode")
+                .unwrap_or_else(|| panic!("{kind:?}'s schema entry is missing a mode field"));
+            assert_eq!(
+                mode_field["bare"],
+                serde_json::json!(true),
+                "{kind:?}'s mode field must be marked bare -- DecisiveMoveMode has no serde tag"
+            );
+        }
+
+        // The actual wire shape a client honoring `bare` sends: a plain
+        // string, not `{"kind": "win"}`.
+        let json = r#"{"kind":"decisive_move_nst","mode":"win","epsilon":0.1,"nst_backoff_threshold":5}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).expect("bare-string mode must deserialize");
+        assert_eq!(
+            spec,
+            SimulateSpec::DecisiveMoveNst {
+                mode: DecisiveMoveMode::Win,
+                epsilon: 0.1,
+                nst_backoff_threshold: 5,
+            }
+        );
     }
 }

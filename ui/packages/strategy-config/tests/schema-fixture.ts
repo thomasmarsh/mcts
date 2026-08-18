@@ -21,7 +21,27 @@ export const fixtureSchema: AxisSchema = {
     variants: [{ kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] }],
   },
   simulate: {
-    variants: [{ kind: "uniform", fields: [] }],
+    variants: [
+      { kind: "uniform", fields: [] },
+      {
+        kind: "decisive_move_nst",
+        fields: [
+          {
+            name: "mode",
+            type: "enum",
+            default: "win",
+            bare: true,
+            variants: [
+              { kind: "win", fields: [] },
+              { kind: "win_loss", fields: [] },
+              { kind: "win_loss_draw", fields: [] },
+            ],
+          },
+          { name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 },
+          { name: "nst_backoff_threshold", type: "int", bounds: [0, 100], default: 5 },
+        ],
+      },
+    ],
   },
   simulate_base: {
     variants: [{ kind: "uniform", fields: [] }],
