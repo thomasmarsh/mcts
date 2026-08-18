@@ -43,7 +43,7 @@ use mcts::select::{self, SelectStrategy};
 use mcts::simulate::{self, SimulateStrategy};
 use mcts::strategies::mcts::strategy::Compose;
 use mcts::strategies::Search;
-use mcts::{Requirements, SearchConfig, TreeSearch};
+use mcts::{GraphSearch, Requirements, SearchConfig, TreeSearch};
 use serde::{Deserialize, Serialize};
 
 /// A continuation that can be invoked with any concrete `S: SelectStrategy<G>`
@@ -624,6 +624,9 @@ pub struct SearchSettings {
     pub num_tree_threads: usize,
     pub seed: u64,
     pub max_time: Option<std::time::Duration>,
+    pub graph_search: Option<GraphSearch>,
+    pub solver_loss_threshold: Option<u32>,
+    pub contempt_factor: Option<f64>,
 }
 
 /// Resolves `spec.select`, then hands off to `SimulateStage` -- the first
@@ -760,6 +763,13 @@ where
         if let Some(max_time) = self.settings.max_time {
             config = config.max_time(max_time);
         }
+        if let Some(graph_search) = self.settings.graph_search {
+            config = config.graph_search(graph_search);
+        }
+        if let Some(solver_loss_threshold) = self.settings.solver_loss_threshold {
+            config = config.solver_loss_threshold(solver_loss_threshold);
+        }
+        config = config.contempt_factor(self.settings.contempt_factor);
         Box::new(TreeSearch::<G, Compose<S1, S2, B, FA>>::new().config(config))
     }
 }
@@ -1198,6 +1208,9 @@ mod tests {
             num_tree_threads: 1,
             seed: 1,
             max_time: None,
+            graph_search: None,
+            solver_loss_threshold: None,
+            contempt_factor: None,
         }
     }
 
@@ -1267,6 +1280,61 @@ mod tests {
         assert!(
             legal.contains(&action),
             "the action chosen by a JSON-configured MetaMcts search must be legal"
+        );
+    }
+
+    #[test]
+    fn build_search_applies_graph_search_setting() {
+        // `Nim` has no real `zobrist_hash` (defaults to a constant `0`),
+        // which collapses every position into one graph node -- fine for a
+        // single-iteration root expansion (only one node is ever visited),
+        // but running deeper would corrupt move legality across positions
+        // that fold into the same hash. `mcts-tune::lib.rs`'s
+        // `mcgs_trial_selects_combined_graph_statistics` test uses the same
+        // one-iteration trick for the same reason. Real `mcgs`-enabled
+        // callers are guarded by the "mcgs requires a game with a zobrist
+        // hash" check (step 4c), which this config-IR layer intentionally
+        // doesn't duplicate (see this file's `SearchSettings` doc comment).
+        let spec = SearchSpec {
+            select: SelectSpec::Ucb1 { c: 1.4 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::Classic {},
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        let mut settings = nim_search_settings();
+        settings.max_iterations = 1;
+        settings.expand_threshold = 0;
+        settings.graph_search = Some(GraphSearch::Dag(mcts::GraphStats::Both));
+        let mut search = build_search::<Nim>(&spec, &settings);
+        let state = <Nim as Game>::S::default();
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a graph-search-configured search must be legal"
+        );
+    }
+
+    #[test]
+    fn build_search_applies_solver_settings() {
+        let spec = SearchSpec {
+            select: SelectSpec::UctPn { c: 1.4, c_pn: 1.4 },
+            simulate: SimulateSpec::Uniform {},
+            backprop: BackpropSpec::Classic {},
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        let mut settings = nim_search_settings();
+        settings.solver_loss_threshold = Some(1);
+        settings.contempt_factor = Some(0.1);
+        let mut search = build_search::<Nim>(&spec, &settings);
+        let state = <Nim as Game>::S::default();
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a solver-configured search must be legal"
         );
     }
 }
