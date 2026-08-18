@@ -161,6 +161,8 @@ register_select! {
         .threshold(threshold)
         .ucb(select::RaveUcb::Ucb1 { exploration_constant: c }),
     UctPn { c: f64, c_pn: f64 } => select::UctPn::with_c(c, c_pn),
+    ProgressiveHistory { c: f64, ph_weight: f64 } =>
+        select::ProgressiveHistory::new(select::Ucb1::with_c(c), ph_weight),
 }
 
 /// Forwards a resolved `S: SelectStrategy<G>` on to `cont`, wrapped in
@@ -828,6 +830,20 @@ mod tests {
     }
 
     #[test]
+    fn progressive_history_spec_round_trips_through_json() {
+        let json = r#"{"kind":"progressive_history","c":1.4,"ph_weight":2.5}"#;
+        let spec: SelectSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            SelectSpec::ProgressiveHistory {
+                c: 1.4,
+                ph_weight: 2.5
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+    }
+
+    #[test]
     fn epsilon_greedy_wraps_an_arbitrary_inner_spec() {
         let json = r#"{"kind":"epsilon_greedy","epsilon":0.2,"inner":{"kind":"uct_pn","c":1.4,"c_pn":1.0}}"#;
         let spec: SelectSpec = serde_json::from_str(json).unwrap();
@@ -879,6 +895,21 @@ mod tests {
     #[test]
     fn with_select_builds_a_working_tree_search_from_a_json_spec() {
         let spec: SelectSpec = serde_json::from_str(r#"{"kind":"ucb1","c":1.5}"#).unwrap();
+        let state = <Nim as Game>::S::default();
+        let action = with_select::<Nim, _>(&spec, RunCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured search must be legal"
+        );
+    }
+
+    #[test]
+    fn with_select_builds_a_working_tree_search_for_progressive_history() {
+        let spec: SelectSpec =
+            serde_json::from_str(r#"{"kind":"progressive_history","c":1.4,"ph_weight":2.5}"#)
+                .unwrap();
         let state = <Nim as Game>::S::default();
         let action = with_select::<Nim, _>(&spec, RunCont { state: &state });
         let mut legal = Vec::new();
