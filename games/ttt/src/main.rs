@@ -164,14 +164,28 @@ impl GameAdapter for TttAdapter {
         presets().ai_presets()
     }
 
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let s = value_to_state(state)?;
 
         if TicTacToe::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
 
-        let mut ai = presets().build::<TicTacToe>(preset, PRESET_SEED)?;
+        let mut ai = mcts_tune::presets::build_strategy::<TicTacToe>(
+            presets(),
+            preset,
+            custom_spec.as_ref(),
+            PRESET_SEED,
+        )?;
         let action = ai.choose_action(&s);
         let next = TicTacToe::apply(s, &action);
 
@@ -185,15 +199,25 @@ impl GameAdapter for TttAdapter {
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         _budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let s = value_to_state(state)?;
 
         if TicTacToe::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
 
-        let mut ai = presets().build::<TicTacToe>(preset, PRESET_SEED)?;
+        let mut ai = mcts_tune::presets::build_strategy::<TicTacToe>(
+            presets(),
+            preset,
+            custom_spec.as_ref(),
+            PRESET_SEED,
+        )?;
         let _ = ai.choose_action(&s);
         let report = ai.root_report(&s);
 

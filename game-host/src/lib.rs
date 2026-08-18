@@ -313,11 +313,17 @@ pub trait GameAdapter: Send + Sync {
     fn view(&self, state: &Value) -> Result<Value, HostError>;
 
     fn ai_presets(&self) -> Vec<AiPresetInfo>;
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError>;
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError>;
     fn analyze(
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError>;
 
@@ -1127,14 +1133,18 @@ fn dispatch<A: GameAdapter>(adapter: &A, req: &Request) -> Result<Value, HostErr
         "ai_move" => {
             let state = param(&req.params, "state")?;
             let preset = param_str(&req.params, "preset")?;
-            adapter.ai_move(state, preset).and_then(ok_value)
+            let custom = req.params.get("custom");
+            adapter.ai_move(state, preset, custom).and_then(ok_value)
         }
 
         "analyze" => {
             let state = param(&req.params, "state")?;
             let preset = param_str(&req.params, "preset")?;
+            let custom = req.params.get("custom");
             let budget_ms = req.params.get("budget_ms").and_then(|v| v.as_u64());
-            adapter.analyze(state, preset, budget_ms).and_then(ok_value)
+            adapter
+                .analyze(state, preset, custom, budget_ms)
+                .and_then(ok_value)
         }
 
         other => Err(HostError::not_found(format!("unknown method: {other}"))),
@@ -1249,7 +1259,12 @@ mod tests {
             }]
         }
 
-        fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
+        fn ai_move(
+            &self,
+            state: &Value,
+            preset: &str,
+            _custom: Option<&Value>,
+        ) -> Result<AiMoveResult, HostError> {
             if preset == "random" {
                 let next = self.apply(state, &serde_json::json!(0))?;
                 Ok(AiMoveResult {
@@ -1265,6 +1280,7 @@ mod tests {
             &self,
             _state: &Value,
             preset: &str,
+            _custom: Option<&Value>,
             _budget_ms: Option<u64>,
         ) -> Result<Analysis, HostError> {
             if preset != "random" {
@@ -1638,7 +1654,12 @@ mod tests {
         fn ai_presets(&self) -> Vec<AiPresetInfo> {
             vec![]
         }
-        fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
+        fn ai_move(
+            &self,
+            _state: &Value,
+            _preset: &str,
+            _custom: Option<&Value>,
+        ) -> Result<AiMoveResult, HostError> {
             VALIDATION_COUNTS.with(|counts| counts.borrow_mut().plays += 1);
             Err(HostError::not_found("not implemented in test fake"))
         }
@@ -1646,6 +1667,7 @@ mod tests {
             &self,
             _state: &Value,
             _preset: &str,
+            _custom: Option<&Value>,
             _budget_ms: Option<u64>,
         ) -> Result<Analysis, HostError> {
             Err(HostError::not_found("not implemented in test fake"))
@@ -2277,13 +2299,19 @@ mod tests {
         fn ai_presets(&self) -> Vec<AiPresetInfo> {
             vec![]
         }
-        fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
+        fn ai_move(
+            &self,
+            _state: &Value,
+            _preset: &str,
+            _custom: Option<&Value>,
+        ) -> Result<AiMoveResult, HostError> {
             Err(HostError::not_found("not implemented in test fake"))
         }
         fn analyze(
             &self,
             _state: &Value,
             _preset: &str,
+            _custom: Option<&Value>,
             _budget_ms: Option<u64>,
         ) -> Result<Analysis, HostError> {
             Err(HostError::not_found("not implemented in test fake"))

@@ -102,7 +102,12 @@ impl GameAdapter for TestHost {
         ]
     }
 
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        _custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
         let moves = self.legal_moves(state)?;
         if moves.is_empty() {
             return Err(HostError::bad_request("no legal moves"));
@@ -123,6 +128,7 @@ impl GameAdapter for TestHost {
         &self,
         state: &Value,
         preset: &str,
+        _custom: Option<&Value>,
         _budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
         let moves = self.legal_moves(state)?;

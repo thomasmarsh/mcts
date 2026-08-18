@@ -155,10 +155,7 @@ fn simulate_base_variants() -> Vec<Value> {
     vec![
         variant("uniform", vec![]),
         variant("mast", vec![]),
-        variant(
-            "nst",
-            vec![field("backoff_threshold", int([0, 100], 5))],
-        ),
+        variant("nst", vec![field("backoff_threshold", int([0, 100], 5))]),
     ]
 }
 
@@ -232,8 +229,7 @@ pub fn axis_schema() -> Value {
 mod tests {
     use super::*;
     use crate::config_ir::{
-        BackpropSpec, BaseSelectSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec,
-        SimulateSpec,
+        BackpropSpec, BaseSelectSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec,
     };
     use mcts::select::{RaveSchedule, RaveUcb};
     use mcts::simulate::DecisiveMoveMode;
@@ -302,7 +298,14 @@ mod tests {
         let _ = assert_base_select_variant_named;
         cover(
             "select_base",
-            &["ucb1", "ucb1_tuned", "amaf", "rave", "uct_pn", "progressive_history"],
+            &[
+                "ucb1",
+                "ucb1_tuned",
+                "amaf",
+                "rave",
+                "uct_pn",
+                "progressive_history",
+            ],
         );
 
         let assert_simulate_variant_named = |s: &SimulateSpec| match s {
@@ -353,7 +356,12 @@ mod tests {
         let _ = assert_final_action_variant_named;
         cover(
             "final_action",
-            &["robust_child", "max_avg", "max_robust_child", "secure_child"],
+            &[
+                "robust_child",
+                "max_avg",
+                "max_robust_child",
+                "secure_child",
+            ],
         );
 
         // Nested enums: same exhaustive-match trick, checked against the
@@ -420,7 +428,9 @@ mod tests {
         assert_eq!(find("simulate", "decisive_move")["wraps"], "simulate_base");
         // Fixed-shape leaves must NOT carry a `wraps` key -- a UI must not
         // treat them as recursion targets.
-        assert!(find("simulate", "decisive_move_mast").get("wraps").is_none());
+        assert!(find("simulate", "decisive_move_mast")
+            .get("wraps")
+            .is_none());
         assert!(find("simulate", "decisive_move_nst").get("wraps").is_none());
         assert!(find("simulate", "meta_mcts").get("wraps").is_none());
     }

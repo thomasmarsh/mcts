@@ -271,16 +271,35 @@ impl GameAdapter for DruidAdapter {
         presets().ai_presets()
     }
 
-    fn ai_move(&self, state: &Value, preset: &str) -> Result<AiMoveResult, HostError> {
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let state = value_to_state(state)?;
-        presets().preset(preset)?;
+        if custom_spec.is_none() {
+            presets().preset(preset)?;
+        }
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
         let hash = Druid::zobrist_hash(&state);
-        let mut ai = match self.cache.take(preset, hash) {
-            Some(ai) => ai,
-            None => presets().build::<Druid>(preset, PRESET_SEED)?,
+        // A "Custom" search never touches the engine cache -- its key is
+        // `(preset, hash)`, and every custom spec is sent under the same
+        // literal `"custom"` preset id, so caching by that key would return
+        // a stale search built from a *different* custom spec on the same
+        // position.
+        let mut ai = match &custom_spec {
+            Some(spec) => mcts_tune::presets::build_custom::<Druid>(spec, PRESET_SEED)?,
+            None => match self.cache.take(preset, hash) {
+                Some(ai) => ai,
+                None => presets().build::<Druid>(preset, PRESET_SEED)?,
+            },
         };
 
         let mut chosen_kind: Option<PieceKind> = None;
@@ -302,7 +321,9 @@ impl GameAdapter for DruidAdapter {
                         _ => unreachable!("Cell action without prior Piece"),
                     };
                     let result = PlacedPiece(piece, idx);
-                    self.cache.put(preset, hash, ai);
+                    if custom_spec.is_none() {
+                        self.cache.put(preset, hash, ai);
+                    }
                     return Ok(AiMoveResult {
                         mv: serde_json::to_value(result).expect("PlacedPiece always serializes"),
                         state: state_to_value(&ai_state),
@@ -316,29 +337,48 @@ impl GameAdapter for DruidAdapter {
         &self,
         state: &Value,
         preset: &str,
+        custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
+        let custom_spec = custom
+            .map(|v| serde_json::from_value::<mcts_tune::presets::CustomStrategySpec>(v.clone()))
+            .transpose()
+            .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let state = value_to_state(state)?;
-        presets().preset(preset)?;
+        if custom_spec.is_none() {
+            presets().preset(preset)?;
+        }
         if Druid::is_terminal(&state) {
             return Err(HostError::bad_request("game is over"));
         }
         let hash = Druid::zobrist_hash(&state);
 
-        let mut ai = match budget_ms {
-            Some(ms) => presets().build_with::<Druid>(preset, PRESET_SEED, |b| {
-                b.max_time = Some(Duration::from_millis(clamp_budget_ms(ms)));
-            })?,
-            None => match self.cache.take(preset, hash) {
-                Some(ai) => ai,
-                None => presets().build::<Druid>(preset, PRESET_SEED)?,
+        // Same cache-bypass rationale as `ai_move` above -- a custom spec
+        // additionally gets `budget_ms` applied as a `max_time_ms` override,
+        // mirroring how a named preset's own budget is overridden below.
+        let mut ai = match &custom_spec {
+            Some(spec) => {
+                let mut spec = spec.clone();
+                if let Some(ms) = budget_ms {
+                    spec.max_time_ms = Some(clamp_budget_ms(ms));
+                }
+                mcts_tune::presets::build_custom::<Druid>(&spec, PRESET_SEED)?
+            }
+            None => match budget_ms {
+                Some(ms) => presets().build_with::<Druid>(preset, PRESET_SEED, |b| {
+                    b.max_time = Some(Duration::from_millis(clamp_budget_ms(ms)));
+                })?,
+                None => match self.cache.take(preset, hash) {
+                    Some(ai) => ai,
+                    None => presets().build::<Druid>(preset, PRESET_SEED)?,
+                },
             },
         };
 
         let _ = ai.choose_action(&state);
         let report = ai.root_report(&state);
 
-        if budget_ms.is_none() {
+        if custom_spec.is_none() && budget_ms.is_none() {
             self.cache.put(preset, hash, ai);
         }
 

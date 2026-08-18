@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 mcts-bench = { path = "../mcts-bench" }
+mcts-tune = { path = "../mcts-tune" }
 game-host = { path = "../game-host" }
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }

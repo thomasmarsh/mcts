@@ -243,7 +243,7 @@ fn play_match_inner(
         preset_b
     };
 
-    let result = match adapter.ai_move(&state, preset) {
+    let result = match adapter.ai_move(&state, preset, None) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: ai_move failed: {e}");

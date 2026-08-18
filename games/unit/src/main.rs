@@ -40,13 +40,19 @@ impl GameAdapter for UnitAdapter {
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
         vec![]
     }
-    fn ai_move(&self, _state: &Value, _preset: &str) -> Result<AiMoveResult, HostError> {
+    fn ai_move(
+        &self,
+        _state: &Value,
+        _preset: &str,
+        _custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
         Err(HostError::not_found("no ai presets"))
     }
     fn analyze(
         &self,
         _state: &Value,
         _preset: &str,
+        _custom: Option<&Value>,
         _budget_ms: Option<u64>,
     ) -> Result<Analysis, HostError> {
         Err(HostError::not_found("no ai presets"))
