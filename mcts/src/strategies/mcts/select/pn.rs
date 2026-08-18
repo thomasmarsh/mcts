@@ -151,14 +151,26 @@ impl<G: Game> SelectStrategy<G> for UctPn {
 /// that `(dpn, dpn2)` tuples tiebreak correctly and ties share a rank) can be
 /// unit tested directly against hand-picked inputs instead of only through a
 /// full tree search.
+///
+/// `dpn_of` is called exactly once per index, up front, and every comparison
+/// during the sort reads that snapshot -- not `dpn_of` itself. Under
+/// multi-threaded search, `dpn_of` reads a child's live, concurrently-backprop'd
+/// `dpn`/`dpn2` counters; `sort_by_key` (unlike `sort_by_cached_key`) doesn't
+/// guarantee calling its key function only once per element, so a version
+/// that called `dpn_of` from inside the sort could observe two different
+/// values for the same index across two comparisons -- violating the total
+/// order the sort assumes and panicking (observed live: "user-provided
+/// comparison function does not correctly implement a total order", with
+/// `threads: 0` auto-selecting multiple tree threads).
 fn rank_by_dpn(n: usize, dpn_of: impl Fn(usize) -> (u32, u32)) -> Vec<u32> {
+    let dpns: Vec<(u32, u32)> = (0..n).map(dpn_of).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by_key(|&idx| dpn_of(idx));
+    order.sort_by_key(|&idx| dpns[idx]);
 
     let mut ranks = vec![0u32; n];
     let mut rank = 1u32;
     for (pos, &idx) in order.iter().enumerate() {
-        if pos > 0 && dpn_of(idx) != dpn_of(order[pos - 1]) {
+        if pos > 0 && dpns[idx] != dpns[order[pos - 1]] {
             rank = pos as u32 + 1;
         }
         ranks[idx] = rank;
