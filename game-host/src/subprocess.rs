@@ -28,6 +28,20 @@ struct SubprocessProcess {
     _child: Child,
 }
 
+impl SubprocessProcess {
+    /// Kill and reap the subprocess. `Child`'s own `Drop` impl does
+    /// neither of these things (a well-known `std::process` gotcha) -- just
+    /// letting a `SubprocessProcess` fall out of scope leaves an orphaned
+    /// process that becomes a zombie the moment it exits, since nothing
+    /// ever calls `wait()` on it. Every caller that discards a
+    /// `SubprocessProcess` (the restart path in `request()`, `Drop for
+    /// SubprocessAdapter`) must go through this instead of a bare `drop`.
+    fn kill_and_wait(mut self) {
+        let _ = self._child.kill();
+        let _ = self._child.wait();
+    }
+}
+
 // `Child`, `ChildStdin`, `ChildStdout` are all `Send`.
 // The `Send` bound below ensures the whole thing is `Send`.
 
@@ -146,12 +160,17 @@ impl SubprocessAdapter {
         match try_send(self, method, &params) {
             Ok(v) => Ok(v),
             Err(first_err) => {
-                // Mark the process as dead, restart, retry once.
-                *self.inner.lock().unwrap() = None;
-                *self.inner.lock().unwrap() = Some(
+                // Reap the dead process before replacing it, then restart
+                // and retry once.
+                let mut guard = self.inner.lock().unwrap();
+                if let Some(dead) = guard.take() {
+                    dead.kill_and_wait();
+                }
+                *guard = Some(
                     spawn(&self.binary_path)
                         .map_err(|e| HostError::internal(format!("restart subprocess: {e}")))?,
                 );
+                drop(guard);
                 try_send(self, method, &params).map_err(|_| {
                     // Return the original error if retry also fails.
                     first_err
@@ -252,11 +271,9 @@ impl GameAdapter for SubprocessAdapter {
 
 impl Drop for SubprocessAdapter {
     fn drop(&mut self) {
-        // Kill the subprocess if still alive.
         if let Ok(mut guard) = self.inner.lock() {
-            if let Some(mut proc) = guard.take() {
-                let _ = proc._child.kill();
-                let _ = proc._child.wait();
+            if let Some(proc) = guard.take() {
+                proc.kill_and_wait();
             }
         }
     }
@@ -494,6 +511,64 @@ mod tests {
         assert_eq!(info.eval_rounds, 5);
         assert_eq!(info.parameters.len(), 1);
         assert_eq!(info.parameters[0].name, "c");
+    }
+
+    /// Whether `pid` still has an entry in the process table -- `kill -0`
+    /// succeeds for a running process *or* an unreaped zombie (its slot is
+    /// only freed once something calls `wait()` on it), and fails with
+    /// ESRCH once it's been properly reaped. This is exactly the
+    /// distinction `kill_and_wait` exists to guarantee on the other side
+    /// of, so it's what the regression tests below check instead of
+    /// re-deriving "is this a zombie" from `ps` output.
+    fn pid_still_in_process_table(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run kill -0")
+            .success()
+    }
+
+    #[test]
+    fn kill_and_wait_reaps_the_child_so_it_never_zombies() {
+        let proc = spawn(&test_host_binary()).expect("spawn test host");
+        let pid = proc._child.id();
+        proc.kill_and_wait();
+        assert!(
+            !pid_still_in_process_table(pid),
+            "pid {pid} still present after kill_and_wait -- it zombied"
+        );
+    }
+
+    #[test]
+    fn restart_after_a_dead_process_reaps_it_instead_of_leaking_a_zombie() {
+        // Regression test for the "zombie druid processes" bug: the
+        // restart-on-failure path in `request()` used to replace the dead
+        // `SubprocessProcess` with `*self.inner.lock().unwrap() = None`,
+        // which just drops it -- and `Child`'s `Drop` impl does neither
+        // `kill()` nor `wait()`, so the old subprocess became a zombie the
+        // instant it exited. Every failed-and-restarted request leaked one.
+        let adapter = SubprocessAdapter::new(test_host_binary());
+        let old_pid = adapter.inner.lock().unwrap().as_ref().unwrap()._child.id();
+
+        // Kill the subprocess out from under the adapter, bypassing its own
+        // `kill_and_wait` -- simulating the process dying/crashing on its
+        // own, which is what actually triggers the restart path in
+        // production (not a call the adapter itself made).
+        std::process::Command::new("kill")
+            .args(["-KILL", &old_pid.to_string()])
+            .status()
+            .expect("run kill -KILL");
+
+        // Any request now hits a closed pipe, which triggers the
+        // restart-and-retry path.
+        let _ = adapter.new_state(serde_json::json!({}));
+
+        assert!(
+            !pid_still_in_process_table(old_pid),
+            "old subprocess pid {old_pid} was never reaped after restart -- zombied"
+        );
     }
 
     #[test]
