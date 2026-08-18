@@ -38,9 +38,11 @@
 
 use mcts::backprop::{self, BackpropStrategy};
 use mcts::game::Game;
+use mcts::node::QInit;
 use mcts::select::{self, SelectStrategy};
 use mcts::simulate::{self, SimulateStrategy};
 use mcts::strategies::mcts::strategy::Compose;
+use mcts::strategies::Search;
 use mcts::{Requirements, SearchConfig, TreeSearch};
 use serde::{Deserialize, Serialize};
 
@@ -48,9 +50,15 @@ use serde::{Deserialize, Serialize};
 /// -- the "callback" side of the CPS dispatch this module's doc comment
 /// describes. `requirements_of` and any real caller building a `TreeSearch`
 /// each implement this once, for their own `Output`.
+/// `+ 'static` on `call`'s own `S` (not just on `G`) is what lets
+/// `build_search` below box the eventually-fully-resolved `TreeSearch<G,
+/// Compose<..>>` as `Box<dyn Search<G = G>>` -- `SelectStrategy` itself
+/// declares no `'static` bound (nothing about "which move to explore" needs
+/// one), but every real implementor (`Ucb1`, `Rave`, ...) is an owned type
+/// with no borrowed fields anyway, so this costs nothing in practice.
 pub trait SelectCont<G: Game> {
     type Output;
-    fn call<S: SelectStrategy<G>>(self, select: S) -> Self::Output;
+    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> Self::Output;
 }
 
 /// `register_select!`'s table, expanded into `BaseSelectSpec`/`SelectSpec`
@@ -96,7 +104,7 @@ macro_rules! register_select {
         /// this is a continuation call rather than a return value.
         pub fn with_base_select<G, C>(spec: &BaseSelectSpec, cont: C) -> C::Output
         where
-            G: Game,
+            G: Game + 'static,
             C: SelectCont<G>,
         {
             match spec.clone() {
@@ -127,7 +135,7 @@ macro_rules! register_select {
         /// `EpsilonGreedy` wrapper.
         pub fn with_select<G, C>(spec: &SelectSpec, cont: C) -> C::Output
         where
-            G: Game,
+            G: Game + 'static,
             C: SelectCont<G>,
         {
             match spec.clone() {
@@ -165,12 +173,12 @@ struct EpsilonGreedyCont<C> {
 
 impl<G, C> SelectCont<G> for EpsilonGreedyCont<C>
 where
-    G: Game,
+    G: Game + 'static,
     C: SelectCont<G>,
 {
     type Output = C::Output;
 
-    fn call<S: SelectStrategy<G>>(self, select: S) -> C::Output {
+    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> C::Output {
         let wrapped = select::EpsilonGreedy::<G, S>::new()
             .epsilon(self.epsilon)
             .inner(select);
@@ -194,7 +202,7 @@ impl<G: Game> SelectCont<G> for RequirementsCont<G> {
     }
 }
 
-pub fn requirements_of<G: Game>(spec: &SelectSpec) -> Requirements {
+pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
     with_select::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
 }
 
@@ -202,9 +210,10 @@ pub fn requirements_of<G: Game>(spec: &SelectSpec) -> Requirements {
 
 /// The `simulate`-axis counterpart of `SelectCont` -- see this module's doc
 /// comment for why continuation-passing rather than a boxed trait object.
+/// See `SelectCont`'s doc comment for why `call`'s `S` carries `+ 'static`.
 pub trait SimulateCont<G: Game> {
     type Output;
-    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> Self::Output;
+    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> Self::Output;
 }
 
 /// `register_simulate!`'s table, expanded into `BaseSimulateSpec`/
@@ -253,7 +262,7 @@ macro_rules! register_simulate {
         /// by invoking `cont` with it -- see `with_base_select` above.
         pub fn with_base_simulate<G, C>(spec: &BaseSimulateSpec, cont: C) -> C::Output
         where
-            G: Game,
+            G: Game + 'static,
             C: SimulateCont<G>,
         {
             match spec.clone() {
@@ -294,7 +303,7 @@ macro_rules! register_simulate {
         /// the `EpsilonGreedy`/`DecisiveMove`/`MetaMcts` wrappers.
         pub fn with_simulate<G, C>(spec: &SimulateSpec, cont: C) -> C::Output
         where
-            G: Game,
+            G: Game + 'static,
             C: SimulateCont<G>,
         {
             match spec.clone() {
@@ -337,12 +346,12 @@ struct EpsilonGreedySimulateCont<C> {
 
 impl<G, C> SimulateCont<G> for EpsilonGreedySimulateCont<C>
 where
-    G: Game,
+    G: Game + 'static,
     C: SimulateCont<G>,
 {
     type Output = C::Output;
 
-    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> C::Output {
+    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> C::Output {
         let wrapped = simulate::EpsilonGreedy::<G, S>::with_epsilon(self.epsilon).inner(simulate);
         self.cont.call(wrapped)
     }
@@ -358,12 +367,12 @@ struct DecisiveMoveSimulateCont<C> {
 
 impl<G, C> SimulateCont<G> for DecisiveMoveSimulateCont<C>
 where
-    G: Game,
+    G: Game + 'static,
     C: SimulateCont<G>,
 {
     type Output = C::Output;
 
-    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> C::Output {
+    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> C::Output {
         let wrapped = simulate::DecisiveMove::<G, S>::new()
             .mode(self.mode)
             .inner(simulate);
@@ -385,13 +394,13 @@ struct MetaMctsInnerCont<G, S1, C> {
 
 impl<G, S1, C> SimulateCont<G> for MetaMctsInnerCont<G, S1, C>
 where
-    G: Game,
-    S1: SelectStrategy<G>,
+    G: Game + 'static,
+    S1: SelectStrategy<G> + 'static,
     C: SimulateCont<G>,
 {
     type Output = C::Output;
 
-    fn call<S2: SimulateStrategy<G>>(self, simulate: S2) -> C::Output {
+    fn call<S2: SimulateStrategy<G> + 'static>(self, simulate: S2) -> C::Output {
         let inner = TreeSearch::<G, Compose<S1, S2>>::default().config(
             SearchConfig::<G, Compose<S1, S2>>::new()
                 .select(self.select)
@@ -415,12 +424,12 @@ struct MetaMctsCont<C> {
 
 impl<G, C> SelectCont<G> for MetaMctsCont<C>
 where
-    G: Game,
+    G: Game + 'static,
     C: SimulateCont<G>,
 {
     type Output = C::Output;
 
-    fn call<S1: SelectStrategy<G>>(self, select: S1) -> C::Output {
+    fn call<S1: SelectStrategy<G> + 'static>(self, select: S1) -> C::Output {
         with_base_simulate::<G, _>(
             &self.simulate_spec,
             MetaMctsInnerCont {
@@ -446,7 +455,7 @@ impl<G: Game> SimulateCont<G> for SimulateRequirementsCont<G> {
     }
 }
 
-pub fn requirements_of_simulate<G: Game>(spec: &SimulateSpec) -> Requirements {
+pub fn requirements_of_simulate<G: Game + 'static>(spec: &SimulateSpec) -> Requirements {
     with_simulate::<G, _>(spec, SimulateRequirementsCont(std::marker::PhantomData))
 }
 
@@ -456,9 +465,10 @@ pub fn requirements_of_simulate<G: Game>(spec: &SimulateSpec) -> Requirements {
 /// those two, `BackpropStrategy` (`mcts/src/strategies/mcts/backprop.rs`) is
 /// not generic over `G: Game` -- its methods take `G` as a per-call type
 /// parameter instead -- so this dispatcher needs no `G` of its own either.
+/// See `SelectCont`'s doc comment for why `call`'s `B` carries `+ 'static`.
 pub trait BackpropCont {
     type Output;
-    fn call<B: BackpropStrategy>(self, backprop: B) -> Self::Output;
+    fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output;
 }
 
 /// `register_backprop!`'s table. `backprop::Classic` is, as of this writing,
@@ -550,7 +560,7 @@ macro_rules! register_final_action {
         /// invoking `cont` with it -- see `with_base_select` above.
         pub fn with_final_action<G, C>(spec: &FinalActionSpec, cont: C) -> C::Output
         where
-            G: Game,
+            G: Game + 'static,
             C: SelectCont<G>,
         {
             match spec.clone() {
@@ -574,8 +584,203 @@ register_final_action! {
 
 /// Reuses `RequirementsCont` (defined above for the `select` axis) since
 /// `final_action`'s dispatch resolves to the same `SelectStrategy<G>` trait.
-pub fn requirements_of_final_action<G: Game>(spec: &FinalActionSpec) -> Requirements {
+pub fn requirements_of_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> Requirements {
     with_final_action::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// The full four-axis config-IR node: one spec per `Strategy<G>` axis, the
+/// same four names `mcts::strategy::Compose<Sel, Sim, Bp, FA>` takes as type
+/// parameters. This is a second, independent entry point alongside
+/// `mcts-tune::build_search`/`make_candidate`'s `match p.family.as_str()`
+/// dispatch -- it doesn't touch or replace that function, which stays the
+/// dispatch path every existing caller (SMAC3, the ladder driver,
+/// `strategy_tune_eval`) actually uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchSpec {
+    pub select: SelectSpec,
+    pub simulate: SimulateSpec,
+    pub backprop: BackpropSpec,
+    pub final_action: FinalActionSpec,
+}
+
+/// The non-strategy `SearchConfig` knobs a `SearchSpec` needs alongside
+/// itself -- this module's counterpart of `mcts-tune::base_config`'s generic
+/// settings (iteration/time budget, `q_init`, threading, ...), factored out
+/// because they're orthogonal to which axis families are chosen and don't
+/// belong inside any one `*Spec` enum.
+#[derive(Clone)]
+pub struct SearchSettings {
+    pub max_iterations: usize,
+    pub max_playout_depth: usize,
+    pub expand_threshold: u32,
+    pub q_init: QInit,
+    pub use_transpositions: bool,
+    pub use_mcts_solver: bool,
+    pub reuse_tree: bool,
+    pub num_tree_threads: usize,
+    pub seed: u64,
+    pub max_time: Option<std::time::Duration>,
+}
+
+/// Resolves `spec.select`, then hands off to `SimulateStage` -- the first
+/// link of the four-stage CPS chain `build_search` drives, mirroring
+/// `MetaMctsCont`/`MetaMctsInnerCont`'s two-stage chain above but one axis
+/// longer.
+struct SelectStage<'a, G: Game> {
+    spec: &'a SearchSpec,
+    settings: &'a SearchSettings,
+    marker: std::marker::PhantomData<G>,
+}
+
+impl<'a, G> SelectCont<G> for SelectStage<'a, G>
+where
+    G: Game + 'static,
+    G::S: std::fmt::Display,
+{
+    type Output = Box<dyn Search<G = G>>;
+
+    fn call<S1: SelectStrategy<G> + 'static>(self, select: S1) -> Self::Output {
+        with_simulate::<G, _>(
+            &self.spec.simulate,
+            SimulateStage {
+                spec: self.spec,
+                settings: self.settings,
+                select,
+                marker: std::marker::PhantomData,
+            },
+        )
+    }
+}
+
+/// Second link: resolves `spec.simulate` once `select` is already resolved,
+/// then hands off to `BackpropStage`.
+struct SimulateStage<'a, G: Game, S1> {
+    spec: &'a SearchSpec,
+    settings: &'a SearchSettings,
+    select: S1,
+    marker: std::marker::PhantomData<G>,
+}
+
+impl<'a, G, S1> SimulateCont<G> for SimulateStage<'a, G, S1>
+where
+    G: Game + 'static,
+    G::S: std::fmt::Display,
+    S1: SelectStrategy<G> + 'static,
+{
+    type Output = Box<dyn Search<G = G>>;
+
+    fn call<S2: SimulateStrategy<G> + 'static>(self, simulate: S2) -> Self::Output {
+        with_backprop(
+            &self.spec.backprop,
+            BackpropStage {
+                spec: self.spec,
+                settings: self.settings,
+                select: self.select,
+                simulate,
+                marker: std::marker::PhantomData,
+            },
+        )
+    }
+}
+
+/// Third link: resolves `spec.backprop`, then hands off to `FinalActionStage`.
+struct BackpropStage<'a, G: Game, S1, S2> {
+    spec: &'a SearchSpec,
+    settings: &'a SearchSettings,
+    select: S1,
+    simulate: S2,
+    marker: std::marker::PhantomData<G>,
+}
+
+impl<'a, G, S1, S2> BackpropCont for BackpropStage<'a, G, S1, S2>
+where
+    G: Game + 'static,
+    G::S: std::fmt::Display,
+    S1: SelectStrategy<G> + 'static,
+    S2: SimulateStrategy<G> + 'static,
+{
+    type Output = Box<dyn Search<G = G>>;
+
+    fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output {
+        with_final_action::<G, _>(
+            &self.spec.final_action,
+            FinalActionStage {
+                settings: self.settings,
+                select: self.select,
+                simulate: self.simulate,
+                backprop,
+                marker: std::marker::PhantomData,
+            },
+        )
+    }
+}
+
+/// Final link: resolves `spec.final_action` and, with all four axes now
+/// concrete, builds the actual `TreeSearch<G, Compose<S1, S2, B, FA>>` and
+/// boxes it -- the only place in this chain that touches `SearchConfig`
+/// directly, since it's the first point every type parameter `Compose` needs
+/// is known.
+struct FinalActionStage<'a, G: Game, S1, S2, B> {
+    settings: &'a SearchSettings,
+    select: S1,
+    simulate: S2,
+    backprop: B,
+    marker: std::marker::PhantomData<G>,
+}
+
+impl<'a, G, S1, S2, B> SelectCont<G> for FinalActionStage<'a, G, S1, S2, B>
+where
+    G: Game + 'static,
+    G::S: std::fmt::Display,
+    S1: SelectStrategy<G> + 'static,
+    S2: SimulateStrategy<G> + 'static,
+    B: BackpropStrategy + 'static,
+{
+    type Output = Box<dyn Search<G = G>>;
+
+    fn call<FA: SelectStrategy<G> + 'static>(self, final_action: FA) -> Self::Output {
+        let mut config = SearchConfig::<G, Compose<S1, S2, B, FA>>::new()
+            .max_iterations(self.settings.max_iterations)
+            .max_playout_depth(self.settings.max_playout_depth)
+            .expand_threshold(self.settings.expand_threshold)
+            .q_init(self.settings.q_init)
+            .use_transpositions(self.settings.use_transpositions)
+            .use_mcts_solver(self.settings.use_mcts_solver)
+            .reuse_tree(self.settings.reuse_tree)
+            .num_tree_threads(self.settings.num_tree_threads)
+            .seed(self.settings.seed)
+            .select(self.select)
+            .simulate(self.simulate)
+            .backprop(self.backprop)
+            .final_action(final_action);
+        if let Some(max_time) = self.settings.max_time {
+            config = config.max_time(max_time);
+        }
+        Box::new(TreeSearch::<G, Compose<S1, S2, B, FA>>::new().config(config))
+    }
+}
+
+/// Builds a runnable `Box<dyn Search<G = G>>` from a `SearchSpec` -- the
+/// config-IR equivalent of `mcts-tune::build_search`, but driven entirely by
+/// this file's registry-generated dispatch instead of `TrialParams`/
+/// `make_candidate`'s hand-written `match p.family.as_str()`. Nothing calls
+/// this yet: it's a second, independently-tested entry point sitting next to
+/// the existing one, not a replacement for it.
+pub fn build_search<G>(spec: &SearchSpec, settings: &SearchSettings) -> Box<dyn Search<G = G>>
+where
+    G: Game + 'static,
+    G::S: std::fmt::Display,
+{
+    with_select::<G, _>(
+        &spec.select,
+        SelectStage {
+            spec,
+            settings,
+            marker: std::marker::PhantomData,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -923,21 +1128,23 @@ mod tests {
         type Output = G::A;
 
         fn call<S: SelectStrategy<G>>(self, final_action: S) -> G::A {
-            let mut ts = TreeSearch::<G, Compose<select::Ucb1, simulate::Uniform, backprop::Classic, S>>::default()
-                .config(
-                    SearchConfig::default()
-                        .final_action(final_action)
-                        .max_iterations(200)
-                        .seed(1),
-                );
+            let mut ts = TreeSearch::<
+                G,
+                Compose<select::Ucb1, simulate::Uniform, backprop::Classic, S>,
+            >::default()
+            .config(
+                SearchConfig::default()
+                    .final_action(final_action)
+                    .max_iterations(200)
+                    .seed(1),
+            );
             ts.choose_action(self.state)
         }
     }
 
     #[test]
     fn with_final_action_builds_a_working_tree_search_from_a_json_spec() {
-        let spec: FinalActionSpec =
-            serde_json::from_str(r#"{"kind":"robust_child"}"#).unwrap();
+        let spec: FinalActionSpec = serde_json::from_str(r#"{"kind":"robust_child"}"#).unwrap();
         let state = <Nim as Game>::S::default();
         let action = with_final_action::<Nim, _>(&spec, RunFinalActionCont { state: &state });
         let mut legal = Vec::new();
@@ -945,6 +1152,90 @@ mod tests {
         assert!(
             legal.contains(&action),
             "the action chosen by a JSON-configured search must be legal"
+        );
+    }
+
+    fn nim_search_settings() -> SearchSettings {
+        SearchSettings {
+            max_iterations: 200,
+            max_playout_depth: 200,
+            expand_threshold: 1,
+            q_init: QInit::Parent,
+            use_transpositions: false,
+            use_mcts_solver: false,
+            reuse_tree: false,
+            num_tree_threads: 1,
+            seed: 1,
+            max_time: None,
+        }
+    }
+
+    #[test]
+    fn search_spec_round_trips_through_json() {
+        let json = r#"{
+            "select": {"kind": "ucb1", "c": 1.4},
+            "simulate": {"kind": "uniform"},
+            "backprop": {"kind": "classic"},
+            "final_action": {"kind": "robust_child"}
+        }"#;
+        let spec: SearchSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            SearchSpec {
+                select: SelectSpec::Ucb1 { c: 1.4 },
+                simulate: SimulateSpec::Uniform {},
+                backprop: BackpropSpec::Classic {},
+                final_action: FinalActionSpec::RobustChild {},
+            }
+        );
+    }
+
+    #[test]
+    fn build_search_builds_a_working_tree_search_from_a_full_json_spec() {
+        // Unlike every other test in this file, this drives all four axes'
+        // specs through one call, proving they compose into a real, runnable
+        // `Box<dyn Search<G>>` -- not just that each axis resolves on its
+        // own.
+        let spec: SearchSpec = serde_json::from_str(
+            r#"{
+                "select": {"kind": "epsilon_greedy", "epsilon": 0.1, "inner": {"kind": "ucb1", "c": 1.4}},
+                "simulate": {"kind": "mast"},
+                "backprop": {"kind": "classic"},
+                "final_action": {"kind": "secure_child", "a": 2.0}
+            }"#,
+        )
+        .unwrap();
+        let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+        let state = <Nim as Game>::S::default();
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured search must be legal"
+        );
+    }
+
+    #[test]
+    fn build_search_wires_meta_mcts_through_the_full_spec() {
+        let spec = SearchSpec {
+            select: SelectSpec::Ucb1 { c: 1.4 },
+            simulate: SimulateSpec::MetaMcts {
+                iterations: 25,
+                select: SelectSpec::Ucb1 { c: 1.4 },
+                simulate: BaseSimulateSpec::Uniform {},
+            },
+            backprop: BackpropSpec::Classic {},
+            final_action: FinalActionSpec::RobustChild {},
+        };
+        let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+        let state = <Nim as Game>::S::default();
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured MetaMcts search must be legal"
         );
     }
 }
