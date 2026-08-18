@@ -23,6 +23,11 @@ use mcts::strategies::Search;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use std::str::FromStr;
+
+use mcts::node::QInit;
+
+use crate::config_ir;
 use crate::{build_search, SearchBudget};
 
 fn one() -> usize {
@@ -168,10 +173,176 @@ impl PresetTable {
     }
 }
 
+/// Non-strategy budget/threading defaults [`build_custom`] applies --
+/// mirrors `mcts-tune::to_search_spec`'s own constants (`PLAYOUT_DEPTH`/
+/// `EXPAND_THRESHOLD`), reused here rather than re-picked, so a "Custom"
+/// search behaves like every named-preset search along every axis it
+/// doesn't expose as a field.
+const PLAYOUT_DEPTH: usize = 200;
+const EXPAND_THRESHOLD: u32 = 1;
+
+/// An inline, JSON-driven `config_ir::SearchSpec` -- the "Custom" strategy
+/// wire payload: unlike [`PresetSpec`] (`params` is `TrialParams`-shaped,
+/// dispatched through `family_catalog`'s ~18 pre-composed family names),
+/// `search` is a full `config_ir::SearchSpec`, built through
+/// [`build_custom`] via `config_ir::build_search` directly -- true free
+/// composition of all four axes, not a named combination. Field shape
+/// otherwise mirrors [`PresetSpec`] minus `id`/`label`/`description` (which
+/// only make sense for a table entry, not a one-off inline config).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomStrategySpec {
+    pub search: config_ir::SearchSpec,
+    #[serde(default)]
+    pub max_time_ms: Option<u64>,
+    #[serde(default)]
+    pub max_iterations: Option<usize>,
+    /// `0` means "every available core" -- same convention as
+    /// [`PresetSpec::threads`], but defaulting to `1` here too (`#[serde(default = "one")]`)
+    /// rather than requiring every caller to name a thread count.
+    #[serde(default = "one")]
+    pub threads: usize,
+    #[serde(default)]
+    pub use_transpositions: bool,
+    /// `QInit`'s wire form is a name string (`"Parent"`/`"Win"`/`"Loss"`/
+    /// `"Draw"`/`"Infinity"`), matching `TrialParams::q_init` -- `QInit`
+    /// itself has no `Serialize`/`Deserialize` derive to reuse directly.
+    #[serde(default = "default_q_init")]
+    pub q_init: String,
+}
+
+fn default_q_init() -> String {
+    "Parent".to_string()
+}
+
+impl CustomStrategySpec {
+    fn budget(&self) -> SearchBudget {
+        let threads = if self.threads == 0 {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        } else {
+            self.threads
+        };
+        SearchBudget {
+            max_time: self.max_time_ms.map(Duration::from_millis),
+            threads,
+            max_iterations: self.max_iterations,
+        }
+    }
+}
+
+/// Builds a runnable search straight from a [`CustomStrategySpec`] --
+/// bypassing `TrialParams`/`family_catalog` entirely and calling
+/// `config_ir::build_search` directly, the first real (non-test) caller of
+/// that function: `family_catalog`'s ~18 families are pre-composed
+/// combinations, never free per-axis composition, so a "Custom" strategy
+/// needs this parallel path rather than routing through [`build_search`]
+/// (this crate's `TrialParams`-based one, re-exported at the crate root).
+pub fn build_custom<G: Game + 'static>(
+    spec: &CustomStrategySpec,
+    seed: u64,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
+    let q_init = QInit::from_str(&spec.q_init)
+        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", spec.q_init)))?;
+    let budget = spec.budget();
+    let settings = config_ir::SearchSettings {
+        max_iterations: budget.iteration_limit(),
+        max_playout_depth: PLAYOUT_DEPTH,
+        expand_threshold: EXPAND_THRESHOLD,
+        q_init,
+        use_transpositions: spec.use_transpositions,
+        use_mcts_solver: true,
+        reuse_tree: true,
+        num_tree_threads: budget.threads,
+        seed,
+        max_time: budget.max_time,
+        graph_search: None,
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    };
+    Ok(config_ir::build_search::<G>(&spec.search, &settings))
+}
+
+/// Resolves either a named preset or an inline [`CustomStrategySpec`] to a
+/// runnable search -- the one call every game adapter's `ai_move`/`analyze`
+/// makes instead of `table.build(preset, seed)` directly, so wiring in the
+/// "Custom" wire-protocol path (see `game-host`'s `ai_move`/`analyze`
+/// `custom` parameter) is a one-line swap per adapter rather than a
+/// per-adapter reimplementation of this branch.
+pub fn build_strategy<G: Game + 'static>(
+    table: &PresetTable,
+    preset: &str,
+    custom: Option<&CustomStrategySpec>,
+    seed: u64,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
+    match custom {
+        Some(spec) => build_custom::<G>(spec, seed),
+        None => table.build::<G>(preset, seed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_ir::{BackpropSpec, BaseSelectSpec, FinalActionSpec, SelectSpec, SimulateSpec};
     use game_nim::Nim;
+
+    fn sample_custom_spec() -> CustomStrategySpec {
+        CustomStrategySpec {
+            search: config_ir::SearchSpec {
+                select: SelectSpec::EpsilonGreedy {
+                    epsilon: 0.1,
+                    inner: BaseSelectSpec::Ucb1 { c: 1.4 },
+                },
+                simulate: SimulateSpec::Uniform {},
+                backprop: BackpropSpec::Classic {},
+                final_action: FinalActionSpec::RobustChild {},
+            },
+            max_time_ms: None,
+            max_iterations: Some(50),
+            threads: 1,
+            use_transpositions: false,
+            q_init: "Infinity".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_custom_resolves_a_free_axis_composition_not_reachable_via_any_family() {
+        // `epsilon_greedy`-wrapped `ucb1` on the `select` axis, with a
+        // `final_action` independently chosen -- `family_catalog` has no
+        // single named family for this exact composition (its
+        // `EpsilonGreedy`-wrapped select rows are all fixed simulate-axis
+        // combos, e.g. `ucb1_mast`), so building it at all is the proof
+        // `build_custom` reaches `config_ir::build_search` directly.
+        let spec = sample_custom_spec();
+        let mut ai = build_custom::<Nim>(&spec, 0).unwrap();
+        let state = <Nim as Game>::S::default();
+        let _ = ai.choose_action(&state);
+    }
+
+    #[test]
+    fn build_custom_rejects_an_invalid_q_init() {
+        let mut spec = sample_custom_spec();
+        spec.q_init = "NotAReal QInit".to_string();
+        let err = match build_custom::<Nim>(&spec, 0) {
+            Err(e) => e,
+            Ok(_) => panic!("invalid q_init must be rejected"),
+        };
+        assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn build_strategy_picks_named_preset_or_custom_spec() {
+        let table = PresetTable::from_json(sample_json()).unwrap();
+        let state = <Nim as Game>::S::default();
+
+        let mut named = build_strategy::<Nim>(&table, "easy", None, 0).unwrap();
+        let _ = named.choose_action(&state);
+
+        let custom = sample_custom_spec();
+        let mut via_custom = build_strategy::<Nim>(&table, "custom", Some(&custom), 0).unwrap();
+        let _ = via_custom.choose_action(&state);
+    }
 
     fn sample_json() -> &'static str {
         r#"[
