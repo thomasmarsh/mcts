@@ -142,6 +142,11 @@ export interface CustomStrategySpec {
   threads?: number;
   use_transpositions?: boolean;
   q_init?: string;
+  /** Monte Carlo *graph* search (transposition-merged DAG) instead of plain
+   * tree search. Requires `use_transpositions: true` -- rejected server-side
+   * by `mcts_tune::presets::build_custom` otherwise, since graph search only
+   * makes sense against a game with a real zobrist hash. */
+  mcgs?: boolean;
 }
 
 /** Which strategy an `ai_move`/`analyze` call should use for a seat -- a

@@ -208,6 +208,16 @@ pub struct CustomStrategySpec {
     /// itself has no `Serialize`/`Deserialize` derive to reuse directly.
     #[serde(default = "default_q_init")]
     pub q_init: String,
+    /// Same wire name and semantics as `TrialParams::mcgs`
+    /// ([`crate::family_catalog`]/`to_search_spec`): `true` switches on Monte
+    /// Carlo *graph* search (`GraphSearch::Dag(GraphStats::Both)`) in place
+    /// of plain tree search, and requires `use_transpositions` also be `true`
+    /// (rejected by [`build_custom`] otherwise) since graph search only
+    /// makes sense against a game with a real zobrist hash. See
+    /// `crate::resolve_graph_search`, the shared derivation both this and
+    /// `to_search_spec` call.
+    #[serde(default)]
+    pub mcgs: bool,
 }
 
 fn default_q_init() -> String {
@@ -245,18 +255,20 @@ pub fn build_custom<G: Game + 'static>(
     let q_init = QInit::from_str(&spec.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", spec.q_init)))?;
     let budget = spec.budget();
+    let (use_transpositions, reuse_tree, graph_search) =
+        crate::resolve_graph_search(spec.mcgs, spec.use_transpositions)?;
     let settings = config_ir::SearchSettings {
         max_iterations: budget.iteration_limit(),
         max_playout_depth: PLAYOUT_DEPTH,
         expand_threshold: EXPAND_THRESHOLD,
         q_init,
-        use_transpositions: spec.use_transpositions,
+        use_transpositions,
         use_mcts_solver: true,
-        reuse_tree: true,
+        reuse_tree,
         num_tree_threads: budget.threads,
         seed,
         max_time: budget.max_time,
-        graph_search: None,
+        graph_search,
         solver_loss_threshold: None,
         contempt_factor: None,
     };
@@ -305,6 +317,7 @@ mod tests {
             threads: 1,
             use_transpositions: false,
             q_init: "Infinity".to_string(),
+            mcgs: false,
         }
     }
 
@@ -331,6 +344,36 @@ mod tests {
             Ok(_) => panic!("invalid q_init must be rejected"),
         };
         assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn build_custom_rejects_mcgs_without_transpositions() {
+        let mut spec = sample_custom_spec();
+        spec.mcgs = true;
+        spec.use_transpositions = false;
+        let err = match build_custom::<Nim>(&spec, 0) {
+            Err(e) => e,
+            Ok(_) => panic!("mcgs without use_transpositions must be rejected"),
+        };
+        assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn build_custom_resolves_mcgs_to_graph_search() {
+        // Doesn't run the built search: `Nim`'s `zobrist_hash` is the
+        // default constant `0` (see `strategy_tune_eval`'s doc comment on
+        // why that corrupts an actual graph search), so this only proves
+        // `build_custom` accepts `mcgs: true` and constructs a search --
+        // not that running an MCGS search against a hash-less game is safe,
+        // which it isn't and never has been (see `resolve_graph_search`'s
+        // "requires a game with a zobrist hash" guard, which is the actual
+        // safeguard callers must honor by only setting `mcgs` for a game
+        // with a real hash, same precondition `use_transpositions` already
+        // carries).
+        let mut spec = sample_custom_spec();
+        spec.mcgs = true;
+        spec.use_transpositions = true;
+        let _ai = build_custom::<Nim>(&spec, 0).unwrap();
     }
 
     #[test]
