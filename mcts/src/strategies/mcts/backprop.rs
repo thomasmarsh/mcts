@@ -282,6 +282,41 @@ pub(crate) fn clark_max_of_gaussians(mu1: f64, sigma1: f64, mu2: f64, sigma2: f6
     (mean, variance.max(0.0))
 }
 
+/// `min(X1, X2)`'s mean/variance, via `min(X1, X2) = -max(-X1, -X2)` --
+/// negating both means leaves the (order-independent) variance unchanged.
+/// Needed alongside `clark_max_of_gaussians` because an interior node's
+/// combined posterior for a player who is *not* that node's own mover must
+/// track the mover's adversarial choice (the mover picks the child that
+/// minimizes a non-mover's value, in this codebase's zero-sum two-player
+/// convention -- see `update_posterior`'s `mover` parameter).
+pub(crate) fn clark_min_of_gaussians(mu1: f64, sigma1: f64, mu2: f64, sigma2: f64) -> (f64, f64) {
+    let (neg_mean, variance) = clark_max_of_gaussians(-mu1, sigma1, -mu2, sigma2);
+    (-neg_mean, variance)
+}
+
+/// Left-folds `combine` (`clark_max_of_gaussians`/`clark_min_of_gaussians`)
+/// pairwise over `posteriors`' `(mean, variance)` pairs, returning the
+/// combined `(mean, variance)` -- or `None` for an empty input. `combine`
+/// takes/returns `(mean, variance)`, but its own two-Gaussian formula is
+/// written in terms of *standard deviation* (`sigma1`/`sigma2`), so each
+/// fold step must convert the running variance to sigma before feeding it
+/// back in, not thread it straight through as if it already were one: doing
+/// that squares an already-squared quantity every step, collapsing the
+/// combined variance toward zero well before the true combined spread is
+/// reached once there are more than two inputs.
+fn fold_gaussian_extremum(
+    posteriors: impl Iterator<Item = (f64, f64)>,
+    combine: fn(f64, f64, f64, f64) -> (f64, f64),
+) -> Option<(f64, f64)> {
+    posteriors
+        .map(|(mu, var)| (mu, var.max(0.0).sqrt()))
+        .reduce(|(mu0, sigma0), (mu1, sigma1)| {
+            let (mean, variance) = combine(mu0, sigma0, mu1, sigma1);
+            (mean, variance.max(0.0).sqrt())
+        })
+        .map(|(mean, sigma)| (mean, sigma * sigma))
+}
+
 /// Grid resolution `BayesNumeric` discretizes each node's posterior PDF
 /// over -- also the fixed-size backing array for `PlayerStats::posterior_grid`.
 pub const BAYES_GRID_SIZE: usize = 64;
@@ -388,6 +423,33 @@ pub(crate) fn numeric_max_of_pdfs(
     pdf_from_cdf(&cdf_product, step)
 }
 
+/// Numeric MIN distribution of `k` independent grid-discretized PDFs: a
+/// value `v` is `>= min(X1..Xk)`'s complement iff every `Xi > v`, so
+/// `P(min <= v) = 1 - product(1 - CDF_i(v))` (the survival-function dual of
+/// `numeric_max_of_pdfs`'s CDF product). Needed for the same reason
+/// `clark_min_of_gaussians` is: an interior node's posterior must be
+/// combined via MIN, not MAX, for every player who isn't that node's own
+/// mover (see `update_posterior`'s `mover` parameter).
+pub(crate) fn numeric_min_of_pdfs(
+    pdfs: &[[f64; BAYES_GRID_SIZE]],
+    lo: f64,
+    hi: f64,
+) -> [f64; BAYES_GRID_SIZE] {
+    let step = (hi - lo) / (BAYES_GRID_SIZE - 1) as f64;
+    let mut survival_product = [1.0; BAYES_GRID_SIZE];
+    for pdf in pdfs {
+        let cdf = cdf_from_pdf(pdf, step);
+        for i in 0..BAYES_GRID_SIZE {
+            survival_product[i] *= 1.0 - cdf[i];
+        }
+    }
+    let mut cdf_min = [0.0; BAYES_GRID_SIZE];
+    for i in 0..BAYES_GRID_SIZE {
+        cdf_min[i] = 1.0 - survival_product[i];
+    }
+    pdf_from_cdf(&cdf_min, step)
+}
+
 pub trait BackpropStrategy: Clone + Sync + Send + Default {
     /// Whether this strategy populates `PlayerStats::posterior_mean`/
     /// `posterior_variance` (and, for `BayesNumeric`, `posterior_grid`) via
@@ -401,16 +463,25 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 
     /// Recomputes and writes one node's Bayesian posterior for `player`:
     /// the normal-normal conjugate posterior from the node's own
-    /// observations if it has no expanded children yet, otherwise the MAX
-    /// distribution over its (already-updated-this-call, or stale-from-a-
-    /// previous-call for off-path siblings -- tolerated the same way
-    /// `derive_pn_dpn`'s partial recomputation already is) children's
-    /// posteriors. Called once per player, per ancestor node, from the
-    /// default `update` body below -- default no-op, only overridden by
-    /// `BayesGaussian`/`BayesNumeric`.
+    /// observations if it has no expanded children yet, otherwise the
+    /// extremum distribution over its (already-updated-this-call, or
+    /// stale-from-a-previous-call for off-path siblings -- tolerated the
+    /// same way `derive_pn_dpn`'s partial recomputation already is)
+    /// children's posteriors. The extremum direction depends on `mover`
+    /// (this node's own `Node::player_idx`, i.e. which player actually
+    /// chooses among these children): MAX when `player == mover` (that
+    /// player picks their own best child), MIN otherwise (the mover's
+    /// choice is adversarial to every other player, in this codebase's
+    /// zero-sum two-player convention -- picking a MAX unconditionally
+    /// here previously gave every non-mover player a systematically
+    /// over-optimistic posterior, since it credited them with a choice
+    /// only the actual mover gets to make). Called once per player, per
+    /// ancestor node, from the default `update` body below -- default
+    /// no-op, only overridden by `BayesGaussian`/`BayesNumeric`.
     fn update_posterior<A: crate::game::Action>(
         &self,
         _player: usize,
+        _mover: usize,
         _slot: &PosteriorSlot<A>,
         _own_children: Option<&ChildArray<A>>,
     ) {
@@ -555,10 +626,11 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if self.provides_posterior() {
                 let node = index.get(*node_id);
                 let own_children = node.is_expanded().then(|| node.children());
+                let mover = node.player_idx;
                 if node.is_root() {
                     let slot = PosteriorSlot::Root(root_stats);
                     for player in 0..G::num_players() {
-                        self.update_posterior(player, &slot, own_children);
+                        self.update_posterior(player, mover, &slot, own_children);
                     }
                 } else {
                     let parent_id = parent_id_opt.cloned().unwrap();
@@ -566,7 +638,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     let idx = parent.child_index(*node_id);
                     let slot = PosteriorSlot::Edge(parent.children(), idx);
                     for player in 0..G::num_players() {
-                        self.update_posterior(player, &slot, own_children);
+                        self.update_posterior(player, mover, &slot, own_children);
                     }
                 }
             }
@@ -732,25 +804,26 @@ impl BackpropStrategy for BayesGaussian {
     fn update_posterior<A: crate::game::Action>(
         &self,
         player: usize,
+        mover: usize,
         slot: &PosteriorSlot<A>,
         own_children: Option<&ChildArray<A>>,
     ) {
+        let combine = if player == mover {
+            clark_max_of_gaussians
+        } else {
+            clark_min_of_gaussians
+        };
         let combined = own_children.and_then(|children| {
-            (0..children.len())
-                .filter(|&i| children.is_explored(i))
-                .map(|i| {
-                    let (mu, var) = children.posterior(i, player);
-                    (mu, var.max(0.0).sqrt())
-                })
-                .reduce(|(mu0, sigma0), (mu1, sigma1)| {
-                    clark_max_of_gaussians(mu0, sigma0, mu1, sigma1)
-                })
+            fold_gaussian_extremum(
+                (0..children.len())
+                    .filter(|&i| children.is_explored(i))
+                    .map(|i| children.posterior(i, player)),
+                combine,
+            )
         });
-        let (mean, variance) = combined
-            .map(|(mu, sigma)| (mu, sigma * sigma))
-            .unwrap_or_else(|| {
-                conjugate_leaf_posterior(slot, player, self.prior_variance, self.obs_variance)
-            });
+        let (mean, variance) = combined.unwrap_or_else(|| {
+            conjugate_leaf_posterior(slot, player, self.prior_variance, self.obs_variance)
+        });
         slot.set(player, mean, variance);
     }
 }
@@ -810,6 +883,7 @@ impl BackpropStrategy for BayesNumeric {
     fn update_posterior<A: crate::game::Action>(
         &self,
         player: usize,
+        mover: usize,
         slot: &PosteriorSlot<A>,
         own_children: Option<&ChildArray<A>>,
     ) {
@@ -829,8 +903,10 @@ impl BackpropStrategy for BayesNumeric {
 
         let pdf = if child_pdfs.is_empty() {
             self.leaf_pdf(slot, player)
-        } else {
+        } else if player == mover {
             numeric_max_of_pdfs(&child_pdfs, self.value_lo, self.value_hi)
+        } else {
+            numeric_min_of_pdfs(&child_pdfs, self.value_lo, self.value_hi)
         };
         let (mean, variance) = mean_variance_from_pdf(&pdf, self.value_lo, self.value_hi);
         slot.set(player, mean, variance);
@@ -916,8 +992,33 @@ mod bayes_tests {
         let leaf_stats = NodeStats::new(1, false);
         leaf_stats.update(&[1.0]);
         let leaf_slot = PosteriorSlot::Root(&leaf_stats);
-        strategy.update_posterior::<u8>(0, &leaf_slot, None);
+        strategy.update_posterior::<u8>(0, 0, &leaf_slot, None);
         let (leaf_mean, _) = leaf_stats.posterior(0);
         assert!(leaf_mean > 0.0);
+    }
+
+    /// Regression test for a fold-wiring bug found via
+    /// `examples/bayes_uct_bandit_tree.rs`: combining more than two
+    /// children's posteriors collapsed the running variance toward zero
+    /// (each fold step squared an already-squared quantity), which made
+    /// `BayesUct1`/`BayesUct2`'s exploration term vanish and left search
+    /// unable to correct an early wrong guess. Five children -- reproducing
+    /// the exact case that surfaced it -- should combine to a variance in
+    /// the same order of magnitude as its inputs, not many orders smaller.
+    #[test]
+    fn fold_gaussian_extremum_does_not_collapse_variance_past_two_children() {
+        let arms: [(f64, f64); 5] = [
+            (-0.020548, 0.006849),
+            (0.171875, 0.015625),
+            (0.076190, 0.009524),
+            (0.750000, 0.083333),
+            (0.343750, 0.031250),
+        ];
+        let (_, variance) = fold_gaussian_extremum(arms.into_iter(), clark_min_of_gaussians).unwrap();
+        let min_input_variance = arms.iter().map(|&(_, v)| v).fold(f64::INFINITY, f64::min);
+        assert!(
+            variance > min_input_variance * 0.1,
+            "variance {variance:e} collapsed far below the smallest input variance {min_input_variance:e}"
+        );
     }
 }
