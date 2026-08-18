@@ -284,6 +284,22 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
+    // Druid's "strong"/"master" presets (`games/druid/src/main.rs`'s
+    // `build_ai`) -- plain Ucb1 select with a decisive-move-checking,
+    // NST-guided playout policy.
+    "ucb1_dm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::Ucb1 { c: c(p)? },
+        simulate: SimulateSpec::DecisiveMoveNst {
+            mode: DecisiveMoveMode::Win,
+            epsilon: epsilon(p)?,
+            nst_backoff_threshold: p
+                .nst_backoff_threshold
+                .ok_or_else(|| missing("nst_backoff_threshold"))?,
+        },
+        final_action: to_final_action_spec(p)?,
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
     "ucb1_progressive_history" => [c, ph_weight, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::ProgressiveHistory {
             c: c(p)?,

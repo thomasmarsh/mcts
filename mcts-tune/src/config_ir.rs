@@ -310,6 +310,17 @@ macro_rules! register_simulate {
                 mode: simulate::DecisiveMoveMode,
                 epsilon: f64,
             },
+            /// `simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>`
+            /// -- `DecisiveMoveMast`'s counterpart for an `Nst` leaf instead of
+            /// `Mast`, same two-wrapper-levels-deep reasoning: Druid's
+            /// `strong`/`master` presets (`games/druid/src/main.rs`'s `build_ai`)
+            /// are the one real caller of this exact composition, and have
+            /// never varied the `Nst` leaf either.
+            DecisiveMoveNst {
+                mode: simulate::DecisiveMoveMode,
+                epsilon: f64,
+                nst_backoff_threshold: u32,
+            },
             MetaMcts {
                 iterations: usize,
             },
@@ -343,6 +354,19 @@ macro_rules! register_simulate {
                             .inner(simulate::EpsilonGreedy::<G, simulate::Mast>::with_epsilon(
                                 epsilon,
                             ));
+                    cont.call(simulate)
+                }
+                SimulateSpec::DecisiveMoveNst { mode, epsilon, nst_backoff_threshold } => {
+                    let simulate =
+                        simulate::DecisiveMove::<G, simulate::EpsilonGreedy<G, simulate::Nst>>::new()
+                            .mode(mode)
+                            .inner(
+                                simulate::EpsilonGreedy::<G, simulate::Nst>::with_epsilon(epsilon)
+                                    .inner(
+                                        simulate::Nst::new()
+                                            .backoff_threshold(nst_backoff_threshold),
+                                    ),
+                            );
                     cont.call(simulate)
                 }
                 SimulateSpec::MetaMcts { iterations } => {

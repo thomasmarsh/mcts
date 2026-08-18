@@ -41,6 +41,7 @@ use std::str::FromStr;
 
 pub mod config_ir;
 mod family_catalog;
+pub mod presets;
 pub mod trace;
 
 use family_catalog::{
@@ -1018,6 +1019,14 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn test_family_ucb1_dm_nst_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }));
+    }
+
     // `meta_mcts`'s round trip is proven in `tests/stress.rs` instead of here:
     // its inner nested search makes even one candidate-vs-baseline game
     // noticeably slower than every other family's (multi-second, not the
@@ -1140,6 +1149,28 @@ mod tests {
                 inner: config_ir::BaseSimulateSpec::Nst {
                     backoff_threshold: 3
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_dm_nst() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3,
+                "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::DecisiveMoveNst {
+                mode: simulate::DecisiveMoveMode::Win,
+                epsilon: 0.2,
+                nst_backoff_threshold: 3,
             }
         );
     }
@@ -1553,6 +1584,24 @@ mod tests {
     /// round-trip lives in `tests/stress.rs` for cost reasons, but this
     /// check is pure metadata with no MCTS search, so it's cheap to include
     /// here too).
+    ///
+    /// Deliberately still hand-written rather than generated from
+    /// `register_family!`'s per-row field lists (`family_conditions()`):
+    /// those rows only name *which* top-level fields a family reads, not
+    /// concrete values, so they can't exercise the nested conditions this
+    /// test also needs to cover -- `rave`'s `schedule`/`rave_ucb`-gated
+    /// fields, `final_action: secure_child`'s `a`, `contempt: on`'s
+    /// `contempt_factor` -- all of which are hand-written conditions
+    /// `strategy_tuner_info_with_mcgs` appends precisely because they
+    /// depend on a *child* field's own sampled value, not on `family`
+    /// alone (see `family_catalog.rs`'s `register_family!` doc comment).
+    /// Generating a fixture from the field-name list alone would only be
+    /// able to assert "this field is active", which `family_conditions()`
+    /// already guarantees by construction -- a tautology, not a check.
+    /// What would still silently drift is a *new* family being added to
+    /// `register_family!` without a matching entry here; that's covered by
+    /// `test_family_required_params_covers_every_registered_family` below
+    /// instead, which needs no concrete values.
     fn family_required_params() -> Vec<(&'static str, Value)> {
         vec![
             (
@@ -1604,6 +1653,10 @@ mod tests {
                 json!({"family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
             ),
             ("rave", rave_params()),
+            (
+                "ucb1_dm_nst",
+                json!({"family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            ),
             ("meta_mcts", json!({"family": "meta_mcts", "c": 1.4})),
             ("ucb1_pn", pn_params()),
             (
@@ -1615,6 +1668,25 @@ mod tests {
                 }),
             ),
         ]
+    }
+
+    #[test]
+    fn test_family_required_params_covers_every_registered_family() {
+        // The gap `family_required_params()`'s own doc comment identifies:
+        // a family added to `register_family!` without a matching fixture
+        // here wouldn't fail anything, it would just silently skip that
+        // family in `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
+        // below. Comparing the two name sets closes that gap without
+        // needing `family_required_params()` to become generated data.
+        let registered: std::collections::HashSet<&str> = family_choices().into_iter().collect();
+        let covered: std::collections::HashSet<&str> = family_required_params()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(
+            registered, covered,
+            "family_required_params() must have exactly one fixture per family_catalog::family_choices() entry"
+        );
     }
 
     /// The fixed point of "active" parameter names implied by
