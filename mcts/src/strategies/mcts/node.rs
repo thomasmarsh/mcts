@@ -1020,4 +1020,17 @@ where
     pub(crate) fn has_solver(&self) -> bool {
         self.solver.is_some()
     }
+
+    /// Heap bytes owned by this node's solver side block (`Box<SolverState>`
+    /// when allocated, 0 otherwise) -- the per-node analogue of
+    /// `ChildArray::heap_bytes_estimate`'s AMAF term, used by
+    /// `TreeSearch::memory_stats` to size the storage win from gating
+    /// `Node`'s solver fields on `SearchConfig::use_mcts_solver`.
+    pub(crate) fn solver_heap_bytes(&self) -> usize {
+        if self.solver.is_some() {
+            std::mem::size_of::<SolverState>()
+        } else {
+            0
+        }
+    }
 }

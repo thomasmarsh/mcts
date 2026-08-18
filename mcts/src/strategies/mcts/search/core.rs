@@ -46,6 +46,11 @@ pub struct MemoryStats {
     /// Estimated heap bytes owned by expanded nodes' `ChildArray`s (their
     /// parallel `Vec`s/`FxHashMap`), summed via `ChildArray::heap_bytes_estimate`.
     pub child_array_heap_bytes: usize,
+    /// Heap bytes owned by every node's solver side block (`Box<SolverState>`
+    /// when `SearchConfig::use_mcts_solver` is on, 0 otherwise), summed via
+    /// `Node::solver_heap_bytes`. Unlike `node_bytes`, this reflects the
+    /// runtime `use_mcts_solver` switch, not just `Node<A>`'s fixed type size.
+    pub solver_bytes: usize,
     /// Total entry count in the transposition table.
     pub table_entries: usize,
     /// Entries keyed by root-relative `(position_hash, ply)` in explicit DAG
@@ -242,6 +247,7 @@ where
         self.index.for_each(|node: &Node<G::A>| {
             stats.total_nodes += 1;
             stats.node_bytes += std::mem::size_of::<Node<G::A>>();
+            stats.solver_bytes += node.solver_heap_bytes();
             match node.status() {
                 None => stats.leaf_nodes += 1,
                 Some(NodeState::Terminal) => stats.terminal_nodes += 1,
