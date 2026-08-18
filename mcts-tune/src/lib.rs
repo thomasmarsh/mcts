@@ -40,11 +40,13 @@
 use std::str::FromStr;
 
 pub mod config_ir;
+mod family_catalog;
 pub mod trace;
 
+use family_catalog::{param, tunable_field_parameters, TrialParams};
 use game_host::{
     ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
-    HostError, TunerCondition, TunerInfo, TunerParameter,
+    HostError, TunerCondition, TunerInfo,
 };
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
@@ -203,37 +205,6 @@ impl SearchBudget {
             .or_else(|| self.max_time.map(|_| usize::MAX))
             .unwrap_or(MAX_ITER)
     }
-}
-
-/// One trial's candidate parameters, deserialized from the `params` JSON
-/// object `strategy_tune_eval` receives -- the merged active-parameter set a
-/// SMAC3 harness builds from its search-space YAML. `family` selects which
-/// of the fields below are actually required; everything except `family`/
-/// `q_init` is `Option` because it's only meaningful for a subset of
-/// families (validated per-family in `make_candidate`, the same way missing
-/// required fields were already rejected before `family` existed).
-#[derive(Debug, serde::Deserialize)]
-pub struct TrialParams {
-    family: String,
-    q_init: String,
-    final_action: Option<String>,
-    a: Option<f64>,
-    c: Option<f64>,
-    epsilon: Option<f64>,
-    amaf_alpha: Option<f64>,
-    ph_weight: Option<f64>,
-    nst_backoff_threshold: Option<u32>,
-    threshold: Option<u32>,
-    bias: Option<f64>,
-    schedule: Option<String>,
-    k: Option<u32>,
-    rave: Option<u32>,
-    rave_ucb: Option<String>,
-    c_pn: Option<f64>,
-    solver_loss_threshold: Option<u32>,
-    contempt: Option<String>,
-    contempt_factor: Option<f64>,
-    mcgs: Option<bool>,
 }
 
 /// `final_action` resolution shared by every family whose own named type
@@ -819,97 +790,26 @@ pub fn strategy_tuner_info_with_mcgs(
         baselines: baselines.iter().map(|s| s.to_string()).collect(),
         game_config: json!({}),
         eval_rounds,
-        parameters: vec![
-            param(
-                "family",
-                json!({"type": "categorical", "choices": [
-                    "ucb1", "ucb1_dm", "ucb1_mast", "ucb1_nst",
-                    "ucb1_progressive_history", "ucb1_max_robust",
-                    "amaf", "amaf_mast",
-                    "ucb1_tuned", "ucb1_tuned_mast", "ucb1_tuned_dm", "ucb1_tuned_dm_mast",
-                    "meta_mcts", "rave", "ucb1_pn", "ucb1_pn_mast",
-                ], "default": "rave"}),
-            ),
-            param(
-                "q_init",
-                json!({"type": "categorical", "choices": ["Draw", "Infinity", "Loss", "Parent", "Win"], "default": "Infinity"}),
-            ),
-            param(
-                "final_action",
-                json!({"type": "categorical", "choices": ["max_avg", "secure_child", "robust_child"], "default": "robust_child"}),
-            ),
-            param(
-                "a",
-                json!({"type": "float", "bounds": [0, 10], "default": 4.0}),
-            ),
-            param(
-                "c",
-                json!({"type": "float", "bounds": [0, 3], "default": std::f64::consts::SQRT_2}),
-            ),
-            param(
-                "epsilon",
-                json!({"type": "float", "bounds": [0, 1], "default": 0.1}),
-            ),
-            param(
-                "amaf_alpha",
-                json!({"type": "float", "bounds": [0, 1], "default": 1.0}),
-            ),
-            param(
-                "ph_weight",
-                json!({"type": "float", "bounds": [0, 5], "default": 1.0}),
-            ),
-            param(
-                "nst_backoff_threshold",
-                json!({"type": "int", "bounds": [0, 100], "default": 5}),
-            ),
-            param(
-                "bias",
-                json!({"type": "float", "bounds": [0, 10], "default": 0.00001}),
-            ),
-            param(
-                "k",
-                json!({"type": "int", "bounds": [0, 2000], "default": 1000}),
-            ),
-            param(
-                "rave",
-                json!({"type": "int", "bounds": [0, 2000], "default": 700}),
-            ),
-            param(
-                "schedule",
-                json!({"type": "categorical", "choices": ["hand_selected", "min_mse", "threshold"], "default": "threshold"}),
-            ),
-            param(
-                "threshold",
-                json!({"type": "int", "bounds": [0, 2000], "default": 700}),
-            ),
-            param(
-                "rave_ucb",
-                json!({"type": "categorical", "choices": ["none", "ucb1", "tuned"], "default": "tuned"}),
-            ),
-            param(
-                // Kowalski et al. 2023 Eq. 4: clustered 1.0-2.0 in the
-                // paper's own experiments, domain-dependent.
-                "c_pn",
-                json!({"type": "float", "bounds": [0, 3], "default": 1.0}),
-            ),
-            param(
-                // MCTS-Solver's proven-loss selection threshold `T`
-                // (Kowalski et al. 2023 Section III.B); the paper uses
-                // T=5 throughout.
-                "solver_loss_threshold",
-                json!({"type": "int", "bounds": [0, 50], "default": 5}),
-            ),
-            param(
-                "contempt",
-                json!({"type": "categorical", "choices": ["off", "on"], "default": "off"}),
-            ),
-            param(
-                // Compared against `Node::expected_score`, whose default
-                // range (`Game::compute_utilities`'s default) is [-1, 1].
-                "contempt_factor",
-                json!({"type": "float", "bounds": [-1, 1], "default": 0.0}),
-            ),
-        ],
+        parameters: {
+            let mut parameters = vec![
+                param(
+                    "family",
+                    json!({"type": "categorical", "choices": [
+                        "ucb1", "ucb1_dm", "ucb1_mast", "ucb1_nst",
+                        "ucb1_progressive_history", "ucb1_max_robust",
+                        "amaf", "amaf_mast",
+                        "ucb1_tuned", "ucb1_tuned_mast", "ucb1_tuned_dm", "ucb1_tuned_dm_mast",
+                        "meta_mcts", "rave", "ucb1_pn", "ucb1_pn_mast",
+                    ], "default": "rave"}),
+                ),
+                param(
+                    "q_init",
+                    json!({"type": "categorical", "choices": ["Draw", "Infinity", "Loss", "Parent", "Win"], "default": "Infinity"}),
+                ),
+            ];
+            parameters.extend(tunable_field_parameters());
+            parameters
+        },
         conditions: vec![
             condition(json!({"family": FINAL_ACTION_FAMILIES}), &["final_action"]),
             condition(json!({"final_action": "secure_child"}), &["a"]),
@@ -941,13 +841,6 @@ pub fn strategy_tuner_info_with_mcgs(
             .push(param("mcgs", json!({"type": "bool", "default": false})));
     }
     info
-}
-
-fn param(name: &str, spec: Value) -> TunerParameter {
-    TunerParameter {
-        name: name.into(),
-        spec,
-    }
 }
 
 fn condition(if_: Value, then: &[&str]) -> TunerCondition {
