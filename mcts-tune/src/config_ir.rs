@@ -38,6 +38,7 @@
 
 use mcts::game::Game;
 use mcts::select::{self, SelectStrategy};
+use mcts::simulate::{self, SimulateStrategy};
 use mcts::Requirements;
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +196,174 @@ pub fn requirements_of<G: Game>(spec: &SelectSpec) -> Requirements {
     with_select::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+/// The `simulate`-axis counterpart of `SelectCont` -- see this module's doc
+/// comment for why continuation-passing rather than a boxed trait object.
+pub trait SimulateCont<G: Game> {
+    type Output;
+    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> Self::Output;
+}
+
+/// `register_simulate!`'s table, expanded into `BaseSimulateSpec`/
+/// `SimulateSpec` and their dispatchers, mirroring `register_select!` above.
+///
+/// `EpsilonGreedy` and `DecisiveMove` are not rows here -- both wrap an
+/// *inner* spec (`simulate::EpsilonGreedy<G, S>`/`simulate::DecisiveMove<G,
+/// S>` are generic over an arbitrary inner `SimulateStrategy`), and are
+/// handled by hand below on both enums instead, the same way
+/// `register_select!` special-cases its own `EpsilonGreedy`. Their inner
+/// spec is a `BaseSimulateSpec` (the table's variants only, no wrapper
+/// variants of its own) rather than a recursive `Box<SimulateSpec>`, for the
+/// same unbounded-monomorphization reason `register_select!`'s doc comment
+/// explains -- e.g. `EpsilonGreedy(DecisiveMove(EpsilonGreedy(...)))` stops
+/// being representable, matching the fact that real configs only ever nest
+/// one wrapper deep.
+macro_rules! register_simulate {
+    (
+        $(
+            $variant:ident { $($field:ident : $ty:ty),* $(,)? } => $ctor:expr
+        ),+ $(,)?
+    ) => {
+        /// The inner spec `EpsilonGreedy`/`DecisiveMove` wrap -- the table's
+        /// families, with no wrapper variant of its own (see
+        /// `register_simulate!`'s doc comment on why).
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        pub enum BaseSimulateSpec {
+            $(
+                $variant { $($field: $ty),* },
+            )+
+        }
+
+        /// Dispatches `spec` to the concrete `SimulateStrategy<G>` it names
+        /// by invoking `cont` with it -- see `with_base_select` above.
+        pub fn with_base_simulate<G, C>(spec: &BaseSimulateSpec, cont: C) -> C::Output
+        where
+            G: Game,
+            C: SimulateCont<G>,
+        {
+            match spec.clone() {
+                $(
+                    BaseSimulateSpec::$variant { $($field),* } => {
+                        let simulate = $ctor;
+                        cont.call(simulate)
+                    }
+                )+
+            }
+        }
+
+        /// The config-IR node for the `simulate` axis: every
+        /// `BaseSimulateSpec` family, plus `EpsilonGreedy`/`DecisiveMove`
+        /// each wrapping one of them.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        pub enum SimulateSpec {
+            $(
+                $variant { $($field: $ty),* },
+            )+
+            EpsilonGreedy {
+                epsilon: f64,
+                inner: BaseSimulateSpec,
+            },
+            DecisiveMove {
+                mode: simulate::DecisiveMoveMode,
+                inner: BaseSimulateSpec,
+            },
+        }
+
+        /// Dispatches `spec` the same way `with_base_simulate` does, plus
+        /// the `EpsilonGreedy`/`DecisiveMove` wrappers.
+        pub fn with_simulate<G, C>(spec: &SimulateSpec, cont: C) -> C::Output
+        where
+            G: Game,
+            C: SimulateCont<G>,
+        {
+            match spec.clone() {
+                $(
+                    SimulateSpec::$variant { $($field),* } => {
+                        let simulate = $ctor;
+                        cont.call(simulate)
+                    }
+                )+
+                SimulateSpec::EpsilonGreedy { epsilon, inner } => {
+                    with_base_simulate::<G, _>(&inner, EpsilonGreedySimulateCont { epsilon, cont })
+                }
+                SimulateSpec::DecisiveMove { mode, inner } => {
+                    with_base_simulate::<G, _>(&inner, DecisiveMoveSimulateCont { mode, cont })
+                }
+            }
+        }
+    };
+}
+
+register_simulate! {
+    Uniform {} => simulate::Uniform,
+    Mast {} => simulate::Mast,
+    Nst { backoff_threshold: u32 } => simulate::Nst::new().backoff_threshold(backoff_threshold),
+}
+
+/// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
+/// `simulate::EpsilonGreedy` -- `with_simulate`'s handling of the recursive
+/// `EpsilonGreedy` spec variant.
+struct EpsilonGreedySimulateCont<C> {
+    epsilon: f64,
+    cont: C,
+}
+
+impl<G, C> SimulateCont<G> for EpsilonGreedySimulateCont<C>
+where
+    G: Game,
+    C: SimulateCont<G>,
+{
+    type Output = C::Output;
+
+    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> C::Output {
+        let wrapped = simulate::EpsilonGreedy::<G, S>::with_epsilon(self.epsilon).inner(simulate);
+        self.cont.call(wrapped)
+    }
+}
+
+/// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
+/// `simulate::DecisiveMove` -- `with_simulate`'s handling of the recursive
+/// `DecisiveMove` spec variant.
+struct DecisiveMoveSimulateCont<C> {
+    mode: simulate::DecisiveMoveMode,
+    cont: C,
+}
+
+impl<G, C> SimulateCont<G> for DecisiveMoveSimulateCont<C>
+where
+    G: Game,
+    C: SimulateCont<G>,
+{
+    type Output = C::Output;
+
+    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> C::Output {
+        let wrapped = simulate::DecisiveMove::<G, S>::new()
+            .mode(self.mode)
+            .inner(simulate);
+        self.cont.call(wrapped)
+    }
+}
+
+/// A `SimulateCont` whose `Output` is just the resolved component's own
+/// `Requirements` -- see `RequirementsCont` above for why this reuses the
+/// real dispatch rather than a second, independently-drifting table.
+struct SimulateRequirementsCont<G>(std::marker::PhantomData<G>);
+
+impl<G: Game> SimulateCont<G> for SimulateRequirementsCont<G> {
+    type Output = Requirements;
+
+    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> Requirements {
+        simulate.requirements()
+    }
+}
+
+pub fn requirements_of_simulate<G: Game>(spec: &SimulateSpec) -> Requirements {
+    with_simulate::<G, _>(spec, SimulateRequirementsCont(std::marker::PhantomData))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +462,107 @@ mod tests {
         let spec: SelectSpec = serde_json::from_str(r#"{"kind":"ucb1","c":1.5}"#).unwrap();
         let state = <Nim as Game>::S::default();
         let action = with_select::<Nim, _>(&spec, RunCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured search must be legal"
+        );
+    }
+
+    /// Builds and runs a `TreeSearch<Nim, Compose<select::Ucb1, S>>` for
+    /// whatever concrete `S` `with_simulate` resolves -- the `simulate`-axis
+    /// counterpart of `RunCont` above.
+    struct RunSimulateCont<'a, G: Game> {
+        state: &'a G::S,
+    }
+
+    impl<'a, G: Game> SimulateCont<G> for RunSimulateCont<'a, G> {
+        type Output = G::A;
+
+        fn call<S: SimulateStrategy<G>>(self, simulate: S) -> G::A {
+            let mut ts = TreeSearch::<G, Compose<select::Ucb1, S>>::default().config(
+                SearchConfig::default()
+                    .simulate(simulate)
+                    .max_iterations(200)
+                    .seed(1),
+            );
+            ts.choose_action(self.state)
+        }
+    }
+
+    #[test]
+    fn simulate_spec_round_trips_through_json() {
+        let json = r#"{"kind":"nst","backoff_threshold":10}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SimulateSpec::Nst { backoff_threshold: 10 });
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+    }
+
+    #[test]
+    fn simulate_epsilon_greedy_and_decisive_move_wrap_an_arbitrary_inner_spec() {
+        let json = r#"{"kind":"epsilon_greedy","epsilon":0.2,"inner":{"kind":"mast"}}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        let SimulateSpec::EpsilonGreedy { epsilon, inner } = &spec else {
+            panic!("expected EpsilonGreedy");
+        };
+        assert_eq!(*epsilon, 0.2);
+        assert_eq!(*inner, BaseSimulateSpec::Mast {});
+
+        let json = r#"{"kind":"decisive_move","mode":"win_loss","inner":{"kind":"nst","backoff_threshold":5}}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        let SimulateSpec::DecisiveMove { mode, inner } = &spec else {
+            panic!("expected DecisiveMove");
+        };
+        assert_eq!(*mode, simulate::DecisiveMoveMode::WinLoss);
+        assert_eq!(*inner, BaseSimulateSpec::Nst { backoff_threshold: 5 });
+    }
+
+    #[test]
+    fn requirements_of_simulate_matches_the_real_components_own_answer() {
+        // `Nst` sets both `global` and `nst` (see `simulate::Nst`'s doc
+        // comment on why it needs the unigram table on top of its own
+        // bigram one) -- asserting only `nst` here would have passed
+        // silently if this table dropped `global` from the real
+        // `backprop_flags()` answer.
+        let nst = SimulateSpec::Nst { backoff_threshold: 5 };
+        let reqs = requirements_of_simulate::<Nim>(&nst);
+        assert!(reqs.global);
+        assert!(reqs.nst);
+
+        let mast = SimulateSpec::Mast {};
+        assert!(requirements_of_simulate::<Nim>(&mast).global);
+        assert!(!requirements_of_simulate::<Nim>(&mast).nst);
+
+        let uniform = SimulateSpec::Uniform {};
+        assert_eq!(
+            requirements_of_simulate::<Nim>(&uniform),
+            Requirements::default()
+        );
+
+        // Wrapping in EpsilonGreedy/DecisiveMove must not lose Nst's
+        // requirements -- both wrappers delegate `requirements()` straight
+        // to `inner` (see `simulate::EpsilonGreedy`/`DecisiveMove`'s own
+        // doc comments), so this checks that survives the spec/dispatch
+        // layer too.
+        let wrapped_eg = SimulateSpec::EpsilonGreedy {
+            epsilon: 0.1,
+            inner: BaseSimulateSpec::Nst { backoff_threshold: 5 },
+        };
+        assert_eq!(requirements_of_simulate::<Nim>(&wrapped_eg), reqs);
+
+        let wrapped_dm = SimulateSpec::DecisiveMove {
+            mode: simulate::DecisiveMoveMode::Win,
+            inner: BaseSimulateSpec::Nst { backoff_threshold: 5 },
+        };
+        assert_eq!(requirements_of_simulate::<Nim>(&wrapped_dm), reqs);
+    }
+
+    #[test]
+    fn with_simulate_builds_a_working_tree_search_from_a_json_spec() {
+        let spec: SimulateSpec = serde_json::from_str(r#"{"kind":"uniform"}"#).unwrap();
+        let state = <Nim as Game>::S::default();
+        let action = with_simulate::<Nim, _>(&spec, RunSimulateCont { state: &state });
         let mut legal = Vec::new();
         Nim::generate_actions(&state, &mut legal);
         assert!(

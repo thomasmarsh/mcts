@@ -228,7 +228,8 @@ where
 
 /////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DecisiveMoveMode {
     #[default]
     Win, // Decisive move
