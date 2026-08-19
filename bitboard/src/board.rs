@@ -544,6 +544,22 @@ impl<S: Storage, const N: usize, const M: usize>
     }
 }
 
+impl<const N: usize, const M: usize> Board<u64, crate::dim::Const<N>, crate::dim::Const<M>> {
+    /// Builds a board directly from a raw row-major bitmask -- e.g. a
+    /// literal winning-line pattern a game (or codegen) already knows at
+    /// compile time, mirroring `BitBoard::new(value: u64)`. Only defined for
+    /// single-word (`u64`) storage at `Const` dims, the shape every such
+    /// literal mask this crate serves fits in.
+    #[inline(always)]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self {
+            bits,
+            rows: crate::dim::Const,
+            cols: crate::dim::Const,
+        }
+    }
+}
+
 impl<S: Storage, R: Dim, C: Dim> PartialEq for Board<S, R, C> {
     fn eq(&self, other: &Self) -> bool {
         self.rows() == other.rows()
