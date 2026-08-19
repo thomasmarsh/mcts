@@ -190,6 +190,21 @@ impl State {
         self.engine.white()
     }
 
+    /// The `black()`/`white()` snapshot from just before the most recent
+    /// placement -- what [`is_ko`](Self::is_ko) compares the position after
+    /// a candidate move against to enforce the simple-ko rule. Exposed for
+    /// callers (`main.rs`'s wire format) that need to round-trip full state,
+    /// not just the board a renderer displays.
+    #[inline(always)]
+    pub fn ko_black(&self) -> Bits {
+        self.ko_black
+    }
+
+    #[inline(always)]
+    pub fn ko_white(&self) -> Bits {
+        self.ko_white
+    }
+
     #[inline(always)]
     pub fn turn(&self) -> Player {
         self.turn

@@ -66,7 +66,15 @@ fn check_size(size: usize) -> Result<usize, HostError> {
 #[derive(Serialize, Deserialize)]
 struct WireState {
     cells: Vec<Option<String>>,
-    ko_cells: Vec<Option<String>>,
+    /// Raw `[u64; 6]` words (hex, like `Move`'s capture mask -- see that
+    /// type's doc comment for why not plain numbers) of `State::ko_black`/
+    /// `ko_white`, not a `cells`-shaped overlay: unlike `black`/`white`,
+    /// which can never both cover the same cell, the sentinel "no ko active"
+    /// value (`State::new`'s `ones`) sets every cell of *both* boards at
+    /// once, so an `Option<Player>`-per-cell encoding (picking one color
+    /// when both are set) can't round-trip it.
+    ko_black_hex: Vec<String>,
+    ko_white_hex: Vec<String>,
     turn: String,
     can_swap: bool,
     winner: bool,
@@ -109,6 +117,28 @@ fn color_at(black: Bits, white: Bits, index: usize) -> Option<Player> {
     }
 }
 
+/// Hex-encodes a board's backing words, low word first -- mirrors `Move`'s
+/// own `Serialize` impl (see that type's doc comment for why hex strings,
+/// not raw `u64`s: `JSON.parse` on the client silently loses precision past
+/// JS's 2^53 safe-integer range for a word with several scattered bits set).
+fn bits_to_hex(b: Bits) -> Vec<String> {
+    b.words().map(|w| format!("{w:016x}")).collect()
+}
+
+fn bits_from_hex(hex: &[String], size: usize) -> Result<Bits, HostError> {
+    let mut b = Bits::new(Dyn(size), Dyn(size));
+    for (w, s) in hex.iter().enumerate() {
+        let mut word =
+            u64::from_str_radix(s, 16).map_err(|e| HostError::bad_request(e.to_string()))?;
+        while word != 0 {
+            let bit = word.trailing_zeros() as usize;
+            word &= word - 1;
+            b.set_index(w * 64 + bit);
+        }
+    }
+    Ok(b)
+}
+
 fn state_to_value(s: &State) -> Value {
     let n = s.black().rows();
     serde_json::to_value(WireState {
@@ -118,12 +148,8 @@ fn state_to_value(s: &State) -> Value {
         cells: (0..n * n)
             .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
             .collect(),
-        // The ko boards aren't exposed on `State`, so the wire format keeps
-        // its historical shape (mirroring `black`/`white`) without actually
-        // round-tripping ko state -- see the comment in `state_from_wire`.
-        ko_cells: (0..n * n)
-            .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
-            .collect(),
+        ko_black_hex: bits_to_hex(s.ko_black()),
+        ko_white_hex: bits_to_hex(s.ko_white()),
     })
     .expect("")
 }
@@ -153,18 +179,13 @@ fn state_from_wire(w: &WireState) -> Result<State, HostError> {
             _ => {}
         }
     }
-    // The wire format doesn't carry ko state (see `state_to_value`), so a
-    // state round-tripped through the host adapter always looks
-    // "just captured nothing" to the ko rule -- ko violations a move earlier
-    // in the same client session won't be caught after a round trip. This
-    // matches the previous (fixed-size) adapter's behaviour, which had the
-    // same gap.
-    let ones = !Bits::new(Dyn(size), Dyn(size));
+    let ko_black = bits_from_hex(&w.ko_black_hex, size)?;
+    let ko_white = bits_from_hex(&w.ko_white_hex, size)?;
     Ok(State::from_parts(
         black,
         white,
-        ones,
-        ones,
+        ko_black,
+        ko_white,
         parse_player(&w.turn),
         w.can_swap,
         w.winner,
@@ -554,5 +575,66 @@ mod tests {
             let next = GonnectAdapter::load().apply(&state, &moves[0]).unwrap();
             assert_eq!(next["cells"].as_array().unwrap().len(), n * n);
         }
+    }
+
+    /// Reproduces the exact shape of a real game session: every move goes
+    /// through `GonnectAdapter::apply`'s `Value`-in/`Value`-out contract, the
+    /// same JSON round trip a stateless HTTP request makes (`adapter.rs`'s
+    /// doc comment: "state flows in as a JSON `Value`... and back out
+    /// again"). Plays a standard single-stone ko capture on a 5x5 board, then
+    /// asserts the immediate recapture (`(2,2)`, index 12) is excluded from
+    /// `legal_moves` on the position *after* that round trip -- catching a
+    /// regression where the wire format silently drops `ko_black`/
+    /// `ko_white` and the ko rule stops applying across requests, letting
+    /// two players (or two AI presets) recapture back and forth forever.
+    #[test]
+    fn ko_rule_survives_the_json_state_round_trip() {
+        let adapter = GonnectAdapter::load();
+        let mut state = adapter.new_state(serde_json::json!({ "size": 5 })).unwrap();
+
+        let apply_at = |state: &Value, target: usize| -> Value {
+            let moves = adapter.legal_moves(state).unwrap();
+            let mv = moves
+                .iter()
+                .find(|m| m[0].as_u64() == Some(target as u64))
+                .unwrap_or_else(|| panic!("index {target} not legal in {moves:?}"));
+            adapter.apply(state, mv).unwrap()
+        };
+
+        // Black (1,2)=7, White (2,2)=12, Black (2,1)=11, White (3,1)=16,
+        // Black (2,3)=13, White (3,3)=18, Black (0,0)=0 (neutral), White
+        // (4,2)=22 -- surrounds White's lone stone at 12 on 3 sides (7, 11,
+        // 13) and pre-stages White stones on 3 sides of the point Black is
+        // about to capture into (16, 18, 22), so that capture leaves Black's
+        // new stone in atari -- the ko shape.
+        for target in [7, 12, 11, 16, 13, 18, 0, 22] {
+            state = apply_at(&state, target);
+        }
+        assert_eq!(state["winner"], Value::Bool(false));
+
+        // Black plays (3,2)=17, capturing White's stone at 12.
+        state = apply_at(&state, 17);
+        assert_eq!(
+            color_at_json(&state, 12),
+            None,
+            "White's stone at 12 should have been captured"
+        );
+        assert_eq!(
+            color_at_json(&state, 17),
+            Some("Black"),
+            "Black's stone should now sit at 17"
+        );
+
+        // The immediate recapture at 12 would recreate the position from
+        // just before Black's capturing move -- illegal under the ko rule.
+        let moves = adapter.legal_moves(&state).unwrap();
+        assert!(
+            !moves.iter().any(|m| m[0].as_u64() == Some(12)),
+            "ko-violating recapture at 12 should not be legal: {moves:?}"
+        );
+    }
+
+    fn color_at_json(state: &Value, index: usize) -> Option<&str> {
+        state["cells"][index].as_str()
     }
 }
