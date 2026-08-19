@@ -240,6 +240,25 @@ impl Game for TicTacToe {
     fn zobrist_hash(state: &Self::S) -> u64 {
         state.hash()
     }
+
+    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+        let sym = canonical_symmetry(state.position.board);
+        let mut symmetries = [0u32; NUM_SYMMETRIES];
+        board_symmetries(state.position.board, &mut symmetries);
+        let canon = Position {
+            turn: state.position.turn,
+            board: symmetries[sym],
+        };
+        (HashedPosition::from_position(canon), sym)
+    }
+
+    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
+        Move(Sym::index_symmetries(action.0 as usize)[sym] as u8)
+    }
+
+    fn invert_action(action: Self::A, sym: usize) -> Self::A {
+        Move(Sym::invert_symmetry(action.0 as usize, sym) as u8)
+    }
 }
 
 impl RectangularBoard for HashedPosition {
@@ -350,6 +369,66 @@ mod tests {
             // Check if the inversion gives back the original index
             prop_assert_eq!(inverted_index, original_index);
         }
+
+        // `Game::apply_to_action`/`invert_action` are just `Sym::index_symmetries`/
+        // `invert_symmetry` exposed through the trait -- this is the same
+        // property as `test_idempotent_sym` above, checked through the
+        // `Game`-level API that MCGS symmetry-aware graph merging will
+        // actually call.
+        #[test]
+        fn test_action_transform_round_trip(idx in 0..9usize, sym in 0..8usize) {
+            let action = Move(idx as u8);
+            let transformed = TicTacToe::apply_to_action(action, sym);
+            let back = TicTacToe::invert_action(transformed, sym);
+            prop_assert_eq!(back, action);
+        }
+    }
+
+    // `canonical_representation` must map every symmetric image of a state
+    // to the same canonical result -- the whole point of canonicalizing is
+    // that a graph-merge lookup keyed on the canonical state finds the same
+    // node no matter which orientation a parent reached it through.
+    // Non-geometric fields (here, just `turn`) are untouched by the board
+    // symmetry and must come through unchanged.
+    #[test]
+    fn test_canonical_representation_invariant_under_symmetry() {
+        let mut reachable = vec![HashedPosition::new()];
+        for m in [4u8, 0, 8, 1, 2] {
+            let next = TicTacToe::apply(*reachable.last().unwrap(), &Move(m));
+            reachable.push(next);
+        }
+
+        for state in reachable {
+            let (canon, canon_sym) = TicTacToe::canonical_representation(state);
+
+            let mut symmetries = [0u32; NUM_SYMMETRIES];
+            board_symmetries(state.position.board, &mut symmetries);
+            for &board in symmetries.iter() {
+                let variant = HashedPosition::from_position(Position {
+                    turn: state.position.turn,
+                    board,
+                });
+                let (canon2, _) = TicTacToe::canonical_representation(variant);
+                assert_eq!(
+                    canon2.position, canon.position,
+                    "canonical_representation disagreed across symmetric images \
+                     of board {board:#x}"
+                );
+            }
+
+            // The reported symmetry index must actually produce the
+            // canonical board when applied to the original.
+            assert_eq!(
+                board_symmetries_nth(state.position.board, canon_sym),
+                canon.position.board
+            );
+        }
+    }
+
+    fn board_symmetries_nth(board: u32, sym: usize) -> u32 {
+        let mut symmetries = [0u32; NUM_SYMMETRIES];
+        board_symmetries(board, &mut symmetries);
+        symmetries[sym]
     }
 
     impl render::NodeRender for HashedPosition {}

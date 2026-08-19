@@ -211,11 +211,42 @@ pub trait Game: Sized + Clone + Sync + Send {
         //     .collect()
     }
 
-    /// A canonical representation of the state. Many board games exhibit some
-    /// form of symmetry. Canonicalizing the state will enable the engine to
-    /// leverage those symmetries.
-    fn canonical_representation(state: Self::S) -> Self::S {
-        state
+    /// A canonical representation of the state, paired with the index of the
+    /// symmetry group element that was applied to reach it (`0` is always
+    /// the identity). Many board games exhibit some form of symmetry;
+    /// canonicalizing the state lets the engine recognize equivalent
+    /// positions reached through different move orders. The symmetry index
+    /// is what a caller needs to translate actions between the literal
+    /// board and the canonicalized state via `apply_to_action`/
+    /// `invert_action` below -- the canonicalized state alone isn't enough,
+    /// since two different callers can canonicalize to the same state via
+    /// different symmetry elements.
+    ///
+    /// Games that haven't characterized their symmetries return the state
+    /// unchanged with symmetry index `0`; this is indistinguishable from
+    /// "characterized as having no symmetry", which is fine, since both are
+    /// legitimate uses of the identity element.
+    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+        (state, 0)
+    }
+
+    /// Map an action through symmetry element `sym` -- e.g. to translate a
+    /// legal action on the literal board into the orientation of a
+    /// canonicalized state produced by `canonical_representation`. The
+    /// default is the identity, which is correct as long as
+    /// `canonical_representation` hasn't been overridden to report anything
+    /// but symmetry index `0`.
+    #[allow(unused_variables)]
+    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
+        action
+    }
+
+    /// The inverse of `apply_to_action`: `invert_action(apply_to_action(a,
+    /// s), s) == a` for every legal action `a` and every symmetry index `s`
+    /// the game's `canonical_representation` can report.
+    #[allow(unused_variables)]
+    fn invert_action(action: Self::A, sym: usize) -> Self::A {
+        action
     }
 
     /// A zobrist hash is expected to be cheap and precomputed upon move
