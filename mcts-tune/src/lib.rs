@@ -1083,6 +1083,20 @@ mod tests {
     }
 
     #[test]
+    fn test_family_ucb1_lgr2_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_lgr2", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
+    fn test_family_ucb1_lgr2_mast_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_lgr2_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }));
+    }
+
+    #[test]
     fn test_family_ucb1_nst_round_trips() {
         assert_family_round_trips(json!({
             "family": "ucb1_nst", "c": 1.4, "epsilon": 0.2,
@@ -1276,6 +1290,48 @@ mod tests {
             config_ir::SimulateSpec::EpsilonGreedy {
                 epsilon: 0.2,
                 inner: config_ir::BaseSimulateSpec::Lgr {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_lgr2() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_lgr2", "c": 1.4, "epsilon": 0.2, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Lgr2 {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_lgr2_mast() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_lgr2_mast", "c": 1.4, "epsilon": 0.2, "q_init": "Infinity",
+                "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::EpsilonGreedy {
+                epsilon: 0.2,
+                inner: config_ir::BaseSimulateSpec::Lgr2Mast {},
             }
         );
     }
@@ -1769,6 +1825,14 @@ mod tests {
             (
                 "ucb1_lgr",
                 json!({"family": "ucb1_lgr", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_lgr2",
+                json!({"family": "ucb1_lgr2", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_lgr2_mast",
+                json!({"family": "ucb1_lgr2_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
             ),
             (
                 "ucb1_nst",

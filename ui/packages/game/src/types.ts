@@ -105,7 +105,9 @@ export type BaseSimulateSpec =
   | { kind: "uniform" }
   | { kind: "mast" }
   | { kind: "nst"; backoff_threshold: number }
-  | { kind: "lgr" };
+  | { kind: "lgr" }
+  | { kind: "lgr2" }
+  | { kind: "lgr2_mast" };
 
 /** `config_ir::SimulateSpec` -- `BaseSimulateSpec`'s families plus its
  * wrappers and fixed-shape two-level leaves (`decisive_move_mast`/

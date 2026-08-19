@@ -140,6 +140,36 @@ impl<G: Game> Strategy<G> for Ucb1Lgr {
     }
 }
 
+// Vanilla UCT + LGRF-2 (LGR-2 with forgetting)
+#[derive(Clone, Default)]
+pub struct Ucb1Lgr2;
+
+impl<G: Game> Strategy<G> for Ucb1Lgr2 {
+    type Select = select::Ucb1;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Lgr2<G>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_lgr2".into()
+    }
+}
+
+// Vanilla UCT + LGRF-2, falling back to MAST instead of uniform random
+#[derive(Clone, Default)]
+pub struct Ucb1Lgr2Mast;
+
+impl<G: Game> Strategy<G> for Ucb1Lgr2Mast {
+    type Select = select::Ucb1;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Lgr2<G, simulate::Lgr<G, simulate::Mast>>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_lgr2_mast".into()
+    }
+}
+
 // Vanilla UCT + Progressive History
 #[derive(Clone, Default)]
 pub struct Ucb1ProgressiveHistory;

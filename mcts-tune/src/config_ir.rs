@@ -389,6 +389,15 @@ register_simulate! {
     Mast {} => simulate::Mast,
     Nst { backoff_threshold: u32 } => simulate::Nst::new().backoff_threshold(backoff_threshold),
     Lgr {} => simulate::Lgr::<G>::new(),
+    Lgr2 {} => simulate::Lgr2::<G>::new(),
+    // Lgr2Mast: simulate::Lgr2<G, simulate::Lgr<G, simulate::Mast>> --
+    // LGRF-2's usual pairing with MAST (Baier & Drake 2010; Tak, Winands &
+    // Björnsson 2012) as the fallback once both reply tables miss, instead
+    // of Lgr2's plain uniform-random bottom. A fixed composition (like
+    // DecisiveMoveMast above) rather than a generically configurable inner,
+    // for the same reason register_simulate!'s doc comment gives for not
+    // making wrappers arbitrarily recursive.
+    Lgr2Mast {} => simulate::Lgr2::<G, simulate::Lgr<G, simulate::Mast>>::new(),
 }
 
 /// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
@@ -1322,6 +1331,22 @@ mod tests {
     }
 
     #[test]
+    fn lgr2_simulate_spec_round_trips_through_json() {
+        let json = r#"{"kind":"lgr2"}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SimulateSpec::Lgr2 {});
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    #[test]
+    fn lgr2_mast_simulate_spec_round_trips_through_json() {
+        let json = r#"{"kind":"lgr2_mast"}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SimulateSpec::Lgr2Mast {});
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    #[test]
     fn simulate_epsilon_greedy_and_decisive_move_wrap_an_arbitrary_inner_spec() {
         let json = r#"{"kind":"epsilon_greedy","epsilon":0.2,"inner":{"kind":"mast"}}"#;
         let spec: SimulateSpec = serde_json::from_str(json).unwrap();
@@ -1404,6 +1429,33 @@ mod tests {
             inner: BaseSimulateSpec::Lgr {},
         };
         assert_eq!(requirements_of_simulate::<Nim>(&wrapped_lgr_eg), lgr_reqs);
+
+        // `Lgr2` sets both its own `lgr2` bit *and* `lgr` -- its default
+        // inner is `Lgr` (LGR-1), the fallback the resolved
+        // `simulate::Lgr2::<G>::new()` actually nests, so its requirements
+        // must union in whatever that nested `Lgr` needs too.
+        let lgr2 = SimulateSpec::Lgr2 {};
+        let lgr2_reqs = requirements_of_simulate::<Nim>(&lgr2);
+        assert!(lgr2_reqs.lgr2);
+        assert!(lgr2_reqs.lgr);
+        assert!(!lgr2_reqs.global);
+        assert!(!lgr2_reqs.nst);
+
+        let wrapped_lgr2_eg = SimulateSpec::EpsilonGreedy {
+            epsilon: 0.1,
+            inner: BaseSimulateSpec::Lgr2 {},
+        };
+        assert_eq!(requirements_of_simulate::<Nim>(&wrapped_lgr2_eg), lgr2_reqs);
+
+        // `Lgr2Mast` nests `Mast` as its ultimate fallback, so it must pull
+        // in `global` (the unigram table `Mast` reads) on top of `lgr2`/
+        // `lgr`.
+        let lgr2_mast = SimulateSpec::Lgr2Mast {};
+        let lgr2_mast_reqs = requirements_of_simulate::<Nim>(&lgr2_mast);
+        assert!(lgr2_mast_reqs.lgr2);
+        assert!(lgr2_mast_reqs.lgr);
+        assert!(lgr2_mast_reqs.global);
+        assert!(!lgr2_mast_reqs.nst);
     }
 
     #[test]
