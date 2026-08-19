@@ -264,6 +264,15 @@ pub enum DecisiveMoveMode {
     Win, // Decisive move
     WinLoss,     // Decisive move + anti-decisive move
     WinLossDraw, // Any terminal state
+    /// Teytaud & Teytaud 2010's Algorithm 4 (DM+ADM), the real "anti-decisive
+    /// move" rather than `WinLoss`'s same-ply terminal check: if no move
+    /// wins immediately, look one ply further and prefer a move that leaves
+    /// the opponent with no immediate winning reply. Strictly more work than
+    /// the other modes (a second `generate_actions` + scan per candidate),
+    /// so it's the right default only for playouts with a small enough
+    /// branching factor that the extra ply is cheap relative to a full
+    /// rollout.
+    AntiDecisive,
 }
 
 #[derive(Clone)]
@@ -347,6 +356,52 @@ where
                     }
                 }
                 loser.or(draw)
+            }
+
+            AntiDecisive => {
+                // Pass 1: an immediate win always takes priority, regardless
+                // of where it falls in `available` -- same rule as `Win`.
+                for action in available {
+                    let child_state = G::apply(state.clone(), action);
+                    if matches!(G::terminal_status(&child_state), TerminalStatus::Winner(w) if w.to_index() == player)
+                    {
+                        return Some(action);
+                    }
+                }
+                // Pass 2 (only reached once pass 1 has ruled out a win
+                // anywhere in the list): the real anti-decisive check --
+                // look one ply further and take the first move that leaves
+                // the opponent no immediate winning reply. `opponent_actions`
+                // is reused across candidates rather than reallocated, and
+                // this returns on the first acceptable candidate instead of
+                // scoring all of them, both in the spirit of Soemers et al.
+                // 2021's playout implementations: do the least work needed
+                // to find *a* good move, not the full board evaluation.
+                let mut opponent_actions = Vec::new();
+                for action in available {
+                    let child_state = G::apply(state.clone(), action);
+                    if !matches!(
+                        G::terminal_status(&child_state),
+                        TerminalStatus::NotTerminal
+                    ) {
+                        // Already a loss or draw for us -- ruled out above as
+                        // a win, so never worth preferring over an unproven
+                        // continuation.
+                        continue;
+                    }
+                    opponent_actions.clear();
+                    G::generate_actions(&child_state, &mut opponent_actions);
+                    let opponent_can_win = opponent_actions.iter().any(|reply| {
+                        matches!(
+                            G::terminal_status(&G::apply(child_state.clone(), reply)),
+                            TerminalStatus::Winner(_)
+                        )
+                    });
+                    if !opponent_can_win {
+                        return Some(action);
+                    }
+                }
+                None
             }
         }
     }

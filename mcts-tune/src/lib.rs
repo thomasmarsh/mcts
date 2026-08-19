@@ -1069,6 +1069,13 @@ mod tests {
     }
 
     #[test]
+    fn test_family_ucb1_adm_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_adm", "c": 1.4, "final_action": "max_avg",
+        }));
+    }
+
+    #[test]
     fn test_family_ucb1_mast_round_trips() {
         assert_family_round_trips(json!({
             "family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
@@ -1170,6 +1177,14 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn test_family_ucb1_adm_nst_round_trips() {
+        assert_family_round_trips(json!({
+            "family": "ucb1_adm_nst", "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }));
+    }
+
     // `meta_mcts`'s round trip is proven in `tests/stress.rs` instead of here:
     // its inner nested search makes even one candidate-vs-baseline game
     // noticeably slower than every other family's (multi-second, not the
@@ -1244,6 +1259,31 @@ mod tests {
                 select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
                 simulate: config_ir::SimulateSpec::DecisiveMove {
                     mode: simulate::DecisiveMoveMode::Win,
+                    inner: config_ir::BaseSimulateSpec::Uniform {},
+                },
+                backprop: config_ir::BackpropSpec::Classic {},
+                final_action: config_ir::FinalActionSpec::MaxAvg {},
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_adm() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_adm", "c": 1.4, "q_init": "Infinity", "final_action": "max_avg",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec,
+            config_ir::SearchSpec {
+                select: config_ir::SelectSpec::Ucb1 { c: 1.4 },
+                simulate: config_ir::SimulateSpec::DecisiveMove {
+                    mode: simulate::DecisiveMoveMode::AntiDecisive,
                     inner: config_ir::BaseSimulateSpec::Uniform {},
                 },
                 backprop: config_ir::BackpropSpec::Classic {},
@@ -1375,6 +1415,28 @@ mod tests {
             spec.simulate,
             config_ir::SimulateSpec::DecisiveMoveNst {
                 mode: simulate::DecisiveMoveMode::Win,
+                epsilon: 0.2,
+                nst_backoff_threshold: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn to_search_spec_ucb1_adm_nst() {
+        let (spec, _) = to_search_spec(
+            &trial(json!({
+                "family": "ucb1_adm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3,
+                "q_init": "Infinity", "final_action": "robust_child",
+            })),
+            0,
+            false,
+            &SearchBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.simulate,
+            config_ir::SimulateSpec::DecisiveMoveNst {
+                mode: simulate::DecisiveMoveMode::AntiDecisive,
                 epsilon: 0.2,
                 nst_backoff_threshold: 3,
             }
@@ -1819,6 +1881,10 @@ mod tests {
                 json!({"family": "ucb1_dm", "c": 1.4, "final_action": "max_avg"}),
             ),
             (
+                "ucb1_adm",
+                json!({"family": "ucb1_adm", "c": 1.4, "final_action": "max_avg"}),
+            ),
+            (
                 "ucb1_mast",
                 json!({"family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
             ),
@@ -1874,6 +1940,10 @@ mod tests {
             (
                 "ucb1_dm_nst",
                 json!({"family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            ),
+            (
+                "ucb1_adm_nst",
+                json!({"family": "ucb1_adm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
             ),
             ("meta_mcts", json!({"family": "meta_mcts", "c": 1.4})),
             ("ucb1_pn", pn_params()),
