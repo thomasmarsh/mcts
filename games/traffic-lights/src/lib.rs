@@ -7,7 +7,7 @@ use mcts::{
 use serde::Serialize;
 use std::fmt::Display;
 
-pub const USE_SYMMETRY: bool = false;
+pub const USE_SYMMETRY: bool = true;
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub enum Player {
@@ -152,10 +152,31 @@ impl Position {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-// 9 playable positions * 4 states * 2 players
+// 9 cells * 4 possible values (2 bits) for occupied-cell tokens, plus 1
+// reserved slot for the side-to-move toggle.
 pub const NUM_MOVES: usize = 72;
 
 pub static HASHES: LazyZobristTable<NUM_MOVES> = LazyZobristTable::new(0x4);
+
+/// Zobrist token for "cell `index` currently holds `value`" (`value` in
+/// 1..=3; `value == 0` is empty and contributes no token -- both here and
+/// in every caller below, an empty cell is simply skipped).
+#[inline]
+fn cell_token(index: usize, value: usize) -> u64 {
+    HASHES.hash((index << 2) | value)
+}
+
+/// One past the highest `cell_token` index (`8 << 2 | 3 == 35`), reserved
+/// for the side-to-move toggle so it can never collide with a real cell
+/// token.
+const SIDE_TO_MOVE_INDEX: usize = 9 << 2;
+
+/// Zobrist token toggled once per ply so that two positions with identical
+/// cell contents but different players to move still hash differently.
+#[inline]
+fn side_to_move_token() -> u64 {
+    HASHES.hash(SIDE_TO_MOVE_INDEX)
+}
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct HashedPosition {
@@ -181,42 +202,60 @@ impl Default for HashedPosition {
 impl HashedPosition {
     /// Rebuild a `HashedPosition` from a raw `Position`, computing hashes
     /// from scratch (no prior hash to XOR from). Mirrors
-    /// `ttt::HashedPosition::from_position`.
+    /// `ttt::HashedPosition::from_position`, but must also mirror `apply`'s
+    /// own token scheme below (current-value cell tokens plus a single
+    /// side-to-move toggle) rather than `ttt`'s simpler placed-once-piece
+    /// scheme, since a traffic-lights cell's value changes more than once.
     pub fn from_position(position: Position) -> Self {
         let mut tmp = Self {
             position,
             hashes: [0; 8],
         };
-        // Walk every cell that is occupied and XOR its hash contribution
-        // to rebuild the full hash from scratch.
+        // Walk every occupied cell and XOR in its symmetric-image tokens
+        // to rebuild all 8 hashes from scratch.
         for i in 0..9 {
             let value = ((tmp.position.board as usize) >> (i * 2)) & 0b11;
             if value == 0 {
                 continue;
             }
-            let q = (i << 3) | (value << 1) | tmp.position.turn as usize;
-            tmp.hashes[0] ^= HASHES.hash(q);
+            for (s, &index) in D4Symmetry::<3>::index_symmetries(i).iter().enumerate() {
+                tmp.hashes[s] ^= cell_token(index, value);
+            }
+        }
+        if tmp.position.turn == Player::Second {
+            for h in tmp.hashes.iter_mut() {
+                *h ^= side_to_move_token();
+            }
         }
         tmp
     }
 
     #[inline]
     fn apply(&mut self, m: Move) {
-        if USE_SYMMETRY {
-            let symmetries = D4Symmetry::<3>::index_symmetries(m.index());
-            // TODO: self.hashes[0] is producing bad values. The `else` branch below is working.
-            for (i, index) in symmetries.iter().enumerate() {
-                let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
-                let q = (index << 3) | (value << 1) | self.position.turn as usize;
-                self.hashes[i] ^= HASHES.hash(q);
+        let index = m.index();
+        let old_value = ((self.position.board as usize) >> (index * 2)) & 0b11;
+        let new_value = old_value + 1;
+
+        // Always maintain all 8 symmetric-image hashes (mirrors ttt), so
+        // `hash()` can pick whichever slot `USE_SYMMETRY` calls for without
+        // `apply` needing to know which slot that'll be. XOR out the old
+        // cell token (if the cell wasn't empty) and XOR in the new one, for
+        // every symmetric image of the moved cell.
+        let symmetries = D4Symmetry::<3>::index_symmetries(index);
+        for (i, &sym_index) in symmetries.iter().enumerate() {
+            if old_value != 0 {
+                self.hashes[i] ^= cell_token(sym_index, old_value);
             }
-        } else {
-            let index = m.index();
-            let value = ((self.position.board as usize) >> (index * 2)) & 0b11;
-            let q = (index << 3) | (value << 1) | self.position.turn as usize;
-            self.hashes[0] ^= HASHES.hash(q);
+            self.hashes[i] ^= cell_token(sym_index, new_value);
         }
+
+        let turn_before = self.position.turn;
         self.position.apply(m);
+        if self.position.turn != turn_before {
+            for h in self.hashes.iter_mut() {
+                *h ^= side_to_move_token();
+            }
+        }
     }
 
     #[inline(always)]
@@ -388,10 +427,12 @@ mod tests {
             // There are 36 bits of state in the board, counting illegal moves,
             // over 68 billion states. Only 256,208 states are legal given terminal
             // states with wins. Taking into account the eight-way symmetry, we get
-            // a reduction in state space, but only a small reduction to 244,129
-            // distinct states.
+            // a reduction in state space to 33,986 distinct states -- cross-checked
+            // against an independent count keyed on `canonical_representation`'s
+            // output (turn, winner, canonical board) rather than the Zobrist hash,
+            // so this isn't just re-asserting whatever the hash happens to produce.
             assert_eq!(unhashed.len(), 256208);
-            assert_eq!(hashed.len(), 244129);
+            assert_eq!(hashed.len(), 33986);
         }
     }
 
