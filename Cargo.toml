@@ -28,6 +28,7 @@ workspace = true
 [workspace]
 resolver = "2"
 members = [
+    "bitboard",
     "mcts",
     "mcts-bench",
     "mcts-tune",
@@ -69,6 +70,7 @@ members = [
 # is still a full member, just reachable only via `--workspace` or `-p
 # mcts-examples --example foo`, matching how it's actually invoked.
 default-members = [
+    "bitboard",
     "mcts",
     "mcts-bench",
     "mcts-tune",
