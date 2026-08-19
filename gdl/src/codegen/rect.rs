@@ -1,10 +1,10 @@
 //! `Topology::Rect` codegen: lowers a `Program` into the text of a standalone `games/*`-shaped
-//! Rust crate, built on `game_core::bitboard::BitBoard<N, M>` -- the same backend
+//! Rust crate, built on `bitboard::Board<u64, Const<N>, Const<M>>` -- the same backend
 //! `core::interp::State` already binds `Program` to at runtime, but here specialized once, at
 //! generation time, into ordinary monomorphic Rust rather than re-walked per call. Compare
 //! `games/ttt/src/lib.rs` (hand-written) against this module's output for Tic-Tac-Toe
 //! (`games/ttt-gen/src/lib.rs`, checked in via `cargo run -p gdl --bin codegen`):
-//! representation choices differ (one `BitBoard` per player here vs. `games/ttt`'s packed 2-bit
+//! representation choices differ (one `Board` per player here vs. `games/ttt`'s packed 2-bit
 //! cells, no D4-symmetry-aware zobrist here), but both implement `mcts::game::Game` for the same
 //! rules and both pass the same oracle-comparison test (`tests/ttt_gen_oracle.rs`).
 //!
@@ -15,10 +15,11 @@ use crate::core::{BoolExpr, EndRule, Player, Program, Rect, Region};
 
 use super::Error;
 
-/// Lowers `region` into a Rust expression of type `Board` (a `game_core::bitboard::BitBoard<N,
-/// M>`), evaluated relative to `self.occupied: [Board; NUM_PLAYERS]` -- so the returned text is
-/// valid in any method with a `&self` receiver of that shape (`Position::gen_moves` and
-/// `Position::winner`, the only two call sites so far).
+/// Lowers `region` into a Rust expression of type `Board` (a
+/// `bitboard::Board<u64, Const<N>, Const<M>>`), evaluated relative to
+/// `self.occupied: [Board; NUM_PLAYERS]` -- so the returned text is valid in any method with a
+/// `&self` receiver of that shape (`Position::gen_moves` and `Position::winner`, the only two
+/// call sites so far).
 fn region_expr(region: &Region) -> Result<String, Error> {
     Ok(match region {
         Region::Occupied(Player(i)) => format!("self.occupied[{i}]"),
@@ -30,7 +31,7 @@ fn region_expr(region: &Region) -> Result<String, Error> {
         Region::Complement(a) => format!("!{}", region_expr(a)?),
         Region::Sites(sites) => {
             let mask = sites.iter().fold(0u64, |acc, &s| acc | (1 << s));
-            format!("Board::new(0b{mask:b})")
+            format!("Board::from_bits(0b{mask:b})")
         }
         Region::Intersect(..)
         | Region::Shift { .. }
@@ -140,7 +141,7 @@ pub fn generate(
 //
 // {game_name}, lowered from {source_path} via gdl::core::Program.
 
-use game_core::bitboard::BitBoard;
+use bitboard::Const;
 use game_core::display::{{RectangularBoard, RectangularBoardDisplay}};
 use mcts::game::{{Game, PlayerIndex}};
 use mcts::zobrist::LazyZobristTable;
@@ -151,7 +152,7 @@ const ROWS: usize = {rows};
 const COLS: usize = {cols};
 const NUM_PLAYERS: usize = {num_players};
 
-type Board = BitBoard<{rows}, {cols}>;
+type Board = bitboard::Board<u64, Const<{rows}>, Const<{cols}>>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Player {{
@@ -195,19 +196,20 @@ impl Position {{
     pub fn new() -> Self {{
         Self {{
             turn: Player::P0,
-            occupied: [Board::EMPTY; NUM_PLAYERS],
+            occupied: [Board::new_const(); NUM_PLAYERS],
         }}
     }}
 
     pub fn gen_moves(&self, actions: &mut Vec<Move>) {{
         let legal = {move_expr};
-        for s in legal {{
+        for s in legal.iter_set() {{
             actions.push(Move(s as u8));
         }}
     }}
 
     pub fn apply(&mut self, m: Move) {{
-        self.occupied[self.turn.to_index()].set(m.0 as usize);
+        let site = m.0 as usize;
+        self.occupied[self.turn.to_index()].set(site / COLS, site % COLS);
         self.turn = self.turn.next();
     }}
 
@@ -314,9 +316,8 @@ impl RectangularBoard for HashedPosition {{
     const NUM_DISPLAY_COLS: usize = COLS;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {{
-        let site = row * COLS + col;
         for p in 0..NUM_PLAYERS {{
-            if self.position.occupied[p].get(site) {{
+            if self.position.occupied[p].get(row, col) {{
                 return (b'A' + p as u8) as char;
             }}
         }}
