@@ -8,4 +8,4 @@ export * from "./types.js";
 export { GobanRenderer } from "./GobanRenderer.js";
 export { createSimpleSummary, formatMove } from "./summary.js";
 export { standardStarPoints } from "./star-points.js";
-export { createSizeField, type SizeConfig } from "./NewGameFields.js";
+export { createSizeField, createSizeRangeField, type SizeConfig } from "./NewGameFields.js";
