@@ -207,8 +207,12 @@ where
                                 shared.graph_stats,
                             );
                         }
-                        let prev_action =
-                            last_tree_action::<G>(shared.index, &stack, state, shared.explicit_dag);
+                        let prev_action = last_tree_action::<G>(
+                            shared.index,
+                            &stack,
+                            state,
+                            shared.use_transpositions,
+                        );
                         for _ in 0..k {
                             let trial = simulate_step(
                                 shared.max_playout_depth,

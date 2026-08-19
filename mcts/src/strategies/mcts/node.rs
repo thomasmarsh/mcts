@@ -755,8 +755,19 @@ pub fn real_action<G: Game>(
 /// `real_action` needs to translate `real_state`'s own node's `ChildArray`
 /// actions back to the literal board. `0` (identity) for the root (see
 /// `expand`'s doc comment: the root's own action list is never
-/// canonicalized) and for any search mode other than explicit
-/// `GraphSearch::Dag`.
+/// canonicalized) and for any search mode that doesn't share nodes across
+/// paths (`canonicalizes` is `false`): plain single-orientation tree search,
+/// with no transposition table at all.
+///
+/// `canonicalizes` must be `true` whenever a node can be reached by more
+/// than one real orientation -- not just explicit `GraphSearch::Dag`, but
+/// also the legacy `use_transpositions` transposition table (`SearchConfig::
+/// uses_transpositions()`), since that path shares a node's `ChildArray`
+/// across whatever real states hash-collide onto it exactly the same way
+/// Dag mode does. Passing `false` there while a game's `Game::zobrist_hash`
+/// folds symmetry into its hash (as ttt's `HashedPosition::hash` does)
+/// silently applies a `ChildArray` action generated in one real orientation
+/// against a different real orientation's state.
 ///
 /// Deliberately recomputed from `real_state` on every call rather than
 /// cached anywhere on the incoming edge: a node reached by more than one
@@ -767,11 +778,11 @@ pub fn real_action<G: Game>(
 /// reflecting whichever path happened to create the edge first, which is
 /// wrong for every other path that later reuses it.
 pub fn incoming_sym<G: Game>(
-    explicit_dag: bool,
+    canonicalizes: bool,
     is_root: bool,
     real_state: Real<&G::S>,
 ) -> Transform {
-    if explicit_dag && !is_root {
+    if canonicalizes && !is_root {
         G::canonical_representation(Real(real_state.0.clone())).1
     } else {
         Transform::IDENTITY

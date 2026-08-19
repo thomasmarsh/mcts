@@ -4,7 +4,7 @@ use mcts::zobrist::LazyZobristTable;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-const USE_SYMMETRY: bool = false;
+const USE_SYMMETRY: bool = true;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Piece {
