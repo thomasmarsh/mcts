@@ -714,9 +714,13 @@ mod tests {
         };
     }
 
-    // Sub-word board (9 bits, fits one word).
+    // Sub-word boards (fit in one word).
     oracle_tests!(oracle_3x3, 3, 1, 9);
+    oracle_tests!(oracle_6x6, 6, 1, 36);
     // Multi-word boards, matching Gonnect/AtariGo's real supported sizes.
     oracle_tests!(oracle_9x9, 9, 2, 81);
     oracle_tests!(oracle_13x13, 13, 3, 169);
+    // Multi-word board outside today's supported sizes, exercising a shape
+    // Phase 7's wider size range will expose.
+    oracle_tests!(oracle_11x11, 11, 2, 121);
 }
