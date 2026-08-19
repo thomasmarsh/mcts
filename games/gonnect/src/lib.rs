@@ -6,12 +6,12 @@ use game_core::bigbitboard;
 use game_core::bigbitboard::BigBitBoard;
 use game_core::display::RectangularBoard;
 use game_core::display::RectangularBoardDisplay;
+use game_core::go_engine::GoEngine;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::mem::swap;
 
 #[derive(Copy, Clone, Serialize, Debug, Default, Hash, PartialEq, Eq)]
 pub enum Player {
@@ -94,10 +94,9 @@ impl<const N: usize, const WORDS: usize> Move<N, WORDS> {
     }
 }
 
-#[derive(Clone, Copy, Serialize, Debug, Hash, PartialEq, Eq)]
-pub struct State<const N: usize, const WORDS: usize> {
-    black: BigBitBoard<N, N, WORDS>,
-    white: BigBitBoard<N, N, WORDS>,
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct State<const N: usize, const WORDS: usize, const CELLS: usize> {
+    engine: GoEngine<N, WORDS, CELLS>,
     ko_black: BigBitBoard<N, N, WORDS>,
     ko_white: BigBitBoard<N, N, WORDS>,
     turn: Player,
@@ -105,11 +104,10 @@ pub struct State<const N: usize, const WORDS: usize> {
     winner: bool,
 }
 
-impl<const N: usize, const WORDS: usize> Default for State<N, WORDS> {
+impl<const N: usize, const WORDS: usize, const CELLS: usize> Default for State<N, WORDS, CELLS> {
     fn default() -> Self {
         Self {
-            black: BigBitBoard::default(),
-            white: BigBitBoard::default(),
+            engine: GoEngine::default(),
             ko_black: BigBitBoard::ONES,
             ko_white: BigBitBoard::ONES,
             turn: Player::default(),
@@ -119,7 +117,7 @@ impl<const N: usize, const WORDS: usize> Default for State<N, WORDS> {
     }
 }
 
-impl<const N: usize, const WORDS: usize> State<N, WORDS> {
+impl<const N: usize, const WORDS: usize, const CELLS: usize> State<N, WORDS, CELLS> {
     #[inline(always)]
     pub fn from_parts(
         black: BigBitBoard<N, N, WORDS>,
@@ -131,8 +129,7 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
         winner: bool,
     ) -> Self {
         Self {
-            black,
-            white,
+            engine: GoEngine::from_boards(black, white),
             ko_black,
             ko_white,
             turn,
@@ -143,12 +140,12 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
 
     #[inline(always)]
     pub fn black(&self) -> BigBitBoard<N, N, WORDS> {
-        self.black
+        self.engine.black()
     }
 
     #[inline(always)]
     pub fn white(&self) -> BigBitBoard<N, N, WORDS> {
-        self.white
+        self.engine.white()
     }
 
     #[inline(always)]
@@ -163,14 +160,14 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
 
     #[inline(always)]
     fn occupied(&self) -> BigBitBoard<N, N, WORDS> {
-        self.black | self.white
+        self.black() | self.white()
     }
 
     #[inline(always)]
     fn player(&self, player: Player) -> BigBitBoard<N, N, WORDS> {
         match player {
-            Player::Black => self.black,
-            Player::White => self.white,
+            Player::Black => self.black(),
+            Player::White => self.white(),
         }
     }
 
@@ -185,10 +182,10 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
     #[inline(always)]
     fn color(&self, index: usize) -> Player {
         debug_assert!(self.occupied().get(index));
-        if self.black.get(index) {
+        if self.black().get(index) {
             Player::Black
         } else {
-            debug_assert!(self.white.get(index));
+            debug_assert!(self.white().get(index));
             Player::White
         }
     }
@@ -204,14 +201,7 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
 
     #[inline]
     fn valid(&self, index: usize) -> (bool, BigBitBoard<N, N, WORDS>) {
-        if (self.black | self.white).get(index) {
-            return (false, BigBitBoard::EMPTY);
-        }
-        bigbitboard::check_go_move::<N, WORDS>(
-            self.player(self.turn),
-            self.player(self.turn.next()),
-            index,
-        )
+        self.engine.check(self.turn == Player::Black, index)
     }
 
     #[inline]
@@ -223,25 +213,18 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
             self.winner = true;
             self.turn = self.turn.next();
         } else if *action == Move::SWAP {
-            swap(&mut self.black, &mut self.white);
+            let engine = GoEngine::from_boards(self.white(), self.black());
+            self.engine = engine;
             self.can_swap = false;
         } else {
             let index = action.0 as usize;
             debug_assert!(!self.occupied().get(index));
+            self.ko_black = self.black();
+            self.ko_white = self.white();
             let player = self.player(self.turn) | BigBitBoard::from_index(index);
-            let opponent = self.player(self.turn.next());
-            self.ko_black = self.black;
-            self.ko_white = self.white;
-            match self.turn {
-                Player::Black => {
-                    self.black = player;
-                    self.white = opponent & !action.1;
-                }
-                Player::White => {
-                    self.white = player;
-                    self.black = opponent & !action.1;
-                }
-            }
+            self.engine
+                .play(self.turn == Player::Black, index)
+                .expect("apply called with a move already validated by generate_actions");
             if player.has_opposite_connection4(index) {
                 self.winner = true;
             }
@@ -260,18 +243,18 @@ impl<const N: usize, const WORDS: usize> State<N, WORDS> {
 // Zobrist hashing for Gonnect is harder because of the repetition of the ko rule. A solution
 // would be to use Zobrist path hashing.
 #[derive(Clone)]
-pub struct Gonnect<const N: usize, const WORDS: usize>;
+pub struct Gonnect<const N: usize, const WORDS: usize, const CELLS: usize>;
 
-impl<const N: usize, const WORDS: usize> Game for Gonnect<N, WORDS> {
-    type S = State<N, WORDS>;
+impl<const N: usize, const WORDS: usize, const CELLS: usize> Game for Gonnect<N, WORDS, CELLS> {
+    type S = State<N, WORDS, CELLS>;
     type A = Move<N, WORDS>;
     type P = Player;
 
-    fn apply(mut state: State<N, WORDS>, action: &Move<N, WORDS>) -> State<N, WORDS> {
+    fn apply(mut state: State<N, WORDS, CELLS>, action: &Move<N, WORDS>) -> State<N, WORDS, CELLS> {
         state.apply(action)
     }
 
-    fn generate_actions(state: &State<N, WORDS>, actions: &mut Vec<Move<N, WORDS>>) {
+    fn generate_actions(state: &State<N, WORDS, CELLS>, actions: &mut Vec<Move<N, WORDS>>) {
         if state.can_swap && state.occupied().count_ones() == 1 {
             actions.push(Move::SWAP);
         }
@@ -286,15 +269,15 @@ impl<const N: usize, const WORDS: usize> Game for Gonnect<N, WORDS> {
         }
     }
 
-    fn is_terminal(state: &State<N, WORDS>) -> bool {
+    fn is_terminal(state: &State<N, WORDS, CELLS>) -> bool {
         state.winner
     }
 
-    fn player_to_move(state: &State<N, WORDS>) -> Player {
+    fn player_to_move(state: &State<N, WORDS, CELLS>) -> Player {
         state.turn
     }
 
-    fn winner(state: &State<N, WORDS>) -> Option<Player> {
+    fn winner(state: &State<N, WORDS, CELLS>) -> Option<Player> {
         if state.winner {
             Some(state.turn)
         } else {
@@ -302,7 +285,7 @@ impl<const N: usize, const WORDS: usize> Game for Gonnect<N, WORDS> {
         }
     }
 
-    fn parse_action(state: &State<N, WORDS>, input: &str) -> Option<Self::A> {
+    fn parse_action(state: &State<N, WORDS, CELLS>, input: &str) -> Option<Self::A> {
         if input.trim() == "swap" {
             if state.can_swap && state.occupied().count_ones() == 1 {
                 return Some(Move::SWAP);
@@ -357,14 +340,16 @@ impl<const N: usize, const WORDS: usize> Game for Gonnect<N, WORDS> {
     }
 }
 
-impl<const N: usize, const WORDS: usize> RectangularBoard for State<N, WORDS> {
+impl<const N: usize, const WORDS: usize, const CELLS: usize> RectangularBoard
+    for State<N, WORDS, CELLS>
+{
     const NUM_DISPLAY_ROWS: usize = N;
     const NUM_DISPLAY_COLS: usize = N;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {
-        if self.black.get_at(row, col) {
+        if self.black().get_at(row, col) {
             'X'
-        } else if self.white.get_at(row, col) {
+        } else if self.white().get_at(row, col) {
             'O'
         } else {
             '.'
@@ -372,15 +357,19 @@ impl<const N: usize, const WORDS: usize> RectangularBoard for State<N, WORDS> {
     }
 }
 
-impl<const N: usize, const WORDS: usize> fmt::Display for State<N, WORDS> {
+impl<const N: usize, const WORDS: usize, const CELLS: usize> fmt::Display
+    for State<N, WORDS, CELLS>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         RectangularBoardDisplay(self).fmt(f)
     }
 }
 
-struct MovesDisplay<const N: usize, const WORDS: usize>(State<N, WORDS>);
+struct MovesDisplay<const N: usize, const WORDS: usize, const CELLS: usize>(State<N, WORDS, CELLS>);
 
-impl<const N: usize, const WORDS: usize> RectangularBoard for MovesDisplay<N, WORDS> {
+impl<const N: usize, const WORDS: usize, const CELLS: usize> RectangularBoard
+    for MovesDisplay<N, WORDS, CELLS>
+{
     const NUM_DISPLAY_ROWS: usize = N;
     const NUM_DISPLAY_COLS: usize = N;
 
@@ -395,9 +384,9 @@ impl<const N: usize, const WORDS: usize> RectangularBoard for MovesDisplay<N, WO
             }
         }
 
-        if self.0.black.get_at(row, col) {
+        if self.0.black().get_at(row, col) {
             'X'
-        } else if self.0.white.get_at(row, col) {
+        } else if self.0.white().get_at(row, col) {
             'O'
         } else if found {
             '+'
@@ -408,8 +397,8 @@ impl<const N: usize, const WORDS: usize> RectangularBoard for MovesDisplay<N, WO
 }
 
 #[cfg(test)]
-impl<const N: usize, const WORDS: usize> mcts::strategies::mcts::render::NodeRender
-    for State<N, WORDS>
+impl<const N: usize, const WORDS: usize, const CELLS: usize>
+    mcts::strategies::mcts::render::NodeRender for State<N, WORDS, CELLS>
 {
 }
 
@@ -437,27 +426,27 @@ mod tests {
     /// cap below is generous headroom for a small board, not a proven
     /// bound. Hitting it is a correctness signal worth investigating, not
     /// just a slow test.
-    fn seeded_random_play<const N: usize, const WORDS: usize>(seed: u64) {
+    fn seeded_random_play<const N: usize, const WORDS: usize, const CELLS: usize>(seed: u64) {
         let mut rng = SmallRng::seed_from_u64(seed);
-        let mut state = State::<N, WORDS>::default();
+        let mut state = State::<N, WORDS, CELLS>::default();
         let max_plies = N * N * 8 + 32;
 
         for _ in 0..max_plies {
-            if Gonnect::<N, WORDS>::is_terminal(&state) {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&state) {
                 assert!(
-                    Gonnect::<N, WORDS>::winner(&state).is_some(),
+                    Gonnect::<N, WORDS, CELLS>::winner(&state).is_some(),
                     "a terminal Gonnect state must have a winner (draws are not possible)"
                 );
                 return;
             }
             let mut actions = Vec::new();
-            Gonnect::<N, WORDS>::generate_actions(&state, &mut actions);
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&state, &mut actions);
             assert!(
                 !actions.is_empty(),
                 "generate_actions must never be empty for a non-terminal state"
             );
             let action = actions[rng.gen_range(0..actions.len())];
-            state = Gonnect::<N, WORDS>::apply(state, &action);
+            state = Gonnect::<N, WORDS, CELLS>::apply(state, &action);
         }
         panic!("Gonnect<{N}> (seed {seed}) did not terminate within {max_plies} plies");
     }
@@ -465,7 +454,7 @@ mod tests {
     #[test]
     fn test_gonnect_seeded_playouts_terminate() {
         for seed in 0..200 {
-            seeded_random_play::<5, 1>(seed);
+            seeded_random_play::<5, 1, 25>(seed);
         }
     }
 
@@ -475,7 +464,7 @@ mod tests {
     #[test]
     fn test_gonnect_9x9_seeded_playouts_terminate() {
         for seed in 0..30 {
-            seeded_random_play::<9, 2>(seed);
+            seeded_random_play::<9, 2, 81>(seed);
         }
     }
 
@@ -488,9 +477,10 @@ mod tests {
     fn test_gonnect_3x3_all_lines_terminate_with_a_winner() {
         const N: usize = 3;
         const WORDS: usize = 1;
-        let start = State::<N, WORDS>::default();
-        let mut seen: HashSet<State<N, WORDS>> = HashSet::new();
-        let mut queue: VecDeque<State<N, WORDS>> = VecDeque::new();
+        const CELLS: usize = 9;
+        let start = State::<N, WORDS, CELLS>::default();
+        let mut seen: HashSet<State<N, WORDS, CELLS>> = HashSet::new();
+        let mut queue: VecDeque<State<N, WORDS, CELLS>> = VecDeque::new();
         seen.insert(start);
         queue.push_back(start);
 
@@ -502,27 +492,124 @@ mod tests {
                 "reachable-state graph is unexpectedly large -- possible non-termination"
             );
 
-            if Gonnect::<N, WORDS>::is_terminal(&state) {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&state) {
                 assert!(
-                    Gonnect::<N, WORDS>::winner(&state).is_some(),
+                    Gonnect::<N, WORDS, CELLS>::winner(&state).is_some(),
                     "a terminal Gonnect state must have a winner (draws are not possible)"
                 );
                 continue;
             }
 
             let mut actions = Vec::new();
-            Gonnect::<N, WORDS>::generate_actions(&state, &mut actions);
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&state, &mut actions);
             assert!(
                 !actions.is_empty(),
                 "generate_actions must never be empty for a non-terminal state"
             );
 
             for action in actions {
-                let next = Gonnect::<N, WORDS>::apply(state, &action);
+                let next = Gonnect::<N, WORDS, CELLS>::apply(state, &action);
                 if seen.insert(next) {
                     queue.push_back(next);
                 }
             }
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+    // Equivalence check: before retiring `check_go_move` as Gonnect's own
+    // legality/capture path (now `GoEngine::check`/`play`, see `State::valid`/
+    // `apply`), replay the same seeded-random-playout regression games above
+    // and assert the engine-backed action set matches a `check_go_move`
+    // oracle computed independently from the same board/turn/ko state at
+    // every ply.
+
+    /// Old-path oracle: legal actions computed directly from `check_go_move`
+    /// plus the ko check, against a plain `black`/`white`/`ko_black`/
+    /// `ko_white` set of boards, mirroring exactly what `State::valid`/
+    /// `is_ko`/`generate_actions` did before the `GoEngine` port.
+    fn old_path_actions<const N: usize, const WORDS: usize>(
+        black: BigBitBoard<N, N, WORDS>,
+        white: BigBitBoard<N, N, WORDS>,
+        ko_black: BigBitBoard<N, N, WORDS>,
+        ko_white: BigBitBoard<N, N, WORDS>,
+        turn: Player,
+        can_swap: bool,
+    ) -> Vec<Move<N, WORDS>> {
+        let occupied = black | white;
+        let (player, opponent) = match turn {
+            Player::Black => (black, white),
+            Player::White => (white, black),
+        };
+        let (player_ko, opponent_ko) = match turn {
+            Player::Black => (ko_black, ko_white),
+            Player::White => (ko_white, ko_black),
+        };
+        let mut actions = Vec::new();
+        if can_swap && occupied.count_ones() == 1 {
+            actions.push(Move::SWAP);
+        }
+        for index in !occupied {
+            let (valid, will_capture) =
+                bigbitboard::check_go_move::<N, WORDS>(player, opponent, index);
+            if !valid {
+                continue;
+            }
+            let would_be_player = player | BigBitBoard::from_index(index);
+            let would_be_opponent = opponent & !will_capture;
+            let is_ko = player_ko == would_be_player && opponent_ko == would_be_opponent;
+            if !is_ko {
+                actions.push(Move(index as u16, will_capture));
+            }
+        }
+        if actions.is_empty() {
+            actions.push(Move::NO_MOVE);
+        }
+        actions
+    }
+
+    fn seeded_random_play_matches_old_path<
+        const N: usize,
+        const WORDS: usize,
+        const CELLS: usize,
+    >(
+        seed: u64,
+    ) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::<N, WORDS, CELLS>::default();
+        let max_plies = N * N * 8 + 32;
+
+        for _ in 0..max_plies {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&state) {
+                return;
+            }
+            let mut actions = Vec::new();
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&state, &mut actions);
+            let old_actions = old_path_actions::<N, WORDS>(
+                state.black(),
+                state.white(),
+                state.ko_black,
+                state.ko_white,
+                state.turn(),
+                state.can_swap,
+            );
+            assert_eq!(
+                actions, old_actions,
+                "engine-backed action set diverged from the check_go_move oracle at seed {seed}"
+            );
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Gonnect::<N, WORDS, CELLS>::apply(state, &action);
+        }
+        panic!("Gonnect<{N}> (seed {seed}) did not terminate within {max_plies} plies");
+    }
+
+    #[test]
+    fn test_engine_backed_gonnect_matches_check_go_move_oracle() {
+        for seed in 0..200 {
+            seeded_random_play_matches_old_path::<5, 1, 25>(seed);
+        }
+        for seed in 0..30 {
+            seeded_random_play_matches_old_path::<9, 2, 81>(seed);
         }
     }
 
@@ -532,7 +619,7 @@ mod tests {
                 test_gonnect_seeded_playouts_terminate covers the same termination concern \
                 deterministically"]
     fn test_gonnect_render() {
-        let mut search = TreeSearch::<Gonnect<3, 1>, strategy::Ucb1>::new().config(
+        let mut search = TreeSearch::<Gonnect<3, 1, 9>, strategy::Ucb1>::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)

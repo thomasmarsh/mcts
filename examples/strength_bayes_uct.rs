@@ -23,7 +23,7 @@ use mcts::strategies::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type G7 = Gonnect<7, 1>;
+type G7 = Gonnect<7, 1, 49>;
 
 fn fmt_result(r: &GameResult) -> String {
     let (point, (lo, hi)) = r.win_rate_ci(1.96);

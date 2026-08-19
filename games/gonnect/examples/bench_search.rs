@@ -44,15 +44,17 @@ fn presets() -> PresetTable {
 
 /// Fixed-iteration, single-threaded "strong" search from the empty board.
 /// Returns (elapsed, iterations/sec).
-fn bench_search<const N: usize, const WORDS: usize>(iterations: usize) -> (Duration, f64) {
+fn bench_search<const N: usize, const WORDS: usize, const CELLS: usize>(
+    iterations: usize,
+) -> (Duration, f64) {
     let mut search = presets()
-        .build_with::<Gonnect<N, WORDS>>("strong", 0, |b: &mut SearchBudget| {
+        .build_with::<Gonnect<N, WORDS, CELLS>>("strong", 0, |b: &mut SearchBudget| {
             b.threads = 1;
             b.max_iterations = Some(iterations);
             b.max_time = None;
         })
         .expect("\"strong\" preset must be buildable");
-    let state = State::<N, WORDS>::default();
+    let state = State::<N, WORDS, CELLS>::default();
 
     let t0 = Instant::now();
     let _ = search.choose_action(&state);
@@ -65,7 +67,8 @@ fn bench_search<const N: usize, const WORDS: usize>(iterations: usize) -> (Durat
 /// shape as `SimulateStrategy::playout`'s rollouts), timing total wall time
 /// against time spent purely inside `generate_actions`. Returns
 /// (total_elapsed, generate_actions_elapsed, total_plies).
-fn bench_rollouts<const N: usize, const WORDS: usize>() -> (Duration, Duration, usize) {
+fn bench_rollouts<const N: usize, const WORDS: usize, const CELLS: usize>(
+) -> (Duration, Duration, usize) {
     let mut rng = SmallRng::seed_from_u64(ROLLOUT_SEED);
     let max_plies = N * N * 8 + 32;
     let mut total_plies = 0usize;
@@ -73,17 +76,17 @@ fn bench_rollouts<const N: usize, const WORDS: usize>() -> (Duration, Duration, 
 
     let t0 = Instant::now();
     for _ in 0..ROLLOUT_GAMES {
-        let mut state = State::<N, WORDS>::default();
+        let mut state = State::<N, WORDS, CELLS>::default();
         for _ in 0..max_plies {
-            if Gonnect::<N, WORDS>::is_terminal(&state) {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&state) {
                 break;
             }
             let mut actions = Vec::new();
             let ga0 = Instant::now();
-            Gonnect::<N, WORDS>::generate_actions(&state, &mut actions);
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&state, &mut actions);
             gen_actions_time += ga0.elapsed();
             let action = actions[rng.gen_range(0..actions.len())];
-            state = Gonnect::<N, WORDS>::apply(state, &action);
+            state = Gonnect::<N, WORDS, CELLS>::apply(state, &action);
             total_plies += 1;
         }
     }
@@ -91,9 +94,9 @@ fn bench_rollouts<const N: usize, const WORDS: usize>() -> (Duration, Duration, 
     (total_elapsed, gen_actions_time, total_plies)
 }
 
-fn run_size<const N: usize, const WORDS: usize>(iterations: usize) {
-    let (search_elapsed, rate) = bench_search::<N, WORDS>(iterations);
-    let (rollout_total, rollout_gen_actions, total_plies) = bench_rollouts::<N, WORDS>();
+fn run_size<const N: usize, const WORDS: usize, const CELLS: usize>(iterations: usize) {
+    let (search_elapsed, rate) = bench_search::<N, WORDS, CELLS>(iterations);
+    let (rollout_total, rollout_gen_actions, total_plies) = bench_rollouts::<N, WORDS, CELLS>();
     let gen_actions_pct = 100.0 * rollout_gen_actions.as_secs_f64() / rollout_total.as_secs_f64();
 
     println!("=== {N}x{N} ===");
@@ -122,7 +125,7 @@ fn main() {
     println!("Rollouts: {ROLLOUT_GAMES} seeded uniform-random self-play games per size.");
     println!();
 
-    run_size::<9, 2>(iterations);
-    run_size::<13, 3>(iterations);
-    run_size::<19, 6>(iterations);
+    run_size::<9, 2, 81>(iterations);
+    run_size::<13, 3, 169>(iterations);
+    run_size::<19, 6, 361>(iterations);
 }
