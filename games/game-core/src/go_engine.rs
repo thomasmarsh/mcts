@@ -35,7 +35,7 @@ use crate::bigbitboard::BigBitBoard;
 /// array length from another const generic, so callers supply it and
 /// [`CHECK_CELLS`](Self::CHECK_CELLS) catches a mismatch at
 /// monomorphization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug)]
 pub struct GoEngine<const N: usize, const WORDS: usize, const CELLS: usize> {
     black: BigBitBoard<N, N, WORDS>,
     white: BigBitBoard<N, N, WORDS>,
@@ -48,6 +48,36 @@ pub struct GoEngine<const N: usize, const WORDS: usize, const CELLS: usize> {
     /// `liberties[r]` is the liberty count of the group represented by `r`,
     /// valid only when `group_rep[r] == r`.
     liberties: [u16; CELLS],
+}
+
+/// Which cell `play` happens to pick as a group's representative (and thus
+/// the contents of `group_rep`/`chain_next`/`liberties` at non-representative
+/// slots) depends on move order, not just the resulting position -- two
+/// engines reached by different move sequences can have identical `black`/
+/// `white` occupancy with different internal bookkeeping. Callers (transposition
+/// tables, opening-book state indices, the exhaustive-search regression tests
+/// in `atarigo`/`gonnect`) all mean "same position" when they compare states,
+/// so equality/hashing here is defined purely on occupancy, matching what
+/// `check`/`play` actually depend on externally -- the group/liberty tables
+/// are a deterministic function of `black`/`white` and carry no extra
+/// information once occupancy agrees.
+impl<const N: usize, const WORDS: usize, const CELLS: usize> PartialEq
+    for GoEngine<N, WORDS, CELLS>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.black == other.black && self.white == other.white
+    }
+}
+
+impl<const N: usize, const WORDS: usize, const CELLS: usize> Eq for GoEngine<N, WORDS, CELLS> {}
+
+impl<const N: usize, const WORDS: usize, const CELLS: usize> std::hash::Hash
+    for GoEngine<N, WORDS, CELLS>
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.black.hash(state);
+        self.white.hash(state);
+    }
 }
 
 impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, CELLS> {

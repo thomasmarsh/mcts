@@ -29,7 +29,7 @@ const PRESET_SEED: u64 = 0;
 /// embedded defaults, or an operator-supplied override file named by
 /// `GONNECT_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
 /// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
-/// `WORDS`, only by which `Gonnect<N, WORDS>` `PresetTable::build` is
+/// `WORDS`, only by which `Gonnect<N, WORDS, CELLS>` `PresetTable::build` is
 /// monomorphized for at each call site.
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
@@ -41,7 +41,7 @@ fn presets() -> &'static PresetTable {
 }
 
 /// `(N, WORDS)` pairs this binary serves. Each is a distinct
-/// `State<N, WORDS>` monomorphization -- see `dispatch_size!` below -- so
+/// `State<N, WORDS, CELLS>` monomorphization -- see `dispatch_size!` below -- so
 /// board size is chosen at request time (via `new_state`'s `{"size": N}`
 /// config, or inferred from an existing state's cell count) rather than
 /// fixed at compile time. 13x13 is Gonnect's traditional board size and
@@ -49,27 +49,30 @@ fn presets() -> &'static PresetTable {
 const SUPPORTED_SIZES: &[(usize, usize)] = &[(9, 2), (13, 3), (19, 6)];
 const DEFAULT_SIZE: usize = 13;
 
-/// Runs `$body` with `$n`/`$words` bound as the matching `usize` consts for
-/// board size `$size` (a runtime value). The match arms double as
+/// Runs `$body` with `$n`/`$words`/`$cells` bound as the matching `usize`
+/// consts for board size `$size` (a runtime value). The match arms double as
 /// validation: `$size` must be one of `SUPPORTED_SIZES` or the default arm
 /// returns a `HostError::bad_request` -- so every caller of this macro
 /// implicitly rejects an unsupported size before touching a `State`.
 macro_rules! dispatch_size {
-    ($size:expr, $n:ident, $words:ident, $body:block) => {
+    ($size:expr, $n:ident, $words:ident, $cells:ident, $body:block) => {
         match $size {
             9 => {
                 const $n: usize = 9;
                 const $words: usize = 2;
+                const $cells: usize = 81;
                 $body
             }
             13 => {
                 const $n: usize = 13;
                 const $words: usize = 3;
+                const $cells: usize = 169;
                 $body
             }
             19 => {
                 const $n: usize = 19;
                 const $words: usize = 6;
+                const $cells: usize = 361;
                 $body
             }
             other => {
@@ -131,7 +134,9 @@ fn color_at<const N: usize, const WORDS: usize>(
     }
 }
 
-fn state_to_value<const N: usize, const WORDS: usize>(s: &State<N, WORDS>) -> Value {
+fn state_to_value<const N: usize, const WORDS: usize, const CELLS: usize>(
+    s: &State<N, WORDS, CELLS>,
+) -> Value {
     serde_json::to_value(WireState {
         turn: player_name(s.turn()).into(),
         can_swap: true,
@@ -165,7 +170,9 @@ fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
         .ok_or_else(|| HostError::bad_request(format!("unexpected cell count {len}")))
 }
 
-fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N, WORDS> {
+fn state_from_wire<const N: usize, const WORDS: usize, const CELLS: usize>(
+    w: &WireState,
+) -> State<N, WORDS, CELLS> {
     let mut black = BigBitBoard::EMPTY;
     let mut white = BigBitBoard::EMPTY;
     for (i, cell) in w.cells.iter().enumerate() {
@@ -204,9 +211,9 @@ fn book_path(n: usize) -> std::path::PathBuf {
 /// for the life of the subprocess, so this is exactly one load per game
 /// session, not one per move.
 struct GonnectAdapter {
-    book_9: Option<book::BookIndex<9, 2>>,
-    book_13: Option<book::BookIndex<13, 3>>,
-    book_19: Option<book::BookIndex<19, 6>>,
+    book_9: Option<book::BookIndex<9, 2, 81>>,
+    book_13: Option<book::BookIndex<13, 3, 169>>,
+    book_19: Option<book::BookIndex<19, 6, 361>>,
 }
 
 impl GonnectAdapter {
@@ -223,15 +230,15 @@ impl GonnectAdapter {
     /// self-play-generated at production strength, so it's a fit for
     /// strengthening the strong preset, not for the easy one's purpose of
     /// being beatable.
-    fn augmented_preset<const N: usize, const WORDS: usize>(
+    fn augmented_preset<const N: usize, const WORDS: usize, const CELLS: usize>(
         &self,
         preset: &str,
         custom: Option<&mcts_tune::presets::CustomStrategySpec>,
-    ) -> Result<Box<dyn Search<G = Gonnect<N, WORDS>> + '_>, HostError>
+    ) -> Result<Box<dyn Search<G = Gonnect<N, WORDS, CELLS>> + '_>, HostError>
     where
-        Self: BookFor<N, WORDS>,
+        Self: BookFor<N, WORDS, CELLS>,
     {
-        let inner = mcts_tune::presets::build_strategy::<Gonnect<N, WORDS>>(
+        let inner = mcts_tune::presets::build_strategy::<Gonnect<N, WORDS, CELLS>>(
             presets(),
             preset,
             custom,
@@ -247,23 +254,23 @@ impl GonnectAdapter {
 /// Selects `GonnectAdapter`'s size-specific book field generically, so
 /// `dispatch_size!`'s shared body (macro-expanded once per size, with `N`/
 /// `WORDS` bound as literal consts per arm) can look up the right one via
-/// `<GonnectAdapter as BookFor<N, WORDS>>::book_index(self)` without needing a
+/// `<GonnectAdapter as BookFor<N, WORDS, CELLS>>::book_index(self)` without needing a
 /// separate hand-written match at each call site.
-trait BookFor<const N: usize, const WORDS: usize> {
-    fn book_index(&self) -> Option<&book::BookIndex<N, WORDS>>;
+trait BookFor<const N: usize, const WORDS: usize, const CELLS: usize> {
+    fn book_index(&self) -> Option<&book::BookIndex<N, WORDS, CELLS>>;
 }
-impl BookFor<9, 2> for GonnectAdapter {
-    fn book_index(&self) -> Option<&book::BookIndex<9, 2>> {
+impl BookFor<9, 2, 81> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<9, 2, 81>> {
         self.book_9.as_ref()
     }
 }
-impl BookFor<13, 3> for GonnectAdapter {
-    fn book_index(&self) -> Option<&book::BookIndex<13, 3>> {
+impl BookFor<13, 3, 169> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<13, 3, 169>> {
         self.book_13.as_ref()
     }
 }
-impl BookFor<19, 6> for GonnectAdapter {
-    fn book_index(&self) -> Option<&book::BookIndex<19, 6>> {
+impl BookFor<19, 6, 361> for GonnectAdapter {
+    fn book_index(&self) -> Option<&book::BookIndex<19, 6, 361>> {
         self.book_19.as_ref()
     }
 }
@@ -284,18 +291,18 @@ impl GameAdapter for GonnectAdapter {
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         let config: NewGameConfig = serde_json::from_value(config)
             .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
-        dispatch_size!(config.size, N, WORDS, {
-            Ok(state_to_value(&State::<N, WORDS>::default()))
+        dispatch_size!(config.size, N, WORDS, CELLS, {
+            Ok(state_to_value(&State::<N, WORDS, CELLS>::default()))
         })
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
             let mut mv = Vec::new();
-            if !Gonnect::<N, WORDS>::is_terminal(&s) {
-                Gonnect::<N, WORDS>::generate_actions(&s, &mut mv);
+            if !Gonnect::<N, WORDS, CELLS>::is_terminal(&s) {
+                Gonnect::<N, WORDS, CELLS>::generate_actions(&s, &mut mv);
             }
             Ok(mv
                 .into_iter()
@@ -306,34 +313,34 @@ impl GameAdapter for GonnectAdapter {
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
             let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
                 .map_err(|e| HostError::bad_request(e.to_string()))?;
-            if Gonnect::<N, WORDS>::is_terminal(&s) {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
             let mut legal = Vec::new();
-            Gonnect::<N, WORDS>::generate_actions(&s, &mut legal);
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&s, &mut legal);
             if !legal.contains(&m) {
                 return Err(HostError::bad_request("illegal move"));
             }
-            Ok(state_to_value(&Gonnect::<N, WORDS>::apply(s, &m)))
+            Ok(state_to_value(&Gonnect::<N, WORDS, CELLS>::apply(s, &m)))
         })
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            let winner = Gonnect::<N, WORDS>::winner(&s);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            let winner = Gonnect::<N, WORDS, CELLS>::winner(&s);
             serde_json::to_value(GameView {
                 turn: player_name(s.turn()).into(),
                 cells: (0..N * N)
                     .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
                     .collect(),
                 winner: winner.map(|p| player_name(p).to_string()),
-                terminal: Gonnect::<N, WORDS>::is_terminal(&s),
+                terminal: Gonnect::<N, WORDS, CELLS>::is_terminal(&s),
             })
             .map_err(|e| HostError::internal(e.to_string()))
         })
@@ -353,14 +360,14 @@ impl GameAdapter for GonnectAdapter {
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            if Gonnect::<N, WORDS>::is_terminal(&s) {
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = self.augmented_preset::<N, WORDS>(preset, custom_spec.as_ref())?;
+            let mut ai = self.augmented_preset::<N, WORDS, CELLS>(preset, custom_spec.as_ref())?;
             let action = ai.choose_action(&s);
-            let next = Gonnect::<N, WORDS>::apply(s, &action);
+            let next = Gonnect::<N, WORDS, CELLS>::apply(s, &action);
             Ok(AiMoveResult {
                 mv: serde_json::to_value(action).unwrap(),
                 state: state_to_value(&next),
@@ -380,12 +387,12 @@ impl GameAdapter for GonnectAdapter {
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            if Gonnect::<N, WORDS>::is_terminal(&s) {
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = self.augmented_preset::<N, WORDS>(preset, custom_spec.as_ref())?;
+            let mut ai = self.augmented_preset::<N, WORDS, CELLS>(preset, custom_spec.as_ref())?;
             let _ = ai.choose_action(&s);
             let report = ai.root_report(&s);
             let suggested = report
@@ -445,7 +452,7 @@ impl GameAdapter for GonnectAdapter {
         // Gonnect's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s
         // `strategy_tune_eval` doc comment.
-        dispatch_size!(size, N, WORDS, {
+        dispatch_size!(size, N, WORDS, CELLS, {
             let outcome = if let Some(cfg) = baseline_config {
                 let baseline_seed = seed.unwrap_or(0);
                 // This opponent is itself a `build_search`-built config, on
@@ -462,7 +469,12 @@ impl GameAdapter for GonnectAdapter {
                 // played -- mirrors how a bad candidate `params` is already
                 // rejected during `TrialParams` deserialization inside
                 // `strategy_tune_eval` itself.
-                mcts_tune::build_search::<Gonnect<N, WORDS>>(&cfg, baseline_seed, false, &budget)?;
+                mcts_tune::build_search::<Gonnect<N, WORDS, CELLS>>(
+                    &cfg,
+                    baseline_seed,
+                    false,
+                    &budget,
+                )?;
                 mcts_tune::strategy_tune_eval(
                     &params,
                     rounds,
@@ -470,7 +482,7 @@ impl GameAdapter for GonnectAdapter {
                     false,
                     budget,
                     move || {
-                        mcts_tune::build_search::<Gonnect<N, WORDS>>(
+                        mcts_tune::build_search::<Gonnect<N, WORDS, CELLS>>(
                             &cfg,
                             baseline_seed,
                             false,
@@ -495,7 +507,7 @@ impl GameAdapter for GonnectAdapter {
                     },
                     move || {
                         presets()
-                            .build::<Gonnect<N, WORDS>>("strong", PRESET_SEED)
+                            .build::<Gonnect<N, WORDS, CELLS>>("strong", PRESET_SEED)
                             .expect("\"strong\" preset must be buildable")
                     },
                     Default::default(),
@@ -539,8 +551,9 @@ impl GameAdapter for GonnectAdapter {
             seed: seed.unwrap_or(0),
             ..Default::default()
         };
-        dispatch_size!(size, N, WORDS, {
-            let built = book::build::<N, WORDS>(&config, None, |_round, _plies, _utilities| {});
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let built =
+                book::build::<N, WORDS, CELLS>(&config, None, |_round, _plies, _utilities| {});
             serde_json::to_value(built).map_err(|e| HostError::internal(e.to_string()))
         })
     }
