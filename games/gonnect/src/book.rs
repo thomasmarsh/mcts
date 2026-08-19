@@ -10,8 +10,8 @@
 //! structure. This module supplies the game-specific plumbing for both
 //! directions: building a book (`build`, below) and consulting one during
 //! live play (`BookIndex`/`BookAugmented`, at the bottom of this file) --
-//! a `TreeSearch<Gonnect<N, WORDS, CELLS>, strategy::QuasiBestFirst>` configured
-//! the way `TreeSearch::make_book_entry` requires (`expand_threshold: 0`,
+//! a `TreeSearch<Gonnect, strategy::QuasiBestFirst>` configured the way
+//! `TreeSearch::make_book_entry` requires (`expand_threshold: 0`,
 //! `max_iterations: 1`), driven in a loop that folds each finished game
 //! back into the book before the next one starts.
 
@@ -58,9 +58,9 @@ impl Default for BookBuildConfig {
     }
 }
 
-/// Runs `config.rounds` self-play games for board size `(N, WORDS)`,
-/// split as evenly as possible across `config.num_workers` worker threads,
-/// and returns the combined book.
+/// Runs `config.rounds` self-play games on a `size x size` board, split as
+/// evenly as possible across `config.num_workers` worker threads, and
+/// returns the combined book.
 ///
 /// `seed`, if given, is folded in as each worker's starting point: every
 /// worker plays its own share of games against a private clone of `seed`
@@ -79,88 +79,82 @@ impl Default for BookBuildConfig {
 /// that game, but with `num_workers > 1` calls arrive in completion order
 /// across workers, not strictly increasing. `plies` is the finished game's
 /// length; `utilities` is that game's per-player outcome.
-pub fn build<const N: usize, const WORDS: usize, const CELLS: usize>(
+pub fn build(
+    size: usize,
     config: &BookBuildConfig,
-    seed: Option<&OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A>>,
+    seed: Option<&OpeningBook<<Gonnect as Game>::A>>,
     mut on_game: impl FnMut(u32, usize, &[f64]),
-) -> OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A> {
-    let num_players = Gonnect::<N, WORDS, CELLS>::num_players();
+) -> OpeningBook<<Gonnect as Game>::A> {
+    let num_players = Gonnect::num_players();
     let num_workers = config.num_workers.max(1);
     let base_rounds = config.rounds / num_workers as u32;
     let extra_rounds = config.rounds % num_workers as u32;
-    let initial = State::<N, WORDS, CELLS>::default();
+    let initial = State::new(size);
 
     let (tx, rx) = std::sync::mpsc::channel::<(u32, usize, Vec<f64>)>();
-    let deltas: Vec<OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A>> =
-        std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(num_workers);
-            let mut round_start = 0u32;
-            for worker in 0..num_workers {
-                let worker_rounds = base_rounds + u32::from((worker as u32) < extra_rounds);
-                let round_base = round_start;
-                round_start += worker_rounds;
-                let tx = tx.clone();
-                // Distinct, well-separated per-worker RNG seeds so parallel
-                // workers don't just replay the same games -- see `select::
-                // quasi`'s epsilon-greedy fallback for where randomness enters.
-                let worker_seed = config
-                    .seed
-                    .wrapping_add((worker as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let deltas: Vec<OpeningBook<<Gonnect as Game>::A>> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(num_workers);
+        let mut round_start = 0u32;
+        for worker in 0..num_workers {
+            let worker_rounds = base_rounds + u32::from((worker as u32) < extra_rounds);
+            let round_base = round_start;
+            round_start += worker_rounds;
+            let tx = tx.clone();
+            let initial = initial.clone();
+            // Distinct, well-separated per-worker RNG seeds so parallel
+            // workers don't just replay the same games -- see `select::
+            // quasi`'s epsilon-greedy fallback for where randomness enters.
+            let worker_seed = config
+                .seed
+                .wrapping_add((worker as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
 
-                handles.push(scope.spawn(move || {
-                    let inner_search =
-                        TreeSearch::<Gonnect<N, WORDS, CELLS>, strategy::Ucb1Mast>::new().config(
-                            SearchConfig::new()
-                                .name("gonnect/book-inner")
-                                .expand_threshold(1)
-                                .max_iterations(config.inner_iterations)
-                                .q_init(QInit::Infinity),
-                        );
+            handles.push(scope.spawn(move || {
+                let inner_search = TreeSearch::<Gonnect, strategy::Ucb1Mast>::new().config(
+                    SearchConfig::new()
+                        .name("gonnect/book-inner")
+                        .expand_threshold(1)
+                        .max_iterations(config.inner_iterations)
+                        .q_init(QInit::Infinity),
+                );
 
-                    let qbf = select::QuasiBestFirst::<
-                            Gonnect<N, WORDS, CELLS>,
-                            strategy::Ucb1Mast,
-                        >::new()
-                        .search(inner_search);
+                let qbf = select::QuasiBestFirst::<Gonnect, strategy::Ucb1Mast>::new()
+                    .search(inner_search);
 
-                    let mut top_select =
-                        select::EpsilonGreedy::<Gonnect<N, WORDS, CELLS>, _>::new()
-                            .epsilon(config.top_epsilon)
-                            .inner(qbf);
-                    if let Some(seed_book) = seed {
-                        top_select.inner.book = seed_book.clone();
+                let mut top_select = select::EpsilonGreedy::<Gonnect, _>::new()
+                    .epsilon(config.top_epsilon)
+                    .inner(qbf);
+                if let Some(seed_book) = seed {
+                    top_select.inner.book = seed_book.clone();
+                }
+
+                let mut search = TreeSearch::<Gonnect, strategy::QuasiBestFirst>::new().config(
+                    SearchConfig::new()
+                        .name("gonnect/book-build")
+                        .select(top_select)
+                        .expand_threshold(0)
+                        .max_iterations(1)
+                        .seed(worker_seed),
+                );
+
+                let mut delta = OpeningBook::new(num_players);
+                for local_round in 0..worker_rounds {
+                    let (actions, utilities) = search.make_book_entry(&initial);
+                    let plies = actions.len();
+                    if !actions.is_empty() {
+                        search.config.select.inner.book.add(&actions, &utilities);
+                        delta.add(&actions, &utilities);
                     }
-
-                    let mut search =
-                        TreeSearch::<Gonnect<N, WORDS, CELLS>, strategy::QuasiBestFirst>::new()
-                            .config(
-                                SearchConfig::new()
-                                    .name("gonnect/book-build")
-                                    .select(top_select)
-                                    .expand_threshold(0)
-                                    .max_iterations(1)
-                                    .seed(worker_seed),
-                            );
-
-                    let mut delta = OpeningBook::new(num_players);
-                    for local_round in 0..worker_rounds {
-                        let (actions, utilities) = search.make_book_entry(&initial);
-                        let plies = actions.len();
-                        if !actions.is_empty() {
-                            search.config.select.inner.book.add(&actions, &utilities);
-                            delta.add(&actions, &utilities);
-                        }
-                        let _ = tx.send((round_base + local_round, plies, utilities));
-                    }
-                    delta
-                }));
-            }
-            drop(tx);
-            for (round, plies, utilities) in rx.iter() {
-                on_game(round, plies, &utilities);
-            }
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+                    let _ = tx.send((round_base + local_round, plies, utilities));
+                }
+                delta
+            }));
+        }
+        drop(tx);
+        for (round, plies, utilities) in rx.iter() {
+            on_game(round, plies, &utilities);
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
     let mut book = seed
         .cloned()
@@ -175,20 +169,21 @@ pub fn build<const N: usize, const WORDS: usize, const CELLS: usize>(
 /// `OpeningBook::build_state_index`'s doc comment), so a live position can
 /// be looked up directly instead of needing the move sequence that reached
 /// it -- `GameAdapter::ai_move`/`analyze` only ever see the current state.
-pub struct BookIndex<const N: usize, const WORDS: usize, const CELLS: usize> {
-    book: OpeningBook<Move<N, WORDS>>,
-    state_index: HashMap<State<N, WORDS, CELLS>, index::Id>,
+pub struct BookIndex {
+    book: OpeningBook<Move>,
+    state_index: HashMap<State, index::Id>,
 }
 
-impl<const N: usize, const WORDS: usize, const CELLS: usize> BookIndex<N, WORDS, CELLS> {
-    /// Reads and indexes the book file at `path`. `None` on any failure
-    /// (missing file, unparseable JSON) -- a book that hasn't been built
-    /// yet for this size is the normal case, not an error, so callers fall
-    /// back to unaugmented search rather than propagating one.
-    pub fn load(path: &std::path::Path) -> Option<Self> {
+impl BookIndex {
+    /// Reads and indexes the book file at `path`, for a `size x size` board.
+    /// `None` on any failure (missing file, unparseable JSON) -- a book
+    /// that hasn't been built yet for this size is the normal case, not an
+    /// error, so callers fall back to unaugmented search rather than
+    /// propagating one.
+    pub fn load(path: &std::path::Path, size: usize) -> Option<Self> {
         let json = std::fs::read_to_string(path).ok()?;
-        let book: OpeningBook<Move<N, WORDS>> = serde_json::from_str(&json).ok()?;
-        let state_index = book.build_state_index::<Gonnect<N, WORDS, CELLS>>(State::default());
+        let book: OpeningBook<Move> = serde_json::from_str(&json).ok()?;
+        let state_index = book.build_state_index::<Gonnect>(State::new(size));
         Some(Self { book, state_index })
     }
 }
@@ -206,22 +201,17 @@ pub const MIN_BOOK_VISITS: u64 = 5;
 /// state to integrate with, and a PN-MCTS-style exactness guarantee isn't
 /// undermined since the book never touches search internals, only replaces
 /// `choose_action`'s result outright when confident.
-pub struct BookAugmented<'a, const N: usize, const WORDS: usize, const CELLS: usize> {
-    inner: Box<dyn Search<G = Gonnect<N, WORDS, CELLS>>>,
-    book: &'a BookIndex<N, WORDS, CELLS>,
+pub struct BookAugmented<'a> {
+    inner: Box<dyn Search<G = Gonnect>>,
+    book: &'a BookIndex,
     /// Set by the most recent `choose_action` call iff it was answered
     /// from the book, so `root_report` can report the book's own stats
     /// instead of `inner`'s (which never ran).
     last_book_id: Option<index::Id>,
 }
 
-impl<'a, const N: usize, const WORDS: usize, const CELLS: usize>
-    BookAugmented<'a, N, WORDS, CELLS>
-{
-    pub fn new(
-        inner: Box<dyn Search<G = Gonnect<N, WORDS, CELLS>>>,
-        book: &'a BookIndex<N, WORDS, CELLS>,
-    ) -> Self {
+impl<'a> BookAugmented<'a> {
+    pub fn new(inner: Box<dyn Search<G = Gonnect>>, book: &'a BookIndex) -> Self {
         Self {
             inner,
             book,
@@ -230,10 +220,8 @@ impl<'a, const N: usize, const WORDS: usize, const CELLS: usize>
     }
 }
 
-impl<const N: usize, const WORDS: usize, const CELLS: usize> Search
-    for BookAugmented<'_, N, WORDS, CELLS>
-{
-    type G = Gonnect<N, WORDS, CELLS>;
+impl Search for BookAugmented<'_> {
+    type G = Gonnect;
 
     fn friendly_name(&self) -> String {
         format!("book+{}", self.inner.friendly_name())
@@ -243,11 +231,11 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> Search
         self.inner.set_friendly_name(name);
     }
 
-    fn choose_action(&mut self, state: &State<N, WORDS, CELLS>) -> Move<N, WORDS> {
+    fn choose_action(&mut self, state: &State) -> Move {
         self.last_book_id = None;
         if let Some(&id) = self.book.state_index.get(state) {
             if self.book.book.num_visits_at(id) >= MIN_BOOK_VISITS {
-                let player = Gonnect::<N, WORDS, CELLS>::player_to_move(state).to_index();
+                let player = Gonnect::player_to_move(state).to_index();
                 if let Some((action, _, _)) =
                     self.book.book.children_at(id, player).into_iter().next()
                 {
@@ -259,15 +247,15 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> Search
         self.inner.choose_action(state)
     }
 
-    fn principle_variation(&self) -> Vec<Move<N, WORDS>> {
+    fn principle_variation(&self) -> Vec<Move> {
         self.inner.principle_variation()
     }
 
-    fn root_report(&self, state: &State<N, WORDS, CELLS>) -> RootReport<Move<N, WORDS>> {
+    fn root_report(&self, state: &State) -> RootReport<Move> {
         let Some(id) = self.last_book_id else {
             return self.inner.root_report(state);
         };
-        let player = Gonnect::<N, WORDS, CELLS>::player_to_move(state).to_index();
+        let player = Gonnect::player_to_move(state).to_index();
         let actions: Vec<_> = self
             .book
             .book
@@ -302,15 +290,13 @@ mod tests {
     /// how many times it was actually asked -- lets tests assert
     /// `BookAugmented` skips the wrapped search entirely on a confident
     /// book hit, rather than merely happening to agree with it.
-    struct StubSearch<const N: usize, const WORDS: usize, const CELLS: usize> {
-        action: Move<N, WORDS>,
+    struct StubSearch {
+        action: Move,
         calls: Arc<AtomicUsize>,
     }
 
-    impl<const N: usize, const WORDS: usize, const CELLS: usize> Search
-        for StubSearch<N, WORDS, CELLS>
-    {
-        type G = Gonnect<N, WORDS, CELLS>;
+    impl Search for StubSearch {
+        type G = Gonnect;
 
         fn friendly_name(&self) -> String {
             "stub".into()
@@ -318,7 +304,7 @@ mod tests {
 
         fn set_friendly_name(&mut self, _name: &str) {}
 
-        fn choose_action(&mut self, _state: &State<N, WORDS, CELLS>) -> Move<N, WORDS> {
+        fn choose_action(&mut self, _state: &State) -> Move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.action
         }
@@ -328,15 +314,15 @@ mod tests {
     /// root replies added to the book: `actions[0]` visited
     /// `MIN_BOOK_VISITS` times with a clean win (confident and good),
     /// `actions[1]` visited once with a loss (present, but not confident).
-    fn tiny_book_and_moves() -> (OpeningBook<Move<3, 1>>, Vec<Move<3, 1>>) {
+    fn tiny_book_and_moves() -> (OpeningBook<Move>, Vec<Move>) {
         let mut actions = Vec::new();
-        Gonnect::<3, 1, 9>::generate_actions(&State::default(), &mut actions);
+        Gonnect::generate_actions(&State::new(3), &mut actions);
         assert!(
             actions.len() >= 2,
             "3x3 empty board should have several legal moves"
         );
 
-        let mut book = OpeningBook::new(Gonnect::<3, 1, 9>::num_players());
+        let mut book = OpeningBook::new(Gonnect::num_players());
         for _ in 0..MIN_BOOK_VISITS {
             book.add(&[actions[0]], &[1.0, -1.0]);
         }
@@ -347,7 +333,7 @@ mod tests {
     #[test]
     fn book_index_load_returns_none_for_a_missing_file() {
         let path = std::path::Path::new("/nonexistent/gonnect-book-does-not-exist.json");
-        assert!(BookIndex::<3, 1, 9>::load(path).is_none());
+        assert!(BookIndex::load(path, 3).is_none());
     }
 
     #[test]
@@ -361,21 +347,21 @@ mod tests {
             std::thread::current().id()
         ));
         std::fs::write(&path, serde_json::to_string(&book).unwrap()).unwrap();
-        let index = BookIndex::<3, 1, 9>::load(&path);
+        let index = BookIndex::load(&path, 3);
         std::fs::remove_file(&path).ok();
         let index = index.expect("just-written book file should load");
 
-        let root = State::<3, 1, 9>::default();
+        let root = State::new(3);
         assert_eq!(*index.state_index.get(&root).unwrap(), root_id);
 
-        let after_first = Gonnect::<3, 1, 9>::apply(root, &actions[0]);
+        let after_first = Gonnect::apply(root, &actions[0]);
         assert!(index.state_index.contains_key(&after_first));
     }
 
     #[test]
     fn book_augmented_plays_the_confident_book_move_without_consulting_inner() {
         let (book, actions) = tiny_book_and_moves();
-        let state_index = book.build_state_index::<Gonnect<3, 1, 9>>(State::default());
+        let state_index = book.build_state_index::<Gonnect>(State::new(3));
         let index = BookIndex { book, state_index };
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -385,7 +371,7 @@ mod tests {
         };
         let mut augmented = BookAugmented::new(Box::new(stub), &index);
 
-        let chosen = augmented.choose_action(&State::default());
+        let chosen = augmented.choose_action(&State::new(3));
         assert_eq!(
             chosen, actions[0],
             "should play the book's confident top move"
@@ -396,10 +382,10 @@ mod tests {
     #[test]
     fn book_augmented_falls_through_below_the_visit_threshold() {
         let mut actions = Vec::new();
-        Gonnect::<3, 1, 9>::generate_actions(&State::default(), &mut actions);
-        let mut book = OpeningBook::<Move<3, 1>>::new(Gonnect::<3, 1, 9>::num_players());
+        Gonnect::generate_actions(&State::new(3), &mut actions);
+        let mut book = OpeningBook::<Move>::new(Gonnect::num_players());
         book.add(&[actions[0]], &[1.0, -1.0]); // one visit -- below MIN_BOOK_VISITS
-        let state_index = book.build_state_index::<Gonnect<3, 1, 9>>(State::default());
+        let state_index = book.build_state_index::<Gonnect>(State::new(3));
         let index = BookIndex { book, state_index };
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -409,7 +395,7 @@ mod tests {
         };
         let mut augmented = BookAugmented::new(Box::new(stub), &index);
 
-        let chosen = augmented.choose_action(&State::default());
+        let chosen = augmented.choose_action(&State::new(3));
         assert_eq!(
             chosen, actions[1],
             "an under-visited entry shouldn't override the inner search"
@@ -419,12 +405,12 @@ mod tests {
 
     #[test]
     fn book_augmented_falls_through_off_book() {
-        let book = OpeningBook::<Move<3, 1>>::new(Gonnect::<3, 1, 9>::num_players());
-        let state_index = book.build_state_index::<Gonnect<3, 1, 9>>(State::default());
+        let book = OpeningBook::<Move>::new(Gonnect::num_players());
+        let state_index = book.build_state_index::<Gonnect>(State::new(3));
         let index = BookIndex { book, state_index };
 
         let mut actions = Vec::new();
-        Gonnect::<3, 1, 9>::generate_actions(&State::default(), &mut actions);
+        Gonnect::generate_actions(&State::new(3), &mut actions);
         let calls = Arc::new(AtomicUsize::new(0));
         let stub = StubSearch {
             action: actions[0],
@@ -432,7 +418,7 @@ mod tests {
         };
         let mut augmented = BookAugmented::new(Box::new(stub), &index);
 
-        let chosen = augmented.choose_action(&State::default());
+        let chosen = augmented.choose_action(&State::new(3));
         assert_eq!(chosen, actions[0]);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -440,7 +426,7 @@ mod tests {
     #[test]
     fn root_report_reflects_book_stats_after_a_book_hit() {
         let (book, actions) = tiny_book_and_moves();
-        let state_index = book.build_state_index::<Gonnect<3, 1, 9>>(State::default());
+        let state_index = book.build_state_index::<Gonnect>(State::new(3));
         let index = BookIndex { book, state_index };
         let stub = StubSearch {
             action: actions[1],
@@ -448,7 +434,7 @@ mod tests {
         };
         let mut augmented = BookAugmented::new(Box::new(stub), &index);
 
-        let root = State::<3, 1, 9>::default();
+        let root = State::new(3);
         let chosen = augmented.choose_action(&root);
         let report = augmented.root_report(&root);
 
@@ -465,19 +451,19 @@ mod tests {
 
     #[test]
     fn root_report_falls_through_to_inner_when_the_book_was_not_consulted() {
-        let book = OpeningBook::<Move<3, 1>>::new(Gonnect::<3, 1, 9>::num_players());
-        let state_index = book.build_state_index::<Gonnect<3, 1, 9>>(State::default());
+        let book = OpeningBook::<Move>::new(Gonnect::num_players());
+        let state_index = book.build_state_index::<Gonnect>(State::new(3));
         let index = BookIndex { book, state_index };
 
         let mut actions = Vec::new();
-        Gonnect::<3, 1, 9>::generate_actions(&State::default(), &mut actions);
+        Gonnect::generate_actions(&State::new(3), &mut actions);
         let stub = StubSearch {
             action: actions[0],
             calls: Arc::new(AtomicUsize::new(0)),
         };
         let mut augmented = BookAugmented::new(Box::new(stub), &index);
 
-        let root = State::<3, 1, 9>::default();
+        let root = State::new(3);
         let _ = augmented.choose_action(&root);
         // `StubSearch` doesn't override `root_report`, so `Search`'s
         // default (empty) report proves the call really passed through.

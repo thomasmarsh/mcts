@@ -9,8 +9,8 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_atarigo::{AtariGo, Move, Player, State};
-use game_core::bigbitboard::BigBitBoard;
+use bitboard::Dyn;
+use game_atarigo::{AtariGo, Bits, Move, Player, State};
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 
@@ -27,10 +27,8 @@ const PRESET_SEED: u64 = 0;
 /// The parsed `easy`/`strong` preset table -- loaded at runtime from
 /// `games/atarigo/presets.json` (or the file named by `ATARIGO_PRESETS_PATH`),
 /// falling back to the compiled-in defaults only if that path is missing
-/// (see `PresetTable::load`'s doc comment). Presets
-/// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
-/// `WORDS`, only by which `Game<N, WORDS, CELLS>` `PresetTable::build` is
-/// monomorphized for at each call site.
+/// (see `PresetTable::load`'s doc comment). Presets are size-invariant,
+/// varying only by the starting `State`'s own runtime dims.
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
     PRESETS.get_or_init(|| {
@@ -44,44 +42,22 @@ fn presets() -> &'static PresetTable {
     })
 }
 
-/// Board sizes this binary serves, 3x3 through 19x19. `WORDS`/`CELLS` are
-/// derived from `N` (see `dispatch_size!`) rather than hand-listed per size --
-/// board size is chosen at request time (via `new_state`'s `{"size": N}`
-/// config, or inferred from an existing state's cell count) rather than
-/// fixed at compile time.
-const SUPPORTED_SIZES: &[usize] = &[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
-const DEFAULT_SIZE: usize = 9;
+/// Board sizes this binary serves, 3x3 through 19x19 -- a runtime `size`
+/// field on `State` (see `game_atarigo::Bits`, `Board<[u64; 6], Dyn, Dyn>`)
+/// rather than a distinct compiled type per size, so this is just a bounds
+/// check now, not a dispatch table.
+const MIN_SIZE: usize = 3;
+const MAX_SIZE: usize = 19;
+const DEFAULT_SIZE: usize = game_atarigo::DEFAULT_SIZE;
 
-/// Runs `$body` with `$n`/`$words`/`$cells` bound as the matching `usize`
-/// consts for board size `$size` (a runtime value). The match arms double as
-/// validation: `$size` must be one of `SUPPORTED_SIZES` or the default arm
-/// returns a `HostError::bad_request` -- so every caller of this macro
-/// implicitly rejects an unsupported size before touching a `State`. Extending
-/// the served range is a matter of adding `N` literals to the list below --
-/// `CELLS`/`WORDS` are computed from `N` (the same `CELLS.div_ceil(64)`
-/// relationship `BigBitBoard::CHECK_WORDS` asserts), not hand-transcribed.
-macro_rules! dispatch_size {
-    ($size:expr, $n:ident, $words:ident, $cells:ident, $body:block) => {
-        dispatch_size!(@match $size, $n, $words, $cells, $body,
-            3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
-    };
-    (@match $size:expr, $n:ident, $words:ident, $cells:ident, $body:block, $($lit:literal),+ $(,)?) => {
-        match $size {
-            $(
-                $lit => {
-                    const $n: usize = $lit;
-                    const $cells: usize = $n * $n;
-                    const $words: usize = $cells.div_ceil(64);
-                    $body
-                }
-            )+
-            other => {
-                return Err(HostError::bad_request(format!(
-                    "unsupported board size {other} (supported: 3..=19)"
-                )))
-            }
-        }
-    };
+fn check_size(size: usize) -> Result<usize, HostError> {
+    if (MIN_SIZE..=MAX_SIZE).contains(&size) {
+        Ok(size)
+    } else {
+        Err(HostError::bad_request(format!(
+            "unsupported board size {size} (supported: {MIN_SIZE}..={MAX_SIZE})"
+        )))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,26 +94,22 @@ fn parse_player(name: &str) -> Player {
     }
 }
 
-fn color_at<const N: usize, const WORDS: usize, const CELLS: usize>(
-    s: &State<N, WORDS, CELLS>,
-    index: usize,
-) -> Option<Player> {
-    if s.black().get(index) {
+fn color_at(s: &State, index: usize) -> Option<Player> {
+    if s.black().get_index(index) {
         Some(Player::Black)
-    } else if s.white().get(index) {
+    } else if s.white().get_index(index) {
         Some(Player::White)
     } else {
         None
     }
 }
 
-fn state_to_value<const N: usize, const WORDS: usize, const CELLS: usize>(
-    s: &State<N, WORDS, CELLS>,
-) -> Value {
+fn state_to_value(s: &State) -> Value {
+    let n = s.black().rows();
     serde_json::to_value(WireState {
         turn: player_name(s.turn()).into(),
         winner: s.has_winner(),
-        cells: (0..N * N)
+        cells: (0..n * n)
             .map(|i| color_at(s, i).map(|p| player_name(p).to_string()))
             .collect(),
     })
@@ -148,32 +120,33 @@ fn parse_wire_state(v: &Value) -> Result<WireState, HostError> {
     serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))
 }
 
-/// Recovers `N` from a wire state's cell count by matching it against
-/// `SUPPORTED_SIZES` -- no separate `size` field is needed on the state
-/// wire format because `cells.len() == N * N` already determines `N`
-/// uniquely (unlike `WORDS` alone, which is ambiguous: `N=5` and `N=7` both
-/// pack into a single word).
+/// Recovers the board size from a wire state's cell count -- no separate
+/// `size` field is needed on the state wire format because `cells.len() ==
+/// size * size` already determines it, and it must land in
+/// `MIN_SIZE..=MAX_SIZE` to be a size this binary ever produced.
 fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
-    SUPPORTED_SIZES
-        .iter()
-        .copied()
+    (MIN_SIZE..=MAX_SIZE)
         .find(|&n| n * n == len)
         .ok_or_else(|| HostError::bad_request(format!("unexpected cell count {len}")))
 }
 
-fn state_from_wire<const N: usize, const WORDS: usize, const CELLS: usize>(
-    w: &WireState,
-) -> State<N, WORDS, CELLS> {
-    let mut black = BigBitBoard::EMPTY;
-    let mut white = BigBitBoard::EMPTY;
+fn state_from_wire(w: &WireState) -> Result<State, HostError> {
+    let size = size_from_cell_count(w.cells.len())?;
+    let mut black = Bits::new(Dyn(size), Dyn(size));
+    let mut white = Bits::new(Dyn(size), Dyn(size));
     for (i, cell) in w.cells.iter().enumerate() {
         match cell.as_deref() {
-            Some("Black") => black.set(i),
-            Some("White") => white.set(i),
+            Some("Black") => black.set_index(i),
+            Some("White") => white.set_index(i),
             _ => {}
         }
     }
-    State::from_boards(black, white, parse_player(&w.turn), w.winner)
+    Ok(State::from_boards(
+        black,
+        white,
+        parse_player(&w.turn),
+        w.winner,
+    ))
 }
 
 struct AtarigoAdapter;
@@ -194,59 +167,49 @@ impl GameAdapter for AtarigoAdapter {
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         let config: NewGameConfig = serde_json::from_value(config)
             .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
-        dispatch_size!(config.size, N, WORDS, CELLS, {
-            Ok(state_to_value(&State::<N, WORDS, CELLS>::default()))
-        })
+        let size = check_size(config.size)?;
+        Ok(state_to_value(&State::new(size)))
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let w = parse_wire_state(state)?;
-        let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
-            let mut mv = Vec::new();
-            if !AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
-                AtariGo::<N, WORDS, CELLS>::generate_actions(&s, &mut mv);
-            }
-            Ok(mv
-                .into_iter()
-                .map(|m| serde_json::to_value(m).unwrap())
-                .collect())
-        })
+        let s = state_from_wire(&w)?;
+        let mut mv = Vec::new();
+        if !AtariGo::is_terminal(&s) {
+            AtariGo::generate_actions(&s, &mut mv);
+        }
+        Ok(mv
+            .into_iter()
+            .map(|m| serde_json::to_value(m).unwrap())
+            .collect())
     }
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
-        let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
-            let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
-                .map_err(|e| HostError::bad_request(e.to_string()))?;
-            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
-                return Err(HostError::bad_request("game is over"));
-            }
-            let mut legal = Vec::new();
-            AtariGo::<N, WORDS, CELLS>::generate_actions(&s, &mut legal);
-            if !legal.contains(&m) {
-                return Err(HostError::bad_request("illegal move"));
-            }
-            Ok(state_to_value(&AtariGo::<N, WORDS, CELLS>::apply(s, &m)))
-        })
+        let s = state_from_wire(&w)?;
+        let m: Move = serde_json::from_value(mv.clone())
+            .map_err(|e| HostError::bad_request(e.to_string()))?;
+        if AtariGo::is_terminal(&s) {
+            return Err(HostError::bad_request("game is over"));
+        }
+        let mut legal = Vec::new();
+        AtariGo::generate_actions(&s, &mut legal);
+        if !legal.contains(&m) {
+            return Err(HostError::bad_request("illegal move"));
+        }
+        Ok(state_to_value(&AtariGo::apply(s, &m)))
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
-        let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
-            let winner = AtariGo::<N, WORDS, CELLS>::winner(&s);
-            serde_json::to_value(GameView {
-                turn: player_name(s.turn()).into(),
-                cells: (0..N * N)
-                    .map(|i| color_at(&s, i).map(|p| player_name(p).to_string()))
-                    .collect(),
-                winner: winner.map(|p| player_name(p).to_string()),
-                terminal: AtariGo::<N, WORDS, CELLS>::is_terminal(&s),
-            })
-            .map_err(|e| HostError::internal(e.to_string()))
+        let s = state_from_wire(&w)?;
+        let winner = AtariGo::winner(&s);
+        serde_json::to_value(GameView {
+            turn: player_name(s.turn()).into(),
+            cells: (0..s.black().len())
+                .map(|i| color_at(&s, i).map(|p| player_name(p).to_string()))
+                .collect(),
+            winner: winner.map(|p| player_name(p).to_string()),
+            terminal: AtariGo::is_terminal(&s),
         })
+        .map_err(|e| HostError::internal(e.to_string()))
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
         presets().ai_presets()
@@ -262,24 +225,21 @@ impl GameAdapter for AtarigoAdapter {
             .transpose()
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
-        let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
-            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
-                return Err(HostError::bad_request("game is over"));
-            }
-            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS, CELLS>>(
-                presets(),
-                preset,
-                custom_spec.as_ref(),
-                PRESET_SEED,
-            )?;
-            let action = ai.choose_action(&s);
-            let next = AtariGo::<N, WORDS, CELLS>::apply(s, &action);
-            Ok(AiMoveResult {
-                mv: serde_json::to_value(action).unwrap(),
-                state: state_to_value(&next),
-            })
+        let s = state_from_wire(&w)?;
+        if AtariGo::is_terminal(&s) {
+            return Err(HostError::bad_request("game is over"));
+        }
+        let mut ai = mcts_tune::presets::build_strategy::<AtariGo>(
+            presets(),
+            preset,
+            custom_spec.as_ref(),
+            PRESET_SEED,
+        )?;
+        let action = ai.choose_action(&s);
+        let next = AtariGo::apply(s, &action);
+        Ok(AiMoveResult {
+            mv: serde_json::to_value(action).unwrap(),
+            state: state_to_value(&next),
         })
     }
     fn analyze(
@@ -294,43 +254,40 @@ impl GameAdapter for AtarigoAdapter {
             .transpose()
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
-        let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
-            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
-                return Err(HostError::bad_request("game is over"));
-            }
-            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS, CELLS>>(
-                presets(),
-                preset,
-                custom_spec.as_ref(),
-                PRESET_SEED,
-            )?;
-            let _ = ai.choose_action(&s);
-            let report = ai.root_report(&s);
-            let suggested = report
+        let s = state_from_wire(&w)?;
+        if AtariGo::is_terminal(&s) {
+            return Err(HostError::bad_request("game is over"));
+        }
+        let mut ai = mcts_tune::presets::build_strategy::<AtariGo>(
+            presets(),
+            preset,
+            custom_spec.as_ref(),
+            PRESET_SEED,
+        )?;
+        let _ = ai.choose_action(&s);
+        let report = ai.root_report(&s);
+        let suggested = report
+            .principal_variation
+            .first()
+            .map(|a| serde_json::to_value(a).unwrap());
+        Ok(Analysis {
+            actions: report
+                .actions
+                .into_iter()
+                .map(|a| AnalysisAction {
+                    action: serde_json::to_value(a.action).unwrap(),
+                    visits: a.visits,
+                    mean_value: a.mean_value,
+                    is_proven: a.is_proven,
+                })
+                .collect(),
+            principal_variation: report
                 .principal_variation
-                .first()
-                .map(|a| serde_json::to_value(a).unwrap());
-            Ok(Analysis {
-                actions: report
-                    .actions
-                    .into_iter()
-                    .map(|a| AnalysisAction {
-                        action: serde_json::to_value(a.action).unwrap(),
-                        visits: a.visits,
-                        mean_value: a.mean_value,
-                        is_proven: a.is_proven,
-                    })
-                    .collect(),
-                principal_variation: report
-                    .principal_variation
-                    .into_iter()
-                    .map(|a| serde_json::to_value(a).unwrap())
-                    .collect(),
-                total_visits: report.total_visits,
-                suggested_move: suggested,
-            })
+                .into_iter()
+                .map(|a| serde_json::to_value(a).unwrap())
+                .collect(),
+            total_visits: report.total_visits,
+            suggested_move: suggested,
         })
     }
 
@@ -358,83 +315,72 @@ impl GameAdapter for AtarigoAdapter {
             Some(cfg) => {
                 let cfg: NewGameConfig = serde_json::from_value(cfg)
                     .map_err(|e| HostError::bad_request(format!("invalid game_config: {e}")))?;
-                cfg.size
+                check_size(cfg.size)?
             }
             None => DEFAULT_SIZE,
         };
+        let initial_state = State::new(size);
         // AtariGo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s `strategy_tune_eval`
         // doc comment.
-        dispatch_size!(size, N, WORDS, CELLS, {
-            let outcome = if let Some(cfg) = baseline_config {
-                let baseline_seed = seed.unwrap_or(0);
-                // This opponent is itself a `build_search`-built config, on
-                // the same iteration-based footing as the candidate -- both
-                // sides get the *same* budget (an operator's `max_iterations`
-                // override included) so there's nothing to match asymmetrically
-                // (see `SearchBudget`'s and `build_search`'s doc comments).
-                let budget = mcts_tune::SearchBudget {
+        let outcome = if let Some(cfg) = baseline_config {
+            let baseline_seed = seed.unwrap_or(0);
+            // This opponent is itself a `build_search`-built config, on
+            // the same iteration-based footing as the candidate -- both
+            // sides get the *same* budget (an operator's `max_iterations`
+            // override included) so there's nothing to match asymmetrically
+            // (see `SearchBudget`'s and `build_search`'s doc comments).
+            let budget = mcts_tune::SearchBudget {
+                max_iterations,
+                max_time: max_time_ms.map(std::time::Duration::from_millis),
+                ..Default::default()
+            };
+            // Fail fast on an invalid baseline config, before any games are
+            // played -- mirrors how a bad candidate `params` is already
+            // rejected during `TrialParams` deserialization inside
+            // `strategy_tune_eval` itself.
+            mcts_tune::build_search::<AtariGo>(&cfg, baseline_seed, false, &budget)?;
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                false,
+                budget,
+                move || {
+                    mcts_tune::build_search::<AtariGo>(&cfg, baseline_seed, false, &budget)
+                        .expect("baseline_config already validated above")
+                },
+                initial_state,
+                trace_path.as_deref(),
+                on_game,
+            )?
+        } else {
+            mcts_tune::strategy_tune_eval(
+                &params,
+                rounds,
+                seed,
+                false,
+                mcts_tune::SearchBudget {
                     max_iterations,
                     max_time: max_time_ms.map(std::time::Duration::from_millis),
                     ..Default::default()
-                };
-                // Fail fast on an invalid baseline config, before any games are
-                // played -- mirrors how a bad candidate `params` is already
-                // rejected during `TrialParams` deserialization inside
-                // `strategy_tune_eval` itself.
-                mcts_tune::build_search::<AtariGo<N, WORDS, CELLS>>(
-                    &cfg,
-                    baseline_seed,
-                    false,
-                    &budget,
-                )?;
-                mcts_tune::strategy_tune_eval(
-                    &params,
-                    rounds,
-                    seed,
-                    false,
-                    budget,
-                    move || {
-                        mcts_tune::build_search::<AtariGo<N, WORDS, CELLS>>(
-                            &cfg,
-                            baseline_seed,
-                            false,
-                            &budget,
-                        )
-                        .expect("baseline_config already validated above")
-                    },
-                    Default::default(),
-                    trace_path.as_deref(),
-                    on_game,
-                )?
-            } else {
-                mcts_tune::strategy_tune_eval(
-                    &params,
-                    rounds,
-                    seed,
-                    false,
-                    mcts_tune::SearchBudget {
-                        max_iterations,
-                        max_time: max_time_ms.map(std::time::Duration::from_millis),
-                        ..Default::default()
-                    },
-                    move || {
-                        presets()
-                            .build::<AtariGo<N, WORDS, CELLS>>("strong", PRESET_SEED)
-                            .expect("games/atarigo/presets.json's \"strong\" preset must build")
-                    },
-                    Default::default(),
-                    trace_path.as_deref(),
-                    on_game,
-                )?
-            };
-            Ok(serde_json::json!({
-                "cost": outcome.cost,
-                "wins": outcome.wins,
-                "losses": outcome.losses,
-                "draws": outcome.draws,
-            }))
-        })
+                },
+                move || {
+                    presets()
+                        .build::<AtariGo>("strong", PRESET_SEED)
+                        .expect("games/atarigo/presets.json's \"strong\" preset must build")
+                },
+                initial_state,
+                trace_path.as_deref(),
+                on_game,
+            )?
+        };
+        Ok(serde_json::json!({
+            "cost": outcome.cost,
+            "wins": outcome.wins,
+            "losses": outcome.losses,
+            "draws": outcome.draws,
+        }))
     }
 }
 
@@ -479,7 +425,7 @@ mod tests {
 
     #[test]
     fn new_state_supports_every_advertised_size() {
-        for &n in SUPPORTED_SIZES {
+        for n in MIN_SIZE..=MAX_SIZE {
             let v = AtarigoAdapter
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap_or_else(|e| panic!("new_state({n}) failed: {e}"));
@@ -496,7 +442,7 @@ mod tests {
 
     #[test]
     fn legal_moves_and_apply_round_trip_at_every_size() {
-        for &n in SUPPORTED_SIZES {
+        for n in MIN_SIZE..=MAX_SIZE {
             let state = AtarigoAdapter
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap();
