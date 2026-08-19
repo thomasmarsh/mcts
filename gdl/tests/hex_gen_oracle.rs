@@ -13,8 +13,8 @@
 //! `core::interp::State` (`BitBoard`-backed, capped at 64 cells) to
 //! represent at all, so there's no interpreter to cross-check against --
 //! [`HexOracle`] uses plain arrays and has no such cap, making it the one
-//! reference this crate's `BigBitBoard` codegen branch can be checked
-//! against.
+//! reference this crate's multi-word `bitboard::Board` codegen branch can be
+//! checked against.
 
 use mcts::game::{Game, PlayerIndex};
 

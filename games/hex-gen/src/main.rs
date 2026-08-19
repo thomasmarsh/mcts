@@ -127,9 +127,9 @@ fn cells_of<const N: usize, const WORDS: usize>(
 ) -> Vec<Option<Player>> {
     (0..N * N)
         .map(|i| {
-            if position.occupied[0].get(i) {
+            if position.occupied[0].get_index(i) {
                 Some(Player::P0)
-            } else if position.occupied[1].get(i) {
+            } else if position.occupied[1].get_index(i) {
                 Some(Player::P1)
             } else {
                 None
@@ -161,7 +161,7 @@ fn value_to_state<const N: usize, const WORDS: usize>(
     let mut state = HashedPosition::<N, WORDS>::new();
     for (i, cell) in wire.cells.into_iter().enumerate() {
         if let Some(player) = cell {
-            state.position.occupied[player.to_index()].set(i);
+            state.position.occupied[player.to_index()].set_index(i);
         }
     }
     state.position.turn = wire.turn;

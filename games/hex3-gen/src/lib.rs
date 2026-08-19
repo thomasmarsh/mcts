@@ -2,11 +2,11 @@
 // do not edit by hand. Regenerate instead of patching -- see gdl/src/codegen/hex.rs.
 //
 // Hex 3x3, lowered from gdl/style-c/sexpr/hex.gdls via gdl::core::Program. Const-generic over board side
-// `N` and `game_core::bigbitboard::BigBitBoard`'s own `WORDS` parameter -- see a caller crate's
+// `N` and `bitboard::Board<[u64; WORDS], Const<N>, Const<N>>`'s own `WORDS` parameter -- see a caller crate's
 // `main.rs` (e.g. `games/hex-gen/src/main.rs`'s `dispatch_size!` macro) for how a concrete board
 // size is picked at request time, the same pattern `games/gonnect` hand-writes for itself.
 
-use game_core::bigbitboard::BigBitBoard;
+use bitboard::{Board, Const};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
 use serde::{Deserialize, Serialize};
@@ -47,11 +47,11 @@ impl Player {
 /// The mover's stones (`board`, floodfilled from `edges[0]`) reach every remaining entry of
 /// `edges` -- the Rust realization of `BoolExpr::Connects{ conn: Connectivity::Six }`, matching
 /// `gdl::core::interp::eval_bool`'s own `Connects` arm but specialized once, at generation time,
-/// to a direct `BigBitBoard::flood6` call instead of `core::interp::bounded_fixpoint`'s general
+/// to a direct `Board::flood6` call instead of `core::interp::bounded_fixpoint`'s general
 /// iterate-to-a-fixpoint loop.
 fn hex_connects<const N: usize, const WORDS: usize>(
-    board: BigBitBoard<N, N, WORDS>,
-    edges: &[BigBitBoard<N, N, WORDS>],
+    board: Board<[u64; WORDS], Const<N>, Const<N>>,
+    edges: &[Board<[u64; WORDS], Const<N>, Const<N>>],
 ) -> bool {
     let [first, rest @ ..] = edges else {
         return false;
@@ -60,31 +60,31 @@ fn hex_connects<const N: usize, const WORDS: usize>(
     rest.iter().all(|&e| flooded.intersects(e))
 }
 
-fn side_east<const N: usize, const WORDS: usize>() -> BigBitBoard<N, N, WORDS> {
-    let mut b = BigBitBoard::EMPTY;
+fn side_east<const N: usize, const WORDS: usize>() -> Board<[u64; WORDS], Const<N>, Const<N>> {
+    let mut b = Board::new_const();
     for c in 0..N {
-        b.set(c * N + (N - 1));
+        b.set_index(c * N + (N - 1));
     }
     b
 }
-fn side_north<const N: usize, const WORDS: usize>() -> BigBitBoard<N, N, WORDS> {
-    let mut b = BigBitBoard::EMPTY;
+fn side_north<const N: usize, const WORDS: usize>() -> Board<[u64; WORDS], Const<N>, Const<N>> {
+    let mut b = Board::new_const();
     for c in 0..N {
-        b.set((N - 1) * N + c);
+        b.set_index((N - 1) * N + c);
     }
     b
 }
-fn side_south<const N: usize, const WORDS: usize>() -> BigBitBoard<N, N, WORDS> {
-    let mut b = BigBitBoard::EMPTY;
+fn side_south<const N: usize, const WORDS: usize>() -> Board<[u64; WORDS], Const<N>, Const<N>> {
+    let mut b = Board::new_const();
     for c in 0..N {
-        b.set(c);
+        b.set_index(c);
     }
     b
 }
-fn side_west<const N: usize, const WORDS: usize>() -> BigBitBoard<N, N, WORDS> {
-    let mut b = BigBitBoard::EMPTY;
+fn side_west<const N: usize, const WORDS: usize>() -> Board<[u64; WORDS], Const<N>, Const<N>> {
+    let mut b = Board::new_const();
     for c in 0..N {
-        b.set(c * N);
+        b.set_index(c * N);
     }
     b
 }
@@ -95,7 +95,7 @@ pub struct Move(pub u8);
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct Position<const N: usize, const WORDS: usize> {
     pub turn: Player,
-    pub occupied: [BigBitBoard<N, N, WORDS>; NUM_PLAYERS],
+    pub occupied: [Board<[u64; WORDS], Const<N>, Const<N>>; NUM_PLAYERS],
 }
 
 impl<const N: usize, const WORDS: usize> Default for Position<N, WORDS> {
@@ -108,7 +108,7 @@ impl<const N: usize, const WORDS: usize> Position<N, WORDS> {
     pub fn new() -> Self {
         Self {
             turn: Player::P0,
-            occupied: [BigBitBoard::EMPTY; NUM_PLAYERS],
+            occupied: [Board::new_const(); NUM_PLAYERS],
         }
     }
 
@@ -120,7 +120,7 @@ impl<const N: usize, const WORDS: usize> Position<N, WORDS> {
     }
 
     pub fn apply(&mut self, m: Move) {
-        self.occupied[self.turn.to_index()].set(m.0 as usize);
+        self.occupied[self.turn.to_index()].set_index(m.0 as usize);
         self.turn = self.turn.next();
     }
 
@@ -130,7 +130,7 @@ impl<const N: usize, const WORDS: usize> Position<N, WORDS> {
     pub fn winner(&self) -> Option<Player> {
         let last_mover = (self.turn.to_index() + NUM_PLAYERS - 1) % NUM_PLAYERS;
         let board = self.occupied[last_mover];
-        let edges: &[BigBitBoard<N, N, WORDS>] = match last_mover {
+        let edges: &[Board<[u64; WORDS], Const<N>, Const<N>>] = match last_mover {
             0 => &[side_north::<N, WORDS>(), side_south::<N, WORDS>()],
             1 => &[side_west::<N, WORDS>(), side_east::<N, WORDS>()],
             _ => unreachable!(),
@@ -242,7 +242,7 @@ impl<const N: usize, const WORDS: usize> RectangularBoard for HashedPosition<N, 
     fn display_char_at(&self, row: usize, col: usize) -> char {
         let site = row * N + col;
         for p in 0..NUM_PLAYERS {
-            if self.position.occupied[p].get(site) {
+            if self.position.occupied[p].get_index(site) {
                 return (b'A' + p as u8) as char;
             }
         }
