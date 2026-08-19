@@ -5,6 +5,14 @@
 /// without duplicating the implementation.
 pub trait Dim: Copy {
     fn get(self) -> usize;
+
+    /// Reconstructs a dimension from a runtime length, e.g. read back off
+    /// the wire by `Board`'s `Deserialize` impl. `Const<N>` has no runtime
+    /// state to restore, so it ignores `len` and always produces `N` --
+    /// callers that need to catch a mismatched `len` (as `Deserialize` does)
+    /// must check `.get()` against it themselves. `Dyn` just carries the
+    /// length through.
+    fn from_len(len: usize) -> Self;
 }
 
 /// Compile-time-known dimension, matching the const-generic size a game's
@@ -19,6 +27,10 @@ impl<const N: usize> Dim for Const<N> {
     fn get(self) -> usize {
         N
     }
+
+    fn from_len(_len: usize) -> Self {
+        Const
+    }
 }
 
 /// Runtime-known dimension. Lets a single monomorphization of `Board` (and
@@ -31,5 +43,9 @@ impl Dim for Dyn {
     #[inline(always)]
     fn get(self) -> usize {
         self.0
+    }
+
+    fn from_len(len: usize) -> Self {
+        Dyn(len)
     }
 }
