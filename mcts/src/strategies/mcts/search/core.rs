@@ -1,5 +1,7 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::Real;
+use crate::game::Transform;
 use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
@@ -157,7 +159,7 @@ where
                 use_transpositions: self.config.uses_transpositions(),
                 graph_stats: self.config.graph_stats(),
                 solver_loss_threshold: self.config.solver_loss_threshold,
-                incoming_sym: 0,
+                incoming_sym: Transform::IDENTITY,
             },
             &mut self.config.rng,
         );
@@ -382,7 +384,7 @@ where
             // Recomputed fresh from `state` every iteration, like
             // `select_step`'s local of the same name -- see `node::
             // incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 player,

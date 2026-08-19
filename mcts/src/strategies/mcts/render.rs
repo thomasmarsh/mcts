@@ -1,4 +1,5 @@
 use crate::game::Game;
+use crate::game::Real;
 
 use super::config::GraphSearch;
 use super::node;
@@ -70,7 +71,7 @@ fn print_trans<G>(
             let children = node.children();
             // Fresh from `state` (this node's own real board state), not
             // cached -- see `node::incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
@@ -106,7 +107,7 @@ where
         let node = index.get(node_id);
         if node.is_expanded() {
             let children = node.children();
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,

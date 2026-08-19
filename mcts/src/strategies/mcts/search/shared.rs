@@ -1,5 +1,6 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::Real;
 use crate::game::TerminalStatus;
 use crate::strategies::mcts::backprop::BackpropStrategy;
 use crate::strategies::mcts::config::BackpropFlags;
@@ -239,7 +240,9 @@ pub fn expand<'a, G: Game>(
             // recomputed fresh from its own real state rather than cached
             // (see that function's doc comment).
             let gen_state = if canonicalize && !node.is_root() {
-                G::canonical_representation(state.clone()).0
+                G::canonical_representation(Real(state.clone()))
+                    .0
+                    .into_inner()
             } else {
                 state.clone()
             };
@@ -277,7 +280,9 @@ pub fn new_child<G: Game>(
     children.get_or_create_child(best_idx, || {
         let child_id = if shared.explicit_dag {
             let ply = parent.ply + 1;
-            let canon_state = G::canonical_representation(state.clone()).0;
+            let canon_state = G::canonical_representation(Real(state.clone()))
+                .0
+                .into_inner();
             let canon_hash = G::zobrist_hash(&canon_state);
             shared.table.get_or_insert_graph(
                 TranspositionKey {
@@ -413,7 +418,8 @@ pub fn select_step<G: Game>(
         // on the incoming edge would be wrong whenever this node's own
         // parent is itself a transposition (reached via more than one real
         // orientation across different iterations).
-        let incoming_sym = node::incoming_sym::<G>(shared.explicit_dag, node.is_root(), &ctx.state);
+        let incoming_sym =
+            node::incoming_sym::<G>(shared.explicit_dag, node.is_root(), Real(&ctx.state));
 
         // A single snapshot of this node's status -- see `Node::status`'s
         // doc comment for why this can't be two separate `is_terminal()`/
