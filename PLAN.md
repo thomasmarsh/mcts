@@ -55,7 +55,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] UCB1-Driven Playouts
 - [ ] Shallow Cutoffs with Shallow Material Evaluation
 - [ ] PoolRollout
-- [ ] Decisive / Anti-Decisive Playout Truncation
+- [x] Decisive / Anti-Decisive Playout Truncation
 
 ### Tuning
 - [x] Opening books (Quasi-Best-First self-play, Gonnect; `game_host::GameAdapter::book_build` is the

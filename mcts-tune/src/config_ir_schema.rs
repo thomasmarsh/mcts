@@ -120,7 +120,10 @@ fn rave_ucb_enum() -> Value {
 }
 
 fn decisive_move_mode_enum() -> Value {
-    bare_en("win", &["win", "win_loss", "win_loss_draw"])
+    bare_en(
+        "win",
+        &["win", "win_loss", "win_loss_draw", "anti_decisive"],
+    )
 }
 
 /// `BaseSelectSpec`'s variants -- every `select` family except
@@ -446,6 +449,7 @@ mod tests {
             DecisiveMoveMode::Win => "win",
             DecisiveMoveMode::WinLoss => "win_loss",
             DecisiveMoveMode::WinLossDraw => "win_loss_draw",
+            DecisiveMoveMode::AntiDecisive => "anti_decisive",
         };
         let _ = assert_decisive_move_mode_variant_named;
 

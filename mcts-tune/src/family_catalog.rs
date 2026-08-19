@@ -295,6 +295,23 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
+    // `mode` is fixed per family (like every other `*_dm*` row below) rather
+    // than exposed as its own tunable field, so a SMAC3 search that wants to
+    // compare Teytaud & Teytaud 2010's decisive-move-only check against the
+    // pricier anti-decisive one (see `simulate::DecisiveMoveMode::AntiDecisive`'s
+    // doc comment) needs both named explicitly -- this is `ucb1_dm`'s
+    // anti-decisive counterpart.
+    "ucb1_adm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::Ucb1 { c: c(p)? },
+        simulate: SimulateSpec::DecisiveMove {
+            mode: DecisiveMoveMode::AntiDecisive,
+            inner: BaseSimulateSpec::Uniform {},
+        },
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
     "ucb1_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
@@ -361,6 +378,23 @@ register_family! {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMoveNst {
             mode: DecisiveMoveMode::Win,
+            epsilon: epsilon(p)?,
+            nst_backoff_threshold: p
+                .nst_backoff_threshold
+                .ok_or_else(|| missing("nst_backoff_threshold"))?,
+        },
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
+    // `ucb1_dm_nst`'s anti-decisive counterpart -- same NST-guided playout,
+    // Druid's actual "strong"/"master" shape, but the pricier two-ply block
+    // check instead of a same-ply win check.
+    "ucb1_adm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::Ucb1 { c: c(p)? },
+        simulate: SimulateSpec::DecisiveMoveNst {
+            mode: DecisiveMoveMode::AntiDecisive,
             epsilon: epsilon(p)?,
             nst_backoff_threshold: p
                 .nst_backoff_threshold

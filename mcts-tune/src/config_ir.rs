@@ -1526,6 +1526,29 @@ mod tests {
     }
 
     #[test]
+    fn anti_decisive_mode_round_trips_through_json_and_builds_a_working_search() {
+        let json = r#"{"kind":"decisive_move_mast","mode":"anti_decisive","epsilon":0.2}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            spec,
+            SimulateSpec::DecisiveMoveMast {
+                mode: simulate::DecisiveMoveMode::AntiDecisive,
+                epsilon: 0.2,
+            }
+        );
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json.replace(' ', ""));
+
+        let state = <Nim as Game>::S::default();
+        let action = with_simulate::<Nim, _>(&spec, RunSimulateCont { state: &state });
+        let mut legal = Vec::new();
+        Nim::generate_actions(&state, &mut legal);
+        assert!(
+            legal.contains(&action),
+            "the action chosen by a JSON-configured AntiDecisive search must be legal"
+        );
+    }
+
+    #[test]
     fn backprop_spec_round_trips_through_json() {
         let json = r#"{"kind":"classic"}"#;
         let spec: BackpropSpec = serde_json::from_str(json).unwrap();

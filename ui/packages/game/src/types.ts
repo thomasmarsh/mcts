@@ -82,7 +82,11 @@ export type RaveUcb =
   | { kind: "ucb1_tuned"; exploration_constant: number };
 
 /** `mcts::simulate::DecisiveMoveMode`'s wire form. */
-export type DecisiveMoveMode = "win" | "win_loss" | "win_loss_draw";
+export type DecisiveMoveMode =
+  | "win"
+  | "win_loss"
+  | "win_loss_draw"
+  | "anti_decisive";
 
 /** `config_ir::BaseSelectSpec` -- the families an `EpsilonGreedy` may wrap. */
 export type BaseSelectSpec =
