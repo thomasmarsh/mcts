@@ -4,7 +4,7 @@
 /// letting `Board` implement every bit-level and shift/flood operation
 /// exactly once, generically over the word count, instead of hand-duplicated
 /// per-type.
-pub trait Storage: Copy {
+pub trait Storage: Copy + Send + 'static {
     const CAPACITY_WORDS: usize;
 
     fn zero() -> Self;

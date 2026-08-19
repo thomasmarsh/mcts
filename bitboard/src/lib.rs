@@ -9,7 +9,7 @@ mod board;
 mod dim;
 mod storage;
 
-pub use board::Board;
+pub use board::{Board, Direction};
 pub use dim::{Const, Dim, Dyn};
 pub use storage::Storage;
 
