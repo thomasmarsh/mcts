@@ -1,4 +1,5 @@
 use rand::rngs::SmallRng;
+use rand::Rng;
 use serde::Serialize;
 
 // Refers to a player index. Expectation is that these values
@@ -76,6 +77,27 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// should produce the same set of actions.) This will not be
     /// invoked if `is_terminal` returns `true`.
     fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>);
+
+    /// A single uniformly-random legal action, or `None` if there are none
+    /// (mirrors `generate_actions` returning empty on a non-terminal state --
+    /// see its callers). The default just materializes the full list via
+    /// `generate_actions` and picks one, so this is correct for every `Game`
+    /// for free; it exists so a game whose legality check is cheap per
+    /// candidate (e.g. an incremental engine) can override it with rejection
+    /// sampling -- draw a random cell, check just that one, retry on
+    /// failure -- instead of enumerating every candidate on every rollout
+    /// ply. `SimulateStrategy::playout`'s default (uniform) path is the only
+    /// caller; context-sensitive strategies (`Mast`/`Nst`/`Lgr`/`Lgr2`) still
+    /// need the full list for their policy lookups and don't use this.
+    fn random_action(state: &Self::S, rng: &mut SmallRng) -> Option<Self::A> {
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        if actions.is_empty() {
+            None
+        } else {
+            Some(actions[rng.gen_range(0..actions.len())].clone())
+        }
+    }
 
     /// Returns `true` if the game has ended and there are no more
     /// possible actions. The default implementation calls
