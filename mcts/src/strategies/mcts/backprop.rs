@@ -487,9 +487,11 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) {
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_amaf<G: Game>(
         &self,
         parent_id_opt: Option<index::Id>,
+        parent_incoming_sym: usize,
         trace: &[(G::A, usize)],
         index: &TreeIndex<G::A>,
         node_id: index::Id,
@@ -511,9 +513,15 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             // Maps directly to the sibling's index in `children`, rather
             // than to its arena `Id`, so a match below can call
             // `add_amaf` without a second (previously O(n)) reverse lookup
-            // from `Id` back to array position.
+            // from `Id` back to array position. `parent_incoming_sym` (not
+            // `children.sym(i)`, a different value per `real_action`'s doc
+            // comment) is `parent`'s own incoming symmetry.
             let sibling_actions: FxHashMap<_, usize> = (0..children.len())
-                .filter_map(|i| children.node_id(i).map(|_| (children.action(i).clone(), i)))
+                .filter_map(|i| {
+                    children
+                        .node_id(i)
+                        .map(|_| (node::real_action::<G>(children, i, parent_incoming_sym), i))
+                })
                 .collect();
 
             // The player who could have chosen any of `parent_id`'s sibling
@@ -565,6 +573,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         global: &TreeStats<G>,
         index: &TreeIndex<G::A>,
         root_stats: &NodeStats,
+        root_state: &G::S,
+        explicit_dag: bool,
         trial: simulate::Trial<G>,
         flags: BackpropFlags,
         use_mcts_solver: bool,
@@ -573,12 +583,23 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         G: Game,
     {
         // init_amaf: AMAF | GRAVE | GLOBAL | LGR | LGR2
-        let mut amaf_actions =
-            if flags.amaf() || flags.grave() || flags.global() || flags.lgr() || flags.lgr2() {
-                trial.actions.clone()
-            } else {
-                vec![]
-            };
+        let needs_actions =
+            flags.amaf() || flags.grave() || flags.global() || flags.lgr() || flags.lgr2();
+        let mut amaf_actions = if needs_actions {
+            trial.actions.clone()
+        } else {
+            vec![]
+        };
+        // Every stack node's own incoming symmetry, replayed from
+        // `root_state` -- see `node::incoming_sym`'s doc comment for why
+        // this can't be a value cached on the edge. Computed once, up
+        // front, only when `needs_actions` actually reads a tree action
+        // below.
+        let incoming_syms = if needs_actions {
+            stack.incoming_syms::<G>(index, root_state, explicit_dag).0
+        } else {
+            Default::default()
+        };
 
         // `trial.terminal` already carries the winner if `playout` ended
         // naturally (rather than hitting the depth cutoff) -- reuse it
@@ -590,7 +611,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             .utilities(G::num_players())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
         let mut is_leaf = true;
-        for (parent_id_opt, node_id) in stack.reverse_pairs2() {
+        for (parent_entry_opt, (node_id, node_idx)) in stack.reverse_pairs2() {
+            let parent_id_opt = parent_entry_opt.map(|(id, _)| *id);
             debug_assert!(
                 (parent_id_opt.is_some() && !index.get(*node_id).is_root())
                     || (parent_id_opt.is_none() && index.get(*node_id).is_root())
@@ -602,10 +624,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     root_stats.update(&utilities);
                 }
             } else {
-                let parent_id = parent_id_opt.cloned().unwrap();
+                let parent_id = parent_id_opt.unwrap();
                 debug_assert_ne!(parent_id, *node_id);
                 let parent = index.get(parent_id);
-                let idx = parent.child_index(*node_id);
+                // `node_idx` is this entry's own stored slot in `parent`'s
+                // `ChildArray` -- see `stack::StackEntry`'s doc comment for
+                // why this must come from the traversed path itself, never a
+                // `ChildArray` reverse lookup by `Id` (unsound once several
+                // of a parent's actions canonicalize to the same shared
+                // child under symmetry-aware merging).
+                let idx = *node_idx;
                 let children = parent.children();
                 if graph_stats.is_none_or(GraphStats::uses_edges) {
                     children.update(idx, &utilities);
@@ -634,9 +662,9 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                         self.update_posterior(player, mover, &slot, own_children);
                     }
                 } else {
-                    let parent_id = parent_id_opt.cloned().unwrap();
+                    let parent_id = parent_id_opt.unwrap();
                     let parent = index.get(parent_id);
-                    let idx = parent.child_index(*node_id);
+                    let idx = *node_idx;
                     let slot = PosteriorSlot::Edge(parent.children(), idx);
                     for player in 0..G::num_players() {
                         self.update_posterior(player, mover, &slot, own_children);
@@ -682,8 +710,13 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             // just the playout suffix. Mirrors GRAVE's use of the same
             // accumulator below.
             if flags.amaf() {
+                let parent_incoming_sym = parent_id_opt
+                    .and_then(|id| incoming_syms.get(&id))
+                    .copied()
+                    .unwrap_or(0);
                 self.update_amaf::<G>(
-                    parent_id_opt.cloned(),
+                    parent_id_opt,
+                    parent_incoming_sym,
                     &amaf_actions,
                     index,
                     *node_id,
@@ -697,9 +730,14 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             if flags.amaf() || flags.grave() || flags.global() || flags.lgr() || flags.lgr2() {
                 let node = index.get(*node_id);
                 if !node.is_root() {
-                    let parent_id = parent_id_opt.cloned().unwrap();
-                    let idx = stack.child_index(index, parent_id, *node_id);
-                    let action = index.get(parent_id).children().action(idx).clone();
+                    let parent_id = parent_id_opt.unwrap();
+                    let idx = *node_idx;
+                    let parent_incoming_sym = incoming_syms.get(&parent_id).copied().unwrap_or(0);
+                    let action = node::real_action::<G>(
+                        index.get(parent_id).children(),
+                        idx,
+                        parent_incoming_sym,
+                    );
                     // The edge from `parent_id` to `node_id` was played by
                     // whoever was to move *at* `parent_id` -- `node_id`'s own
                     // `player_idx` is the mover of `node_id`'s own outgoing

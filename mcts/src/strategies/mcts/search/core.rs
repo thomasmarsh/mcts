@@ -2,7 +2,8 @@ use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::index::Id;
-use crate::strategies::mcts::node::{Node, NodeState, NodeStats};
+use crate::strategies::mcts::node;
+use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{
     add_path_virtual_loss, backprop_step, last_tree_action, proven_draw_child, proven_win_child,
@@ -70,9 +71,17 @@ where
     #[inline]
     pub fn select(&mut self, ctx: &mut SearchContext<G>) {
         debug_assert!(self.stack.is_empty());
+        // `ctx` always starts a call at the root (`current_id`/`state` are
+        // the root's own), so this is always correct and keeps
+        // `self.root_state` populated for callers that drive `select`/
+        // `simulate`/`backprop` directly rather than through `choose_action`
+        // (which already sets it via `reuse_or_reset`, making this a no-op
+        // refresh in that path).
+        self.root_state = Some(ctx.state.clone());
         select_step(
             &Shared {
                 index: &self.index,
+                root_state: self.root_state.as_ref().unwrap(),
                 root_stats: &self.root_stats,
                 table: &self.table,
                 global: &self.stats,
@@ -130,13 +139,15 @@ where
             }
         }
 
-        let stack = crate::strategies::mcts::stack::NodeStack::new(vec![self.root_id]);
+        let stack = crate::strategies::mcts::stack::NodeStack::new(vec![(self.root_id, 0)]);
         let grave = self.stats.grave.read().unwrap();
         let idx = self.config.final_action.best_child(
             &SelectContext {
                 q_init: self.config.q_init,
                 stack: &stack,
                 root_stats: &self.root_stats,
+                root_state: state,
+                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 player,
                 state,
                 index: &self.index,
@@ -146,6 +157,7 @@ where
                 use_transpositions: self.config.uses_transpositions(),
                 graph_stats: self.config.graph_stats(),
                 solver_loss_threshold: self.config.solver_loss_threshold,
+                incoming_sym: 0,
             },
             &mut self.config.rng,
         );
@@ -155,7 +167,12 @@ where
 
     #[inline]
     pub fn simulate(&mut self, state: &G::S) -> Trial<G> {
-        let prev_action = last_tree_action::<G>(&self.index, &self.stack);
+        let prev_action = last_tree_action::<G>(
+            &self.index,
+            &self.stack,
+            self.root_state.as_ref().unwrap(),
+            matches!(self.config.graph_search, GraphSearch::Dag(_)),
+        );
         simulate_step(
             self.config.max_playout_depth,
             &self.stats,
@@ -176,7 +193,12 @@ where
             (0..k).map(|_| self.config.simulate.clone()).collect();
         let max_playout_depth = self.config.max_playout_depth;
         let stats = &self.stats;
-        let prev_action = last_tree_action::<G>(&self.index, &self.stack);
+        let prev_action = last_tree_action::<G>(
+            &self.index,
+            &self.stack,
+            self.root_state.as_ref().unwrap(),
+            matches!(self.config.graph_search, GraphSearch::Dag(_)),
+        );
 
         std::thread::scope(|scope| {
             let handles: Vec<_> = strategies
@@ -214,6 +236,7 @@ where
         backprop_step(
             &Shared {
                 index: &self.index,
+                root_state: self.root_state.as_ref().unwrap(),
                 root_stats: &self.root_stats,
                 table: &self.table,
                 global: &self.stats,
@@ -351,15 +374,22 @@ where
         let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
         let mut state = init_state.clone();
-        let mut stack = NodeStack::new(vec![node_id]);
+        let mut stack = NodeStack::new(vec![(node_id, 0)]);
         let grave = self.stats.grave.read().unwrap();
+        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
         while node.is_expanded() {
             let player = node.player_idx;
+            // Recomputed fresh from `state` every iteration, like
+            // `select_step`'s local of the same name -- see `node::
+            // incoming_sym`'s doc comment.
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 player,
                 stack: &stack,
                 root_stats: &self.root_stats,
+                root_state: init_state,
+                explicit_dag,
                 state: &state,
                 index: &self.index,
                 table: &self.table,
@@ -368,6 +398,7 @@ where
                 use_transpositions: self.config.uses_transpositions(),
                 graph_stats: self.config.graph_stats(),
                 solver_loss_threshold: self.config.solver_loss_threshold,
+                incoming_sym,
             };
 
             let best_idx =
@@ -384,12 +415,12 @@ where
             let Some(child_id) = children.node_id(best_idx) else {
                 break;
             };
-            let action = children.action(best_idx).clone();
+            let action = real_action::<G>(children, best_idx, incoming_sym);
             node_id = child_id;
             node = self.index.get(node_id);
             state = G::apply(state, &action);
             self.pv.push(action);
-            stack.push(node_id);
+            stack.push(node_id, best_idx);
         }
     }
 }

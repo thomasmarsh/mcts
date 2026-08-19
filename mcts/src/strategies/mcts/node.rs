@@ -1,5 +1,6 @@
 use super::*;
 use crate::game::Action;
+use crate::game::Game;
 
 use rustc_hash::FxHashMap;
 use std::str::FromStr;
@@ -720,6 +721,49 @@ impl<A: Action> ChildArray<A> {
                 amaf,
             }),
         }
+    }
+}
+
+/// The literal-board action `children.action(idx)` corresponds to.
+/// `children` is stored in *its owning node's own* canonical orientation
+/// (see `Game::canonical_representation`), which generally differs from
+/// whatever real board orientation a given path actually reached that node
+/// through. The caller supplies that translation as `incoming_sym` -- see
+/// `incoming_sym`'s doc comment for why it must always be recomputed fresh
+/// from a real game state, never cached on the edge.
+///
+/// Every consumer that feeds a `ChildArray` action into `Game::apply`, or
+/// into a table keyed by literal board actions (GRAVE/MAST/NST/history/
+/// AMAF), must go through this instead of reading `action(idx)` directly, or
+/// it silently applies/keys a canonical-orientation action against a
+/// literal-orientation state. A byte-for-byte no-op (`invert_action`
+/// defaults to the identity) for every game that hasn't overridden
+/// `canonical_representation`, regardless of `incoming_sym`.
+pub fn real_action<G: Game>(children: &ChildArray<G::A>, idx: usize, incoming_sym: usize) -> G::A {
+    G::invert_action(children.action(idx).clone(), incoming_sym)
+}
+
+/// The symmetry index relating `real_state` (an actual literal-board game
+/// state -- never a canonicalized one) to its own canonical form: what
+/// `real_action` needs to translate `real_state`'s own node's `ChildArray`
+/// actions back to the literal board. `0` (identity) for the root (see
+/// `expand`'s doc comment: the root's own action list is never
+/// canonicalized) and for any search mode other than explicit
+/// `GraphSearch::Dag`.
+///
+/// Deliberately recomputed from `real_state` on every call rather than
+/// cached anywhere on the incoming edge: a node reached by more than one
+/// real orientation (a transposition on that node's *parent*, not just on
+/// the node itself) needs a different translation per path, since each
+/// path's own real state canonicalizes via a different symmetry element in
+/// general. A value cached at edge-creation time would silently keep
+/// reflecting whichever path happened to create the edge first, which is
+/// wrong for every other path that later reuses it.
+pub fn incoming_sym<G: Game>(explicit_dag: bool, is_root: bool, real_state: &G::S) -> usize {
+    if explicit_dag && !is_root {
+        G::canonical_representation(real_state.clone()).1
+    } else {
+        0
     }
 }
 

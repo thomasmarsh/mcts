@@ -141,6 +141,7 @@ where
 
         let shared = Shared {
             index: &self.index,
+            root_state: state,
             root_stats: &self.root_stats,
             table: &self.table,
             global: &self.stats,
@@ -206,7 +207,8 @@ where
                                 shared.graph_stats,
                             );
                         }
-                        let prev_action = last_tree_action::<G>(shared.index, &stack);
+                        let prev_action =
+                            last_tree_action::<G>(shared.index, &stack, state, shared.explicit_dag);
                         for _ in 0..k {
                             let trial = simulate_step(
                                 shared.max_playout_depth,

@@ -2,6 +2,8 @@ use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::strategies::mcts::config::GraphSearch;
 use crate::strategies::mcts::config::GraphStats;
+use crate::strategies::mcts::node;
+use crate::strategies::mcts::node::real_action;
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
@@ -97,7 +99,7 @@ where
 
             let k = self.config.num_rollouts_per_leaf;
             let trials = if k > 1 {
-                let stack = NodeStack::new(self.stack.clone());
+                let stack = NodeStack::<G::A>::new(self.stack.clone());
                 self.add_extra_virtual_loss(&stack, k - 1);
                 self.simulate_many(&ctx.state, k)
             } else {
@@ -137,12 +139,21 @@ where
         }
 
         // The stack now contains the action path to the terminal state.
+        // `stack.pairs()` walks root -> leaf, replaying real states (see
+        // `node::incoming_sym`'s doc comment for why the translation can't
+        // be cached across paths and must come from the real state in hand).
         let mut actions = vec![];
-        let stack = NodeStack::new(self.stack.clone());
-        for (parent_id, child_id) in stack.pairs() {
-            let idx = stack.child_index(&self.index, *parent_id, *child_id);
+        let stack = NodeStack::<G::A>::new(self.stack.clone());
+        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
+        let mut replay_state = state.clone();
+        for ((parent_id, _), (_, idx)) in stack.pairs() {
+            let idx = *idx;
             let parent = self.index.get(*parent_id);
-            actions.push(parent.children().action(idx).clone());
+            let incoming_sym =
+                node::incoming_sym::<G>(explicit_dag, parent.is_root(), &replay_state);
+            let action = real_action::<G>(parent.children(), idx, incoming_sym);
+            replay_state = G::apply(replay_state, &action);
+            actions.push(action);
         }
 
         let trial = self.trial.as_ref().unwrap();

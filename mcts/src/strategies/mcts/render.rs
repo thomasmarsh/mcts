@@ -1,19 +1,30 @@
 use crate::game::Game;
 
+use super::config::GraphSearch;
+use super::node;
+use super::node::real_action;
 use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
 
 pub fn render<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>)
 where
     G::S: NodeRender,
 {
-    print::<G>(&search.index, search.root_id);
+    let explicit_dag = matches!(search.config.graph_search, GraphSearch::Dag(_));
+    print::<G>(&search.index, search.root_id, explicit_dag);
 }
 
 pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &G::S)
 where
     G::S: NodeRender,
 {
-    print_trans::<G>(&search.index, &search.table, search.root_id, state.clone());
+    let explicit_dag = matches!(search.config.graph_search, GraphSearch::Dag(_));
+    print_trans::<G>(
+        &search.index,
+        &search.table,
+        search.root_id,
+        state.clone(),
+        explicit_dag,
+    );
 }
 
 pub trait NodeRender {
@@ -33,6 +44,7 @@ fn print_trans<G>(
     table: &TranspositionTable,
     root_id: index::Id,
     init_state: G::S,
+    explicit_dag: bool,
 ) where
     G: Game,
     G::S: NodeRender,
@@ -56,12 +68,15 @@ fn print_trans<G>(
         let node = index.get(node_id);
         if node.is_expanded() {
             let children = node.children();
+            // Fresh from `state` (this node's own real board state), not
+            // cached -- see `node::incoming_sym`'s doc comment.
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
                     print_id,
                     children.node_id(i).unwrap(),
-                    G::apply(state.clone(), children.action(i)),
+                    G::apply(state.clone(), &real_action::<G>(children, i, incoming_sym)),
                 ));
             }
         }
@@ -69,7 +84,7 @@ fn print_trans<G>(
     println!("}}");
 }
 
-fn print<G>(index: &TreeIndex<G::A>, root_id: index::Id)
+fn print<G>(index: &TreeIndex<G::A>, root_id: index::Id, explicit_dag: bool)
 where
     G: Game,
     G::S: NodeRender,
@@ -91,11 +106,12 @@ where
         let node = index.get(node_id);
         if node.is_expanded() {
             let children = node.children();
+            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), &state);
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
                     children.node_id(i).unwrap(),
-                    G::apply(state.clone(), children.action(i)),
+                    G::apply(state.clone(), &real_action::<G>(children, i, incoming_sym)),
                 ));
             }
         }

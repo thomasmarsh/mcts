@@ -41,6 +41,14 @@ pub struct SelectContext<'a, G: Game> {
     pub q_init: node::QInit,
     pub stack: &'a NodeStack<G::A>,
     pub root_stats: &'a NodeStats,
+    /// The root's own literal-board state -- what a caller needing more than
+    /// `incoming_sym` (e.g. `QuasiBestFirst::best_child`, which needs every
+    /// ancestor's own incoming symmetry, not just `stack.current_id()`'s)
+    /// replays real states forward from via `NodeStack::incoming_syms`. See
+    /// `node::incoming_sym`'s doc comment for why this can't be cached
+    /// per-edge.
+    pub root_state: &'a G::S,
+    pub explicit_dag: bool,
     pub state: &'a G::S,
     pub player: usize,
     pub index: &'a TreeIndex<G::A>,
@@ -54,6 +62,16 @@ pub struct SelectContext<'a, G: Game> {
     /// solver is off, same as everywhere else `Proven` never leaves
     /// `Unproven` in that case (see `is_proven_loss`'s doc comment).
     pub solver_loss_threshold: u32,
+    /// The symmetry index of the edge leading into `stack.current_id()` --
+    /// i.e. what translates *that* node's own (possibly canonical)
+    /// `ChildArray` actions back into `state`'s literal-board orientation
+    /// (see `Game::canonical_representation`, `node::real_action`). Not
+    /// derivable from `stack`/`index` alone here: it depends on which edge
+    /// of `stack.current_id()`'s own *parent* was taken to reach it, a
+    /// property of the caller's descent, not of the node itself. `0`
+    /// (identity) at the root, and for every game that hasn't overridden
+    /// `canonical_representation`.
+    pub incoming_sym: usize,
 }
 
 impl<'a, G: Game> SelectContext<'a, G> {
