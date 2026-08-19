@@ -334,6 +334,31 @@ pub trait Game: Sized + Clone + Sync + Send {
         Real(action.0)
     }
 
+    /// The ply (pieces/stones already placed on the board `state`
+    /// represents) past which `canonical_representation` should stop
+    /// attempting to canonicalize. A position's stabilizer under a game's
+    /// symmetry group generally shrinks toward the identity as more
+    /// distinguishing detail accumulates on the board, so canonicalizing
+    /// well past that point mostly pays its recomputation cost (once per
+    /// *visit* -- see `node::incoming_sym`, called from `select_step` and
+    /// every `backprop`/PV/render walk, not once per node expansion) for
+    /// diminishing transposition-table hits. The default, `usize::MAX`,
+    /// means "always attempt it" -- today's behavior for every game that hasn't
+    /// characterized a cutoff (including games too small for one to
+    /// matter, like tic-tac-toe's whole 9-ply game).
+    ///
+    /// Takes `state`, not just `Self`, because the right cutoff can depend
+    /// on the specific board an instance was built on, not just the game
+    /// type: a fixed-board game (tic-tac-toe, Othello) can ignore the
+    /// argument and return a constant, but a game whose board size varies
+    /// per instance needs to derive its threshold from that instance's own
+    /// dimensions rather than the engine imposing one number for every
+    /// size.
+    #[allow(unused_variables)]
+    fn symmetry_ply_limit(state: &Self::S) -> usize {
+        usize::MAX
+    }
+
     /// A zobrist hash is expected to be cheap and precomputed upon move
     /// application.
     #[allow(unused_variables)]

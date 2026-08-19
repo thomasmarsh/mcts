@@ -14,6 +14,17 @@ pub const BOARD_SIZE: usize = 8;
 
 pub const USE_SYMMETRY: bool = true;
 
+/// The disc count (`state.occupied().count_ones()`) past which
+/// `Othello::canonical_representation` stops attempting symmetry
+/// canonicalization -- see `Game::symmetry_ply_limit`'s doc comment.
+/// Othello starts with 4 discs on the board, so this allows roughly the
+/// first 16 plies (the conventional "opening" window) to canonicalize
+/// before the board accumulates enough asymmetric detail that
+/// non-identity stabilizers become rare. A first-pass heuristic, not a
+/// profiled number -- revisit once real canonical-vs-identity-hash
+/// transposition-table hit-rate data is available to measure it directly.
+pub const SYMMETRY_PLY_LIMIT: usize = 20;
+
 // ── Zobrist hashing ───────────────────────────────────────────────────────
 
 // 64 squares × 2 players = 128 piece entries + 1 turn + 1 last_pass
@@ -587,8 +598,15 @@ impl Game for Othello {
         2
     }
 
+    fn symmetry_ply_limit(_state: &Self::S) -> usize {
+        SYMMETRY_PLY_LIMIT
+    }
+
     fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
         let state = state.0;
+        if state.occupied().count_ones() as usize > SYMMETRY_PLY_LIMIT {
+            return (Canonical(state), Transform::IDENTITY);
+        }
         let sym = canonical_symmetry(state.black, state.white);
         let (black_bits, white_bits) = board_symmetries(state.black, state.white)[sym];
 
@@ -1251,6 +1269,45 @@ mod tests {
             assert_eq!(canon_black, canon.black.bits());
             assert_eq!(canon_white, canon.white.bits());
         }
+    }
+
+    // Past `SYMMETRY_PLY_LIMIT`, `canonical_representation` must stop
+    // canonicalizing and fall back to the identity -- see `plan/
+    // symmetry.md`'s depth-cutoff addendum. Construct a state one disc over
+    // the limit directly (rather than playing a full game to it) so the
+    // test stays fast and deterministic.
+    #[test]
+    fn test_canonical_representation_respects_symmetry_ply_limit() {
+        assert_eq!(
+            Othello::symmetry_ply_limit(&State::default()),
+            SYMMETRY_PLY_LIMIT
+        );
+
+        // A black-only board with SYMMETRY_PLY_LIMIT + 1 discs, none of
+        // which is its own canonical (lexicographically minimal) image --
+        // if the cutoff didn't fire, canonicalization would move it.
+        let mut black = 0u64;
+        for i in 0..=SYMMETRY_PLY_LIMIT {
+            black |= 1 << (63 - i);
+        }
+        let state = State {
+            black: BB::from_bits(black),
+            white: BB::from_bits(0),
+            turn: Player::Black,
+            last_pass: false,
+            hashes: [0u64; 8],
+        };
+        assert_ne!(
+            canonical_symmetry(state.black, state.white),
+            0,
+            "test setup: state should not already be its own canonical image"
+        );
+
+        let (canon, sym) = Othello::canonical_representation(Real(state));
+        let canon = canon.into_inner();
+        assert_eq!(sym, Transform::IDENTITY);
+        assert_eq!(canon.black, state.black);
+        assert_eq!(canon.white, state.white);
     }
 
     // With `USE_SYMMETRY` on, `zobrist_hash` folds every state down to its
