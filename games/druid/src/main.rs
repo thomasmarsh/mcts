@@ -45,15 +45,17 @@ use mcts_tune::presets::PresetTable;
 // Presets
 // ---------------------------------------------------------------------------
 
-/// The parsed `easy`/`medium`/`strong`/`master` preset table --
-/// `games/druid/presets.json`'s embedded defaults, or an operator-supplied
-/// override file named by `DRUID_PRESETS_PATH` (see `PresetTable::load`'s
-/// doc comment).
+/// The parsed `easy`/`medium`/`strong`/`master` preset table -- loaded at
+/// runtime from `games/druid/presets.json` (or the file named by
+/// `DRUID_PRESETS_PATH`), falling back to the compiled-in defaults only if
+/// that path is missing (see `PresetTable::load`'s doc comment).
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
     PRESETS.get_or_init(|| {
-        let override_path = env::var("DRUID_PRESETS_PATH").ok().map(PathBuf::from);
-        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+        let presets_path = env::var("DRUID_PRESETS_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json")));
+        PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
             .expect("games/druid/presets.json must parse")
     })
 }

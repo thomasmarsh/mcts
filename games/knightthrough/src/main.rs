@@ -24,17 +24,17 @@ const TUNE_EVAL_ROUNDS: u32 = 20;
 /// `mcts_tune::presets::PresetTable::build`.
 const PRESET_SEED: u64 = 0;
 
-/// The parsed `easy`/`strong` preset table --
-/// `games/knightthrough/presets.json`'s embedded defaults, or an
-/// operator-supplied override file named by `KNIGHTTHROUGH_PRESETS_PATH`
+/// The parsed `easy`/`strong` preset table -- loaded at runtime from
+/// `games/knightthrough/presets.json` (or the file named by `KNIGHTTHROUGH_PRESETS_PATH`),
+/// falling back to the compiled-in defaults only if that path is missing
 /// (see `PresetTable::load`'s doc comment).
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
     PRESETS.get_or_init(|| {
-        let override_path = env::var("KNIGHTTHROUGH_PRESETS_PATH")
-            .ok()
-            .map(PathBuf::from);
-        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+        let presets_path = env::var("KNIGHTTHROUGH_PRESETS_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json")));
+        PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
             .expect("games/knightthrough/presets.json must parse")
     })
 }
