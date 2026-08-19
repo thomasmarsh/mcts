@@ -37,10 +37,10 @@ pub enum Topology {
 }
 
 /// One of a topology's eight queen-move shift directions -- names
-/// `game_core::bitboard::BitBoard::shift_*` directly, so lowering a `Region::Shift`/`adjacent`
+/// `bitboard::Board::shift_*` directly, so lowering a `Region::Shift`/`adjacent`
 /// term to a backend call is the identity mapping. `Hex`'s six-way adjacency uses `Northeast`/
 /// `Southwest` for its one diagonal pair (`Northwest`/`Southeast` is the *other* square diagonal,
-/// deliberately excluded -- see `game_core::bitboard::BitBoard::flood6`'s doc comment); `Rect`'s
+/// deliberately excluded -- see `bitboard::Board::flood6`'s doc comment); `Rect`'s
 /// `Eight` connectivity is the only user of the remaining two variants so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

@@ -6,7 +6,7 @@
 //!
 //! Deliberately still a 3x3 board (`games/hex3-gen`, not the 11x11
 //! `games/hex-gen` the UI actually plays): `core::interp::State<N, M>` is
-//! itself `game_core::bitboard::BitBoard<N, M>`-backed, capped at 64 cells,
+//! itself `bitboard::Board<u64, bitboard::Const<N>, bitboard::Const<M>>`-backed, capped at 64 cells,
 //! so it cannot represent an 11x11 (121-cell) position at all. `games/hex3-gen`'s own
 //! `Position`/`Hex` are const-generic (see `gdl/src/codegen/hex.rs`'s doc comment); pinned at
 //! `<3, 1>` here, the size `style-c/sexpr/hex.gdls` (this crate's source `.gdls`) itself uses.

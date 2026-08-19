@@ -391,6 +391,20 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
         (self & !self.wall(Direction::South) & !self.wall(Direction::West)).raw_shr(self.cols() + 1)
     }
 
+    /// The *other* diagonal -- deliberately excluded from `flood6`'s 6-way
+    /// adjacency (see `shift_northeast`'s doc comment), but still needed by a
+    /// caller that wants full 8-way (queen-move) adjacency, e.g. a chess-like
+    /// game or `gdl`'s `Connectivity::Eight`.
+    #[inline]
+    pub fn shift_northwest(self) -> Self {
+        (self & !self.wall(Direction::North) & !self.wall(Direction::West)).raw_shl(self.cols() - 1)
+    }
+
+    #[inline]
+    pub fn shift_southeast(self) -> Self {
+        (self & !self.wall(Direction::South) & !self.wall(Direction::East)).raw_shr(self.cols() - 1)
+    }
+
     #[inline]
     pub fn shift(self, direction: Direction) -> Self {
         match direction {
@@ -752,7 +766,7 @@ impl<S: Storage, R: Dim, C: Dim> std::ops::BitXorAssign for Board<S, R, C> {
 }
 
 /// Consumes set bits lowest-index-first, same idiom as
-/// `game_core::bitboard::BitBoard`'s `Iterator` impl -- lets a `for src in
+/// `bitboard::Board`'s `Iterator` impl -- lets a `for src in
 /// board` loop (over a `Copy` board, so the loop body's `board` binding is
 /// unaffected) walk row-major indices without going through `iter_set`'s
 /// borrow.

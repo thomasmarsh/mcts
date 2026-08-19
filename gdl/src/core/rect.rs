@@ -1,5 +1,5 @@
 //! The `Rect` topology (see `DESIGN.md`'s "Topology model"): an N x M grid, single-bit
-//! occupancy per cell, row-major site indices matching [`game_core::bitboard::BitBoard`]'s own
+//! occupancy per cell, row-major site indices matching [`bitboard::Board`]'s own
 //! `row * cols + col` convention.
 
 /// An `N x M` rectangular grid topology.

@@ -86,10 +86,12 @@
 // plies, forcing constant rebuilds -- per-ply bitboard floods over <= 36
 // cells are cheap and always correct.
 
-use game_core::bitboard::{BitBoard, Direction};
+use bitboard::{Const, Direction};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex, TerminalStatus};
 use mcts::zobrist::LazyZobristTable;
+
+type BitBoard<const N: usize, const M: usize> = bitboard::Board<u64, Const<N>, Const<M>>;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -104,7 +106,7 @@ pub const FLAT: u8 = 0;
 pub const WALL: u8 = 1;
 pub const CAP: u8 = 2;
 
-// Direction deltas, indexed to match `game_core::bitboard::Direction`.
+// Direction deltas, indexed to match `bitboard::Direction`.
 const DIRS: [(i32, i32); 4] = [(0, 1), (1, 0), (0, -1), (-1, 0)];
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq, Hash)]
@@ -417,7 +419,7 @@ impl<const N: usize> State<N> {
                 bits |= 1 << i;
             }
         }
-        BitBoard::new(bits)
+        BitBoard::from_bits(bits)
     }
 
     /// Whether `color` has a road (a top-piece path, flats and capstones
@@ -426,12 +428,12 @@ impl<const N: usize> State<N> {
         let mask = self.road_mask(color);
         connects(
             mask,
-            BitBoard::wall(Direction::North),
-            BitBoard::wall(Direction::South),
+            BitBoard::<N, N>::EMPTY.wall(Direction::North),
+            BitBoard::<N, N>::EMPTY.wall(Direction::South),
         ) || connects(
             mask,
-            BitBoard::wall(Direction::East),
-            BitBoard::wall(Direction::West),
+            BitBoard::<N, N>::EMPTY.wall(Direction::East),
+            BitBoard::<N, N>::EMPTY.wall(Direction::West),
         )
     }
 
@@ -719,7 +721,7 @@ impl<const N: usize> State<N> {
 /// Flood fill from `a` with early exit on touching `b`.
 fn connects<const N: usize>(mask: BitBoard<N, N>, a: BitBoard<N, N>, b: BitBoard<N, N>) -> bool {
     let mut flood = mask & a;
-    if flood.is_empty() {
+    if flood.none_set() {
         return false;
     }
     loop {

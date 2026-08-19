@@ -68,7 +68,7 @@
 // is ever placed on an intermediate square) -- so an unordered, sorted set is
 // sufficient to reproduce the resulting board.
 
-use game_core::bitboard::BitBoard;
+use bitboard::Const;
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex, TerminalStatus};
 
@@ -80,7 +80,7 @@ pub const NUM_SQUARES: usize = SIZE * SIZE;
 pub const RIVER_ROW: i32 = 3;
 pub const MAX_CAPTURES: usize = 16;
 
-type Board = BitBoard<7, 7>;
+type Board = bitboard::Board<u64, Const<7>, Const<7>>;
 
 #[derive(Copy, Clone, Serialize, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Player {
@@ -353,8 +353,8 @@ impl State {
         for (i, cell) in cells.iter().enumerate() {
             if let Some((color, piece)) = cell {
                 match color {
-                    Player::Black => black_occ.set(i),
-                    Player::White => white_occ.set(i),
+                    Player::Black => black_occ.set_index(i),
+                    Player::White => white_occ.set_index(i),
                 }
                 if *piece == Piece::Lion {
                     match color {
@@ -397,8 +397,8 @@ impl State {
         debug_assert!(self.squares[sq].is_none());
         self.squares[sq] = Some((color, piece));
         match color {
-            Player::Black => self.black_occ.set(sq),
-            Player::White => self.white_occ.set(sq),
+            Player::Black => self.black_occ.set_index(sq),
+            Player::White => self.white_occ.set_index(sq),
         }
         if piece == Piece::Lion {
             match color {
@@ -604,7 +604,7 @@ impl State {
         let occupied = self.black_occ | self.white_occ;
         let mut sq = idx(r1 + step.0, c1 + step.1);
         while sq != to {
-            if occupied.get(sq) {
+            if occupied.get_index(sq) {
                 return None;
             }
             let (r, c) = rc(sq);
@@ -760,7 +760,9 @@ impl State {
             };
             let mid = idx(mid_rc.0, mid_rc.1);
             let land = idx(land_rc.0, land_rc.1);
-            if enemy_occ.get(mid) && !captured.contains(&(mid as u8)) && !occ_without_from.get(land)
+            if enemy_occ.get_index(mid)
+                && !captured.contains(&(mid as u8))
+                && !occ_without_from.get_index(land)
             {
                 captured.push(mid as u8);
                 landings.push(land as u8);

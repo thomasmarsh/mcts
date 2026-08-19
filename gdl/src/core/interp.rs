@@ -1,5 +1,5 @@
 //! A tree-walking evaluator that binds a Core IR [`super::Program`] directly to a concrete
-//! `Rect`-shaped board (`game_core::bitboard::BitBoard<N, M>`), rather than compiling it to Rust
+//! `Rect`-shaped board (`bitboard::Board<u64, bitboard::Const<N>, bitboard::Const<M>>`), rather than compiling it to Rust
 //! source. Per `DESIGN.md`'s bootstrap order ("Interpret Core, don't codegen yet"), this is
 //! deliberately the slow, obviously-correct path -- an oracle to check codegen against later,
 //! not a performance target itself.
@@ -8,13 +8,13 @@
 //! `BitBoard`, so this only works for a topology known at the call site -- see this module's own
 //! tests and the oracle tests in `tests/` for concrete examples).
 
-use game_core::bitboard::BitBoard;
-
 use super::{BoolExpr, Connectivity, Direction, Player, Program, Region, Topology};
+
+type BitBoard<const N: usize, const M: usize> = bitboard::Board<u64, bitboard::Const<N>, bitboard::Const<M>>;
 
 /// `region` shifted one step in `dir` -- the backend realization of [`Region::Shift`]/DESIGN.md's
 /// `shift(dir): Region -> Region`. Each arm is a direct, unmodified call into an existing, proven
-/// `BitBoard::shift_*` method (`game_core::bitboard::BitBoard`'s "Board displacement" section) --
+/// `BitBoard::shift_*` method (`bitboard::Board`'s "Board displacement" section) --
 /// this function adds no new bit-twiddling of its own, it only gives the Core IR a name for what
 /// already exists.
 fn shift<const N: usize, const M: usize>(region: BitBoard<N, M>, dir: Direction) -> BitBoard<N, M> {
@@ -37,7 +37,7 @@ fn shift<const N: usize, const M: usize>(region: BitBoard<N, M>, dir: Direction)
 /// Every direction's shift is computed from the same input `region` and OR'd together in one
 /// expression, deliberately -- splitting this across multiple statements (each shift computed
 /// from the *previous* statement's already-shifted result) is exactly the latent bug
-/// `game_core::bitboard::BitBoard::flood6`'s doc comment documents: a compound shift can bridge
+/// `bitboard::Board::flood6`'s doc comment documents: a compound shift can bridge
 /// through a cell that isn't actually `conn`-adjacent to the original region. Folding over a
 /// direction list computed from the one unmodified `region` value structurally can't reintroduce
 /// that bug, unlike a hand-written sequence of `|=` statements.
@@ -119,7 +119,7 @@ fn bounded_fixpoint<Aux, const N: usize, const M: usize>(
 /// of [`Region::Flood`]/DESIGN.md's `flood(seed, conn): Region -> Region`, and
 /// [`bounded_fixpoint`]'s `Aux = ()` instantiation (`step` just unions in `adjacent`). This
 /// replaces what was previously a direct, non-composable call to
-/// `game_core::bitboard::BitBoard::flood6` in `State::winner` -- same underlying bit operations
+/// `bitboard::Board::flood6` in `State::winner` -- same underlying bit operations
 /// (`adjacent`'s `Connectivity::Six` arm ORs the identical six shifts `flood6` did), now expressed
 /// as a real Region-algebra combinator instead of a bespoke per-arity `BitBoard` method call.
 fn flood<const N: usize, const M: usize>(
@@ -218,7 +218,7 @@ impl<const N: usize, const M: usize> State<N, M> {
     /// Places a piece for the current player at `site` and advances to the next player.
     /// Does not check legality -- callers should check `legal_moves` first.
     pub fn apply(&mut self, site: usize) {
-        self.occupied[self.to_move].set(site);
+        self.occupied[self.to_move].set_index(site);
         self.to_move = (self.to_move + 1) % self.occupied.len();
     }
 
@@ -278,7 +278,7 @@ mod tests {
         state.apply(4);
         assert_eq!(state.to_move, 1);
         assert_eq!(state.legal_moves(&program).count_ones(), 8);
-        assert!(!state.legal_moves(&program).get(4));
+        assert!(!state.legal_moves(&program).get_index(4));
     }
 
     #[test]
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn hex_p2_wins_by_connecting_west_and_east_edges_via_diagonal() {
         // P2's edges are NW (col 0: sites 0, 3, 6) and SE (col 2: sites 2, 5, 8). The
-        // northeast/southwest diagonal (0, 4, 8) is hex-adjacent (see game_core::bitboard's
+        // northeast/southwest diagonal (0, 4, 8) is hex-adjacent (see bitboard::Board's
         // flood6 doc comment) and connects west to east.
         let program = hex_program();
         let mut state = State::<3, 3>::new(&program);
@@ -609,7 +609,7 @@ mod tests {
                     if let Some(&dir) = parent_dirs.first() {
                         parent.insert(s2, dir);
                     }
-                    next.set(s2);
+                    next.set_index(s2);
                 }
                 (next, (parent, cycle))
             },

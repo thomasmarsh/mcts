@@ -3,7 +3,7 @@
 //! reference -- there's no existing `games/hex` crate to reuse the way `games/ttt` was reused for
 //! `tests/ttt_gen_oracle.rs`, per `DESIGN.md`'s corpus notes, so [`HexOracle`] (a second copy of
 //! `tests/hex_oracle.rs`'s own oracle, deliberately duplicated rather than shared -- see that
-//! file's doc comment for why it avoids calling into `gdl::core::hex`/`game_core::bitboard` at
+//! file's doc comment for why it avoids calling into `gdl::core::hex`/`bitboard::Board` at
 //! all) plays that role here instead. Walks both sides through `mcts::game::Game`
 //! (`generate_actions`/`apply`/`is_terminal`/`winner`), the same way `tests/ttt_gen_oracle.rs`
 //! exercises `games/ttt-gen`'s own `Game` impl end to end.
@@ -173,7 +173,7 @@ fn column(col: usize) -> Vec<usize> {
 /// `(row, row)` site indices, one per row -- touches col 0 (row 0) and col `SIDE - 1`
 /// (row `SIDE - 1`), P1's win condition, connected via the hex-adjacent
 /// `shift_northeast`/`shift_southwest` diagonal (`(row, col)` <-> `(row + 1, col + 1)`; see
-/// `game_core::bitboard`'s "Hex flood fill" doc comment).
+/// `bitboard::Board`'s "Hex flood fill" doc comment).
 fn hex_adjacent_diagonal() -> Vec<usize> {
     (0..SIDE).map(|row| row * SIDE + row).collect()
 }
