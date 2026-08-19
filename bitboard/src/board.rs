@@ -112,13 +112,25 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
     }
 
     /// Iterates the row-major indices (`row * cols + col`) of set bits, in
-    /// ascending order.
+    /// ascending order. Pops the lowest set bit via `trailing_zeros` (a
+    /// single BSF/TZCNT) each step, so cost is O(popcount) per word rather
+    /// than a fixed O(64) scan -- the same idiom `nego`'s `BitBoard` uses for
+    /// its `Iterator` impl, which matters on the mostly-empty boards this
+    /// crate's flood/connectivity ops iterate most (e.g. a near-empty 19x19
+    /// Go board still costs a full 6-word x 64-bit scan under the naive
+    /// version).
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
         (0..S::CAPACITY_WORDS).flat_map(move |w| {
-            let word = self.bits.word(w);
-            (0..64)
-                .filter(move |b| (word >> b) & 1 != 0)
-                .map(move |b| w * 64 + b)
+            let mut word = self.bits.word(w);
+            std::iter::from_fn(move || {
+                if word == 0 {
+                    None
+                } else {
+                    let bit = word.trailing_zeros() as usize;
+                    word &= word - 1;
+                    Some(w * 64 + bit)
+                }
+            })
         })
     }
 
@@ -218,19 +230,18 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Wall masks. `wall_words` is the one operation in this file that's a real
-// loop over the board's dimension rather than O(1) word arithmetic, so it's
-// memoized: computed once per distinct `(S, rows, cols)` ever asked about,
-// then reused. This isn't the `const fn`-evaluated LUT `BitBoard`/
-// `BigBitBoard` use -- a local `static` can't name a generic parameter from
-// its enclosing `impl` (`S` here), so a single process-wide cache keyed by
-// `TypeId` stands in for "one table per `S`" instead -- but it still means
-// one lock-and-lookup per distinct size, not a per-call recomputation. For a
-// `Const<N>, Const<M>` board that's a single entry ever populated (dims
-// never change for that monomorphization); for a `Dyn, Dyn` board serving
-// many sizes from one monomorphization (e.g. Gonnect/AtariGo's
-// `Board<[u64; 6], Dyn, Dyn>` across `3..=19`), this is exactly the "small
-// table indexed by size" the plan calls for.
+// Wall masks. `wall_words_uncached` is the one operation in this file that's
+// a real loop over the board's dimension rather than O(1) word arithmetic.
+// Whether that loop's result is worth memoizing depends on the dim kind --
+// see `Dim::CACHE_WALLS`'s doc comment -- so `wall_words` dispatches on it:
+// `Dyn` boards (many sizes, one monomorphization) hit the process-wide cache
+// keyed by `TypeId` (a local `static` can't name a generic parameter from
+// its enclosing `impl`, i.e. `S` here, so this stands in for "one table per
+// `S`"); `Const<N>, Const<M>` boards (one monomorphization *per* size)
+// recompute directly every call instead, skipping the lock/hashmap/downcast
+// entirely -- for a loop bounded by `rows`/`cols` (at most 19 in every game
+// this crate serves today), that's cheaper than the synchronization it would
+// otherwise pay on every `wall()`/shift call.
 impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
     fn wall_words_uncached(rows: usize, cols: usize, direction: Direction) -> S {
         let mut out = S::zero();
@@ -260,6 +271,10 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
     }
 
     fn wall_words(rows: usize, cols: usize, direction: Direction) -> S {
+        if !(R::CACHE_WALLS || C::CACHE_WALLS) {
+            return Self::wall_words_uncached(rows, cols, direction);
+        }
+
         use std::any::{Any, TypeId};
 
         type WallCache = Mutex<HashMap<(TypeId, usize, usize), Box<dyn Any + Send>>>;
