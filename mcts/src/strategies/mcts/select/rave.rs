@@ -1,6 +1,7 @@
 use super::super::config::BackpropFlags;
 use super::super::config::GRAVE;
 use super::super::index::Id;
+use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
@@ -153,9 +154,9 @@ impl Rave {
 }
 
 impl Rave {
-    fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id) -> Id {
+    fn get_ref<G: Game>(&self, ctx: &SelectContext<'_, G>, node_id: Id, idx: usize) -> Id {
         let mut stack = ctx.stack.clone();
-        stack.push(node_id);
+        stack.push(node_id, idx);
         let rev_pairs = stack.reverse_pairs();
 
         if ctx.index.get(node_id).is_root() {
@@ -163,7 +164,7 @@ impl Rave {
         }
 
         // TODO: we can push this down during select descent rather than walking back up.
-        for (parent_id, child_id) in rev_pairs {
+        for ((parent_id, _), (child_id, child_idx)) in rev_pairs {
             if stack
                 .get_stats(
                     ctx.index,
@@ -171,6 +172,7 @@ impl Rave {
                     ctx.graph_stats,
                     *parent_id,
                     *child_id,
+                    *child_idx,
                 )
                 .total_visits()
                 >= self.threshold
@@ -209,13 +211,13 @@ impl<G: Game> SelectStrategy<G> for Rave {
         idx: usize,
         parent_log: f64,
     ) -> f64 {
-        let ref_id = self.get_ref(ctx, child_id);
+        let ref_id = self.get_ref(ctx, child_id, idx);
         let hash = ctx.index.get(ref_id).hash;
-        let action = children.action(idx);
+        let action = real_action::<G>(children, idx, ctx.incoming_sym);
         let grave_stats = ctx
             .grave
             .get(&hash)
-            .and_then(|player| player[ctx.player].get(action).cloned())
+            .and_then(|player| player[ctx.player].get(&action).cloned())
             .unwrap_or_default();
 
         let amaf_n = grave_stats.num_visits;

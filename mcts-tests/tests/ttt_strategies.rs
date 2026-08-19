@@ -581,6 +581,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // simulation -- a genuine AMAF match, should update Move(7)'s edge.
     Classic.update_amaf::<G>(
         Some(root_id),
+        0,
         &[(Move(7), 1)],
         &index,
         processed_id,
@@ -602,6 +603,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // never had the choice to play it from root. Must not update.
     Classic.update_amaf::<G>(
         Some(root_id),
+        0,
         &[(Move(7), 0)],
         &index,
         processed_id,
@@ -1709,13 +1711,14 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false, false);
 
     let root = ts.index.get(root_id);
     let children = root.children();
 
     let shared = Shared {
         index: &ts.index,
+        root_state: &init_state,
         root_stats: &ts.root_stats,
         table: &ts.table,
         global: &ts.stats,
@@ -1761,12 +1764,14 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         );
     }
 
-    let stack = NodeStack::new(vec![root_id]);
+    let stack = NodeStack::new(vec![(root_id, 0)]);
     let grave = Default::default();
     let select_ctx = SelectContext {
         q_init: node::QInit::Loss,
         stack: &stack,
         root_stats: &ts.root_stats,
+        root_state: &init_state,
+        explicit_dag: false,
         state: &init_state,
         player,
         index: &ts.index,
@@ -1776,6 +1781,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         use_transpositions: false,
         graph_stats: None,
         solver_loss_threshold: 0,
+        incoming_sym: 0,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
@@ -1807,7 +1813,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false, false);
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -1818,6 +1824,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
 
     let shared = Shared {
         index: &ts.index,
+        root_state: &init_state,
         root_stats: &ts.root_stats,
         table: &ts.table,
         global: &ts.stats,
@@ -1852,12 +1859,14 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     );
     children.update(1, &[1.0, 0.0]);
 
-    let stack = NodeStack::new(vec![root_id]);
+    let stack = NodeStack::new(vec![(root_id, 0)]);
     let grave = Default::default();
     let select_ctx = SelectContext {
         q_init: node::QInit::Loss,
         stack: &stack,
         root_stats: &ts.root_stats,
+        root_state: &init_state,
+        explicit_dag: false,
         state: &init_state,
         player: root.player_idx,
         index: &ts.index,
@@ -1867,6 +1876,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         use_transpositions: false,
         graph_stats: None,
         solver_loss_threshold: 0,
+        incoming_sym: 0,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);

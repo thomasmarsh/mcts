@@ -7,6 +7,7 @@ use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
+use crate::strategies::mcts::node::real_action;
 use crate::strategies::mcts::node::ChildArray;
 use crate::strategies::mcts::node::Node;
 use crate::strategies::mcts::node::NodeState;
@@ -181,6 +182,10 @@ pub(crate) type ActionTotal<A> = (A, u32, Vec<f64>);
 /// two copies that could drift.
 pub struct Shared<'a, G: Game> {
     pub index: &'a TreeIndex<G::A>,
+    /// The root's own literal-board state -- the anchor every `node::
+    /// incoming_sym` translation replays real states forward from (see its
+    /// doc comment for why this can't be a cached per-edge value).
+    pub root_state: &'a G::S,
     pub root_stats: &'a NodeStats,
     pub table: &'a TranspositionTable,
     pub global: &'a TreeStats<G>,
@@ -215,13 +220,31 @@ pub fn expand<'a, G: Game>(
     state: &G::S,
     use_mcts_solver: bool,
     has_amaf: bool,
+    canonicalize: bool,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
         let status = G::terminal_status(state);
         if matches!(status, TerminalStatus::NotTerminal) {
+            // The root's own action list stays in the literal, uncanonicalized
+            // orientation regardless of `canonicalize`: it has no incoming
+            // edge, and it's the one node whose actions must already be
+            // directly playable against the real game state
+            // (`select_final_action`, `verbose_summary`). Every other node's
+            // action list is generated from whichever real state first
+            // reached it, canonicalized -- `canonical_representation` is
+            // deterministic on the equivalence class, so it doesn't matter
+            // which of possibly several transposed parents that state came
+            // from; every caller translates back via `node::incoming_sym`,
+            // recomputed fresh from its own real state rather than cached
+            // (see that function's doc comment).
+            let gen_state = if canonicalize && !node.is_root() {
+                G::canonical_representation(state.clone()).0
+            } else {
+                state.clone()
+            };
             let mut actions = Vec::new();
-            G::generate_actions(state, &mut actions);
+            G::generate_actions(&gen_state, &mut actions);
             debug_assert!(!actions.is_empty());
             NodeState::Expanded(ChildArray::new(actions, G::num_players(), has_amaf))
         } else {
@@ -249,21 +272,22 @@ pub fn new_child<G: Game>(
     best_idx: usize,
     current_id: Id,
 ) -> Id {
-    let hash = G::zobrist_hash(state);
     let parent = shared.index.get(current_id);
     let children = parent.children();
     children.get_or_create_child(best_idx, || {
         let child_id = if shared.explicit_dag {
             let ply = parent.ply + 1;
+            let canon_state = G::canonical_representation(state.clone()).0;
+            let canon_hash = G::zobrist_hash(&canon_state);
             shared.table.get_or_insert_graph(
                 TranspositionKey {
-                    position_hash: hash,
+                    position_hash: canon_hash,
                     ply,
                 },
                 || {
                     shared.index.insert(Node::new_at_ply(
                         G::player_to_move(state).to_index(),
-                        hash,
+                        canon_hash,
                         ply,
                         G::num_players(),
                         shared.has_amaf,
@@ -272,6 +296,7 @@ pub fn new_child<G: Game>(
                 },
             )
         } else if shared.use_transpositions {
+            let hash = G::zobrist_hash(state);
             shared.table.get_or_insert(hash, || {
                 shared.index.insert(Node::new_at_ply(
                     G::player_to_move(state).to_index(),
@@ -283,6 +308,7 @@ pub fn new_child<G: Game>(
                 ))
             })
         } else {
+            let hash = G::zobrist_hash(state);
             shared.index.insert(Node::new_at_ply(
                 G::player_to_move(state).to_index(),
                 hash,
@@ -359,14 +385,21 @@ pub fn proven_draw_child<G: Game>(
 pub fn select_step<G: Game>(
     shared: &Shared<'_, G>,
     ctx: &mut SearchContext<G>,
-    stack: &mut Vec<Id>,
+    stack: &mut Vec<(Id, usize)>,
     select_strategy: &mut impl SelectStrategy<G>,
     rng: &mut SmallRng,
 ) {
     debug_assert!(stack.is_empty());
     let grave = shared.global.grave.read().unwrap();
+    // The idx (in the previous node's `ChildArray`) that reached
+    // `ctx.current_id` -- unused for the very first push (the root has no
+    // predecessor, see `stack::StackEntry`'s doc comment), then updated to
+    // `best_idx` every iteration right after it's chosen, since that's the
+    // same slot whichever branch below (existing vs. newly created child)
+    // ends up using.
+    let mut incoming_idx = 0usize;
     loop {
-        stack.push(ctx.current_id);
+        stack.push((ctx.current_id, incoming_idx));
 
         let node_stack = NodeStack::new(stack.clone());
         let num_visits = node_stack
@@ -374,6 +407,13 @@ pub fn select_step<G: Game>(
             .num_visits();
         let node = shared.index.get(ctx.current_id);
         let player = node.player_idx;
+        // Recomputed fresh from `ctx.state` (this node's own real board
+        // state) every iteration rather than carried from the previous one
+        // -- see `node::incoming_sym`'s doc comment for why a value cached
+        // on the incoming edge would be wrong whenever this node's own
+        // parent is itself a transposition (reached via more than one real
+        // orientation across different iterations).
+        let incoming_sym = node::incoming_sym::<G>(shared.explicit_dag, node.is_root(), &ctx.state);
 
         // A single snapshot of this node's status -- see `Node::status`'s
         // doc comment for why this can't be two separate `is_terminal()`/
@@ -398,6 +438,7 @@ pub fn select_step<G: Game>(
                     &ctx.state,
                     shared.use_mcts_solver,
                     shared.has_amaf,
+                    shared.explicit_dag,
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return;
@@ -413,6 +454,8 @@ pub fn select_step<G: Game>(
                         q_init: shared.q_init,
                         stack: &node_stack,
                         root_stats: shared.root_stats,
+                        root_state: shared.root_state,
+                        explicit_dag: shared.explicit_dag,
                         player,
                         state: &ctx.state,
                         index: shared.index,
@@ -422,11 +465,13 @@ pub fn select_step<G: Game>(
                         use_transpositions: shared.use_transpositions,
                         graph_stats: shared.graph_stats,
                         solver_loss_threshold: shared.solver_loss_threshold,
+                        incoming_sym,
                     };
 
                     select_strategy.best_child(&select_ctx, rng)
                 }
             };
+        incoming_idx = best_idx;
 
         let children = shared.index.get(ctx.current_id).children();
 
@@ -442,16 +487,20 @@ pub fn select_step<G: Game>(
             if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
                 shared.index.get(child_id).stats.add_virtual_loss();
             }
-            ctx.traverse_apply(child_id, children.action(best_idx));
+            // `children.action(best_idx)` is in *this* node's own
+            // orientation (canonical if this node isn't the root -- see
+            // `expand`), translated via `incoming_sym`.
+            let action = real_action::<G>(children, best_idx, incoming_sym);
+            ctx.traverse_apply(child_id, &action);
         } else {
+            let action = real_action::<G>(children, best_idx, incoming_sym);
             {
                 let mut actions = vec![];
                 G::generate_actions(&ctx.state, &mut actions);
-                debug_assert_eq!(actions[best_idx], *children.action(best_idx));
+                debug_assert!(actions.contains(&action));
             }
 
-            let action = children.action(best_idx);
-            let state = G::apply(ctx.state.clone(), action);
+            let state = G::apply(ctx.state.clone(), &action);
 
             let child_id = new_child::<G>(shared, &state, best_idx, ctx.current_id);
 
@@ -463,7 +512,7 @@ pub fn select_step<G: Game>(
             ctx.state = state;
 
             if shared.expand_threshold > 0 {
-                stack.push(ctx.current_id);
+                stack.push((ctx.current_id, incoming_idx));
                 return;
             }
         }
@@ -475,17 +524,23 @@ pub fn select_step<G: Game>(
 /// root (no descent happened this iteration, e.g. `expand_threshold` not yet
 /// met there). This is the bigram context `Nst::select_move` needs for the
 /// playout's first ply; `playout` tracks its own running context for every
-/// ply after that.
+/// ply after that. Replays real states from `root_state` (see `NodeStack::
+/// incoming_syms`'s doc comment for why a cached per-edge value can't be
+/// trusted here) -- O(depth), same as `backprop_step`'s own per-iteration
+/// walk.
 #[inline]
-pub fn last_tree_action<G: Game>(index: &TreeIndex<G::A>, stack: &[Id]) -> Option<G::A> {
+pub fn last_tree_action<G: Game>(
+    index: &TreeIndex<G::A>,
+    stack: &[(Id, usize)],
+    root_state: &G::S,
+    explicit_dag: bool,
+) -> Option<G::A> {
     if stack.len() < 2 {
         return None;
     }
-    let parent_id = stack[stack.len() - 2];
-    let child_id = stack[stack.len() - 1];
-    let parent = index.get(parent_id);
-    let idx = parent.child_index(child_id);
-    Some(parent.children().action(idx).clone())
+    let node_stack = NodeStack::new(stack.to_vec());
+    let (_, actions) = node_stack.incoming_syms::<G>(index, root_state, explicit_dag);
+    actions.get(&stack[stack.len() - 1].0).cloned()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -519,13 +574,12 @@ pub fn add_path_virtual_loss<A: crate::game::Action>(
     extra: usize,
     graph_stats: Option<GraphStats>,
 ) {
-    for (parent_id, child_id) in stack.pairs() {
+    for ((parent_id, _), (child_id, idx)) in stack.pairs() {
         let parent = index.get(*parent_id);
-        let idx = parent.child_index(*child_id);
         let children = parent.children();
         for _ in 0..extra {
             if graph_stats.is_none_or(GraphStats::uses_edges) {
-                children.add_virtual_loss(idx);
+                children.add_virtual_loss(*idx);
             }
             if graph_stats.is_some_and(GraphStats::uses_nodes) {
                 index.get(*child_id).stats.add_virtual_loss();
@@ -536,7 +590,7 @@ pub fn add_path_virtual_loss<A: crate::game::Action>(
 
 pub fn backprop_step<G: Game>(
     shared: &Shared<'_, G>,
-    stack: &[Id],
+    stack: &[(Id, usize)],
     backprop_strategy: &impl BackpropStrategy,
     trial: Trial<G>,
     flags: BackpropFlags,
@@ -552,6 +606,8 @@ pub fn backprop_step<G: Game>(
         shared.global,
         shared.index,
         shared.root_stats,
+        shared.root_state,
+        shared.explicit_dag,
         trial,
         flags,
         shared.use_mcts_solver,

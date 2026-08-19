@@ -1,6 +1,7 @@
 use super::super::config::BackpropFlags;
 use super::super::config::GLOBAL;
 use super::super::index::Id;
+use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
@@ -82,9 +83,9 @@ impl<G: Game> SelectStrategy<G> for ProgressiveHistory {
             .ucb
             .score_child(ctx, child_id, children, idx, parent_log);
 
-        let action = children.action(idx);
+        let action = real_action::<G>(children, idx, ctx.incoming_sym);
         let player_actions = ctx.global.player_actions[ctx.player].read().unwrap();
-        let Some(stats) = player_actions.get(action).filter(|s| s.num_visits > 0) else {
+        let Some(stats) = player_actions.get(&action).filter(|s| s.num_visits > 0) else {
             return ucb;
         };
         let history_score = stats.score / stats.num_visits as f64;

@@ -53,7 +53,16 @@ where
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
-    pub stack: Vec<Id>,
+    /// The root->leaf descent path from the most recent `select`/`select_step`
+    /// call, as `(Id, idx)` pairs -- `idx` is the slot in the *previous*
+    /// entry's `ChildArray` that was actually selected to reach this entry
+    /// (unused placeholder for the root's own entry). Carried explicitly
+    /// rather than a bare `Vec<Id>` because a `ChildArray`'s `id_index`
+    /// reverse map can't disambiguate which slot was used once
+    /// symmetry-aware graph merging lets several actions from one parent
+    /// canonicalize to the same shared child (see `stack::StackEntry`'s doc
+    /// comment).
+    pub stack: Vec<(Id, usize)>,
     pub trial: Option<Trial<G>>,
 }
 

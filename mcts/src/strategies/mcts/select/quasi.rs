@@ -2,6 +2,8 @@ use super::super::book;
 use super::super::config::SearchConfig;
 use super::super::config::Strategy;
 use super::super::index::Id;
+use super::super::node;
+use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::search::TreeSearch;
 use super::super::select::SelectContext;
@@ -141,18 +143,27 @@ where
         let available = current.children();
 
         // The stack now contains the action path to the terminal state.
+        // `ctx.stack.pairs()` walks root -> leaf, replaying real states from
+        // `ctx.root_state` -- see `node::incoming_sym`'s doc comment for why
+        // each parent's own incoming symmetry must come from the real state
+        // in hand, not a cached edge value.
         // TODO: factor this pair iteration out of here
         let mut key_init = vec![];
-        for (parent_id, child_id) in ctx.stack.pairs() {
-            let idx = ctx.stack.child_index(ctx.index, *parent_id, *child_id);
+        let mut replay_state = ctx.root_state.clone();
+        for ((parent_id, _), (_, idx)) in ctx.stack.pairs() {
+            let idx = *idx;
             let parent = ctx.index.get(*parent_id);
-            key_init.push(parent.children().action(idx).clone());
+            let incoming_sym =
+                node::incoming_sym::<G>(ctx.explicit_dag, parent.is_root(), &replay_state);
+            let action = real_action::<G>(parent.children(), idx, incoming_sym);
+            replay_state = G::apply(replay_state, &action);
+            key_init.push(action);
         }
         let player_to_move = G::player_to_move(ctx.state).to_index();
         let k_score = self.k[player_to_move];
 
         let enumerated: Vec<(usize, G::A)> = (0..available.len())
-            .map(|i| (i, available.action(i).clone()))
+            .map(|i| (i, real_action::<G>(available, i, ctx.incoming_sym)))
             .collect();
         let best = random_best(enumerated.as_slice(), rng, |(_, action): &(usize, G::A)| {
             let mut key = key_init.clone();
@@ -176,7 +187,7 @@ where
         } else {
             let action = self.search.choose_action(ctx.state);
             (0..available.len())
-                .find(|&i| *available.action(i) == action)
+                .find(|&i| real_action::<G>(available, i, ctx.incoming_sym) == action)
                 .unwrap()
         }
     }
