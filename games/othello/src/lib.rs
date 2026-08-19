@@ -352,7 +352,7 @@ pub struct State {
     pub last_pass: bool,
     /// Incrementally-maintained Zobrist hash for each of the 8 symmetries.
     /// `hashes[0]` is the identity-symmetry hash; the others can be used
-    /// for canonical-symmetry reduction once `canonical_symmetry` is added.
+    /// for canonical-symmetry reduction via `canonical_symmetry`.
     pub hashes: [u64; 8],
 }
 
@@ -401,6 +401,33 @@ pub fn xor_const(hashes: &mut [u64; 8], table_idx: usize) {
     for h in hashes.iter_mut() {
         *h ^= v;
     }
+}
+
+/// All 8 symmetric images of a `State`'s geometric fields (`black`/`white`),
+/// as raw bit patterns, keyed the same way as `D4Symmetry::index_symmetries`
+/// -- index 0 is the identity.
+fn board_symmetries(black: BB, white: BB) -> [(u64, u64); 8] {
+    let mut out = [(0u64, 0u64); 8];
+    for (sym_idx, slot) in out.iter_mut().enumerate() {
+        *slot = (
+            D4Symmetry::<8>::apply_to_bits(black.bits(), sym_idx),
+            D4Symmetry::<8>::apply_to_bits(white.bits(), sym_idx),
+        );
+    }
+    out
+}
+
+/// Index of the symmetry whose image of `(black, white)` is lexicographically
+/// minimal -- the canonical orientation for the position, mirroring
+/// `D4Symmetry::packed_canonical_symmetry` for boards too wide to pack into
+/// a `u32`.
+pub fn canonical_symmetry(black: BB, white: BB) -> usize {
+    board_symmetries(black, white)
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, &(b, w))| (b, w))
+        .unwrap()
+        .0
 }
 
 impl State {
@@ -546,6 +573,46 @@ impl Game for Othello {
 
     fn num_players() -> usize {
         2
+    }
+
+    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+        let sym = canonical_symmetry(state.black, state.white);
+        let (black_bits, white_bits) = board_symmetries(state.black, state.white)[sym];
+
+        let mut hashes = [0u64; 8];
+        xor_piece_range(&mut hashes, black_bits, Player::Black);
+        xor_piece_range(&mut hashes, white_bits, Player::White);
+        if state.turn == Player::White {
+            xor_const(&mut hashes, ZOBRIST_TURN);
+        }
+        if state.last_pass {
+            xor_const(&mut hashes, ZOBRIST_LAST_PASS);
+        }
+
+        (
+            State {
+                black: BB::from_bits(black_bits),
+                white: BB::from_bits(white_bits),
+                turn: state.turn,
+                last_pass: state.last_pass,
+                hashes,
+            },
+            sym,
+        )
+    }
+
+    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
+        if action == Move::PASS {
+            return action;
+        }
+        Move(D4Symmetry::<8>::index_symmetries(action.0 as usize)[sym] as u8)
+    }
+
+    fn invert_action(action: Self::A, sym: usize) -> Self::A {
+        if action == Move::PASS {
+            return action;
+        }
+        Move(D4Symmetry::<8>::invert_symmetry(action.0 as usize, sym) as u8)
     }
 }
 
@@ -1089,5 +1156,70 @@ mod tests {
         // may not be legal in our correct replay.  Just assert invariants.
         assert_eq!(state.occupied().count_ones(), 27, "23 moves = 27 discs");
         assert_eq!(state.black.bits() & state.white.bits(), 0, "no overlap");
+    }
+
+    // `Game::apply_to_action`/`invert_action` translate a board index
+    // through D4, except `Move::PASS` which every symmetry must fix --
+    // mirroring ttt's `test_action_transform_round_trip`.
+    #[test]
+    fn test_action_transform_round_trip() {
+        for idx in 0..64usize {
+            for sym in 0..8usize {
+                let action = Move(idx as u8);
+                let transformed = Othello::apply_to_action(action, sym);
+                let back = Othello::invert_action(transformed, sym);
+                assert_eq!(back, action);
+            }
+        }
+        for sym in 0..8usize {
+            assert_eq!(Othello::apply_to_action(Move::PASS, sym), Move::PASS);
+            assert_eq!(Othello::invert_action(Move::PASS, sym), Move::PASS);
+        }
+    }
+
+    // `canonical_representation` must map every symmetric image of a
+    // reachable state to the same canonical result, with non-geometric
+    // fields (`turn`, `last_pass`) untouched -- mirroring ttt's
+    // `test_canonical_representation_invariant_under_symmetry`.
+    #[test]
+    fn test_canonical_representation_invariant_under_symmetry() {
+        let mut reachable = vec![State::default()];
+        for m in [Move(19), Move(18), Move(20)] {
+            let next = Othello::apply(*reachable.last().unwrap(), &m);
+            reachable.push(next);
+        }
+
+        for state in reachable {
+            let (canon, canon_sym) = Othello::canonical_representation(state);
+
+            for &(black_bits, white_bits) in board_symmetries(state.black, state.white).iter() {
+                let mut hashes = [0u64; 8];
+                xor_piece_range(&mut hashes, black_bits, Player::Black);
+                xor_piece_range(&mut hashes, white_bits, Player::White);
+                if state.turn == Player::White {
+                    xor_const(&mut hashes, ZOBRIST_TURN);
+                }
+                if state.last_pass {
+                    xor_const(&mut hashes, ZOBRIST_LAST_PASS);
+                }
+                let variant = State {
+                    black: BB::from_bits(black_bits),
+                    white: BB::from_bits(white_bits),
+                    turn: state.turn,
+                    last_pass: state.last_pass,
+                    hashes,
+                };
+                let (canon2, _) = Othello::canonical_representation(variant);
+                assert_eq!(
+                    (canon2.black, canon2.white, canon2.turn, canon2.last_pass),
+                    (canon.black, canon.white, canon.turn, canon.last_pass),
+                    "canonical_representation disagreed across symmetric images"
+                );
+            }
+
+            let (canon_black, canon_white) = board_symmetries(state.black, state.white)[canon_sym];
+            assert_eq!(canon_black, canon.black.bits());
+            assert_eq!(canon_white, canon.white.bits());
+        }
     }
 }

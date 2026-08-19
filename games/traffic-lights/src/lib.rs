@@ -59,6 +59,10 @@ impl Move {
     fn index(self) -> usize {
         (self.0 >> 2) as usize
     }
+
+    fn with_index(self, index: usize) -> Self {
+        Move((self.0 & 0b11) | ((index as u8) << 2))
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -302,6 +306,26 @@ impl Game for TrafficLights {
     fn zobrist_hash(state: &Self::S) -> u64 {
         state.hash()
     }
+
+    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+        let sym = D4Symmetry::<3>::packed_canonical_symmetry(state.position.board);
+        let mut symmetries = [0u32; 8];
+        D4Symmetry::<3>::packed_board_symmetries(state.position.board, &mut symmetries);
+        let canon = Position {
+            turn: state.position.turn,
+            winner: state.position.winner,
+            board: symmetries[sym],
+        };
+        (HashedPosition::from_position(canon), sym)
+    }
+
+    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
+        action.with_index(D4Symmetry::<3>::index_symmetries(action.index())[sym])
+    }
+
+    fn invert_action(action: Self::A, sym: usize) -> Self::A {
+        action.with_index(D4Symmetry::<3>::invert_symmetry(action.index(), sym))
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -364,4 +388,62 @@ mod tests {
     // that access the `mcts` crate's private fields (`ts.table`, `ts.stats`)
     // are not movable to this crate.  They belong in a separate test crate
     // (`mcts-tests/`) that depends on both `mcts` and `game-traffic-lights`.
+
+    // `Game::apply_to_action`/`invert_action` translate only the cell index
+    // half of `Move` -- the piece color half must survive untouched,
+    // mirroring ttt's proptest-based `test_action_transform_round_trip`
+    // (no proptest dev-dependency here, so this is an exhaustive loop over
+    // the same small domain instead).
+    #[test]
+    fn test_action_transform_round_trip() {
+        for idx in 0..9usize {
+            for piece in 1..=3u8 {
+                for sym in 0..8usize {
+                    let action = Move(((idx as u8) << 2) | piece);
+                    let transformed = TrafficLights::apply_to_action(action, sym);
+                    let back = TrafficLights::invert_action(transformed, sym);
+                    assert_eq!(back, action);
+                }
+            }
+        }
+    }
+
+    // `canonical_representation` must map every symmetric image of a
+    // reachable state to the same canonical result, with non-geometric
+    // fields (`turn`, `winner`) untouched -- mirroring ttt's
+    // `test_canonical_representation_invariant_under_symmetry`.
+    #[test]
+    fn test_canonical_representation_invariant_under_symmetry() {
+        let mut reachable = vec![HashedPosition::new()];
+        for m in [
+            Move::new(Piece::R, 4),
+            Move::new(Piece::R, 0),
+            Move::new(Piece::Y, 4),
+        ] {
+            let next = TrafficLights::apply(*reachable.last().unwrap(), &m);
+            reachable.push(next);
+        }
+
+        for state in reachable {
+            let (canon, canon_sym) = TrafficLights::canonical_representation(state);
+
+            let mut symmetries = [0u32; 8];
+            D4Symmetry::<3>::packed_board_symmetries(state.position.board, &mut symmetries);
+            for &board in symmetries.iter() {
+                let variant = HashedPosition::from_position(Position {
+                    turn: state.position.turn,
+                    winner: state.position.winner,
+                    board,
+                });
+                let (canon2, _) = TrafficLights::canonical_representation(variant);
+                assert_eq!(
+                    canon2.position, canon.position,
+                    "canonical_representation disagreed across symmetric images \
+                     of board {board:#x}"
+                );
+            }
+
+            assert_eq!(symmetries[canon_sym], canon.position.board);
+        }
+    }
 }
