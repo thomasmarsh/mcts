@@ -32,7 +32,9 @@ fn presets() -> &'static PresetTable {
     PRESETS.get_or_init(|| {
         let presets_path = env::var("TRAFFIC_LIGHTS_PRESETS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json")));
+            .unwrap_or_else(|_| {
+                PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"))
+            });
         PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
             .expect("games/traffic-lights/presets.json must parse")
     })
