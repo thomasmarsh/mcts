@@ -149,7 +149,61 @@ where
 #[derive(Default, Clone)]
 pub struct Uniform;
 
-impl<G: Game> SimulateStrategy<G> for Uniform {}
+impl<G: Game> SimulateStrategy<G> for Uniform {
+    /// Overrides the default `playout` (rather than just `select_move`) so
+    /// each ply can skip materializing the full `available` action list via
+    /// `G::generate_actions` -- `Uniform::select_move` would just pick
+    /// uniformly from it anyway, and `Uniform` never reads `prev_action`/
+    /// `own_prev_action`/`stats`, so nothing here needs the tree-descent
+    /// bookkeeping the default loop threads through for context-sensitive
+    /// strategies. `G::random_action`'s default still falls back to
+    /// `generate_actions` + uniform pick, so this is behavior-preserving for
+    /// every game; only a game overriding `random_action` (e.g. with
+    /// rejection sampling) actually gets cheaper per-ply cost.
+    fn playout(
+        &mut self,
+        mut state: G::S,
+        max_playout_depth: usize,
+        _stats: &TreeStats<G>,
+        _prev_action: Option<G::A>,
+        rng: &mut SmallRng,
+    ) -> Trial<G> {
+        let mut actions = Vec::new();
+        let mut depth = 0;
+        let end_type;
+        let terminal;
+        loop {
+            let status = G::terminal_status(&state);
+            if !matches!(status, TerminalStatus::NotTerminal) {
+                end_type = Some(EndType::NaturalEnd);
+                terminal = status;
+                break;
+            }
+            if depth >= max_playout_depth {
+                end_type = Some(EndType::TurnLimit);
+                terminal = TerminalStatus::NotTerminal;
+                break;
+            }
+            let Some(action) = G::random_action(&state, rng) else {
+                end_type = Some(EndType::NaturalEnd);
+                terminal = TerminalStatus::NotTerminal;
+                break;
+            };
+            let player = G::player_to_move(&state).to_index();
+            actions.push((action.clone(), player));
+            state = G::apply(state, &action);
+            depth += 1;
+        }
+
+        Trial {
+            actions,
+            state,
+            status: Status { end_type },
+            depth,
+            terminal,
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 

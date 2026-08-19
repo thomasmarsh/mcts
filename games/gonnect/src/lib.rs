@@ -269,6 +269,50 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> Game for Gonnect<N,
         }
     }
 
+    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// uniform rollouts -- same idea as `AtariGo::random_action`: draw a
+    /// random cell and run the `GoEngine`-backed `State::valid`/`is_ko`
+    /// checks on just that one cell instead of probing every empty cell via
+    /// `generate_actions`, falling back to the full enumeration once
+    /// `max_attempts` misses in a row (bounds cost when legal placements are
+    /// sparse, and is also what correctly proves "no legal move").
+    ///
+    /// The swap-eligible state (exactly one stone on the board) is left to
+    /// the `generate_actions` fallback unconditionally rather than folded
+    /// into rejection sampling: it's already a single-stone board (cheap to
+    /// enumerate), and giving `SWAP` its correct uniform weight against an
+    /// a-priori-unknown count of legal placements isn't something rejection
+    /// sampling over cells alone can do.
+    fn random_action(
+        state: &State<N, WORDS, CELLS>,
+        rng: &mut rand::rngs::SmallRng,
+    ) -> Option<Move<N, WORDS>> {
+        use rand::Rng;
+        if state.can_swap && state.occupied().count_ones() == 1 {
+            let mut actions = Vec::new();
+            Self::generate_actions(state, &mut actions);
+            return Some(actions[rng.gen_range(0..actions.len())]);
+        }
+        let occupied = state.occupied();
+        if occupied.count_ones() as usize == CELLS {
+            return Some(Move::NO_MOVE);
+        }
+        let max_attempts = 64;
+        for _ in 0..max_attempts {
+            let index = rng.gen_range(0..CELLS);
+            if occupied.get(index) {
+                continue;
+            }
+            let (valid, will_capture) = state.valid(index);
+            if valid && !state.is_ko(index, will_capture) {
+                return Some(Move(index as u16, will_capture));
+            }
+        }
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        Some(actions[rng.gen_range(0..actions.len())])
+    }
+
     fn is_terminal(state: &State<N, WORDS, CELLS>) -> bool {
         state.winner
     }
@@ -610,6 +654,58 @@ mod tests {
         }
         for seed in 0..30 {
             seeded_random_play_matches_old_path::<9, 2, 81>(seed);
+        }
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+    // `random_action`'s rejection-sampling fast path must always agree with `generate_actions`'s
+    // full enumeration: every draw is either `Move::NO_MOVE` when that's the only legal action, or
+    // an action also present in `generate_actions`'s output (`SWAP` included, since that state is
+    // left to the `generate_actions` fallback unconditionally).
+
+    fn random_action_matches_generate_actions<
+        const N: usize,
+        const WORDS: usize,
+        const CELLS: usize,
+    >(
+        seed: u64,
+    ) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::<N, WORDS, CELLS>::default();
+        let max_plies = N * N * 8 + 32;
+
+        for _ in 0..max_plies {
+            if Gonnect::<N, WORDS, CELLS>::is_terminal(&state) {
+                return;
+            }
+            let mut actions = Vec::new();
+            Gonnect::<N, WORDS, CELLS>::generate_actions(&state, &mut actions);
+            // Draw several times from the same state to exercise both the
+            // rejection-sampling success path and (near the end of the
+            // game, when legal placements are sparse) its full-enumeration
+            // fallback.
+            for _ in 0..8 {
+                let drawn = Gonnect::<N, WORDS, CELLS>::random_action(&state, &mut rng).expect(
+                    "random_action must return Some whenever generate_actions is non-empty",
+                );
+                assert!(
+                    actions.contains(&drawn),
+                    "random_action drew {drawn:?}, not present in generate_actions {actions:?}"
+                );
+            }
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Gonnect::<N, WORDS, CELLS>::apply(state, &action);
+        }
+        panic!("Gonnect<{N}> (seed {seed}) did not terminate within {max_plies} plies");
+    }
+
+    #[test]
+    fn test_gonnect_random_action_matches_generate_actions() {
+        for seed in 0..200 {
+            random_action_matches_generate_actions::<5, 1, 25>(seed);
+        }
+        for seed in 0..30 {
+            random_action_matches_generate_actions::<9, 2, 81>(seed);
         }
     }
 
