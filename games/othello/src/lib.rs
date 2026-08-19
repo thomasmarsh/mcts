@@ -1,4 +1,4 @@
-use game_core::bitboard::{BitBoard, Direction};
+use bitboard::{Const, Direction};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use game_core::symmetry::D4Symmetry;
 use mcts::game::{Game, PlayerIndex};
@@ -76,7 +76,7 @@ impl Move {
 // Move generation (free function on raw bitboards)
 // ---------------------------------------------------------------------------
 
-pub type BB = BitBoard<BOARD_SIZE, BOARD_SIZE>;
+pub type BB = bitboard::Board<u64, Const<BOARD_SIZE>, Const<BOARD_SIZE>>;
 
 /// Kogge-Stone dumb7fill: flood from source `p` through opponent `o` in a
 /// direction (left shift) bounded by wall mask `mask`.  Returns opponent
@@ -127,20 +127,20 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     legal |= (n << 8) & empty;
 
     // North-West (+7) — must guard against wrapping from col 0 to col 7.
-    let nw = flood_left(player, opponent, 7, !BB::wall(Direction::East));
-    legal |= (nw << 7) & !BB::wall(Direction::East) & empty;
+    let nw = flood_left(player, opponent, 7, !player.wall(Direction::East));
+    legal |= (nw << 7) & !player.wall(Direction::East) & empty;
 
     // North-East (+9) — guard against wrapping from col 7 to col 0.
     // << 9 = row+1, col+1; col 7 wraps to col 0 → mask NOT_H during
     // propagation.  Final <<9 can produce next-row col 0 from col 7
     // (a wrapping artifact) → final mask NOT_A.
-    let ne = flood_left(player, opponent, 9, !BB::wall(Direction::West));
-    legal |= (ne << 9) & !BB::wall(Direction::West) & empty;
+    let ne = flood_left(player, opponent, 9, !player.wall(Direction::West));
+    legal |= (ne << 9) & !player.wall(Direction::West) & empty;
 
     // East (+1) — guard against wrapping from col 7 to col 0.
     // Final <<1 from propagation-cleaned columns cannot wrap.
-    let e = flood_left(player, opponent, 1, !BB::wall(Direction::West));
-    legal |= (e << 1) & !BB::wall(Direction::West) & empty;
+    let e = flood_left(player, opponent, 1, !player.wall(Direction::West));
+    legal |= (e << 1) & !player.wall(Direction::West) & empty;
 
     // ── Right-shift directions ──
 
@@ -151,17 +151,17 @@ pub fn generate_moves(player: BB, opponent: BB) -> BB {
     // South-West (-9) — guard against wrapping from col 0 to col 7.
     // Propagation uses NOT_A.  Final >>9 can produce same-row col 7 from
     // col 0 (a wrapping artifact) → final mask NOT_H.
-    let sw = flood_right(player, opponent, 9, !BB::wall(Direction::East));
-    legal |= (sw >> 9) & !BB::wall(Direction::East) & empty;
+    let sw = flood_right(player, opponent, 9, !player.wall(Direction::East));
+    legal |= (sw >> 9) & !player.wall(Direction::East) & empty;
 
     // South-East (-7) — guard against wrapping from col 7 to col 0.
     // Final >>7 can produce same-row col 0 from col 7 → mask NOT_A.
-    let se = flood_right(player, opponent, 7, !BB::wall(Direction::West));
-    legal |= (se >> 7) & !BB::wall(Direction::West) & empty;
+    let se = flood_right(player, opponent, 7, !player.wall(Direction::West));
+    legal |= (se >> 7) & !player.wall(Direction::West) & empty;
 
     // West (>> 1).  Final >>1 from cleaned columns cannot wrap.
-    let w = flood_right(player, opponent, 1, !BB::wall(Direction::East));
-    legal |= (w >> 1) & !BB::wall(Direction::East) & empty;
+    let w = flood_right(player, opponent, 1, !player.wall(Direction::East));
+    legal |= (w >> 1) & !player.wall(Direction::East) & empty;
 
     legal
 }
@@ -181,18 +181,18 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= n;
     }
 
-    let ne = flood_left(move_mask, opponent, 9, !BB::wall(Direction::West));
-    if ((ne << 9) & !BB::wall(Direction::West) & player).intersects(player) {
+    let ne = flood_left(move_mask, opponent, 9, !player.wall(Direction::West));
+    if ((ne << 9) & !player.wall(Direction::West) & player).intersects(player) {
         flips |= ne;
     }
 
-    let nw = flood_left(move_mask, opponent, 7, !BB::wall(Direction::East));
-    if ((nw << 7) & !BB::wall(Direction::East) & player).intersects(player) {
+    let nw = flood_left(move_mask, opponent, 7, !player.wall(Direction::East));
+    if ((nw << 7) & !player.wall(Direction::East) & player).intersects(player) {
         flips |= nw;
     }
 
-    let e = flood_left(move_mask, opponent, 1, !BB::wall(Direction::West));
-    if ((e << 1) & !BB::wall(Direction::West) & player).intersects(player) {
+    let e = flood_left(move_mask, opponent, 1, !player.wall(Direction::West));
+    if ((e << 1) & !player.wall(Direction::West) & player).intersects(player) {
         flips |= e;
     }
 
@@ -202,18 +202,18 @@ pub fn get_flips(player: BB, opponent: BB, move_mask: BB) -> BB {
         flips |= s;
     }
 
-    let sw = flood_right(move_mask, opponent, 9, !BB::wall(Direction::East));
-    if ((sw >> 9) & !BB::wall(Direction::East) & player).intersects(player) {
+    let sw = flood_right(move_mask, opponent, 9, !player.wall(Direction::East));
+    if ((sw >> 9) & !player.wall(Direction::East) & player).intersects(player) {
         flips |= sw;
     }
 
-    let se = flood_right(move_mask, opponent, 7, !BB::wall(Direction::West));
-    if ((se >> 7) & !BB::wall(Direction::West) & player).intersects(player) {
+    let se = flood_right(move_mask, opponent, 7, !player.wall(Direction::West));
+    if ((se >> 7) & !player.wall(Direction::West) & player).intersects(player) {
         flips |= se;
     }
 
-    let w = flood_right(move_mask, opponent, 1, !BB::wall(Direction::East));
-    if ((w >> 1) & !BB::wall(Direction::East) & player).intersects(player) {
+    let w = flood_right(move_mask, opponent, 1, !player.wall(Direction::East));
+    if ((w >> 1) & !player.wall(Direction::East) & player).intersects(player) {
         flips |= w;
     }
 
@@ -235,13 +235,13 @@ pub const DIRS: [(i32, i32); 8] = [
 ];
 
 pub fn naive_generate_moves(player: BB, opponent: BB) -> BB {
-    if player.is_empty() || opponent.is_empty() {
+    if player.none_set() || opponent.none_set() {
         return BB::EMPTY;
     }
     let occupied = player | opponent;
     let mut legal = BB::EMPTY;
     for idx in 0..64 {
-        if occupied.get_at(idx / 8, idx % 8) {
+        if occupied.get(idx / 8, idx % 8) {
             continue;
         }
         let (sr, sc) = (idx as i32 / 8, idx as i32 % 8);
@@ -364,8 +364,8 @@ impl Default for State {
         // Black to move: no turn hash (turn hash XOR'd for White).
         // last_pass = false: no pass hash.
         Self {
-            black: BB::new(INITIAL_BLACK),
-            white: BB::new(INITIAL_WHITE),
+            black: BB::from_bits(INITIAL_BLACK),
+            white: BB::from_bits(INITIAL_WHITE),
             turn: Player::Black,
             last_pass: false,
             hashes,
@@ -558,9 +558,9 @@ impl RectangularBoard for State {
     const NUM_DISPLAY_COLS: usize = BOARD_SIZE;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {
-        if self.black.get_at(row, col) {
+        if self.black.get(row, col) {
             '●'
-        } else if self.white.get_at(row, col) {
+        } else if self.white.get(row, col) {
             '○'
         } else {
             '.'
@@ -608,7 +608,7 @@ mod tests {
         // Verify none of the expected squares are occupied.
         let occupied = player | opponent;
         for &i in expected {
-            assert!(!occupied.get(i), "expected move at {} is occupied", i);
+            assert!(!occupied.get_index(i), "expected move at {} is occupied", i);
         }
     }
 
@@ -803,10 +803,10 @@ mod tests {
         assert_eq!(state.white.count_ones(), 2);
         assert_eq!(state.occupied().count_ones(), 4);
         assert_eq!(state.turn, Player::Black);
-        assert!(state.black.get(28));
-        assert!(state.black.get(35));
-        assert!(state.white.get(27));
-        assert!(state.white.get(36));
+        assert!(state.black.get_index(28));
+        assert!(state.black.get_index(35));
+        assert!(state.white.get_index(27));
+        assert!(state.white.get_index(36));
     }
 
     #[test]
@@ -832,12 +832,12 @@ mod tests {
     fn test_apply_stub() {
         let state = State::default();
         let moved = Othello::apply(state, &Move(19));
-        assert!(moved.black.get(19));
+        assert!(moved.black.get_index(19));
         // d3 captures white at d4 via the north ray, so black gains d3 + flip d4
         assert_eq!(moved.black.count_ones(), 4);
-        assert!(moved.black.get(27));
+        assert!(moved.black.get_index(27));
         assert_eq!(moved.white.count_ones(), 1);
-        assert!(moved.white.get(36));
+        assert!(moved.white.get_index(36));
         assert_eq!(moved.turn, Player::White);
     }
 
@@ -925,12 +925,12 @@ mod tests {
         // White plays a4(24).
         state.apply(&Move(24));
         assert!(!state.last_pass, "real move should reset last_pass");
-        assert!(state.white.get(24), "white should have disc at a4");
+        assert!(state.white.get_index(24), "white should have disc at a4");
         assert!(
-            state.black.is_empty(),
+            state.black.none_set(),
             "black at b4(25) should have been flipped"
         );
-        assert!(state.white.get(25), "white should have flipped b4");
+        assert!(state.white.get_index(25), "white should have flipped b4");
         assert_eq!(state.turn, Player::Black);
     }
 
@@ -963,7 +963,7 @@ mod tests {
 
                 // Invariant: no overlapping bits.
                 assert!(
-                    (state.black & state.white).is_empty(),
+                    (state.black & state.white).none_set(),
                     "overlapping bits before move"
                 );
                 // Invariant: turn matches cached.
@@ -985,7 +985,7 @@ mod tests {
                     // Non-pass: verify legality up front.
                     let move_mask = BB::from_index(action.0 as usize);
                     assert!(
-                        (move_mask & (player | opponent)).is_empty(),
+                        (move_mask & (player | opponent)).none_set(),
                         "move to occupied square"
                     );
                     assert!(
@@ -999,7 +999,7 @@ mod tests {
 
                 // Invariant: no overlapping bits after apply.
                 assert!(
-                    (state.black & state.white).is_empty(),
+                    (state.black & state.white).none_set(),
                     "overlapping bits after move"
                 );
                 // Invariant: turn toggled.
@@ -1015,7 +1015,7 @@ mod tests {
                         Player::White => (state.black, state.white),
                     };
                     assert!(
-                        player.get(toggle_idx),
+                        player.get_index(toggle_idx),
                         "bit {toggle_idx} should belong to the mover after a non-pass move"
                     );
                 }

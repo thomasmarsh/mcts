@@ -73,13 +73,18 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
         row * self.cols() + col
     }
 
+    /// Gets a single bit by its row-major index (`row * cols + col`), rather
+    /// than by `(row, col)` -- e.g. for a value already produced by
+    /// `iter_set`/an action index, where recovering `(row, col)` first would
+    /// be pure overhead.
     #[inline(always)]
-    fn get_index(&self, index: usize) -> bool {
+    pub fn get_index(&self, index: usize) -> bool {
         (self.bits.word(index / 64) >> (index % 64)) & 1 != 0
     }
 
+    /// Sets a single bit by its row-major index -- see `get_index`.
     #[inline(always)]
-    fn set_index(&mut self, index: usize) {
+    pub fn set_index(&mut self, index: usize) {
         *self.bits.word_mut(index / 64) |= 1u64 << (index % 64);
     }
 
@@ -139,6 +144,14 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
     #[inline]
     fn bits_empty(&self) -> bool {
         (0..S::CAPACITY_WORDS).all(|w| self.bits.word(w) == 0)
+    }
+
+    /// True if no bits are set. Public counterpart to `bits_empty`, for
+    /// callers that need to ask a board (as opposed to `is_empty`, which asks
+    /// the board's declared dimensions) whether it currently holds any bits.
+    #[inline]
+    pub fn none_set(&self) -> bool {
+        self.bits_empty()
     }
 
     #[inline]
@@ -225,6 +238,29 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
             *out.bits.word_mut(w) = value;
         }
         out
+    }
+}
+
+/// Raw, arbitrary-distance word shifts (as opposed to `shift_north`/etc.,
+/// which shift by exactly one cell and mask off the wrapped-around wall).
+/// Callers implementing their own multi-step flood (e.g. Othello's
+/// Kogge-Stone dumb7fill, which shifts by 1/7/8/9 directly) need the raw
+/// operation; `shift_north`/`shift_east`/etc. are built on top of these.
+impl<S: Storage, R: Dim, C: Dim> std::ops::Shl<usize> for Board<S, R, C> {
+    type Output = Self;
+
+    #[inline]
+    fn shl(self, rhs: usize) -> Self::Output {
+        self.raw_shl(rhs)
+    }
+}
+
+impl<S: Storage, R: Dim, C: Dim> std::ops::Shr<usize> for Board<S, R, C> {
+    type Output = Self;
+
+    #[inline]
+    fn shr(self, rhs: usize) -> Self::Output {
+        self.raw_shr(rhs)
     }
 }
 
@@ -387,7 +423,7 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
                 | flood.shift_east()
                 | flood.shift_south()
                 | flood.shift_west();
-            flood = flood & self;
+            flood &= self;
             if flood == temp {
                 break;
             }
@@ -418,7 +454,7 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
             let temp = flood;
             flood = flood | flood.shift_north() | flood.shift_south();
             flood = flood | flood.shift_east() | flood.shift_west();
-            flood = flood & self;
+            flood &= self;
             if flood == temp {
                 break;
             }
@@ -455,7 +491,7 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
                 | flood.shift_west()
                 | flood.shift_northeast()
                 | flood.shift_southwest();
-            flood = flood & self;
+            flood &= self;
             if flood == temp {
                 break;
             }
@@ -491,7 +527,7 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
                 | flood.shift_east()
                 | flood.shift_south()
                 | flood.shift_west();
-            flood = flood & self;
+            flood &= self;
             if (flood.intersects(n) && flood.intersects(s))
                 || (flood.intersects(e) && flood.intersects(w))
             {
@@ -523,7 +559,7 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
             let temp = flood;
             flood = flood | flood.shift_north() | flood.shift_south();
             flood = flood | flood.shift_east() | flood.shift_west();
-            flood = flood & self;
+            flood &= self;
             if (flood.intersects(n) && flood.intersects(s))
                 || (flood.intersects(e) && flood.intersects(w))
             {
@@ -544,6 +580,16 @@ impl<S: Storage, const N: usize, const M: usize>
     }
 }
 
+impl<R: Dim, C: Dim> Board<u64, R, C> {
+    /// The raw backing word, for wire formats that serialize a single-word
+    /// board as plain hex (mirroring `BitBoard::bits`) rather than through
+    /// `Board`'s own `Serialize` impl.
+    #[inline(always)]
+    pub fn bits(&self) -> u64 {
+        self.bits
+    }
+}
+
 impl<const N: usize, const M: usize> Board<u64, crate::dim::Const<N>, crate::dim::Const<M>> {
     /// Builds a board directly from a raw row-major bitmask -- e.g. a
     /// literal winning-line pattern a game (or codegen) already knows at
@@ -557,6 +603,48 @@ impl<const N: usize, const M: usize> Board<u64, crate::dim::Const<N>, crate::dim
             rows: crate::dim::Const,
             cols: crate::dim::Const,
         }
+    }
+
+    /// The board-shaped constant with no bits set.
+    pub const EMPTY: Self = Self::from_bits(0);
+
+    /// The board-shaped constant with every in-bounds cell (`0..N*M`) set --
+    /// mirrors `BitBoard::ONES`, used as the "no wall guard needed" mask for
+    /// shifts that can't wrap off either edge.
+    pub const ONES: Self = Self::from_bits(if N * M == 64 {
+        u64::MAX
+    } else {
+        (1u64 << (N * M)) - 1
+    });
+
+    /// A board with only row-major index `index` set, matching
+    /// `BitBoard::from_index`'s static call form -- only defined at `Const`
+    /// dims, where `N`/`M` are known without an existing instance to
+    /// template off of.
+    #[inline(always)]
+    pub const fn from_index(index: usize) -> Self {
+        debug_assert!(index < N * M);
+        Self::from_bits(1u64 << index)
+    }
+
+    /// A board with only `(row, col)` set.
+    #[inline(always)]
+    pub fn from_coord(row: usize, col: usize) -> Self {
+        debug_assert!(row < N);
+        debug_assert!(col < M);
+        Self::from_index(Self::to_index(row, col))
+    }
+
+    /// The row-major index of `(row, col)`.
+    #[inline(always)]
+    pub const fn to_index(row: usize, col: usize) -> usize {
+        row * M + col
+    }
+
+    /// The inverse of `to_index`.
+    #[inline(always)]
+    pub const fn to_coord(index: usize) -> (usize, usize) {
+        (index / M, index % M)
     }
 }
 
@@ -608,6 +696,49 @@ impl<S: Storage, R: Dim, C: Dim> Not for Board<S, R, C> {
             *out.bits.word_mut(w) = !self.bits.word(w) & mask;
         }
         out
+    }
+}
+
+impl<S: Storage, R: Dim, C: Dim> std::ops::BitAndAssign for Board<S, R, C> {
+    #[inline]
+    fn bitand_assign(&mut self, rhs: Self) {
+        *self = *self & rhs;
+    }
+}
+
+impl<S: Storage, R: Dim, C: Dim> std::ops::BitOrAssign for Board<S, R, C> {
+    #[inline]
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs;
+    }
+}
+
+impl<S: Storage, R: Dim, C: Dim> std::ops::BitXorAssign for Board<S, R, C> {
+    #[inline]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        *self = *self ^ rhs;
+    }
+}
+
+/// Consumes set bits lowest-index-first, same idiom as
+/// `game_core::bitboard::BitBoard`'s `Iterator` impl -- lets a `for src in
+/// board` loop (over a `Copy` board, so the loop body's `board` binding is
+/// unaffected) walk row-major indices without going through `iter_set`'s
+/// borrow.
+impl<S: Storage, R: Dim, C: Dim> Iterator for Board<S, R, C> {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        for w in 0..S::CAPACITY_WORDS {
+            let word = self.bits.word(w);
+            if word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                *self.bits.word_mut(w) = word & (word - 1);
+                return Some(w * 64 + bit);
+            }
+        }
+        None
     }
 }
 

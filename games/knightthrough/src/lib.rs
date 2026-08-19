@@ -1,11 +1,12 @@
 #![allow(unused)]
 
-use game_core::bitboard;
-use game_core::bitboard::BitBoard;
+use bitboard::{Board, Const, Direction};
 use game_core::display::RectangularBoard;
 use game_core::display::RectangularBoardDisplay;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
+
+type BitBoard<const N: usize, const M: usize> = Board<u64, Const<N>, Const<M>>;
 
 use serde::Serialize;
 use std::fmt;
@@ -60,8 +61,8 @@ impl<const N: usize, const M: usize> Default for State<N, M> {
         debug_assert!(N > 5);
         debug_assert!(M > 0);
 
-        let n = BitBoard::wall(bitboard::Direction::North);
-        let s = BitBoard::wall(bitboard::Direction::South);
+        let n = BitBoard::<N, M>::EMPTY.wall(Direction::North);
+        let s = BitBoard::<N, M>::EMPTY.wall(Direction::South);
 
         let black = n | n.shift_south();
         let white = s | s.shift_north();
@@ -106,18 +107,18 @@ impl<const N: usize, const M: usize> State<N, M> {
     #[inline(always)]
     fn player(&self, player: Player) -> (BitBoard<N, M>, BitBoard<N, M>) {
         match player {
-            Player::Black => (self.black, BitBoard::wall(bitboard::Direction::South)),
-            Player::White => (self.white, BitBoard::wall(bitboard::Direction::North)),
+            Player::Black => (self.black, self.black.wall(Direction::South)),
+            Player::White => (self.white, self.white.wall(Direction::North)),
         }
     }
 
     #[inline(always)]
     fn color(&self, index: usize) -> Player {
-        debug_assert!(self.occupied().get(index));
-        if self.black.get(index) {
+        debug_assert!(self.occupied().get_index(index));
+        if self.black.get_index(index) {
             Player::Black
         } else {
-            debug_assert!(self.white.get(index));
+            debug_assert!(self.white.get_index(index));
             Player::White
         }
     }
@@ -159,7 +160,7 @@ impl<const N: usize, const M: usize> State<N, M> {
 
     #[inline]
     fn apply(&mut self, action: &Move) -> Self {
-        debug_assert!(self.occupied().get(action.0 as usize));
+        debug_assert!(self.occupied().get_index(action.0 as usize));
         let src = BitBoard::from_index(action.0 as usize);
         let dst = BitBoard::from_index(action.1 as usize);
         let (mut player, goal) = self.player(self.turn);
@@ -237,9 +238,9 @@ impl<const N: usize, const M: usize> RectangularBoard for State<N, M> {
     const NUM_DISPLAY_COLS: usize = M;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {
-        if self.black.get_at(row, col) {
+        if self.black.get(row, col) {
             'X'
-        } else if self.white.get_at(row, col) {
+        } else if self.white.get(row, col) {
             'O'
         } else {
             '.'
