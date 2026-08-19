@@ -3,7 +3,7 @@
 /// generic over this so the same shift/flood/wall logic serves both a
 /// fixed-size game board and Gonnect/AtariGo's single runtime-sized board,
 /// without duplicating the implementation.
-pub trait Dim: Copy {
+pub trait Dim: Copy + std::fmt::Debug {
     fn get(self) -> usize;
 
     /// Reconstructs a dimension from a runtime length, e.g. read back off
