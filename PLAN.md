@@ -8,7 +8,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Flat mc (baseline)
 - [x] Vanilla mcts
 - [x] Max time
-- [ ] Replace `Compose` and `Strategy` implementation with composable algebra
+- [x] Composable features expressible in JSON
 
 ### Benchmarking / Tuning
 - [x] Battle royale
@@ -25,7 +25,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] UCT
 - [x] UCB1-tuned
 - [ ] UCB-V
-- [ ] Bayesian UCT
+- [x] Bayesian UCT
 - [ ] EXP3 (probabilistic, partial observable games, simultaneous moves)
 - [ ] Hierarchical optimistic optimization for trees
 - [ ] Move groups
@@ -37,7 +37,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Regulated Policy Optimization Selection
 - [ ] Semisplit Moves / Turn Linearization
 
-### Simulation << MORE ADVANTAGEOUS THAN SELECTION
+### Simulation
 - [ ] Rule based simulation policy
 - [ ] Contextual Monte Carlo search
 - [ ] Fill the board
@@ -48,10 +48,10 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Use History Heuristics
 - [ ] Use of evaluation functions
 - [ ] Simulation balancing 
-- [ ] Last good reply (LGR)
+- [x] Last good reply (LGR)
 - [ ] Patterns
 - [ ] Dynamic Backoff NAST (N-gram Average Sampling)
-- [ ] LGRF-2 (Last Good Reply with Forgetting)
+- [x] LGRF-2 (Last Good Reply with Forgetting)
 - [ ] UCB1-Driven Playouts
 - [ ] Shallow Cutoffs with Shallow Material Evaluation
 - [ ] PoolRollout
@@ -78,7 +78,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] AMAF
 - [x] RAVE
 - [x] GRAVE
-- [ ] HRAVE
+- [x] HRAVE
 - [ ] Permuation AMAF
 - [ ] Alpha AMAF
 - [ ] Same-first AMAF
@@ -95,13 +95,6 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Tree reuse across moves (re-rooting)
 
 ### DAG
-
-See `plan/mcgs.md` for the full design. Implemented: `GraphSearch::Dag(GraphStats::{Edges,Nodes,Both})`
-opt-in mode (`mcts/src/strategies/mcts/config.rs`), root-relative-ply transposition keying
-(`table.rs`'s `TranspositionKey`) so the graph is acyclic by construction, mode-aware stats
-routing through selection/backprop, and integration coverage in
-`mcts-tests/tests/ttt_strategies.rs`. `GraphSearch::Dag(_)` currently asserts against both the
-legacy `use_transpositions` bool and `reuse_tree`.
 
 - [ ] Persistent transposition table / exact position cache (hash -> NodeStats | (hash,action) -> NodeStats)
 - [x] UCB for DAGs
@@ -125,75 +118,3 @@ legacy `use_transpositions` bool and `reuse_tree`.
 - [ ] Transposition table updates
 
 See: https://ics.uci.edu/~dechter/courses/ics-295/fall-2019/presentations/Pezeshki.pdf
-
-## Composable Algebra
-
-We want to avoid lots of policy variant branching in the hot path or storage waste
-
-First revision was:
-
-```rust
-pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
-    type Select: select::SelectStrategy<G>;
-    type Simulate: simulate::SimulateStrategy<G>;
-    type Backprop: backprop::BackpropStrategy;
-    type FinalAction: select::SelectStrategy<G>;
-
-    // etc.
-}
-```
-
-Implementations suffer from combinatorial explosion and ignore important compositional
-properties like interactions between the methods. To help minimize the explicit struct/impl
-burden, added:
-
-```rust
-#[derive(Clone, Copy, Default)]
-pub struct Compose<Sel, Sim, Bp = backprop::Classic, FA = select::RobustChild>(
-    PhantomData<(Sel, Sim, Bp, FA)>,
-);
-
-impl<G, Sel, Sim, Bp, FA> Strategy<G> for Compose<Sel, Sim, Bp, FA>
-where
-    G: Game,
-    Sel: select::SelectStrategy<G>,
-    Sim: simulate::SimulateStrategy<G>,
-    Bp: backprop::BackpropStrategy,
-    FA: select::SelectStrategy<G>,
-{
-    type Select = Sel;
-    type Simulate = Sim;
-    type Backprop = Bp;
-    type FinalAction = FA;
-}
-```
-
-But still not ideal. Model in Idris and lower to Haskell then Rust?
-
-Conceptually:
-
-```
-    mkStrategy
-        :: {Game g}
-        => Config       -- A complex ADT / feature mask
-        -> Strategy g   -- A reified strategy
-```
-
-But if a config is something like "use RAVE and MAST and PN", we need to account for
-all interactions, which structural elements to use, and which to abandon. This seems to
-form a lattice of sorts.
-
-- Storage:
-    - Anything global tree storage related: doesn't need to be optimized (a transposition
-      table, e.g.); can be present but unused
-
-    - Anything Node/Edge specific _should_ be conditionally present
-
-    - Consider having several template tree/node types rather than try to construct
-      this dynamically. Expand set as necessary
-
-- Computation / branching:
-    - Anything in coarse steps, initialiation, between search/select/expand/rollout/backprop
-      steps _might_ be permissible to include in any combination of features
-
-    - Anything in rollout is the hottest path
