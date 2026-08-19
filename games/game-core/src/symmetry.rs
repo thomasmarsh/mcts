@@ -1,13 +1,69 @@
-//! Dihedral symmetries (D4) for square boards of any size.
+//! Board symmetry groups: which rigid transformations of a board leave its
+//! adjacency structure unchanged.
 //!
-//! The D4 group has 8 elements: identity, horizontal flip (H), vertical flip
-//! (V), transpose across the main diagonal (D), and their compositions.
+//! `D4Symmetry<S>` (8 elements: identity, column flip, row flip,
+//! main-diagonal transpose, and their compositions) applies to square
+//! boards. `KleinFour<ROWS, COLS>` (4 elements: identity, column flip,
+//! row flip, and their composition) applies to any rectangular board,
+//! square or not — a non-square board has no diagonal transpose to include
+//! since that would map it onto a differently-shaped board.
+//!
+//! Both implement the shared [`SymmetryGroup`] trait, so callers that only
+//! need "map a cell index through symmetry element `sym`" / "which element
+//! inverts `sym`" can be generic over which group a given board's shape
+//! admits, without hardcoding D4.
 //!
 //! Rather than pre-computing permutation tables (which would require
 //! `[usize; S * S]` in a const-generic context, unstable on stable Rust),
 //! all transformations are computed inline from the cell index using simple
-//! arithmetic.  For any concrete `S` the compiler will constant-fold these
-//! into the same machine code a table lookup would produce.
+//! arithmetic.  For any concrete `S`/`ROWS`/`COLS` the compiler will
+//! constant-fold these into the same machine code a table lookup would
+//! produce.
+
+/// Reverse column order on an `rows`×`cols` grid — col → cols-1-col, row
+/// unchanged. Named for its effect (left becomes right), not an axis, since
+/// "horizontal flip" is read both ways in the wild.
+#[inline]
+fn flip_cols_index(i: usize, cols: usize) -> usize {
+    let row = i / cols;
+    let col = i % cols;
+    row * cols + (cols - 1 - col)
+}
+
+/// Reverse row order on an `rows`×`cols` grid — row → rows-1-row, col
+/// unchanged. Named for its effect (top becomes bottom), not an axis.
+#[inline]
+fn flip_rows_index(i: usize, rows: usize, cols: usize) -> usize {
+    let row = i / cols;
+    let col = i % cols;
+    (rows - 1 - row) * cols + col
+}
+
+/// A finite group of permutations of a board's cell indices — the
+/// transformations that leave the board's adjacency structure unchanged.
+///
+/// Element 0 is always the identity. Code that needs to canonicalize a
+/// board or transform an action through a symmetry can be generic over
+/// which concrete group a game's board shape admits ([`D4Symmetry`] for
+/// square boards, [`KleinFour`] for rectangular ones), rather than
+/// hardcoding D4.
+pub trait SymmetryGroup {
+    /// Number of elements in the group, including the identity at index 0.
+    const ORDER: usize;
+
+    /// Map a cell index through group element `sym`.
+    fn apply_index(i: usize, sym: usize) -> usize;
+
+    /// Index of the group element that inverts `sym`: applying `sym` and
+    /// then `invert(sym)` (via `apply_index` twice) is the identity.
+    fn invert(sym: usize) -> usize;
+
+    /// Map an index back through the inverse of `sym` in one step.
+    #[inline]
+    fn invert_index(i: usize, sym: usize) -> usize {
+        Self::apply_index(i, Self::invert(sym))
+    }
+}
 
 /// Board-side-length parameterised D4 symmetry group.
 ///
@@ -20,30 +76,26 @@
 /// type Sym8 = D4Symmetry<8>;
 /// let syms = Sym8::index_symmetries(27);  // all 8 images of cell 27
 /// assert_eq!(syms[0], 27);                // identity
-/// assert_eq!(syms[1], 28);                // horizontal flip
+/// assert_eq!(syms[1], 28);                // column flip
 /// ```
 pub struct D4Symmetry<const S: usize>;
 
 impl<const S: usize> D4Symmetry<S> {
-    /// Horizontal mirror: reflect across the vertical axis — col → S-1-col.
+    /// Reverse column order — col → S-1-col.
     #[inline]
-    fn h(i: usize) -> usize {
-        let row = i / S;
-        let col = i % S;
-        row * S + (S - 1 - col)
+    fn flip_cols(i: usize) -> usize {
+        flip_cols_index(i, S)
     }
 
-    /// Vertical mirror: reflect across the horizontal axis — row → S-1-row.
+    /// Reverse row order — row → S-1-row.
     #[inline]
-    fn v(i: usize) -> usize {
-        let row = i / S;
-        let col = i % S;
-        (S - 1 - row) * S + col
+    fn flip_rows(i: usize) -> usize {
+        flip_rows_index(i, S, S)
     }
 
     /// Transpose across the main diagonal — (row, col) → (col, row).
     #[inline]
-    fn d(i: usize) -> usize {
+    fn transpose(i: usize) -> usize {
         let row = i / S;
         let col = i % S;
         col * S + row
@@ -51,39 +103,41 @@ impl<const S: usize> D4Symmetry<S> {
 
     /// Produce all 8 symmetric images of a cell index.
     ///
-    /// Order: identity, H, V, D, V∘H, D∘H, D∘V, D∘V∘H.
+    /// Order: identity, flip_cols, flip_rows, transpose, flip_rows∘flip_cols,
+    /// transpose∘flip_cols, transpose∘flip_rows, transpose∘flip_rows∘flip_cols.
     #[inline]
     pub fn index_symmetries(i: usize) -> [usize; 8] {
-        let h = Self::h(i);
-        let v = Self::v(i);
-        let d = Self::d(i);
+        let fc = Self::flip_cols(i);
+        let fr = Self::flip_rows(i);
+        let t = Self::transpose(i);
         [
             i,
-            h,
-            v,
-            d,
-            Self::v(h),
-            Self::d(h),
-            Self::d(v),
-            Self::d(Self::v(h)),
+            fc,
+            fr,
+            t,
+            Self::flip_rows(fc),
+            Self::transpose(fc),
+            Self::transpose(fr),
+            Self::transpose(Self::flip_rows(fc)),
         ]
     }
 
     /// Map an index back through the inverse of a symmetry.
     ///
-    /// For an involution (H, V, D) the inverse is the same permutation.
-    /// For a composition the inverse is the reverse composition.
+    /// For an involution (flip_cols, flip_rows, transpose) the inverse is
+    /// the same permutation. For a composition the inverse is the reverse
+    /// composition.
     #[inline]
     pub fn invert_symmetry(i: usize, sym_idx: usize) -> usize {
         match sym_idx {
             0 => i,
-            1 => Self::h(i),
-            2 => Self::v(i),
-            3 => Self::d(i),
-            4 => Self::h(Self::v(i)),          // (V∘H)⁻¹ = H∘V
-            5 => Self::h(Self::d(i)),          // (D∘H)⁻¹ = H∘D
-            6 => Self::v(Self::d(i)),          // (D∘V)⁻¹ = V∘D
-            7 => Self::h(Self::v(Self::d(i))), // (D∘V∘H)⁻¹ = H∘V∘D
+            1 => Self::flip_cols(i),
+            2 => Self::flip_rows(i),
+            3 => Self::transpose(i),
+            4 => Self::flip_cols(Self::flip_rows(i)), // (flip_rows∘flip_cols)⁻¹ = flip_cols∘flip_rows
+            5 => Self::flip_cols(Self::transpose(i)), // (transpose∘flip_cols)⁻¹ = flip_cols∘transpose
+            6 => Self::flip_rows(Self::transpose(i)), // (transpose∘flip_rows)⁻¹ = flip_rows∘transpose
+            7 => Self::flip_cols(Self::flip_rows(Self::transpose(i))), // (transpose∘flip_rows∘flip_cols)⁻¹ = flip_cols∘flip_rows∘transpose
             _ => unreachable!(),
         }
     }
@@ -133,19 +187,110 @@ impl<const S: usize> D4Symmetry<S> {
     }
 }
 
+impl<const S: usize> SymmetryGroup for D4Symmetry<S> {
+    const ORDER: usize = 8;
+
+    #[inline]
+    fn apply_index(i: usize, sym: usize) -> usize {
+        Self::index_symmetries(i)[sym]
+    }
+
+    #[inline]
+    fn invert(sym: usize) -> usize {
+        // Same table as `invert_symmetry`'s match arms, indexed directly:
+        // each of D4's 8 elements is its own inverse except the two
+        // 4-cycles (transpose∘flip_cols and transpose∘flip_rows), which
+        // are inverses of each other.
+        const INV: [usize; 8] = [0, 1, 2, 3, 4, 6, 5, 7];
+        INV[sym]
+    }
+}
+
+/// Klein four-group symmetries (identity, column flip, row flip, and their
+/// composition) for a `ROWS`×`COLS` board of any aspect ratio.
+///
+/// A non-square board has no diagonal transpose available — that would map
+/// it onto a `COLS`×`ROWS` board, a different shape, not a symmetry of the
+/// board it started as. Klein four is the largest group of rigid
+/// transformations every rectangular board (square ones included) admits;
+/// [`D4Symmetry`] is a strict refinement available only when `ROWS == COLS`.
+pub struct KleinFour<const ROWS: usize, const COLS: usize>;
+
+impl<const ROWS: usize, const COLS: usize> KleinFour<ROWS, COLS> {
+    #[inline]
+    fn flip_cols(i: usize) -> usize {
+        flip_cols_index(i, COLS)
+    }
+
+    #[inline]
+    fn flip_rows(i: usize) -> usize {
+        flip_rows_index(i, ROWS, COLS)
+    }
+
+    /// Produce all 4 symmetric images of a cell index.
+    ///
+    /// Order: identity, flip_cols, flip_rows, flip_rows∘flip_cols.
+    #[inline]
+    pub fn index_symmetries(i: usize) -> [usize; 4] {
+        let fc = Self::flip_cols(i);
+        let fr = Self::flip_rows(i);
+        [i, fc, fr, Self::flip_rows(fc)]
+    }
+
+    /// Map an index back through the inverse of a symmetry.
+    ///
+    /// Every element of Klein four is its own inverse (the group is
+    /// isomorphic to Z/2 × Z/2), so this is just `index_symmetries(i)[sym_idx]`
+    /// spelled out for parity with `D4Symmetry::invert_symmetry`.
+    #[inline]
+    pub fn invert_symmetry(i: usize, sym_idx: usize) -> usize {
+        match sym_idx {
+            0 => i,
+            1 => Self::flip_cols(i),
+            2 => Self::flip_rows(i),
+            3 => Self::flip_rows(Self::flip_cols(i)),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl<const ROWS: usize, const COLS: usize> SymmetryGroup for KleinFour<ROWS, COLS> {
+    const ORDER: usize = 4;
+
+    #[inline]
+    fn apply_index(i: usize, sym: usize) -> usize {
+        Self::index_symmetries(i)[sym]
+    }
+
+    #[inline]
+    fn invert(sym: usize) -> usize {
+        // Every element is its own inverse.
+        sym
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verify that H, V, D are bijections on [0, S*S).
+    /// Verify that flip_cols, flip_rows, transpose are bijections on [0, S*S).
     fn check_permutations<const S: usize>() {
         let n = S * S;
         for (name, perm) in [
-            ("H", D4Symmetry::<S>::h as fn(usize) -> usize),
-            ("V", D4Symmetry::<S>::v as fn(usize) -> usize),
-            ("D", D4Symmetry::<S>::d as fn(usize) -> usize),
+            (
+                "flip_cols",
+                D4Symmetry::<S>::flip_cols as fn(usize) -> usize,
+            ),
+            (
+                "flip_rows",
+                D4Symmetry::<S>::flip_rows as fn(usize) -> usize,
+            ),
+            (
+                "transpose",
+                D4Symmetry::<S>::transpose as fn(usize) -> usize,
+            ),
         ] {
             let mut seen = vec![false; n];
             for i in 0..n {
@@ -237,6 +382,101 @@ mod tests {
                 back, board,
                 "sym {sym_idx} then inv {inv} on {board:#x} gave {back:#x}"
             );
+        }
+    }
+
+    /// Generic round-trip check usable by any `SymmetryGroup`: applying an
+    /// element and then its inverse (via `invert_index`) must be the
+    /// identity, for every cell and every group element.
+    fn check_symmetry_group_round_trip<G: SymmetryGroup>(cells: usize) {
+        for i in 0..cells {
+            for sym in 0..G::ORDER {
+                let image = G::apply_index(i, sym);
+                assert!(
+                    image < cells,
+                    "apply_index({i}, {sym}) = {image} out of range"
+                );
+                let back = G::invert_index(image, sym);
+                assert_eq!(
+                    back, i,
+                    "invert_index(apply_index({i}, {sym}), {sym}) = {back}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_d4_symmetry_group_round_trip() {
+        check_symmetry_group_round_trip::<D4Symmetry<3>>(9);
+        check_symmetry_group_round_trip::<D4Symmetry<8>>(64);
+    }
+
+    #[test]
+    fn test_klein_four_symmetry_group_round_trip() {
+        check_symmetry_group_round_trip::<KleinFour<3, 3>>(9);
+        check_symmetry_group_round_trip::<KleinFour<3, 5>>(15);
+        check_symmetry_group_round_trip::<KleinFour<8, 8>>(64);
+    }
+
+    /// Verify flip_cols/flip_rows are bijections on a rectangular
+    /// (non-square) grid too -- `check_permutations` above only ever
+    /// exercised square `D4Symmetry` boards, so this is the first coverage
+    /// of the `ROWS != COLS` case.
+    #[test]
+    fn test_klein_four_permutations_rectangular() {
+        let (rows, cols) = (3usize, 5usize);
+        let n = rows * cols;
+        for (name, perm) in [
+            (
+                "flip_cols",
+                KleinFour::<3, 5>::flip_cols as fn(usize) -> usize,
+            ),
+            (
+                "flip_rows",
+                KleinFour::<3, 5>::flip_rows as fn(usize) -> usize,
+            ),
+        ] {
+            let mut seen = vec![false; n];
+            for i in 0..n {
+                let v = perm(i);
+                assert!(v < n, "{name}[{i}] = {v} out of range");
+                assert!(!seen[v], "{name} is not injective (dupe at {v})");
+                seen[v] = true;
+            }
+            assert!(seen.iter().all(|&x| x), "{name} is not surjective");
+        }
+    }
+
+    /// Verify invert_symmetry is the true inverse of index_symmetries for
+    /// KleinFour, mirroring `test_invert_symmetry_is_inverse` above.
+    #[test]
+    fn test_klein_four_invert_symmetry_is_inverse() {
+        for i in 0..15 {
+            let s = KleinFour::<3, 5>::index_symmetries(i);
+            for (sym_idx, &s_i) in s.iter().enumerate() {
+                let back = KleinFour::<3, 5>::invert_symmetry(s_i, sym_idx);
+                assert_eq!(
+                    back, i,
+                    "invert_symmetry({s_i}, {sym_idx}) = {back}, expected {i}"
+                );
+            }
+        }
+    }
+
+    /// On a square board, `KleinFour`'s 4 elements (identity, flip_cols,
+    /// flip_rows, flip_rows∘flip_cols) must agree with the corresponding 4
+    /// of `D4Symmetry`'s 8 -- Klein four is a subgroup of D4, not an
+    /// independent definition that happens to look similar.
+    #[test]
+    fn test_klein_four_is_d4_subgroup_on_square_board() {
+        // D4Symmetry::index_symmetries order is
+        // [id, flip_cols, flip_rows, transpose, flip_rows∘flip_cols, ...];
+        // KleinFour::index_symmetries order is [id, flip_cols, flip_rows,
+        // flip_rows∘flip_cols] -- indices 0,1,2,4 of D4's.
+        for i in 0..9 {
+            let d4 = D4Symmetry::<3>::index_symmetries(i);
+            let k4 = KleinFour::<3, 3>::index_symmetries(i);
+            assert_eq!(k4, [d4[0], d4[1], d4[2], d4[4]]);
         }
     }
 }
