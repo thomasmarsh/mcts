@@ -39,6 +39,12 @@ use crate::bigbitboard::BigBitBoard;
 pub struct GoEngine<const N: usize, const WORDS: usize, const CELLS: usize> {
     black: BigBitBoard<N, N, WORDS>,
     white: BigBitBoard<N, N, WORDS>,
+    /// `black | white`, maintained incrementally by [`play`](Self::play)
+    /// instead of re-ORed from scratch on every [`check`](Self::check) call
+    /// -- `generate_actions` calls `check` once per candidate empty cell, so
+    /// recomputing this OR per candidate (rather than once per move
+    /// actually played) was pure waste.
+    occupied: BigBitBoard<N, N, WORDS>,
     /// `group_rep[cell]` is the representative cell of `cell`'s group, or
     /// [`SENTINEL`](Self::SENTINEL) if `cell` is empty.
     group_rep: [u16; CELLS],
@@ -96,6 +102,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         Self {
             black: BigBitBoard::EMPTY,
             white: BigBitBoard::EMPTY,
+            occupied: BigBitBoard::EMPTY,
             group_rep: [Self::SENTINEL; CELLS],
             chain_next: [Self::SENTINEL; CELLS],
             liberties: [0; CELLS],
@@ -114,6 +121,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         engine.black = black;
         engine.white = white;
         let occupied = black | white;
+        engine.occupied = occupied;
         let mut assigned = BigBitBoard::<N, N, WORDS>::EMPTY;
 
         for start in 0..CELLS {
@@ -145,10 +153,12 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         self.white
     }
 
+    #[inline]
     fn occupied(&self) -> BigBitBoard<N, N, WORDS> {
-        self.black | self.white
+        self.occupied
     }
 
+    #[inline]
     fn own_board(&self, black_to_move: bool) -> BigBitBoard<N, N, WORDS> {
         if black_to_move {
             self.black
@@ -157,6 +167,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         }
     }
 
+    #[inline]
     fn opp_board(&self, black_to_move: bool) -> BigBitBoard<N, N, WORDS> {
         if black_to_move {
             self.white
@@ -165,6 +176,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         }
     }
 
+    #[inline]
     fn rep(&self, cell: usize) -> Option<u16> {
         let r = self.group_rep[cell];
         (r != Self::SENTINEL).then_some(r)
@@ -181,6 +193,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
     /// Up to four orthogonal neighbor indices of `index`, `None` past a
     /// board edge. Matches `BigBitBoard`'s north = row+1 / east = col+1
     /// convention (see its `shift_north`/`shift_east`).
+    #[inline]
     fn neighbors(index: usize) -> [Option<usize>; 4] {
         let (row, col) = BigBitBoard::<N, N, WORDS>::to_coord(index);
         [
@@ -264,6 +277,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
     /// liberties already), or `index` itself borders an empty cell, the
     /// merged group has at least that one liberty regardless of how much
     /// its contributors' liberty sets overlap elsewhere.
+    #[inline]
     pub fn check(&self, black_to_move: bool, index: usize) -> (bool, BigBitBoard<N, N, WORDS>) {
         debug_assert!(!self.occupied().get(index));
         let own_board = self.own_board(black_to_move);
@@ -316,6 +330,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
         } else {
             self.white.set(index);
         }
+        self.occupied.set(index);
         self.group_rep[index] = index as u16;
         self.chain_next[index] = index as u16;
 
@@ -325,6 +340,7 @@ impl<const N: usize, const WORDS: usize, const CELLS: usize> GoEngine<N, WORDS, 
             } else {
                 self.black.clear(cell);
             }
+            self.occupied.clear(cell);
             self.group_rep[cell] = Self::SENTINEL;
         }
 
@@ -442,12 +458,12 @@ mod tests {
 
         // Measured (not the plan's rough estimate): 81 cells * 3 u16 arrays
         // (group_rep + chain_next + liberties) is 486 bytes of raw payload,
-        // plus the black/white `BigBitBoard` pair, plus a couple of bytes of
-        // struct alignment padding. Pinned here so a representation change
-        // shows up as a failing test.
-        assert_eq!(sizes[0].1, 520); // 9x9
-        assert_eq!(sizes[1].1, 1064); // 13x13
-        assert_eq!(sizes[2].1, 2264); // 19x19: ~2.2 KB, vs. today's 96-byte pair
+        // plus the black/white/occupied `BigBitBoard` triple, plus a couple
+        // of bytes of struct alignment padding. Pinned here so a
+        // representation change shows up as a failing test.
+        assert_eq!(sizes[0].1, 536); // 9x9
+        assert_eq!(sizes[1].1, 1088); // 13x13
+        assert_eq!(sizes[2].1, 2312); // 19x19: ~2.3 KB, vs. today's 96-byte pair
     }
 
     #[test]
