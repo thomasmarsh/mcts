@@ -66,12 +66,22 @@ type GraveTable<A> = FxHashMap<u64, Vec<FxHashMap<A, node::ActionStats>>>;
 /// game-history action in from outside the tree being searched.
 type BigramTable<A> = FxHashMap<(A, A), node::ActionStats>;
 
+/// LGR's per-player reply table: the opponent's move that preceded this
+/// player's move -> the last move this player played in reply that went on
+/// to win the playout. Unlike `player_actions`/`player_bigram_actions`
+/// (running averages), this is a plain last-write-wins map -- no
+/// `ActionStats` accumulation, since LGR-1 has no notion of a score, only
+/// "the most recent winning reply". Scoped to the current search only, same
+/// reasoning as `BigramTable`'s doc comment above.
+type ReplyTable<A> = FxHashMap<A, A>;
+
 #[derive(Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: RwLock<FxHashMap<G::A, node::ActionStats>>,
     pub grave: RwLock<GraveTable<G::A>>,
     pub player_actions: Vec<RwLock<FxHashMap<G::A, node::ActionStats>>>,
     pub player_bigram_actions: Vec<RwLock<BigramTable<G::A>>>,
+    pub player_replies: Vec<RwLock<ReplyTable<G::A>>>,
     pub accum_depth: AtomicUsize,
     pub iter_count: AtomicUsize,
 }
@@ -85,6 +95,9 @@ impl<G: Game> Default for TreeStats<G> {
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             player_bigram_actions: (0..G::num_players())
+                .map(|_| RwLock::new(FxHashMap::default()))
+                .collect(),
+            player_replies: (0..G::num_players())
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             accum_depth: AtomicUsize::new(0),
@@ -105,6 +118,11 @@ impl<G: Game> Clone for TreeStats<G> {
                 .collect(),
             player_bigram_actions: self
                 .player_bigram_actions
+                .iter()
+                .map(|m| RwLock::new(m.read().unwrap().clone()))
+                .collect(),
+            player_replies: self
+                .player_replies
                 .iter()
                 .map(|m| RwLock::new(m.read().unwrap().clone()))
                 .collect(),

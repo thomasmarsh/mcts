@@ -18,6 +18,11 @@ pub const AMAF: usize = 0b100;
 /// reconstruction and bigram-table write NST needs (see `backprop.rs`'s
 /// `flags.nst()` block).
 pub const NST: usize = 0b1000;
+/// LGR (Last Good Reply, Baier & Drake): per-player reply table, keyed by
+/// the opponent's preceding move rather than the mover's own action like
+/// `GLOBAL`/`NST` -- its own bit since it neither reads nor writes either
+/// of those tables (see `simulate::Lgr`'s doc comment).
+pub const LGR: usize = 0b10000;
 
 /// Controls whether a search owns a tree or shares positions reached by
 /// distinct move orders. `Dag` uses a root-relative ply in addition to the
@@ -70,6 +75,10 @@ impl BackpropFlags {
     pub fn nst(&self) -> bool {
         self.0 & NST == NST
     }
+
+    pub fn lgr(&self) -> bool {
+        self.0 & LGR == LGR
+    }
 }
 
 impl std::ops::BitOr for BackpropFlags {
@@ -112,6 +121,9 @@ pub struct Requirements {
     /// NST's bigram table, on top of `global` (see `simulate::Nst`'s doc
     /// comment on why it needs its own bit).
     pub nst: bool,
+    /// LGR's per-player reply table (`simulate::Lgr`), independent of
+    /// `global`/`nst` -- see `LGR`'s doc comment.
+    pub lgr: bool,
     /// This component's own scoring only means something once
     /// `use_mcts_solver` is on -- e.g. `select::UctPn`'s proof/disproof rank
     /// bonus degenerates to a harmless constant with the solver off (see its
@@ -138,6 +150,7 @@ impl Requirements {
             global: false,
             amaf: false,
             nst: false,
+            lgr: false,
             solver: false,
             max_players: None,
             needs_posterior: false,
@@ -154,6 +167,7 @@ impl Requirements {
             global: self.global || other.global,
             amaf: self.amaf || other.amaf,
             nst: self.nst || other.nst,
+            lgr: self.lgr || other.lgr,
             solver: self.solver || other.solver,
             max_players: match (self.max_players, other.max_players) {
                 (None, x) | (x, None) => x,
@@ -174,6 +188,7 @@ impl Requirements {
             global: flags.global(),
             amaf: flags.amaf(),
             nst: flags.nst(),
+            lgr: flags.lgr(),
             ..Self::none()
         }
     }
@@ -191,6 +206,9 @@ impl Requirements {
         }
         if self.nst {
             bits |= NST;
+        }
+        if self.lgr {
+            bits |= LGR;
         }
         BackpropFlags(bits)
     }
@@ -576,7 +594,7 @@ mod requirements_tests {
         };
         let combined = a.union(b);
         assert!(combined.amaf && combined.global);
-        assert!(!combined.grave && !combined.nst && !combined.solver);
+        assert!(!combined.grave && !combined.nst && !combined.lgr && !combined.solver);
         assert_eq!(
             combined.max_players,
             Some(2),
@@ -597,12 +615,12 @@ mod requirements_tests {
 
     #[test]
     fn backprop_flags_round_trip_through_requirements() {
-        let flags = BackpropFlags(GRAVE | GLOBAL | AMAF | NST);
+        let flags = BackpropFlags(GRAVE | GLOBAL | AMAF | NST | LGR);
         let reqs = Requirements::from_backprop_flags(flags);
-        assert!(reqs.grave && reqs.global && reqs.amaf && reqs.nst);
+        assert!(reqs.grave && reqs.global && reqs.amaf && reqs.nst && reqs.lgr);
         let round_tripped = reqs.backprop_flags();
         assert!(round_tripped.grave() && round_tripped.global());
-        assert!(round_tripped.amaf() && round_tripped.nst());
+        assert!(round_tripped.amaf() && round_tripped.nst() && round_tripped.lgr());
     }
 
     #[test]

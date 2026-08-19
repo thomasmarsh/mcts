@@ -104,7 +104,8 @@ export type SelectSpec = BaseSelectSpec | { kind: "epsilon_greedy"; epsilon: num
 export type BaseSimulateSpec =
   | { kind: "uniform" }
   | { kind: "mast" }
-  | { kind: "nst"; backoff_threshold: number };
+  | { kind: "nst"; backoff_threshold: number }
+  | { kind: "lgr" };
 
 /** `config_ir::SimulateSpec` -- `BaseSimulateSpec`'s families plus its
  * wrappers and fixed-shape two-level leaves (`decisive_move_mast`/

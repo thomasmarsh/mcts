@@ -47,7 +47,10 @@ fn true_value(probs: &[[f64; WIDTH]; WIDTH], j: usize) -> f64 {
 fn true_best(probs: &[[f64; WIDTH]; WIDTH]) -> (usize, f64) {
     (0..WIDTH)
         .map(|j| (j, true_value(probs, j)))
-        .fold((0, f64::NEG_INFINITY), |acc, x| if x.1 > acc.1 { x } else { acc })
+        .fold(
+            (0, f64::NEG_INFINITY),
+            |acc, x| if x.1 > acc.1 { x } else { acc },
+        )
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -88,8 +91,16 @@ impl Game for BanditTree {
 
     fn apply(state: BanditState, action: &u8) -> BanditState {
         match state.depth {
-            0 => BanditState { depth: 1, j: *action, k: 0 },
-            1 => BanditState { depth: 2, j: state.j, k: *action },
+            0 => BanditState {
+                depth: 1,
+                j: *action,
+                k: 0,
+            },
+            1 => BanditState {
+                depth: 2,
+                j: state.j,
+                k: *action,
+            },
             _ => unreachable!("apply called on terminal bandit-tree state"),
         }
     }
@@ -134,7 +145,9 @@ impl Game for BanditTree {
     }
 }
 
-fn ucb1(iterations: usize) -> TreeSearch<BanditTree, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>> {
+fn ucb1(
+    iterations: usize,
+) -> TreeSearch<BanditTree, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("ucb1")
@@ -148,7 +161,11 @@ fn bayes_uct1(
     iterations: usize,
 ) -> TreeSearch<
     BanditTree,
-    Compose<select::BayesUct1, mcts::strategies::mcts::simulate::Uniform, mcts::strategies::mcts::backprop::BayesGaussian>,
+    Compose<
+        select::BayesUct1,
+        mcts::strategies::mcts::simulate::Uniform,
+        mcts::strategies::mcts::backprop::BayesGaussian,
+    >,
 > {
     TreeSearch::new().config(
         SearchConfig::new()
@@ -164,7 +181,11 @@ fn bayes_uct2(
     iterations: usize,
 ) -> TreeSearch<
     BanditTree,
-    Compose<select::BayesUct2, mcts::strategies::mcts::simulate::Uniform, mcts::strategies::mcts::backprop::BayesGaussian>,
+    Compose<
+        select::BayesUct2,
+        mcts::strategies::mcts::simulate::Uniform,
+        mcts::strategies::mcts::backprop::BayesGaussian,
+    >,
 > {
     TreeSearch::new().config(
         SearchConfig::new()
@@ -182,7 +203,10 @@ fn bayes_uct2(
 /// ("recompute ... note the absolute difference between mean and true
 /// value") but applied to the realized top-level decision rather than the
 /// node's internal value estimate, since that's what a player experiences.
-fn mean_regret<S: Search<G = BanditTree>>(mut make_search: impl FnMut() -> S, trials: usize) -> (f64, f64) {
+fn mean_regret<S: Search<G = BanditTree>>(
+    mut make_search: impl FnMut() -> S,
+    trials: usize,
+) -> (f64, f64) {
     let mut regrets = Vec::with_capacity(trials);
     for _ in 0..trials {
         let mut probs = [[0.0; WIDTH]; WIDTH];

@@ -196,6 +196,7 @@ fn simulate_base_variants() -> Vec<Value> {
         variant("uniform", vec![]),
         variant("mast", vec![]),
         variant("nst", vec![field("backoff_threshold", int([0, 100], 5))]),
+        variant("lgr", vec![]),
     ]
 }
 
@@ -358,6 +359,7 @@ mod tests {
             SimulateSpec::Uniform {} => "uniform",
             SimulateSpec::Mast {} => "mast",
             SimulateSpec::Nst { .. } => "nst",
+            SimulateSpec::Lgr {} => "lgr",
             SimulateSpec::EpsilonGreedy { .. } => "epsilon_greedy",
             SimulateSpec::DecisiveMove { .. } => "decisive_move",
             SimulateSpec::DecisiveMoveMast { .. } => "decisive_move_mast",
@@ -371,6 +373,7 @@ mod tests {
                 "uniform",
                 "mast",
                 "nst",
+                "lgr",
                 "epsilon_greedy",
                 "decisive_move",
                 "decisive_move_mast",
@@ -383,9 +386,10 @@ mod tests {
             BaseSimulateSpec::Uniform {} => "uniform",
             BaseSimulateSpec::Mast {} => "mast",
             BaseSimulateSpec::Nst { .. } => "nst",
+            BaseSimulateSpec::Lgr {} => "lgr",
         };
         let _ = assert_base_simulate_variant_named;
-        cover("simulate_base", &["uniform", "mast", "nst"]);
+        cover("simulate_base", &["uniform", "mast", "nst", "lgr"]);
 
         let assert_backprop_variant_named = |s: &BackpropSpec| match s {
             BackpropSpec::Classic {} => "classic",
