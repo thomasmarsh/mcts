@@ -10,7 +10,8 @@
 
 use super::{BoolExpr, Connectivity, Direction, Player, Program, Region, Topology};
 
-type BitBoard<const N: usize, const M: usize> = bitboard::Board<u64, bitboard::Const<N>, bitboard::Const<M>>;
+type BitBoard<const N: usize, const M: usize> =
+    bitboard::Board<u64, bitboard::Const<N>, bitboard::Const<M>>;
 
 /// `region` shifted one step in `dir` -- the backend realization of [`Region::Shift`]/DESIGN.md's
 /// `shift(dir): Region -> Region`. Each arm is a direct, unmodified call into an existing, proven

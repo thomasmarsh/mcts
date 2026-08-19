@@ -201,6 +201,11 @@ impl State {
     }
 
     #[inline(always)]
+    pub fn can_swap(&self) -> bool {
+        self.can_swap
+    }
+
+    #[inline(always)]
     fn occupied(&self) -> Bits {
         self.black() | self.white()
     }
@@ -282,7 +287,13 @@ impl State {
                 self.winner = true;
             }
         }
-        if self.can_swap && self.occupied().count_ones() == 1 {
+        // The swap window is open for exactly one reply: the move that
+        // brings `occupied` to 1 (Black's opening placement) leaves it open
+        // for White; any move after that -- an ordinary placement (occupied
+        // now != 1) or an explicit `SWAP` (already cleared above) -- closes
+        // it for good, so a later capture that happens to drop `occupied`
+        // back to 1 can't reopen it.
+        if self.can_swap && self.occupied().count_ones() != 1 {
             self.can_swap = false;
         }
         if !self.winner {
