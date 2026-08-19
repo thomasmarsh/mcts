@@ -46,6 +46,15 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
         }
     }
 
+    /// An all-zero board with the same dims as `self` -- for a caller
+    /// outside this module that needs a fresh same-shape board (e.g. a
+    /// seed/accumulator mask) but only has an existing `Board` value to copy
+    /// the dims from, not the bare `R`/`C` dim values `new` takes.
+    #[inline(always)]
+    pub fn empty_like(&self) -> Self {
+        Self::new(self.rows, self.cols)
+    }
+
     #[inline(always)]
     pub fn rows(&self) -> usize {
         self.rows.get()

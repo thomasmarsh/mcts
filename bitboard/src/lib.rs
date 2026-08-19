@@ -7,10 +7,12 @@
 
 mod board;
 mod dim;
+mod go;
 mod storage;
 
 pub use board::{Board, Direction};
 pub use dim::{Const, Dim, Dyn};
+pub use go::{check_go_move, GoEngine};
 pub use storage::Storage;
 
 #[cfg(test)]
