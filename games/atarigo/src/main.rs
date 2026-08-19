@@ -28,7 +28,7 @@ const PRESET_SEED: u64 = 0;
 /// embedded defaults, or an operator-supplied override file named by
 /// `ATARIGO_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
 /// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
-/// `WORDS`, only by which `Game<N, WORDS>` `PresetTable::build` is
+/// `WORDS`, only by which `Game<N, WORDS, CELLS>` `PresetTable::build` is
 /// monomorphized for at each call site.
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
@@ -40,7 +40,7 @@ fn presets() -> &'static PresetTable {
 }
 
 /// `(N, WORDS)` pairs this binary serves. Each is a distinct
-/// `State<N, WORDS>` monomorphization -- see `dispatch_size!` below -- so
+/// `State<N, WORDS, CELLS>` monomorphization -- see `dispatch_size!` below -- so
 /// board size is chosen at request time (via `new_state`'s `{"size": N}`
 /// config, or inferred from an existing state's cell count) rather than
 /// fixed at compile time.
@@ -53,21 +53,24 @@ const DEFAULT_SIZE: usize = 9;
 /// returns a `HostError::bad_request` -- so every caller of this macro
 /// implicitly rejects an unsupported size before touching a `State`.
 macro_rules! dispatch_size {
-    ($size:expr, $n:ident, $words:ident, $body:block) => {
+    ($size:expr, $n:ident, $words:ident, $cells:ident, $body:block) => {
         match $size {
             5 => {
                 const $n: usize = 5;
                 const $words: usize = 1;
+                const $cells: usize = 25;
                 $body
             }
             7 => {
                 const $n: usize = 7;
                 const $words: usize = 1;
+                const $cells: usize = 49;
                 $body
             }
             9 => {
                 const $n: usize = 9;
                 const $words: usize = 2;
+                const $cells: usize = 81;
                 $body
             }
             other => {
@@ -113,8 +116,8 @@ fn parse_player(name: &str) -> Player {
     }
 }
 
-fn color_at<const N: usize, const WORDS: usize>(
-    s: &State<N, WORDS>,
+fn color_at<const N: usize, const WORDS: usize, const CELLS: usize>(
+    s: &State<N, WORDS, CELLS>,
     index: usize,
 ) -> Option<Player> {
     if s.black().get(index) {
@@ -126,7 +129,9 @@ fn color_at<const N: usize, const WORDS: usize>(
     }
 }
 
-fn state_to_value<const N: usize, const WORDS: usize>(s: &State<N, WORDS>) -> Value {
+fn state_to_value<const N: usize, const WORDS: usize, const CELLS: usize>(
+    s: &State<N, WORDS, CELLS>,
+) -> Value {
     serde_json::to_value(WireState {
         turn: player_name(s.turn()).into(),
         winner: s.has_winner(),
@@ -154,7 +159,9 @@ fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
         .ok_or_else(|| HostError::bad_request(format!("unexpected cell count {len}")))
 }
 
-fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N, WORDS> {
+fn state_from_wire<const N: usize, const WORDS: usize, const CELLS: usize>(
+    w: &WireState,
+) -> State<N, WORDS, CELLS> {
     let mut black = BigBitBoard::EMPTY;
     let mut white = BigBitBoard::EMPTY;
     for (i, cell) in w.cells.iter().enumerate() {
@@ -164,12 +171,7 @@ fn state_from_wire<const N: usize, const WORDS: usize>(w: &WireState) -> State<N
             _ => {}
         }
     }
-    State {
-        black,
-        white,
-        turn: parse_player(&w.turn),
-        winner: w.winner,
-    }
+    State::from_boards(black, white, parse_player(&w.turn), w.winner)
 }
 
 struct AtarigoAdapter;
@@ -190,18 +192,18 @@ impl GameAdapter for AtarigoAdapter {
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         let config: NewGameConfig = serde_json::from_value(config)
             .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
-        dispatch_size!(config.size, N, WORDS, {
-            Ok(state_to_value(&State::<N, WORDS>::default()))
+        dispatch_size!(config.size, N, WORDS, CELLS, {
+            Ok(state_to_value(&State::<N, WORDS, CELLS>::default()))
         })
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
             let mut mv = Vec::new();
-            if !AtariGo::<N, WORDS>::is_terminal(&s) {
-                AtariGo::<N, WORDS>::generate_actions(&s, &mut mv);
+            if !AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
+                AtariGo::<N, WORDS, CELLS>::generate_actions(&s, &mut mv);
             }
             Ok(mv
                 .into_iter()
@@ -212,34 +214,34 @@ impl GameAdapter for AtarigoAdapter {
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
             let m: Move<N, WORDS> = serde_json::from_value(mv.clone())
                 .map_err(|e| HostError::bad_request(e.to_string()))?;
-            if AtariGo::<N, WORDS>::is_terminal(&s) {
+            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
             let mut legal = Vec::new();
-            AtariGo::<N, WORDS>::generate_actions(&s, &mut legal);
+            AtariGo::<N, WORDS, CELLS>::generate_actions(&s, &mut legal);
             if !legal.contains(&m) {
                 return Err(HostError::bad_request("illegal move"));
             }
-            Ok(state_to_value(&AtariGo::<N, WORDS>::apply(s, &m)))
+            Ok(state_to_value(&AtariGo::<N, WORDS, CELLS>::apply(s, &m)))
         })
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            let winner = AtariGo::<N, WORDS>::winner(&s);
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            let winner = AtariGo::<N, WORDS, CELLS>::winner(&s);
             serde_json::to_value(GameView {
                 turn: player_name(s.turn()).into(),
                 cells: (0..N * N)
                     .map(|i| color_at(&s, i).map(|p| player_name(p).to_string()))
                     .collect(),
                 winner: winner.map(|p| player_name(p).to_string()),
-                terminal: AtariGo::<N, WORDS>::is_terminal(&s),
+                terminal: AtariGo::<N, WORDS, CELLS>::is_terminal(&s),
             })
             .map_err(|e| HostError::internal(e.to_string()))
         })
@@ -259,19 +261,19 @@ impl GameAdapter for AtarigoAdapter {
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            if AtariGo::<N, WORDS>::is_terminal(&s) {
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS>>(
+            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS, CELLS>>(
                 presets(),
                 preset,
                 custom_spec.as_ref(),
                 PRESET_SEED,
             )?;
             let action = ai.choose_action(&s);
-            let next = AtariGo::<N, WORDS>::apply(s, &action);
+            let next = AtariGo::<N, WORDS, CELLS>::apply(s, &action);
             Ok(AiMoveResult {
                 mv: serde_json::to_value(action).unwrap(),
                 state: state_to_value(&next),
@@ -291,12 +293,12 @@ impl GameAdapter for AtarigoAdapter {
             .map_err(|e| HostError::bad_request(format!("invalid custom strategy: {e}")))?;
         let w = parse_wire_state(state)?;
         let size = size_from_cell_count(w.cells.len())?;
-        dispatch_size!(size, N, WORDS, {
-            let s: State<N, WORDS> = state_from_wire(&w);
-            if AtariGo::<N, WORDS>::is_terminal(&s) {
+        dispatch_size!(size, N, WORDS, CELLS, {
+            let s: State<N, WORDS, CELLS> = state_from_wire(&w);
+            if AtariGo::<N, WORDS, CELLS>::is_terminal(&s) {
                 return Err(HostError::bad_request("game is over"));
             }
-            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS>>(
+            let mut ai = mcts_tune::presets::build_strategy::<AtariGo<N, WORDS, CELLS>>(
                 presets(),
                 preset,
                 custom_spec.as_ref(),
@@ -361,7 +363,7 @@ impl GameAdapter for AtarigoAdapter {
         // AtariGo's `Game::zobrist_hash` is the default constant `0`, so
         // transpositions must stay off -- see `mcts-tune`'s `strategy_tune_eval`
         // doc comment.
-        dispatch_size!(size, N, WORDS, {
+        dispatch_size!(size, N, WORDS, CELLS, {
             let outcome = if let Some(cfg) = baseline_config {
                 let baseline_seed = seed.unwrap_or(0);
                 // This opponent is itself a `build_search`-built config, on
@@ -378,7 +380,12 @@ impl GameAdapter for AtarigoAdapter {
                 // played -- mirrors how a bad candidate `params` is already
                 // rejected during `TrialParams` deserialization inside
                 // `strategy_tune_eval` itself.
-                mcts_tune::build_search::<AtariGo<N, WORDS>>(&cfg, baseline_seed, false, &budget)?;
+                mcts_tune::build_search::<AtariGo<N, WORDS, CELLS>>(
+                    &cfg,
+                    baseline_seed,
+                    false,
+                    &budget,
+                )?;
                 mcts_tune::strategy_tune_eval(
                     &params,
                     rounds,
@@ -386,7 +393,7 @@ impl GameAdapter for AtarigoAdapter {
                     false,
                     budget,
                     move || {
-                        mcts_tune::build_search::<AtariGo<N, WORDS>>(
+                        mcts_tune::build_search::<AtariGo<N, WORDS, CELLS>>(
                             &cfg,
                             baseline_seed,
                             false,
@@ -411,7 +418,7 @@ impl GameAdapter for AtarigoAdapter {
                     },
                     move || {
                         presets()
-                            .build::<AtariGo<N, WORDS>>("strong", PRESET_SEED)
+                            .build::<AtariGo<N, WORDS, CELLS>>("strong", PRESET_SEED)
                             .expect("games/atarigo/presets.json's \"strong\" preset must build")
                     },
                     Default::default(),

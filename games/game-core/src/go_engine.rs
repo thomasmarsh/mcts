@@ -35,7 +35,7 @@ use crate::bigbitboard::BigBitBoard;
 /// array length from another const generic, so callers supply it and
 /// [`CHECK_CELLS`](Self::CHECK_CELLS) catches a mismatch at
 /// monomorphization.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GoEngine<const N: usize, const WORDS: usize, const CELLS: usize> {
     black: BigBitBoard<N, N, WORDS>,
     white: BigBitBoard<N, N, WORDS>,
