@@ -1,5 +1,6 @@
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
+use mcts::game::Transform;
 use mcts::strategies::parallel_test_guard;
 use mcts::strategies::Search;
 
@@ -581,7 +582,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // simulation -- a genuine AMAF match, should update Move(7)'s edge.
     Classic.update_amaf::<G>(
         Some(root_id),
-        0,
+        Transform::IDENTITY,
         &[(Move(7), 1)],
         &index,
         processed_id,
@@ -603,7 +604,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // never had the choice to play it from root. Must not update.
     Classic.update_amaf::<G>(
         Some(root_id),
-        0,
+        Transform::IDENTITY,
         &[(Move(7), 0)],
         &index,
         processed_id,
@@ -1781,7 +1782,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         use_transpositions: false,
         graph_stats: None,
         solver_loss_threshold: 0,
-        incoming_sym: 0,
+        incoming_sym: Transform::IDENTITY,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
@@ -1876,7 +1877,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         use_transpositions: false,
         graph_stats: None,
         solver_loss_threshold: 0,
-        incoming_sym: 0,
+        incoming_sym: Transform::IDENTITY,
     };
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(1);

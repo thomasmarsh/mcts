@@ -1,6 +1,9 @@
 use super::*;
 use crate::game::Action;
+use crate::game::Canonical;
 use crate::game::Game;
+use crate::game::Real;
+use crate::game::Transform;
 
 use rustc_hash::FxHashMap;
 use std::str::FromStr;
@@ -739,8 +742,12 @@ impl<A: Action> ChildArray<A> {
 /// literal-orientation state. A byte-for-byte no-op (`invert_action`
 /// defaults to the identity) for every game that hasn't overridden
 /// `canonical_representation`, regardless of `incoming_sym`.
-pub fn real_action<G: Game>(children: &ChildArray<G::A>, idx: usize, incoming_sym: usize) -> G::A {
-    G::invert_action(children.action(idx).clone(), incoming_sym)
+pub fn real_action<G: Game>(
+    children: &ChildArray<G::A>,
+    idx: usize,
+    incoming_sym: Transform,
+) -> G::A {
+    G::invert_action(Canonical(children.action(idx).clone()), incoming_sym).into_inner()
 }
 
 /// The symmetry index relating `real_state` (an actual literal-board game
@@ -759,11 +766,15 @@ pub fn real_action<G: Game>(children: &ChildArray<G::A>, idx: usize, incoming_sy
 /// general. A value cached at edge-creation time would silently keep
 /// reflecting whichever path happened to create the edge first, which is
 /// wrong for every other path that later reuses it.
-pub fn incoming_sym<G: Game>(explicit_dag: bool, is_root: bool, real_state: &G::S) -> usize {
+pub fn incoming_sym<G: Game>(
+    explicit_dag: bool,
+    is_root: bool,
+    real_state: Real<&G::S>,
+) -> Transform {
     if explicit_dag && !is_root {
-        G::canonical_representation(real_state.clone()).1
+        G::canonical_representation(Real(real_state.0.clone())).1
     } else {
-        0
+        Transform::IDENTITY
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::Real;
 use crate::strategies::mcts::config::GraphSearch;
 use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::node;
@@ -150,7 +151,7 @@ where
             let idx = *idx;
             let parent = self.index.get(*parent_id);
             let incoming_sym =
-                node::incoming_sym::<G>(explicit_dag, parent.is_root(), &replay_state);
+                node::incoming_sym::<G>(explicit_dag, parent.is_root(), Real(&replay_state));
             let action = real_action::<G>(parent.children(), idx, incoming_sym);
             replay_state = G::apply(replay_state, &action);
             actions.push(action);

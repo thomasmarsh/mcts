@@ -6,6 +6,8 @@ use super::node::StatsRef;
 use super::search::TreeIndex;
 use crate::game::Action;
 use crate::game::Game;
+use crate::game::Real;
+use crate::game::Transform;
 use crate::util::Pairs;
 use crate::util::ReversePairs;
 use crate::util::ReversePairs2;
@@ -80,17 +82,17 @@ impl<A: Action> NodeStack<A> {
         index: &TreeIndex<A>,
         root_state: &G::S,
         explicit_dag: bool,
-    ) -> (FxHashMap<Id, usize>, FxHashMap<Id, G::A>) {
+    ) -> (FxHashMap<Id, Transform>, FxHashMap<Id, G::A>) {
         let mut syms = FxHashMap::default();
         let mut actions = FxHashMap::default();
-        syms.insert(self.root(), 0);
+        syms.insert(self.root(), Transform::IDENTITY);
         let mut state = root_state.clone();
         for ((parent_id, _), (child_id, child_idx)) in self.pairs() {
             let parent = index.get(*parent_id);
             let parent_sym = *syms.get(parent_id).unwrap();
             let action = node::real_action::<G>(parent.children(), *child_idx, parent_sym);
             state = G::apply(state, &action);
-            let child_sym = node::incoming_sym::<G>(explicit_dag, false, &state);
+            let child_sym = node::incoming_sym::<G>(explicit_dag, false, Real(&state));
             syms.insert(*child_id, child_sym);
             actions.insert(*child_id, action);
         }

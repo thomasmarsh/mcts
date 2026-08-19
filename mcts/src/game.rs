@@ -19,6 +19,91 @@ pub trait Action: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + S
 // Blanket implementation
 impl<T: Clone + Eq + std::hash::Hash + std::fmt::Debug + Serialize + Sync + Send> Action for T {}
 
+/// Index of an element in a game's symmetry group, as reported by
+/// `Game::canonical_representation` and consumed by `Game::apply_to_action`/
+/// `invert_action` -- which orientation a canonicalized state or action sits
+/// in, relative to the literal board. `Transform::IDENTITY` (index `0`) is
+/// always the no-op element, the same convention `game_core::symmetry::
+/// SymmetryGroup` uses for its own group elements; `is_identity` lets a
+/// caller fast-path the common case (no symmetry, or the root's own
+/// never-canonicalized action list) instead of unconditionally composing/
+/// inverting through a transform that turns out to do nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Transform(usize);
+
+impl Transform {
+    pub const IDENTITY: Transform = Transform(0);
+
+    #[inline]
+    pub const fn new(index: usize) -> Self {
+        Transform(index)
+    }
+
+    #[inline]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+
+    #[inline]
+    pub const fn is_identity(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl From<usize> for Transform {
+    #[inline]
+    fn from(index: usize) -> Self {
+        Transform(index)
+    }
+}
+
+impl From<Transform> for usize {
+    #[inline]
+    fn from(sym: Transform) -> usize {
+        sym.0
+    }
+}
+
+/// A value expressed in the literal, physical orientation of the game
+/// actually being played -- directly legal against `Game::S`/playable via
+/// `Game::apply`, or (for an action) directly present in `Game::
+/// generate_actions`'s output for such a state. Every consumer outside the
+/// canonicalization/graph-merge machinery itself (rollout continuation,
+/// applying a move to the real game, the UI/server boundary) deals in
+/// `Real` values.
+///
+/// Contrast [`Canonical`]. The two wrappers exist so a signature states
+/// which frame a state or action is in, rather than leaving it to a
+/// parameter name or doc comment: a caller that mixes up `Real` and
+/// `Canonical` gets a compile error at the call site instead of silently
+/// applying/keying a canonical-orientation value against a literal-board
+/// state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Real<T>(pub T);
+
+/// A value expressed in the canonicalized orientation `Game::
+/// canonical_representation` chose for a position's equivalence class --
+/// not directly legal against the real game state until translated back via
+/// `Game::invert_action` (see [`Real`]). A `ChildArray`'s own action list is
+/// stored in `Canonical` terms for every node except the root (which has no
+/// incoming edge to canonicalize against, and so stays `Real`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Canonical<T>(pub T);
+
+impl<T> Real<T> {
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> Canonical<T> {
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
 /// The outcome of checking whether a state is terminal, bundled with the
 /// winner when it is -- so a caller that needs both `is_terminal` and
 /// `winner` on the same state (the common case at the end of a rollout) can
@@ -226,8 +311,8 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// unchanged with symmetry index `0`; this is indistinguishable from
     /// "characterized as having no symmetry", which is fine, since both are
     /// legitimate uses of the identity element.
-    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
-        (state, 0)
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        (Canonical(state.0), Transform::IDENTITY)
     }
 
     /// Map an action through symmetry element `sym` -- e.g. to translate a
@@ -235,18 +320,18 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// canonicalized state produced by `canonical_representation`. The
     /// default is the identity, which is correct as long as
     /// `canonical_representation` hasn't been overridden to report anything
-    /// but symmetry index `0`.
+    /// but `Transform::IDENTITY`.
     #[allow(unused_variables)]
-    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
-        action
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        Canonical(action.0)
     }
 
     /// The inverse of `apply_to_action`: `invert_action(apply_to_action(a,
     /// s), s) == a` for every legal action `a` and every symmetry index `s`
     /// the game's `canonical_representation` can report.
     #[allow(unused_variables)]
-    fn invert_action(action: Self::A, sym: usize) -> Self::A {
-        action
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        Real(action.0)
     }
 
     /// A zobrist hash is expected to be cheap and precomputed upon move

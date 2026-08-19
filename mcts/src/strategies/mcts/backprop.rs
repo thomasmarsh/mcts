@@ -5,6 +5,7 @@ use super::*;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
+use crate::game::Transform;
 
 use rustc_hash::FxHashMap;
 
@@ -491,7 +492,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     fn update_amaf<G: Game>(
         &self,
         parent_id_opt: Option<index::Id>,
-        parent_incoming_sym: usize,
+        parent_incoming_sym: Transform,
         trace: &[(G::A, usize)],
         index: &TreeIndex<G::A>,
         node_id: index::Id,
@@ -713,7 +714,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 let parent_incoming_sym = parent_id_opt
                     .and_then(|id| incoming_syms.get(&id))
                     .copied()
-                    .unwrap_or(0);
+                    .unwrap_or(Transform::IDENTITY);
                 self.update_amaf::<G>(
                     parent_id_opt,
                     parent_incoming_sym,
@@ -732,7 +733,10 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 if !node.is_root() {
                     let parent_id = parent_id_opt.unwrap();
                     let idx = *node_idx;
-                    let parent_incoming_sym = incoming_syms.get(&parent_id).copied().unwrap_or(0);
+                    let parent_incoming_sym = incoming_syms
+                        .get(&parent_id)
+                        .copied()
+                        .unwrap_or(Transform::IDENTITY);
                     let action = node::real_action::<G>(
                         index.get(parent_id).children(),
                         idx,

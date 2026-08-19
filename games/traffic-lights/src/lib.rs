@@ -1,7 +1,7 @@
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use game_core::symmetry::D4Symmetry;
 use mcts::{
-    game::{Game, PlayerIndex},
+    game::{Canonical, Game, PlayerIndex, Real, Transform},
     zobrist::LazyZobristTable,
 };
 use serde::Serialize;
@@ -307,7 +307,8 @@ impl Game for TrafficLights {
         state.hash()
     }
 
-    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        let state = state.0;
         let sym = D4Symmetry::<3>::packed_canonical_symmetry(state.position.board);
         let mut symmetries = [0u32; 8];
         D4Symmetry::<3>::packed_board_symmetries(state.position.board, &mut symmetries);
@@ -316,15 +317,25 @@ impl Game for TrafficLights {
             winner: state.position.winner,
             board: symmetries[sym],
         };
-        (HashedPosition::from_position(canon), sym)
+        (
+            Canonical(HashedPosition::from_position(canon)),
+            Transform::new(sym),
+        )
     }
 
-    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
-        action.with_index(D4Symmetry::<3>::index_symmetries(action.index())[sym])
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        Canonical(
+            action
+                .0
+                .with_index(D4Symmetry::<3>::index_symmetries(action.0.index())[sym.index()]),
+        )
     }
 
-    fn invert_action(action: Self::A, sym: usize) -> Self::A {
-        action.with_index(D4Symmetry::<3>::invert_symmetry(action.index(), sym))
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        Real(action.0.with_index(D4Symmetry::<3>::invert_symmetry(
+            action.0.index(),
+            sym.index(),
+        )))
     }
 }
 
@@ -400,9 +411,10 @@ mod tests {
             for piece in 1..=3u8 {
                 for sym in 0..8usize {
                     let action = Move(((idx as u8) << 2) | piece);
-                    let transformed = TrafficLights::apply_to_action(action, sym);
+                    let sym = Transform::new(sym);
+                    let transformed = TrafficLights::apply_to_action(Real(action), sym);
                     let back = TrafficLights::invert_action(transformed, sym);
-                    assert_eq!(back, action);
+                    assert_eq!(back.into_inner(), action);
                 }
             }
         }
@@ -425,7 +437,8 @@ mod tests {
         }
 
         for state in reachable {
-            let (canon, canon_sym) = TrafficLights::canonical_representation(state);
+            let (canon, canon_sym) = TrafficLights::canonical_representation(Real(state));
+            let canon = canon.into_inner();
 
             let mut symmetries = [0u32; 8];
             D4Symmetry::<3>::packed_board_symmetries(state.position.board, &mut symmetries);
@@ -435,15 +448,16 @@ mod tests {
                     winner: state.position.winner,
                     board,
                 });
-                let (canon2, _) = TrafficLights::canonical_representation(variant);
+                let (canon2, _) = TrafficLights::canonical_representation(Real(variant));
                 assert_eq!(
-                    canon2.position, canon.position,
+                    canon2.into_inner().position,
+                    canon.position,
                     "canonical_representation disagreed across symmetric images \
                      of board {board:#x}"
                 );
             }
 
-            assert_eq!(symmetries[canon_sym], canon.position.board);
+            assert_eq!(symmetries[canon_sym.index()], canon.position.board);
         }
     }
 }

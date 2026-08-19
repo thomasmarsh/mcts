@@ -10,6 +10,7 @@ use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use crate::game::Game;
 use crate::game::PlayerIndex;
+use crate::game::Real;
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -154,7 +155,7 @@ where
             let idx = *idx;
             let parent = ctx.index.get(*parent_id);
             let incoming_sym =
-                node::incoming_sym::<G>(ctx.explicit_dag, parent.is_root(), &replay_state);
+                node::incoming_sym::<G>(ctx.explicit_dag, parent.is_root(), Real(&replay_state));
             let action = real_action::<G>(parent.children(), idx, incoming_sym);
             replay_state = G::apply(replay_state, &action);
             key_init.push(action);

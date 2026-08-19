@@ -32,6 +32,7 @@ use super::stack::NodeStack;
 use super::table::TranspositionTable;
 use super::*;
 use crate::game::Game;
+use crate::game::Transform;
 
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -71,7 +72,7 @@ pub struct SelectContext<'a, G: Game> {
     /// property of the caller's descent, not of the node itself. `0`
     /// (identity) at the root, and for every game that hasn't overridden
     /// `canonical_representation`.
-    pub incoming_sym: usize,
+    pub incoming_sym: Transform,
 }
 
 impl<'a, G: Game> SelectContext<'a, G> {

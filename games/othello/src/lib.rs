@@ -1,7 +1,7 @@
 use bitboard::{Const, Direction};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use game_core::symmetry::D4Symmetry;
-use mcts::game::{Game, PlayerIndex};
+use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;
 use serde::Serialize;
 use std::fmt;
@@ -575,7 +575,8 @@ impl Game for Othello {
         2
     }
 
-    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        let state = state.0;
         let sym = canonical_symmetry(state.black, state.white);
         let (black_bits, white_bits) = board_symmetries(state.black, state.white)[sym];
 
@@ -590,29 +591,35 @@ impl Game for Othello {
         }
 
         (
-            State {
+            Canonical(State {
                 black: BB::from_bits(black_bits),
                 white: BB::from_bits(white_bits),
                 turn: state.turn,
                 last_pass: state.last_pass,
                 hashes,
-            },
-            sym,
+            }),
+            Transform::new(sym),
         )
     }
 
-    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        let action = action.0;
         if action == Move::PASS {
-            return action;
+            return Canonical(action);
         }
-        Move(D4Symmetry::<8>::index_symmetries(action.0 as usize)[sym] as u8)
+        Canonical(Move(
+            D4Symmetry::<8>::index_symmetries(action.0 as usize)[sym.index()] as u8,
+        ))
     }
 
-    fn invert_action(action: Self::A, sym: usize) -> Self::A {
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        let action = action.0;
         if action == Move::PASS {
-            return action;
+            return Real(action);
         }
-        Move(D4Symmetry::<8>::invert_symmetry(action.0 as usize, sym) as u8)
+        Real(Move(
+            D4Symmetry::<8>::invert_symmetry(action.0 as usize, sym.index()) as u8,
+        ))
     }
 }
 
@@ -1166,14 +1173,22 @@ mod tests {
         for idx in 0..64usize {
             for sym in 0..8usize {
                 let action = Move(idx as u8);
-                let transformed = Othello::apply_to_action(action, sym);
+                let sym = Transform::new(sym);
+                let transformed = Othello::apply_to_action(Real(action), sym);
                 let back = Othello::invert_action(transformed, sym);
-                assert_eq!(back, action);
+                assert_eq!(back.into_inner(), action);
             }
         }
         for sym in 0..8usize {
-            assert_eq!(Othello::apply_to_action(Move::PASS, sym), Move::PASS);
-            assert_eq!(Othello::invert_action(Move::PASS, sym), Move::PASS);
+            let sym = Transform::new(sym);
+            assert_eq!(
+                Othello::apply_to_action(Real(Move::PASS), sym).into_inner(),
+                Move::PASS
+            );
+            assert_eq!(
+                Othello::invert_action(Canonical(Move::PASS), sym).into_inner(),
+                Move::PASS
+            );
         }
     }
 
@@ -1190,7 +1205,8 @@ mod tests {
         }
 
         for state in reachable {
-            let (canon, canon_sym) = Othello::canonical_representation(state);
+            let (canon, canon_sym) = Othello::canonical_representation(Real(state));
+            let canon = canon.into_inner();
 
             for &(black_bits, white_bits) in board_symmetries(state.black, state.white).iter() {
                 let mut hashes = [0u64; 8];
@@ -1209,7 +1225,8 @@ mod tests {
                     last_pass: state.last_pass,
                     hashes,
                 };
-                let (canon2, _) = Othello::canonical_representation(variant);
+                let (canon2, _) = Othello::canonical_representation(Real(variant));
+                let canon2 = canon2.into_inner();
                 assert_eq!(
                     (canon2.black, canon2.white, canon2.turn, canon2.last_pass),
                     (canon.black, canon.white, canon.turn, canon.last_pass),
@@ -1217,7 +1234,8 @@ mod tests {
                 );
             }
 
-            let (canon_black, canon_white) = board_symmetries(state.black, state.white)[canon_sym];
+            let (canon_black, canon_white) =
+                board_symmetries(state.black, state.white)[canon_sym.index()];
             assert_eq!(canon_black, canon.black.bits());
             assert_eq!(canon_white, canon.white.bits());
         }

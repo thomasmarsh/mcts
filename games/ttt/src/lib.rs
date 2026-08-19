@@ -1,5 +1,5 @@
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
-use mcts::game::{Game, PlayerIndex};
+use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -241,7 +241,8 @@ impl Game for TicTacToe {
         state.hash()
     }
 
-    fn canonical_representation(state: Self::S) -> (Self::S, usize) {
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        let state = state.0;
         let sym = canonical_symmetry(state.position.board);
         let mut symmetries = [0u32; NUM_SYMMETRIES];
         board_symmetries(state.position.board, &mut symmetries);
@@ -249,15 +250,22 @@ impl Game for TicTacToe {
             turn: state.position.turn,
             board: symmetries[sym],
         };
-        (HashedPosition::from_position(canon), sym)
+        (
+            Canonical(HashedPosition::from_position(canon)),
+            Transform::new(sym),
+        )
     }
 
-    fn apply_to_action(action: Self::A, sym: usize) -> Self::A {
-        Move(Sym::index_symmetries(action.0 as usize)[sym] as u8)
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        Canonical(Move(
+            Sym::index_symmetries(action.0 .0 as usize)[sym.index()] as u8,
+        ))
     }
 
-    fn invert_action(action: Self::A, sym: usize) -> Self::A {
-        Move(Sym::invert_symmetry(action.0 as usize, sym) as u8)
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        Real(Move(
+            Sym::invert_symmetry(action.0 .0 as usize, sym.index()) as u8,
+        ))
     }
 }
 
@@ -378,9 +386,10 @@ mod tests {
         #[test]
         fn test_action_transform_round_trip(idx in 0..9usize, sym in 0..8usize) {
             let action = Move(idx as u8);
-            let transformed = TicTacToe::apply_to_action(action, sym);
+            let sym = Transform::new(sym);
+            let transformed = TicTacToe::apply_to_action(Real(action), sym);
             let back = TicTacToe::invert_action(transformed, sym);
-            prop_assert_eq!(back, action);
+            prop_assert_eq!(back.into_inner(), action);
         }
     }
 
@@ -399,7 +408,8 @@ mod tests {
         }
 
         for state in reachable {
-            let (canon, canon_sym) = TicTacToe::canonical_representation(state);
+            let (canon, canon_sym) = TicTacToe::canonical_representation(Real(state));
+            let canon = canon.into_inner();
 
             let mut symmetries = [0u32; NUM_SYMMETRIES];
             board_symmetries(state.position.board, &mut symmetries);
@@ -408,9 +418,10 @@ mod tests {
                     turn: state.position.turn,
                     board,
                 });
-                let (canon2, _) = TicTacToe::canonical_representation(variant);
+                let (canon2, _) = TicTacToe::canonical_representation(Real(variant));
                 assert_eq!(
-                    canon2.position, canon.position,
+                    canon2.into_inner().position,
+                    canon.position,
                     "canonical_representation disagreed across symmetric images \
                      of board {board:#x}"
                 );
@@ -419,7 +430,7 @@ mod tests {
             // The reported symmetry index must actually produce the
             // canonical board when applied to the original.
             assert_eq!(
-                board_symmetries_nth(state.position.board, canon_sym),
+                board_symmetries_nth(state.position.board, canon_sym.index()),
                 canon.position.board
             );
         }
