@@ -43,6 +43,95 @@ FLOOR_BASELINES: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 
+def _build_cmd(
+    cfg: SearchConfig,
+    binary: Path,
+    config: Configuration,
+    *,
+    rounds: int,
+    seed: int,
+    instance: str | None,
+    trace_path: str | None,
+) -> list[str]:
+    """Build the ``tune eval`` argv shared by trial evaluation and the preflight check."""
+    cmd = [
+        str(binary),
+        "tune",
+        "eval",
+        "--config",
+        json_dumps(dict(config)),
+        "--rounds",
+        str(rounds),
+        "--seed",
+        str(seed),
+    ]
+    if instance is not None:
+        if instance in cfg.target.baseline_configs:
+            cmd += ["--baseline-config", json.dumps(cfg.target.baseline_configs[instance])]
+        elif instance in FLOOR_BASELINES:
+            cmd += ["--baseline-config", json.dumps(FLOOR_BASELINES[instance])]
+        else:
+            cmd += ["--baseline", instance]
+
+    if cfg.target.game_config is not None:
+        cmd += ["--game-config", json.dumps(cfg.target.game_config)]
+
+    if cfg.target.max_iterations is not None:
+        cmd += ["--max-iterations", str(cfg.target.max_iterations)]
+
+    if trace_path is not None:
+        cmd += ["--trace-path", trace_path]
+
+    return cmd
+
+
+def preflight_check(
+    cfg: SearchConfig,
+    default_config: Configuration,
+    *,
+    instances: list[str],
+) -> None:
+    """Run one real trial before ``smac.optimize()`` starts.
+
+    A misconfiguration that makes *every* trial's ``tune eval`` invocation
+    fail the same way (an unsupported ``--game-config``, an unknown
+    ``--baseline``, a missing binary flag, ...) is otherwise invisible until
+    the whole run finishes: ``train()`` below scores each such failure as
+    ``cost = 1.0``, which looks exactly like a real (if extreme) 100%-loss
+    search result rather than the binary never having played a game at all.
+    Running the default configuration once, here, with the exit code and
+    stderr surfaced directly, turns that into an immediate, readable failure
+    instead of a full ``optimizer.n_trials``-trial budget spent on a config
+    that could never have succeeded.
+    """
+    binary = cfg.resolve_binary()
+    instance = instances[0] if instances else None
+    cmd = _build_cmd(
+        cfg,
+        binary,
+        default_config,
+        rounds=1,
+        seed=0,
+        instance=instance,
+        trace_path=None,
+    )
+    logger.info("Preflight check: %s", " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Preflight trial timed out after 60s -- aborting before spending the "
+            f"full {cfg.optimizer.n_trials}-trial budget.\ncmd: {' '.join(cmd)}"
+        ) from None
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Preflight trial failed (exit {result.returncode}) -- aborting before "
+            f"spending the full {cfg.optimizer.n_trials}-trial budget on a config "
+            f"that can never succeed.\ncmd: {' '.join(cmd)}\nstdout:\n{result.stdout}"
+            f"\nstderr:\n{result.stderr}"
+        )
+
+
 def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
     """Return a callable suitable as SMAC's ``target_function``.
 
@@ -84,33 +173,15 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
         A ``float`` cost (lower = better), parsed from the ``{"cost": ...}``
         JSON line the binary's ``tune eval`` subcommand prints on stdout.
         """
-        cmd = [
-            str(binary),
-            "tune",
-            "eval",
-            "--config",
-            json_dumps(dict(config)),
-            "--rounds",
-            str(cfg.target.rounds),
-            "--seed",
-            str(seed),
-        ]
-        if instance is not None:
-            if instance in cfg.target.baseline_configs:
-                cmd += ["--baseline-config", json.dumps(cfg.target.baseline_configs[instance])]
-            elif instance in FLOOR_BASELINES:
-                cmd += ["--baseline-config", json.dumps(FLOOR_BASELINES[instance])]
-            else:
-                cmd += ["--baseline", instance]
-
-        if cfg.target.game_config is not None:
-            cmd += ["--game-config", json.dumps(cfg.target.game_config)]
-
-        if cfg.target.max_iterations is not None:
-            cmd += ["--max-iterations", str(cfg.target.max_iterations)]
-
-        if trace_path is not None:
-            cmd += ["--trace-path", trace_path]
+        cmd = _build_cmd(
+            cfg,
+            binary,
+            config,
+            rounds=cfg.target.rounds,
+            seed=seed,
+            instance=instance,
+            trace_path=trace_path,
+        )
 
         logger.debug("Running: %s", " ".join(cmd))
 

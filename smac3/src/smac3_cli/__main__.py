@@ -28,7 +28,7 @@ from .callback import IncumbentTracker, TrialTracker
 from .config import SearchConfig
 from .resume import load_prior_runhistory
 from .space import build_space
-from .target import make_target
+from .target import make_target, preflight_check
 
 warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message="invalid value encountered", category=RuntimeWarning)
@@ -245,6 +245,12 @@ def build_optimizer(
     # actually distinguishes the two kinds of instance id when dispatching
     # to the game binary.
     instances = [*cfg.target.baselines, *cfg.target.baseline_configs]
+
+    # Fail fast on a systemic misconfiguration (bad --game-config, unknown
+    # baseline, ...) rather than silently spending the entire n_trials
+    # budget scoring every trial cost=1.0 -- see `preflight_check`'s
+    # docstring.
+    preflight_check(cfg, cs.get_default_configuration(), instances=instances)
 
     # A normal resume keeps the same objective instances, so its completed
     # observations remain valid training data.  A ladder rung deliberately
