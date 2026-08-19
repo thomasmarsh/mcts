@@ -149,7 +149,7 @@ where
                 stack: &stack,
                 root_stats: &self.root_stats,
                 root_state: state,
-                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
+                canonicalizes: self.config.uses_transpositions(),
                 player,
                 state,
                 index: &self.index,
@@ -173,7 +173,7 @@ where
             &self.index,
             &self.stack,
             self.root_state.as_ref().unwrap(),
-            matches!(self.config.graph_search, GraphSearch::Dag(_)),
+            self.config.uses_transpositions(),
         );
         simulate_step(
             self.config.max_playout_depth,
@@ -199,7 +199,7 @@ where
             &self.index,
             &self.stack,
             self.root_state.as_ref().unwrap(),
-            matches!(self.config.graph_search, GraphSearch::Dag(_)),
+            self.config.uses_transpositions(),
         );
 
         std::thread::scope(|scope| {
@@ -378,20 +378,20 @@ where
         let mut state = init_state.clone();
         let mut stack = NodeStack::new(vec![(node_id, 0)]);
         let grave = self.stats.grave.read().unwrap();
-        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
+        let canonicalizes = self.config.uses_transpositions();
         while node.is_expanded() {
             let player = node.player_idx;
             // Recomputed fresh from `state` every iteration, like
             // `select_step`'s local of the same name -- see `node::
             // incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
+            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 player,
                 stack: &stack,
                 root_stats: &self.root_stats,
                 root_state: init_state,
-                explicit_dag,
+                canonicalizes,
                 state: &state,
                 index: &self.index,
                 table: &self.table,

@@ -575,7 +575,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         index: &TreeIndex<G::A>,
         root_stats: &NodeStats,
         root_state: &G::S,
-        explicit_dag: bool,
+        canonicalizes: bool,
         trial: simulate::Trial<G>,
         flags: BackpropFlags,
         use_mcts_solver: bool,
@@ -597,7 +597,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         // front, only when `needs_actions` actually reads a tree action
         // below.
         let incoming_syms = if needs_actions {
-            stack.incoming_syms::<G>(index, root_state, explicit_dag).0
+            stack.incoming_syms::<G>(index, root_state, canonicalizes).0
         } else {
             Default::default()
         };

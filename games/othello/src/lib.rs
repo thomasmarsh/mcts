@@ -12,6 +12,8 @@ pub const INITIAL_WHITE: u64 = (1 << 27) | (1 << 36); // d4, e5
 
 pub const BOARD_SIZE: usize = 8;
 
+pub const USE_SYMMETRY: bool = true;
+
 // ── Zobrist hashing ───────────────────────────────────────────────────────
 
 // 64 squares × 2 players = 128 piece entries + 1 turn + 1 last_pass
@@ -437,10 +439,20 @@ impl State {
         self.black | self.white
     }
 
-    /// The identity-symmetry Zobrist hash of this state.
+    /// This state's Zobrist hash -- the canonical-symmetry slot when
+    /// `USE_SYMMETRY` is on (letting `use_transpositions`/graph-search node
+    /// sharing merge positions reached via different orientations; see
+    /// `mcts::strategies::mcts::node::incoming_sym`'s doc comment for why
+    /// every consumer of a shared node's `ChildArray` must translate through
+    /// that shared orientation rather than assuming its own), the plain
+    /// identity slot otherwise.
     #[inline(always)]
     fn hash(&self) -> u64 {
-        self.hashes[0]
+        if USE_SYMMETRY {
+            self.hashes[canonical_symmetry(self.black, self.white)]
+        } else {
+            self.hashes[0]
+        }
     }
 
     /// Generate legal moves for the player whose turn it is.
@@ -1239,5 +1251,33 @@ mod tests {
             assert_eq!(canon_black, canon.black.bits());
             assert_eq!(canon_white, canon.white.bits());
         }
+    }
+
+    // With `USE_SYMMETRY` on, `zobrist_hash` folds every state down to its
+    // canonical-symmetry slot, so `use_transpositions(true)` should actually
+    // hit the transposition table on a small search -- mirroring ttt's
+    // `test_ttt_sym_search`. This also exercises the fix to `node::
+    // incoming_sym`/`expand`'s canonicalize gate (broadened from "explicit
+    // `GraphSearch::Dag` only" to "any mode that shares nodes across
+    // orientations"): before that fix, sharing a `ChildArray` across
+    // differently-oriented real states here without `GraphSearch::Dag`
+    // panicked on the `actions.contains(&action)` debug assertion.
+    #[test]
+    fn test_othello_sym_search() {
+        use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::strategies::Search;
+
+        type TS = TreeSearch<Othello, strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(300)
+                .q_init(QInit::Loss)
+                .use_transpositions(true),
+        );
+        let state = State::default();
+        _ = ts.choose_action(&state);
+
+        assert!(ts.table.hits.load(std::sync::atomic::Ordering::Relaxed) > 0);
     }
 }

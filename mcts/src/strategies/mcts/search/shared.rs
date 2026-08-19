@@ -419,7 +419,7 @@ pub fn select_step<G: Game>(
         // parent is itself a transposition (reached via more than one real
         // orientation across different iterations).
         let incoming_sym =
-            node::incoming_sym::<G>(shared.explicit_dag, node.is_root(), Real(&ctx.state));
+            node::incoming_sym::<G>(shared.use_transpositions, node.is_root(), Real(&ctx.state));
 
         // A single snapshot of this node's status -- see `Node::status`'s
         // doc comment for why this can't be two separate `is_terminal()`/
@@ -444,7 +444,7 @@ pub fn select_step<G: Game>(
                     &ctx.state,
                     shared.use_mcts_solver,
                     shared.has_amaf,
-                    shared.explicit_dag,
+                    shared.use_transpositions,
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return;
@@ -461,7 +461,7 @@ pub fn select_step<G: Game>(
                         stack: &node_stack,
                         root_stats: shared.root_stats,
                         root_state: shared.root_state,
-                        explicit_dag: shared.explicit_dag,
+                        canonicalizes: shared.use_transpositions,
                         player,
                         state: &ctx.state,
                         index: shared.index,
@@ -539,13 +539,13 @@ pub fn last_tree_action<G: Game>(
     index: &TreeIndex<G::A>,
     stack: &[(Id, usize)],
     root_state: &G::S,
-    explicit_dag: bool,
+    canonicalizes: bool,
 ) -> Option<G::A> {
     if stack.len() < 2 {
         return None;
     }
     let node_stack = NodeStack::new(stack.to_vec());
-    let (_, actions) = node_stack.incoming_syms::<G>(index, root_state, explicit_dag);
+    let (_, actions) = node_stack.incoming_syms::<G>(index, root_state, canonicalizes);
     actions.get(&stack[stack.len() - 1].0).cloned()
 }
 
@@ -613,7 +613,7 @@ pub fn backprop_step<G: Game>(
         shared.index,
         shared.root_stats,
         shared.root_state,
-        shared.explicit_dag,
+        shared.use_transpositions,
         trial,
         flags,
         shared.use_mcts_solver,

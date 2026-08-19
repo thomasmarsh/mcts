@@ -1,7 +1,6 @@
 use crate::game::Game;
 use crate::game::Real;
 
-use super::config::GraphSearch;
 use super::node;
 use super::node::real_action;
 use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
@@ -10,21 +9,21 @@ pub fn render<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>)
 where
     G::S: NodeRender,
 {
-    let explicit_dag = matches!(search.config.graph_search, GraphSearch::Dag(_));
-    print::<G>(&search.index, search.root_id, explicit_dag);
+    let canonicalizes = search.config.uses_transpositions();
+    print::<G>(&search.index, search.root_id, canonicalizes);
 }
 
 pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &G::S)
 where
     G::S: NodeRender,
 {
-    let explicit_dag = matches!(search.config.graph_search, GraphSearch::Dag(_));
+    let canonicalizes = search.config.uses_transpositions();
     print_trans::<G>(
         &search.index,
         &search.table,
         search.root_id,
         state.clone(),
-        explicit_dag,
+        canonicalizes,
     );
 }
 
@@ -45,7 +44,7 @@ fn print_trans<G>(
     table: &TranspositionTable,
     root_id: index::Id,
     init_state: G::S,
-    explicit_dag: bool,
+    canonicalizes: bool,
 ) where
     G: Game,
     G::S: NodeRender,
@@ -71,7 +70,7 @@ fn print_trans<G>(
             let children = node.children();
             // Fresh from `state` (this node's own real board state), not
             // cached -- see `node::incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
+            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
@@ -85,7 +84,7 @@ fn print_trans<G>(
     println!("}}");
 }
 
-fn print<G>(index: &TreeIndex<G::A>, root_id: index::Id, explicit_dag: bool)
+fn print<G>(index: &TreeIndex<G::A>, root_id: index::Id, canonicalizes: bool)
 where
     G: Game,
     G::S: NodeRender,
@@ -107,7 +106,7 @@ where
         let node = index.get(node_id);
         if node.is_expanded() {
             let children = node.children();
-            let incoming_sym = node::incoming_sym::<G>(explicit_dag, node.is_root(), Real(&state));
+            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,

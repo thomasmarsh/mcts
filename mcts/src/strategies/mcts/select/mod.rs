@@ -49,7 +49,12 @@ pub struct SelectContext<'a, G: Game> {
     /// `node::incoming_sym`'s doc comment for why this can't be cached
     /// per-edge.
     pub root_state: &'a G::S,
-    pub explicit_dag: bool,
+    /// Whether nodes can be shared across differing real orientations --
+    /// true for explicit `GraphSearch::Dag` and for the legacy
+    /// `use_transpositions` table alike (see `node::incoming_sym`'s doc
+    /// comment). Gates whether `node::incoming_sym` computes a real
+    /// translation or short-circuits to identity.
+    pub canonicalizes: bool,
     pub state: &'a G::S,
     pub player: usize,
     pub index: &'a TreeIndex<G::A>,

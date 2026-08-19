@@ -145,13 +145,13 @@ where
         // be cached across paths and must come from the real state in hand).
         let mut actions = vec![];
         let stack = NodeStack::<G::A>::new(self.stack.clone());
-        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
+        let canonicalizes = self.config.uses_transpositions();
         let mut replay_state = state.clone();
         for ((parent_id, _), (_, idx)) in stack.pairs() {
             let idx = *idx;
             let parent = self.index.get(*parent_id);
             let incoming_sym =
-                node::incoming_sym::<G>(explicit_dag, parent.is_root(), Real(&replay_state));
+                node::incoming_sym::<G>(canonicalizes, parent.is_root(), Real(&replay_state));
             let action = real_action::<G>(parent.children(), idx, incoming_sym);
             replay_state = G::apply(replay_state, &action);
             actions.push(action);

@@ -81,7 +81,7 @@ impl<A: Action> NodeStack<A> {
         &self,
         index: &TreeIndex<A>,
         root_state: &G::S,
-        explicit_dag: bool,
+        canonicalizes: bool,
     ) -> (FxHashMap<Id, Transform>, FxHashMap<Id, G::A>) {
         let mut syms = FxHashMap::default();
         let mut actions = FxHashMap::default();
@@ -92,7 +92,7 @@ impl<A: Action> NodeStack<A> {
             let parent_sym = *syms.get(parent_id).unwrap();
             let action = node::real_action::<G>(parent.children(), *child_idx, parent_sym);
             state = G::apply(state, &action);
-            let child_sym = node::incoming_sym::<G>(explicit_dag, false, Real(&state));
+            let child_sym = node::incoming_sym::<G>(canonicalizes, false, Real(&state));
             syms.insert(*child_id, child_sym);
             actions.insert(*child_id, action);
         }
