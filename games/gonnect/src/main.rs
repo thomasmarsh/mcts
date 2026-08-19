@@ -37,50 +37,49 @@ fn presets() -> &'static PresetTable {
     PRESETS.get_or_init(|| {
         let presets_path = env::var("GONNECT_PRESETS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json")));
+            .unwrap_or_else(|_| {
+                PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"))
+            });
         PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
             .expect("games/gonnect/presets.json must parse")
     })
 }
 
-/// `(N, WORDS)` pairs this binary serves. Each is a distinct
-/// `State<N, WORDS, CELLS>` monomorphization -- see `dispatch_size!` below -- so
+/// Board sizes this binary serves, 3x3 through 19x19. `WORDS`/`CELLS` are
+/// derived from `N` (see `dispatch_size!`) rather than hand-listed per size --
 /// board size is chosen at request time (via `new_state`'s `{"size": N}`
 /// config, or inferred from an existing state's cell count) rather than
 /// fixed at compile time. 13x13 is Gonnect's traditional board size and
 /// stays the default.
-const SUPPORTED_SIZES: &[(usize, usize)] = &[(9, 2), (13, 3), (19, 6)];
+const SUPPORTED_SIZES: &[usize] = &[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 const DEFAULT_SIZE: usize = 13;
 
 /// Runs `$body` with `$n`/`$words`/`$cells` bound as the matching `usize`
 /// consts for board size `$size` (a runtime value). The match arms double as
 /// validation: `$size` must be one of `SUPPORTED_SIZES` or the default arm
 /// returns a `HostError::bad_request` -- so every caller of this macro
-/// implicitly rejects an unsupported size before touching a `State`.
+/// implicitly rejects an unsupported size before touching a `State`. Extending
+/// the served range is a matter of adding `N` literals to the list below --
+/// `CELLS`/`WORDS` are computed from `N` (the same `CELLS.div_ceil(64)`
+/// relationship `BigBitBoard::CHECK_WORDS` asserts), not hand-transcribed.
 macro_rules! dispatch_size {
     ($size:expr, $n:ident, $words:ident, $cells:ident, $body:block) => {
+        dispatch_size!(@match $size, $n, $words, $cells, $body,
+            3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+    };
+    (@match $size:expr, $n:ident, $words:ident, $cells:ident, $body:block, $($lit:literal),+ $(,)?) => {
         match $size {
-            9 => {
-                const $n: usize = 9;
-                const $words: usize = 2;
-                const $cells: usize = 81;
-                $body
-            }
-            13 => {
-                const $n: usize = 13;
-                const $words: usize = 3;
-                const $cells: usize = 169;
-                $body
-            }
-            19 => {
-                const $n: usize = 19;
-                const $words: usize = 6;
-                const $cells: usize = 361;
-                $body
-            }
+            $(
+                $lit => {
+                    const $n: usize = $lit;
+                    const $cells: usize = $n * $n;
+                    const $words: usize = $cells.div_ceil(64);
+                    $body
+                }
+            )+
             other => {
                 return Err(HostError::bad_request(format!(
-                    "unsupported board size {other} (supported: 9, 13, 19)"
+                    "unsupported board size {other} (supported: 3..=19)"
                 )))
             }
         }
@@ -168,7 +167,7 @@ fn parse_wire_state(v: &Value) -> Result<WireState, HostError> {
 fn size_from_cell_count(len: usize) -> Result<usize, HostError> {
     SUPPORTED_SIZES
         .iter()
-        .map(|&(n, _)| n)
+        .copied()
         .find(|&n| n * n == len)
         .ok_or_else(|| HostError::bad_request(format!("unexpected cell count {len}")))
 }
@@ -277,6 +276,28 @@ impl BookFor<19, 6, 361> for GonnectAdapter {
         self.book_19.as_ref()
     }
 }
+
+/// Generates a trivial `BookFor<$n, ..., ...>` impl returning `None` for
+/// every size that doesn't have a hand-written, book-backed impl above.
+/// Rust's lack of stable specialization means a single blanket "default to
+/// `None`" impl can't coexist with the book-backed overrides, so this stands
+/// in for one -- `CELLS`/`WORDS` are derived from `$n` the same way
+/// `dispatch_size!` derives them, so a new size only needs adding to the
+/// list, not a hand-transcribed struct field.
+macro_rules! book_for_none {
+    ($($n:literal),+ $(,)?) => {
+        $(
+            impl BookFor<$n, { ($n as usize * $n as usize).div_ceil(64) }, { $n * $n }> for GonnectAdapter {
+                fn book_index(
+                    &self,
+                ) -> Option<&book::BookIndex<$n, { ($n as usize * $n as usize).div_ceil(64) }, { $n * $n }>> {
+                    None
+                }
+            }
+        )+
+    };
+}
+book_for_none!(3, 4, 5, 6, 7, 8, 10, 11, 12, 14, 15, 16, 17, 18);
 
 impl GameAdapter for GonnectAdapter {
     fn kind(&self) -> &'static str {
@@ -603,7 +624,7 @@ mod tests {
 
     #[test]
     fn new_state_supports_every_advertised_size() {
-        for &(n, _) in SUPPORTED_SIZES {
+        for &n in SUPPORTED_SIZES {
             let v = GonnectAdapter::load()
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap_or_else(|e| panic!("new_state({n}) failed: {e}"));
@@ -614,13 +635,13 @@ mod tests {
     #[test]
     fn new_state_rejects_unsupported_size() {
         assert!(GonnectAdapter::load()
-            .new_state(serde_json::json!({ "size": 7 }))
+            .new_state(serde_json::json!({ "size": 20 }))
             .is_err());
     }
 
     #[test]
     fn legal_moves_and_apply_round_trip_at_every_size() {
-        for &(n, _) in SUPPORTED_SIZES {
+        for &n in SUPPORTED_SIZES {
             let state = GonnectAdapter::load()
                 .new_state(serde_json::json!({ "size": n }))
                 .unwrap();
