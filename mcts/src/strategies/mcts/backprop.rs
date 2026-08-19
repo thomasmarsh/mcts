@@ -572,12 +572,13 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) where
         G: Game,
     {
-        // init_amaf: AMAF | GRAVE | GLOBAL | LGR
-        let mut amaf_actions = if flags.amaf() || flags.grave() || flags.global() || flags.lgr() {
-            trial.actions.clone()
-        } else {
-            vec![]
-        };
+        // init_amaf: AMAF | GRAVE | GLOBAL | LGR | LGR2
+        let mut amaf_actions =
+            if flags.amaf() || flags.grave() || flags.global() || flags.lgr() || flags.lgr2() {
+                trial.actions.clone()
+            } else {
+                vec![]
+            };
 
         // `trial.terminal` already carries the winner if `playout` ended
         // naturally (rather than hitting the depth cutoff) -- reuse it
@@ -692,8 +693,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 self.update_grave::<G>(&amaf_actions, index, global, *node_id, &utilities);
             }
 
-            // push_action: AMAF | GRAVE | GLOBAL | LGR
-            if flags.amaf() || flags.grave() || flags.global() || flags.lgr() {
+            // push_action: AMAF | GRAVE | GLOBAL | LGR | LGR2
+            if flags.amaf() || flags.grave() || flags.global() || flags.lgr() || flags.lgr2() {
                 let node = index.get(*node_id);
                 if !node.is_root() {
                     let parent_id = parent_id_opt.cloned().unwrap();
@@ -774,6 +775,45 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 if utilities[*p] >= max_utility {
                     let mut replies = global.player_replies[*p].write().unwrap();
                     replies.insert(prev_action.clone(), action.clone());
+                }
+            }
+        }
+
+        // update: LGR2 -- LGRF-2's own 2-ply table, keyed by (this
+        // player's own previous move, the opponent's reply to it). Same
+        // windowed chronological reconstruction as LGR above, but over
+        // triples: `window[0]` is this player's own earlier move,
+        // `window[1]` is the opponent's reply, `window[2]` is this
+        // player's next move -- the "reply to a reply" LGRF-2 uses as
+        // context. `window[0]` and `window[2]` must belong to the same
+        // player for the triple to have a well-defined own-move context;
+        // it's skipped otherwise (only possible in non-alternating
+        // turn orders).
+        //
+        // Unlike LGR's plain table, this one *forgets*: a losing player's
+        // move is removed from the table when it's still the entry
+        // recorded for that context, so a reply that stops winning stops
+        // being played instead of lingering until some later winning
+        // trial happens to overwrite it.
+        if flags.lgr2() {
+            let max_utility = utilities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let mut chronological = amaf_actions[trial.actions.len()..].to_vec();
+            chronological.reverse();
+            chronological.extend(trial.actions.iter().cloned());
+
+            for window in chronological.windows(3) {
+                let (own_prev_action, p0) = &window[0];
+                let (opp_action, _p1) = &window[1];
+                let (action, p2) = &window[2];
+                if p0 != p2 {
+                    continue;
+                }
+                let context = (own_prev_action.clone(), opp_action.clone());
+                let mut replies2 = global.player_replies2[*p2].write().unwrap();
+                if utilities[*p2] >= max_utility {
+                    replies2.insert(context, action.clone());
+                } else if replies2.get(&context) == Some(action) {
+                    replies2.remove(&context);
                 }
             }
         }

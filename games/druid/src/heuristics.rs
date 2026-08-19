@@ -236,6 +236,7 @@ impl<M: MoveEncoding> DruidHeuristic<M> {
 }
 
 impl<M: MoveEncoding> SimulateStrategy<DruidGame<M>> for DruidHeuristic<M> {
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &<DruidGame<M> as mcts::game::Game>::S,
@@ -243,6 +244,7 @@ impl<M: MoveEncoding> SimulateStrategy<DruidGame<M>> for DruidHeuristic<M> {
         _stats: &TreeStats<DruidGame<M>>,
         player: usize,
         _prev_action: Option<&<DruidGame<M> as mcts::game::Game>::A>,
+        _own_prev_action: Option<&<DruidGame<M> as mcts::game::Game>::A>,
         rng: &mut SmallRng,
     ) -> &'a <DruidGame<M> as mcts::game::Game>::A {
         let mover = if player == Player::Black.to_index() {

@@ -75,6 +75,13 @@ type BigramTable<A> = FxHashMap<(A, A), node::ActionStats>;
 /// reasoning as `BigramTable`'s doc comment above.
 type ReplyTable<A> = FxHashMap<A, A>;
 
+/// LGRF-2's per-player 2-ply reply table: (this player's own previous move,
+/// the opponent's reply to it) -> the last move this player played in that
+/// context that went on to win. Same last-write-wins shape as `ReplyTable`,
+/// plus forgetting (see `backprop.rs`'s `flags.lgr2()` block): a losing
+/// reply is removed from here rather than just left unwritten.
+type Reply2Table<A> = FxHashMap<(A, A), A>;
+
 #[derive(Debug)]
 pub struct TreeStats<G: Game> {
     pub actions: RwLock<FxHashMap<G::A, node::ActionStats>>,
@@ -82,6 +89,7 @@ pub struct TreeStats<G: Game> {
     pub player_actions: Vec<RwLock<FxHashMap<G::A, node::ActionStats>>>,
     pub player_bigram_actions: Vec<RwLock<BigramTable<G::A>>>,
     pub player_replies: Vec<RwLock<ReplyTable<G::A>>>,
+    pub player_replies2: Vec<RwLock<Reply2Table<G::A>>>,
     pub accum_depth: AtomicUsize,
     pub iter_count: AtomicUsize,
 }
@@ -98,6 +106,9 @@ impl<G: Game> Default for TreeStats<G> {
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             player_replies: (0..G::num_players())
+                .map(|_| RwLock::new(FxHashMap::default()))
+                .collect(),
+            player_replies2: (0..G::num_players())
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             accum_depth: AtomicUsize::new(0),
@@ -123,6 +134,11 @@ impl<G: Game> Clone for TreeStats<G> {
                 .collect(),
             player_replies: self
                 .player_replies
+                .iter()
+                .map(|m| RwLock::new(m.read().unwrap().clone()))
+                .collect(),
+            player_replies2: self
+                .player_replies2
                 .iter()
                 .map(|m| RwLock::new(m.read().unwrap().clone()))
                 .collect(),

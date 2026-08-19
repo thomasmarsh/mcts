@@ -955,7 +955,8 @@ mod tests {
             let mut available = Vec::new();
             Druid::generate_actions(&state, &mut available);
             let player = Druid::player_to_move(&state).to_index();
-            let chosen = *heuristic.select_move(&state, &available, &stats, player, None, &mut rng);
+            let chosen =
+                *heuristic.select_move(&state, &available, &stats, player, None, None, &mut rng);
             assert!(
                 available.contains(&chosen),
                 "select_move must return one of the available moves"
@@ -1246,7 +1247,8 @@ mod flat_tests {
             let mut available = Vec::new();
             DruidFlat::generate_actions(&state, &mut available);
             let player = DruidFlat::player_to_move(&state).to_index();
-            let chosen = *heuristic.select_move(&state, &available, &stats, player, None, &mut rng);
+            let chosen =
+                *heuristic.select_move(&state, &available, &stats, player, None, None, &mut rng);
             assert!(
                 available.contains(&chosen),
                 "flat select_move must return one of the available moves"

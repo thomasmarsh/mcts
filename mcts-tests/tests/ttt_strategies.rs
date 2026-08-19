@@ -929,7 +929,7 @@ fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     // to the unigram score, which prefers Move(1).
     let mut below = Nst::default();
     assert_eq!(
-        *below.select_move(&state, &available, &stats, 0, Some(&prev), &mut rng),
+        *below.select_move(&state, &available, &stats, 0, Some(&prev), None, &mut rng),
         Move(1)
     );
 
@@ -943,7 +943,7 @@ fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     }
     let mut above = Nst::default().backoff_threshold(5);
     assert_eq!(
-        *above.select_move(&state, &available, &stats, 0, Some(&prev), &mut rng),
+        *above.select_move(&state, &available, &stats, 0, Some(&prev), None, &mut rng),
         Move(0)
     );
 
@@ -952,7 +952,7 @@ fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     // score.
     let mut no_context = Nst::default().backoff_threshold(1);
     assert_eq!(
-        *no_context.select_move(&state, &available, &stats, 0, None, &mut rng),
+        *no_context.select_move(&state, &available, &stats, 0, None, None, &mut rng),
         Move(1)
     );
 }

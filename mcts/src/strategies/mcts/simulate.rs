@@ -42,6 +42,7 @@ where
 {
     // The default implementation is a uniform selection
     #[allow(unused_variables)]
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &G::S,
@@ -49,6 +50,7 @@ where
         stats: &TreeStats<G>,
         player: usize,
         prev_action: Option<&G::A>,
+        own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         &available[rng.gen_range(0..available.len())]
@@ -62,6 +64,14 @@ where
     /// current search only -- there is deliberately no attempt to thread in
     /// whatever move preceded the tree root in the real game, since `G::S`
     /// doesn't generally retain that history (see `Nst`'s doc comment).
+    ///
+    /// `own_prev_action` is this same player's own most recent move earlier
+    /// in this playout -- the context `Lgr2` needs on top of `prev_action`
+    /// (the opponent's reply to it). Unlike `prev_action`, it is *not*
+    /// reconstructed from the tree-descent path -- it starts `None` and is
+    /// only filled in once this player has moved at least once within the
+    /// current `playout` call, so it's always `None` for a player's first
+    /// move of a playout even if they moved earlier during tree descent.
     fn playout(
         &mut self,
         mut state: G::S,
@@ -73,6 +83,7 @@ where
         let mut actions = Vec::new();
         let mut available = Vec::new();
         let mut depth = 0;
+        let mut own_prev_action: Vec<Option<G::A>> = vec![None; G::num_players()];
         let end_type;
         let terminal;
         loop {
@@ -95,11 +106,19 @@ where
                 break;
             }
             let player = G::player_to_move(&state).to_index();
-            let action: &G::A =
-                self.select_move(&state, &available, stats, player, prev_action.as_ref(), rng);
+            let action: &G::A = self.select_move(
+                &state,
+                &available,
+                stats,
+                player,
+                prev_action.as_ref(),
+                own_prev_action[player].as_ref(),
+                rng,
+            );
             let action = action.clone();
             actions.push((action.clone(), player));
             prev_action = Some(action.clone());
+            own_prev_action[player] = Some(action.clone());
             state = G::apply(state, &action);
             depth += 1;
         }
@@ -187,6 +206,7 @@ where
     G: Game,
     S: SimulateStrategy<G>,
 {
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &G::S,
@@ -194,6 +214,7 @@ where
         stats: &TreeStats<G>,
         player: usize,
         prev_action: Option<&G::A>,
+        own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if rng.gen::<f64>() < self.epsilon {
@@ -204,11 +225,19 @@ where
                 stats,
                 player,
                 prev_action,
+                own_prev_action,
                 rng,
             )
         } else {
-            self.inner
-                .select_move(state, available, stats, player, prev_action, rng)
+            self.inner.select_move(
+                state,
+                available,
+                stats,
+                player,
+                prev_action,
+                own_prev_action,
+                rng,
+            )
         }
     }
 
@@ -342,6 +371,7 @@ where
     G: Game,
     S: SimulateStrategy<G> + Default,
 {
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &<G as Game>::S,
@@ -349,11 +379,19 @@ where
         stats: &TreeStats<G>,
         player: usize,
         prev_action: Option<&G::A>,
+        own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
         self.choose(state, available, player).unwrap_or_else(|| {
-            self.inner
-                .select_move(state, available, stats, player, prev_action, rng)
+            self.inner.select_move(
+                state,
+                available,
+                stats,
+                player,
+                prev_action,
+                own_prev_action,
+                rng,
+            )
         })
     }
 
@@ -408,6 +446,7 @@ where
         BackpropFlags(GLOBAL)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         _state: &G::S,
@@ -415,6 +454,7 @@ where
         stats: &TreeStats<G>,
         player: usize,
         _prev_action: Option<&G::A>,
+        _own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         let player_actions = stats.player_actions[player].read().unwrap();
@@ -474,6 +514,7 @@ where
         BackpropFlags(GLOBAL | NST)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         _state: &G::S,
@@ -481,6 +522,7 @@ where
         stats: &TreeStats<G>,
         player: usize,
         prev_action: Option<&G::A>,
+        _own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         let player_actions = stats.player_actions[player].read().unwrap();
@@ -576,6 +618,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &G::S,
@@ -583,6 +626,7 @@ where
         stats: &TreeStats<G>,
         player: usize,
         prev_action: Option<&G::A>,
+        _own_prev_action: Option<&G::A>,
         rng: &mut SmallRng,
     ) -> &'a G::A {
         if let Some(prev) = prev_action {
@@ -593,8 +637,124 @@ where
                 }
             }
         }
-        self.inner
-            .select_move(state, available, stats, player, prev_action, rng)
+        self.inner.select_move(
+            state,
+            available,
+            stats,
+            player,
+            prev_action,
+            _own_prev_action,
+            rng,
+        )
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// LGRF-2 (Last Good Reply with Forgetting, level 2; Baier & Drake 2010):
+/// `Lgr`'s single-ply reply table extended with a second table keyed by
+/// *both* preceding moves -- this player's own last move and the
+/// opponent's reply to it -- which is where the "forgetting" half of
+/// LGRF-2 lives: a 2-ply reply that goes on to lose is actively removed
+/// from this table (`backprop::BackpropStrategy::update`'s `flags.lgr2()`
+/// block), rather than just being left unwritten the way a losing trial
+/// already is for `Lgr`'s plain table.
+///
+/// Falls back to `inner` (default `Lgr<G>`, i.e. LGR-1) whenever there's no
+/// 2-ply context yet (a player's first move of a playout), no recorded
+/// reply for that context, or the recorded reply isn't currently legal --
+/// so `Lgr2<G>`'s default composition (`Lgr2<G, Lgr<G, Uniform>>`) gets the
+/// full LGRF-2 -> LGR-1 -> uniform fallback chain the paper describes for
+/// free, by literally nesting `Lgr` rather than re-deriving its behavior.
+///
+/// The 1-ply table `inner: Lgr` reads/writes (`TreeStats::player_replies`)
+/// keeps `Lgr`'s existing plain last-write-wins semantics -- no forgetting
+/// -- so composing `Lgr` directly (LGR-1) is unaffected by this type
+/// existing at all.
+#[derive(Clone)]
+pub struct Lgr2<G, S = Lgr<G>>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    inner: S,
+    marker: PhantomData<G>,
+}
+
+impl<G, S> Lgr2<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
+    }
+}
+
+impl<G, S> Default for Lgr2<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            inner: S::default(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<G, S> SimulateStrategy<G> for Lgr2<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(LGR2) | self.inner.backprop_flags()
+    }
+
+    /// See `EpsilonGreedy::requirements`'s doc comment -- same reason: adds
+    /// this type's own `lgr2` bit on top of whatever `inner` needs.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements {
+            lgr2: true,
+            ..self.inner.requirements()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_move<'a>(
+        &mut self,
+        state: &G::S,
+        available: &'a [G::A],
+        stats: &TreeStats<G>,
+        player: usize,
+        prev_action: Option<&G::A>,
+        own_prev_action: Option<&G::A>,
+        rng: &mut SmallRng,
+    ) -> &'a G::A {
+        if let (Some(own), Some(opp)) = (own_prev_action, prev_action) {
+            let replies2 = stats.player_replies2[player].read().unwrap();
+            if let Some(reply) = replies2.get(&(own.clone(), opp.clone())) {
+                if let Some(found) = available.iter().find(|a| *a == reply) {
+                    return found;
+                }
+            }
+        }
+        self.inner.select_move(
+            state,
+            available,
+            stats,
+            player,
+            prev_action,
+            own_prev_action,
+            rng,
+        )
     }
 }
 
@@ -622,6 +782,7 @@ where
     G: Game,
     S: Strategy<G>,
 {
+    #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
         state: &G::S,
@@ -629,6 +790,7 @@ where
         _stats: &TreeStats<G>,
         _player: usize,
         _prev_action: Option<&G::A>,
+        _own_prev_action: Option<&G::A>,
         _rng: &mut SmallRng,
     ) -> &'a <G as Game>::A {
         let action = self.inner.choose_action(state);
