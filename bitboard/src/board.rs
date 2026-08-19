@@ -88,8 +88,9 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
         *self.bits.word_mut(index / 64) |= 1u64 << (index % 64);
     }
 
+    /// Clears a single bit by its row-major index -- see `get_index`.
     #[inline(always)]
-    fn clear_index(&mut self, index: usize) {
+    pub fn clear_index(&mut self, index: usize) {
         *self.bits.word_mut(index / 64) &= !(1u64 << (index % 64));
     }
 
@@ -114,6 +115,13 @@ impl<S: Storage, R: Dim, C: Dim> Board<S, R, C> {
         (0..S::CAPACITY_WORDS)
             .map(|w| self.bits.word(w).count_ones())
             .sum()
+    }
+
+    /// The raw backing words, low word first -- for a caller that needs to fold over every word
+    /// generically (e.g. hashing), independent of `S`'s concrete layout. Mirrors
+    /// `BigBitBoard::words`, generalized over any storage rather than only `[u64; WORDS]`.
+    pub fn words(&self) -> impl Iterator<Item = u64> + '_ {
+        (0..S::CAPACITY_WORDS).map(move |w| self.bits.word(w))
     }
 
     /// Iterates the row-major indices (`row * cols + col`) of set bits, in

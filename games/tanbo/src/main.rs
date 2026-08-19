@@ -9,7 +9,7 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_core::bigbitboard::BigBitBoard;
+use bitboard::Board;
 use game_tanbo::{Move, Player, State, Tanbo};
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
@@ -80,12 +80,12 @@ fn state_to_value(s: &State<9, 2>) -> Value {
 fn value_to_state(v: &Value) -> Result<State<9, 2>, HostError> {
     let w: WireState =
         serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
-    let mut black = BigBitBoard::EMPTY;
-    let mut white = BigBitBoard::EMPTY;
+    let mut black = Board::new_const();
+    let mut white = Board::new_const();
     for (i, cell) in w.cells.iter().enumerate() {
         match cell.as_deref() {
-            Some("Black") => black.set(i),
-            Some("White") => white.set(i),
+            Some("Black") => black.set_index(i),
+            Some("White") => white.set_index(i),
             _ => {}
         }
     }

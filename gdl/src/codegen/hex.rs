@@ -6,18 +6,19 @@
 //! Unlike `rect::generate` (which bakes one concrete board size into the generated types), this
 //! backend emits a *const-generic* `Position<const N: usize, const WORDS: usize>` (plus
 //! `HashedPosition`/the `Game`-implementing marker struct) parameterized over board side `N` and
-//! `game_core::bigbitboard::BigBitBoard`'s own `WORDS` parameter -- the same `<const N, const
-//! WORDS>` shape `games/gonnect` already hand-writes for its own multiple board sizes (9/13/19).
+//! `bitboard::Board<[u64; WORDS], Const<N>, Const<N>>`'s own `WORDS` parameter -- the same
+//! `<const N, const WORDS>` shape `games/gonnect` already hand-writes for its own multiple board
+//! sizes (9/13/19).
 //! A single generated crate can then be instantiated at several concrete sizes from one hand-
 //! written `main.rs` dispatch (`games/hex-gen/src/main.rs`'s `dispatch_size!` macro, mirroring
 //! `games/gonnect/src/main.rs`'s), rather than needing one generated crate per board size.
 //!
-//! The board type is always `BigBitBoard<N, N, WORDS>`, never the plain-`u64` `BitBoard<N, N>`
-//! `rect::generate` uses: a single generic function body has to work for every instantiated `N`,
-//! and `BigBitBoard` is the one board type that's already generic over its own word count.
-//! `WORDS` is a genuine second const-generic parameter (not derivable from `N` on stable Rust --
-//! see `BigBitBoard`'s own doc comment), supplied by whichever concrete instantiation a caller
-//! picks; `BigBitBoard::CHECK_WORDS` rejects a wrong pairing at compile time.
+//! The board type is always `Board<[u64; WORDS], Const<N>, Const<N>>` (the multi-word storage
+//! backend), never `rect::generate`'s single-word `Board<u64, Const<N>, Const<M>>`: a single
+//! generic function body has to work for every instantiated `N`, and `[u64; WORDS]` is the one
+//! storage backend that's already generic over its own word count. `WORDS` is a genuine second
+//! const-generic parameter (not derivable from `N` on stable Rust -- see `bitboard::Storage`'s
+//! own doc comment), supplied by whichever concrete instantiation a caller picks.
 //!
 //! The real consequence of going const-generic: a `Region::Sites` region (`Program`'s `(regions
 //! ...)` edges) can no longer lower to a literal bitmask, since one generic function body has to
@@ -34,7 +35,7 @@
 //! `Region::Occupied`/`Union`/`Complement`/`Sites` shapes `rect` already lowers (Hex's own
 //! `(sites Empty)` move generator and `(regions ...)` edges are built only from those), plus
 //! `BoolExpr::Connects` itself, specialized to `Connectivity::Six` via a generated `hex_connects`
-//! helper that calls `BigBitBoard::flood6` directly. `HexShape::Triangle` (Y) is out of scope --
+//! helper that calls `Board::flood6` directly. `HexShape::Triangle` (Y) is out of scope --
 //! see `mod.rs`.
 //!
 //! Zobrist hashing also had to change shape: a `static LazyZobristTable<NUM_HASHES>` needs
@@ -85,10 +86,10 @@ fn edge_fn_source(name: &str) -> String {
         _ => unreachable!("identify_edge only returns these four names"),
     };
     format!(
-        r#"fn {name}<const N: usize, const WORDS: usize>() -> BigBitBoard<N, N, WORDS> {{
-    let mut b = BigBitBoard::EMPTY;
+        r#"fn {name}<const N: usize, const WORDS: usize>() -> Board<[u64; WORDS], Const<N>, Const<N>> {{
+    let mut b = Board::new_const();
     for c in 0..N {{
-        b.set({body});
+        b.set_index({body});
     }}
     b
 }}
@@ -96,8 +97,8 @@ fn edge_fn_source(name: &str) -> String {
     )
 }
 
-/// Lowers `region` into a Rust expression of type `BigBitBoard<N, N, WORDS>`, evaluated relative
-/// to `self.occupied: [BigBitBoard<N, N, WORDS>; NUM_PLAYERS]` -- see `rect::region_expr`'s
+/// Lowers `region` into a Rust expression of type `Board<[u64; WORDS], Const<N>, Const<N>>`,
+/// evaluated relative to `self.occupied: [Board<[u64; WORDS], Const<N>, Const<N>>; NUM_PLAYERS]` -- see `rect::region_expr`'s
 /// identical doc comment for why this stays a separate copy rather than shared with `rect`'s.
 fn region_expr(region: &Region, hex: &Hex) -> Result<String, Error> {
     Ok(match region {
@@ -143,7 +144,7 @@ fn contains_connects(expr: &BoolExpr) -> bool {
 
 /// Lowers `expr` into a `bool`-typed Rust expression. `board` is the (already-lowered) name of
 /// the region-under-test variable in scope; `edges` is `Some(name)` of an in-scope
-/// `&[BigBitBoard<N, N, WORDS>]` binding (`Program.player_regions[last_mover]`, lowered by
+/// `&[Board<[u64; WORDS], Const<N>, Const<N>>]` binding (`Program.player_regions[last_mover]`, lowered by
 /// `generate` below) when the program declares any, required by `BoolExpr::Connects`.
 fn bool_expr(
     expr: &BoolExpr,
@@ -291,7 +292,7 @@ pub fn generate(
 
     let edges_binding = if needs_connects {
         format!(
-            r#"        let edges: &[BigBitBoard<N, N, WORDS>] = match last_mover {{
+            r#"        let edges: &[Board<[u64; WORDS], Const<N>, Const<N>>] = match last_mover {{
 {edges_arms}            _ => unreachable!(),
         }};
 "#
@@ -308,11 +309,11 @@ pub fn generate(
 /// The mover's stones (`board`, floodfilled from `edges[0]`) reach every remaining entry of
 /// `edges` -- the Rust realization of `BoolExpr::Connects{ conn: Connectivity::Six }`, matching
 /// `gdl::core::interp::eval_bool`'s own `Connects` arm but specialized once, at generation time,
-/// to a direct `BigBitBoard::flood6` call instead of `core::interp::bounded_fixpoint`'s general
+/// to a direct `Board::flood6` call instead of `core::interp::bounded_fixpoint`'s general
 /// iterate-to-a-fixpoint loop.
 fn hex_connects<const N: usize, const WORDS: usize>(
-    board: BigBitBoard<N, N, WORDS>,
-    edges: &[BigBitBoard<N, N, WORDS>],
+    board: Board<[u64; WORDS], Const<N>, Const<N>>,
+    edges: &[Board<[u64; WORDS], Const<N>, Const<N>>],
 ) -> bool {
     let [first, rest @ ..] = edges else {
         return false;
@@ -331,11 +332,11 @@ fn hex_connects<const N: usize, const WORDS: usize>(
 // do not edit by hand. Regenerate instead of patching -- see gdl/src/codegen/hex.rs.
 //
 // {game_name}, lowered from {source_path} via gdl::core::Program. Const-generic over board side
-// `N` and `game_core::bigbitboard::BigBitBoard`'s own `WORDS` parameter -- see a caller crate's
+// `N` and `bitboard::Board<[u64; WORDS], Const<N>, Const<N>>`'s own `WORDS` parameter -- see a caller crate's
 // `main.rs` (e.g. `games/hex-gen/src/main.rs`'s `dispatch_size!` macro) for how a concrete board
 // size is picked at request time, the same pattern `games/gonnect` hand-writes for itself.
 
-use game_core::bigbitboard::BigBitBoard;
+use bitboard::{{Board, Const}};
 use game_core::display::{{RectangularBoard, RectangularBoardDisplay}};
 use mcts::game::{{Game, PlayerIndex}};
 use serde::{{Deserialize, Serialize}};
@@ -374,7 +375,7 @@ pub struct Move(pub u8);
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
 pub struct Position<const N: usize, const WORDS: usize> {{
     pub turn: Player,
-    pub occupied: [BigBitBoard<N, N, WORDS>; NUM_PLAYERS],
+    pub occupied: [Board<[u64; WORDS], Const<N>, Const<N>>; NUM_PLAYERS],
 }}
 
 impl<const N: usize, const WORDS: usize> Default for Position<N, WORDS> {{
@@ -387,7 +388,7 @@ impl<const N: usize, const WORDS: usize> Position<N, WORDS> {{
     pub fn new() -> Self {{
         Self {{
             turn: Player::P0,
-            occupied: [BigBitBoard::EMPTY; NUM_PLAYERS],
+            occupied: [Board::new_const(); NUM_PLAYERS],
         }}
     }}
 
@@ -399,7 +400,7 @@ impl<const N: usize, const WORDS: usize> Position<N, WORDS> {{
     }}
 
     pub fn apply(&mut self, m: Move) {{
-        self.occupied[self.turn.to_index()].set(m.0 as usize);
+        self.occupied[self.turn.to_index()].set_index(m.0 as usize);
         self.turn = self.turn.next();
     }}
 
@@ -518,7 +519,7 @@ impl<const N: usize, const WORDS: usize> RectangularBoard for HashedPosition<N, 
     fn display_char_at(&self, row: usize, col: usize) -> char {{
         let site = row * N + col;
         for p in 0..NUM_PLAYERS {{
-            if self.position.occupied[p].get(site) {{
+            if self.position.occupied[p].get_index(site) {{
                 return (b'A' + p as u8) as char;
             }}
         }}
