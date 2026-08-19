@@ -29,17 +29,20 @@ use mcts_tune::presets::PresetTable;
 /// only seed available to `mcts_tune::presets::PresetTable::build`.
 const PRESET_SEED: u64 = 0;
 
-/// The parsed `easy`/`strong` preset table -- `games/hex-gen/presets.json`'s
-/// embedded defaults, or an operator-supplied override file named by
-/// `HEX_GEN_PRESETS_PATH` (see `PresetTable::load`'s doc comment). Presets
+/// The parsed `easy`/`strong` preset table -- loaded at runtime from
+/// `games/hex-gen/presets.json` (or the file named by `HEX_GEN_PRESETS_PATH`),
+/// falling back to the compiled-in defaults only if that path is missing
+/// (see `PresetTable::load`'s doc comment). Presets
 /// are size-invariant: `build_easy`/`build_strong` never varied by `N`/
 /// `WORDS`, only by which `Hex<N, WORDS>` `PresetTable::build` is
 /// monomorphized for at each call site.
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
     PRESETS.get_or_init(|| {
-        let override_path = env::var("HEX_GEN_PRESETS_PATH").ok().map(PathBuf::from);
-        PresetTable::load(include_str!("../presets.json"), override_path.as_deref())
+        let presets_path = env::var("HEX_GEN_PRESETS_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json")));
+        PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
             .expect("games/hex-gen/presets.json must parse")
     })
 }
