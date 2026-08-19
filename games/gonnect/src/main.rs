@@ -113,7 +113,7 @@ fn state_to_value(s: &State) -> Value {
     let n = s.black().rows();
     serde_json::to_value(WireState {
         turn: player_name(s.turn()).into(),
-        can_swap: true,
+        can_swap: s.can_swap(),
         winner: s.has_winner(),
         cells: (0..n * n)
             .map(|i| color_at(s.black(), s.white(), i).map(|p| player_name(p).to_string()))
