@@ -675,6 +675,20 @@ impl<S: Storage, R: Dim, C: Dim> PartialEq for Board<S, R, C> {
 
 impl<S: Storage, R: Dim, C: Dim> Eq for Board<S, R, C> {}
 
+/// Mirrors `GoEngine`'s own `Hash` impl: fold every backing word plus
+/// `rows`/`cols` so a `Dyn`-dimensioned board's runtime size participates
+/// (two boards with the same bits but different dims must hash differently,
+/// matching `PartialEq`, which already compares dims).
+impl<S: Storage, R: Dim, C: Dim> std::hash::Hash for Board<S, R, C> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for w in 0..S::CAPACITY_WORDS {
+            self.bits.word(w).hash(state);
+        }
+        self.rows().hash(state);
+        self.cols().hash(state);
+    }
+}
+
 impl<S: Storage, R: Dim, C: Dim> BitAnd for Board<S, R, C> {
     type Output = Self;
 

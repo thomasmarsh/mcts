@@ -101,12 +101,9 @@ fn parse_args() -> Args {
     args
 }
 
-/// Builds the book for one `(N, WORDS)` monomorphization, prints a
-/// progress line per game, then reports and serializes the result. `N`/
-/// `WORDS` are a single macro-dispatched pair (mirrors `game-gonnect`'s own
-/// `dispatch_size!` in `main.rs`) since Gonnect's board size is a const
-/// generic, not a runtime value.
-fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
+/// Builds the book for `args.size`, prints a progress line per game, then
+/// reports and serializes the result.
+fn run(args: &Args) {
     let out = args
         .out
         .clone()
@@ -116,7 +113,7 @@ fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
     // unparseable file (the common case for a first run at this size) just
     // means "start from an empty book", same as `BookIndex::load`'s own
     // fallback.
-    let seed: Option<OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A>> = if args.fresh {
+    let seed: Option<OpeningBook<<Gonnect as Game>::A>> = if args.fresh {
         None
     } else {
         std::fs::read_to_string(&out)
@@ -136,8 +133,11 @@ fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
     }
 
     let start = Instant::now();
-    let book: OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A> =
-        book::build::<N, WORDS, CELLS>(&args.book, seed.as_ref(), |round, plies, utilities| {
+    let book: OpeningBook<<Gonnect as Game>::A> = book::build(
+        args.size,
+        &args.book,
+        seed.as_ref(),
+        |round, plies, utilities| {
             println!(
                 "game {:>4}/{}: {:>3} plies, utilities {:?}",
                 round + 1,
@@ -145,14 +145,15 @@ fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
                 plies,
                 utilities,
             );
-        });
+        },
+    );
     println!(
         "\nbuilt book from {} games in {:.2?}",
         args.book.rounds,
         start.elapsed()
     );
 
-    let initial = State::<N, WORDS, CELLS>::default();
+    let initial = State::new(args.size);
     report_top_moves(&book, &initial, args.top);
 
     if let Some(parent) = std::path::Path::new(&out).parent() {
@@ -160,16 +161,20 @@ fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
     }
     let json = serde_json::to_string_pretty(&book).expect("book always serializes");
     std::fs::write(&out, &json).expect("failed to write book file");
-    println!("\nwrote {out} ({} bytes) for size {N}x{N}", json.len());
+    let size = args.size;
+    println!(
+        "\nwrote {out} ({} bytes) for size {size}x{size}",
+        json.len()
+    );
 
     // Round-trip check: reload what was just written and confirm the root's
     // top reply for `player` still scores identically, so a corrupted or
     // lossy serialization (e.g. the map-key issue `Entry`'s custom
     // `Serialize`/`Deserialize` wire shape exists to avoid) fails loudly
     // here instead of silently shipping a bad book file.
-    let reloaded: OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A> =
+    let reloaded: OpeningBook<<Gonnect as Game>::A> =
         serde_json::from_str(&json).expect("just-written book always deserializes");
-    let player = Gonnect::<N, WORDS, CELLS>::player_to_move(&initial).to_index();
+    let player = Gonnect::player_to_move(&initial).to_index();
     assert_eq!(
         reloaded.score(&[], player),
         book.score(&[], player),
@@ -180,12 +185,8 @@ fn run<const N: usize, const WORDS: usize, const CELLS: usize>(args: &Args) {
 
 /// Prints the book's ranked replies from `state`, using `Game::notation`
 /// for human-readable cells (e.g. `D4`) instead of raw indices.
-fn report_top_moves<const N: usize, const WORDS: usize, const CELLS: usize>(
-    book: &OpeningBook<<Gonnect<N, WORDS, CELLS> as Game>::A>,
-    state: &State<N, WORDS, CELLS>,
-    top: usize,
-) {
-    let player = Gonnect::<N, WORDS, CELLS>::player_to_move(state).to_index();
+fn report_top_moves(book: &OpeningBook<<Gonnect as Game>::A>, state: &State, top: usize) {
+    let player = Gonnect::player_to_move(state).to_index();
     match book.children(&[], player) {
         None => println!("\n(root has no book entries -- run more rounds)"),
         Some(mut candidates) => {
@@ -195,7 +196,7 @@ fn report_top_moves<const N: usize, const WORDS: usize, const CELLS: usize>(
                 candidates.len()
             );
             for (action, visits, score) in candidates {
-                let notation = Gonnect::<N, WORDS, CELLS>::notation(state, &action);
+                let notation = Gonnect::notation(state, &action);
                 let score_str = score.map_or("--".to_string(), |s| format!("{s:.3}"));
                 println!("  {notation:>4}  visits={visits:<5} score={score_str}");
             }
@@ -205,10 +206,8 @@ fn report_top_moves<const N: usize, const WORDS: usize, const CELLS: usize>(
 
 fn main() {
     let args = parse_args();
-    match args.size {
-        9 => run::<9, 2, 81>(&args),
-        13 => run::<13, 3, 169>(&args),
-        19 => run::<19, 6, 361>(&args),
-        other => panic!("unsupported board size {other} (supported: 9, 13, 19)"),
+    if !(3..=19).contains(&args.size) {
+        panic!("unsupported board size {} (supported: 3..=19)", args.size);
     }
+    run(&args);
 }

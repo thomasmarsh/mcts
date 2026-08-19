@@ -9,7 +9,11 @@
 // folded over children every backup) makes it slower per iteration, which a
 // time-based budget would unfairly penalize.
 //
-// Board: 7x7 Gonnect (`Gonnect<7, 1>` -- 49 cells fit one `u64` word).
+// Board: Gonnect's default size (`game_gonnect::DEFAULT_SIZE`, 13x13) --
+// board size is a runtime field on `State` rather than a const generic, and
+// `round_robin_multiple` always starts games from `G::S::default()`, so this
+// always plays on the default size rather than a size this file can pick
+// itself.
 //
 // Usage: cargo run --release --example strength_bayes_uct [c] [rounds]
 // `c` (default 1.0) is Bayes-UCT2's exploration constant, matching classic
@@ -23,7 +27,7 @@ use mcts::strategies::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type G7 = Gonnect<7, 1, 49>;
+type G7 = Gonnect;
 
 fn fmt_result(r: &GameResult) -> String {
     let (point, (lo, hi)) = r.win_rate_ci(1.96);
@@ -52,7 +56,11 @@ fn main() {
     let iterations: usize = 20_000;
 
     println!("=== Bayes-UCT2 (c={bayes_c}) vs classic UCT (c=sqrt2) strength comparison ===");
-    println!("Board: 7x7 Gonnect");
+    println!(
+        "Board: Gonnect, default size ({}x{})",
+        game_gonnect::DEFAULT_SIZE,
+        game_gonnect::DEFAULT_SIZE
+    );
     println!("Fixed budget: {} iterations/move, both sides", iterations);
     println!("{} rounds ({} games total)", rounds, rounds * 2);
     println!();
