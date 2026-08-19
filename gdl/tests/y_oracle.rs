@@ -66,7 +66,7 @@ impl YOracle {
 
     /// The six hex-adjacent neighbors of `site` that are still on the (triangular) board --
     /// north/south/east/west, plus the northeast/southwest diagonal, matching
-    /// `game_core::bitboard::BitBoard::flood6`'s convention (see `hex_oracle.rs`'s identical
+    /// `bitboard::Board::flood6`'s convention (see `hex_oracle.rs`'s identical
     /// neighbor list -- the adjacency itself is unaffected by which sites the board masks out).
     fn neighbors(site: usize) -> Vec<usize> {
         let row = (site / SIDE) as isize;

@@ -4,7 +4,7 @@
 //! `DESIGN.md`'s corpus notes, so this test *is* the second implementation rather than a wrapper
 //! around one.
 //!
-//! [`HexOracle`] deliberately doesn't call into `gdl::core::hex` or `game_core::bitboard`'s
+//! [`HexOracle`] deliberately doesn't call into `gdl::core::hex` or `bitboard::Board`'s
 //! `flood6` at all -- it recomputes hex adjacency and connected components from first principles
 //! (a plain BFS over an explicit six-neighbor delta list), so a bug shared between the oracle and
 //! the interpreter is very unlikely to be a coincidence.
@@ -54,7 +54,7 @@ impl HexOracle {
     }
 
     /// The six hex-adjacent neighbors of `site`: north/south/east/west, plus the
-    /// northeast/southwest diagonal (not northwest/southeast) -- see `game_core::bitboard`'s
+    /// northeast/southwest diagonal (not northwest/southeast) -- see `bitboard::Board`'s
     /// `flood6` doc comment for why that's the diagonal pair this corpus picked.
     fn neighbors(site: usize) -> Vec<usize> {
         let row = (site / SIDE) as isize;

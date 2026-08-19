@@ -1,6 +1,6 @@
 /// The raw word array backing a `Board`. Implemented for `u64` (a single
-/// word, replacing `game_core::bitboard::BitBoard`'s backing store) and
-/// `[u64; WORDS]` (replacing `game_core::bigbitboard::BigBitBoard`'s),
+/// word, replacing `bitboard::Board`'s backing store) and
+/// `[u64; WORDS]` (replacing `bitboard::Board`'s),
 /// letting `Board` implement every bit-level and shift/flood operation
 /// exactly once, generically over the word count, instead of hand-duplicated
 /// per-type.

@@ -1,6 +1,6 @@
 //! The `Hex` topology (see `DESIGN.md`'s "Topology model"): hexagonal cells packed into the same
 //! row-major `side x side` site indexing as [`super::Rect`] (`row * side + col`), with six-way
-//! adjacency instead of four/eight -- see `game_core::bitboard::BitBoard::flood6` for the
+//! adjacency instead of four/eight -- see `bitboard::Board::flood6` for the
 //! concrete shift set this relies on. Two shapes share this one underlying `side x side` grid and
 //! its six-way adjacency unchanged, differing only in which sites are valid and how the board's
 //! edges are named: [`HexShape::Rhombus`] (Ludii's `(hex Diamond <side>)`, used by Hex) uses every
@@ -78,7 +78,7 @@ impl Hex {
     }
 
     /// Every site along `edge`: row `side - 1` is `North` (the board's top row, per
-    /// `game_core::bitboard::BitBoard`'s bottom-left origin), row `0` is `South`, column `side -
+    /// `bitboard::Board`'s bottom-left origin), row `0` is `South`, column `side -
     /// 1` is `East`, column `0` is `West`. Only meaningful for [`HexShape::Rhombus`] -- see
     /// [`Hex::triangle_edge`] for the other shape.
     pub fn edge(&self, edge: Edge) -> Vec<usize> {

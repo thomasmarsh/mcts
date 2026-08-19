@@ -18,7 +18,7 @@
 //! `Connects` edge-to-edge end rule (`ROADMAP.md` phase 6) -- it lowers the same `Region` shapes
 //! as `rect`, plus `BoolExpr::Connects` itself (specialized to `Connectivity::Six`, the only one
 //! any corpus Hex-topology game uses, via a generated `hex_connects` helper that calls
-//! `game_core::bitboard::BitBoard::flood6` directly rather than reproducing
+//! `bitboard::Board::flood6` directly rather than reproducing
 //! `core::interp::bounded_fixpoint`'s general fixpoint loop). Only `HexShape::Rhombus` boards are
 //! supported so far -- `HexShape::Triangle` (Y) additionally needs `Region::Intersect` to mask
 //! `(sites Empty)` down to the triangular half of the grid, a real next step, not attempted here.
