@@ -9,8 +9,7 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_core::bitboard::BitBoard;
-use game_othello::{Move, Othello, Player, State};
+use game_othello::{Move, Othello, Player, State, BB as BitBoard};
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 
@@ -85,8 +84,8 @@ fn value_to_state(v: &Value) -> Result<State, HostError> {
     let w: WireState =
         serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
     Ok(State {
-        black: BitBoard::new(w.black),
-        white: BitBoard::new(w.white),
+        black: BitBoard::from_bits(w.black),
+        white: BitBoard::from_bits(w.white),
         turn: parse_player(&w.turn),
         last_pass: w.last_pass,
         hashes: [0u64; 8],
@@ -109,14 +108,14 @@ impl GameAdapter for OthAdapter {
     }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
         let mut s = State {
-            black: BitBoard::new(0),
-            white: BitBoard::new(0),
+            black: BitBoard::from_bits(0),
+            white: BitBoard::from_bits(0),
             turn: Player::Black,
             last_pass: false,
             hashes: [0u64; 8],
         };
-        s.black = BitBoard::new(0x0000000810000000);
-        s.white = BitBoard::new(0x0000001008000000);
+        s.black = BitBoard::from_bits(0x0000000810000000);
+        s.white = BitBoard::from_bits(0x0000001008000000);
         Ok(state_to_value(&s))
     }
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {

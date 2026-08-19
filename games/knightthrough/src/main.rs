@@ -9,10 +9,12 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_core::bitboard::BitBoard;
+use bitboard::{Board, Const};
 use game_knightthrough::{Knightthrough, Move, Player, State};
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
+
+type BitBoard = Board<u64, Const<8>, Const<8>>;
 
 /// Number of self-play games one `tune_eval` call runs when the caller
 /// doesn't override it -- also reported as `eval_rounds` in `tuner()`.
@@ -87,8 +89,8 @@ fn value_to_state(v: &Value) -> Result<State<8, 8>, HostError> {
         u64::from_str_radix(s, 16).map_err(|e| HostError::bad_request(format!("invalid hex: {e}")))
     };
     Ok(State::new(
-        BitBoard::new(parse_hex(&w.black)?),
-        BitBoard::new(parse_hex(&w.white)?),
+        BitBoard::from_bits(parse_hex(&w.black)?),
+        BitBoard::from_bits(parse_hex(&w.white)?),
         parse_player(&w.turn),
         w.winner,
     ))
@@ -110,8 +112,8 @@ impl GameAdapter for KtAdapter {
     }
     fn new_state(&self, _: Value) -> Result<Value, HostError> {
         Ok(state_to_value(&State::new(
-            BitBoard::new(0xffff000000000000),
-            BitBoard::new(0x000000000000ffff),
+            BitBoard::from_bits(0xffff000000000000),
+            BitBoard::from_bits(0x000000000000ffff),
             Player::Black,
             false,
         )))

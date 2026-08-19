@@ -215,7 +215,7 @@ fn test_othello_many_random_games_complete() {
 #[test]
 fn test_othello_oracle_symmetry_stress() {
     let _guard = stress_test_guard();
-    type BB = game_core::bitboard::BitBoard<8, 8>;
+    type BB = bitboard::Board<u64, bitboard::Const<8>, bitboard::Const<8>>;
     use game_core::symmetry::D4Symmetry;
     use game_othello::{
         self, naive_apply, naive_generate_moves, naive_get_flips, Move, Othello, Player, State,
@@ -262,10 +262,10 @@ fn test_othello_oracle_symmetry_stress() {
                 let mut white_sym = BB::EMPTY;
                 for i in 0..64 {
                     let si = D4Symmetry::<8>::index_symmetries(i)[sym_idx];
-                    if state.black.get_at(i / 8, i % 8) {
+                    if state.black.get(i / 8, i % 8) {
                         black_sym |= BB::from_index(si);
                     }
-                    if state.white.get_at(i / 8, i % 8) {
+                    if state.white.get(i / 8, i % 8) {
                         white_sym |= BB::from_index(si);
                     }
                 }
@@ -302,11 +302,11 @@ fn test_othello_oracle_symmetry_stress() {
                 );
             }
 
-            if legal.is_empty() {
+            if legal.none_set() {
                 // No legal moves: try pass
                 // Check that naive also has no legal moves
                 assert!(
-                    naive_legal.is_empty(),
+                    naive_legal.none_set(),
                     "game={game} ply={ply}: naive has moves but prod doesn't"
                 );
 
@@ -319,7 +319,7 @@ fn test_othello_oracle_symmetry_stress() {
                         after_pass.bits(), after_naive.bits(),
                     );
                 }
-                if after_pass.is_empty() {
+                if after_pass.none_set() {
                     // Double pass: game over
                     break;
                 }
@@ -423,10 +423,12 @@ fn test_othello_oracle_symmetry_stress() {
 // Breakthrough & Knightthrough oracle stress tests
 // ============================================================================
 
+use bitboard::{Board, Const};
 use game_breakthrough as breakthrough;
-use game_core::bitboard::BitBoard;
 use game_knightthrough as knightthrough;
 use mcts::game::Game;
+
+type BitBoard = Board<u64, Const<8>, Const<8>>;
 
 // ---- Custom Player enum for the naive representation (matches both game
 // Player types structurally) ----
@@ -450,12 +452,12 @@ impl Player {
 
 type NaiveBoard = [Option<Player>; 64];
 
-fn naive_from_bitboards(black: &BitBoard<8, 8>, white: &BitBoard<8, 8>) -> NaiveBoard {
+fn naive_from_bitboards(black: &BitBoard, white: &BitBoard) -> NaiveBoard {
     let mut board = [None; 64];
     for (i, cell) in board.iter_mut().enumerate() {
-        if black.get(i) {
+        if black.get_index(i) {
             *cell = Some(Player::Black);
-        } else if white.get(i) {
+        } else if white.get_index(i) {
             *cell = Some(Player::White);
         }
     }
