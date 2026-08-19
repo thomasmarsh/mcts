@@ -306,6 +306,17 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     }),
+    "ucb1_lgr" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+        select: SelectSpec::Ucb1 { c: c(p)? },
+        simulate: SimulateSpec::EpsilonGreedy {
+            epsilon: epsilon(p)?,
+            inner: BaseSimulateSpec::Lgr {},
+        },
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    }),
     "ucb1_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {

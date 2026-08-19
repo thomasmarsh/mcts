@@ -503,6 +503,103 @@ where
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// Last Good Reply (LGR-1, Baier & Drake 2010): a per-player reply table,
+/// keyed by the opponent's preceding move, that always plays the most
+/// recent move this player replied with in that context *and* went on to
+/// win the playout with -- a deterministic override, not a score like
+/// `Mast`/`Nst`, falling back to `inner` whenever no reply is recorded yet
+/// or the recorded reply isn't currently legal. Unlike `Nst`'s bigram table
+/// (a running average with a visit-count backoff), LGR's table is plain
+/// last-write-wins with no unlearning -- that's LGRF-2's refinement, not
+/// this one.
+///
+/// Same playout-scoped `prev_action` caveat as `Nst`: the context is always
+/// within the current search, never a real move from before the tree root.
+#[derive(Clone)]
+pub struct Lgr<G, S = Uniform>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    inner: S,
+    marker: PhantomData<G>,
+}
+
+impl<G, S> Lgr<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
+    }
+}
+
+impl<G, S> Default for Lgr<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            inner: S::default(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<G, S> SimulateStrategy<G> for Lgr<G, S>
+where
+    G: Game,
+    S: SimulateStrategy<G> + Default,
+{
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(LGR) | self.inner.backprop_flags()
+    }
+
+    /// See `EpsilonGreedy::requirements`'s doc comment -- same reason: this
+    /// needs to add its own `lgr` bit on top of whatever `inner` needs,
+    /// which the default `from_backprop_flags(self.backprop_flags())` would
+    /// already get right here, but an explicit union keeps this consistent
+    /// with `inner`'s own overridden `requirements()` (e.g. an `inner` with
+    /// `max_players`/`solver` set, which `backprop_flags()` alone can't
+    /// express).
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements {
+            lgr: true,
+            ..self.inner.requirements()
+        }
+    }
+
+    fn select_move<'a>(
+        &mut self,
+        state: &G::S,
+        available: &'a [G::A],
+        stats: &TreeStats<G>,
+        player: usize,
+        prev_action: Option<&G::A>,
+        rng: &mut SmallRng,
+    ) -> &'a G::A {
+        if let Some(prev) = prev_action {
+            let replies = stats.player_replies[player].read().unwrap();
+            if let Some(reply) = replies.get(prev) {
+                if let Some(found) = available.iter().find(|a| *a == reply) {
+                    return found;
+                }
+            }
+        }
+        self.inner
+            .select_move(state, available, stats, player, prev_action, rng)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Clone)]
 pub struct MetaMcts<G: Game, S: Strategy<G>> {
     pub inner: TreeSearch<G, S>,

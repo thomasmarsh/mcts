@@ -41,8 +41,14 @@ fn fmt_result(r: &GameResult) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let bayes_c: f64 = args.get(1).map(|s| s.parse().expect("c must be a float")).unwrap_or(1.0);
-    let rounds: usize = args.get(2).map(|s| s.parse().expect("rounds must be an int")).unwrap_or(20);
+    let bayes_c: f64 = args
+        .get(1)
+        .map(|s| s.parse().expect("c must be a float"))
+        .unwrap_or(1.0);
+    let rounds: usize = args
+        .get(2)
+        .map(|s| s.parse().expect("rounds must be an int"))
+        .unwrap_or(20);
     let iterations: usize = 20_000;
 
     println!("=== Bayes-UCT2 (c={bayes_c}) vs classic UCT (c=sqrt2) strength comparison ===");
@@ -51,14 +57,15 @@ fn main() {
     println!("{} rounds ({} games total)", rounds, rounds * 2);
     println!();
 
-    let ucb1 = TreeSearch::<G7, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>>::new()
-        .config(
-            SearchConfig::new()
-                .name("ucb1/c=sqrt2")
-                .max_iterations(iterations)
-                .q_init(QInit::Infinity)
-                .select(select::Ucb1::with_c(std::f64::consts::SQRT_2)),
-        );
+    let ucb1 =
+        TreeSearch::<G7, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>>::new()
+            .config(
+                SearchConfig::new()
+                    .name("ucb1/c=sqrt2")
+                    .max_iterations(iterations)
+                    .q_init(QInit::Infinity)
+                    .select(select::Ucb1::with_c(std::f64::consts::SQRT_2)),
+            );
 
     let bayes_uct2 = TreeSearch::<
         G7,
@@ -79,7 +86,12 @@ fn main() {
 
     let mut strategies: Vec<AnySearch<G7>> = vec![AnySearch::new(ucb1), AnySearch::new(bayes_uct2)];
 
-    let results = round_robin_multiple::<G7, _>(&mut strategies, rounds, &mut std::io::stdout(), Verbosity::Verbose);
+    let results = round_robin_multiple::<G7, _>(
+        &mut strategies,
+        rounds,
+        &mut std::io::stdout(),
+        Verbosity::Verbose,
+    );
 
     println!();
     println!("=== Summary ===");

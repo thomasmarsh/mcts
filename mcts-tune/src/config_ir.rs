@@ -388,6 +388,7 @@ register_simulate! {
     Uniform {} => simulate::Uniform,
     Mast {} => simulate::Mast,
     Nst { backoff_threshold: u32 } => simulate::Nst::new().backoff_threshold(backoff_threshold),
+    Lgr {} => simulate::Lgr::<G>::new(),
 }
 
 /// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
@@ -1313,6 +1314,14 @@ mod tests {
     }
 
     #[test]
+    fn lgr_simulate_spec_round_trips_through_json() {
+        let json = r#"{"kind":"lgr"}"#;
+        let spec: SimulateSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, SimulateSpec::Lgr {});
+        assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+    }
+
+    #[test]
     fn simulate_epsilon_greedy_and_decisive_move_wrap_an_arbitrary_inner_spec() {
         let json = r#"{"kind":"epsilon_greedy","epsilon":0.2,"inner":{"kind":"mast"}}"#;
         let spec: SimulateSpec = serde_json::from_str(json).unwrap();
@@ -1380,6 +1389,21 @@ mod tests {
             },
         };
         assert_eq!(requirements_of_simulate::<Nim>(&wrapped_dm), reqs);
+
+        // `Lgr` sets its own `lgr` bit only -- unlike `Nst`, it doesn't
+        // touch the `global`/unigram table at all (see `simulate::Lgr`'s
+        // doc comment).
+        let lgr = SimulateSpec::Lgr {};
+        let lgr_reqs = requirements_of_simulate::<Nim>(&lgr);
+        assert!(lgr_reqs.lgr);
+        assert!(!lgr_reqs.global);
+        assert!(!lgr_reqs.nst);
+
+        let wrapped_lgr_eg = SimulateSpec::EpsilonGreedy {
+            epsilon: 0.1,
+            inner: BaseSimulateSpec::Lgr {},
+        };
+        assert_eq!(requirements_of_simulate::<Nim>(&wrapped_lgr_eg), lgr_reqs);
     }
 
     #[test]

@@ -125,6 +125,21 @@ impl<G: Game> Strategy<G> for Ucb1Nst {
     }
 }
 
+// Vanilla UCT + LGR
+#[derive(Clone, Default)]
+pub struct Ucb1Lgr;
+
+impl<G: Game> Strategy<G> for Ucb1Lgr {
+    type Select = select::Ucb1;
+    type Simulate = simulate::EpsilonGreedy<G, simulate::Lgr<G>>;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_lgr".into()
+    }
+}
+
 // Vanilla UCT + Progressive History
 #[derive(Clone, Default)]
 pub struct Ucb1ProgressiveHistory;

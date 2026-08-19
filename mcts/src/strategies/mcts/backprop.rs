@@ -572,8 +572,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) where
         G: Game,
     {
-        // init_amaf: AMAF | GRAVE | GLOBAL
-        let mut amaf_actions = if flags.amaf() || flags.grave() || flags.global() {
+        // init_amaf: AMAF | GRAVE | GLOBAL | LGR
+        let mut amaf_actions = if flags.amaf() || flags.grave() || flags.global() || flags.lgr() {
             trial.actions.clone()
         } else {
             vec![]
@@ -692,8 +692,8 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 self.update_grave::<G>(&amaf_actions, index, global, *node_id, &utilities);
             }
 
-            // push_action: AMAF | GRAVE | GLOBAL
-            if flags.amaf() || flags.grave() || flags.global() {
+            // push_action: AMAF | GRAVE | GLOBAL | LGR
+            if flags.amaf() || flags.grave() || flags.global() || flags.lgr() {
                 let node = index.get(*node_id);
                 if !node.is_root() {
                     let parent_id = parent_id_opt.cloned().unwrap();
@@ -751,6 +751,30 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     .or_default();
                 bigram_stats.num_visits += 1;
                 bigram_stats.score += utilities[*p];
+            }
+        }
+
+        // update: LGR -- last-write-wins reply table, keyed by (mover,
+        // opponent's preceding move). Only the winning player(s) of this
+        // trial teach their table anything -- a losing player's replies
+        // aren't "good replies" by definition, so recording them would just
+        // add noise a plain last-write-wins map (no visit counting to drown
+        // it back out) can't recover from. "Won" is "this player's utility
+        // is (tied for) the max of the trial" rather than a hardcoded
+        // `== 1.0`, so this stays correct under any utility normalization.
+        if flags.lgr() {
+            let max_utility = utilities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let mut chronological = amaf_actions[trial.actions.len()..].to_vec();
+            chronological.reverse();
+            chronological.extend(trial.actions.iter().cloned());
+
+            for pair in chronological.windows(2) {
+                let (prev_action, _) = &pair[0];
+                let (action, p) = &pair[1];
+                if utilities[*p] >= max_utility {
+                    let mut replies = global.player_replies[*p].write().unwrap();
+                    replies.insert(prev_action.clone(), action.clone());
+                }
             }
         }
     }
@@ -1014,7 +1038,8 @@ mod bayes_tests {
             (0.750000, 0.083333),
             (0.343750, 0.031250),
         ];
-        let (_, variance) = fold_gaussian_extremum(arms.into_iter(), clark_min_of_gaussians).unwrap();
+        let (_, variance) =
+            fold_gaussian_extremum(arms.into_iter(), clark_min_of_gaussians).unwrap();
         let min_input_variance = arms.iter().map(|&(_, v)| v).fold(f64::INFINITY, f64::min);
         assert!(
             variance > min_input_variance * 0.1,

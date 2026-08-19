@@ -61,8 +61,16 @@ impl Game for BanditTree {
 
     fn apply(state: BanditState, action: &u8) -> BanditState {
         match state.depth {
-            0 => BanditState { depth: 1, j: *action, k: 0 },
-            1 => BanditState { depth: 2, j: state.j, k: *action },
+            0 => BanditState {
+                depth: 1,
+                j: *action,
+                k: 0,
+            },
+            1 => BanditState {
+                depth: 2,
+                j: state.j,
+                k: *action,
+            },
             _ => unreachable!(),
         }
     }
@@ -113,13 +121,22 @@ fn main() {
 
     println!("True p[j][k]:");
     for (j, row) in probs.iter().enumerate() {
-        println!("  j={} : {:?}  (true_value={:.4})", j, row, true_value(&probs, j));
+        println!(
+            "  j={} : {:?}  (true_value={:.4})",
+            j,
+            row,
+            true_value(&probs, j)
+        );
     }
     println!();
 
     let n = 400;
 
-    let mut ucb1 = TreeSearch::<BanditTree, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>>::new().config(
+    let mut ucb1 = TreeSearch::<
+        BanditTree,
+        Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>,
+    >::new()
+    .config(
         SearchConfig::new()
             .max_iterations(n)
             .q_init(QInit::Infinity)
@@ -127,18 +144,33 @@ fn main() {
     );
     let chosen = ucb1.choose_action(&BanditState::default());
     let report = ucb1.root_report(&BanditState::default());
-    println!("UCB1 chose j={} (true best j={})", chosen, (0..WIDTH).max_by(|&a, &b| true_value(&probs,a).partial_cmp(&true_value(&probs,b)).unwrap()).unwrap());
+    println!(
+        "UCB1 chose j={} (true best j={})",
+        chosen,
+        (0..WIDTH)
+            .max_by(|&a, &b| true_value(&probs, a)
+                .partial_cmp(&true_value(&probs, b))
+                .unwrap())
+            .unwrap()
+    );
     for a in &report.actions {
         println!(
             "  action={} visits={} mean_value={:.4} true_value={:.4}",
-            a.action, a.visits, a.mean_value, true_value(&probs, a.action as usize)
+            a.action,
+            a.visits,
+            a.mean_value,
+            true_value(&probs, a.action as usize)
         );
     }
     println!();
 
     let mut bayes2 = TreeSearch::<
         BanditTree,
-        Compose<select::BayesUct2, mcts::strategies::mcts::simulate::Uniform, mcts::strategies::mcts::backprop::BayesGaussian>,
+        Compose<
+            select::BayesUct2,
+            mcts::strategies::mcts::simulate::Uniform,
+            mcts::strategies::mcts::backprop::BayesGaussian,
+        >,
     >::new()
     .config(
         SearchConfig::new()
@@ -153,7 +185,10 @@ fn main() {
     for a in &report2.actions {
         println!(
             "  action={} visits={} mean_value={:.4} true_value={:.4}",
-            a.action, a.visits, a.mean_value, true_value(&probs, a.action as usize)
+            a.action,
+            a.visits,
+            a.mean_value,
+            true_value(&probs, a.action as usize)
         );
     }
 }
