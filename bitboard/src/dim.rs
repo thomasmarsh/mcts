@@ -13,6 +13,19 @@ pub trait Dim: Copy + std::fmt::Debug {
     /// must check `.get()` against it themselves. `Dyn` just carries the
     /// length through.
     fn from_len(len: usize) -> Self;
+
+    /// Whether `Board::wall_words` should memoize its result in the
+    /// process-wide cache. `Dyn` boards (e.g. Gonnect/AtariGo's single
+    /// `Board<[u64; 6], Dyn, Dyn>` monomorphization serving `3..=19`) hit
+    /// many distinct sizes from one monomorphization, so caching saves real
+    /// recomputation. `Const<N>` boards are already one monomorphization
+    /// *per size* -- every call ever made against that type has the same
+    /// `rows`/`cols` -- so routing through the shared
+    /// `Mutex<HashMap<..>>`/`TypeId`/`downcast_ref` machinery buys nothing
+    /// over just recomputing the mask directly (a plain loop of at most
+    /// `rows`/`cols` iterations, no synchronization), and costs a lock plus
+    /// a hash lookup on every call instead.
+    const CACHE_WALLS: bool;
 }
 
 /// Compile-time-known dimension, matching the const-generic size a game's
@@ -31,6 +44,8 @@ impl<const N: usize> Dim for Const<N> {
     fn from_len(_len: usize) -> Self {
         Const
     }
+
+    const CACHE_WALLS: bool = false;
 }
 
 /// Runtime-known dimension. Lets a single monomorphization of `Board` (and
@@ -48,4 +63,6 @@ impl Dim for Dyn {
     fn from_len(len: usize) -> Self {
         Dyn(len)
     }
+
+    const CACHE_WALLS: bool = true;
 }
