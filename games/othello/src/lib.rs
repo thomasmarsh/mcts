@@ -1285,10 +1285,11 @@ mod tests {
     }
 
     // Past `SYMMETRY_PLY_LIMIT`, `canonical_representation` must stop
-    // canonicalizing and fall back to the identity -- see `plan/
-    // symmetry.md`'s depth-cutoff addendum. Construct a state one disc over
-    // the limit directly (rather than playing a full game to it) so the
-    // test stays fast and deterministic.
+    // canonicalizing and fall back to the identity, since deep in the game
+    // tree almost every position is already asymmetric and the canonicalization
+    // cost stops paying for itself. Construct a state one disc over the limit
+    // directly (rather than playing a full game to it) so the test stays fast
+    // and deterministic.
     #[test]
     fn test_canonical_representation_respects_symmetry_ply_limit() {
         assert_eq!(

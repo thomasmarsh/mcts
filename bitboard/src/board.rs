@@ -1167,8 +1167,8 @@ mod tests {
 
     /////////////////////////////////////////////////////////////////////////////////////////////
 
-    // Phase 2: shift/wall/adjacency/flood4/flood8/flood6/connectivity oracle
-    // tests, ported from `bigbitboard.rs`'s `check_shifts_against_oracle`/
+    // Shift/wall/adjacency/flood4/flood8/flood6/connectivity oracle tests,
+    // ported from `bigbitboard.rs`'s `check_shifts_against_oracle`/
     // `check_flood4_against_oracle`/`check_flood6_against_oracle` to run
     // against `Board` at both `Const` and `Dyn` dims.
 
