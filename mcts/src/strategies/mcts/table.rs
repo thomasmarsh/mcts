@@ -137,6 +137,22 @@ impl TranspositionTable {
         self.get_or_insert_graph(key, || node_id);
     }
 
+    /// Full replacement of the ply-keyed graph table (`search/reroot.rs`'s
+    /// DAG re-rooting): every retained node's `ply` shifts by the same
+    /// amount when the root promotes, so there is no way to "fix up" an old
+    /// `TranspositionKey` in place the way `compact` remaps the legacy
+    /// hash-only table -- the ply component has to be recomputed from
+    /// scratch, so this just clears and reinserts every entry the caller
+    /// already derived from the rebuilt arena.
+    pub fn rebuild_graph(
+        &mut self,
+        entries: impl IntoIterator<Item = (TranspositionKey, index::Id)>,
+    ) {
+        let table = self.graph_table.get_mut().unwrap();
+        table.clear();
+        table.extend(entries);
+    }
+
     /// Unconditional insert-if-absent for callers that already have a node
     /// id in hand (e.g. seeding the root) rather than needing one created
     /// on demand.

@@ -466,6 +466,24 @@ impl<A: Action> ChildArray<A> {
         &self.actions[idx]
     }
 
+    /// Rewrites every action in place via `f` -- used only when a graph
+    /// node promotes to root (`search/reroot.rs`'s DAG re-rooting). Its
+    /// actions were generated in *its own* canonical orientation (see
+    /// `expand`'s doc comment: every non-root node's action list is), but
+    /// `node::incoming_sym` hard-codes `Transform::IDENTITY` for any node
+    /// with `is_root() == true`, on the assumption that a from-birth root's
+    /// actions are already directly playable against the real state. A
+    /// promoted node wasn't root when its actions were generated, so that
+    /// assumption doesn't hold for it until this translates them back to
+    /// the literal board exactly once, before `is_root` flips and every
+    /// future `incoming_sym`/`real_action` call for this node stops
+    /// translating at all.
+    pub(crate) fn retranslate_actions(&mut self, mut f: impl FnMut(&A) -> A) {
+        for a in self.actions.iter_mut() {
+            *a = f(a);
+        }
+    }
+
     pub fn is_explored(&self, idx: usize) -> bool {
         self.child_ids[idx].get().is_some()
     }
