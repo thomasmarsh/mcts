@@ -46,10 +46,17 @@ export function formatMove(move: Move, before: GameState): string {
   return `${before.turn} ${file}${rank}`;
 }
 
-/** Population count for a u64 value (fast bit-counting via Hamming weight). */
-function popcount(v: number): number {
-  v = v - ((v >>> 1) & 0x5555555555555555);
-  v = (v & 0x3333333333333333) + ((v >>> 2) & 0x3333333333333333);
-  v = (v + (v >>> 4)) & 0x0f0f0f0f0f0f0f0f;
-  return Math.imul(v, 0x0101010101010101) >>> 56;
+/** Population count for a hex-encoded u64 board value. Counts via `BigInt`
+ * rather than JS's `>>>`/`&`/`Math.imul` -- those coerce to 32-bit ints
+ * (`ToUint32`), so the Hamming-weight trick this used to use silently
+ * ignored every bit above position 31 on a real (non-empty-upper-half)
+ * board. */
+function popcount(hex: string): number {
+  let v = BigInt(`0x${hex}`);
+  let count = 0;
+  while (v !== 0n) {
+    v &= v - 1n;
+    count++;
+  }
+  return count;
 }

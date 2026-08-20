@@ -40,16 +40,44 @@ fn presets() -> &'static PresetTable {
     })
 }
 
+/// `black`/`white` as hex strings, not raw JSON numbers: a full-board u64
+/// with bits scattered across its whole width (routine well into a game, and
+/// not just at the very end -- disc positions accumulate on both sides of
+/// the board from early on) commonly exceeds JS's 2^53 safe-integer range.
+/// `serde`'s derived numeric encoding would silently round such a value
+/// through `JSON.parse`'s `f64`, corrupting the board on the client -- and
+/// since the client echoes its current state back on every subsequent
+/// `apply`/`ai_move` request, that corruption compounds forward for the rest
+/// of the game instead of self-correcting. Mirrors the hex-string convention
+/// `games/atarigo`/`games/breakthrough`/`games/knightthrough` already use for
+/// their own 64-bit bitboard wire fields.
+mod hex_u64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("{v:016x}"))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        let s = String::deserialize(d)?;
+        u64::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct WireState {
+    #[serde(with = "hex_u64")]
     black: u64,
+    #[serde(with = "hex_u64")]
     white: u64,
     turn: String,
     last_pass: bool,
 }
 #[derive(Serialize)]
 struct GameView {
+    #[serde(with = "hex_u64")]
     black: u64,
+    #[serde(with = "hex_u64")]
     white: u64,
     turn: String,
     last_pass: bool,

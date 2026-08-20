@@ -21,8 +21,8 @@ export const OthelloRenderer: Component<GameRendererProps<GameState, Move, GameV
   /** Returns "black", "white", or null for a given cell index. */
   function occupant(index: number): "black" | "white" | null {
     const cellBit = 1n << BigInt(index);
-    const black = BigInt(props.state.black);
-    const white = BigInt(props.state.white);
+    const black = BigInt(`0x${props.state.black}`);
+    const white = BigInt(`0x${props.state.white}`);
     if (black & cellBit) return "black";
     if (white & cellBit) return "white";
     return null;
