@@ -345,3 +345,37 @@ fn aspiration_window_does_not_change_the_answer() {
         with_aspiration.choose_action(&state)
     );
 }
+
+#[test]
+fn bounded_negamax_finds_the_same_winning_move_as_choose_action() {
+    // Same 5-stones position as `finds_the_winning_move_from_a_non_multiple_of_three`,
+    // but through the single-shot `bounded_negamax` entry point instead of
+    // iterative-deepening `choose_action` -- depth 5 fully solves this game
+    // (5 stones can't take more than 5 plies).
+    let state = State { stones: 5, turn: 0 };
+    let mut search = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default(),
+    );
+    let (action, score) = search.bounded_negamax(&state, 5);
+    assert_eq!(action, Take(2));
+    assert!(
+        score >= WIN_SCORE - 5,
+        "a fully solved forced win should score at (or within mate distance of) WIN_SCORE, got {score}"
+    );
+}
+
+#[test]
+fn bounded_negamax_reports_a_loss_from_a_multiple_of_three() {
+    let state = State { stones: 3, turn: 0 };
+    let mut search = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default(),
+    );
+    let (_, score) = search.bounded_negamax(&state, 3);
+    assert!(
+        score <= -WIN_SCORE + 3,
+        "every move from a multiple of three should score at (or within mate distance of) \
+         LOSS_SCORE, got {score}"
+    );
+}
