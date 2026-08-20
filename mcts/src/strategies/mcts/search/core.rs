@@ -130,6 +130,7 @@ where
             &mut self.stack,
             &mut self.config.select,
             &mut self.config.rng,
+            self.config.prior.as_deref_mut(),
         )
     }
 

@@ -653,6 +653,34 @@ impl<A: Action> ChildArray<A> {
         });
     }
 
+    /// Seeds child `idx` with `pseudo_visits` fictitious visits at `value`
+    /// (this node's own player-to-move's perspective), before any real
+    /// `Node`/`Id` exists for that slot -- `prior::PriorStrategy`'s
+    /// expansion-time hook (MCTS-IP/MS). Reuses `update` rather than writing
+    /// `ChildArrayData`'s fields directly, so the seeded visits are ordinary
+    /// visits as far as every other accessor (`expected_score`, `snapshot`,
+    /// ...) is concerned -- indistinguishable from `pseudo_visits` real
+    /// playouts that all happened to return `value`. Two-player zero-sum
+    /// only: `player_idx`'s row gets `value`, every other player's row gets
+    /// `-value` (see `prior::PriorStrategy`'s doc comment on this same
+    /// restriction).
+    pub(crate) fn seed_prior(&self, idx: usize, player_idx: usize, value: f64, pseudo_visits: u32) {
+        if pseudo_visits == 0 {
+            return;
+        }
+        debug_assert!(self.num_players <= 2);
+        let mut utilities = vec![0.0; self.num_players];
+        utilities[player_idx] = value;
+        for (p, u) in utilities.iter_mut().enumerate() {
+            if p != player_idx {
+                *u = -value;
+            }
+        }
+        for _ in 0..pseudo_visits {
+            self.update(idx, &utilities);
+        }
+    }
+
     pub fn add_amaf(&self, idx: usize, player_index: usize, utility: f64) {
         if !self.has_amaf {
             return;
@@ -1168,5 +1196,38 @@ where
         } else {
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod prior_tests {
+    use super::ChildArray;
+
+    // Hand-verifiable: seeding child 0 with value 0.5 at 4 pseudo-visits (for
+    // player 0 of a 2-player game) should read back exactly as if 4 real
+    // playouts had all scored 0.5 for player 0 and -0.5 for player 1 --
+    // `expected_score` averages, so the seeded value itself, not `4 * 0.5`.
+    #[test]
+    fn test_seed_prior_writes_two_player_zero_sum_stats() {
+        let children: ChildArray<u32> = ChildArray::new(vec![10, 20], 2, false);
+
+        children.seed_prior(0, 0, 0.5, 4);
+
+        assert_eq!(children.num_visits(0), 4);
+        assert_eq!(children.expected_score(0, 0), 0.5);
+        assert_eq!(children.expected_score(0, 1), -0.5);
+        // Untouched sibling.
+        assert_eq!(children.num_visits(1), 0);
+        assert!(
+            children.node_id(0).is_none(),
+            "seeding never creates a Node"
+        );
+    }
+
+    #[test]
+    fn test_seed_prior_zero_pseudo_visits_is_a_no_op() {
+        let children: ChildArray<u32> = ChildArray::new(vec![10], 2, false);
+        children.seed_prior(0, 0, 0.9, 0);
+        assert_eq!(children.num_visits(0), 0);
     }
 }

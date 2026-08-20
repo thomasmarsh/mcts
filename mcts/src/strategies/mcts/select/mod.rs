@@ -288,12 +288,49 @@ where
     let unvisited_value = strategy.unvisited_value(ctx, aux);
 
     random_best_index_by(children, ctx, rng, |i| {
-        if let Some(child_id) = children.node_id(i) {
-            strategy.score_child(ctx, child_id, children, i, aux)
-        } else {
-            unvisited_value
-        }
+        score_child_or_prior(ctx, strategy, children, i, aux, unvisited_value)
     })
+}
+
+/// `random_best_index`'s per-child scoring, factored out so `ThompsonSampling`/
+/// `UctPn` (which override `best_child` outright, to compute a rank/weight
+/// that needs more than one child's stats at once) can share it instead of
+/// re-deriving their own copy.
+///
+/// A not-yet-created child (`children.node_id(i)` is `None`) with
+/// `children.num_visits(i) > 0` has had `prior::PriorStrategy`-seeded
+/// pseudo-visits written directly into its `ChildArray` row
+/// (`node::ChildArray::seed_prior`, called from `search/shared.rs::expand()`)
+/// -- so it's scored exactly like a real child, through `score_child`, with
+/// the *parent's own* `Id` passed as a harmless placeholder for the
+/// otherwise-nonexistent child `Id`. Sound only because `SelectContext::
+/// child_snapshot` never dereferences that `Id` except under
+/// `GraphStats::Nodes`, which `SearchConfig::validate` rejects outright
+/// whenever a prior strategy is active (see its doc comment) -- so this
+/// branch is never reached in a configuration where the placeholder would
+/// matter. Every other unvisited child (no prior, or `pseudo_visits() == 0`)
+/// keeps today's behavior: `unvisited_value`, one constant shared by every
+/// still-untouched sibling.
+#[inline]
+pub(super) fn score_child_or_prior<G, S>(
+    ctx: &SelectContext<'_, G>,
+    strategy: &S,
+    children: &ChildArray<G::A>,
+    idx: usize,
+    aux: S::Aux,
+    unvisited_value: S::Score,
+) -> S::Score
+where
+    G: Game,
+    S: SelectStrategy<G>,
+{
+    match children.node_id(idx) {
+        Some(child_id) => strategy.score_child(ctx, child_id, children, idx, aux),
+        None if children.num_visits(idx) > 0 => {
+            strategy.score_child(ctx, ctx.stack.current_id(), children, idx, aux)
+        }
+        None => unvisited_value,
+    }
 }
 
 /// The tie-broken argmax + proven-loss-skip core of `random_best_index`,

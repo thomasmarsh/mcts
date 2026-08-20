@@ -3,6 +3,7 @@ use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use super::random_best_index_by;
+use super::score_child_or_prior;
 use super::ucb::Ucb1;
 use crate::game::Game;
 
@@ -117,12 +118,8 @@ impl<G: Game> SelectStrategy<G> for UctPn {
         let c_pn = self.c_pn;
 
         random_best_index_by(children, ctx, rng, |idx| {
-            let ucb1_score = match children.node_id(idx) {
-                Some(child_id) => SelectStrategy::<G>::score_child(
-                    &self.ucb1, ctx, child_id, children, idx, parent_log,
-                ),
-                None => unvisited_ucb1,
-            };
+            let ucb1_score =
+                score_child_or_prior(ctx, &self.ucb1, children, idx, parent_log, unvisited_ucb1);
             ucb1_score + c_pn * (1.0 - ranks[idx] as f64 / max_rank)
         })
     }

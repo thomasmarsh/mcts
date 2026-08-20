@@ -3,6 +3,7 @@ use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
 use super::is_proven_loss;
+use super::score_child_or_prior;
 use crate::game::Game;
 
 use rand::rngs::SmallRng;
@@ -235,10 +236,14 @@ impl<G: Game> SelectStrategy<G> for ThompsonSampling {
                     // sibling happens to be a proven loss.
                     f32::MIN_POSITIVE
                 } else {
-                    children
-                        .node_id(idx)
-                        .map(|child_id| self.score_child(ctx, child_id, children, idx, ()))
-                        .unwrap_or(self.unvisited_value(ctx, ())) as f32
+                    score_child_or_prior(
+                        ctx,
+                        self,
+                        children,
+                        idx,
+                        (),
+                        self.unvisited_value(ctx, ()),
+                    ) as f32
                 }
             })
             .collect::<Vec<_>>();

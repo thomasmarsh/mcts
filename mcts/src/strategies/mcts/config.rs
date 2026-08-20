@@ -413,6 +413,15 @@ where
     /// `true`; a plain `reset()` already starts from a single-node arena, so
     /// there's nothing to compact on that path.
     pub max_arena_len: Option<usize>,
+
+    /// MCTS-IP/MS-d-Visit-0 (Baier & Winands): a per-action prior computed
+    /// at expansion time (`prior::PriorStrategy`), seeded into each freshly-
+    /// expanded node's children before any of them is visited. `None` (the
+    /// default) keeps every existing search's untouched `QInit`-driven
+    /// `unvisited_value` behavior. See `prior`'s module doc comment for why
+    /// this is a boxed trait object rather than a third generic parameter on
+    /// `Strategy<G>`/`TreeSearch<G, S>`.
+    pub prior: Option<Box<dyn prior::PriorStrategyDyn<G>>>,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -445,6 +454,7 @@ where
             num_tree_threads: 1,
             reuse_tree: false,
             max_arena_len: None,
+            prior: None,
         }
     }
 }
@@ -493,6 +503,34 @@ where
                  (BayesGaussian/BayesNumeric) that provides posterior mean/variance estimates"
                     .to_string(),
             );
+        }
+        if self.prior.is_some() {
+            // `prior::PriorStrategy` seeds a not-yet-created child's stats
+            // directly into `ChildArray`'s edge-owned rows and relies on
+            // `select::random_best_index`'s unvisited branch reading them
+            // back via `SelectContext::child_snapshot` without a live `Id` --
+            // sound whenever `child_snapshot` ignores its `child_id`
+            // argument (every `GraphStats` mode except `Nodes`, which
+            // dereferences it directly), and only whenever no active
+            // component also needs a genuine `Id` for that same
+            // not-yet-created child the way `select::Rave`'s GRAVE
+            // ancestor lookup does (keyed by the child's own hash, which a
+            // placeholder `Id` can't stand in for).
+            if matches!(self.graph_stats(), Some(GraphStats::Nodes)) {
+                return Err(
+                    "prior strategy is incompatible with GraphStats::Nodes -- child stats \
+                     it seeds live in ChildArray (edge-owned), which Nodes mode never reads"
+                        .to_string(),
+                );
+            }
+            if self.requirements().grave {
+                return Err(
+                    "prior strategy is incompatible with GRAVE (select::Rave) -- GRAVE's \
+                     ancestor lookup needs a real child Id, which an unvisited prior-seeded \
+                     child doesn't have yet"
+                        .to_string(),
+                );
+            }
         }
         Ok(())
     }
@@ -578,6 +616,11 @@ where
 
     pub fn solver_loss_threshold(mut self, solver_loss_threshold: u32) -> Self {
         self.solver_loss_threshold = solver_loss_threshold;
+        self
+    }
+
+    pub fn with_prior(mut self, prior: impl prior::PriorStrategy<G> + 'static) -> Self {
+        self.prior = Some(Box::new(prior));
         self
     }
 

@@ -1121,6 +1121,149 @@ fn test_minimax_rollout_prefers_the_winning_move_to_a_forced_draw() {
 }
 
 #[test]
+fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() {
+    // Same near-terminal position as `test_minimax_rollout_prefers_the_
+    // winning_move_to_a_forced_draw` above (two empty cells, X to move --
+    // playing 2 wins immediately, playing 8 forces a draw), but exercising a
+    // different phase: `NegamaxPrior` seeds pseudo-visits into *both*
+    // children the moment the node is expanded, before either has a single
+    // real playout. `Ucb1::best_child` should already prefer the winning
+    // move on this very first call, using only the seeded prior -- the whole
+    // point of MCTS-MS-d-Visit-0/MCTS-IP-M over a uniform `unvisited_value`.
+    use game_ttt::*;
+    use mcts::node;
+    use mcts::prior::NegamaxPrior;
+    use mcts::search::shared::expand;
+    use mcts::select::{SelectContext, SelectStrategy, Ucb1};
+    use mcts::stack::NodeStack;
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let init_state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
+
+    let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
+    let mut prior = NegamaxPrior::<G>::default().depth(2).pseudo_visits(4);
+    expand::<G>(
+        &ts.index,
+        root_id,
+        &init_state,
+        false,
+        false,
+        false,
+        Some(&mut prior),
+    );
+
+    let root = ts.index.get(root_id);
+    let children = root.children();
+    assert_eq!(
+        children.len(),
+        2,
+        "exactly two legal moves in this position"
+    );
+
+    let winning_idx = (0..children.len())
+        .find(|&i| *children.action(i) == Move(2))
+        .expect("Move(2) should be a legal action here");
+
+    // No `new_child` calls at all -- both children are still unvisited as
+    // far as `ChildArray::node_id` is concerned; only their seeded
+    // pseudo-visit stats (written by `expand` via `ChildArray::seed_prior`)
+    // distinguish them.
+    for idx in 0..children.len() {
+        assert!(
+            children.node_id(idx).is_none(),
+            "child {idx} should have no real Node yet"
+        );
+        assert!(
+            children.num_visits(idx) > 0,
+            "child {idx} should have prior-seeded pseudo-visits"
+        );
+    }
+
+    let stack = NodeStack::new(vec![(root_id, 0)]);
+    let grave = Default::default();
+    let select_ctx = SelectContext {
+        q_init: node::QInit::Parent,
+        stack: &stack,
+        root_stats: &ts.root_stats,
+        root_state: &init_state,
+        canonicalizes: false,
+        state: &init_state,
+        player: root.player_idx,
+        index: &ts.index,
+        table: &ts.table,
+        grave: &grave,
+        global: &ts.stats,
+        use_transpositions: false,
+        graph_stats: None,
+        solver_loss_threshold: 0,
+        incoming_sym: Transform::IDENTITY,
+    };
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    let mut strategy = Ucb1::default();
+    assert_eq!(
+        strategy.best_child(&select_ctx, &mut rng),
+        winning_idx,
+        "the seeded prior alone should already favor the winning move"
+    );
+}
+
+#[test]
+fn test_negamax_prior_self_play_no_panic_single_and_tree_parallel() {
+    // Full `choose_action` self-play with a `NegamaxPrior` configured, both
+    // single-threaded and tree-parallel -- the synthetic test above only
+    // ever calls `expand()`/`best_child` once; this exercises the whole
+    // `select_step` loop across many iterations and many real moves
+    // (repeated expansions, virtual loss, backprop) the way a real search
+    // actually uses it.
+    let _guard = parallel_test_guard();
+    use game_ttt::*;
+    use mcts::prior::NegamaxPrior;
+    type G = TicTacToe;
+
+    for num_tree_threads in [1, 4] {
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(50)
+                .num_tree_threads(num_tree_threads)
+                .with_prior(NegamaxPrior::<G>::default().depth(1).pseudo_visits(2)),
+        );
+
+        let mut state = HashedPosition::new();
+        for _ in 0..6 {
+            if !matches!(
+                G::terminal_status(&state),
+                mcts::game::TerminalStatus::NotTerminal
+            ) {
+                break;
+            }
+            let mut legal = Vec::new();
+            G::generate_actions(&state, &mut legal);
+            let action = ts.choose_action(&state);
+            assert!(legal.contains(&action));
+            state = G::apply(state, &action);
+        }
+    }
+}
+
+#[test]
 fn test_evaluated_cutoff_scores_the_depth_cutoff_with_the_evaluator() {
     // A depth-0 playout can't run a single ply (the very first check is
     // `depth >= max_playout_depth`), so it always ends via `EndType::
@@ -1917,7 +2060,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false, false, None);
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -2020,7 +2163,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false, false);
+    expand::<G>(&ts.index, root_id, &init_state, false, false, false, None);
 
     let root = ts.index.get(root_id);
     let children = root.children();

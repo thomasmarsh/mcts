@@ -4,6 +4,7 @@ pub mod config;
 pub mod correction;
 pub mod index;
 pub mod node;
+pub mod prior;
 pub mod render;
 pub mod search;
 pub mod select;
