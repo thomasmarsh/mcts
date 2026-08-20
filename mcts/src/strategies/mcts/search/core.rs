@@ -63,6 +63,34 @@ pub struct MemoryStats {
     pub table_bytes: usize,
 }
 
+/// Diagnostics-only snapshot of DAG/transposition-merge structure, meaningful
+/// whenever `GraphSearch::Dag` or the legacy `use_transpositions(true)` is
+/// active (all fields are legitimately zero for an ordinary tree). Walks
+/// every arena entry, same caveat as `MemoryStats`. See `TreeSearch::
+/// graph_diagnostics`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GraphDiagnostics {
+    /// Cumulative transposition-table lookups (across both the legacy and
+    /// ply-keyed graph tables) that found an already-resolved node rather
+    /// than creating a new one -- `TranspositionTable::hits`.
+    pub table_hits: usize,
+    /// Distinct positions currently mapped in the transposition table(s) --
+    /// `TranspositionTable::len`, i.e. every node reachable through a table
+    /// lookup rather than only through a `ChildArray` slot.
+    pub unique_graph_nodes: usize,
+    /// Sum, over every expanded node, of its child array's resolved slots
+    /// (`ChildArray::explored_len`) -- every edge that has actually been
+    /// connected to a child node, whether newly created or shared.
+    pub resolved_edges: usize,
+    /// Nodes with more than one incoming edge (`Node::is_transposition`) --
+    /// the nodes actually being shared by more than one parent, as opposed
+    /// to every node merely reachable via the table.
+    pub transposition_nodes: usize,
+    /// The largest `Node::incoming_edges` seen on any node -- how heavily
+    /// the single most-shared position is being reused.
+    pub max_incoming_edges: u32,
+}
+
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
@@ -325,6 +353,29 @@ where
         stats
     }
 
+    /// Diagnostics-only snapshot of DAG/transposition-merge structure -- see
+    /// `GraphDiagnostics`. Cheap to call even for an ordinary tree (every
+    /// field reads zero), but still walks the whole arena, so treat it the
+    /// same as `memory_stats`: a profiling tool, not a hot-path call.
+    pub fn graph_diagnostics(&self) -> GraphDiagnostics {
+        let mut diag = GraphDiagnostics {
+            table_hits: self.table.hits.load(Relaxed),
+            unique_graph_nodes: self.table.len(),
+            ..Default::default()
+        };
+        self.index.for_each(|node: &Node<G::A>| {
+            let incoming = node.incoming_edges();
+            if incoming > 1 {
+                diag.transposition_nodes += 1;
+            }
+            diag.max_incoming_edges = diag.max_incoming_edges.max(incoming);
+            if let Some(NodeState::Expanded(children)) = node.status() {
+                diag.resolved_edges += children.explored_len();
+            }
+        });
+        diag
+    }
+
     pub fn verbose_summary(&self, state: &G::S, num_threads: usize) {
         if !self.config.verbose {
             return;
@@ -382,7 +433,20 @@ where
             );
         }
 
-        eprintln!("PV: {}", pv_string::<G>(self.pv.as_slice(), state))
+        eprintln!("PV: {}", pv_string::<G>(self.pv.as_slice(), state));
+
+        if self.config.uses_transpositions() {
+            let diag = self.graph_diagnostics();
+            eprintln!(
+                "Graph: {} table hits, {} unique nodes, {} resolved edges, \
+                 {} transposition nodes, {} max incoming edges",
+                diag.table_hits,
+                diag.unique_graph_nodes,
+                diag.resolved_edges,
+                diag.transposition_nodes,
+                diag.max_incoming_edges,
+            );
+        }
     }
 
     #[inline]

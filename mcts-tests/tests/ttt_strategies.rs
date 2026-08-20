@@ -218,6 +218,62 @@ fn test_explicit_graph_stat_modes_pick_legal_actions_and_update_their_owner() {
 }
 
 #[test]
+fn test_graph_diagnostics_reports_hits_edges_and_transposition_nodes() {
+    // mcgs.md item 6: `TreeSearch::graph_diagnostics` should describe the
+    // same DAG a `GraphStats::Both` search actually built, cross-checked
+    // against the lower-level counters/walks it's built from.
+    use game_ttt::*;
+    use mcts::{GraphSearch, GraphStats};
+
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let state = HashedPosition::new();
+
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(500)
+            .expand_threshold(0)
+            .seed(17)
+            .graph_search(GraphSearch::Dag(GraphStats::Both)),
+    );
+    search.choose_action(&state);
+
+    let diag = search.graph_diagnostics();
+    assert_eq!(
+        diag.table_hits,
+        search.table.hits.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    assert_eq!(diag.unique_graph_nodes, search.table.len());
+    assert!(
+        diag.table_hits > 0,
+        "tic-tac-toe move orders should expose at least one graph transposition"
+    );
+    assert!(diag.resolved_edges > 0);
+    assert!(
+        diag.transposition_nodes > 0,
+        "a node with more than one incoming edge should exist under Both"
+    );
+    assert!(diag.max_incoming_edges > 1);
+
+    // An ordinary tree search never shares a node -- every node still has
+    // exactly one incoming edge (`Node::add_incoming_edge` fires for every
+    // new child regardless of mode), but none is ever a transposition, and
+    // the transposition table itself is never touched.
+    let mut plain = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(500)
+            .expand_threshold(0)
+            .seed(17),
+    );
+    plain.choose_action(&state);
+    let plain_diag = plain.graph_diagnostics();
+    assert_eq!(plain_diag.table_hits, 0);
+    assert_eq!(plain_diag.unique_graph_nodes, 0);
+    assert_eq!(plain_diag.transposition_nodes, 0);
+    assert_eq!(plain_diag.max_incoming_edges, 1);
+}
+
+#[test]
 fn test_tree_parallel_graph_both_balances_node_virtual_loss() {
     let _guard = parallel_test_guard();
     use game_ttt::*;
