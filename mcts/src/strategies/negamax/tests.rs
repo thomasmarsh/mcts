@@ -256,6 +256,31 @@ fn history_heuristic_toggle_does_not_change_the_answer() {
 }
 
 #[test]
+fn countermove_heuristic_toggle_does_not_change_the_answer() {
+    let state = State { stones: 5, turn: 0 };
+    let mut with_countermove = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_countermove_heuristic(true),
+    );
+    let mut without_countermove = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_countermove_heuristic(false),
+    );
+    assert_eq!(
+        with_countermove.choose_action(&state),
+        without_countermove.choose_action(&state)
+    );
+    assert_eq!(
+        with_countermove.root_score(),
+        without_countermove.root_score()
+    );
+}
+
+#[test]
 fn singular_extension_toggle_does_not_change_the_answer() {
     let state = State { stones: 5, turn: 0 };
     let mut with_extension = Negamax::<Subtraction, MaterialBlind>::new_with_options(
