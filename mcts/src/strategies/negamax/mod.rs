@@ -62,19 +62,29 @@
 //!   (`NegamaxOptions::aspiration_window`) before each depth's definitive
 //!   full-window search, purely to prime the transposition table's move
 //!   ordering hint.
+//! - History-heuristic move ordering (`NegamaxOptions::history_heuristic`):
+//!   every action that causes a beta cutoff earns `depth * depth` in a
+//!   table keyed by the action alone (not by the position it was played
+//!   from), persisting across the whole `choose_action` call. Actions after
+//!   the transposition-table move are then tried in descending history
+//!   order, on the theory that a move which has been refuting other
+//!   positions is likely to refute this one too.
+//! - Singular extensions (`NegamaxOptions::singular_extension`): a node
+//!   with exactly one legal move is searched one ply deeper than its
+//!   parent asked for, since there's no branching to prune there anyway --
+//!   capped so a single iterative-deepening pass can't more than double
+//!   its nominal depth even against a long forced sequence.
 //!
 //! # Room for more
 //!
 //! Deliberately not implemented, but each has a natural seam to land in
 //! without disturbing this structure: null-move pruning and quiescence
 //! search both need their own opt-in game-level hooks (a null move's
-//! legality, and a "noisy" move subset) the way `Evaluator` is one;
-//! singular extensions and countermove/history-based move ordering are
-//! pure additions to `negamax_search`'s move loop and don't need new game
-//! surface at all.
+//! legality, and a "noisy" move subset) the way `Evaluator` is one.
 
 mod table;
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
@@ -170,6 +180,16 @@ pub struct NegamaxOptions {
     /// bad move ordering costing a wasted full-width search on the first
     /// try; essentially free when ordering is good.
     pub principal_variation_search: bool,
+    /// Order each node's non-transposition-table moves by a history table
+    /// (action -> accumulated `depth * depth` for every beta cutoff it has
+    /// caused so far this search), instead of `Game::generate_actions`'
+    /// raw order. See the module docs' "History-heuristic move ordering".
+    pub history_heuristic: bool,
+    /// Extend a forced line (a node with exactly one legal move) one ply
+    /// deeper than the search would otherwise stop, capped per iteration so
+    /// a long forced sequence can't more than double that iteration's
+    /// nominal depth. See the module docs' "Singular extensions".
+    pub singular_extension: bool,
     pub verbose: bool,
 }
 
@@ -181,6 +201,8 @@ impl Default for NegamaxOptions {
             table_bits: 20,
             aspiration_window: None,
             principal_variation_search: true,
+            history_heuristic: true,
+            singular_extension: true,
             verbose: false,
         }
     }
@@ -212,6 +234,16 @@ impl NegamaxOptions {
         self
     }
 
+    pub fn with_history_heuristic(mut self, enabled: bool) -> Self {
+        self.history_heuristic = enabled;
+        self
+    }
+
+    pub fn with_singular_extension(mut self, enabled: bool) -> Self {
+        self.singular_extension = enabled;
+        self
+    }
+
     pub fn verbose(mut self) -> Self {
         self.verbose = true;
         self
@@ -228,6 +260,17 @@ pub struct Negamax<G: Game, E: Evaluator<G>> {
     /// best-first -- both this depth's move-ordering seed for the next
     /// iteration and the source for `root_report`.
     root_scores: Vec<(G::A, Score)>,
+    /// History-heuristic move-ordering scores, keyed by action alone (see
+    /// `NegamaxOptions::history_heuristic`). Reset at the start of every
+    /// `choose_action` call -- it's a within-search ordering hint, not
+    /// meant to persist across different root positions.
+    history: HashMap<G::A, i32>,
+    /// This iteration's singular-extension budget: `negamax_search` may
+    /// extend a forced (single-legal-move) node one ply deeper only while
+    /// `ply < singular_extension_cap`, so one iterative-deepening pass can
+    /// never search more than double its nominal depth even against a long
+    /// forced sequence.
+    singular_extension_cap: u32,
     nodes_searched: u64,
     depth_reached: u32,
     name: String,
@@ -247,6 +290,8 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             table,
             pv: Vec::new(),
             root_scores: Vec::new(),
+            history: HashMap::new(),
+            singular_extension_cap: 0,
             nodes_searched: 0,
             depth_reached: 0,
             name: "negamax".into(),
@@ -358,11 +403,26 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             !actions.is_empty(),
             "Game::terminal_status said NotTerminal but generate_actions is empty"
         );
+        let mut ordered_start = 0;
         if let Some(tm) = &tt_move {
             if let Some(pos) = actions.iter().position(|a| a == tm) {
                 actions.swap(0, pos);
+                ordered_start = 1;
             }
         }
+        if self.options.history_heuristic {
+            actions[ordered_start..]
+                .sort_by_key(|a| std::cmp::Reverse(self.history.get(a).copied().unwrap_or(0)));
+        }
+
+        let child_depth = if self.options.singular_extension
+            && actions.len() == 1
+            && ply < self.singular_extension_cap
+        {
+            depth
+        } else {
+            depth - 1
+        };
 
         let mut best_score = LOSS_SCORE - 1;
         let mut best_action = actions[0].clone();
@@ -373,19 +433,19 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             let score = if searching_pv && self.options.principal_variation_search {
                 let probe = -self.negamax_search(
                     &child,
-                    depth - 1,
+                    child_depth,
                     ply + 1,
                     -alpha - 1,
                     -alpha,
                     deadline,
                 )?;
                 if probe > alpha && probe < beta {
-                    -self.negamax_search(&child, depth - 1, ply + 1, -beta, -probe, deadline)?
+                    -self.negamax_search(&child, child_depth, ply + 1, -beta, -probe, deadline)?
                 } else {
                     probe
                 }
             } else {
-                -self.negamax_search(&child, depth - 1, ply + 1, -beta, -alpha, deadline)?
+                -self.negamax_search(&child, child_depth, ply + 1, -beta, -alpha, deadline)?
             };
 
             if score > best_score {
@@ -397,6 +457,9 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
                 searching_pv = true;
             }
             if alpha >= beta {
+                if self.options.history_heuristic {
+                    *self.history.entry(a.clone()).or_insert(0) += (depth * depth) as i32;
+                }
                 break;
             }
         }
@@ -489,12 +552,14 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
             .cloned()
             .map(|a| (a, DRAW_SCORE))
             .collect();
+        self.history.clear();
 
         let deadline = self.options.max_time.map(|d| Instant::now() + d);
         let mut prev_score = DRAW_SCORE;
 
         let mut depth = 1u32;
         while depth <= self.options.max_depth {
+            self.singular_extension_cap = depth * 2;
             if depth > 2 {
                 if let Some(window) = self.options.aspiration_window {
                     let _ = self.negamax_search(
