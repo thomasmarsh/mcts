@@ -222,10 +222,10 @@ fn test_node_incoming_edge_count_marks_transpositions() {
     assert!(node.is_transposition());
 }
 
-// mcgs.md item 5's residual correction, wired at the point `select_step`
-// resolves an existing child (`shared::mcgs_correction_at_edge`): compares
-// one edge's local Q against its shared target node's Q, both for the
-// parent's own mover, only once the target has more than one incoming edge.
+// The residual correction, wired at the point `select_step` resolves an
+// existing child (`shared::mcgs_correction_at_edge`): compares one edge's
+// local Q against its shared target node's Q, both for the parent's own
+// mover, only once the target has more than one incoming edge.
 mod mcgs_correction_at_edge_tests {
     use crate::strategies::mcts::config::{GraphStats, McgsCorrection};
     use crate::strategies::mcts::node::{ChildArray, Node};
@@ -417,6 +417,211 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     assert_eq!(children.node_id(2), Some(new_ids[2]));
     assert_eq!(children.child_index(new_ids[0]), 0);
     assert_eq!(children.child_index(new_ids[2]), 2);
+}
+
+// A tiny deterministic `Game` used only by tests, whose two action orders
+// converge on the same node at the same ply, so `select`/`backprop` (via
+// `choose_action`) can be driven through a real, if minimal, search instead
+// of relying on random discovery in a full game like tic-tac-toe.
+mod converge_game_tests {
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::node::NodeState;
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{GraphSearch, GraphStats, SearchConfig, TreeSearch};
+
+    // 6 distinct "pick" actions; a state is the order-independent set of 4
+    // already picked, so two orders that pick the same 4-of-6 subset
+    // converge on one shared node -- a wider diamond than tic-tac-toe's
+    // incidental transpositions, small enough to enumerate by hand
+    // (`C(6, 4) == 15` distinct terminal states, `1 + 6 + 15 + 20 == 42`
+    // non-terminal ones), but with enough terminal-state variety (`winner`
+    // depends on *which* 4 were picked, not just how many) that `Both`
+    // mode's node/edge Q estimates can genuinely diverge instead of
+    // trivially agreeing on one constant outcome the way a fully
+    // deterministic single-terminal-state game would.
+    const NUM_ACTIONS: u8 = 6;
+    const PICKS: u32 = 4;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State {
+        mask: u8,
+    }
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:06b}", self.mask)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Action(u8);
+
+    #[derive(Clone)]
+    struct ConvergeGame;
+
+    impl Game for ConvergeGame {
+        type S = State;
+        type A = Action;
+        type P = Player;
+
+        fn apply(state: Self::S, action: &Self::A) -> Self::S {
+            State {
+                mask: state.mask | (1 << action.0),
+            }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            if state.mask.count_ones() >= PICKS {
+                return;
+            }
+            for i in 0..NUM_ACTIONS {
+                if state.mask & (1 << i) == 0 {
+                    actions.push(Action(i));
+                }
+            }
+        }
+
+        fn winner(state: &Self::S) -> Option<Self::P> {
+            if state.mask.count_ones() < PICKS {
+                return None;
+            }
+            let sum: u32 = (0..NUM_ACTIONS)
+                .filter(|&i| state.mask & (1 << i) != 0)
+                .map(u32::from)
+                .sum();
+            Some(Player((sum % 2) as usize))
+        }
+
+        fn player_to_move(state: &Self::S) -> Self::P {
+            Player((state.mask.count_ones() % 2) as usize)
+        }
+
+        fn zobrist_hash(state: &Self::S) -> u64 {
+            state.mask as u64
+        }
+    }
+
+    type TS = TreeSearch<ConvergeGame, Ucb1>;
+
+    fn legal(state: &State) -> Vec<Action> {
+        let mut actions = Vec::new();
+        ConvergeGame::generate_actions(state, &mut actions);
+        actions
+    }
+
+    #[test]
+    fn every_graph_stats_mode_chooses_a_legal_action() {
+        let state = State::default();
+        for graph_search in [
+            None,
+            Some(GraphStats::Edges),
+            Some(GraphStats::Nodes),
+            Some(GraphStats::Both),
+        ]
+        .map(|s| s.map(GraphSearch::Dag))
+        {
+            let mut config = SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .seed(7);
+            if let Some(gs) = graph_search {
+                config = config.graph_search(gs);
+            }
+            let mut search = TS::default().config(config);
+            let action = search.choose_action(&state);
+            assert!(legal(&state).contains(&action), "{graph_search:?}");
+        }
+    }
+
+    #[test]
+    fn graph_mode_creates_fewer_arena_nodes_than_plain_tree() {
+        let state = State::default();
+
+        let mut tree = TS::default().config(
+            SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .seed(7),
+        );
+        tree.choose_action(&state);
+
+        let mut dag = TS::default().config(
+            SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both)),
+        );
+        dag.choose_action(&state);
+
+        assert!(
+            dag.arena_len() < tree.arena_len(),
+            "merging equal-depth transpositions should need fewer arena nodes \
+             than a plain tree for the same iteration budget: dag={} tree={}",
+            dag.arena_len(),
+            tree.arena_len()
+        );
+    }
+
+    #[test]
+    fn only_both_mode_lets_a_shared_nodes_edges_disagree_with_it() {
+        for graph_stats in [GraphStats::Edges, GraphStats::Nodes, GraphStats::Both] {
+            let state = State::default();
+            let mut search = TS::default().config(
+                SearchConfig::default()
+                    .max_iterations(500)
+                    .expand_threshold(0)
+                    .seed(7)
+                    .graph_search(GraphSearch::Dag(graph_stats)),
+            );
+            search.choose_action(&state);
+
+            let mut found_shared_edge = false;
+            let mut found_divergence = false;
+            search.index.for_each(|node| {
+                let Some(NodeState::Expanded(children)) = node.status() else {
+                    return;
+                };
+                for idx in 0..children.len() {
+                    let Some(child_id) = children.node_id(idx) else {
+                        continue;
+                    };
+                    let child = search.index.get(child_id);
+                    if !child.is_transposition() {
+                        continue;
+                    }
+                    found_shared_edge = true;
+                    if graph_stats == GraphStats::Both {
+                        let edge_q = children.expected_score(idx, 0);
+                        let node_q = child.stats.expected_score(0);
+                        if (edge_q - node_q).abs() > 1e-9 {
+                            found_divergence = true;
+                        }
+                    }
+                }
+            });
+
+            assert!(
+                found_shared_edge,
+                "{graph_stats:?}: expected at least one transposition edge over 500 iterations"
+            );
+            assert_eq!(
+                found_divergence,
+                graph_stats == GraphStats::Both,
+                "{graph_stats:?}: edge/shared-node Q divergence should only appear in Both mode"
+            );
+        }
+    }
 }
 
 // PN-MCTS (Kowalski et al. 2023): `derive_pn_dpn`'s negamax recurrence,

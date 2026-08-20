@@ -467,8 +467,8 @@ pub fn proven_draw_child<G: Game>(
     })
 }
 
-/// The residual information-leak check (mcgs.md item 5, arXiv 2012.11045v1
-/// Section III.C) at one edge about to enter an already-shared node: compares
+/// The residual information-leak check (arXiv 2012.11045v1 Section III.C)
+/// at one edge about to enter an already-shared node: compares
 /// the edge's own local Q for `mover` (the parent's own player-to-move, whose
 /// decision this edge represents) against `target`'s shared Q for that same
 /// player. `target` only has evidence worth trusting over the edge once more
