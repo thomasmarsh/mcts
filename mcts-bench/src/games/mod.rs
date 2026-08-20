@@ -137,7 +137,6 @@ const GAME_KINDS: &[(&str, &str)] = &[
     ("nim", "game-nim"),
     ("null", "game-null"),
     ("othello", "game-othello"),
-    ("shibumi", "game-shibumi"),
     ("tak", "game-tak"),
     ("tanbo", "game-tanbo"),
     ("traffic-lights", "game-traffic-lights"),
