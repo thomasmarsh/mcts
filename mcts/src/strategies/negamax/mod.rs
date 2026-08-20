@@ -96,6 +96,20 @@
 //!   `strategies::mcts::node::real_action`/`crate::symmetry::incoming_sym`
 //!   do the same translation for MCTS's `ChildArray`s. A no-op for every
 //!   game that hasn't overridden `canonical_representation`.
+//! - Parallel search (`NegamaxOptions::num_threads`): Lazy-SMP-style root
+//!   splitting rather than in-tree (YBWC) fan-out. Each worker thread runs
+//!   its own complete iterative-deepening search of the same root against
+//!   its own private history/countermove tables, sharing only the
+//!   transposition table (wrapped in an `RwLock`, full-state-verified reads
+//!   and writes exactly as in the single-threaded case). Threads' start
+//!   depths are staggered (`1 + worker_index % num_threads`) so they don't
+//!   all redo the same shallow work in lockstep; a thread that reaches a
+//!   position first leaves every other thread a usable bound. The merge
+//!   once every worker's search completes is "take the result from
+//!   whichever thread reached the greatest completed depth, breaking ties
+//!   on score" -- a negamax search's per-thread output is a single
+//!   deterministic best move, not a visit distribution to combine the way
+//!   MCTS's root parallelism does.
 //!
 //! # Room for more
 //!
@@ -108,6 +122,7 @@ mod table;
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus};
@@ -232,6 +247,12 @@ pub struct NegamaxOptions {
     /// `history_heuristic`), in addition to the plain per-action history
     /// table. See the module docs' "Countermove-history move ordering".
     pub countermove_heuristic: bool,
+    /// Number of root-splitting worker threads (Lazy SMP). `1` (the
+    /// default) runs the existing single-threaded search with no locking
+    /// overhead on the transposition table; anything greater spawns that
+    /// many independent full searches of the root sharing one table. See
+    /// the module docs' "Parallel search".
+    pub num_threads: usize,
     pub verbose: bool,
 }
 
@@ -247,6 +268,7 @@ impl Default for NegamaxOptions {
             history_heuristic: true,
             singular_extension: true,
             countermove_heuristic: true,
+            num_threads: 1,
             verbose: false,
         }
     }
@@ -298,6 +320,11 @@ impl NegamaxOptions {
         self
     }
 
+    pub fn with_num_threads(mut self, num_threads: usize) -> Self {
+        self.num_threads = num_threads;
+        self
+    }
+
     pub fn verbose(mut self) -> Self {
         self.verbose = true;
         self
@@ -306,9 +333,27 @@ impl NegamaxOptions {
 
 /// Iterative-deepening negamax. See the module docs for the feature list.
 pub struct Negamax<G: Game, E: Evaluator<G>> {
-    eval: E,
+    /// Shared via `Arc` rather than owned outright so parallel root
+    /// splitting's worker searches (see `NegamaxOptions::num_threads`) can
+    /// each get their own `Negamax` without requiring `E: Clone`.
+    eval: Arc<E>,
     options: NegamaxOptions,
-    table: Option<TranspositionTable<G>>,
+    /// Shared (and, once `num_threads > 1`, actually contended) via `Arc<
+    /// RwLock<_>>` rather than owned outright, so every root-splitting
+    /// worker thread reads/writes through the same table instead of each
+    /// searching from a cold one -- see the module docs' "Parallel search".
+    /// Single-threaded callers pay one uncontended lock acquisition per
+    /// lookup/store, not a design compromise specific to this feature: it's
+    /// the same full-state-verified table either way, just always reached
+    /// through the lock.
+    table: Option<Arc<RwLock<TranspositionTable<G>>>>,
+    /// This worker's iterative-deepening start depth. `1` for a
+    /// single-threaded search; staggered per worker
+    /// (`1 + worker_index % num_threads`) under root splitting so threads
+    /// don't all redo the same shallow iterations in lockstep. Not part of
+    /// `NegamaxOptions` -- it's assigned per-worker by
+    /// `choose_action_root_split`, not user-configurable.
+    start_depth: u32,
     pv: Vec<G::A>,
     /// Every root move's score at the deepest completed iteration, sorted
     /// best-first -- both this depth's move-ordering seed for the next
@@ -342,12 +387,17 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
     }
 
     pub fn new_with_options(eval: E, options: NegamaxOptions) -> Self {
-        let table = (options.table_bits > 0)
-            .then(|| TranspositionTable::new(options.table_bits, options.replacement));
+        let table = (options.table_bits > 0).then(|| {
+            Arc::new(RwLock::new(TranspositionTable::new(
+                options.table_bits,
+                options.replacement,
+            )))
+        });
         Self {
-            eval,
+            eval: Arc::new(eval),
             options,
             table,
+            start_depth: 1,
             pv: Vec::new(),
             root_scores: Vec::new(),
             history: HashMap::new(),
@@ -455,7 +505,8 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
         let mut beta = beta;
         let mut tt_move = None;
         if let Some(table) = &self.table {
-            if let Some(entry) = table.lookup(hash, &canonical_state) {
+            let looked_up = table.read().unwrap().lookup(hash, &canonical_state);
+            if let Some(entry) = looked_up {
                 // The stored `best_action` was computed against whichever
                 // orientation first wrote this entry, not necessarily
                 // `sym` -- translate it back to `state`'s own real
@@ -590,7 +641,7 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             }
         }
 
-        if let Some(table) = &mut self.table {
+        if let Some(table) = &self.table {
             let bound = if best_score <= alpha_orig {
                 Bound::Upper
             } else if best_score >= beta {
@@ -602,7 +653,7 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             // looked up in above, not `state`'s literal one -- see
             // `tt_move`'s translation on the read side.
             let canonical_best_action = G::apply_to_action(Real(best_action), sym).into_inner();
-            table.store(
+            table.write().unwrap().store(
                 hash,
                 &canonical_state,
                 depth,
@@ -633,6 +684,8 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             let (canonical, sym) = G::canonical_representation(Real(s.clone()));
             let canonical_state = canonical.into_inner();
             let Some(next) = table
+                .read()
+                .unwrap()
                 .lookup(G::zobrist_hash(&canonical_state), &canonical_state)
                 .and_then(|e| e.best_action.clone())
                 .map(|a| G::invert_action(Canonical(a), sym).into_inner())
@@ -644,40 +697,12 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
         }
         pv
     }
-}
 
-impl<G: Game, E: Evaluator<G> + Default> Default for Negamax<G, E> {
-    fn default() -> Self {
-        Self::new(E::default())
-    }
-}
-
-impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
-    type G = G;
-
-    fn friendly_name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn set_friendly_name(&mut self, name: &str) {
-        self.name = name.into();
-    }
-
-    fn estimated_depth(&self) -> usize {
-        self.depth_reached as usize
-    }
-
-    fn arena_len(&self) -> usize {
-        self.table.as_ref().map_or(0, |t| t.len())
-    }
-
-    fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
-        debug_assert!(
-            supports::<G>(),
-            "Negamax assumes a deterministic, perfect-information, two-player \
-             alternating-move game -- see `negamax::supports` and the module docs"
-        );
-
+    /// The single-threaded iterative-deepening search loop, run either
+    /// directly (`NegamaxOptions::num_threads == 1`) or, once per worker,
+    /// by `choose_action_root_split`. `self.start_depth` (always `1`
+    /// outside of root splitting) is where iterative deepening begins.
+    fn choose_action_serial(&mut self, state: &G::S) -> G::A {
         let mut root_actions = Vec::new();
         G::generate_actions(state, &mut root_actions);
         assert!(
@@ -698,7 +723,7 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
         let deadline = self.options.max_time.map(|d| Instant::now() + d);
         let mut prev_score = DRAW_SCORE;
 
-        let mut depth = 1u32;
+        let mut depth = self.start_depth;
         while depth <= self.options.max_depth {
             self.singular_extension_cap = depth * 2;
             if depth > 2 {
@@ -771,6 +796,111 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
         }
 
         self.root_scores[0].0.clone()
+    }
+
+    /// Lazy-SMP-style root splitting (see the module docs' "Parallel
+    /// search"): spawn `num_threads` workers, each a fresh `Negamax`
+    /// sharing this instance's evaluator and transposition table but with
+    /// its own private history/countermove tables and a staggered
+    /// iterative-deepening start depth, then keep the result from whichever
+    /// worker completed the greatest depth (ties broken on score).
+    fn choose_action_root_split(&mut self, state: &G::S, num_threads: usize) -> G::A {
+        /// One worker's result: `(depth_reached, root_score, best_action,
+        /// principal_variation, nodes_searched)`.
+        type WorkerResult<G> = (u32, Score, <G as Game>::A, Vec<<G as Game>::A>, u64);
+
+        let mut workers: Vec<Self> = (0..num_threads)
+            .map(|i| Self {
+                eval: Arc::clone(&self.eval),
+                options: NegamaxOptions {
+                    num_threads: 1,
+                    ..self.options.clone()
+                },
+                table: self.table.clone(),
+                start_depth: 1 + (i as u32) % (num_threads as u32),
+                pv: Vec::new(),
+                root_scores: Vec::new(),
+                history: HashMap::new(),
+                countermove: HashMap::new(),
+                singular_extension_cap: 0,
+                nodes_searched: 0,
+                depth_reached: 0,
+                name: self.name.clone(),
+                game_type: PhantomData,
+            })
+            .collect();
+
+        let results: Vec<WorkerResult<G>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = workers
+                .iter_mut()
+                .map(|worker| {
+                    scope.spawn(move || {
+                        let action = worker.choose_action_serial(state);
+                        (
+                            worker.depth_reached,
+                            worker.root_score(),
+                            action,
+                            worker.pv.clone(),
+                            worker.nodes_searched,
+                        )
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let best = results
+            .iter()
+            .max_by_key(|(depth, score, ..)| (*depth, *score))
+            .expect("num_threads > 1 implies at least one worker result")
+            .clone();
+
+        self.depth_reached = best.0;
+        self.root_scores = vec![(best.2.clone(), best.1)];
+        self.pv = best.3;
+        self.nodes_searched = results.iter().map(|(.., n)| n).sum();
+
+        best.2
+    }
+}
+
+impl<G: Game, E: Evaluator<G> + Default> Default for Negamax<G, E> {
+    fn default() -> Self {
+        Self::new(E::default())
+    }
+}
+
+impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
+    type G = G;
+
+    fn friendly_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.into();
+    }
+
+    fn estimated_depth(&self) -> usize {
+        self.depth_reached as usize
+    }
+
+    fn arena_len(&self) -> usize {
+        self.table.as_ref().map_or(0, |t| t.read().unwrap().len())
+    }
+
+    fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A {
+        debug_assert!(
+            supports::<G>(),
+            "Negamax assumes a deterministic, perfect-information, two-player \
+             alternating-move game -- see `negamax::supports` and the module docs"
+        );
+        let num_threads = self.options.num_threads.max(1);
+        if num_threads > 1 {
+            self.choose_action_root_split(state, num_threads)
+        } else {
+            self.choose_action_serial(state)
+        }
     }
 
     fn principle_variation(&self) -> Vec<<Self::G as Game>::A> {

@@ -90,7 +90,12 @@ impl<G: Game> TranspositionTable<G> {
         self.slots.iter().flatten().filter(|s| s.is_some()).count()
     }
 
-    pub(crate) fn lookup(&self, hash: u64, state: &G::S) -> Option<&TTEntry<G>> {
+    /// Returns an owned copy of the matching entry, not a borrow: once the
+    /// table is shared across threads behind a lock (see `Negamax`'s
+    /// parallel root splitting), a caller can't hold a read guard open
+    /// across the rest of `negamax_search`'s recursion, so every lookup
+    /// pays one clone up front instead.
+    pub(crate) fn lookup(&self, hash: u64, state: &G::S) -> Option<TTEntry<G>> {
         let slot = &self.slots[(hash as usize) & self.mask];
         let tiers = if self.replacement == Replacement::TwoTier {
             &slot[..]
@@ -101,6 +106,7 @@ impl<G: Game> TranspositionTable<G> {
             .iter()
             .flatten()
             .find(|e| e.hash == hash && &e.state == state)
+            .cloned()
     }
 
     #[allow(clippy::too_many_arguments)]
