@@ -76,6 +76,15 @@
 //!   parent asked for, since there's no branching to prune there anyway --
 //!   capped so a single iterative-deepening pass can't more than double
 //!   its nominal depth even against a long forced sequence.
+//! - Countermove-history move ordering (`NegamaxOptions::countermove_heuristic`):
+//!   like the history table above, but scored per `(previous action, this
+//!   action)` pair instead of per-action alone -- "what refuted this
+//!   specific reply elsewhere in the tree" is a sharper ordering signal
+//!   than "what refutes things in general," on the theory that a move's
+//!   best answer is often independent of the rest of the position. Reset
+//!   per `choose_action` call, same as the plain history table, and
+//!   consulted together with it (summed) when ordering non-transposition-
+//!   table moves.
 //!
 //! # Room for more
 //!
@@ -94,6 +103,16 @@ use crate::game::{Game, PlayerIndex, TerminalStatus};
 use crate::strategies::{ActionReport, RootReport, Search};
 pub use table::Replacement;
 use table::{Bound, TranspositionTable};
+
+/// The alpha-beta bounds passed to [`Negamax::negamax_search`], bundled into
+/// one argument purely to keep that function's parameter count under
+/// clippy's `too_many_arguments` threshold -- no meaning beyond "the current
+/// search window."
+#[derive(Clone, Copy)]
+struct Window {
+    alpha: Score,
+    beta: Score,
+}
 
 /// Score type returned by [`Evaluator::evaluate`] and by the search itself,
 /// always from the perspective of the player about to move in the state
@@ -196,6 +215,12 @@ pub struct NegamaxOptions {
     /// a long forced sequence can't more than double that iteration's
     /// nominal depth. See the module docs' "Singular extensions".
     pub singular_extension: bool,
+    /// Order each node's non-transposition-table moves by a countermove-
+    /// history table (keyed by `(action that led to this node, this
+    /// node's action)`, scored the same `depth * depth` way as
+    /// `history_heuristic`), in addition to the plain per-action history
+    /// table. See the module docs' "Countermove-history move ordering".
+    pub countermove_heuristic: bool,
     pub verbose: bool,
 }
 
@@ -210,6 +235,7 @@ impl Default for NegamaxOptions {
             principal_variation_search: true,
             history_heuristic: true,
             singular_extension: true,
+            countermove_heuristic: true,
             verbose: false,
         }
     }
@@ -256,6 +282,11 @@ impl NegamaxOptions {
         self
     }
 
+    pub fn with_countermove_heuristic(mut self, enabled: bool) -> Self {
+        self.countermove_heuristic = enabled;
+        self
+    }
+
     pub fn verbose(mut self) -> Self {
         self.verbose = true;
         self
@@ -277,6 +308,11 @@ pub struct Negamax<G: Game, E: Evaluator<G>> {
     /// `choose_action` call -- it's a within-search ordering hint, not
     /// meant to persist across different root positions.
     history: HashMap<G::A, i32>,
+    /// Countermove-history move-ordering scores, keyed by `(action that led
+    /// to this node, this node's action)` (see
+    /// `NegamaxOptions::countermove_heuristic`). Reset alongside `history`
+    /// at the start of every `choose_action` call.
+    countermove: HashMap<(G::A, G::A), i32>,
     /// This iteration's singular-extension budget: `negamax_search` may
     /// extend a forced (single-legal-move) node one ply deeper only while
     /// `ply < singular_extension_cap`, so one iterative-deepening pass can
@@ -304,6 +340,7 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             pv: Vec::new(),
             root_scores: Vec::new(),
             history: HashMap::new(),
+            countermove: HashMap::new(),
             singular_extension_cap: 0,
             nodes_searched: 0,
             depth_reached: 0,
@@ -359,16 +396,19 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
     /// returning `state`'s score from `Game::player_to_move(state)`'s
     /// perspective, or `None` on timeout. `ply` is the distance from the
     /// root, used only to prefer faster wins / slower losses (see the
-    /// module docs' "mate-distance scoring").
+    /// module docs' "mate-distance scoring"). `window.alpha`/`window.beta`
+    /// bundle the alpha-beta bounds into one argument purely to keep the
+    /// parameter count clippy-sized -- see [`Window`].
     fn negamax_search(
         &mut self,
         state: &G::S,
+        prev_action: Option<&G::A>,
         depth: u32,
         ply: u32,
-        mut alpha: Score,
-        beta: Score,
+        window: Window,
         deadline: Option<Instant>,
     ) -> Option<Score> {
+        let Window { mut alpha, beta } = window;
         self.nodes_searched += 1;
         if self.timed_out(deadline) {
             return None;
@@ -423,9 +463,23 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
                 ordered_start = 1;
             }
         }
-        if self.options.history_heuristic {
-            actions[ordered_start..]
-                .sort_by_key(|a| std::cmp::Reverse(self.history.get(a).copied().unwrap_or(0)));
+        if self.options.history_heuristic || self.options.countermove_heuristic {
+            actions[ordered_start..].sort_by_key(|a| {
+                let mut score = 0;
+                if self.options.history_heuristic {
+                    score += self.history.get(a).copied().unwrap_or(0);
+                }
+                if self.options.countermove_heuristic {
+                    if let Some(prev) = prev_action {
+                        score += self
+                            .countermove
+                            .get(&(prev.clone(), a.clone()))
+                            .copied()
+                            .unwrap_or(0);
+                    }
+                }
+                std::cmp::Reverse(score)
+            });
         }
 
         let child_depth = if self.options.singular_extension
@@ -446,19 +500,42 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             let score = if searching_pv && self.options.principal_variation_search {
                 let probe = -self.negamax_search(
                     &child,
+                    Some(a),
                     child_depth,
                     ply + 1,
-                    -alpha - 1,
-                    -alpha,
+                    Window {
+                        alpha: -alpha - 1,
+                        beta: -alpha,
+                    },
                     deadline,
                 )?;
                 if probe > alpha && probe < beta {
-                    -self.negamax_search(&child, child_depth, ply + 1, -beta, -probe, deadline)?
+                    -self.negamax_search(
+                        &child,
+                        Some(a),
+                        child_depth,
+                        ply + 1,
+                        Window {
+                            alpha: -beta,
+                            beta: -probe,
+                        },
+                        deadline,
+                    )?
                 } else {
                     probe
                 }
             } else {
-                -self.negamax_search(&child, child_depth, ply + 1, -beta, -alpha, deadline)?
+                -self.negamax_search(
+                    &child,
+                    Some(a),
+                    child_depth,
+                    ply + 1,
+                    Window {
+                        alpha: -beta,
+                        beta: -alpha,
+                    },
+                    deadline,
+                )?
             };
 
             if score > best_score {
@@ -472,6 +549,14 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             if alpha >= beta {
                 if self.options.history_heuristic {
                     *self.history.entry(a.clone()).or_insert(0) += (depth * depth) as i32;
+                }
+                if self.options.countermove_heuristic {
+                    if let Some(prev) = prev_action {
+                        *self
+                            .countermove
+                            .entry((prev.clone(), a.clone()))
+                            .or_insert(0) += (depth * depth) as i32;
+                    }
                 }
                 break;
             }
@@ -566,6 +651,7 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
             .map(|a| (a, DRAW_SCORE))
             .collect();
         self.history.clear();
+        self.countermove.clear();
 
         let deadline = self.options.max_time.map(|d| Instant::now() + d);
         let mut prev_score = DRAW_SCORE;
@@ -574,13 +660,16 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
         while depth <= self.options.max_depth {
             self.singular_extension_cap = depth * 2;
             if depth > 2 {
-                if let Some(window) = self.options.aspiration_window {
+                if let Some(margin) = self.options.aspiration_window {
                     let _ = self.negamax_search(
                         state,
+                        None,
                         depth,
                         0,
-                        prev_score.saturating_sub(window),
-                        prev_score.saturating_add(window),
+                        Window {
+                            alpha: prev_score.saturating_sub(margin),
+                            beta: prev_score.saturating_add(margin),
+                        },
                         deadline,
                     );
                 }
@@ -592,9 +681,17 @@ impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
             let mut complete = true;
             for (a, _) in self.root_scores.clone() {
                 let child = G::apply(state.clone(), &a);
-                let Some(child_score) =
-                    self.negamax_search(&child, depth - 1, 1, -beta, -alpha, deadline)
-                else {
+                let Some(child_score) = self.negamax_search(
+                    &child,
+                    Some(&a),
+                    depth - 1,
+                    1,
+                    Window {
+                        alpha: -beta,
+                        beta: -alpha,
+                    },
+                    deadline,
+                ) else {
                     complete = false;
                     break;
                 };
