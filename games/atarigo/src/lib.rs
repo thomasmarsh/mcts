@@ -1103,24 +1103,28 @@ mod tests {
     /// Root cause (confirmed via ad hoc instrumentation, not yet fixed):
     /// `ChildArray::child_ids[idx]` (`mcts::strategies::mcts::node`) is a
     /// `OnceLock`, resolved once per (parent node, action index) and then
-    /// reused forever. That's unsound once a parent node itself becomes
+    /// reused forever. That was unsound once a parent node itself became
     /// shared across more than one real board orientation (which
     /// `canonical_representation`/symmetry-aware hashing deliberately
     /// causes under a game's symmetry-ply limit): the same canonical action
     /// index, translated back through each orientation's own symmetry
     /// transform, produces a *different* real child board per orientation,
-    /// but only the first orientation to explore that slot ever gets to
+    /// but only the first orientation to explore that slot ever got to
     /// create/attach a child node there -- every later visit via a
-    /// different real orientation of the same shared parent silently reuses
+    /// different real orientation of the same shared parent silently reused
     /// that first orientation's child node against its own, different, real
-    /// board. This is a level below the per-edge symmetry-index caching bug
+    /// board. This was a level below the per-edge symmetry-index caching bug
     /// fixed earlier (which made `incoming_sym` always recomputed fresh
     /// rather than cached) -- that fix stopped the *translation* from going
-    /// stale, but the *child identity* cached in `ChildArray` has the exact
-    /// same staleness problem and was never addressed.
+    /// stale, but the *child identity* cached in `ChildArray` had the exact
+    /// same staleness problem. Fixed by `mcts::strategies::mcts::search::
+    /// shared::verified_child_id`, which re-derives the real successor
+    /// state's hash on every visit to an already-explored `ChildArray` slot
+    /// and falls through to the shared transposition/DAG table (instead of
+    /// trusting the cached child) whenever it disagrees with the cached
+    /// child's own stored hash.
     #[test]
-    #[ignore = "known bug: reproduces mcts's symmetry/transposition node-sharing corruption -- see doc comment"]
-    fn debug_repro_transposition_corruption_past_symmetry_ply_limit() {
+    fn regression_transposition_corruption_past_symmetry_ply_limit() {
         use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
         use mcts::strategies::Search;
 
@@ -1136,6 +1140,11 @@ mod tests {
         let state = State::new(7);
         _ = ts.choose_action(&state);
     }
+
+    // A broader sweep of this same regression across board sizes/iteration
+    // counts/seeds (the original bug-hunt found this crashed 92/150 such
+    // combinations) lives in `mcts-tests/tests/stress.rs` -- too slow for
+    // `cargo test --lib`, see AGENTS.md's "Rust tests" section.
 }
 
 #[cfg(test)]

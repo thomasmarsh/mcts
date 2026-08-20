@@ -9,6 +9,7 @@ mcts = { path = "../mcts" }
 bitboard = { path = "../bitboard" }
 game-core = { path = "../games/game-core" }
 game-othello = { path = "../games/othello" }
+game-atarigo = { path = "../games/atarigo" }
 game-breakthrough = { path = "../games/breakthrough" }
 game-knightthrough = { path = "../games/knightthrough" }
 game-druid = { path = "../games/druid" }
