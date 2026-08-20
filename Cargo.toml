@@ -30,6 +30,7 @@ workspace = true
 resolver = "2"
 members = [
     "bitboard",
+    "pyramid",
     "mcts",
     "mcts-bench",
     "mcts-tune",
@@ -52,7 +53,6 @@ members = [
     "games/gonnect",
     "games/nim",
     "games/null",
-    "games/shibumi",
     "games/tak",
     "games/unit",
     "games/druid",
@@ -73,6 +73,7 @@ members = [
 # mcts-examples --example foo`, matching how it's actually invoked.
 default-members = [
     "bitboard",
+    "pyramid",
     "mcts",
     "mcts-bench",
     "mcts-tune",
@@ -95,7 +96,6 @@ default-members = [
     "games/gonnect",
     "games/nim",
     "games/null",
-    "games/shibumi",
     "games/tak",
     "games/unit",
     "games/druid",
