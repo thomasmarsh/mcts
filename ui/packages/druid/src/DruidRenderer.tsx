@@ -47,6 +47,11 @@ const WINNER_GLOW_WHITE = "#ffd98a";
 
 const PLAY_AREA_COLOR = 0x9a9da6;
 
+// A drag that moves the pointer more than this many CSS pixels between
+// mousedown and mouseup is an OrbitControls pan/rotate, not a click -- see
+// `onPointerDown`/`onClick`.
+const DRAG_CLICK_THRESHOLD = 6;
+
 const BORDER_WORLD = 0.012;
 const BORDER_COLOR = "#5a5c66";
 const TEX_DENSITY = 64;
@@ -476,8 +481,22 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     return hits.length > 0 ? (hits[0]!.object.userData.move as Move) : null;
   }
 
+  let pointerDownAt: { x: number; y: number } | null = null;
+
+  function onPointerDown(event: MouseEvent): void {
+    pointerDownAt = { x: event.clientX, y: event.clientY };
+  }
+
   function onClick(event: MouseEvent): void {
     if (props.busy) return;
+    // A native `click` fires on mouseup regardless of how far the pointer
+    // travelled since mousedown -- so an OrbitControls rotate/pan that
+    // happens to start and end over a legal-move cell would otherwise place
+    // a piece there. Only treat it as a placement if the pointer barely
+    // moved, i.e. this was actually a click and not a drag.
+    const dx = pointerDownAt ? event.clientX - pointerDownAt.x : 0;
+    const dy = pointerDownAt ? event.clientY - pointerDownAt.y : 0;
+    if (Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD) return;
     const move = pickMoveAt(event.clientX, event.clientY);
     if (move) props.onMove(move);
   }
@@ -669,6 +688,7 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
 
     raycaster = new THREE.Raycaster();
 
+    canvasRef.addEventListener("mousedown", onPointerDown);
     canvasRef.addEventListener("click", onClick);
     canvasRef.addEventListener("mousemove", onPointerMove);
     canvasRef.addEventListener("mouseleave", onPointerLeave);
@@ -681,6 +701,7 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
   onCleanup(() => {
     cancelAnimationFrame(animationHandle);
     window.removeEventListener("resize", onResize);
+    canvasRef?.removeEventListener("mousedown", onPointerDown);
     canvasRef?.removeEventListener("click", onClick);
     canvasRef?.removeEventListener("mousemove", onPointerMove);
     canvasRef?.removeEventListener("mouseleave", onPointerLeave);

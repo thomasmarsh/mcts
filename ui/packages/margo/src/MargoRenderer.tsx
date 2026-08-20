@@ -24,8 +24,14 @@ import { LEVEL_RISE, positionFor } from "./geometry.js";
 import type { Action, GameState, GameView } from "./types.js";
 import "./margo.css";
 
-const RADIUS = 0.47;
+// Slightly over the exact touching radius (0.5, per `positionFor`'s unit-
+// diameter spacing) so resting marbles visibly press against their
+// neighbors instead of leaving the sliver of daylight a geometrically
+// "correct" 0.5 would render as.
+const RADIUS = 0.505;
+const SOCKET_RADIUS = 0.32;
 const BLACK_COLOR = 0x2c2e35;
+const BLACK_OUTLINE_COLOR = 0x7d818f;
 const WHITE_COLOR = 0xf4ecdd;
 const MOVE_HILITE = 0x52c2ee;
 const ANALYSIS_HEAT_COLOR = 0xffa94d;
@@ -33,6 +39,10 @@ const ANALYSIS_PROVEN_COLOR = 0x4caf7a;
 const SUGGESTED_RING_COLOR = "#ffe066";
 const GHOST_OPACITY = 0.45;
 const ZOMBIE_RING_COLOR = "#c94b4b";
+// A drag that moves the pointer more than this many CSS pixels between
+// mousedown and mouseup is an OrbitControls pan/rotate, not a click -- see
+// `onPointerDown`/`onClick`.
+const DRAG_CLICK_THRESHOLD = 6;
 
 function disposeMaterial(mat: THREE.Material | THREE.Material[] | undefined): void {
   if (!mat) return;
@@ -40,6 +50,8 @@ function disposeMaterial(mat: THREE.Material | THREE.Material[] | undefined): vo
     mat.forEach(disposeMaterial);
     return;
   }
+  const withMap = mat as THREE.Material & { map?: THREE.Texture | null };
+  withMap.map?.dispose();
   mat.dispose();
 }
 
@@ -52,7 +64,12 @@ function clearGroup(group: THREE.Group): void {
   }
 }
 
-function makeLabelSprite(text: string): THREE.Sprite {
+/** A flat, textured plane laid on the board surface -- as opposed to a
+ * `THREE.Sprite`, which always billboards to face the camera and so would
+ * appear to float above the board, re-facing the viewer as `OrbitControls`
+ * orbits around it instead of staying "printed" on the board like the rest
+ * of its geometry. */
+function makeLabelPlane(text: string): THREE.Mesh {
   const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -67,10 +84,15 @@ function makeLabelSprite(text: string): THREE.Sprite {
   ctx.fillStyle = "#2a2b32";
   ctx.fillText(text, size / 2, size / 2 + 4);
   const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.6, 0.6, 1);
-  return sprite;
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.6), material);
+  plane.rotation.x = -Math.PI / 2;
+  return plane;
 }
 
 /** A marble material with a thin, glossy clearcoat over a duller base coat
@@ -95,6 +117,17 @@ function buildZombieRing(): THREE.Mesh {
   return new THREE.Mesh(geo, mat);
 }
 
+/** A back-face-only, slightly-oversized shell around a black marble -- the
+ * standard inverted-hull outline trick. Adjacent black marbles are both this
+ * dark, so without it two touching black spheres read as one blob; the thin
+ * lighter rim it leaves at each silhouette edge is what separates them. */
+function buildOutline(geo: THREE.SphereGeometry): THREE.Mesh {
+  const mat = new THREE.MeshBasicMaterial({ color: BLACK_OUTLINE_COLOR, side: THREE.BackSide });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.scale.setScalar(1.06);
+  return mesh;
+}
+
 export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameView>> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
 
@@ -115,6 +148,12 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
 
   const sphereGeo = new THREE.SphereGeometry(RADIUS, 28, 20);
   const ringGeo = new THREE.RingGeometry(RADIUS * 0.55, RADIUS * 0.88, 32);
+  // Cursor hit-testing uses this full disc, not `ringGeo` -- `ringGeo` is an
+  // annulus with a hole in the middle, and raycasting straight at pickables
+  // means most of a legal cell's visual footprint (everything inside the
+  // ring's wall) would never register a hit. `pickGeo` is invisible; the
+  // ring stays purely cosmetic.
+  const pickGeo = new THREE.CircleGeometry(0.48, 24);
 
   function buildBoard(n: number): void {
     clearGroup(boardGroup);
@@ -127,22 +166,29 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     base.position.set(center.x, -0.3 - RADIUS, center.z);
     boardGroup.add(base);
 
-    const points: THREE.Vector3[] = [];
-    for (let i = 0; i < n; i++) {
-      points.push(new THREE.Vector3(i, -RADIUS + 0.01, -0.5), new THREE.Vector3(i, -RADIUS + 0.01, n - 0.5));
-      points.push(new THREE.Vector3(-0.5, -RADIUS + 0.01, i), new THREE.Vector3(n - 0.5, -RADIUS + 0.01, i));
+    // A Shibumi board is a slab drilled with sockets the ground-level
+    // marbles sit in -- not a flat plane with a marble balanced on top of
+    // it, which is what gridlines over a bare surface would suggest. A
+    // real cut hole needs CSG boolean subtraction three.js doesn't have
+    // built in; a recessed, darker, narrower cylinder standing in for the
+    // hole opening reads the same way (marble sitting *in* something) from
+    // any camera angle this board is viewed at.
+    const socketGeo = new THREE.CylinderGeometry(SOCKET_RADIUS, SOCKET_RADIUS * 0.9, 0.16, 24);
+    const socketMat = new THREE.MeshStandardMaterial({ color: 0x3a362c, roughness: 1 });
+    for (let row = 0; row < n; row++) {
+      for (let col = 0; col < n; col++) {
+        const socket = new THREE.Mesh(socketGeo, socketMat);
+        socket.position.set(col, -RADIUS - 0.02, row);
+        boardGroup.add(socket);
+      }
     }
-    const gridGeo = new THREE.BufferGeometry().setFromPoints(points);
-    const gridMat = new THREE.LineBasicMaterial({ color: 0x8a8370, transparent: true, opacity: 0.4 });
-    boardGroup.add(new THREE.LineSegments(gridGeo, gridMat));
 
     const margin = 0.85;
     for (let i = 0; i < n; i++) {
-      const letter = String.fromCharCode(65 + i);
-      const sprite = makeLabelSprite(letter);
-      sprite.position.set(i, -RADIUS + 0.02, -0.5 - margin);
-      boardGroup.add(sprite);
-      const number = makeLabelSprite(String(i + 1));
+      const letter = makeLabelPlane(String.fromCharCode(65 + i));
+      letter.position.set(i, -RADIUS + 0.02, -0.5 - margin);
+      boardGroup.add(letter);
+      const number = makeLabelPlane(String(i + 1));
       number.position.set(-0.5 - margin, -RADIUS + 0.02, i);
       boardGroup.add(number);
     }
@@ -162,6 +208,11 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       const sphere = new THREE.Mesh(sphereGeo, mat);
       sphere.position.set(x, y, z);
       piecesGroup.add(sphere);
+      if (cell.piece === "Black") {
+        const outline = buildOutline(sphereGeo);
+        outline.position.set(x, y, z);
+        piecesGroup.add(outline);
+      }
       if (cell.zombie) {
         const ring = buildZombieRing();
         ring.position.set(x, y, z);
@@ -189,6 +240,8 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       depthWrite: false,
     });
 
+    const pickMat = new THREE.MeshBasicMaterial({ visible: false });
+
     props.legalMoves.forEach((move) => {
       const index = placementCells(move);
       if (index === null) return;
@@ -196,9 +249,18 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       const ring = new THREE.Mesh(ringGeo, mat.clone());
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(x, y - RADIUS + 0.02, z);
-      ring.userData.move = move;
       highlightGroup.add(ring);
-      pickables.push(ring);
+
+      // The visible ring is a thin annulus (a hole in the middle), so it
+      // alone would only register hover/click over its wall. Pick against
+      // this separate, invisible full disc instead, covering the whole
+      // playable footprint the ring merely outlines.
+      const pick = new THREE.Mesh(pickGeo, pickMat);
+      pick.rotation.x = -Math.PI / 2;
+      pick.position.set(x, y - RADIUS + 0.02, z);
+      pick.userData.move = move;
+      highlightGroup.add(pick);
+      pickables.push(pick);
     });
   }
 
@@ -274,8 +336,22 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     return hits.length > 0 ? (hits[0]!.object.userData.move as Action) : null;
   }
 
+  let pointerDownAt: { x: number; y: number } | null = null;
+
+  function onPointerDown(event: MouseEvent): void {
+    pointerDownAt = { x: event.clientX, y: event.clientY };
+  }
+
   function onClick(event: MouseEvent): void {
     if (props.busy) return;
+    // A native `click` fires on mouseup regardless of how far the pointer
+    // travelled since mousedown -- so an OrbitControls rotate/pan that
+    // happens to start and end over a legal-move cell would otherwise place
+    // a piece there. Only treat it as a placement if the pointer barely
+    // moved, i.e. this was actually a click and not a drag.
+    const dx = pointerDownAt ? event.clientX - pointerDownAt.x : 0;
+    const dy = pointerDownAt ? event.clientY - pointerDownAt.y : 0;
+    if (Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD) return;
     const move = pickMoveAt(event.clientX, event.clientY);
     if (move) props.onMove(move);
   }
@@ -343,6 +419,7 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
 
     raycaster = new THREE.Raycaster();
 
+    canvasRef.addEventListener("mousedown", onPointerDown);
     canvasRef.addEventListener("click", onClick);
     canvasRef.addEventListener("mousemove", onPointerMove);
     canvasRef.addEventListener("mouseleave", onPointerLeave);
@@ -354,6 +431,7 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
   onCleanup(() => {
     cancelAnimationFrame(animationHandle);
     window.removeEventListener("resize", onResize);
+    canvasRef?.removeEventListener("mousedown", onPointerDown);
     canvasRef?.removeEventListener("click", onClick);
     canvasRef?.removeEventListener("mousemove", onPointerMove);
     canvasRef?.removeEventListener("mouseleave", onPointerLeave);
@@ -364,6 +442,7 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     clearGroup(analysisGroup);
     sphereGeo.dispose();
     ringGeo.dispose();
+    pickGeo.dispose();
     renderer?.dispose();
   });
 
