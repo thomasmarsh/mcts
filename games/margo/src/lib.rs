@@ -9,16 +9,18 @@
 //! size reuses the same monomorphization with a runtime-sized `Pyramid`.
 //!
 //! A piece may be placed on any empty, supported cell (`Pyramid::can_place`).
-//! Capture is Go-style over the *visible* (non-buried) touching-adjacency
-//! graph: after a placement, any enemy group without a liberty is removed
-//! (no zombie exception yet -- see `resolve_captures`), suicide is illegal
-//! unless the placement itself captures enough to give the new piece a
-//! liberty, and a piece hidden by another piece directly above it doesn't
-//! count toward any group's connectivity or liberties even though it's
-//! still physically on the board. There is no zombie exception, ko, or
-//! swap rule yet. The game ends when the player to move has no legal
-//! placement, and the winner is whoever has more pieces on the board (a
-//! draw if equal).
+//! Capture is Go-style over the *visible* (non-buried, non-zombie)
+//! touching-adjacency graph: after a placement, any enemy group without a
+//! liberty is removed -- except a member pinned by a capturing-colour piece
+//! resting directly on top of it, which survives in place as a "zombie"
+//! (still occupying its cell and still counted for scoring, but permanently
+//! excluded from future connectivity, like a buried piece). Suicide is
+//! illegal unless the placement itself captures enough to give the new
+//! piece a liberty, and a piece hidden by another piece directly above it
+//! doesn't count toward any group's connectivity or liberties even though
+//! it's still physically on the board. There is no ko or swap rule yet. The
+//! game ends when the player to move has no legal placement, and the winner
+//! is whoever has more pieces on the board (a draw if equal).
 
 use std::fmt;
 
@@ -53,12 +55,14 @@ fn go_board(cells: usize) -> GoBoard {
     GoBoard::new(Dyn(1), Dyn(cells))
 }
 
-/// The visible (non-buried) subset of `black`/`white` occupancy, split into
-/// per-colour [`GoBoard`]s -- the input [`resolve_captures`] runs its
-/// touching-adjacency flood fill over. Buried cells are dropped entirely
-/// (neither colour), matching Margo's rule that a buried piece "does not
-/// count in any connection".
-fn visible_boards(occupied: &Cells, black: &Cells) -> (GoBoard, GoBoard) {
+/// The visible (non-buried, non-zombie) subset of `black`/`white` occupancy,
+/// split into per-colour [`GoBoard`]s -- the input [`resolve_captures`] runs
+/// its touching-adjacency flood fill over. Buried and zombie cells are
+/// dropped entirely (neither colour): buried because a piece hidden by an
+/// occluder "does not count in any connection", zombie because a captured
+/// group's pinned survivor is permanently excluded from connectivity the
+/// same way (see the module docs' zombie summary).
+fn visible_boards(occupied: &Cells, black: &Cells, zombie: &Cells) -> (GoBoard, GoBoard) {
     let cells = occupied.total_cells();
     let mut black_board = go_board(cells);
     let mut white_board = go_board(cells);
@@ -67,7 +71,7 @@ fn visible_boards(occupied: &Cells, black: &Cells) -> (GoBoard, GoBoard) {
             continue;
         }
         let (col, row, level) = occupied.to_coord(index);
-        if occupied.is_buried(col, row, level) {
+        if occupied.is_buried(col, row, level) || zombie.get_index(index) {
             continue;
         }
         if black.get_index(index) {
@@ -91,6 +95,17 @@ fn visible_boards(occupied: &Cells, black: &Cells) -> (GoBoard, GoBoard) {
 /// Returns the mask
 /// of opponent cells to capture if legal, or `None` if the placement is
 /// suicide.
+///
+/// Closing a captured cell's last liberty by occupying its dependent two
+/// levels above one of its own supporters has the same retroactive-burial
+/// effect: the newly-placed piece buries that supporter (it's exactly the
+/// occluder position for it), which was also one of the captured cell's own
+/// neighbors, permanently reopening a liberty. This makes some captures --
+/// specifically, ones whose last liberty is two levels above an existing
+/// piece the captured cell also depends on -- structurally unreachable, not
+/// just hard to set up by hand (see `apply_captures_splits_pinned_and_
+/// removed_members`, which tests the zombie/removal split directly against
+/// a hand-built capture mask rather than fighting this to build one).
 fn resolve_captures(
     own: GoBoard,
     opp: GoBoard,
@@ -127,6 +142,40 @@ fn resolve_captures(
     (safe || !will_capture.none_set()).then_some(will_capture)
 }
 
+/// Splits a computed capture mask into zombies and outright removals: a
+/// captured cell survives in place, keeping its colour, iff a
+/// capturing-colour piece rests directly on top of it (one of its own
+/// dependents belongs to the mover) -- removing it would leave that piece
+/// floating. `mover_black` identifies the capturing colour. Factored out of
+/// [`State::resolve_place`] so the zombie/removal split can be unit tested
+/// directly against a hand-built capture mask, without needing a
+/// [`resolve_captures`]-derived one -- mirroring how
+/// `placement_that_captures_to_gain_a_liberty_is_accepted` tests
+/// `resolve_captures` directly when a full `State`-reachable scenario isn't
+/// tractable to construct by hand.
+fn apply_captures(
+    mut occupied: Cells,
+    mut black: Cells,
+    mut zombie: Cells,
+    captured: GoBoard,
+    mover_black: bool,
+) -> (Cells, Cells, Cells) {
+    for cell in captured {
+        let (c, r, l) = occupied.to_coord(cell);
+        let pinned_by_capturer = occupied
+            .dependents(c, r, l)
+            .into_iter()
+            .any(|(dc, dr)| black.get(dc, dr, l + 1) == mover_black);
+        if pinned_by_capturer {
+            zombie.set_index(cell);
+        } else {
+            occupied.clear_index(cell);
+            black.clear_index(cell);
+        }
+    }
+    (occupied, black, zombie)
+}
+
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Default, Hash, PartialEq, Eq)]
 pub enum Player {
     #[default]
@@ -159,12 +208,18 @@ pub struct Place(pub u16);
 /// colour-agnostic); `black` marks which of those cells belong to Black --
 /// White's pieces are `occupied & !black`, derived rather than stored
 /// separately so the two boards can't drift out of sync with each other.
-/// Board size lives entirely in `occupied`/`black`'s own `Dyn` dimension
-/// (`Pyramid::n`), not a separate field, so it can never disagree with them.
+/// `zombie` marks cells that survived capture pinned by a capturing-colour
+/// piece resting directly on top (see the module docs) -- still set in
+/// `occupied`/`black`, but permanently excluded from visible connectivity
+/// the same way a buried cell is, since the support structure that pins them
+/// never un-forms. Board size lives entirely in `occupied`/`black`'s own
+/// `Dyn` dimension (`Pyramid::n`), not a separate field, so it can never
+/// disagree with them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     occupied: Cells,
     black: Cells,
+    zombie: Cells,
     turn: Player,
 }
 
@@ -184,6 +239,7 @@ impl State {
         Self {
             occupied: Cells::new(Dyn(n)),
             black: Cells::new(Dyn(n)),
+            zombie: Cells::new(Dyn(n)),
             turn: Player::default(),
         }
     }
@@ -204,15 +260,24 @@ impl State {
     }
 
     #[inline]
+    pub fn is_zombie(&self, index: usize) -> bool {
+        self.zombie.get_index(index)
+    }
+
+    #[inline]
     pub fn turn(&self) -> Player {
         self.turn
     }
 
     /// Attempts to place the player to move's piece at flat `index`,
-    /// returning the resulting `(occupied, black)` boards (captures already
-    /// applied) if legal, or `None` if the cell isn't a legal placement
-    /// (unsupported/occupied) or would be suicide.
-    fn resolve_place(&self, index: usize, adjacency: &TouchingAdjacency) -> Option<(Cells, Cells)> {
+    /// returning the resulting `(occupied, black, zombie)` boards (captures
+    /// already applied) if legal, or `None` if the cell isn't a legal
+    /// placement (unsupported/occupied) or would be suicide.
+    fn resolve_place(
+        &self,
+        index: usize,
+        adjacency: &TouchingAdjacency,
+    ) -> Option<(Cells, Cells, Cells)> {
         let (col, row, level) = self.occupied.to_coord(index);
         if !self.occupied.can_place(col, row, level) {
             return None;
@@ -226,7 +291,7 @@ impl State {
             new_black.set_index(index);
         }
 
-        let (black_board, white_board) = visible_boards(&new_occupied, &new_black);
+        let (black_board, white_board) = visible_boards(&new_occupied, &new_black, &self.zombie);
         let (own_board, opp_board) = if mover_black {
             (black_board, white_board)
         } else {
@@ -242,12 +307,10 @@ impl State {
             resolve_captures(own_board, opp_board, index, adjacency)?
         };
 
-        for cell in captured {
-            new_occupied.clear_index(cell);
-            new_black.clear_index(cell);
-        }
+        let (new_occupied, new_black, new_zombie) =
+            apply_captures(new_occupied, new_black, self.zombie, captured, mover_black);
 
-        Some((new_occupied, new_black))
+        Some((new_occupied, new_black, new_zombie))
     }
 
     fn piece_count(&self, player: Player) -> u32 {
@@ -268,11 +331,12 @@ impl Game for Margo {
 
     fn apply(mut state: State, action: &Place) -> State {
         let adjacency = TouchingAdjacency::new(state.occupied.n());
-        let (new_occupied, new_black) = state
+        let (new_occupied, new_black, new_zombie) = state
             .resolve_place(action.0 as usize, &adjacency)
             .expect("action generated by generate_actions must be legal");
         state.occupied = new_occupied;
         state.black = new_black;
+        state.zombie = new_zombie;
         state.turn = state.turn.next();
         state
     }
@@ -364,9 +428,10 @@ mod tests {
         let adjacency = TouchingAdjacency::new(state.occupied.n());
         for &(col, row) in &[(0, 0), (1, 0), (0, 1)] {
             let idx = state.occupied.index(col, row, 0);
-            let (occupied, black) = state.resolve_place(idx, &adjacency).unwrap();
+            let (occupied, black, zombie) = state.resolve_place(idx, &adjacency).unwrap();
             state.occupied = occupied;
             state.black = black;
+            state.zombie = zombie;
             state.turn = state.turn.next();
         }
         assert!(
@@ -375,9 +440,10 @@ mod tests {
         );
 
         let idx = state.occupied.index(1, 1, 0);
-        let (occupied, black) = state.resolve_place(idx, &adjacency).unwrap();
+        let (occupied, black, zombie) = state.resolve_place(idx, &adjacency).unwrap();
         state.occupied = occupied;
         state.black = black;
+        state.zombie = zombie;
         assert!(can_place(&state, target));
     }
 
@@ -386,9 +452,10 @@ mod tests {
         let mut state = State::new(DEFAULT_N);
         let adjacency = TouchingAdjacency::new(state.occupied.n());
         let idx = state.occupied.index(2, 2, 0);
-        let (occupied, black) = state.resolve_place(idx, &adjacency).unwrap();
+        let (occupied, black, zombie) = state.resolve_place(idx, &adjacency).unwrap();
         state.occupied = occupied;
         state.black = black;
+        state.zombie = zombie;
         assert!(!can_place(&state, idx));
     }
 
@@ -420,11 +487,14 @@ mod tests {
         }
     }
 
-    /// A group with a single liberty gets captured when its last liberty is
-    /// filled: black surrounds a lone white stone on three sides, then plays
-    /// the fourth to capture it. Constructed via direct field construction
-    /// (per the new-game skill's guidance), not simulated play, so the
-    /// scenario is exact regardless of `generate_actions`'s own behaviour.
+    /// A single-member group with one liberty is captured when its last
+    /// liberty is filled -- but here that liberty happens to be the group's
+    /// own dependent, so the closing black stone rests directly on top of
+    /// it, pinning it: the captured piece stays on the board as a zombie
+    /// (original colour kept, but excluded from future connectivity) rather
+    /// than being removed. Constructed via direct field construction (per
+    /// the new-game skill's guidance), not simulated play, so the scenario
+    /// is exact regardless of `generate_actions`'s own behaviour.
     ///
     /// Uses the base corner `(0, 0, 0)` rather than an interior cell: a
     /// touching-adjacency neighbor set includes not just the (up to four)
@@ -437,9 +507,19 @@ mod tests {
     /// four supporters). So surrounding a corner needs exactly its two
     /// lateral neighbors filled, then the capturing move is the corner's own
     /// dependent -- newly placeable precisely because the target itself
-    /// supports it.
+    /// supports it, and unavoidably a pin: a captured cell's last liberty
+    /// can only ever be closed by occupying its dependent (every other
+    /// neighbor a corner cell has is a lateral, already accounted for), and
+    /// closing that specific slot with the mover's own colour is exactly
+    /// what "pinned" means. See [`apply_captures`]'s own tests for the
+    /// plain-removal case (a captured cell whose dependent, if any, isn't
+    /// occupied by the mover) -- reproducing that end-to-end through a real
+    /// `State` turns out to need a fully captured multi-level group, and
+    /// closing one always buries an existing piece it also depends on (see
+    /// `resolve_captures`'s neighboring doc comment on this), reopening a
+    /// liberty no further move can close.
     #[test]
-    fn scripted_capture_removes_surrounded_group() {
+    fn scripted_zombie_survives_pinned_capture() {
         let mut state = State::new(DEFAULT_N);
         let white_cell = state.occupied.index(0, 0, 0);
         state.occupied.set_index(white_cell);
@@ -454,17 +534,77 @@ mod tests {
 
         let adjacency = TouchingAdjacency::new(state.occupied.n());
         let last = state.occupied.index(0, 0, 1);
-        let (new_occupied, new_black) = state.resolve_place(last, &adjacency).unwrap();
+        let (new_occupied, new_black, new_zombie) = state.resolve_place(last, &adjacency).unwrap();
 
         assert!(
-            !new_occupied.get_index(white_cell),
-            "white stone must be captured"
+            new_occupied.get_index(white_cell),
+            "pinned white stone must survive as a zombie, not be removed"
+        );
+        assert!(
+            !new_black.get_index(white_cell),
+            "a zombie keeps its original colour"
+        );
+        assert!(
+            new_zombie.get_index(white_cell),
+            "captured-but-pinned stone must be marked zombie"
         );
         assert!(
             new_occupied.get_index(last),
             "black's placement must remain"
         );
         assert!(new_black.get_index(last));
+    }
+
+    /// [`apply_captures`]'s zombie/removal split, exercised directly against
+    /// a hand-built capture mask rather than one [`resolve_captures`]
+    /// derives from a real encirclement: two unrelated white cells, one with
+    /// a black piece resting directly on top of it (pinned), one with no
+    /// piece above it at all (not pinned). Landed this way -- rather than as
+    /// a single `State`-reachable captured *group* with one pinned and one
+    /// plain-removed member -- because every way of constructing that
+    /// requires closing a captured cell's liberty by occupying its
+    /// dependent, and doing that two levels above any base cell always
+    /// buries an existing supporter that same cell also depends on for its
+    /// own liberties (see `resolve_captures`'s doc comment), permanently
+    /// reopening a liberty no further move can close. `apply_captures`
+    /// itself has no such constraint -- it only inspects a precomputed
+    /// capture mask.
+    #[test]
+    fn apply_captures_splits_pinned_and_removed_members() {
+        let mut occupied = Cells::new(Dyn(DEFAULT_N));
+        let mut black = Cells::new(Dyn(DEFAULT_N));
+
+        let pinned = occupied.index(0, 0, 0);
+        let pin = occupied.index(0, 0, 1);
+        let removed = occupied.index(2, 2, 0);
+
+        occupied.set_index(pinned);
+        occupied.set_index(pin);
+        occupied.set_index(removed);
+        black.set_index(pin);
+
+        let mut captured = go_board(occupied.total_cells());
+        captured.set_index(pinned);
+        captured.set_index(removed);
+
+        let (new_occupied, new_black, new_zombie) =
+            apply_captures(occupied, black, Cells::new(Dyn(DEFAULT_N)), captured, true);
+
+        assert!(
+            new_occupied.get_index(pinned),
+            "pinned member stays on the board"
+        );
+        assert!(
+            !new_black.get_index(pinned),
+            "a zombie keeps its original colour"
+        );
+        assert!(new_zombie.get_index(pinned));
+
+        assert!(
+            !new_occupied.get_index(removed),
+            "unpinned member is removed"
+        );
+        assert!(!new_zombie.get_index(removed));
     }
 
     /// A buried piece (hidden by an occluder two levels up) must not count
@@ -497,7 +637,8 @@ mod tests {
             "test setup must actually bury the target"
         );
 
-        let (black_board, white_board) = visible_boards(&state.occupied, &state.black);
+        let (black_board, white_board) =
+            visible_boards(&state.occupied, &state.black, &state.zombie);
         assert!(!black_board.get_index(target));
         assert!(!white_board.get_index(target));
     }
