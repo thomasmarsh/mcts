@@ -1074,6 +1074,52 @@ fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     );
 }
 
+#[test]
+fn test_minimax_rollout_prefers_the_winning_move_to_a_forced_draw() {
+    // Two empty cells (2, 8), X to move: playing 2 completes row 0-1-2 for
+    // an immediate win, ending the playout after one ply; playing 8 forces
+    // O into the only remaining cell (2), which is a draw for both (no
+    // line is completed). A uniform rollout would pick between them with
+    // even odds; `MinimaxRollout` with `n` covering both remaining plies
+    // should search the position out exactly and always prefer the win.
+    use game_ttt::*;
+    use mcts::simulate::{MinimaxRollout, SimulateStrategy};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    let stats = mcts::search::TreeStats::<G>::default();
+
+    for seed in 0..10 {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let mut strategy = MinimaxRollout::<G>::default().n(2);
+        let trial = strategy.playout(state, 2, &stats, None, &mut rng);
+        assert_eq!(
+            trial.actions,
+            vec![(Move(2), 0)],
+            "seed {seed}: should play the immediate winning move, not the drawing one"
+        );
+        assert_eq!(trial.depth, 1);
+        assert!(matches!(
+            trial.terminal,
+            mcts::game::TerminalStatus::Winner(Piece::X)
+        ));
+    }
+}
+
 // Tree reuse across moves ("re-rooting", search.rs's
 // `reuse_or_reset`/`find_reachable`). `reuse_or_reset` is exercised
 // directly (rather than only indirectly via two `choose_action` calls)

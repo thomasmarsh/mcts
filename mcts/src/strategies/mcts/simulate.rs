@@ -1,7 +1,9 @@
 use super::*;
+use crate::evaluator::{Evaluator, MaterialBlind};
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
+use crate::strategies::negamax::{Negamax, NegamaxOptions};
 use crate::strategies::Search;
 use crate::util::random_best;
 
@@ -190,6 +192,143 @@ impl<G: Game> SimulateStrategy<G> for Uniform {
                 break;
             };
             let player = G::player_to_move(&state).to_index();
+            actions.push((action.clone(), player));
+            state = G::apply(state, &action);
+            depth += 1;
+        }
+
+        Trial {
+            actions,
+            state,
+            status: Status { end_type },
+            depth,
+            terminal,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// MCTS-MR-n (minimax rollouts; the domain-independent predecessor to Baier
+/// & Winands' MCTS-IR-M): a uniform-random rollout for every ply, except the
+/// last `n` plies before the playout's depth cutoff (`max_playout_depth`),
+/// which are instead chosen by an exact bounded-negamax search of however
+/// much depth remains. Needs no real heuristic `Evaluator` at all when `n` is
+/// small enough that the bounded search reaches a true terminal state before
+/// its depth budget runs out -- the default `E = MaterialBlind` covers that
+/// case; only a game whose remaining-depth search can still bottom out
+/// non-terminal needs a real one plugged in via `MinimaxRollout::<G, E>`.
+///
+/// Overrides `playout` rather than `select_move`, unlike every other
+/// strategy above except `Uniform`: deciding whether a given ply falls
+/// within the last `n` needs `depth` and `max_playout_depth`, neither of
+/// which `select_move`'s signature carries.
+pub struct MinimaxRollout<G, E = MaterialBlind>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+{
+    pub n: u32,
+    negamax: Negamax<G, E>,
+}
+
+/// Hand-written for the same reason as `Negamax`'s own `Clone` impl: a
+/// derive would add an `E: Clone` bound that `Negamax<G, E>`'s real
+/// requirements don't need.
+impl<G, E> Clone for MinimaxRollout<G, E>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+{
+    fn clone(&self) -> Self {
+        Self {
+            n: self.n,
+            negamax: self.negamax.clone(),
+        }
+    }
+}
+
+impl<G, E> MinimaxRollout<G, E>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn n(mut self, n: u32) -> Self {
+        self.n = n;
+        self
+    }
+}
+
+impl<G, E> Default for MinimaxRollout<G, E>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            n: 1,
+            // No transposition table: each of the last `n` plies searches a
+            // different, shrinking remaining depth from a state that (unlike
+            // `Negamax::choose_action`'s iterative deepening) is never
+            // revisited at another depth, so a table would only add locking
+            // overhead across the many rollouts a single MCTS search runs,
+            // never pay for itself with a hit.
+            negamax: Negamax::new_with_options(
+                E::default(),
+                NegamaxOptions::default().with_table_bits(0),
+            ),
+        }
+    }
+}
+
+impl<G, E> SimulateStrategy<G> for MinimaxRollout<G, E>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+{
+    fn playout(
+        &mut self,
+        mut state: G::S,
+        max_playout_depth: usize,
+        _stats: &TreeStats<G>,
+        _prev_action: Option<G::A>,
+        rng: &mut SmallRng,
+    ) -> Trial<G> {
+        let mut actions = Vec::new();
+        let mut available = Vec::new();
+        let mut depth = 0;
+        let end_type;
+        let terminal;
+        loop {
+            let status = G::terminal_status(&state);
+            if !matches!(status, TerminalStatus::NotTerminal) {
+                end_type = Some(EndType::NaturalEnd);
+                terminal = status;
+                break;
+            }
+            if depth >= max_playout_depth {
+                end_type = Some(EndType::TurnLimit);
+                terminal = TerminalStatus::NotTerminal;
+                break;
+            }
+            available.clear();
+            G::generate_actions(&state, &mut available);
+            if available.is_empty() {
+                end_type = Some(EndType::NaturalEnd);
+                terminal = TerminalStatus::NotTerminal;
+                break;
+            }
+            let remaining = (max_playout_depth - depth) as u32;
+            let player = G::player_to_move(&state).to_index();
+            let action = if remaining <= self.n {
+                self.negamax.bounded_negamax(&state, remaining).0
+            } else {
+                available[rng.gen_range(0..available.len())].clone()
+            };
             actions.push((action.clone(), player));
             state = G::apply(state, &action);
             depth += 1;
