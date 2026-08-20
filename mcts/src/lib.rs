@@ -1,5 +1,6 @@
 pub mod game;
 pub mod strategies;
+pub mod symmetry;
 pub mod timer;
 pub mod util;
 pub mod zobrist;

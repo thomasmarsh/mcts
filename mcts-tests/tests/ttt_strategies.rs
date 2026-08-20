@@ -2114,10 +2114,10 @@ fn test_graph_reroot_promotes_matching_node_and_rebases_ply() {
         // `x_child_id`'s `ChildArray` actions are stored in *its own*
         // canonical orientation (explicit `GraphSearch::Dag` canonicalizes
         // every non-root node), not the real board's -- must go through
-        // `node::real_action`/`node::incoming_sym` to get a directly
+        // `node::real_action`/`symmetry::incoming_sym` to get a directly
         // playable action, exactly like `select_step`/`compute_pv` do.
         let incoming_sym =
-            mcts::node::incoming_sym::<G>(true, false, mcts::game::Real(&after_own_move));
+            mcts::symmetry::incoming_sym::<G>(true, false, mcts::game::Real(&after_own_move));
         let idx = (0..children.len())
             .find(|&i| children.is_explored(i))
             .expect("some reply should have been explored at 300 iterations");

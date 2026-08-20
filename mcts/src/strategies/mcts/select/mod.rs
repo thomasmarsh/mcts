@@ -46,13 +46,13 @@ pub struct SelectContext<'a, G: Game> {
     /// `incoming_sym` (e.g. `QuasiBestFirst::best_child`, which needs every
     /// ancestor's own incoming symmetry, not just `stack.current_id()`'s)
     /// replays real states forward from via `NodeStack::incoming_syms`. See
-    /// `node::incoming_sym`'s doc comment for why this can't be cached
+    /// `crate::symmetry::incoming_sym`'s doc comment for why this can't be cached
     /// per-edge.
     pub root_state: &'a G::S,
     /// Whether nodes can be shared across differing real orientations --
     /// true for explicit `GraphSearch::Dag` and for the legacy
-    /// `use_transpositions` table alike (see `node::incoming_sym`'s doc
-    /// comment). Gates whether `node::incoming_sym` computes a real
+    /// `use_transpositions` table alike (see `crate::symmetry::incoming_sym`'s doc
+    /// comment). Gates whether `crate::symmetry::incoming_sym` computes a real
     /// translation or short-circuits to identity.
     pub canonicalizes: bool,
     pub state: &'a G::S,

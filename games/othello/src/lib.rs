@@ -421,7 +421,7 @@ pub fn xor_const(hashes: &mut [u64; 8], table_idx: usize) {
 /// -- index 0 is the identity. Uses `board_symmetries_8x8`'s O(1)
 /// word-parallel transforms rather than looping `D4Symmetry::apply_to_bits`
 /// (O(popcount)) per symmetry -- this runs on every canonicalization, which
-/// (per `Game::canonical_representation`/`node::incoming_sym`) is every
+/// (per `Game::canonical_representation`/`mcts::symmetry::incoming_sym`) is every
 /// visited node below `SYMMETRY_PLY_LIMIT`, not just every expansion.
 fn board_symmetries(black: BB, white: BB) -> [(u64, u64); 8] {
     let black_syms = game_core::symmetry::board_symmetries_8x8(black);
@@ -452,7 +452,7 @@ impl State {
     /// This state's Zobrist hash -- the canonical-symmetry slot when
     /// `USE_SYMMETRY` is on (letting `use_transpositions`/graph-search node
     /// sharing merge positions reached via different orientations; see
-    /// `mcts::strategies::mcts::node::incoming_sym`'s doc comment for why
+    /// `mcts::symmetry::incoming_sym`'s doc comment for why
     /// every consumer of a shared node's `ChildArray` must translate through
     /// that shared orientation rather than assuming its own), the plain
     /// identity slot otherwise.

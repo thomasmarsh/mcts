@@ -340,7 +340,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// symmetry group generally shrinks toward the identity as more
     /// distinguishing detail accumulates on the board, so canonicalizing
     /// well past that point mostly pays its recomputation cost (once per
-    /// *visit* -- see `node::incoming_sym`, called from `select_step` and
+    /// *visit* -- see `crate::symmetry::incoming_sym`, called from `select_step` and
     /// every `backprop`/PV/render walk, not once per node expansion) for
     /// diminishing transposition-table hits. The default, `usize::MAX`,
     /// means "always attempt it" -- today's behavior for every game that hasn't

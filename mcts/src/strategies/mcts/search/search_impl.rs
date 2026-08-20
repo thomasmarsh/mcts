@@ -3,7 +3,6 @@ use crate::game::PlayerIndex;
 use crate::game::Real;
 use crate::strategies::mcts::config::GraphSearch;
 use crate::strategies::mcts::config::GraphStats;
-use crate::strategies::mcts::node;
 use crate::strategies::mcts::node::real_action;
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
@@ -13,6 +12,7 @@ use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::ActionReport;
 use crate::strategies::RootReport;
 use crate::strategies::Search;
+use crate::symmetry::incoming_sym;
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -141,8 +141,9 @@ where
 
         // The stack now contains the action path to the terminal state.
         // `stack.pairs()` walks root -> leaf, replaying real states (see
-        // `node::incoming_sym`'s doc comment for why the translation can't
-        // be cached across paths and must come from the real state in hand).
+        // `crate::symmetry::incoming_sym`'s doc comment for why the
+        // translation can't be cached across paths and must come from the
+        // real state in hand).
         let mut actions = vec![];
         let stack = NodeStack::<G::A>::new(self.stack.clone());
         let canonicalizes = self.config.uses_transpositions();
@@ -151,7 +152,7 @@ where
             let idx = *idx;
             let parent = self.index.get(*parent_id);
             let incoming_sym =
-                node::incoming_sym::<G>(canonicalizes, parent.is_root(), Real(&replay_state));
+                incoming_sym::<G>(canonicalizes, parent.is_root(), Real(&replay_state));
             let action = real_action::<G>(parent.children(), idx, incoming_sym);
             replay_state = G::apply(replay_state, &action);
             actions.push(action);

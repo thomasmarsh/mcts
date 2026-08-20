@@ -23,6 +23,7 @@ use crate::strategies::mcts::simulate::Trial;
 use crate::strategies::mcts::stack::NodeStack;
 use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::mcts::table::TranspositionTable;
+use crate::symmetry::incoming_sym;
 
 use rand::rngs::SmallRng;
 use rustc_hash::FxHashMap;
@@ -179,9 +180,10 @@ pub(crate) type ActionTotal<A> = (A, u32, Vec<f64>);
 /// two copies that could drift.
 pub struct Shared<'a, G: Game> {
     pub index: &'a TreeIndex<G::A>,
-    /// The root's own literal-board state -- the anchor every `node::
-    /// incoming_sym` translation replays real states forward from (see its
-    /// doc comment for why this can't be a cached per-edge value).
+    /// The root's own literal-board state -- the anchor every
+    /// `crate::symmetry::incoming_sym` translation replays real states
+    /// forward from (see its doc comment for why this can't be a cached
+    /// per-edge value).
     pub root_state: &'a G::S,
     pub root_stats: &'a NodeStats,
     pub table: &'a TranspositionTable,
@@ -235,7 +237,8 @@ pub fn expand<'a, G: Game>(
             // reached it, canonicalized -- `canonical_representation` is
             // deterministic on the equivalence class, so it doesn't matter
             // which of possibly several transposed parents that state came
-            // from; every caller translates back via `node::incoming_sym`,
+            // from; every caller translates back via `crate::symmetry::
+            // incoming_sym`,
             // recomputed fresh from its own real state rather than cached
             // (see that function's doc comment).
             let gen_state = if canonicalize && !node.is_root() {
@@ -549,12 +552,12 @@ pub fn select_step<G: Game>(
         let player = node.player_idx;
         // Recomputed fresh from `ctx.state` (this node's own real board
         // state) every iteration rather than carried from the previous one
-        // -- see `node::incoming_sym`'s doc comment for why a value cached
-        // on the incoming edge would be wrong whenever this node's own
-        // parent is itself a transposition (reached via more than one real
-        // orientation across different iterations).
+        // -- see `crate::symmetry::incoming_sym`'s doc comment for why a
+        // value cached on the incoming edge would be wrong whenever this
+        // node's own parent is itself a transposition (reached via more
+        // than one real orientation across different iterations).
         let incoming_sym =
-            node::incoming_sym::<G>(shared.use_transpositions, node.is_root(), Real(&ctx.state));
+            incoming_sym::<G>(shared.use_transpositions, node.is_root(), Real(&ctx.state));
 
         // A single snapshot of this node's status -- see `Node::status`'s
         // doc comment for why this can't be two separate `is_terminal()`/
