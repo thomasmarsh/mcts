@@ -85,6 +85,17 @@
 //!   per `choose_action` call, same as the plain history table, and
 //!   consulted together with it (summed) when ordering non-transposition-
 //!   table moves.
+//! - Symmetry-aware transposition: the table is hashed/looked-up/stored
+//!   keyed on `Game::canonical_representation(state)` rather than `state`
+//!   itself, so two positions that are symmetry images of each other (a
+//!   rotation/reflection reached via different move orders) share one
+//!   entry instead of each being searched from scratch. `tt_move` and the
+//!   stored `best_action` are translated between the literal board and
+//!   whichever canonical orientation wrote/reads the entry via
+//!   `Game::apply_to_action`/`invert_action`, mirroring how
+//!   `strategies::mcts::node::real_action`/`crate::symmetry::incoming_sym`
+//!   do the same translation for MCTS's `ChildArray`s. A no-op for every
+//!   game that hasn't overridden `canonical_representation`.
 //!
 //! # Room for more
 //!
@@ -99,7 +110,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-use crate::game::{Game, PlayerIndex, TerminalStatus};
+use crate::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus};
 use crate::strategies::{ActionReport, RootReport, Search};
 pub use table::Replacement;
 use table::{Bound, TranspositionTable};
@@ -430,13 +441,30 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             );
         }
 
-        let hash = G::zobrist_hash(state);
+        // Hashed/stored/looked-up in canonical orientation rather than
+        // `state`'s literal one, so two positions that are symmetry images
+        // of each other (reached via different move orders/orientations)
+        // share the same slot instead of each being searched from scratch.
+        // A no-op for any game that hasn't overridden
+        // `Game::canonical_representation` (`sym` is always `IDENTITY`
+        // there, per that method's doc comment).
+        let (canonical, sym) = G::canonical_representation(Real(state.clone()));
+        let canonical_state = canonical.into_inner();
+        let hash = G::zobrist_hash(&canonical_state);
         let alpha_orig = alpha;
         let mut beta = beta;
         let mut tt_move = None;
         if let Some(table) = &self.table {
-            if let Some(entry) = table.lookup(hash, state) {
-                tt_move = entry.best_action.clone();
+            if let Some(entry) = table.lookup(hash, &canonical_state) {
+                // The stored `best_action` was computed against whichever
+                // orientation first wrote this entry, not necessarily
+                // `sym` -- translate it back to `state`'s own real
+                // orientation before it's usable as this call's move-
+                // ordering hint.
+                tt_move = entry
+                    .best_action
+                    .clone()
+                    .map(|a| G::invert_action(Canonical(a), sym).into_inner());
                 if entry.depth >= depth {
                     match entry.bound {
                         Bound::Exact => return Some(entry.score),
@@ -570,7 +598,18 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             } else {
                 Bound::Exact
             };
-            table.store(hash, state, depth, best_score, bound, Some(best_action));
+            // Stored in the same canonical orientation the entry was
+            // looked up in above, not `state`'s literal one -- see
+            // `tt_move`'s translation on the read side.
+            let canonical_best_action = G::apply_to_action(Real(best_action), sym).into_inner();
+            table.store(
+                hash,
+                &canonical_state,
+                depth,
+                best_score,
+                bound,
+                Some(canonical_best_action),
+            );
         }
 
         Some(best_score)
@@ -591,9 +630,12 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
             if !matches!(G::terminal_status(&s), TerminalStatus::NotTerminal) {
                 break;
             }
+            let (canonical, sym) = G::canonical_representation(Real(s.clone()));
+            let canonical_state = canonical.into_inner();
             let Some(next) = table
-                .lookup(G::zobrist_hash(&s), &s)
+                .lookup(G::zobrist_hash(&canonical_state), &canonical_state)
                 .and_then(|e| e.best_action.clone())
+                .map(|a| G::invert_action(Canonical(a), sym).into_inner())
             else {
                 break;
             };

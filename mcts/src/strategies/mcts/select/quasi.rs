@@ -2,7 +2,6 @@ use super::super::book;
 use super::super::config::SearchConfig;
 use super::super::config::Strategy;
 use super::super::index::Id;
-use super::super::node;
 use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::search::TreeSearch;
@@ -12,6 +11,7 @@ use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::Real;
 use crate::strategies::Search;
+use crate::symmetry::incoming_sym;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
@@ -145,9 +145,9 @@ where
 
         // The stack now contains the action path to the terminal state.
         // `ctx.stack.pairs()` walks root -> leaf, replaying real states from
-        // `ctx.root_state` -- see `node::incoming_sym`'s doc comment for why
-        // each parent's own incoming symmetry must come from the real state
-        // in hand, not a cached edge value.
+        // `ctx.root_state` -- see `crate::symmetry::incoming_sym`'s doc
+        // comment for why each parent's own incoming symmetry must come
+        // from the real state in hand, not a cached edge value.
         // TODO: factor this pair iteration out of here
         let mut key_init = vec![];
         let mut replay_state = ctx.root_state.clone();
@@ -155,7 +155,7 @@ where
             let idx = *idx;
             let parent = ctx.index.get(*parent_id);
             let incoming_sym =
-                node::incoming_sym::<G>(ctx.canonicalizes, parent.is_root(), Real(&replay_state));
+                incoming_sym::<G>(ctx.canonicalizes, parent.is_root(), Real(&replay_state));
             let action = real_action::<G>(parent.children(), idx, incoming_sym);
             replay_state = G::apply(replay_state, &action);
             key_init.push(action);

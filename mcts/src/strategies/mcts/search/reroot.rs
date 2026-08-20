@@ -9,6 +9,7 @@ use crate::strategies::mcts::node::NodeState;
 use crate::strategies::mcts::search::shared::MAX_REROOT_DEPTH;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::table::TranspositionKey;
+use crate::symmetry::incoming_sym;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
@@ -69,7 +70,7 @@ where
     /// actions are stored in *that node's own* canonical orientation (see
     /// `node::real_action`'s doc comment), not the literal board's, so a
     /// candidate can only be found by translating each edge through
-    /// `node::incoming_sym` as the walk descends, not by comparing a node's
+    /// `crate::symmetry::incoming_sym` as the walk descends, not by comparing a node's
     /// stored (canonical) hash against `target`'s literal hash. Comparing
     /// the replayed state directly also makes a separate post-hoc
     /// verification pass unnecessary: a match here is already proven, not
@@ -97,7 +98,7 @@ where
                 }
                 let children = node.children();
                 let incoming_sym =
-                    node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&real_state));
+                    incoming_sym::<G>(canonicalizes, node.is_root(), Real(&real_state));
                 for i in 0..children.len() {
                     let Some(child_id) = children.node_id(i) else {
                         continue;
@@ -127,16 +128,16 @@ where
 
         // `matched_id`'s `ChildArray` (if it has one) was generated in
         // *its own* canonical orientation -- correct for a non-root node,
-        // but `node::incoming_sym` hard-codes identity once `is_root()` is
-        // true, on the assumption a root's actions are already literal
-        // (see `expand`'s doc comment). Translate them back to the literal
-        // board now, before flipping `is_root` below makes every future
-        // `incoming_sym`/`real_action` call for this node stop translating
-        // at all -- otherwise the very first descent through it after
-        // promotion applies a still-canonical action straight to the real
-        // board and corrupts play.
+        // but `crate::symmetry::incoming_sym` hard-codes identity once
+        // `is_root()` is true, on the assumption a root's actions are
+        // already literal (see `expand`'s doc comment). Translate them back
+        // to the literal board now, before flipping `is_root` below makes
+        // every future `incoming_sym`/`real_action` call for this node stop
+        // translating at all -- otherwise the very first descent through it
+        // after promotion applies a still-canonical action straight to the
+        // real board and corrupts play.
         let canonicalizes = self.config.uses_transpositions();
-        let sym = node::incoming_sym::<G>(canonicalizes, false, Real(state));
+        let sym = incoming_sym::<G>(canonicalizes, false, Real(state));
         if let Some(children) = self.index.get_mut(matched_id).children_mut() {
             children
                 .retranslate_actions(|a| G::invert_action(Canonical(a.clone()), sym).into_inner());

@@ -78,3 +78,33 @@ fn picks_a_legal_move_from_the_opening_position() {
         "tic-tac-toe from the opening position is a proven draw"
     );
 }
+
+#[test]
+fn symmetric_positions_reuse_the_first_searchs_transposition_entries() {
+    // Corners 0 and 2 are a 90-degree rotation of each other -- ttt's
+    // `Game::canonical_representation` maps the two resulting one-move
+    // states (and, transitively, most of their descendant subtrees) onto
+    // the same canonical orientation. `Negamax`'s table isn't cleared
+    // across `choose_action` calls, so a second search from the rotated
+    // twin of an already-searched position should land far more
+    // transposition-table hits (and so need far fewer nodes) than the
+    // first search that populated the table from scratch.
+    use game_ttt::*;
+
+    let mut search = solver();
+
+    let corner0 = TicTacToe::apply(HashedPosition::new(), &Move(0));
+    search.choose_action(&corner0);
+    let nodes_first = search.nodes_searched();
+
+    let corner2 = TicTacToe::apply(HashedPosition::new(), &Move(2));
+    search.choose_action(&corner2);
+    let nodes_second = search.nodes_searched();
+
+    assert!(
+        nodes_second < nodes_first / 2,
+        "second search over a rotated-symmetric position should reuse the \
+         first search's transposition-table entries and need far fewer \
+         nodes: first={nodes_first} second={nodes_second}"
+    );
+}

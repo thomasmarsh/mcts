@@ -4,7 +4,6 @@ use crate::game::Real;
 use crate::game::Transform;
 use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::index::Id;
-use crate::strategies::mcts::node;
 use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{
@@ -17,6 +16,7 @@ use crate::strategies::mcts::select::SelectContext;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::{SimulateStrategy, Trial};
 use crate::strategies::mcts::stack::NodeStack;
+use crate::symmetry::incoming_sym;
 use crate::util::pv_string;
 
 use rand::rngs::SmallRng;
@@ -476,9 +476,9 @@ where
         while node.is_expanded() {
             let player = node.player_idx;
             // Recomputed fresh from `state` every iteration, like
-            // `select_step`'s local of the same name -- see `node::
-            // incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
+            // `select_step`'s local of the same name -- see `crate::
+            // symmetry::incoming_sym`'s doc comment.
+            let incoming_sym = incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             let select_ctx = SelectContext {
                 q_init: self.config.q_init,
                 player,

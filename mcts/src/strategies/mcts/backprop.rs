@@ -592,7 +592,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             vec![]
         };
         // Every stack node's own incoming symmetry, replayed from
-        // `root_state` -- see `node::incoming_sym`'s doc comment for why
+        // `root_state` -- see `crate::symmetry::incoming_sym`'s doc comment for why
         // this can't be a value cached on the edge. Computed once, up
         // front, only when `needs_actions` actually reads a tree action
         // below.

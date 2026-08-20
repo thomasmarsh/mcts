@@ -1,7 +1,7 @@
 use crate::game::Game;
 use crate::game::Real;
+use crate::symmetry::incoming_sym;
 
-use super::node;
 use super::node::real_action;
 use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
 
@@ -69,8 +69,8 @@ fn print_trans<G>(
         if node.is_expanded() {
             let children = node.children();
             // Fresh from `state` (this node's own real board state), not
-            // cached -- see `node::incoming_sym`'s doc comment.
-            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
+            // cached -- see `crate::symmetry::incoming_sym`'s doc comment.
+            let incoming_sym = incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,
@@ -106,7 +106,7 @@ where
         let node = index.get(node_id);
         if node.is_expanded() {
             let children = node.children();
-            let incoming_sym = node::incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
+            let incoming_sym = incoming_sym::<G>(canonicalizes, node.is_root(), Real(&state));
             for i in (0..children.len()).filter(|&i| children.is_explored(i)) {
                 stack.push((
                     node_id,

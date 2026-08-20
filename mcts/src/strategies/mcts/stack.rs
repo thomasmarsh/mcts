@@ -8,6 +8,7 @@ use crate::game::Action;
 use crate::game::Game;
 use crate::game::Real;
 use crate::game::Transform;
+use crate::symmetry::incoming_sym;
 use crate::util::Pairs;
 use crate::util::ReversePairs;
 use crate::util::ReversePairs2;
@@ -62,7 +63,7 @@ impl<A: Action> NodeStack<A> {
     /// The symmetry index of the edge leading into each `Id` on this stack,
     /// and the literal-board action taken on that edge -- what
     /// `node::real_action`'s callers need translate a stack node's own
-    /// `ChildArray` actions back to the literal board (see `node::
+    /// `ChildArray` actions back to the literal board (see `crate::symmetry::
     /// incoming_sym`'s doc comment for why this must be derived by replaying
     /// real states from the root, never read off a `ChildArray` alone: a
     /// node's own incoming symmetry depends on which *real* orientation of
@@ -92,7 +93,7 @@ impl<A: Action> NodeStack<A> {
             let parent_sym = *syms.get(parent_id).unwrap();
             let action = node::real_action::<G>(parent.children(), *child_idx, parent_sym);
             state = G::apply(state, &action);
-            let child_sym = node::incoming_sym::<G>(canonicalizes, false, Real(&state));
+            let child_sym = incoming_sym::<G>(canonicalizes, false, Real(&state));
             syms.insert(*child_id, child_sym);
             actions.insert(*child_id, action);
         }

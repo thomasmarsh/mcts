@@ -992,7 +992,7 @@ mod tests {
     /// first expands a node, then reused verbatim by every other real
     /// orientation that later transposes onto the same node (same hash / same
     /// `canonical_representation` output) -- each such orientation supplies
-    /// its own `sym` (`node::incoming_sym`, recomputed fresh from its own
+    /// its own `sym` (`mcts::symmetry::incoming_sym`, recomputed fresh from its own
     /// real state) to translate the *same* shared canonical action list back
     /// to its own board via `invert_action`. Exhaustively BFS the 3x3 board,
     /// group every reachable state by hash, and for every group with more
