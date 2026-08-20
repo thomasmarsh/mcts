@@ -62,6 +62,27 @@ impl GraphStats {
     }
 }
 
+/// The paper's residual information-leak correction (arXiv 2012.11045v1),
+/// only meaningful under `GraphStats::Both` (it compares an edge's local
+/// estimate against its target node's shared estimate, so it has nothing to
+/// read in `Edges`/`Nodes` mode where only one of the two exists). At an
+/// edge into a node reached by more than one parent, the local edge
+/// estimate can disagree with the node's shared estimate -- the node has
+/// learned from paths this edge never took. `Disabled` (the default) never
+/// checks, preserving today's behavior. `Residual { epsilon }` is the
+/// paper's bounded correction: descent stops and a correction trial is
+/// backpropagated only through the saved path whenever the two estimates
+/// diverge by more than `epsilon`. See `correction::residual_correction` for
+/// the pure algebra this drives.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum McgsCorrection {
+    #[default]
+    Disabled,
+    Residual {
+        epsilon: f64,
+    },
+}
+
 pub struct BackpropFlags(pub usize);
 
 impl BackpropFlags {
@@ -286,6 +307,12 @@ where
     pub graph_search: GraphSearch,
     pub use_transpositions: bool,
 
+    /// Residual information-leak correction, only meaningful under
+    /// `GraphSearch::Dag(GraphStats::Both)` -- see `McgsCorrection`'s doc
+    /// comment. `Disabled` (the default) never checks, so this is a no-op
+    /// for every other `graph_search`/`use_transpositions` configuration.
+    pub mcgs_correction: McgsCorrection,
+
     /// MCTS-Solver (Winands et al.): backprop derives and propagates proven
     /// win/loss/draw status alongside the usual visit/score stats, selection
     /// short-circuits onto a proven-winning child and avoids proven-losing
@@ -406,6 +433,7 @@ where
             max_time: Default::default(),
             graph_search: GraphSearch::Tree,
             use_transpositions: false,
+            mcgs_correction: McgsCorrection::Disabled,
             use_mcts_solver: false,
             contempt_factor: None,
             solver_loss_threshold: 0,
@@ -530,6 +558,11 @@ where
 
     pub fn graph_search(mut self, graph_search: GraphSearch) -> Self {
         self.graph_search = graph_search;
+        self
+    }
+
+    pub fn mcgs_correction(mut self, mcgs_correction: McgsCorrection) -> Self {
+        self.mcgs_correction = mcgs_correction;
         self
     }
 
