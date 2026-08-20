@@ -12,7 +12,9 @@
 use bitboard::{Board, Dim, Storage};
 
 pub mod adjacency;
+pub mod symmetry;
 pub use adjacency::touching_neighbors;
+pub use symmetry::PyramidD4;
 
 /// Sum of squares `1^2 + 2^2 + ... + x^2` -- the total cell count of an
 /// `x`-level pyramid (`x` = base width). Closed form of
