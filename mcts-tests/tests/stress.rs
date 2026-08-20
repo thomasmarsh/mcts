@@ -68,6 +68,40 @@ fn test_tree_parallel_transpositions_survive_many_real_time_games() {
     }
 }
 
+/// Broad sweep of `game-atarigo`'s
+/// `regression_transposition_corruption_past_symmetry_ply_limit` across
+/// board sizes/iteration counts/seeds -- that single fast lib test already
+/// covers the regression's minimal repro, but this wider space (multiple
+/// board sizes, iteration counts, and seeds) is what actually exercised the
+/// bug reliably, so this sweep is the real coverage for the fix
+/// (`mcts::strategies::mcts::search::shared::verified_child_id`).
+#[test]
+fn test_atarigo_transposition_symmetry_sweep_no_corruption() {
+    let _guard = stress_test_guard();
+    use game_atarigo::AtariGo;
+    use game_atarigo::State;
+    use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+    use mcts::strategies::Search;
+
+    type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+    for &size in &[5, 7, 9] {
+        for &iterations in &[30, 100, 300] {
+            for seed in 0..10u64 {
+                let mut ts = TS::default().config(
+                    SearchConfig::default()
+                        .expand_threshold(0)
+                        .max_iterations(iterations)
+                        .q_init(QInit::Loss)
+                        .use_transpositions(true)
+                        .seed(seed),
+                );
+                let state = State::new(size);
+                _ = ts.choose_action(&state);
+            }
+        }
+    }
+}
+
 #[test]
 fn test_druid_hash_no_collision_across_many_random_games() {
     let _guard = stress_test_guard();

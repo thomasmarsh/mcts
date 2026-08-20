@@ -39,12 +39,6 @@ impl<G: Game> SearchContext<G> {
     }
 
     #[inline]
-    fn traverse_apply(&mut self, child_id: Id, action: &G::A) {
-        self.traverse(child_id);
-        self.state = G::apply(self.state.clone(), action);
-    }
-
-    #[inline]
     fn traverse(&mut self, child_id: Id) {
         self.current_id = child_id;
     }
@@ -265,6 +259,123 @@ pub fn expand<'a, G: Game>(
     })
 }
 
+/// The subset of `Shared` needed to resolve a real successor state to its
+/// shared arena node under transposition/DAG merging -- factored out so
+/// callers that don't otherwise build a full `Shared` (`compute_pv`, which
+/// runs after search completes) don't have to synthesize one just to reach
+/// `resolve_child_id`/`verified_child_id`.
+pub(crate) struct TranspositionCtx<'a, G: Game> {
+    pub index: &'a TreeIndex<G::A>,
+    pub table: &'a TranspositionTable,
+    pub explicit_dag: bool,
+    pub use_transpositions: bool,
+    pub has_amaf: bool,
+    pub use_mcts_solver: bool,
+}
+
+impl<'a, G: Game> Shared<'a, G> {
+    fn transposition_ctx(&self) -> TranspositionCtx<'a, G> {
+        TranspositionCtx {
+            index: self.index,
+            table: self.table,
+            explicit_dag: self.explicit_dag,
+            use_transpositions: self.use_transpositions,
+            has_amaf: self.has_amaf,
+            use_mcts_solver: self.use_mcts_solver,
+        }
+    }
+}
+
+/// Resolves `state` (the real, literal-board successor already computed by
+/// the caller) to its shared arena node under transposition/DAG merging --
+/// the hash-keyed table lookup half of edge creation, factored out of
+/// `new_child` so `select_step`'s existing-child branch can also reach it
+/// (see `verified_child_id`'s doc comment for why it needs to).
+/// `parent_ply` is the *child's* ply (parent's ply + 1), matching
+/// `TranspositionKey::ply`.
+fn resolve_child_id<G: Game>(ctx: &TranspositionCtx<'_, G>, state: &G::S, child_ply: u32) -> Id {
+    if ctx.explicit_dag {
+        let canon_state = G::canonical_representation(Real(state.clone()))
+            .0
+            .into_inner();
+        let canon_hash = G::zobrist_hash(&canon_state);
+        ctx.table.get_or_insert_graph(
+            TranspositionKey {
+                position_hash: canon_hash,
+                ply: child_ply,
+            },
+            || {
+                ctx.index.insert(Node::new_at_ply(
+                    G::player_to_move(state).to_index(),
+                    canon_hash,
+                    child_ply,
+                    G::num_players(),
+                    ctx.has_amaf,
+                    ctx.use_mcts_solver,
+                ))
+            },
+        )
+    } else {
+        debug_assert!(ctx.use_transpositions);
+        let hash = G::zobrist_hash(state);
+        ctx.table.get_or_insert(hash, || {
+            ctx.index.insert(Node::new_at_ply(
+                G::player_to_move(state).to_index(),
+                hash,
+                child_ply,
+                G::num_players(),
+                ctx.has_amaf,
+                ctx.use_mcts_solver,
+            ))
+        })
+    }
+}
+
+/// A `ChildArray` slot's cached child (`children.node_id(best_idx)`) is only
+/// trustworthy when the *parent* is never reached by more than one real
+/// board orientation -- true whenever transposition/DAG merging is off, but
+/// not once it's on. Under merging, a shared parent can legitimately be
+/// reached by two different real orientations that both translate the same
+/// canonical action index to *different* real successor states once the
+/// child's ply passes the game's `symmetry_ply_limit` (below the limit the
+/// two successors are themselves still symmetric and correctly share a
+/// node; past it they're genuinely different positions). `ChildArray`'s
+/// single `OnceLock` per idx only remembers whichever orientation arrived
+/// first, so a later, different orientation must not silently reuse it --
+/// doing so would apply this orientation's translated action against a
+/// child node built for a different, unrelated real board. Verifies the
+/// cached child's stored hash against what *this* orientation's real
+/// successor state actually hashes to, and
+/// falls through to the same table lookup a brand-new edge would use
+/// (`resolve_child_id`) on a mismatch -- correctly returning the existing
+/// shared node for a genuine merge, or creating a fresh one otherwise,
+/// either way bypassing the stale cached slot rather than trusting it.
+pub(crate) fn verified_child_id<G: Game>(
+    ctx: &TranspositionCtx<'_, G>,
+    cached_id: Id,
+    state: &G::S,
+    child_ply: u32,
+) -> Id {
+    if !(ctx.explicit_dag || ctx.use_transpositions) {
+        return cached_id;
+    }
+    let expect_hash = if ctx.explicit_dag {
+        G::zobrist_hash(
+            &G::canonical_representation(Real(state.clone()))
+                .0
+                .into_inner(),
+        )
+    } else {
+        G::zobrist_hash(state)
+    };
+    if ctx.index.get(cached_id).hash == expect_hash {
+        return cached_id;
+    }
+    let id = resolve_child_id::<G>(ctx, state, child_ply);
+    ctx.index.get(id).add_incoming_edge();
+    id
+}
+
 /// Resolves an unexplored edge's child, creating it if this is the first
 /// caller to arrive (see `Edge::get_or_create_child` and
 /// `TranspositionTable::get_or_insert` for how each half of the
@@ -278,45 +389,12 @@ pub fn new_child<G: Game>(
     let parent = shared.index.get(current_id);
     let children = parent.children();
     children.get_or_create_child(best_idx, || {
-        let child_id = if shared.explicit_dag {
-            let ply = parent.ply + 1;
-            let canon_state = G::canonical_representation(Real(state.clone()))
-                .0
-                .into_inner();
-            let canon_hash = G::zobrist_hash(&canon_state);
-            shared.table.get_or_insert_graph(
-                TranspositionKey {
-                    position_hash: canon_hash,
-                    ply,
-                },
-                || {
-                    shared.index.insert(Node::new_at_ply(
-                        G::player_to_move(state).to_index(),
-                        canon_hash,
-                        ply,
-                        G::num_players(),
-                        shared.has_amaf,
-                        shared.use_mcts_solver,
-                    ))
-                },
-            )
-        } else if shared.use_transpositions {
-            let hash = G::zobrist_hash(state);
-            shared.table.get_or_insert(hash, || {
-                shared.index.insert(Node::new_at_ply(
-                    G::player_to_move(state).to_index(),
-                    hash,
-                    parent.ply + 1,
-                    G::num_players(),
-                    shared.has_amaf,
-                    shared.use_mcts_solver,
-                ))
-            })
+        let child_id = if shared.explicit_dag || shared.use_transpositions {
+            resolve_child_id::<G>(&shared.transposition_ctx(), state, parent.ply + 1)
         } else {
-            let hash = G::zobrist_hash(state);
             shared.index.insert(Node::new_at_ply(
                 G::player_to_move(state).to_index(),
-                hash,
+                G::zobrist_hash(state),
                 parent.ply + 1,
                 G::num_players(),
                 shared.has_amaf,
@@ -489,15 +567,27 @@ pub fn select_step<G: Game>(
             children.add_virtual_loss(best_idx);
         }
 
-        if let Some(child_id) = children.node_id(best_idx) {
-            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
-                shared.index.get(child_id).stats.add_virtual_loss();
-            }
+        if let Some(cached_child_id) = children.node_id(best_idx) {
             // `children.action(best_idx)` is in *this* node's own
             // orientation (canonical if this node isn't the root -- see
             // `expand`), translated via `incoming_sym`.
             let action = real_action::<G>(children, best_idx, incoming_sym);
-            ctx.traverse_apply(child_id, &action);
+            let state = G::apply(ctx.state.clone(), &action);
+            // `cached_child_id` was resolved by whichever real orientation
+            // of this node reached this slot first -- not necessarily this
+            // one. See `verified_child_id`'s doc comment for why that can be
+            // wrong once transposition/DAG merging is on.
+            let child_id = verified_child_id::<G>(
+                &shared.transposition_ctx(),
+                cached_child_id,
+                &state,
+                node.ply + 1,
+            );
+            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
+                shared.index.get(child_id).stats.add_virtual_loss();
+            }
+            ctx.traverse(child_id);
+            ctx.state = state;
         } else {
             let action = real_action::<G>(children, best_idx, incoming_sym);
             {

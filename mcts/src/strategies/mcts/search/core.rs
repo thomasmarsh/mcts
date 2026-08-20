@@ -414,13 +414,29 @@ where
                 };
 
             let children = node.children();
-            let Some(child_id) = children.node_id(best_idx) else {
+            let Some(cached_child_id) = children.node_id(best_idx) else {
                 break;
             };
             let action = real_action::<G>(children, best_idx, incoming_sym);
-            node_id = child_id;
-            node = self.index.get(node_id);
             state = G::apply(state, &action);
+            // See `verified_child_id`'s doc comment: `cached_child_id` was
+            // resolved by whichever real orientation reached this slot
+            // first during search, which need not be the orientation this
+            // PV replay is currently holding.
+            node_id = crate::strategies::mcts::search::shared::verified_child_id::<G>(
+                &crate::strategies::mcts::search::shared::TranspositionCtx {
+                    index: &self.index,
+                    table: &self.table,
+                    explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
+                    use_transpositions: self.config.uses_transpositions(),
+                    has_amaf: self.config.requirements().amaf,
+                    use_mcts_solver: self.config.use_mcts_solver,
+                },
+                cached_child_id,
+                &state,
+                node.ply + 1,
+            );
+            node = self.index.get(node_id);
             self.pv.push(action);
             stack.push(node_id, best_idx);
         }
