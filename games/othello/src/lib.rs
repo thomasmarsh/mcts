@@ -418,16 +418,15 @@ pub fn xor_const(hashes: &mut [u64; 8], table_idx: usize) {
 
 /// All 8 symmetric images of a `State`'s geometric fields (`black`/`white`),
 /// as raw bit patterns, keyed the same way as `D4Symmetry::index_symmetries`
-/// -- index 0 is the identity.
+/// -- index 0 is the identity. Uses `board_symmetries_8x8`'s O(1)
+/// word-parallel transforms rather than looping `D4Symmetry::apply_to_bits`
+/// (O(popcount)) per symmetry -- this runs on every canonicalization, which
+/// (per `Game::canonical_representation`/`node::incoming_sym`) is every
+/// visited node below `SYMMETRY_PLY_LIMIT`, not just every expansion.
 fn board_symmetries(black: BB, white: BB) -> [(u64, u64); 8] {
-    let mut out = [(0u64, 0u64); 8];
-    for (sym_idx, slot) in out.iter_mut().enumerate() {
-        *slot = (
-            D4Symmetry::<8>::apply_to_bits(black.bits(), sym_idx),
-            D4Symmetry::<8>::apply_to_bits(white.bits(), sym_idx),
-        );
-    }
-    out
+    let black_syms = game_core::symmetry::board_symmetries_8x8(black);
+    let white_syms = game_core::symmetry::board_symmetries_8x8(white);
+    std::array::from_fn(|sym_idx| (black_syms[sym_idx].bits(), white_syms[sym_idx].bits()))
 }
 
 /// Index of the symmetry whose image of `(black, white)` is lexicographically
