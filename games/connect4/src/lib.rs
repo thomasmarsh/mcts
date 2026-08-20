@@ -21,18 +21,19 @@
 //! Connect Four admits only a left-right mirror -- flipping rows would
 //! swap which end of a column gravity pulls toward, which isn't a symmetry
 //! of the rules at all. That's the two-element group C2 (a.k.a. D1):
-//! identity and column-mirror (`col -> C - 1 - col`). Small and
-//! rectangular-board-specific enough that it's implemented locally here
-//! (`mirror_index`/`mirror_board`) rather than added to
-//! `game_core::symmetry` alongside `D4Symmetry`/`KleinFour`, following the
-//! same "one array slot per symmetry element" hashing/canonicalization
-//! pattern as `ttt`'s `D4Symmetry<3>` and Gonnect's `D4Dyn`, just with 2
-//! slots instead of 8.
+//! identity and column-mirror (`col -> C - 1 - col`), i.e.
+//! `game_core::symmetry::ColMirror<C>` -- `KleinFour`'s subgroup for exactly
+//! this "only one flip is valid" case. This crate only adds board-level
+//! helpers (`mirror_board`/`board_symmetries`/`canonical_symmetry`) on top
+//! of it, following the same "one array slot per symmetry element"
+//! hashing/canonicalization pattern as `ttt`'s `D4Symmetry<3>` and Gonnect's
+//! `D4Dyn`, just with 2 slots instead of 8.
 
 mod heuristic;
 
 use bitboard::{Board, Const};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
+use game_core::symmetry::{ColMirror, SymmetryGroup};
 use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;
 
@@ -87,22 +88,16 @@ impl Move {
 }
 
 // ── Symmetry helpers ─────────────────────────────────────────────────────
-
-/// Mirror a row-major cell index left-right: `col -> C - 1 - col`, row
-/// unchanged.
-#[inline]
-fn mirror_index<const C: usize>(i: usize) -> usize {
-    let row = i / C;
-    let col = i % C;
-    row * C + (C - 1 - col)
-}
+//
+// The cell-index-level group is `game_core::symmetry::ColMirror<C>`; the
+// helpers here just lift it to board pairs and Zobrist hash slots.
 
 /// The `[identity, mirror]` images of a cell index -- element `s` is what a
 /// piece placed there contributes to `State::hashes[s]`, and what
 /// `Game::apply_to_action`/`invert_action` look up by `Transform::index()`.
 #[inline]
 fn index_symmetries<const C: usize>(i: usize) -> [usize; NUM_SYMMETRIES] {
-    [i, mirror_index::<C>(i)]
+    ColMirror::<C>::index_symmetries(i)
 }
 
 /// Mirror every set cell of a board left-right.
@@ -110,7 +105,7 @@ fn index_symmetries<const C: usize>(i: usize) -> [usize; NUM_SYMMETRIES] {
 fn mirror_board<const R: usize, const C: usize>(b: BitBoard<R, C>) -> BitBoard<R, C> {
     let mut out = b.empty_like();
     for idx in b.iter_set() {
-        out.set_index(mirror_index::<C>(idx));
+        out.set_index(ColMirror::<C>::apply_index(idx, 1));
     }
     out
 }
@@ -423,15 +418,13 @@ impl<const R: usize, const C: usize> Game for Connect4<R, C> {
 
     fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
         let col = action.0.col();
-        let mirrored = if sym.index() == 0 { col } else { C - 1 - col };
+        let mirrored = ColMirror::<C>::apply_index(col, sym.index());
         Canonical(Move(mirrored as u8))
     }
 
     fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
-        // The mirror is its own inverse, so this is the same map as
-        // `apply_to_action`.
         let col = action.0.col();
-        let mirrored = if sym.index() == 0 { col } else { C - 1 - col };
+        let mirrored = ColMirror::<C>::invert_index(col, sym.index());
         Real(Move(mirrored as u8))
     }
 }
