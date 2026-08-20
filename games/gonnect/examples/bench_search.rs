@@ -31,6 +31,7 @@
 // throughput measurement -- kept modest by default since Gonnect's current
 // unincremental legality check is exactly what's expected to make 19x19
 // slow here.
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use game_gonnect::{Gonnect, State};
@@ -43,8 +44,8 @@ const ROLLOUT_GAMES: usize = 20;
 const ROLLOUT_SEED: u64 = 0;
 
 fn presets() -> PresetTable {
-    PresetTable::load(include_str!("../presets.json"), None)
-        .expect("games/gonnect/presets.json must parse")
+    let presets_path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"));
+    PresetTable::load_from_path(&presets_path).expect("games/gonnect/presets.json must parse")
 }
 
 /// Fixed-iteration, single-threaded "strong" search from the empty board.

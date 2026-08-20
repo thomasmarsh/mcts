@@ -103,22 +103,18 @@ impl PresetTable {
         Ok(Self { presets })
     }
 
-    /// [`Self::from_json`], preferring `override_path`'s file contents when
-    /// it exists -- the "easy to configure at runtime" half of the design:
-    /// a game binary embeds its shipped defaults via `include_str!` and
-    /// passes them as `default_json`, but an operator can point
-    /// `override_path` (typically from an env var the binary's own `main`
-    /// reads, e.g. `NIM_PRESETS_PATH`) at an edited copy without a
-    /// rebuild.
-    pub fn load(default_json: &str, override_path: Option<&Path>) -> Result<Self, HostError> {
-        match override_path {
-            Some(path) if path.exists() => {
-                let text = std::fs::read_to_string(path)
-                    .map_err(|e| HostError::internal(format!("reading {}: {e}", path.display())))?;
-                Self::from_json(&text)
-            }
-            _ => Self::from_json(default_json),
-        }
+    /// [`Self::from_json`], reading `path`'s contents at call time -- game
+    /// binaries do not embed `presets.json` via `include_str!` (that would
+    /// make Cargo treat the file as a build dependency and rebuild on every
+    /// edit); they read it fresh from disk on every startup instead, so
+    /// editing presets never triggers a rebuild. `path` is typically the
+    /// game's own `presets.json` next to `Cargo.toml`, or an operator
+    /// override from an env var the binary's own `main` reads (e.g.
+    /// `NIM_PRESETS_PATH`).
+    pub fn load_from_path(path: &Path) -> Result<Self, HostError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| HostError::internal(format!("reading {}: {e}", path.display())))?;
+        Self::from_json(&text)
     }
 
     /// The `GameAdapter::ai_presets` reply -- every preset's `{id, label,
@@ -461,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn load_prefers_an_existing_override_file_over_the_embedded_default() {
+    fn load_from_path_reads_the_file_and_errors_when_it_is_missing() {
         let dir =
             std::env::temp_dir().join(format!("mcts_tune_preset_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -472,13 +468,12 @@ mod tests {
         )
         .unwrap();
 
-        let table = PresetTable::load(sample_json(), Some(&path)).unwrap();
+        let table = PresetTable::load_from_path(&path).unwrap();
         assert_eq!(table.ai_presets().len(), 1);
         assert_eq!(table.ai_presets()[0].id, "only");
 
         std::fs::remove_file(&path).ok();
-        let fallback = PresetTable::load(sample_json(), Some(&path)).unwrap();
-        assert_eq!(fallback.ai_presets().len(), 2);
+        assert!(PresetTable::load_from_path(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }
