@@ -332,8 +332,7 @@ fn cells_key(cells: &Cells) -> Vec<usize> {
 /// `previous` to inconsistent results across symmetric inputs. Caught by
 /// `canonical_representation_invariant_under_symmetry` (a 4x4 board with a
 /// self-symmetric `(occupied, black)` pattern but an asymmetric `previous`)
-/// rather than reasoned out by hand -- see this plan phase's own guidance
-/// on preferring a property test here. Including every geometric field in
+/// rather than reasoned out by hand. Including every geometric field in
 /// the tie-break makes the minimizer's *image* unique even when several
 /// symmetry indices achieve it, which is what `canonical_representation`
 /// actually needs.
@@ -834,9 +833,9 @@ mod tests {
     /// own dependent, so the closing black stone rests directly on top of
     /// it, pinning it: the captured piece stays on the board as a zombie
     /// (original colour kept, but excluded from future connectivity) rather
-    /// than being removed. Constructed via direct field construction (per
-    /// the new-game skill's guidance), not simulated play, so the scenario
-    /// is exact regardless of `generate_actions`'s own behaviour.
+    /// than being removed. Constructed via direct field construction, not
+    /// simulated play, so the scenario is exact regardless of
+    /// `generate_actions`'s own behaviour.
     ///
     /// Uses the base corner `(0, 0, 0)` rather than an interior cell: a
     /// touching-adjacency neighbor set includes not just the (up to four)
@@ -1239,7 +1238,7 @@ mod tests {
     // `canonical_representation` invariance across every symmetric image of
     // a state, `invert_action` always producing a legal real action along
     // random play, and hash consistency -- mirroring `games/gonnect`'s/
-    // `games/atarigo`'s own symmetry test suites (see the new-game skill).
+    // `games/atarigo`'s own symmetry test suites.
 
     /// Every geometric field (`occupied`/`black`/`zombie`/`previous`)
     /// transformed through each of the 8 `PyramidD4` elements -- the full
@@ -1435,5 +1434,32 @@ mod tests {
             mismatches, 0,
             "hash collided across different equivalence classes"
         );
+    }
+
+    /// [`Margo::winner`] is a piece-count race, not connectivity/territory --
+    /// built via direct field construction so the counts are exact
+    /// regardless of `generate_actions`'s behaviour, rather than relying on
+    /// a specific game reaching this ratio through legal play.
+    #[test]
+    fn winner_is_whoever_has_more_pieces() {
+        let mut state = State::new(MIN_N);
+        for &(col, row) in &[(0, 0), (1, 0), (2, 0)] {
+            state.occupied.set_index(state.occupied.index(col, row, 0));
+            state.black.set_index(state.occupied.index(col, row, 0));
+        }
+        for &(col, row) in &[(3, 0), (0, 1)] {
+            state.occupied.set_index(state.occupied.index(col, row, 0));
+        }
+        assert_eq!(Margo::winner(&state), Some(Player::Black));
+
+        let mut tied = State::new(MIN_N);
+        for &(col, row) in &[(0, 0), (1, 0)] {
+            tied.occupied.set_index(tied.occupied.index(col, row, 0));
+            tied.black.set_index(tied.occupied.index(col, row, 0));
+        }
+        for &(col, row) in &[(3, 0), (0, 1)] {
+            tied.occupied.set_index(tied.occupied.index(col, row, 0));
+        }
+        assert_eq!(Margo::winner(&tied), None);
     }
 }
