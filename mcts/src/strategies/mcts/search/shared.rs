@@ -5,6 +5,8 @@ use crate::game::TerminalStatus;
 use crate::strategies::mcts::backprop::BackpropStrategy;
 use crate::strategies::mcts::config::BackpropFlags;
 use crate::strategies::mcts::config::GraphStats;
+use crate::strategies::mcts::config::McgsCorrection;
+use crate::strategies::mcts::correction::residual_correction;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
@@ -200,6 +202,9 @@ pub struct Shared<'a, G: Game> {
     /// `Strategy` reads per-child AMAF stats, gating whether newly created
     /// `Node`/`ChildArray`s allocate their AMAF side table at all.
     pub has_amaf: bool,
+    /// See `McgsCorrection`'s doc comment -- only ever consulted in
+    /// `select_step` when `graph_stats` is `Some(GraphStats::Both)`.
+    pub mcgs_correction: McgsCorrection,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
@@ -462,16 +467,68 @@ pub fn proven_draw_child<G: Game>(
     })
 }
 
+/// The residual information-leak check (mcgs.md item 5, arXiv 2012.11045v1
+/// Section III.C) at one edge about to enter an already-shared node: compares
+/// the edge's own local Q for `mover` (the parent's own player-to-move, whose
+/// decision this edge represents) against `target`'s shared Q for that same
+/// player. `target` only has evidence worth trusting over the edge once more
+/// than one parent has fed it (`is_transposition()`); `residual_correction`
+/// itself already short-circuits on `McgsCorrection::Disabled` or either side
+/// being unvisited. Returns every player's corrected utility (the target
+/// node's own current expected score, clamped) when the check fires -- not
+/// just `mover`'s -- since firing means "stop trusting this edge, trust the
+/// merged node instead" for the whole vector, and the node's per-player
+/// `expected_score` is already well-defined for players other than `mover`.
+///
+/// Generic over `A: Action` (not `G: Game`) since, like `backprop::
+/// derive_pn_dpn`, it never actually calls a `Game` method -- `num_players`
+/// is threaded in explicitly so a unit test can drive this against a hand-
+/// built arena without a real `Game` impl to hand.
+pub(crate) fn mcgs_correction_at_edge<A: crate::game::Action>(
+    config: McgsCorrection,
+    graph_stats: Option<GraphStats>,
+    num_players: usize,
+    children: &ChildArray<A>,
+    best_idx: usize,
+    mover: usize,
+    target: &Node<A>,
+) -> Option<Vec<f64>> {
+    if !matches!(graph_stats, Some(GraphStats::Both)) || !target.is_transposition() {
+        return None;
+    }
+    residual_correction(
+        config,
+        children.expected_score(best_idx, mover),
+        children.num_visits(best_idx),
+        target.stats.expected_score(mover),
+        target.stats.num_visits(),
+    )?;
+    Some(
+        (0..num_players)
+            .map(|p| target.stats.expected_score(p).clamp(-1.0, 1.0))
+            .collect(),
+    )
+}
+
 /// Descend from `ctx.current_id` to a leaf, expanding/creating nodes as
 /// needed, leaving the root->leaf path in `stack`. Shared by the
 /// single-threaded path and every tree-parallel worker.
+///
+/// Returns `Some(utilities)` when `mcgs_correction_at_edge` fires partway
+/// through descent: `stack` ends at the edge's parent (the shared node it
+/// would have entered is never traversed into, so it gets none of this
+/// iteration's virtual loss/visit), and the caller must backpropagate
+/// `utilities` directly (`backprop_correction_step`) instead of rolling out a
+/// real playout from `ctx.state`. `None` is the existing behavior: descent
+/// reached a real leaf, and `ctx`/`stack` are ready for a normal
+/// simulate/backprop pass.
 pub fn select_step<G: Game>(
     shared: &Shared<'_, G>,
     ctx: &mut SearchContext<G>,
     stack: &mut Vec<(Id, usize)>,
     select_strategy: &mut impl SelectStrategy<G>,
     rng: &mut SmallRng,
-) {
+) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());
     let grave = shared.global.grave.read().unwrap();
     // The idx (in the previous node's `ChildArray`) that reached
@@ -506,15 +563,15 @@ pub fn select_step<G: Game>(
         // Leaf -> Terminal in the gap between them and slip past both
         // branches).
         match node.status() {
-            Some(NodeState::Terminal) => return,
+            Some(NodeState::Terminal) => return None,
             Some(NodeState::Expanded(_)) => {
                 if num_visits < shared.expand_threshold {
-                    return;
+                    return None;
                 }
             }
             None => {
                 if num_visits < shared.expand_threshold {
-                    return;
+                    return None;
                 }
                 let node_state = expand::<G>(
                     shared.index,
@@ -525,7 +582,7 @@ pub fn select_step<G: Game>(
                     shared.use_transpositions,
                 );
                 if matches!(node_state, NodeState::Terminal) {
-                    return;
+                    return None;
                 }
             }
         }
@@ -583,6 +640,23 @@ pub fn select_step<G: Game>(
                 &state,
                 node.ply + 1,
             );
+            if let Some(utilities) = mcgs_correction_at_edge(
+                shared.mcgs_correction,
+                shared.graph_stats,
+                G::num_players(),
+                children,
+                best_idx,
+                player,
+                shared.index.get(child_id),
+            ) {
+                // Back out the virtual loss just claimed above: this edge is
+                // never traversed this iteration, so it must not stay
+                // "in flight" until some future call happens to remove it.
+                if shared.graph_stats.is_none_or(GraphStats::uses_edges) {
+                    children.remove_virtual_loss(best_idx);
+                }
+                return Some(utilities);
+            }
             if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
                 shared.index.get(child_id).stats.add_virtual_loss();
             }
@@ -609,7 +683,7 @@ pub fn select_step<G: Game>(
 
             if shared.expand_threshold > 0 {
                 stack.push((ctx.current_id, incoming_idx));
-                return;
+                return None;
             }
         }
     }
@@ -709,4 +783,48 @@ pub fn backprop_step<G: Game>(
         shared.use_mcts_solver,
         shared.graph_stats,
     );
+}
+
+/// Backpropagates a `mcgs_correction_at_edge` correction trial's `utilities`
+/// through `stack` only -- no real playout was sampled, so unlike
+/// `backprop_step` this doesn't touch AMAF/GRAVE/GLOBAL/LGR/NST, Bayesian
+/// posteriors, or MCTS-Solver proof derivation: those all read/write signals
+/// tied to an actually-played trajectory (a played action sequence, a
+/// terminal outcome), neither of which this correction has. It updates
+/// exactly what a real `backprop_step` would have updated for the nodes on
+/// `stack` itself -- edge and/or node score/visit accumulators, matching
+/// `BackpropStrategy::update`'s own `graph_stats`-gated stats loop -- and
+/// removes the matching virtual loss each entry accrued during `select_step`'s
+/// descent (the aborted edge into the corrected node was already backed out
+/// by `select_step` itself, so `stack` never includes it).
+pub fn backprop_correction_step<G: Game>(
+    shared: &Shared<'_, G>,
+    stack: &[(Id, usize)],
+    utilities: &[f64],
+) {
+    shared.global.iter_count.fetch_add(1, Relaxed);
+    let node_stack = NodeStack::<G::A>::new(stack.to_vec());
+    for (parent_entry_opt, (node_id, node_idx)) in node_stack.reverse_pairs2() {
+        if shared.index.get(*node_id).is_root() {
+            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
+                shared.index.get(*node_id).stats.update(utilities);
+            } else {
+                shared.root_stats.update(utilities);
+            }
+        } else {
+            let parent_id = parent_entry_opt.unwrap().0;
+            let parent = shared.index.get(parent_id);
+            let idx = *node_idx;
+            let children = parent.children();
+            if shared.graph_stats.is_none_or(GraphStats::uses_edges) {
+                children.update(idx, utilities);
+                children.remove_virtual_loss(idx);
+            }
+            if shared.graph_stats.is_some_and(GraphStats::uses_nodes) {
+                let node = shared.index.get(*node_id);
+                node.stats.update(utilities);
+                node.stats.remove_virtual_loss();
+            }
+        }
+    }
 }

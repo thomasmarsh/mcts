@@ -222,6 +222,143 @@ fn test_node_incoming_edge_count_marks_transpositions() {
     assert!(node.is_transposition());
 }
 
+// mcgs.md item 5's residual correction, wired at the point `select_step`
+// resolves an existing child (`shared::mcgs_correction_at_edge`): compares
+// one edge's local Q against its shared target node's Q, both for the
+// parent's own mover, only once the target has more than one incoming edge.
+mod mcgs_correction_at_edge_tests {
+    use crate::strategies::mcts::config::{GraphStats, McgsCorrection};
+    use crate::strategies::mcts::node::{ChildArray, Node};
+    use crate::strategies::mcts::search::shared::mcgs_correction_at_edge;
+    use crate::strategies::mcts::search::TreeIndex;
+
+    const RESIDUAL: McgsCorrection = McgsCorrection::Residual { epsilon: 0.1 };
+
+    // A dummy arena Id -- `ChildArray::get_or_create_child` needs one to mark
+    // its slot explored, but nothing here ever dereferences it through the
+    // arena, so any distinct `Id` will do.
+    fn dummy_id() -> crate::strategies::mcts::index::Id {
+        let index = TreeIndex::<u32>::new();
+        index.insert(Node::new(0, 0))
+    }
+
+    // One player-0 mover with a single action, whose edge and target node
+    // stats are set to given (score, visits) pairs so a residual can be
+    // driven above or below `epsilon` directly, without a real playout.
+    fn edge_and_target(edge: (f64, u32), node: (f64, u32)) -> (ChildArray<u32>, Node<u32>) {
+        let children = ChildArray::new(vec![0u32], 2, false);
+        children.get_or_create_child(0, dummy_id);
+        for _ in 0..edge.1 {
+            children.update(0, &[edge.0 / edge.1 as f64, 0.0]);
+        }
+        let target = Node::<u32>::new_at_ply(1, 99, 1, 2, false, false);
+        target.add_incoming_edge();
+        target.add_incoming_edge();
+        for _ in 0..node.1 {
+            target.stats.update(&[node.0 / node.1 as f64, 0.0]);
+        }
+        (children, target)
+    }
+
+    #[test]
+    fn not_both_mode_never_fires() {
+        let (children, target) = edge_and_target((10.0, 10), (-10.0, 10));
+        for graph_stats in [None, Some(GraphStats::Edges), Some(GraphStats::Nodes)] {
+            assert_eq!(
+                mcgs_correction_at_edge(RESIDUAL, graph_stats, 2, &children, 0, 0, &target),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn single_incoming_edge_never_fires() {
+        // Same disagreeing stats as `fires_and_returns_every_players_node_estimate`,
+        // but only one `add_incoming_edge()` -- `is_transposition()` is
+        // false, so nothing shared by another parent exists yet to trust
+        // over this edge.
+        let children = ChildArray::new(vec![0u32], 2, false);
+        children.get_or_create_child(0, dummy_id);
+        for _ in 0..10 {
+            children.update(0, &[1.0, 0.0]);
+        }
+        let target = Node::<u32>::new_at_ply(1, 99, 1, 2, false, false);
+        target.add_incoming_edge();
+        for _ in 0..10 {
+            target.stats.update(&[-1.0, 0.0]);
+        }
+        assert_eq!(
+            mcgs_correction_at_edge(
+                RESIDUAL,
+                Some(GraphStats::Both),
+                2,
+                &children,
+                0,
+                0,
+                &target
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn agreeing_estimates_within_epsilon_do_not_fire() {
+        let (children, target) = edge_and_target((4.0, 10), (4.05, 10));
+        assert_eq!(
+            mcgs_correction_at_edge(
+                RESIDUAL,
+                Some(GraphStats::Both),
+                2,
+                &children,
+                0,
+                0,
+                &target
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn fires_and_returns_every_players_node_estimate() {
+        // Edge (player 0's mover Q) says +1.0; the shared node -- informed
+        // by its other parent -- says -1.0. Player 1's own node estimate is
+        // never read by the residual check itself, but the whole vector it
+        // returns comes from the node, not the edge, once the check fires.
+        let (children, target) = edge_and_target((10.0, 10), (-10.0, 10));
+        target.stats.update(&[0.0, 5.0]); // makes player 1's node score nonzero
+        let got = mcgs_correction_at_edge(
+            RESIDUAL,
+            Some(GraphStats::Both),
+            2,
+            &children,
+            0,
+            0,
+            &target,
+        )
+        .expect("large residual should fire");
+        assert_eq!(got.len(), 2);
+        assert!((got[0] - target.stats.expected_score(0)).abs() < 1e-9);
+        assert!((got[1] - target.stats.expected_score(1)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn disabled_config_never_fires() {
+        let (children, target) = edge_and_target((10.0, 10), (-10.0, 10));
+        assert_eq!(
+            mcgs_correction_at_edge(
+                McgsCorrection::Disabled,
+                Some(GraphStats::Both),
+                2,
+                &children,
+                0,
+                0,
+                &target
+            ),
+            None
+        );
+    }
+}
+
 // Guards `Node::solver`'s "no allocation when the solver is off" storage
 // split the same way `test_child_array_amaf_side_table_empty_when_has_amaf_false`
 // guards the AMAF side table: a future regression that unconditionally

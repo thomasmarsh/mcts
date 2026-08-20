@@ -250,6 +250,64 @@ fn test_tree_parallel_graph_both_balances_node_virtual_loss() {
 }
 
 #[test]
+fn test_mcgs_correction_residual_picks_legal_actions_single_and_tree_parallel() {
+    // Wiring smoke test for mcgs.md item 5: `McgsCorrection::Residual` only
+    // ever short-circuits `select_step`'s descent at an edge into an
+    // already-shared node (`shared::mcgs_correction_at_edge`, unit-tested
+    // directly against hand-built stats in `strategies::tests`), backing out
+    // that edge's virtual loss and backpropagating a synthetic correction
+    // trial through the saved path instead of a real rollout
+    // (`shared::backprop_correction_step`). Every virtual-loss add/remove is
+    // still guarded by a `debug_assert!` (`NodeStats::remove_virtual_loss`/
+    // `ChildArray::remove_virtual_loss`), so a debug-mode run that completes
+    // without panicking already proves the correction path never leaves an
+    // edge or node "in flight" -- this drives a small `epsilon` (far more
+    // aggressive than any real tuning would use) specifically to make that
+    // path fire often over a real tic-tac-toe self-play search, single-
+    // threaded and tree-parallel both.
+    use game_ttt::*;
+    use mcts::{GraphSearch, GraphStats, McgsCorrection};
+
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let state = HashedPosition::new();
+    let mut legal = Vec::new();
+    G::generate_actions(&state, &mut legal);
+
+    let mut single = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(500)
+            .expand_threshold(0)
+            .seed(17)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.001 }),
+    );
+    let action = single.choose_action(&state);
+    assert!(legal.contains(&action));
+    assert!(single.table.graph_len() > 1);
+
+    let _guard = parallel_test_guard();
+    let mut parallel = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(1_000)
+            .expand_threshold(0)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.001 })
+            .num_tree_threads(4),
+    );
+    let action = parallel.choose_action(&state);
+    assert!(legal.contains(&action));
+    let root = parallel.index.get(parallel.root_id);
+    assert_eq!(root.stats.num_visits(), 1_000);
+    assert_eq!(
+        root.stats
+            .num_visits_virtual
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[test]
 fn test_tree_parallel_with_grave_picks_a_legal_action() {
     let _guard = parallel_test_guard();
     // `Rave`'s GRAVE backprop flag routes through `TreeStats::grave`
@@ -1732,6 +1790,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         max_playout_depth: 0,
         solver_loss_threshold: 0,
         has_amaf: false,
+        mcgs_correction: mcts::McgsCorrection::Disabled,
     };
 
     // Children 0 and 1: identical local visit/score stats -- a tie on raw
@@ -1838,6 +1897,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         max_playout_depth: 0,
         solver_loss_threshold: 0,
         has_amaf: false,
+        mcgs_correction: mcts::McgsCorrection::Disabled,
     };
 
     // Child 0: heavily visited, mediocre average score.

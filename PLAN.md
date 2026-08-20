@@ -33,7 +33,6 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Progressive bias
 - [x] MTCS-Solver
 - [ ] PUCT
-- [ ] Monte Carlo paraphrase generation (MCPG)
 - [ ] Regulated Policy Optimization Selection
 - [ ] Semisplit Moves / Turn Linearization
 
@@ -99,9 +98,9 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Persistent transposition table / exact position cache (hash -> NodeStats | (hash,action) -> NodeStats)
 - [x] UCB for DAGs
 - [x] Structural - configurable Node|Edge|Node+Edge stat storage
-- [ ] Residual information-leak correction (`McgsCorrection`, the paper's `Both`-mode descent check)
+- [x] Residual information-leak correction
 - [ ] Graph re-rooting (multi-parent reachability sweep + ply rebase, distinct from the existing single-parent tree promotion path)
-- [ ] Symmetry canonicalization (generalize `D4Symmetry<S>` into a per-game `SymmetryGroup`, canonical key + invertible action transform, per-edge orientation bookkeeping at graph-merge points)
+- [x] Symmetry canonicalization
 
 
 ### Paralellization
