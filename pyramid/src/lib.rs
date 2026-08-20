@@ -9,7 +9,7 @@
 //! dead N=4-only stub with the same `bitboard::Storage`-backed approach
 //! generalized to `n` in `2..=10`.
 
-use bitboard::{Dim, Storage};
+use bitboard::{Board, Dim, Storage};
 
 /// Sum of squares `1^2 + 2^2 + ... + x^2` -- the total cell count of an
 /// `x`-level pyramid (`x` = base width). Closed form of
@@ -186,6 +186,54 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
             })
         })
     }
+    /// Extracts level `level` into an ordinary `bitboard::Board`, so lateral
+    /// operations (`flood4`, `adjacency_mask`, D4 symmetry, ...) can run on a
+    /// single level unmodified rather than reimplemented against the flat
+    /// pyramid storage. `LD` is the extracted board's own dim kind (`Const`
+    /// for a known level side, `Dyn` otherwise) -- the caller supplies
+    /// `side`, since a single level's side (`N - level`) isn't in general the
+    /// same type as `Pyramid`'s own `N`. `LS` is the extracted board's
+    /// storage; it must be large enough for `side * side` bits, which is
+    /// smaller than `Self`'s own total-cell storage since a level is always a
+    /// strict subset of the whole pyramid.
+    ///
+    /// Cells line up by construction: within a level, `Pyramid::index` is
+    /// `level_offset(level) + row * side + col`, exactly matching
+    /// `Board`'s own `row * cols + col` row-major convention (see this
+    /// struct's own doc comment) -- so extraction is a plain contiguous copy
+    /// of the level's bit range, not a coordinate remap.
+    pub fn level_board<LS: Storage, LD: Dim>(&self, level: usize, side: LD) -> Board<LS, LD, LD> {
+        debug_assert_eq!(side.get(), self.level_side(level));
+        let offset = self.level_offset(level);
+        let mut board: Board<LS, LD, LD> = Board::new(side, side);
+        for local in 0..self.level_size(level) {
+            if self.get_index(offset + local) {
+                board.set_index(local);
+            }
+        }
+        board
+    }
+
+    /// The inverse of `level_board`: writes `board`'s bits back into level
+    /// `level`'s range of the flat pyramid storage, overwriting whatever was
+    /// there before (both sets and clears, so a bit a caller cleared on the
+    /// extracted board is reflected here too, not just newly-set bits).
+    pub fn set_level_board<LS: Storage, LD: Dim>(
+        &mut self,
+        level: usize,
+        board: &Board<LS, LD, LD>,
+    ) {
+        debug_assert_eq!(board.rows(), self.level_side(level));
+        debug_assert_eq!(board.cols(), self.level_side(level));
+        let offset = self.level_offset(level);
+        for local in 0..self.level_size(level) {
+            if board.get_index(local) {
+                self.set_index(offset + local);
+            } else {
+                self.clear_index(offset + local);
+            }
+        }
+    }
 }
 
 impl<S: Storage, N: Dim> PartialEq for Pyramid<S, N> {
@@ -340,5 +388,100 @@ mod tests {
             a.iter_set().collect::<Vec<_>>(),
             b.iter_set().collect::<Vec<_>>()
         );
+    }
+
+    // Phase 1: level extraction/write-back round trips, checked against the
+    // same coordinate-walk oracle style as Phase 0's tests above, plus a
+    // check that a lateral op (`flood4`) behaves identically whether run
+    // against a hand-built `Board` or one extracted from a `Pyramid`.
+
+    fn check_level_board_matches_pyramid<S: Storage, N: Dim>(n: N, sets: &[(usize, usize, usize)]) {
+        let mut pyramid: Pyramid<S, N> = Pyramid::new(n);
+        for &(col, row, level) in sets {
+            if pyramid.in_bounds(col, row, level) {
+                pyramid.set(col, row, level);
+            }
+        }
+
+        for level in 0..n.get() {
+            let side = pyramid.level_side(level);
+            let board: bitboard::Board<[u64; 2], bitboard::Dyn, bitboard::Dyn> =
+                pyramid.level_board(level, bitboard::Dyn(side));
+            for row in 0..side {
+                for col in 0..side {
+                    assert_eq!(
+                        board.get(row, col),
+                        pyramid.get(col, row, level),
+                        "level {level} ({col},{row}) mismatch"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn level_board_matches_pyramid_dyn(
+            n in 2usize..=10,
+            triples in proptest::collection::vec((0usize..10, 0usize..10, 0usize..10), 0..100),
+        ) {
+            check_level_board_matches_pyramid::<[u64; 7], Dyn>(Dyn(n), &triples);
+        }
+
+        #[test]
+        fn level_board_matches_pyramid_const_4(
+            triples in proptest::collection::vec((0usize..4, 0usize..4, 0usize..4), 0..60),
+        ) {
+            check_level_board_matches_pyramid::<u64, Const<4>>(Const, &triples);
+        }
+    }
+
+    #[test]
+    fn set_level_board_round_trips_through_extraction() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        pyramid.set(0, 0, 0);
+        pyramid.set(3, 3, 0);
+        pyramid.set(1, 1, 1);
+
+        // Extract level 0 (the 4x4 base), mutate the extracted board (clear
+        // one bit, set another), and write it back -- the flat pyramid must
+        // reflect exactly the extracted board's final state, and other
+        // levels must be untouched.
+        let mut level0: bitboard::Board<u64, Const<4>, Const<4>> = pyramid.level_board(0, Const);
+        assert!(level0.get(0, 0));
+        level0.clear(0, 0);
+        level0.set(2, 2);
+        pyramid.set_level_board(0, &level0);
+
+        assert!(!pyramid.get(0, 0, 0));
+        assert!(pyramid.get(3, 3, 0));
+        assert!(pyramid.get(2, 2, 0));
+        assert!(
+            pyramid.get(1, 1, 1),
+            "level 1 must be untouched by writing back level 0"
+        );
+    }
+
+    #[test]
+    fn flood4_on_extracted_level_matches_lateral_adjacency() {
+        // A connected L-shape plus one diagonal-only (unconnected-by-4) cell
+        // on level 0 of an N=4 pyramid -- proves the extracted level behaves
+        // exactly like an ordinary rectangular board's `flood4`, not just
+        // that individual bits round-trip.
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        for &(col, row) in &[(0, 0), (0, 1), (1, 1)] {
+            pyramid.set(col, row, 0);
+        }
+        pyramid.set(3, 3, 0); // diagonal-only from the L-shape's bounding area
+
+        let level0: bitboard::Board<u64, Const<4>, Const<4>> = pyramid.level_board(0, Const);
+        let start = bitboard::Board::<u64, Const<4>, Const<4>>::to_index(0, 0);
+        let flood = level0.flood4(start);
+
+        assert!(flood.get(0, 0));
+        assert!(flood.get(1, 0));
+        assert!(flood.get(1, 1));
+        assert!(!flood.get(3, 3), "flood4 must not cross a non-adjacent gap");
+        assert_eq!(flood.count_ones(), 3);
     }
 }
