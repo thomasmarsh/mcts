@@ -882,6 +882,35 @@ impl<G: Game, E: Evaluator<G> + Default> Default for Negamax<G, E> {
     }
 }
 
+/// Hand-written rather than `#[derive(Clone)]`: a derive would add an
+/// `E: Clone` bound even though `eval` is only ever touched through the
+/// `Arc` it's already wrapped in, which would needlessly reject every
+/// `Evaluator` that doesn't happen to implement `Clone` itself (e.g. one
+/// holding a large precomputed table). A clone shares the same
+/// transposition table (`Arc<RwLock<_>>`, same as root-splitting workers
+/// already share it deliberately) and evaluator, but gets its own
+/// independent `history`/`countermove`/`pv`/`root_scores` -- the same
+/// per-worker isolation `choose_action_root_split` relies on.
+impl<G: Game, E: Evaluator<G>> Clone for Negamax<G, E> {
+    fn clone(&self) -> Self {
+        Self {
+            eval: Arc::clone(&self.eval),
+            options: self.options.clone(),
+            table: self.table.clone(),
+            start_depth: self.start_depth,
+            pv: self.pv.clone(),
+            root_scores: self.root_scores.clone(),
+            history: self.history.clone(),
+            countermove: self.countermove.clone(),
+            singular_extension_cap: self.singular_extension_cap,
+            nodes_searched: self.nodes_searched,
+            depth_reached: self.depth_reached,
+            name: self.name.clone(),
+            game_type: PhantomData,
+        }
+    }
+}
+
 impl<G: Game, E: Evaluator<G>> Search for Negamax<G, E> {
     type G = G;
 
