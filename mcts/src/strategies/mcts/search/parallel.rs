@@ -170,12 +170,18 @@ where
         let mut simulate_strategies: Vec<S::Simulate> = (0..num_threads)
             .map(|_| self.config.simulate.clone())
             .collect();
+        let mut prior_strategies: Vec<
+            Option<Box<dyn crate::strategies::mcts::prior::PriorStrategyDyn<G>>>,
+        > = (0..num_threads)
+            .map(|_| self.config.prior.clone())
+            .collect();
 
         std::thread::scope(|scope| {
-            for ((seed, select_strategy), simulate_strategy) in seeds
+            for (((seed, select_strategy), simulate_strategy), prior_strategy) in seeds
                 .into_iter()
                 .zip(select_strategies.iter_mut())
                 .zip(simulate_strategies.iter_mut())
+                .zip(prior_strategies.iter_mut())
             {
                 let shared = &shared;
                 let iterations_remaining = &iterations_remaining;
@@ -199,8 +205,14 @@ where
 
                         let mut stack = Vec::new();
                         let mut ctx = SearchContext::new(root_id, state.clone());
-                        let correction =
-                            select_step(shared, &mut ctx, &mut stack, select_strategy, &mut rng);
+                        let correction = select_step(
+                            shared,
+                            &mut ctx,
+                            &mut stack,
+                            select_strategy,
+                            &mut rng,
+                            prior_strategy.as_deref_mut(),
+                        );
 
                         if let Some(utilities) = correction {
                             backprop_correction_step(shared, &stack, &utilities);

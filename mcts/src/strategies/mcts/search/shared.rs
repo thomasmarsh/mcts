@@ -216,6 +216,7 @@ pub struct Shared<'a, G: Game> {
 /// source for a tree node's own position (a rollout's endpoint past this
 /// leaf is not).
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn expand<'a, G: Game>(
     index: &'a TreeIndex<G::A>,
     node_id: Id,
@@ -223,6 +224,7 @@ pub fn expand<'a, G: Game>(
     use_mcts_solver: bool,
     has_amaf: bool,
     canonicalize: bool,
+    prior: Option<&mut (dyn crate::strategies::mcts::prior::PriorStrategyDyn<G> + 'static)>,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
@@ -251,7 +253,26 @@ pub fn expand<'a, G: Game>(
             let mut actions = Vec::new();
             G::generate_actions(&gen_state, &mut actions);
             debug_assert!(!actions.is_empty());
-            NodeState::Expanded(ChildArray::new(actions, G::num_players(), has_amaf))
+            // `prior::PriorStrategy`'s expansion-time seeding (MCTS-IP/MS) --
+            // computed against `gen_state`/`actions` (this node's own,
+            // possibly-canonical orientation) before `actions` moves into
+            // `ChildArray::new`, so the seeded indices line up with the
+            // `ChildArray` slots they're seeded into.
+            let seed = prior.and_then(|p| {
+                let pseudo_visits = p.pseudo_visits();
+                (pseudo_visits > 0)
+                    .then(|| (pseudo_visits, p.evaluate_children(&gen_state, &actions)))
+            });
+            let children = ChildArray::new(actions, G::num_players(), has_amaf);
+            if let Some((pseudo_visits, values)) = seed {
+                debug_assert_eq!(values.len(), children.len());
+                if values.len() == children.len() {
+                    for (idx, value) in values.into_iter().enumerate() {
+                        children.seed_prior(idx, node.player_idx, value, pseudo_visits);
+                    }
+                }
+            }
+            NodeState::Expanded(children)
         } else {
             if use_mcts_solver {
                 debug_assert!(G::num_players() <= 2);
@@ -525,12 +546,33 @@ pub(crate) fn mcgs_correction_at_edge<A: crate::game::Action>(
 /// real playout from `ctx.state`. `None` is the existing behavior: descent
 /// reached a real leaf, and `ctx`/`stack` are ready for a normal
 /// simulate/backprop pass.
+/// Reborrows `prior` for one `expand()` call inside `select_step`'s loop,
+/// rather than moving it out of the `Option` outright -- a later loop
+/// iteration may need to expand a second never-before-visited node (e.g.
+/// with `expand_threshold == 0`, every node gets expanded the instant it's
+/// first reached). A closure-based `prior.as_mut().map(|p| &mut **p)` here
+/// runs into NLL inferring the reborrow's lifetime as spanning every loop
+/// iteration instead of just one (a known rough edge with `&mut dyn Trait`
+/// reborrows through `Option::map`); a plain named-lifetime function avoids
+/// it.
+#[inline]
+fn reborrow_prior<'p, G: Game>(
+    prior: &'p mut Option<&mut (dyn crate::strategies::mcts::prior::PriorStrategyDyn<G> + 'static)>,
+) -> Option<&'p mut (dyn crate::strategies::mcts::prior::PriorStrategyDyn<G> + 'static)> {
+    match prior {
+        Some(p) => Some(&mut **p),
+        None => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn select_step<G: Game>(
     shared: &Shared<'_, G>,
     ctx: &mut SearchContext<G>,
     stack: &mut Vec<(Id, usize)>,
     select_strategy: &mut impl SelectStrategy<G>,
     rng: &mut SmallRng,
+    mut prior: Option<&mut (dyn crate::strategies::mcts::prior::PriorStrategyDyn<G> + 'static)>,
 ) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());
     let grave = shared.global.grave.read().unwrap();
@@ -583,6 +625,7 @@ pub fn select_step<G: Game>(
                     shared.use_mcts_solver,
                     shared.has_amaf,
                     shared.use_transpositions,
+                    reborrow_prior(&mut prior),
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return None;

@@ -1,8 +1,12 @@
-// Background strength comparison: plain UCT vs. two MCTS-minimax hybrids
-// (MCTS-MR-n minimax rollouts, MCTS-IC-E informed cutoffs), on Breakthrough
-// -- the game Baier & Winands' MCTS-minimax hybrid papers use as their own
-// test game, so results are checkable against the papers' own findings, not
-// just internal A/B noise.
+// Background strength comparison: plain UCT vs. three MCTS-minimax hybrids
+// (MCTS-MR-n minimax rollouts, MCTS-IC-E informed cutoffs, MCTS-MS-2-Visit-0
+// minimax-informed expansion priors), on Breakthrough -- the game Baier &
+// Winands' MCTS-minimax hybrid papers use as their own test game, so results
+// are checkable against the papers' own findings, not just internal A/B
+// noise. Of the three, MS is the literature's own strongest performer on
+// Breakthrough (62.2% vs. an MCTS-Solver baseline, 2015 paper's MS-2-Visit-2);
+// MS-2-Visit-0 here is the closest checkable proxy this codebase currently
+// builds (`Visit-v>0` isn't implemented).
 //
 // `simulate::MinimaxRollout` and `simulate::EvaluatedCutoff` otherwise only
 // have hand-solvable-position unit tests (tic-tac-toe, "does it prefer the
@@ -42,6 +46,21 @@ type MrN = strategy::Compose<select::Ucb1, simulate::MinimaxRollout<Board, Heuri
 // cutoff without reaching a real terminal state gets scored by `Heuristic`
 // instead of falling through to `Game::compute_utilities`'s draw default.
 type IcE = strategy::Compose<select::Ucb1, simulate::EvaluatedCutoff<Board, Heuristic>>;
+
+// MCTS-MS-2-Visit-0: no rollout-side change at all -- `Baseline`'s own
+// select/simulate strategies, plus a `NegamaxPrior` that seeds every
+// freshly-expanded node's children with a depth-2 bounded-negamax prior
+// before any of them has a real playout (`SearchConfig::with_prior`). Reuses
+// `Baseline`'s type since the prior lives in `SearchConfig`, not in
+// `Strategy<G>`'s associated types -- see `mcts::prior`'s module doc comment.
+type MsPrior = Baseline;
+
+// MS-2's own search depth, matching the literature's own best-performing
+// depth on Breakthrough (Baier & Winands 2015).
+const MS_DEPTH: u32 = 2;
+// How many fictitious visits each seeded prior is worth -- see
+// `mcts::prior::PriorStrategy::pseudo_visits`'s doc comment.
+const MS_PSEUDO_VISITS: u32 = 4;
 
 // Plies before a still-unresolved rollout gets cut off and scored via
 // `Heuristic` (`IcE`) or handed to bounded negamax for its last few plies
@@ -88,6 +107,21 @@ fn ic_e_config(budget: Duration) -> TreeSearch<Board, IcE> {
     )
 }
 
+fn ms_prior_config(budget: Duration) -> TreeSearch<Board, MsPrior> {
+    TreeSearch::new().config(
+        SearchConfig::new()
+            .name("hybrid/ms-2-visit-0")
+            .use_transpositions(true)
+            .max_time(budget)
+            .select(select::Ucb1::with_c(1.414))
+            .with_prior(
+                mcts::strategies::mcts::prior::NegamaxPrior::<Board, Heuristic>::new()
+                    .depth(MS_DEPTH)
+                    .pseudo_visits(MS_PSEUDO_VISITS),
+            ),
+    )
+}
+
 fn fmt_result(r: &GameResult) -> String {
     let (point, (lo, hi)) = r.win_rate_ci(1.96);
     format!(
@@ -105,26 +139,29 @@ fn fmt_result(r: &GameResult) -> String {
 fn main() {
     println!("=== MCTS-minimax hybrid strength comparison (background job) ===");
     println!("Game: Breakthrough 8x8 (Baier & Winands' own test game)");
-    println!("Arms: baseline UCT, MCTS-MR-n (n={MR_N}), MCTS-IC-E");
+    println!("Arms: baseline UCT, MCTS-MR-n (n={MR_N}), MCTS-IC-E, MCTS-MS-2-Visit-0");
     println!(
         "Hybrid arms cut rollouts at {MAX_PLAYOUT_DEPTH} plies; baseline plays to a real terminal state."
     );
+    println!("MS-2-Visit-0 doesn't cut rollouts -- it seeds expansion-time priors instead.");
     println!("1s/move, sequential, round-robin so every pair of arms is checked.");
     println!();
 
     let budget = Duration::from_secs(1);
     let rounds = 15; // 30 games per pair (round-robin alternates who moves first)
+    let num_arms = 4;
     println!(
         "--- {} rounds ({} games per pair, {} games total) ---",
         rounds,
         rounds * 2,
-        rounds * 2 * 3
+        rounds * 2 * (num_arms * (num_arms - 1) / 2)
     );
 
     let mut strategies: Vec<AnySearch<Board>> = vec![
         AnySearch::new(baseline_config(budget)),
         AnySearch::new(mr_n_config(budget)),
         AnySearch::new(ic_e_config(budget)),
+        AnySearch::new(ms_prior_config(budget)),
     ];
     let results = round_robin_multiple::<Board, _>(
         &mut strategies,
@@ -139,9 +176,10 @@ fn main() {
         println!("  {} : {}", strategies[i].friendly_name(), fmt_result(r));
     }
     println!();
-    println!("Interpretation: full-rollout epsilon-greedy hybrids (MCTS-IR-E/IR-M) are");
-    println!("more expensive than either arm here and are only worth building if MR-n");
-    println!("or IC-E show real wins over the baseline. `round_robin_multiple` plays");
-    println!("every pair (baseline-vs-MR-n, baseline-vs-IC-E, MR-n-vs-IC-E), so all");
-    println!("three comparisons come out of this one run.");
+    println!("Interpretation: published results (Baier & Winands 2015) predict MR-n loses");
+    println!("to the baseline at this real time budget (its per-node cost isn't recouped),");
+    println!("while MS is the strongest reported Breakthrough hybrid -- MS-2-Visit-0 losing");
+    println!("here too would be evidence worth investigating, not an expected result the way");
+    println!("an MR-n loss is. `round_robin_multiple` plays every pair, so all six");
+    println!("comparisons among the four arms come out of this one run.");
 }
