@@ -1,6 +1,7 @@
 pub mod backprop;
 pub mod book;
 pub mod config;
+pub mod correction;
 pub mod index;
 pub mod node;
 pub mod render;
