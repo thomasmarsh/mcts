@@ -19,6 +19,7 @@ mcts-bench = { path = "mcts-bench" }
 game-druid = { path = "games/druid" }
 game-knightthrough = { path = "games/knightthrough" }
 game-gonnect = { path = "games/gonnect" }
+game-breakthrough = { path = "games/breakthrough" }
 rand = { version = "0.8.5", features = ["small_rng"] }
 rustc-hash = "1.1.0"
 
