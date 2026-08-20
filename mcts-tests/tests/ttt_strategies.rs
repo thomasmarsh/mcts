@@ -1120,6 +1120,51 @@ fn test_minimax_rollout_prefers_the_winning_move_to_a_forced_draw() {
     }
 }
 
+#[test]
+fn test_evaluated_cutoff_scores_the_depth_cutoff_with_the_evaluator() {
+    // A depth-0 playout can't run a single ply (the very first check is
+    // `depth >= max_playout_depth`), so it always ends via `EndType::
+    // TurnLimit` from the initial, non-terminal position. Without
+    // `EvaluatedCutoff`, that trial's leaf value would fall back to
+    // `Game::compute_utilities`, which is `winner`-based and so scores
+    // every non-terminal state as a draw (`[0., 0.]`). `EvaluatedCutoff`
+    // should instead consult the evaluator and convert its mover-relative
+    // score into a signed utilities vector.
+    use game_ttt::*;
+    use mcts::evaluator::{Evaluator, Score, EVAL_MAGNITUDE_LIMIT};
+    use mcts::game::PlayerIndex;
+    use mcts::simulate::{EndType, EvaluatedCutoff, SimulateStrategy, Uniform};
+    use rand::SeedableRng;
+
+    type G = TicTacToe;
+
+    #[derive(Clone, Copy, Default)]
+    struct HalfMagnitude;
+
+    impl Evaluator<G> for HalfMagnitude {
+        fn evaluate(&self, _state: &HashedPosition) -> Score {
+            EVAL_MAGNITUDE_LIMIT / 2
+        }
+    }
+
+    let state = HashedPosition::new();
+    let stats = mcts::search::TreeStats::<G>::default();
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+    let mut strategy = EvaluatedCutoff::<G, HalfMagnitude, Uniform>::default();
+
+    let trial = strategy.playout(state, 0, &stats, None, &mut rng);
+
+    assert!(matches!(trial.status.end_type, Some(EndType::TurnLimit)));
+    assert_eq!(trial.depth, 0);
+    let mover = G::player_to_move(&state).to_index();
+    let utilities = trial
+        .cutoff_utilities
+        .expect("a TurnLimit-ended trial should carry a cutoff value");
+    assert_eq!(utilities.len(), 2);
+    assert!((utilities[mover] - 0.5).abs() < 1e-9);
+    assert!((utilities[1 - mover] + 0.5).abs() < 1e-9);
+}
+
 // Tree reuse across moves ("re-rooting", search.rs's
 // `reuse_or_reset`/`find_reachable`). `reuse_or_reset` is exercised
 // directly (rather than only indirectly via two `choose_action` calls)

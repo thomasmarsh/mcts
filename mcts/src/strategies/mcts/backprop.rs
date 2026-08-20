@@ -606,10 +606,14 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
         // naturally (rather than hitting the depth cutoff) -- reuse it
         // instead of re-deriving utilities from `trial.state` via
         // `Game::compute_utilities`, which for games like Druid would redo
-        // the same connectivity scan `playout` just paid for.
+        // the same connectivity scan `playout` just paid for. A depth-cutoff
+        // trial falls back to `cutoff_utilities` next (MCTS-IC-E/-M's hook,
+        // `simulate::EvaluatedCutoff`) before finally defaulting to
+        // `compute_utilities`'s `winner`-based (draw-for-non-terminal) score.
         let utilities = trial
             .terminal
             .utilities(G::num_players())
+            .or_else(|| trial.cutoff_utilities.clone())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
         let mut is_leaf = true;
         for (parent_entry_opt, (node_id, node_idx)) in stack.reverse_pairs2() {

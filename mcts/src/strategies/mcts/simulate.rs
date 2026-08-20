@@ -1,5 +1,5 @@
 use super::*;
-use crate::evaluator::{Evaluator, MaterialBlind};
+use crate::evaluator::{Evaluator, MaterialBlind, EVAL_MAGNITUDE_LIMIT};
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
@@ -36,6 +36,13 @@ pub struct Trial<G: Game> {
     /// this before calling `Game::winner`/`Game::compute_utilities` again,
     /// to avoid redoing whatever work `Game::terminal_status` did.
     pub terminal: TerminalStatus<G::P>,
+    /// A `SimulateStrategy`-supplied leaf value for a playout that ended via
+    /// the depth cutoff (`EndType::TurnLimit`, `terminal` is `NotTerminal`)
+    /// -- MCTS-IC-E/-M's hook (`EvaluatedCutoff`, below). `None` for every
+    /// plain strategy, and for any naturally-ending playout, in which case
+    /// backprop falls back to `terminal.utilities()`/`Game::compute_utilities`
+    /// exactly as before this field existed.
+    pub cutoff_utilities: Option<Vec<f64>>,
 }
 
 pub trait SimulateStrategy<G>: Clone + Sync + Send + Default
@@ -131,6 +138,7 @@ where
             status: Status { end_type },
             depth,
             terminal,
+            cutoff_utilities: None,
         }
     }
 
@@ -203,6 +211,7 @@ impl<G: Game> SimulateStrategy<G> for Uniform {
             status: Status { end_type },
             depth,
             terminal,
+            cutoff_utilities: None,
         }
     }
 }
@@ -340,7 +349,133 @@ where
             status: Status { end_type },
             depth,
             terminal,
+            cutoff_utilities: None,
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// MCTS-IC-E (informed cutoffs, evaluator variant; Baier & Winands): wraps an
+/// inner `SimulateStrategy` unchanged except that a playout ending via the
+/// depth cutoff (`EndType::TurnLimit`, i.e. `trial.terminal` is
+/// `NotTerminal`) gets its leaf value from `Evaluator::evaluate` instead of
+/// whatever `backprop::update`'s fallback chain would otherwise compute
+/// (`Game::compute_utilities`, which is `winner`-based and so silently
+/// scores every cutoff as a draw for a game that hasn't overridden it -- see
+/// `evaluator::Evaluator`'s doc comment). Every naturally-ending playout (a
+/// real win/loss/draw) is untouched: `Trial::terminal` already carries its
+/// true utilities, which that same fallback chain always prefers over this
+/// field.
+///
+/// `Evaluator::evaluate`'s score is from the perspective of
+/// `Game::player_to_move(&trial.state)`; converted here to a per-player
+/// utilities vector the same "nega" way `negamax`'s scoring does, which is
+/// only sound for the two-player zero-sum games that convention assumes --
+/// same restriction as `negamax::supports::<G>()` and `use_mcts_solver`.
+pub struct EvaluatedCutoff<G, E, S = Uniform>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+    S: SimulateStrategy<G> + Default,
+{
+    evaluator: E,
+    inner: S,
+    marker: PhantomData<G>,
+}
+
+/// Hand-written (rather than `#[derive(Clone)]`) so only `E: Clone` -- not
+/// also whatever bound a derive would add transitively -- is required; every
+/// real `Evaluator` this crate ships (`MaterialBlind`, `breakthrough::
+/// Heuristic`) is already `Clone`.
+impl<G, E, S> Clone for EvaluatedCutoff<G, E, S>
+where
+    G: Game,
+    E: Evaluator<G> + Default + Clone,
+    S: SimulateStrategy<G> + Default,
+{
+    fn clone(&self) -> Self {
+        Self {
+            evaluator: self.evaluator.clone(),
+            inner: self.inner.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<G, E, S> EvaluatedCutoff<G, E, S>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+    S: SimulateStrategy<G> + Default,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn inner(mut self, inner: S) -> Self {
+        self.inner = inner;
+        self
+    }
+}
+
+impl<G, E, S> Default for EvaluatedCutoff<G, E, S>
+where
+    G: Game,
+    E: Evaluator<G> + Default,
+    S: SimulateStrategy<G> + Default,
+{
+    fn default() -> Self {
+        Self {
+            evaluator: E::default(),
+            inner: S::default(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<G, E, S> SimulateStrategy<G> for EvaluatedCutoff<G, E, S>
+where
+    G: Game,
+    E: Evaluator<G> + Default + Clone,
+    S: SimulateStrategy<G> + Default,
+{
+    fn playout(
+        &mut self,
+        state: G::S,
+        max_playout_depth: usize,
+        stats: &TreeStats<G>,
+        prev_action: Option<G::A>,
+        rng: &mut SmallRng,
+    ) -> Trial<G> {
+        let mut trial = self
+            .inner
+            .playout(state, max_playout_depth, stats, prev_action, rng);
+        if matches!(trial.status.end_type, Some(EndType::TurnLimit)) {
+            debug_assert!(
+                G::num_players() <= 2,
+                "EvaluatedCutoff's nega-style utility conversion assumes a \
+                 two-player zero-sum game"
+            );
+            let score = self.evaluator.evaluate(&trial.state) as f64 / EVAL_MAGNITUDE_LIMIT as f64;
+            let mover = G::player_to_move(&trial.state).to_index();
+            trial.cutoff_utilities = Some(
+                (0..G::num_players())
+                    .map(|i| if i == mover { score } else { -score })
+                    .collect(),
+            );
+        }
+        trial
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        self.inner.backprop_flags()
+    }
+
+    /// See `EpsilonGreedy::requirements`'s doc comment -- same reason: this
+    /// wraps `inner` without changing its storage requirements.
+    fn requirements(&self) -> config::Requirements {
+        self.inner.requirements()
     }
 }
 

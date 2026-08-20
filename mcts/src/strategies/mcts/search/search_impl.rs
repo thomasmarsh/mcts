@@ -162,6 +162,7 @@ where
         let utilities = trial
             .terminal
             .utilities(G::num_players())
+            .or_else(|| trial.cutoff_utilities.clone())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
 
         (actions, utilities)
