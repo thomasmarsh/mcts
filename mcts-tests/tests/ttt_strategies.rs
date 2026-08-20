@@ -219,9 +219,9 @@ fn test_explicit_graph_stat_modes_pick_legal_actions_and_update_their_owner() {
 
 #[test]
 fn test_graph_diagnostics_reports_hits_edges_and_transposition_nodes() {
-    // mcgs.md item 6: `TreeSearch::graph_diagnostics` should describe the
-    // same DAG a `GraphStats::Both` search actually built, cross-checked
-    // against the lower-level counters/walks it's built from.
+    // `TreeSearch::graph_diagnostics` should describe the same DAG a
+    // `GraphStats::Both` search actually built, cross-checked against the
+    // lower-level counters/walks it's built from.
     use game_ttt::*;
     use mcts::{GraphSearch, GraphStats};
 
@@ -307,7 +307,7 @@ fn test_tree_parallel_graph_both_balances_node_virtual_loss() {
 
 #[test]
 fn test_mcgs_correction_residual_picks_legal_actions_single_and_tree_parallel() {
-    // Wiring smoke test for mcgs.md item 5: `McgsCorrection::Residual` only
+    // Wiring smoke test: `McgsCorrection::Residual` only
     // ever short-circuits `select_step`'s descent at an edge into an
     // already-shared node (`shared::mcgs_correction_at_edge`, unit-tested
     // directly against hand-built stats in `strategies::tests`), backing out
