@@ -365,4 +365,31 @@ pub trait Game: Sized + Clone + Sync + Send {
     fn zobrist_hash(state: &Self::S) -> u64 {
         0
     }
+
+    /// Whether the game has chance events (dice, shuffled draws, etc.)
+    /// beyond what `determinize`'s single-sample resampling papers over --
+    /// i.e. whether a deterministic tree search over `Self::S` alone, with
+    /// no chance-node branching, can see the whole picture. Defaults to
+    /// `false` (deterministic), matching every game in this repo today.
+    /// Consulted opportunistically by strategies that assume determinism
+    /// (see `strategies::negamax::supports`) as a capability check, not a
+    /// compile-time guarantee -- a `true` here doesn't add or remove any
+    /// method on `Game` itself.
+    fn is_stochastic() -> bool {
+        false
+    }
+
+    /// Whether a player's own `Self::S` fails to fully determine what
+    /// every other player can observe (cards in hand, fog of war, etc.).
+    /// Defaults to `false` (perfect information).
+    fn has_hidden_information() -> bool {
+        false
+    }
+
+    /// Whether players strictly alternate single moves, with no
+    /// simultaneous-move or multi-action-per-turn phases. Defaults to
+    /// `true`, matching every game in this repo today.
+    fn alternating_moves() -> bool {
+        true
+    }
 }

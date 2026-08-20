@@ -1,6 +1,7 @@
 pub mod flat_mc;
 pub mod human;
 pub mod mcts;
+pub mod negamax;
 pub mod random;
 
 use crate::game::Game;
