@@ -515,6 +515,7 @@ mod tests {
                 "gonnect",
                 "hex-gen",
                 "knightthrough",
+                "margo",
                 "othello",
                 "tak",
                 "tanbo",
