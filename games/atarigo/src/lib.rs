@@ -610,7 +610,7 @@ impl fmt::Display for State {
 #[cfg(test)]
 mod tests {
     use rand::{rngs::SmallRng, Rng, SeedableRng};
-    use std::collections::{HashSet, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
 
     use super::*;
 
@@ -985,6 +985,100 @@ mod tests {
         for seed in 0..30 {
             check_invert_action_legal_along_random_game(9, seed);
         }
+    }
+
+    /// The cross-transposition case `test_invert_action_produces_legal_real_actions`
+    /// can't reach: a `ChildArray` is built *once*, from whichever real state
+    /// first expands a node, then reused verbatim by every other real
+    /// orientation that later transposes onto the same node (same hash / same
+    /// `canonical_representation` output) -- each such orientation supplies
+    /// its own `sym` (`node::incoming_sym`, recomputed fresh from its own
+    /// real state) to translate the *same* shared canonical action list back
+    /// to its own board via `invert_action`. Exhaustively BFS the 3x3 board,
+    /// group every reachable state by hash, and for every group with more
+    /// than one distinct literal state, check that every canonical action
+    /// (generated once, from the group's shared canonical board) is legal
+    /// under `invert_action` for *every* member of the group, not just
+    /// whichever one happened to generate it.
+    #[test]
+    fn test_invert_action_legal_across_transposed_states() {
+        let start = State::new(3);
+        let mut seen: HashSet<State> = HashSet::new();
+        let mut queue: VecDeque<State> = VecDeque::new();
+        seen.insert(start.clone());
+        queue.push_back(start);
+
+        // hash -> (canonical board, every distinct literal state hashing here)
+        let mut groups: HashMap<u64, (State, Vec<State>)> = HashMap::new();
+
+        while let Some(state) = queue.pop_front() {
+            let h = state.hash();
+            let (canon, _) = AtariGo::canonical_representation(Real(state.clone()));
+            let canon = canon.into_inner();
+            groups
+                .entry(h)
+                .or_insert_with(|| (canon, Vec::new()))
+                .1
+                .push(state.clone());
+
+            if AtariGo::is_terminal(&state) {
+                continue;
+            }
+            let mut actions = Vec::new();
+            AtariGo::generate_actions(&state, &mut actions);
+            for action in actions {
+                let next = AtariGo::apply(state.clone(), &action);
+                if seen.insert(next.clone()) {
+                    queue.push_back(next);
+                }
+            }
+        }
+
+        let mut groups_checked = 0;
+        let mut mismatches = 0;
+        for (canon, members) in groups.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            groups_checked += 1;
+
+            let mut canon_actions = Vec::new();
+            AtariGo::generate_actions(canon, &mut canon_actions);
+
+            for member in members {
+                let (member_canon, sym) = AtariGo::canonical_representation(Real(member.clone()));
+                let member_canon = member_canon.into_inner();
+                assert_eq!(
+                    (
+                        member_canon.black(),
+                        member_canon.white(),
+                        member_canon.turn
+                    ),
+                    (canon.black(), canon.white(), canon.turn),
+                    "group members must share one canonical board"
+                );
+
+                let mut real_actions = Vec::new();
+                AtariGo::generate_actions(member, &mut real_actions);
+
+                for &canon_action in &canon_actions {
+                    let translated =
+                        AtariGo::invert_action(Canonical(canon_action), sym).into_inner();
+                    if !real_actions.contains(&translated) {
+                        mismatches += 1;
+                        println!(
+                            "MISMATCH: member state:\n{member}\ncanon state:\n{canon}\nsym {sym:?}\n\
+                             canonical action {canon_action:?} -> translated {translated:?}, not \
+                             in real actions {real_actions:?}"
+                        );
+                    }
+                }
+            }
+        }
+        println!(
+            "groups with >1 distinct literal state: {groups_checked}, mismatches: {mismatches}"
+        );
+        assert_eq!(mismatches, 0);
     }
 
     // A full `TreeSearch` integration test (mirroring Othello's
