@@ -30,8 +30,9 @@
 use std::fmt;
 
 use bitboard::{Board, Dyn};
-use mcts::game::{Game, PlayerIndex};
-use pyramid::{Pyramid, TouchingAdjacency};
+use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
+use mcts::zobrist::LazyZobristTable;
+use pyramid::{Pyramid, PyramidD4, TouchingAdjacency};
 use serde::{Deserialize, Serialize};
 
 /// Smallest supported base width -- "Spargo", the size a physical Shibumi
@@ -181,6 +182,186 @@ fn apply_captures(
     (occupied, black, zombie)
 }
 
+// ── Symmetry / Zobrist hashing ──────────────────────────────────────────
+//
+// Whole-pyramid D4 (`pyramid::PyramidD4`), array-of-hashes per symmetry
+// element -- the same shape `games/gonnect`/`games/atarigo` use, adapted to
+// `PyramidD4`'s own API (a flat `index_symmetries`/`invert_symmetry` pair,
+// no separate rows/cols).
+//
+// Unlike Gonnect (which incrementally XORs its `hashes: [u64; 8]` field on
+// every `apply`), Margo recomputes the whole array from scratch whenever
+// it's needed (`State::zobrist_hash`), never storing it -- the same
+// rebuild-rather-than-incrementally-maintain choice `visible_boards` above
+// already makes for buried/visible occupancy, on the same reasoning: the
+// board is small (<= 385 cells), and captures, zombie transitions, and the
+// wholesale swap of `previous` on every move already touch most of the
+// board's geometric fields, so incremental XOR maintenance here would save
+// little over a full rebuild while adding a second place (alongside
+// `resolve_place`/`apply_captures`) that has to get every one of those
+// transitions exactly right.
+
+/// A cell can independently belong to `occupied`/`black`/`zombie` (the
+/// current position) and to the `previous` ko snapshot's own `occupied`/
+/// `black` pair -- see `State`'s doc comment for why `previous` is a
+/// geometric field (must rotate/reflect with everything else under
+/// `Game::canonical_representation`) rather than a non-geometric one like
+/// `turn`/`can_swap`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Channel {
+    Occupied = 0,
+    Black = 1,
+    Zombie = 2,
+    PrevOccupied = 3,
+    PrevBlack = 4,
+}
+
+const HASH_CHANNELS: usize = 5;
+
+/// Largest board this game serves is `MAX_N`'s `total_cells(MAX_N) == 385`
+/// cells, `HASH_CHANNELS` channels per cell, plus one slot each for `turn`,
+/// `can_swap`, and whether `previous` is present at all (`Some` vs. `None`
+/// is itself game-relevant: see `ZOBRIST_HAS_PREVIOUS`'s own doc comment).
+const MAX_CELLS: usize = pyramid::total_cells(MAX_N);
+pub const ZOBRIST_ENTRIES: usize = MAX_CELLS * HASH_CHANNELS + 3;
+pub const ZOBRIST_TURN: usize = MAX_CELLS * HASH_CHANNELS;
+pub const ZOBRIST_CAN_SWAP: usize = MAX_CELLS * HASH_CHANNELS + 1;
+/// `previous == None` (the initial empty board) and `previous == Some((empty,
+/// empty))` (reached after White's first placement, before anything has
+/// been captured) are different game states -- the first can never trigger
+/// ko, the second forbids ever recreating an empty board again -- but both
+/// would hash identically on the `PrevOccupied`/`PrevBlack` channels alone
+/// (all-zero either way) without this extra bit distinguishing "no
+/// previous" from "previous happens to be all-zero".
+pub const ZOBRIST_HAS_PREVIOUS: usize = MAX_CELLS * HASH_CHANNELS + 2;
+
+/// Random Zobrist table, lazily initialised.
+pub static HASHES: LazyZobristTable<ZOBRIST_ENTRIES> = LazyZobristTable::new(0xD34D9F1C7A02E6B5);
+
+#[inline]
+fn zobrist_cell(pos: usize, channel: Channel) -> usize {
+    pos * HASH_CHANNELS + channel as usize
+}
+
+/// XOR the hash contribution for a single cell into all 8 symmetry hashes.
+#[inline]
+fn xor_cell(hashes: &mut [u64; 8], pos: usize, channel: Channel, sym: &PyramidD4) {
+    for (s, &sym_pos) in sym.index_symmetries(pos).iter().enumerate() {
+        hashes[s] ^= HASHES.hash(zobrist_cell(sym_pos, channel));
+    }
+}
+
+/// XOR the hash contribution for every set bit of `cells` on `channel`.
+fn xor_cells(hashes: &mut [u64; 8], cells: &Cells, channel: Channel, sym: &PyramidD4) {
+    for pos in cells.iter_set() {
+        xor_cell(hashes, pos, channel, sym);
+    }
+}
+
+/// XOR a position-independent constant (turn, can_swap, has-previous) into
+/// all 8 hashes.
+#[inline]
+fn xor_const(hashes: &mut [u64; 8], table_idx: usize) {
+    let v = HASHES.hash(table_idx);
+    for h in hashes.iter_mut() {
+        *h ^= v;
+    }
+}
+
+/// Rebuilds all 8 symmetry hashes from scratch -- see this section's own
+/// doc comment for why this is called fresh rather than incrementally
+/// maintained as a `State` field.
+fn rebuild_hashes(
+    occupied: &Cells,
+    black: &Cells,
+    zombie: &Cells,
+    previous: Option<(Cells, Cells)>,
+    turn: Player,
+    can_swap: bool,
+) -> [u64; 8] {
+    let sym = PyramidD4::new(occupied.n());
+    let mut hashes = [0u64; 8];
+    xor_cells(&mut hashes, occupied, Channel::Occupied, &sym);
+    xor_cells(&mut hashes, black, Channel::Black, &sym);
+    xor_cells(&mut hashes, zombie, Channel::Zombie, &sym);
+    if let Some((prev_occupied, prev_black)) = previous {
+        xor_cells(&mut hashes, &prev_occupied, Channel::PrevOccupied, &sym);
+        xor_cells(&mut hashes, &prev_black, Channel::PrevBlack, &sym);
+        xor_const(&mut hashes, ZOBRIST_HAS_PREVIOUS);
+    }
+    if turn == Player::Black {
+        xor_const(&mut hashes, ZOBRIST_TURN);
+    }
+    if can_swap {
+        xor_const(&mut hashes, ZOBRIST_CAN_SWAP);
+    }
+    hashes
+}
+
+/// The symmetric image of `cells` under symmetry element `sym_idx`.
+fn transform_cells(cells: &Cells, sym: &PyramidD4, sym_idx: usize) -> Cells {
+    let mut out = Cells::new(Dyn(cells.n()));
+    for pos in cells.iter_set() {
+        out.set_index(sym.index_symmetries(pos)[sym_idx]);
+    }
+    out
+}
+
+/// A comparable key for a board's set-cell pattern, for picking the
+/// lexicographically minimal symmetric image -- `Cells` has no `Ord` impl of
+/// its own (a bare `[u64; 7]` word pattern isn't otherwise meaningful to
+/// compare), so this uses the ascending list of set indices instead, which
+/// `iter_set` already produces in order.
+fn cells_key(cells: &Cells) -> Vec<usize> {
+    cells.iter_set().collect()
+}
+
+/// Index of the symmetry whose image of the *entire* geometric state
+/// (`occupied`, `black`, `zombie`, `previous`) is lexicographically
+/// minimal -- the canonical orientation for the position.
+///
+/// Unlike `games/gonnect`'s `canonical_symmetry` (which ties-break on
+/// `(black, white)` alone, reasoning that every other geometric field rides
+/// along under the same chosen symmetry regardless), Margo's own version of
+/// that shortcut is unsound: when `(occupied, black)` happens to be
+/// invariant under some non-identity element `g` (a genuine tie), `zombie`/
+/// `previous` need not *also* be `g`-invariant, so `min_by_key`'s
+/// first-minimum tie-break picks whichever `g` sorts first in `0..8` --
+/// which, relative to a symmetric *image* of the same position, is a
+/// different index than relative to the original, sending `zombie`/
+/// `previous` to inconsistent results across symmetric inputs. Caught by
+/// `canonical_representation_invariant_under_symmetry` (a 4x4 board with a
+/// self-symmetric `(occupied, black)` pattern but an asymmetric `previous`)
+/// rather than reasoned out by hand -- see this plan phase's own guidance
+/// on preferring a property test here. Including every geometric field in
+/// the tie-break makes the minimizer's *image* unique even when several
+/// symmetry indices achieve it, which is what `canonical_representation`
+/// actually needs.
+fn canonical_symmetry(
+    occupied: &Cells,
+    black: &Cells,
+    zombie: &Cells,
+    previous: Option<(Cells, Cells)>,
+) -> usize {
+    let sym = PyramidD4::new(occupied.n());
+    (0..8)
+        .min_by_key(|&sym_idx| {
+            let previous_key = previous.map(|(prev_occupied, prev_black)| {
+                (
+                    cells_key(&transform_cells(&prev_occupied, &sym, sym_idx)),
+                    cells_key(&transform_cells(&prev_black, &sym, sym_idx)),
+                )
+            });
+            (
+                cells_key(&transform_cells(occupied, &sym, sym_idx)),
+                cells_key(&transform_cells(black, &sym, sym_idx)),
+                cells_key(&transform_cells(zombie, &sym, sym_idx)),
+                previous_key,
+            )
+        })
+        .unwrap()
+}
+
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Default, Hash, PartialEq, Eq)]
 pub enum Player {
     #[default]
@@ -209,12 +390,19 @@ impl PlayerIndex for Player {
 pub enum Action {
     /// Place a piece at flat pyramid index `.0` (see `pyramid::Pyramid::
     /// index`/`to_coord`). `u16` because `total_cells(MAX_N) == 385`
-    /// overflows `u8`.
-    Place(u16),
+    /// overflows `u8`. `.1` is the board's base width `n` -- carried along
+    /// because `Game::apply_to_action`/`invert_action` need it to build a
+    /// `PyramidD4` symmetry, and (unlike `apply`, which always has a
+    /// `State` in scope) their trait signature carries only the action and
+    /// a `Transform` index, no state. Mirrors `games/gonnect`'s `Move`,
+    /// which carries its own board size for the identical reason.
+    Place(u16, u8),
     /// Recolour the single piece on the board to the opposite colour,
     /// taken instead of a placement. Legal only when [`State::can_swap`]
     /// holds, i.e. exactly one piece (White's opening move) is on the
-    /// board and nothing has closed the swap window yet.
+    /// board and nothing has closed the swap window yet. A fixed point of
+    /// every symmetry element, mirroring how `games/gonnect`/`games/
+    /// atarigo` treat their own `SWAP`/`PASS` sentinels.
     Swap,
 }
 
@@ -360,6 +548,24 @@ impl State {
             Player::White => self.occupied.count_ones() - self.black.count_ones(),
         }
     }
+
+    /// This state's Zobrist hash, symmetry-invariant: two states that are
+    /// symmetric images of each other under `PyramidD4` hash identically,
+    /// since both pick out the same slot of `rebuild_hashes`'s per-symmetry
+    /// array via [`canonical_symmetry`] (see `games/gonnect`'s identical
+    /// `State::hash` for why this is the trick that makes the array-of-
+    /// hashes design work).
+    fn zobrist_hash(&self) -> u64 {
+        let hashes = rebuild_hashes(
+            &self.occupied,
+            &self.black,
+            &self.zombie,
+            self.previous,
+            self.turn,
+            self.can_swap,
+        );
+        hashes[canonical_symmetry(&self.occupied, &self.black, &self.zombie, self.previous)]
+    }
 }
 
 #[derive(Clone)]
@@ -373,7 +579,7 @@ impl Game for Margo {
     fn apply(mut state: State, action: &Action) -> State {
         let previous = (state.occupied, state.black);
         match *action {
-            Action::Place(index) => {
+            Action::Place(index, _n) => {
                 let adjacency = TouchingAdjacency::new(state.occupied.n());
                 let (new_occupied, new_black, new_zombie) = state
                     .resolve_place(index as usize, &adjacency)
@@ -420,9 +626,10 @@ impl Game for Margo {
             actions.push(Action::Swap);
         }
         let adjacency = TouchingAdjacency::new(state.occupied.n());
+        let n = state.occupied.n() as u8;
         for index in 0..state.occupied.total_cells() {
             if !state.is_occupied(index) && state.resolve_place(index, &adjacency).is_some() {
-                actions.push(Action::Place(index as u16));
+                actions.push(Action::Place(index as u16, n));
             }
         }
     }
@@ -446,11 +653,64 @@ impl Game for Margo {
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
         match *action {
-            Action::Place(index) => {
+            Action::Place(index, _n) => {
                 let (col, row, level) = state.occupied.to_coord(index as usize);
                 format!("({col},{row},L{level})")
             }
             Action::Swap => "swap".to_string(),
+        }
+    }
+
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        state.zobrist_hash()
+    }
+
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        let state = state.0;
+        let sym_idx =
+            canonical_symmetry(&state.occupied, &state.black, &state.zombie, state.previous);
+        let sym = PyramidD4::new(state.occupied.n());
+        let previous = state.previous.map(|(o, b)| {
+            (
+                transform_cells(&o, &sym, sym_idx),
+                transform_cells(&b, &sym, sym_idx),
+            )
+        });
+        (
+            Canonical(State {
+                occupied: transform_cells(&state.occupied, &sym, sym_idx),
+                black: transform_cells(&state.black, &sym, sym_idx),
+                zombie: transform_cells(&state.zombie, &sym, sym_idx),
+                previous,
+                turn: state.turn,
+                can_swap: state.can_swap,
+            }),
+            Transform::new(sym_idx),
+        )
+    }
+
+    /// `Action::Swap` is a fixed point of every symmetry (see the variant's
+    /// own doc comment); only `Place`'s index transforms, through the
+    /// `PyramidD4` group for the board size it carries.
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        match action.0 {
+            Action::Swap => Canonical(Action::Swap),
+            Action::Place(index, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let image = pyramid_sym.index_symmetries(index as usize)[sym.index()];
+                Canonical(Action::Place(image as u16, n))
+            }
+        }
+    }
+
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        match action.0 {
+            Action::Swap => Real(Action::Swap),
+            Action::Place(index, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let original = pyramid_sym.invert_symmetry(index as usize, sym.index());
+                Real(Action::Place(original as u16, n))
+            }
         }
     }
 }
@@ -925,7 +1185,7 @@ mod tests {
         let mut actions = Vec::new();
         Margo::generate_actions(&state, &mut actions);
         let opening = actions[0];
-        let Action::Place(opening_index) = opening else {
+        let Action::Place(opening_index, _n) = opening else {
             panic!("White's opening move must be a placement");
         };
         let after_white = Margo::apply(state, &opening);
@@ -972,5 +1232,208 @@ mod tests {
         actions.clear();
         Margo::generate_actions(&after_black, &mut actions);
         assert!(actions.iter().all(|a| *a != Action::Swap));
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    // Symmetry: `apply_to_action`/`invert_action` round-trip,
+    // `canonical_representation` invariance across every symmetric image of
+    // a state, `invert_action` always producing a legal real action along
+    // random play, and hash consistency -- mirroring `games/gonnect`'s/
+    // `games/atarigo`'s own symmetry test suites (see the new-game skill).
+
+    /// Every geometric field (`occupied`/`black`/`zombie`/`previous`)
+    /// transformed through each of the 8 `PyramidD4` elements -- the full
+    /// set of states that must all canonicalize identically, since they're
+    /// the same position viewed from 8 different orientations. `turn`/
+    /// `can_swap` aren't geometric, so they ride along unchanged.
+    fn state_symmetries(state: &State) -> [State; 8] {
+        let sym = PyramidD4::new(state.occupied.n());
+        std::array::from_fn(|i| State {
+            occupied: transform_cells(&state.occupied, &sym, i),
+            black: transform_cells(&state.black, &sym, i),
+            zombie: transform_cells(&state.zombie, &sym, i),
+            previous: state
+                .previous
+                .map(|(o, b)| (transform_cells(&o, &sym, i), transform_cells(&b, &sym, i))),
+            turn: state.turn,
+            can_swap: state.can_swap,
+        })
+    }
+
+    /// A canonicalized state's fields, used as the "same equivalence class"
+    /// comparison key in the invariance/hash-consistency checks below.
+    fn canon_key(state: &State) -> (Cells, Cells, Cells, Option<(Cells, Cells)>, Player, bool) {
+        (
+            state.occupied,
+            state.black,
+            state.zombie,
+            state.previous,
+            state.turn,
+            state.can_swap,
+        )
+    }
+
+    #[test]
+    fn action_transform_round_trip() {
+        let n = DEFAULT_N as u8;
+        let total = pyramid::total_cells(DEFAULT_N);
+        for index in 0..total {
+            for sym in 0..8usize {
+                let action = Action::Place(index as u16, n);
+                let sym = Transform::new(sym);
+                let transformed = Margo::apply_to_action(Real(action), sym);
+                let back = Margo::invert_action(transformed, sym);
+                assert_eq!(back.into_inner(), action);
+            }
+        }
+        for sym in 0..8usize {
+            let sym = Transform::new(sym);
+            assert_eq!(
+                Margo::apply_to_action(Real(Action::Swap), sym).into_inner(),
+                Action::Swap
+            );
+            assert_eq!(
+                Margo::invert_action(Canonical(Action::Swap), sym).into_inner(),
+                Action::Swap
+            );
+        }
+    }
+
+    /// Plays a short random game (captures/zombies/ko/swap all in scope,
+    /// not just placements), and at every reached state, checks that
+    /// `canonical_representation` agrees across all 8 of that state's own
+    /// symmetric images.
+    fn check_canonical_representation_invariant(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let mut reachable = vec![state.clone()];
+        let max_plies = state.occupied.total_cells() / 2;
+        for _ in 0..max_plies {
+            if Margo::is_terminal(&state) {
+                break;
+            }
+            let mut actions = Vec::new();
+            Margo::generate_actions(&state, &mut actions);
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Margo::apply(state, &action);
+            reachable.push(state.clone());
+        }
+
+        for state in reachable {
+            let (canon, _sym) = Margo::canonical_representation(Real(state.clone()));
+            let canon_key_value = canon_key(&canon.into_inner());
+
+            for variant in state_symmetries(&state) {
+                let (canon2, _) = Margo::canonical_representation(Real(variant));
+                assert_eq!(
+                    canon_key(&canon2.into_inner()),
+                    canon_key_value,
+                    "canonical_representation disagreed across symmetric images \
+                     (n={n}, seed={seed})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_representation_invariant_under_symmetry() {
+        for seed in 0..20 {
+            check_canonical_representation_invariant(MIN_N, seed);
+        }
+        for seed in 0..10 {
+            check_canonical_representation_invariant(DEFAULT_N, seed);
+        }
+    }
+
+    /// Along random play, every action `generate_actions` offers on the
+    /// canonicalized state, translated back via `invert_action`, must be
+    /// present in the real state's own `generate_actions` output.
+    fn check_invert_action_legal_along_random_game(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.occupied.total_cells() + 2;
+
+        for _ in 0..max_plies {
+            if Margo::is_terminal(&state) {
+                return;
+            }
+            let mut real_actions = Vec::new();
+            Margo::generate_actions(&state, &mut real_actions);
+
+            let (canon, sym) = Margo::canonical_representation(Real(state.clone()));
+            let canon = canon.into_inner();
+            let mut canon_actions = Vec::new();
+            Margo::generate_actions(&canon, &mut canon_actions);
+
+            for &canon_action in &canon_actions {
+                let translated = Margo::invert_action(Canonical(canon_action), sym).into_inner();
+                assert!(
+                    real_actions.contains(&translated),
+                    "seed {seed}, n={n}: invert_action produced {translated:?} (from \
+                     canonical {canon_action:?}, sym {sym:?}), not present in real \
+                     generate_actions {real_actions:?}"
+                );
+            }
+
+            let action = real_actions[rng.gen_range(0..real_actions.len())];
+            state = Margo::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn invert_action_produces_legal_real_actions() {
+        for seed in 0..30 {
+            check_invert_action_legal_along_random_game(MIN_N, seed);
+        }
+        for seed in 0..15 {
+            check_invert_action_legal_along_random_game(DEFAULT_N, seed);
+        }
+    }
+
+    /// Random-sampled hash-consistency check: any two states sharing a
+    /// `zobrist_hash` must have the same `canonical_representation` output.
+    /// Random sampling rather than an exhaustive BFS of the reachable-state
+    /// graph -- Margo's `previous`/ko field keeps positions from deduping
+    /// the way Go-style capture-heavy games often do, so (per this repo's
+    /// `AGENTS.md` note on `cargo test --lib` memory safety) an exhaustive
+    /// walk even from `MIN_N` isn't bounded the way Gonnect's 3x3 exhaustive
+    /// check is.
+    #[test]
+    fn random_games_hash_consistency() {
+        use std::collections::HashMap;
+
+        let mut rng = SmallRng::seed_from_u64(9);
+        let mut by_hash: HashMap<u64, _> = HashMap::new();
+        let mut mismatches = 0;
+        for _game in 0..200 {
+            let mut state = State::new(MIN_N);
+            for _ in 0..40 {
+                if Margo::is_terminal(&state) {
+                    break;
+                }
+                let mut actions = Vec::new();
+                Margo::generate_actions(&state, &mut actions);
+                let action = actions[rng.gen_range(0..actions.len())];
+                state = Margo::apply(state, &action);
+
+                let h = state.zobrist_hash();
+                let (canon, _sym) = Margo::canonical_representation(Real(state.clone()));
+                let key = canon_key(&canon.into_inner());
+                match by_hash.get(&h) {
+                    Some(prev) if *prev != key => {
+                        mismatches += 1;
+                        println!("MISMATCH at hash {h}");
+                    }
+                    Some(_) => {}
+                    None => {
+                        by_hash.insert(h, key);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            mismatches, 0,
+            "hash collided across different equivalence classes"
+        );
     }
 }
