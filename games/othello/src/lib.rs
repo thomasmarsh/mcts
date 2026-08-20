@@ -458,8 +458,22 @@ impl State {
     /// that shared orientation rather than assuming its own), the plain
     /// identity slot otherwise.
     #[inline(always)]
+    /// This state's Zobrist hash -- the canonical-symmetry slot when
+    /// `USE_SYMMETRY` is on and this state is within `SYMMETRY_PLY_LIMIT`,
+    /// the plain identity slot otherwise.
+    ///
+    /// Must apply the exact same ply-limit gate as `canonical_representation`:
+    /// the legacy `use_transpositions` (non-DAG) search path keys its
+    /// transposition table purely on `zobrist_hash(state)`, with no separate
+    /// ply discriminator. If this hash kept folding through
+    /// `canonical_symmetry` past the limit while `canonical_representation`
+    /// stopped rotating the board there, two different real orientations of
+    /// the same over-limit position would hash identically and merge into
+    /// one node, but that node's `ChildArray` (built from `canonical_
+    /// representation`'s un-rotated, literal-orientation output) would only
+    /// be correct for whichever orientation happened to expand it first.
     fn hash(&self) -> u64 {
-        if USE_SYMMETRY {
+        if USE_SYMMETRY && self.occupied().count_ones() as usize <= SYMMETRY_PLY_LIMIT {
             self.hashes[canonical_symmetry(self.black, self.white)]
         } else {
             self.hashes[0]
