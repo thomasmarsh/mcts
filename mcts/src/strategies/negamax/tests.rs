@@ -303,6 +303,34 @@ fn singular_extension_toggle_does_not_change_the_answer() {
 }
 
 #[test]
+fn root_split_parallel_search_agrees_with_the_serial_answer() {
+    // See AGENTS.md's "Rust tests" section: any test spawning its own
+    // thread pool must take this guard so cargo's default per-binary test
+    // concurrency can't overlap two thread-spawning tests' worker bursts.
+    let _guard = crate::strategies::parallel_test_guard();
+
+    let state = State { stones: 5, turn: 0 };
+    let expected = solver().choose_action(&state);
+    let mut parallel = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_num_threads(4),
+    );
+    assert_eq!(
+        parallel.choose_action(&state),
+        expected,
+        "root-split parallel search should find the same optimal move as serial search"
+    );
+    assert!(
+        parallel.root_score() >= WIN_SCORE - parallel.depth_reached() as i32,
+        "the winning move should still be reported as (mate-distance) proven under \
+         root splitting, got {}",
+        parallel.root_score()
+    );
+}
+
+#[test]
 fn aspiration_window_does_not_change_the_answer() {
     let state = State { stones: 5, turn: 0 };
     let mut baseline = solver();
