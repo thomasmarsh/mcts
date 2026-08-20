@@ -11,6 +11,9 @@
 
 use bitboard::{Board, Dim, Storage};
 
+pub mod adjacency;
+pub use adjacency::touching_neighbors;
+
 /// Sum of squares `1^2 + 2^2 + ... + x^2` -- the total cell count of an
 /// `x`-level pyramid (`x` = base width). Closed form of
 /// `(0..x).map(|l| (x - l) * (x - l)).sum()`.
@@ -45,6 +48,52 @@ pub const fn level_offset(n: usize, level: usize) -> usize {
 #[inline(always)]
 pub const fn total_cells(n: usize) -> usize {
     sum_squares(n)
+}
+
+/// Whether `(col, row, level)` is a valid cell of a base-`n` pyramid --
+/// see `Pyramid::in_bounds`.
+#[inline(always)]
+pub const fn in_bounds(n: usize, col: usize, row: usize, level: usize) -> bool {
+    level < n && col < level_side(n, level) && row < level_side(n, level)
+}
+
+/// The flat index of `(col, row, level)` -- see `Pyramid::index`.
+#[inline(always)]
+pub const fn index(n: usize, col: usize, row: usize, level: usize) -> usize {
+    level_offset(n, level) + row * level_side(n, level) + col
+}
+
+/// The inverse of `index` -- see `Pyramid::to_coord`.
+pub fn to_coord(n: usize, index: usize) -> (usize, usize, usize) {
+    debug_assert!(index < total_cells(n));
+    let mut level = 0;
+    while level + 1 < n && level_offset(n, level + 1) <= index {
+        level += 1;
+    }
+    let side = level_side(n, level);
+    let offset = index - level_offset(n, level);
+    (offset % side, offset / side, level)
+}
+
+/// The (up to four) level-`(level + 1)` candidate positions that would rest
+/// on `(col, row, level)` if occupied -- the inverse of `Pyramid::supporters`,
+/// bounds-checked but (unlike `Pyramid::dependents`) not filtered by
+/// occupancy, since the geometric relation it describes doesn't depend on
+/// any particular board's state.
+pub fn dependent_positions(n: usize, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
+    if level + 1 >= n {
+        return Vec::new();
+    }
+    let above_side = level_side(n, level + 1);
+    let mut out = Vec::new();
+    for c in col.saturating_sub(1)..=col {
+        for r in row.saturating_sub(1)..=row {
+            if c < above_side && r < above_side {
+                out.push((c, r));
+            }
+        }
+    }
+    out
 }
 
 /// A flat pyramidal bitset backed by `S` (mirrors `bitboard::Board`'s
@@ -104,29 +153,18 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
 
     #[inline(always)]
     pub fn in_bounds(&self, col: usize, row: usize, level: usize) -> bool {
-        level < self.n() && col < self.level_side(level) && row < self.level_side(level)
+        in_bounds(self.n(), col, row, level)
     }
 
     #[inline(always)]
     pub fn index(&self, col: usize, row: usize, level: usize) -> usize {
         debug_assert!(self.in_bounds(col, row, level));
-        self.level_offset(level) + row * self.level_side(level) + col
+        index(self.n(), col, row, level)
     }
 
-    /// The inverse of `index`: recovers `(col, row, level)` from a flat
-    /// index by walking levels from the base up until the running offset
-    /// covers `index`. Levels only number up to 10 (this crate's stated `n`
-    /// range), so a linear scan costs nothing worth a lookup table for.
-    pub fn to_coord(&self, index: usize) -> (usize, usize, usize) {
-        debug_assert!(index < self.total_cells());
-        let n = self.n();
-        let mut level = 0;
-        while level + 1 < n && self.level_offset(level + 1) <= index {
-            level += 1;
-        }
-        let side = self.level_side(level);
-        let offset = index - self.level_offset(level);
-        (offset % side, offset / side, level)
+    /// The inverse of `index` -- see the free function of the same name.
+    pub fn to_coord(&self, flat_index: usize) -> (usize, usize, usize) {
+        to_coord(self.n(), flat_index)
     }
 
     /// Gets a single bit by its flat index -- see `index`.
@@ -279,19 +317,10 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
     /// row, level)` -- the inverse of `supporters`: `(col, row, level)` is
     /// one of their four support cells. Empty above the apex.
     pub fn dependents(&self, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
-        if level + 1 >= self.n() {
-            return Vec::new();
-        }
-        let above_side = self.level_side(level + 1);
-        let mut out = Vec::new();
-        for c in col.saturating_sub(1)..=col {
-            for r in row.saturating_sub(1)..=row {
-                if c < above_side && r < above_side && self.get(c, r, level + 1) {
-                    out.push((c, r));
-                }
-            }
-        }
-        out
+        dependent_positions(self.n(), col, row, level)
+            .into_iter()
+            .filter(|&(c, r)| self.get(c, r, level + 1))
+            .collect()
     }
 
     /// Whether anything rests directly on `(col, row, level)` at all --
@@ -312,6 +341,23 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
     /// than one dropped piece.
     pub fn is_movable(&self, col: usize, row: usize, level: usize) -> bool {
         self.dependents(col, row, level).len() <= 1
+    }
+
+    /// Whether `(col, row, level)` is buried: hidden from directly above by
+    /// a piece at `(col - 1, row - 1, level + 2)`, the *only* position whose
+    /// projected center exactly coincides with this one (see this crate's
+    /// `adjacency` module docs for the geometric derivation). A buried piece
+    /// still physically touches its neighbors -- `adjacency::touching_neighbors`
+    /// doesn't know or care about burial -- but Margo/Akron's win-condition
+    /// connectivity is defined over *visible* (non-buried) pieces only, per
+    /// their published rules ("buried pieces do not count in any
+    /// connection").
+    pub fn is_buried(&self, col: usize, row: usize, level: usize) -> bool {
+        level + 2 < self.n()
+            && col > 0
+            && row > 0
+            && self.in_bounds(col - 1, row - 1, level + 2)
+            && self.get(col - 1, row - 1, level + 2)
     }
 }
 
@@ -692,5 +738,57 @@ mod tests {
         assert!(flood.get(1, 1));
         assert!(!flood.get(3, 3), "flood4 must not cross a non-adjacent gap");
         assert_eq!(flood.count_ones(), 3);
+    }
+
+    // Cross-check against the published rules: Span's page reports that a
+    // complete 4x4-base (Shibumi-family) pyramid has exactly five "buried"
+    // (non-visible) balls out of its 30 total, and that visible balls'
+    // connectivity is what wins the game -- see `pyramid::adjacency`'s
+    // module docs for the geometric derivation this falls out of.
+
+    #[test]
+    fn full_n4_pyramid_has_exactly_five_buried_balls() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        for level in 0..4 {
+            let side = pyramid.level_side(level);
+            for row in 0..side {
+                for col in 0..side {
+                    pyramid.set(col, row, level);
+                }
+            }
+        }
+        assert_eq!(pyramid.total_cells(), 30);
+
+        let buried: Vec<(usize, usize, usize)> = (0..pyramid.total_cells())
+            .map(|i| pyramid.to_coord(i))
+            .filter(|&(c, r, l)| pyramid.is_buried(c, r, l))
+            .collect();
+        assert_eq!(
+            buried.len(),
+            5,
+            "expected exactly five buried balls (Span's reported figure for a full 4x4 pyramid), got {buried:?}"
+        );
+
+        // The four level-0 cells directly under each level-2 ball, plus the
+        // one level-1 cell directly under the apex.
+        for &(c, r) in &[(1, 1), (1, 2), (2, 1), (2, 2)] {
+            assert!(buried.contains(&(c, r, 0)), "({c},{r},0) should be buried");
+        }
+        assert!(buried.contains(&(1, 1, 1)), "(1,1,1) should be buried");
+    }
+
+    #[test]
+    fn corner_and_apex_are_never_buried() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        for level in 0..4 {
+            let side = pyramid.level_side(level);
+            for row in 0..side {
+                for col in 0..side {
+                    pyramid.set(col, row, level);
+                }
+            }
+        }
+        assert!(!pyramid.is_buried(0, 0, 0), "no occluder can sit off-board");
+        assert!(!pyramid.is_buried(0, 0, 3), "the apex has nothing above it");
     }
 }
