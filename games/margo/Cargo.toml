@@ -1,0 +1,18 @@
+[package]
+name = "game-margo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_margo"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+bitboard = { path = "../../bitboard" }
+pyramid = { path = "../../pyramid" }
+serde = { version = "1", features = ["derive"] }
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[lints]
+workspace = true
