@@ -140,25 +140,14 @@ struct Window {
     beta: Score,
 }
 
-/// Score type returned by [`Evaluator::evaluate`] and by the search itself,
-/// always from the perspective of the player about to move in the state
-/// being scored (the "nega" in negamax: a child's value is negated to
-/// become its parent's).
-pub type Score = i32;
-
-/// A proven win for the player to move. Kept well below `i32::MAX` so
-/// mate-distance adjustments (`WIN_SCORE - ply`) and aspiration-window
-/// arithmetic (`target +/- window`) can't overflow.
-pub const WIN_SCORE: Score = 1_000_000;
-pub const LOSS_SCORE: Score = -WIN_SCORE;
-pub const DRAW_SCORE: Score = 0;
-
-/// Evaluators should stay within this band so a heuristic score can never
-/// be confused with a mate-distance-adjusted `WIN_SCORE`/`LOSS_SCORE`
-/// (which live in `[WIN_SCORE - max_depth, WIN_SCORE]` and the mirror image
-/// below zero, for any `max_depth` this crate would realistically be
-/// configured with).
-pub const EVAL_MAGNITUDE_LIMIT: Score = 900_000;
+/// `Score`/`WIN_SCORE`/`LOSS_SCORE`/`DRAW_SCORE`/`EVAL_MAGNITUDE_LIMIT`/
+/// `Evaluator`/`MaterialBlind` moved to `crate::evaluator` so MCTS-side
+/// minimax hybrids can depend on them without depending on this module --
+/// re-exported here so existing `negamax::`-qualified call sites are
+/// unaffected.
+pub use crate::evaluator::{
+    Evaluator, MaterialBlind, Score, DRAW_SCORE, EVAL_MAGNITUDE_LIMIT, LOSS_SCORE, WIN_SCORE,
+};
 
 /// Whether `G`'s declared capabilities (`Game::is_stochastic`/
 /// `has_hidden_information`/`alternating_moves`/`num_players`) are ones
@@ -169,36 +158,6 @@ pub fn supports<G: Game>() -> bool {
         && !G::is_stochastic()
         && !G::has_hidden_information()
         && G::alternating_moves()
-}
-
-/// A static evaluation of a non-terminal state, from the perspective of
-/// `Game::player_to_move(state)`. Only consulted at the search's depth
-/// cutoff (terminal states are always scored from `Game::terminal_status`
-/// instead) -- a game small enough to negamax out to a terminal state at
-/// whatever depth it's configured with doesn't need one at all (see
-/// [`MaterialBlind`] below).
-///
-/// This is intentionally not part of `Game` itself: most games plugged
-/// into this crate have no static evaluator (they're built for MCTS, whose
-/// rollouts don't need one), and folding an `evaluate` method into `Game`
-/// would force every one of them to grow a stub. Implement this trait only
-/// for the games (and only in the crates) that actually want negamax.
-pub trait Evaluator<G: Game>: Sync + Send {
-    fn evaluate(&self, state: &G::S) -> Score;
-}
-
-/// An [`Evaluator`] that always returns a draw score, for a game whose
-/// state space is small enough that `NegamaxOptions::max_depth` can just
-/// be set past its longest possible game -- the depth cutoff then never
-/// actually fires, so what it returns doesn't matter. Also useful as a
-/// placeholder while a real evaluator is still being written.
-#[derive(Clone, Copy, Default)]
-pub struct MaterialBlind;
-
-impl<G: Game> Evaluator<G> for MaterialBlind {
-    fn evaluate(&self, _state: &G::S) -> Score {
-        DRAW_SCORE
-    }
 }
 
 /// Configuration for [`Negamax`]. Every field has a builder method
@@ -698,6 +657,85 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
         pv
     }
 
+    /// One full-width pass over `root_moves` at `depth`, searching each
+    /// child `depth - 1` plies deep and returning every move's score,
+    /// sorted best-first -- the per-iteration body shared by
+    /// `choose_action_serial`'s iterative-deepening loop and
+    /// [`Self::bounded_negamax`]'s single-shot search. `None` on timeout
+    /// (only reachable when `deadline` is `Some`; [`Self::bounded_negamax`]
+    /// always passes `None`).
+    fn search_root_once(
+        &mut self,
+        state: &G::S,
+        root_moves: Vec<(G::A, Score)>,
+        depth: u32,
+        deadline: Option<Instant>,
+    ) -> Option<Vec<(G::A, Score)>> {
+        let mut alpha = LOSS_SCORE - 1;
+        let beta = WIN_SCORE + 1;
+        let mut iter_scores = Vec::with_capacity(root_moves.len());
+        for (a, _) in root_moves {
+            let child = G::apply(state.clone(), &a);
+            let child_score = self.negamax_search(
+                &child,
+                Some(&a),
+                depth - 1,
+                1,
+                Window {
+                    alpha: -beta,
+                    beta: -alpha,
+                },
+                deadline,
+            )?;
+            let score = -child_score;
+            if score > alpha {
+                alpha = score;
+            }
+            iter_scores.push((a, score));
+        }
+        iter_scores.sort_by_key(|b| std::cmp::Reverse(b.1));
+        Some(iter_scores)
+    }
+
+    /// A single, private, throwaway search rooted at an arbitrary state:
+    /// no iterative deepening (searches exactly `depth` plies, once), no
+    /// time budget, and this `Negamax`'s own `history`/`countermove`/
+    /// `table` are reused as-is
+    /// rather than reset -- callers that want a genuinely cold search
+    /// (e.g. a fresh call per MCTS node, with no state leaking between
+    /// unrelated positions) should construct a dedicated `Negamax` with
+    /// `NegamaxOptions::table_bits(0)` for it, exactly like any other
+    /// `Negamax` instance; this method adds no new state-isolation
+    /// mechanism of its own; it is a thin single-depth entry point,
+    /// nothing more.
+    ///
+    /// Returns `(best action, its score from `state`'s mover's
+    /// perspective)`. Panics if `state` has no legal moves -- callers
+    /// (MCTS's expansion/simulation/backprop hooks) already have an action
+    /// list in hand by the time they'd call this and should not call it on
+    /// a state they haven't already checked isn't terminal.
+    pub fn bounded_negamax(&mut self, state: &G::S, depth: u32) -> (G::A, Score) {
+        debug_assert!(
+            supports::<G>(),
+            "Negamax assumes a deterministic, perfect-information, two-player \
+             alternating-move game -- see `negamax::supports` and the module docs"
+        );
+        assert!(depth >= 1, "bounded_negamax requires depth >= 1");
+        let mut root_actions = Vec::new();
+        G::generate_actions(state, &mut root_actions);
+        assert!(
+            !root_actions.is_empty(),
+            "bounded_negamax called on a state with no legal moves"
+        );
+        let root_moves = root_actions.into_iter().map(|a| (a, DRAW_SCORE)).collect();
+        self.singular_extension_cap = depth * 2;
+        let scores = self
+            .search_root_once(state, root_moves, depth, None)
+            .expect("bounded_negamax passes deadline: None, so search_root_once can't time out");
+        let (action, score) = scores.into_iter().next().expect("checked non-empty above");
+        (action, score)
+    }
+
     /// The single-threaded iterative-deepening search loop, run either
     /// directly (`NegamaxOptions::num_threads == 1`) or, once per worker,
     /// by `choose_action_root_split`. `self.start_depth` (always `1`
@@ -742,38 +780,12 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
                 }
             }
 
-            let mut alpha = LOSS_SCORE - 1;
-            let beta = WIN_SCORE + 1;
-            let mut iter_scores = Vec::with_capacity(self.root_scores.len());
-            let mut complete = true;
-            for (a, _) in self.root_scores.clone() {
-                let child = G::apply(state.clone(), &a);
-                let Some(child_score) = self.negamax_search(
-                    &child,
-                    Some(&a),
-                    depth - 1,
-                    1,
-                    Window {
-                        alpha: -beta,
-                        beta: -alpha,
-                    },
-                    deadline,
-                ) else {
-                    complete = false;
-                    break;
-                };
-                let score = -child_score;
-                if score > alpha {
-                    alpha = score;
-                }
-                iter_scores.push((a, score));
-            }
-
-            if !complete {
+            let Some(iter_scores) =
+                self.search_root_once(state, self.root_scores.clone(), depth, deadline)
+            else {
                 break;
-            }
+            };
 
-            iter_scores.sort_by_key(|b| std::cmp::Reverse(b.1));
             self.root_scores = iter_scores;
             self.depth_reached = depth;
             prev_score = self.root_scores[0].1;

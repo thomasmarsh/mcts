@@ -11,6 +11,11 @@ type BitBoard<const N: usize, const M: usize> = Board<u64, Const<N>, Const<M>>;
 use serde::Serialize;
 use std::fmt;
 
+mod heuristic;
+mod zobrist;
+
+pub use heuristic::Heuristic;
+
 #[derive(Copy, Clone, Serialize, Debug, Default, PartialEq, Eq)]
 pub enum Player {
     #[default]
@@ -223,6 +228,14 @@ impl<const N: usize, const M: usize> Game for Breakthrough<N, M> {
 
     fn num_players() -> usize {
         2
+    }
+
+    fn zobrist_hash(state: &State<N, M>) -> u64 {
+        zobrist::full_hash(
+            state.black().iter_set(),
+            state.white().iter_set(),
+            state.turn(),
+        )
     }
 }
 

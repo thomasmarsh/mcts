@@ -1,3 +1,4 @@
+pub mod evaluator;
 pub mod game;
 pub mod strategies;
 pub mod symmetry;
