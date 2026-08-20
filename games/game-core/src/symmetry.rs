@@ -206,6 +206,138 @@ impl<const S: usize> SymmetryGroup for D4Symmetry<S> {
     }
 }
 
+/// Runtime-sized D4 symmetry group for a square board whose side length
+/// isn't fixed at compile time -- the `Dyn`-dims counterpart of
+/// [`D4Symmetry`], for games like Gonnect/AtariGo whose board size varies
+/// per instance (3x3 through 19x19) rather than being one fixed constant.
+/// Same 8 elements, same index arithmetic, just parameterised by a runtime
+/// `size` field instead of a const generic.
+#[derive(Clone, Copy, Debug)]
+pub struct D4Dyn {
+    size: usize,
+}
+
+impl D4Dyn {
+    #[inline]
+    pub fn new(size: usize) -> Self {
+        Self { size }
+    }
+
+    #[inline]
+    fn flip_cols(&self, i: usize) -> usize {
+        flip_cols_index(i, self.size)
+    }
+
+    #[inline]
+    fn flip_rows(&self, i: usize) -> usize {
+        flip_rows_index(i, self.size, self.size)
+    }
+
+    #[inline]
+    fn transpose(&self, i: usize) -> usize {
+        let row = i / self.size;
+        let col = i % self.size;
+        col * self.size + row
+    }
+
+    /// Produce all 8 symmetric images of a cell index -- see
+    /// `D4Symmetry::index_symmetries` for the element ordering.
+    #[inline]
+    pub fn index_symmetries(&self, i: usize) -> [usize; 8] {
+        let fc = self.flip_cols(i);
+        let fr = self.flip_rows(i);
+        let t = self.transpose(i);
+        [
+            i,
+            fc,
+            fr,
+            t,
+            self.flip_rows(fc),
+            self.transpose(fc),
+            self.transpose(fr),
+            self.transpose(self.flip_rows(fc)),
+        ]
+    }
+
+    /// Map an index back through the inverse of a symmetry -- see
+    /// `D4Symmetry::invert_symmetry`.
+    #[inline]
+    pub fn invert_symmetry(&self, i: usize, sym_idx: usize) -> usize {
+        match sym_idx {
+            0 => i,
+            1 => self.flip_cols(i),
+            2 => self.flip_rows(i),
+            3 => self.transpose(i),
+            4 => self.flip_cols(self.flip_rows(i)),
+            5 => self.flip_cols(self.transpose(i)),
+            6 => self.flip_rows(self.transpose(i)),
+            7 => self.flip_cols(self.flip_rows(self.transpose(i))),
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Applies symmetry element `sym_idx` (of `sym`'s D4 group) to every set bit
+/// of `board`, producing the transformed board -- the `Dyn`-dims/multi-word
+/// counterpart of `D4Symmetry::apply_to_bits`, generic over any
+/// `bitboard::Board` storage/dim combination since `iter_set`/`set_index`/
+/// `empty_like` don't depend on either. Shared by every square-board `Dyn`
+/// game (Gonnect, AtariGo) that needs to rotate/reflect a whole board rather
+/// than a bare bit pattern.
+pub fn transform_board<S: bitboard::Storage, R: bitboard::Dim, C: bitboard::Dim>(
+    board: bitboard::Board<S, R, C>,
+    sym: &D4Dyn,
+    sym_idx: usize,
+) -> bitboard::Board<S, R, C> {
+    let mut out = board.empty_like();
+    for idx in board.iter_set() {
+        out.set_index(sym.index_symmetries(idx)[sym_idx]);
+    }
+    out
+}
+
+/// Applies symmetry element `sym_idx` to a raw `WORDS`-word bitmask --
+/// e.g. a `Move`'s wire-format capture mask, which (see `Move`'s own doc
+/// comment in Gonnect/AtariGo) is deliberately not a dims-carrying `Board`
+/// since a `Move` is deserialized before its target `State`'s size is known.
+pub fn transform_words<const WORDS: usize>(
+    words: [u64; WORDS],
+    d4: &D4Dyn,
+    sym_idx: usize,
+) -> [u64; WORDS] {
+    let mut out = [0u64; WORDS];
+    for (w, &word) in words.iter().enumerate() {
+        let mut word = word;
+        while word != 0 {
+            let bit = word.trailing_zeros() as usize;
+            word &= word - 1;
+            let dst = d4.index_symmetries(w * 64 + bit)[sym_idx];
+            out[dst / 64] |= 1u64 << (dst % 64);
+        }
+    }
+    out
+}
+
+/// The inverse of `transform_words`: applies the inverse of symmetry element
+/// `sym_idx` to a raw `WORDS`-word bitmask.
+pub fn invert_words<const WORDS: usize>(
+    words: [u64; WORDS],
+    d4: &D4Dyn,
+    sym_idx: usize,
+) -> [u64; WORDS] {
+    let mut out = [0u64; WORDS];
+    for (w, &word) in words.iter().enumerate() {
+        let mut word = word;
+        while word != 0 {
+            let bit = word.trailing_zeros() as usize;
+            word &= word - 1;
+            let dst = d4.invert_symmetry(w * 64 + bit, sym_idx);
+            out[dst / 64] |= 1u64 << (dst % 64);
+        }
+    }
+    out
+}
+
 /// Klein four-group symmetries (identity, column flip, row flip, and their
 /// composition) for a `ROWS`×`COLS` board of any aspect ratio.
 ///
@@ -459,6 +591,65 @@ mod tests {
                     back, i,
                     "invert_symmetry({s_i}, {sym_idx}) = {back}, expected {i}"
                 );
+            }
+        }
+    }
+
+    /// `D4Dyn` must agree bit-for-bit with `D4Symmetry<S>` at the same size --
+    /// it's the same group, just with the size moved from a const generic to
+    /// a runtime field.
+    #[test]
+    fn test_d4_dyn_matches_d4_symmetry() {
+        for size in [3usize, 8, 13, 19] {
+            let dyn_sym = D4Dyn::new(size);
+            for i in 0..(size * size) {
+                let expected = match size {
+                    3 => D4Symmetry::<3>::index_symmetries(i).to_vec(),
+                    8 => D4Symmetry::<8>::index_symmetries(i).to_vec(),
+                    13 => D4Symmetry::<13>::index_symmetries(i).to_vec(),
+                    19 => D4Symmetry::<19>::index_symmetries(i).to_vec(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(dyn_sym.index_symmetries(i).to_vec(), expected);
+            }
+        }
+    }
+
+    /// `D4Dyn::invert_symmetry` must be the true inverse of
+    /// `D4Dyn::index_symmetries`, mirroring `test_invert_symmetry_is_inverse`.
+    #[test]
+    fn test_d4_dyn_invert_symmetry_is_inverse() {
+        for size in [3usize, 9, 19] {
+            let sym = D4Dyn::new(size);
+            for i in 0..(size * size) {
+                let s = sym.index_symmetries(i);
+                for (sym_idx, &s_i) in s.iter().enumerate() {
+                    let back = sym.invert_symmetry(s_i, sym_idx);
+                    assert_eq!(
+                        back, i,
+                        "invert_symmetry({s_i}, {sym_idx}) = {back}, expected {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `D4Dyn`'s permutations must be bijections on `[0, size*size)`,
+    /// mirroring `check_permutations`.
+    #[test]
+    fn test_d4_dyn_permutations() {
+        for size in [3usize, 9, 19] {
+            let sym = D4Dyn::new(size);
+            let n = size * size;
+            for sym_idx in 0..8 {
+                let mut seen = vec![false; n];
+                for i in 0..n {
+                    let v = sym.index_symmetries(i)[sym_idx];
+                    assert!(v < n, "sym {sym_idx}[{i}] = {v} out of range");
+                    assert!(!seen[v], "sym {sym_idx} is not injective (dupe at {v})");
+                    seen[v] = true;
+                }
+                assert!(seen.iter().all(|&x| x), "sym {sym_idx} is not surjective");
             }
         }
     }
