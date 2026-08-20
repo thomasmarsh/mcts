@@ -4,6 +4,7 @@
 //! maintains group/liberty bookkeeping across [`GoEngine::play`] calls
 //! instead of re-flooding the whole board on every probe.
 
+use crate::adjacency::{table_flood, table_neighbor_mask, Adjacency, RectAdjacency, MAX_NEIGHBORS};
 use crate::board::Board;
 use crate::dim::Dim;
 use crate::storage::Storage;
@@ -92,8 +93,18 @@ pub fn check_go_move<S: Storage, R: Dim, C: Dim>(
 /// `Vec<u16>` sized from `board.len()` at construction time instead of a
 /// fixed-size array, since a `Dyn`-dimensioned board has no compile-time
 /// cell count to size an array with in the first place.
+///
+/// Also generic over `A: Adjacency`, defaulting to [`RectAdjacency`] (the
+/// original hardcoded rectangular row/col shift math, reproduced exactly --
+/// see `adjacency`'s regression tests). This is what lets a non-rectangular
+/// board (e.g. pyramid's top-down "touching" table) reuse this engine's
+/// union-find liberty bookkeeping wholesale: only the neighbor relation
+/// changes, everything else (`black`/`white`/`occupied` storage, group/
+/// liberty tables) stays a plain `Board<S, R, C>` addressed by flat index,
+/// so a non-rectangular topology can ride on a `Board<S, Dyn, Dyn>` shaped
+/// as one flat row (`rows = 1`) purely as a bitset container.
 #[derive(Clone, Debug)]
-pub struct GoEngine<S: Storage, R: Dim, C: Dim> {
+pub struct GoEngine<S: Storage, R: Dim, C: Dim, A: Adjacency = RectAdjacency> {
     black: Board<S, R, C>,
     white: Board<S, R, C>,
     /// `black | white`, maintained incrementally by [`play`](Self::play)
@@ -102,6 +113,10 @@ pub struct GoEngine<S: Storage, R: Dim, C: Dim> {
     /// recomputing this OR per candidate (rather than once per move
     /// actually played) was pure waste.
     occupied: Board<S, R, C>,
+    /// The cell-adjacency relation this engine's neighbor lookups go
+    /// through -- `RectAdjacency` for an ordinary rectangular board, or a
+    /// precomputed table for a non-rectangular one.
+    adjacency: A,
     /// `group_rep[cell]` is the representative cell of `cell`'s group, or
     /// [`SENTINEL`](Self::SENTINEL) if `cell` is empty.
     group_rep: Vec<u16>,
@@ -124,15 +139,15 @@ pub struct GoEngine<S: Storage, R: Dim, C: Dim> {
 /// `check`/`play` actually depend on externally -- the group/liberty tables
 /// are a deterministic function of `black`/`white` and carry no extra
 /// information once occupancy agrees.
-impl<S: Storage, R: Dim, C: Dim> PartialEq for GoEngine<S, R, C> {
+impl<S: Storage, R: Dim, C: Dim, A: Adjacency> PartialEq for GoEngine<S, R, C, A> {
     fn eq(&self, other: &Self) -> bool {
         self.black == other.black && self.white == other.white
     }
 }
 
-impl<S: Storage, R: Dim, C: Dim> Eq for GoEngine<S, R, C> {}
+impl<S: Storage, R: Dim, C: Dim, A: Adjacency> Eq for GoEngine<S, R, C, A> {}
 
-impl<S: Storage, R: Dim, C: Dim> std::hash::Hash for GoEngine<S, R, C> {
+impl<S: Storage, R: Dim, C: Dim, A: Adjacency> std::hash::Hash for GoEngine<S, R, C, A> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         for w in self.black.words() {
             w.hash(state);
@@ -145,21 +160,9 @@ impl<S: Storage, R: Dim, C: Dim> std::hash::Hash for GoEngine<S, R, C> {
     }
 }
 
-impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
-    const SENTINEL: u16 = u16::MAX;
-
+impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C, RectAdjacency> {
     pub fn new(rows: R, cols: C) -> Self {
-        let black = Board::new(rows, cols);
-        let cells = black.len();
-        debug_assert!(cells <= u16::MAX as usize, "board too large for u16 cells");
-        Self {
-            black,
-            white: Board::new(rows, cols),
-            occupied: Board::new(rows, cols),
-            group_rep: vec![Self::SENTINEL; cells],
-            chain_next: vec![Self::SENTINEL; cells],
-            liberties: vec![0; cells],
-        }
+        Self::new_with_adjacency(rows, cols, RectAdjacency::new(rows.get(), cols.get()))
     }
 
     /// Rebuilds an engine from a pair of occupancy boards by flood-filling
@@ -169,6 +172,39 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
     /// hydrating an engine from a plain `Board` pair (e.g. after
     /// deserializing a saved position), not for the hot path.
     pub fn from_boards(black: Board<S, R, C>, white: Board<S, R, C>) -> Self {
+        let adjacency = RectAdjacency::new(black.rows(), black.cols());
+        Self::from_boards_with_adjacency(black, white, adjacency)
+    }
+}
+
+impl<S: Storage, R: Dim, C: Dim, A: Adjacency> GoEngine<S, R, C, A> {
+    const SENTINEL: u16 = u16::MAX;
+
+    /// Same as [`GoEngine::<S, R, C>::new`] but over an arbitrary `Adjacency`
+    /// provider instead of the default rectangular one -- e.g. pyramid's
+    /// precomputed top-down touching table.
+    pub fn new_with_adjacency(rows: R, cols: C, adjacency: A) -> Self {
+        let black = Board::new(rows, cols);
+        let cells = black.len();
+        debug_assert!(cells <= u16::MAX as usize, "board too large for u16 cells");
+        Self {
+            black,
+            white: Board::new(rows, cols),
+            occupied: Board::new(rows, cols),
+            adjacency,
+            group_rep: vec![Self::SENTINEL; cells],
+            chain_next: vec![Self::SENTINEL; cells],
+            liberties: vec![0; cells],
+        }
+    }
+
+    /// Same as [`GoEngine::<S, R, C>::from_boards`] but over an arbitrary
+    /// `Adjacency` provider -- see [`new_with_adjacency`](Self::new_with_adjacency).
+    pub fn from_boards_with_adjacency(
+        black: Board<S, R, C>,
+        white: Board<S, R, C>,
+        adjacency: A,
+    ) -> Self {
         debug_assert!(!black.intersects(white));
         let occupied = black | white;
         let cells = black.len();
@@ -177,6 +213,7 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
             black,
             white,
             occupied,
+            adjacency,
             group_rep: vec![Self::SENTINEL; cells],
             chain_next: vec![Self::SENTINEL; cells],
             liberties: vec![0; cells],
@@ -188,7 +225,7 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
                 continue;
             }
             let own_board = if black.get_index(start) { black } else { white };
-            let group = own_board.flood4(start);
+            let group = table_flood(own_board, &engine.adjacency, start);
             assigned |= group;
 
             let members: Vec<usize> = group.iter_set().collect();
@@ -197,7 +234,7 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
                 engine.chain_next[cell] = members[(i + 1) % members.len()] as u16;
             }
 
-            let liberties = !occupied & group.adjacency_mask();
+            let liberties = !occupied & table_neighbor_mask(group, &engine.adjacency);
             engine.liberties[start] = liberties.count_ones() as u16;
         }
 
@@ -249,22 +286,6 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         self.rep(cell).map(|r| self.liberties[r as usize] as u32)
     }
 
-    /// Up to four orthogonal neighbor indices of `index`, `None` past a
-    /// board edge. Matches `Board`'s north = row+1 / east = col+1
-    /// convention (see its `shift_north`/`shift_east`).
-    #[inline]
-    fn neighbors(&self, index: usize) -> [Option<usize>; 4] {
-        let rows = self.black.rows();
-        let cols = self.black.cols();
-        let (row, col) = (index / cols, index % cols);
-        [
-            (row + 1 < rows).then(|| (row + 1) * cols + col),
-            (col + 1 < cols).then(|| row * cols + col + 1),
-            (row > 0).then(|| (row - 1) * cols + col),
-            (col > 0).then(|| row * cols + col - 1),
-        ]
-    }
-
     /// All cells belonging to the group represented by `rep`, walking its
     /// chain. O(group size); only called for a group about to be captured
     /// or otherwise actually inspected, never per legality-check candidate.
@@ -294,7 +315,7 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         let mut liberty_mask = self.black.empty_like();
         let mut cell = rep;
         loop {
-            for nb in self.neighbors(cell as usize).into_iter().flatten() {
+            for nb in self.adjacency.neighbors(cell as usize) {
                 if !occupied.get_index(nb) {
                     liberty_mask.set_index(nb);
                 }
@@ -346,11 +367,11 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         let occupied = self.occupied();
 
         let mut safe = false;
-        let mut opp_reps_seen = [Self::SENTINEL; 4];
+        let mut opp_reps_seen = [Self::SENTINEL; MAX_NEIGHBORS];
         let mut n_opp_seen = 0usize;
         let mut will_capture = self.black.empty_like();
 
-        for nb in self.neighbors(index).into_iter().flatten() {
+        for nb in self.adjacency.neighbors(index) {
             if !occupied.get_index(nb) {
                 safe = true;
                 continue;
@@ -406,9 +427,9 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         }
 
         let own_board = self.own_board(black_to_move);
-        let mut own_reps_seen = [Self::SENTINEL; 4];
+        let mut own_reps_seen = [Self::SENTINEL; MAX_NEIGHBORS];
         let mut n_own_seen = 0usize;
-        for nb in self.neighbors(index).into_iter().flatten() {
+        for nb in self.adjacency.neighbors(index) {
             if nb != index && own_board.get_index(nb) {
                 let r = self
                     .rep(nb)
@@ -423,9 +444,9 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         self.rescan_liberties(index as u16);
 
         let opp_board = self.opp_board(black_to_move);
-        let mut opp_reps_seen = [Self::SENTINEL; 4];
+        let mut opp_reps_seen = [Self::SENTINEL; MAX_NEIGHBORS];
         let mut n_opp_seen = 0usize;
-        for nb in self.neighbors(index).into_iter().flatten() {
+        for nb in self.adjacency.neighbors(index) {
             if opp_board.get_index(nb) {
                 let r = self
                     .rep(nb)
@@ -448,7 +469,7 @@ impl<S: Storage, R: Dim, C: Dim> GoEngine<S, R, C> {
         let mut rescanned = self.black.empty_like();
         rescanned.set_index(index);
         for cell in will_capture {
-            for nb in self.neighbors(cell).into_iter().flatten() {
+            for nb in self.adjacency.neighbors(cell) {
                 if let Some(r) = self.rep(nb) {
                     if !rescanned.get_index(r as usize) {
                         rescanned.set_index(r as usize);

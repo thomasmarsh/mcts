@@ -53,6 +53,8 @@
 //! occupancy-dependent relation from the touching graph built here -- a
 //! buried piece still physically touches its neighbors.
 
+use bitboard::{Adjacency, NeighborList};
+
 use crate::{dependent_positions, index, level_side, total_cells};
 
 /// For every flat cell index of a base-`n` pyramid, the flat indices of
@@ -97,6 +99,33 @@ pub fn touching_neighbors(n: usize) -> Vec<Vec<usize>> {
     }
 
     neighbors
+}
+
+/// `bitboard::Adjacency` over a base-`n` pyramid's precomputed top-down
+/// "touching" table (see [`touching_neighbors`]) -- lets `bitboard::GoEngine`
+/// run its union-find liberty bookkeeping directly over the pyramid's
+/// touching graph (conhex-like, not a plain grid) instead of the hardcoded
+/// rectangular shift arithmetic `RectAdjacency` reproduces. Stores the table
+/// itself, not just `n`, since `touching_neighbors` isn't cheap enough to
+/// recompute on every neighbor lookup.
+#[derive(Clone, Debug)]
+pub struct TouchingAdjacency {
+    table: Vec<Vec<usize>>,
+}
+
+impl TouchingAdjacency {
+    pub fn new(n: usize) -> Self {
+        Self {
+            table: touching_neighbors(n),
+        }
+    }
+}
+
+impl Adjacency for TouchingAdjacency {
+    #[inline]
+    fn neighbors(&self, index: usize) -> NeighborList {
+        NeighborList::from_neighbors(self.table[index].iter().copied())
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +238,152 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+// `bitboard::GoEngine` reuse: proves `TouchingAdjacency` is a real, working
+// `Adjacency` provider by driving the general incremental engine over it,
+// cross-checked against a from-scratch reference that shares nothing with
+// `GoEngine`/`TouchingAdjacency` but the raw `touching_neighbors` table
+// itself -- so a game built on this pyramid crate can reuse `GoEngine`'s
+// union-find liberty bookkeeping over the conhex-like touching graph
+// instead of reimplementing it.
+
+#[cfg(test)]
+mod goengine_reuse {
+    use std::collections::HashSet;
+
+    use bitboard::{Board, Dyn, GoEngine};
+    use proptest::prelude::*;
+
+    use super::*;
+
+    // n = 4: the Shibumi-family base size (30 cells), fitting a single u64.
+    const N: usize = 4;
+
+    fn cells() -> usize {
+        total_cells(N)
+    }
+
+    /// From-scratch liberty count for the group containing `start` in
+    /// `occupied_self`, against `occupied_other` -- plain BFS directly over
+    /// `touching_neighbors(N)`, independent of `GoEngine`'s union-find
+    /// bookkeeping and of `TouchingAdjacency`'s `Adjacency` impl.
+    fn reference_liberties(
+        table: &[Vec<usize>],
+        occupied_self: &[bool],
+        occupied_other: &[bool],
+        start: usize,
+    ) -> usize {
+        let mut seen = vec![false; table.len()];
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut liberties = HashSet::new();
+        while let Some(cell) = stack.pop() {
+            for &nb in &table[cell] {
+                if occupied_self[nb] {
+                    if !seen[nb] {
+                        seen[nb] = true;
+                        stack.push(nb);
+                    }
+                } else if !occupied_other[nb] {
+                    liberties.insert(nb);
+                }
+            }
+        }
+        liberties.len()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn goengine_liberties_match_table_oracle(
+            black_bits in proptest::collection::vec(0usize..cells(), 0..20),
+            white_bits in proptest::collection::vec(0usize..cells(), 0..20),
+        ) {
+            let n = cells();
+            let mut black_occ = vec![false; n];
+            let mut white_occ = vec![false; n];
+            for &i in &black_bits {
+                if !white_occ[i] {
+                    black_occ[i] = true;
+                }
+            }
+            for &i in &white_bits {
+                if !black_occ[i] {
+                    white_occ[i] = true;
+                }
+            }
+
+            let mut black: Board<u64, Dyn, Dyn> = Board::new(Dyn(1), Dyn(n));
+            let mut white: Board<u64, Dyn, Dyn> = Board::new(Dyn(1), Dyn(n));
+            for i in 0..n {
+                if black_occ[i] {
+                    black.set_index(i);
+                }
+                if white_occ[i] {
+                    white.set_index(i);
+                }
+            }
+
+            let table = touching_neighbors(N);
+            let engine = GoEngine::from_boards_with_adjacency(black, white, TouchingAdjacency::new(N));
+
+            for i in 0..n {
+                if let Some(lib) = engine.liberties_at(i) {
+                    let (self_occ, other_occ) = if black_occ[i] {
+                        (&black_occ, &white_occ)
+                    } else {
+                        (&white_occ, &black_occ)
+                    };
+                    let expected = reference_liberties(&table, self_occ, other_occ, i);
+                    prop_assert_eq!(lib as usize, expected, "cell {} liberty mismatch", i);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn play_a_capture_over_the_touching_table() {
+        // The single-cell apex (level 3, degree = however many level-2
+        // cells touch it) is the easiest cell to fully surround: play white
+        // on every one of its neighbors, then black at the apex must find
+        // zero liberties -- suicide, illegal, no capture. Fill in one more
+        // black stone at a neighbor first (removing one white liberty
+        // source) then replay to trigger an actual capture instead of just
+        // a suicide check, proving `play`'s incremental capture path (not
+        // just `check`'s legality path) works over the table.
+        let apex = total_cells(N) - 1;
+        let adjacency = TouchingAdjacency::new(N);
+        let apex_neighbors = adjacency.table[apex].clone();
+        assert!(
+            !apex_neighbors.is_empty(),
+            "apex must have at least one neighbor"
+        );
+
+        let mut engine: GoEngine<u64, Dyn, Dyn, _> =
+            GoEngine::new_with_adjacency(Dyn(1), Dyn(total_cells(N)), TouchingAdjacency::new(N));
+
+        // Black takes the apex first, alone -- always legal on an empty board.
+        assert!(engine.play(true, apex).is_some());
+
+        // White surrounds it on every touching neighbor. The last placement
+        // must capture the lone black stone at the apex (assuming those
+        // neighbors have liberties of their own, which they do on an
+        // otherwise-empty n=4 pyramid).
+        let mut captured_apex = false;
+        for &nb in &apex_neighbors {
+            if let Some(captured) = engine.play(false, nb) {
+                if captured.get_index(apex) {
+                    captured_apex = true;
+                }
+            }
+        }
+        assert!(captured_apex, "surrounding the apex must capture it");
+        assert!(!engine.black().get_index(apex));
+        assert!(!engine.white().get_index(apex));
     }
 }

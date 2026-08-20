@@ -5,11 +5,15 @@
 //! a game can serve every board size from a single monomorphization instead
 //! of a distinct compiled match arm per size.
 
+mod adjacency;
 mod board;
 mod dim;
 mod go;
 mod storage;
 
+pub use adjacency::{
+    table_flood, table_neighbor_mask, Adjacency, NeighborList, RectAdjacency, MAX_NEIGHBORS,
+};
 pub use board::{Board, Direction};
 pub use dim::{Const, Dim, Dyn};
 pub use go::{check_go_move, GoEngine};
