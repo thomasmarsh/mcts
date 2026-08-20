@@ -1,0 +1,20 @@
+[package]
+name = "game-connect4"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_connect4"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+game-core = { path = "../game-core" }
+bitboard = { path = "../../bitboard" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[lints]
+workspace = true
