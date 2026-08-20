@@ -45,8 +45,7 @@ fn presets() -> &'static PresetTable {
             .unwrap_or_else(|_| {
                 PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"))
             });
-        PresetTable::load_from_path(&presets_path)
-            .expect("games/hex-gen/presets.json must parse")
+        PresetTable::load_from_path(&presets_path).expect("games/hex-gen/presets.json must parse")
     })
 }
 
