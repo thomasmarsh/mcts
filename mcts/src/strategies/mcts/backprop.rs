@@ -205,6 +205,68 @@ impl<A: crate::game::Action> PosteriorSlot<'_, A> {
             PosteriorSlot::Edge(children, idx) => children.set_posterior_grid(*idx, player, grid),
         }
     }
+
+    /// See `NodeStats::overwrite_score`'s doc comment -- `MinimaxBackprop`'s
+    /// (MCTS-MB-n) own write path, root/edge-dispatched the same way `set`
+    /// above is.
+    fn overwrite_score(&self, player: usize, mean: f64) {
+        match self {
+            PosteriorSlot::Root(stats) => stats.overwrite_score(player, mean),
+            PosteriorSlot::Edge(children, idx) => children.overwrite_score(*idx, player, mean),
+        }
+    }
+}
+
+/// MCTS-MB-n's per-ancestor minimax backup (Baier & Winands): recomputes
+/// `node`'s own per-player value as the outcome of its own mover's best
+/// (currently highest-expected-value, among already-searched) child,
+/// propagated to *every* player's row via that same child -- not each
+/// player's own independent max, since only the mover actually gets to
+/// choose. This reads entirely from `node`'s own `ChildArray` edges (which
+/// already carry a full per-player utility vector per action, not a single
+/// mover-relative value the way `negamax::Score` does), so unlike the
+/// paper's own single-value formulation this needs no negamax sign flip
+/// between plies and isn't restricted to two-player zero-sum games --
+/// ordinary backward induction generalizes to any player count as long as
+/// each player is assumed to maximize their own payoff.
+///
+/// A child counts as "already searched" (participates in the max) only if
+/// it has a real tree node (`ChildArray::node_id` is `Some`) -- an
+/// unresolved slot or a `prior::PriorStrategy`-seeded-but-unvisited one
+/// (pseudo-visits only, no subtree of its own yet) contributes nothing to
+/// back up from, the same "unknown leaf, skip it" treatment
+/// `derive_pn_dpn` gives an unresolved child. No-ops (leaving the node's
+/// Monte-Carlo average from this call's earlier `update` untouched) when
+/// no child qualifies, or when `node` isn't `Expanded` at all.
+pub(crate) fn derive_minimax_value<A: crate::game::Action>(
+    node: &node::Node<A>,
+    slot: &PosteriorSlot<A>,
+    num_players: usize,
+) {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+    let mover = node.player_idx;
+
+    let mut best_idx: Option<usize> = None;
+    let mut best_value = f64::NEG_INFINITY;
+    for i in 0..children.len() {
+        if children.node_id(i).is_none() {
+            continue;
+        }
+        let value = children.expected_score(i, mover);
+        if value > best_value {
+            best_value = value;
+            best_idx = Some(i);
+        }
+    }
+    let Some(best_idx) = best_idx else {
+        return;
+    };
+
+    for player in 0..num_players {
+        slot.overwrite_score(player, children.expected_score(best_idx, player));
+    }
 }
 
 /// Normal-normal conjugate update of a node's *own* observations (its
@@ -488,6 +550,17 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) {
     }
 
+    /// MCTS-MB-n (Baier & Winands): how many plies of ancestors, counting
+    /// from (but not including) the just-backpropagated leaf, get their own
+    /// value overwritten with `derive_minimax_value`'s backup instead of
+    /// left as the ordinary Monte-Carlo average `update`'s per-node block
+    /// already wrote earlier this same call. `0` (the default) disables
+    /// this -- every ancestor keeps the untouched averaging behavior.
+    /// Overridden only by `MinimaxBackprop`.
+    fn mb_depth(&self) -> u32 {
+        0
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update_amaf<G: Game>(
         &self,
@@ -616,7 +689,13 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             .or_else(|| trial.cutoff_utilities.clone())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
         let mut is_leaf = true;
-        for (parent_entry_opt, (node_id, node_idx)) in stack.reverse_pairs2() {
+        let mb_depth = self.mb_depth();
+        // Ply distance of the entry currently being processed from the
+        // backpropagated leaf, `0` for the leaf's own entry. Only
+        // meaningful (and only read) when `mb_depth > 0`.
+        for (ply_from_leaf, (parent_entry_opt, (node_id, node_idx))) in
+            (0u32..).zip(stack.reverse_pairs2())
+        {
             let parent_id_opt = parent_entry_opt.map(|(id, _)| *id);
             debug_assert!(
                 (parent_id_opt.is_some() && !index.get(*node_id).is_root())
@@ -675,6 +754,25 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                         self.update_posterior(player, mover, &slot, own_children);
                     }
                 }
+            }
+
+            // MCTS-MB-n: overwrite this node's own per-player value with
+            // the minimax backup from its own children, for ancestors
+            // strictly within `mb_depth` plies of the backpropagated leaf.
+            // `ply_from_leaf == 0` (the leaf's own entry) is deliberately
+            // excluded -- its value *is* this trial's rollout/evaluator
+            // result, not something to re-derive from children. No-op (the
+            // default `mb_depth() == 0`) for every non-`MinimaxBackprop`
+            // strategy, so this costs nothing when unused.
+            if mb_depth > 0 && (1..=mb_depth).contains(&ply_from_leaf) {
+                let node = index.get(*node_id);
+                let slot = if node.is_root() {
+                    PosteriorSlot::Root(root_stats)
+                } else {
+                    let parent_id = parent_id_opt.unwrap();
+                    PosteriorSlot::Edge(index.get(parent_id).children(), *node_idx)
+                };
+                derive_minimax_value(node, &slot, G::num_players());
             }
 
             // MCTS-Solver: derive/propagate proven status for this node.
@@ -870,6 +968,49 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
 pub struct Classic;
 
 impl BackpropStrategy for Classic {}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// MCTS-MB-n (Baier & Winands): backpropagation-phase hybrid -- within
+/// `depth` plies of the just-backpropagated leaf, overwrite (not average
+/// into) each ancestor's own per-player value with `derive_minimax_value`'s
+/// backward-induction backup from its own already-updated children, instead
+/// of leaving it as the plain Monte-Carlo average `BackpropStrategy::update`
+/// otherwise produces. The paper's own Breakthrough numbers (2015,
+/// domain-independent MR/MS/MB, no evaluation function) found MB-2 the
+/// strongest of the three domain-independent techniques there, winning
+/// 55.0% of 2000 games at equal time against an MCTS-Solver baseline.
+#[derive(Debug, Clone, Copy)]
+pub struct MinimaxBackprop {
+    /// How many plies of ancestors, counting from (but not including) the
+    /// backpropagated leaf, get their value overwritten. `0` disables the
+    /// backup entirely (every node keeps the ordinary Monte-Carlo average),
+    /// equivalent to `Classic`.
+    pub depth: u32,
+}
+
+impl Default for MinimaxBackprop {
+    fn default() -> Self {
+        Self {
+            // MB-2 is the literature's own best-performing depth on
+            // Breakthrough (Baier & Winands 2015), matching
+            // `prior::NegamaxPrior`'s default `depth` for the same reason.
+            depth: 2,
+        }
+    }
+}
+
+impl MinimaxBackprop {
+    pub fn new(depth: u32) -> Self {
+        Self { depth }
+    }
+}
+
+impl BackpropStrategy for MinimaxBackprop {
+    fn mb_depth(&self) -> u32 {
+        self.depth
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -746,3 +746,60 @@ fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
     );
     assert_eq!(root.dpn2(), 2);
 }
+
+// MCTS-MB-n (Baier & Winands): `derive_minimax_value`'s backward-induction
+// backup, hand-verified on a tiny 3-child root -- small enough to compute
+// the expected overwrite by hand, which a purely behavioral test wouldn't
+// necessarily exercise (in particular, that the *non-mover's* row is
+// overwritten from the mover's chosen child, not from the non-mover's own
+// independent max over children -- easy to get backwards).
+//
+// Root (player_idx = 0, i.e. player 0 to move) has three child slots:
+//   - idx 0: an explored edge with one real playout's utilities [0.2, -0.2]
+//     -- expected_score(0, player 0) = 0.2.
+//   - idx 1: an explored edge with one real playout's utilities [0.8, -0.8]
+//     -- expected_score(1, player 0) = 0.8, the mover's best.
+//   - idx 2: an unresolved slot (no tree node at all) -- contributes
+//     nothing, the same "unknown leaf, skip it" treatment
+//     `derive_pn_dpn` gives an unresolved child.
+//
+// Player 0 (the mover) picks idx 1 (0.8 > 0.2), so root's value is
+// overwritten to idx 1's own row for *every* player: player 0 -> 0.8,
+// player 1 -> -0.8 (not player 1's own max, which would incorrectly read
+// idx 0's -0.2 as "better for player 1").
+#[test]
+fn test_derive_minimax_value_backup_hand_verified() {
+    use crate::strategies::mcts::backprop::{derive_minimax_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child0_id = index.insert(Node::new(1, 0));
+    let child1_id = index.insert(Node::new(1, 0));
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
+    children.get_or_create_child(0, || child0_id);
+    children.update(0, &[0.2, -0.2]);
+    children.get_or_create_child(1, || child1_id);
+    children.update(1, &[0.8, -0.8]);
+    // idx 2 deliberately left unresolved (no `get_or_create_child` call).
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.0, 0.0]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_minimax_value(&root, &slot, 2);
+
+    assert_eq!(
+        root.stats.score(0),
+        0.8,
+        "mover's row takes its own best child's value"
+    );
+    assert_eq!(
+        root.stats.score(1),
+        -0.8,
+        "non-mover's row follows the *mover's* chosen child, not its own independent max"
+    );
+}

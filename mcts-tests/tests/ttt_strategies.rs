@@ -1121,6 +1121,58 @@ fn test_minimax_rollout_prefers_the_winning_move_to_a_forced_draw() {
 }
 
 #[test]
+fn test_minimax_backprop_prefers_the_winning_move_to_a_forced_draw() {
+    // Same near-terminal position as `test_minimax_rollout_prefers_the_
+    // winning_move_to_a_forced_draw` above (two empty cells, X to move --
+    // playing 2 wins immediately, playing 8 forces a draw), but exercising
+    // the backpropagation-phase hybrid (MCTS-MB-n) instead of the
+    // simulation-phase one: `MinimaxBackprop` overwrites each ancestor's
+    // value with the minimax backup from its own children rather than the
+    // plain Monte-Carlo average, so once *both* children have been visited
+    // even once each, the root's own value (and thus `choose_action`'s
+    // final pick) should reflect the exact win/draw distinction rather than
+    // whatever a handful of uniform-random playouts happened to average out
+    // to.
+    use game_ttt::*;
+    use mcts::backprop::MinimaxBackprop;
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type S = Compose<select::Ucb1, simulate::Uniform, MinimaxBackprop>;
+    type TS = mcts::TreeSearch<G, S>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(20)
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        let action = ts.choose_action(&state);
+        assert_eq!(
+            action,
+            Move(2),
+            "seed {seed}: should play the immediate winning move, not the drawing one"
+        );
+    }
+}
+
+#[test]
 fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() {
     // Same near-terminal position as `test_minimax_rollout_prefers_the_
     // winning_move_to_a_forced_draw` above (two empty cells, X to move --

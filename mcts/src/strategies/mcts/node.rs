@@ -260,6 +260,24 @@ impl NodeStats {
         self.num_visits() + self.num_visits_virtual.load(Relaxed)
     }
 
+    /// Overwrites this node's own accumulated score for `player_index` so
+    /// its next `expected_score` read returns exactly `mean` -- used by
+    /// `backprop::MinimaxBackprop` (MCTS-MB-n) to replace a node's Monte-
+    /// Carlo average with a minimax-derived value in place, rather than
+    /// blending it in the way `update` does. Leaves `num_visits`/
+    /// `sum_squared_score` untouched: a later real playout through this
+    /// node still accumulates onto the same visit count, and a variance-
+    /// based select strategy reading `sum_squared_score` (UCB1-Tuned, RAVE)
+    /// keeps seeing the real sample spread rather than one implied by the
+    /// overwritten mean -- the same known approximation `expected_score`'s
+    /// own "needs to be overridden for score bounded search" note already
+    /// flags.
+    pub fn overwrite_score(&self, player_index: usize, mean: f64) {
+        let mut data = self.data.write().unwrap();
+        let n = data.num_visits.max(1) as f64;
+        data.player[player_index].score = mean * n;
+    }
+
     /// Marks this edge as "in flight" for a concurrent tree-parallel search:
     /// a thread has committed to this path but hasn't backpropagated a result
     /// yet, so other threads scoring the same edge see it as worse/busier
@@ -609,6 +627,15 @@ impl<A: Action> ChildArray<A> {
             virtual_loss,
             data.player[self.player_index(idx, player_index)].score,
         )
+    }
+
+    /// Edge-indexed counterpart to `NodeStats::overwrite_score` -- see its
+    /// doc comment.
+    pub fn overwrite_score(&self, idx: usize, player_index: usize, mean: f64) {
+        let mut data = self.data.write().unwrap();
+        let n = data.num_visits[idx].max(1) as f64;
+        let i = self.player_index(idx, player_index);
+        data.player[i].score = mean * n;
     }
 
     pub fn exploitation_score(&self, idx: usize, player_index: usize) -> f64 {
