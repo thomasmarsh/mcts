@@ -50,9 +50,11 @@
 //! - Alpha-beta pruning with principal-variation search (a null-window
 //!   probe for every move after the first, re-searched with a full window
 //!   only if it beats alpha) -- `NegamaxOptions::principal_variation_search`.
-//! - A depth-preferred transposition table (`table.rs`) that both catches
-//!   transposing move orders within one depth and seeds move ordering on
-//!   the next, deeper iteration.
+//! - A transposition table (`table.rs`) that both catches transposing move
+//!   orders within one depth and seeds move ordering on the next, deeper
+//!   iteration, with a choice of replacement policy
+//!   (`NegamaxOptions::replacement` / `table::Replacement`: `Always`,
+//!   `DepthPreferred` (the default), or `TwoTier`).
 //! - Mate-distance scoring: a forced win/loss is scored `WIN_SCORE - ply`/
 //!   `LOSS_SCORE + ply` rather than a flat sentinel, so search prefers the
 //!   fastest win and the slowest loss, and iterative deepening stops once a
@@ -90,6 +92,7 @@ use std::time::{Duration, Instant};
 
 use crate::game::{Game, PlayerIndex, TerminalStatus};
 use crate::strategies::{ActionReport, RootReport, Search};
+pub use table::Replacement;
 use table::{Bound, TranspositionTable};
 
 /// Score type returned by [`Evaluator::evaluate`] and by the search itself,
@@ -168,6 +171,9 @@ pub struct NegamaxOptions {
     /// Transposition table size is `1 << table_bits` slots. `0` disables
     /// the table entirely.
     pub table_bits: u32,
+    /// Which entry within a colliding slot is kept vs. overwritten. See
+    /// `Replacement`.
+    pub replacement: Replacement,
     /// If set, each depth past 2 first runs a narrow `[prev_score -
     /// window, prev_score + window]` search at the root purely to prime
     /// the transposition table's move-ordering hint before the definitive
@@ -199,6 +205,7 @@ impl Default for NegamaxOptions {
             max_depth: 64,
             max_time: None,
             table_bits: 20,
+            replacement: Replacement::default(),
             aspiration_window: None,
             principal_variation_search: true,
             history_heuristic: true,
@@ -221,6 +228,11 @@ impl NegamaxOptions {
 
     pub fn with_table_bits(mut self, table_bits: u32) -> Self {
         self.table_bits = table_bits;
+        self
+    }
+
+    pub fn with_replacement(mut self, replacement: Replacement) -> Self {
+        self.replacement = replacement;
         self
     }
 
@@ -283,7 +295,8 @@ impl<G: Game, E: Evaluator<G>> Negamax<G, E> {
     }
 
     pub fn new_with_options(eval: E, options: NegamaxOptions) -> Self {
-        let table = (options.table_bits > 0).then(|| TranspositionTable::new(options.table_bits));
+        let table = (options.table_bits > 0)
+            .then(|| TranspositionTable::new(options.table_bits, options.replacement));
         Self {
             eval,
             options,

@@ -9,7 +9,7 @@
 
 use crate::game::{Game, PlayerIndex};
 use crate::strategies::negamax::{
-    self, Evaluator, MaterialBlind, Negamax, NegamaxOptions, DRAW_SCORE, WIN_SCORE,
+    self, Evaluator, MaterialBlind, Negamax, NegamaxOptions, Replacement, DRAW_SCORE, WIN_SCORE,
 };
 use crate::strategies::Search;
 
@@ -161,6 +161,33 @@ fn transposition_table_toggle_does_not_change_the_chosen_move() {
         with_table.choose_action(&state),
         without_table.choose_action(&state)
     );
+}
+
+#[test]
+fn replacement_policy_does_not_change_the_answer() {
+    // A tiny table (few bits) is deliberately used so entries actually
+    // collide within `choose_action`'s depth-20 search, exercising each
+    // policy's eviction path rather than just its never-hit fallback.
+    let state = State { stones: 5, turn: 0 };
+    let expected = solver().choose_action(&state);
+    for replacement in [
+        Replacement::Always,
+        Replacement::DepthPreferred,
+        Replacement::TwoTier,
+    ] {
+        let mut search = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+            MaterialBlind,
+            NegamaxOptions::default()
+                .with_max_depth(20)
+                .with_table_bits(2)
+                .with_replacement(replacement),
+        );
+        assert_eq!(
+            search.choose_action(&state),
+            expected,
+            "replacement policy {replacement:?} changed the chosen move"
+        );
+    }
 }
 
 #[test]
