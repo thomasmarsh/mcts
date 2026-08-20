@@ -120,13 +120,14 @@ where
         debug_assert!(num_threads > 1);
         debug_assert_eq!(self.config.num_threads, 1);
 
+        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
         let hash = G::zobrist_hash(state);
-        let root_id = self.reuse_or_reset(G::player_to_move(state).to_index(), state);
-        if matches!(self.config.graph_search, GraphSearch::Dag(_)) {
-            assert!(
-                !self.config.reuse_tree,
-                "explicit graph search does not yet support tree reuse"
-            );
+        let root_id = if explicit_dag {
+            self.reuse_or_reset_graph(G::player_to_move(state).to_index(), state)
+        } else {
+            self.reuse_or_reset(G::player_to_move(state).to_index(), state)
+        };
+        if explicit_dag {
             self.table.insert_graph(
                 TranspositionKey {
                     position_hash: hash,

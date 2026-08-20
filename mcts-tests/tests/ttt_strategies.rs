@@ -2009,3 +2009,194 @@ fn test_requirements_union_composes_and_survives_wrapping() {
         "tic-tac-toe is a 2-player game, so UctPn's max_players constraint is satisfied"
     );
 }
+
+// `TreeSearch::reuse_or_reset_graph` (`mcts/src/strategies/mcts/search/
+// reroot.rs`)'s DAG re-rooting, distinct from the single-parent
+// `reuse_or_reset`/`try_promote` path exercised above --
+// a promoted graph node can have more than one surviving parent, and
+// every retained node's `ply` is root-relative, so promotion always
+// rebuilds the arena and the ply-keyed graph table rather than remapping
+// keys in place. `expand_threshold(0)` throughout so every node visited
+// gets a real `ChildArray`/`node.stats` (matching the graph-mode tests
+// above), and ids are deliberately never compared across a promotion --
+// the rebuild always reassigns them -- so these check substantive
+// (ply/is_root/stats/hash) invariants instead.
+
+#[test]
+fn test_graph_reroot_promotes_matching_node_and_rebases_ply() {
+    use game_ttt::*;
+    use mcts::{GraphSearch, GraphStats};
+    type G = TicTacToe;
+    let init_state = HashedPosition::new();
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let mut ts = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(300)
+            .expand_threshold(0)
+            .reuse_tree(true)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .seed(42),
+    );
+
+    let action = ts.choose_action(&init_state);
+    let after_own_move = G::apply(init_state, &action);
+
+    let x_child_id = {
+        let root = ts.index.get(ts.root_id);
+        let children = root.children();
+        let idx = (0..children.len())
+            .find(|&i| *children.action(i) == action)
+            .unwrap();
+        children
+            .node_id(idx)
+            .expect("the played action must have been explored")
+    };
+    let (reply, expected_id) = {
+        let x_child = ts.index.get(x_child_id);
+        let children = x_child.children();
+        // `x_child_id`'s `ChildArray` actions are stored in *its own*
+        // canonical orientation (explicit `GraphSearch::Dag` canonicalizes
+        // every non-root node), not the real board's -- must go through
+        // `node::real_action`/`node::incoming_sym` to get a directly
+        // playable action, exactly like `select_step`/`compute_pv` do.
+        let incoming_sym =
+            mcts::node::incoming_sym::<G>(true, false, mcts::game::Real(&after_own_move));
+        let idx = (0..children.len())
+            .find(|&i| children.is_explored(i))
+            .expect("some reply should have been explored at 300 iterations");
+        (
+            mcts::node::real_action::<G>(children, idx, incoming_sym),
+            children.node_id(idx).unwrap(),
+        )
+    };
+    let next_state = G::apply(after_own_move, &reply);
+
+    // Two real plies below the searched root, and carrying real samples
+    // from the search above.
+    assert_eq!(ts.index.get(expected_id).ply, 2);
+    let expected_visits = ts.index.get(expected_id).stats.num_visits();
+    assert!(
+        expected_visits > 0,
+        "the promoted node must have been actually visited during search, \
+         or this test can't tell a real promotion from a silent reset"
+    );
+
+    let player_idx = G::player_to_move(&next_state).to_index();
+    let root_id = ts.reuse_or_reset_graph(player_idx, &next_state);
+
+    assert_eq!(ts.root_id, root_id);
+    assert!(ts.index.get(root_id).is_root());
+    assert_eq!(
+        ts.index.get(root_id).ply,
+        0,
+        "the promoted root's ply must be rebased to 0, not left at 2"
+    );
+    assert_eq!(
+        ts.index.get(root_id).stats.num_visits(),
+        expected_visits,
+        "promotion must carry the matched node's own accumulated stats \
+         forward -- ids are reassigned by the arena rebuild, so this (not \
+         id equality) is what proves the same node survived"
+    );
+    assert_eq!(ts.root_state.as_ref(), Some(&next_state));
+}
+
+#[test]
+fn test_graph_reroot_falls_back_to_reset_when_no_match() {
+    // Five real plies past the searched root -- one more than
+    // `MAX_REROOT_DEPTH` (4), so this is guaranteed unreachable within
+    // the bound regardless of how much of the (tiny) TicTacToe tree 200
+    // iterations happened to explore.
+    use game_ttt::*;
+    use mcts::{GraphSearch, GraphStats};
+    type G = TicTacToe;
+    let init_state = HashedPosition::new();
+
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    let mut ts = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(200)
+            .expand_threshold(0)
+            .reuse_tree(true)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .seed(42),
+    );
+
+    let _ = ts.choose_action(&init_state);
+
+    let mut far_state = init_state;
+    for m in [0u8, 1, 2, 3, 4] {
+        far_state = G::apply(far_state, &Move(m));
+    }
+    let player_idx = G::player_to_move(&far_state).to_index();
+    let root_id = ts.reuse_or_reset_graph(player_idx, &far_state);
+
+    assert!(ts.index.get(root_id).is_root());
+    assert_eq!(ts.index.get(root_id).ply, 0);
+    assert_eq!(
+        ts.index.len(),
+        1,
+        "no match found within MAX_REROOT_DEPTH -- should fall back to a fresh reset()"
+    );
+    assert_eq!(
+        ts.table.graph_len(),
+        0,
+        "reset() clears the graph table too, and this fallback bypasses \
+         choose_action's own post-reset root insert"
+    );
+}
+
+#[test]
+fn test_graph_reroot_across_self_play_keeps_ply_and_table_consistent() {
+    // The end-to-end regression this feature is really for: repeated
+    // `choose_action` calls (self-play, one search instance playing both
+    // sides) with `reuse_tree` on, over several real plies, each one
+    // exercising the promote path rather than a silent reset. If ply
+    // rebasing or the graph-table rebuild were wrong, this would either
+    // panic (a `debug_assert!` on stale virtual loss, or a `ChildArray`/
+    // `NodeStats` access on a node the rebuild dropped) or silently start
+    // returning illegal moves.
+    use game_ttt::*;
+    use mcts::{GraphSearch, GraphStats};
+    type G = TicTacToe;
+
+    for stats in [GraphStats::Edges, GraphStats::Nodes, GraphStats::Both] {
+        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(150)
+                .expand_threshold(0)
+                .reuse_tree(true)
+                .graph_search(GraphSearch::Dag(stats))
+                .seed(7),
+        );
+
+        let mut state = HashedPosition::new();
+        for _ in 0..6 {
+            if matches!(
+                G::terminal_status(&state),
+                mcts::game::TerminalStatus::NotTerminal
+            ) {
+                let mut legal = Vec::new();
+                G::generate_actions(&state, &mut legal);
+                let action = ts.choose_action(&state);
+                assert!(legal.contains(&action), "{stats:?} chose a legal move");
+
+                // `choose_action(&state)` searches (and re-roots) onto
+                // `state` itself -- the position *before* this move -- and
+                // only returns the action to play from it, so the root
+                // state check has to happen before `state` advances.
+                assert!(ts.index.get(ts.root_id).is_root());
+                assert_eq!(
+                    ts.index.get(ts.root_id).ply,
+                    0,
+                    "{stats:?}: root ply must stay rebased to 0 across every re-root"
+                );
+                assert_eq!(ts.root_state.as_ref(), Some(&state));
+
+                state = G::apply(state, &action);
+            }
+        }
+    }
+}

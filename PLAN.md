@@ -57,8 +57,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] Decisive / Anti-Decisive Playout Truncation
 
 ### Tuning
-- [x] Opening books (Quasi-Best-First self-play, Gonnect; `game_host::GameAdapter::book_build` is the
-      generic per-game hook other games can adopt the same way `tune_eval` was adopted)
+- [x] Opening books
 - [ ] Online Tuning
 - [ ] Search seeding (seed nodes with artificial runs)
 
@@ -99,7 +98,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [x] UCB for DAGs
 - [x] Structural - configurable Node|Edge|Node+Edge stat storage
 - [x] Residual information-leak correction
-- [ ] Graph re-rooting (multi-parent reachability sweep + ply rebase, distinct from the existing single-parent tree promotion path)
+- [x] Graph re-rooting (multi-parent reachability sweep + ply rebase)
 - [x] Symmetry canonicalization
 
 
