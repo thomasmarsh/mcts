@@ -28,8 +28,9 @@ const PRESET_SEED: u64 = 0;
 
 /// The parsed `easy`/`strong` preset table -- loaded at runtime from
 /// `games/breakthrough/presets.json` (or the file named by `BREAKTHROUGH_PRESETS_PATH`),
-/// falling back to the compiled-in defaults only if that path is missing
-/// (see `PresetTable::load`'s doc comment).
+/// read fresh from disk at every startup -- not embedded via `include_str!`,
+/// so editing it never triggers a rebuild (see `PresetTable::load_from_path`'s
+/// doc comment).
 fn presets() -> &'static PresetTable {
     static PRESETS: OnceLock<PresetTable> = OnceLock::new();
     PRESETS.get_or_init(|| {
@@ -38,7 +39,7 @@ fn presets() -> &'static PresetTable {
             .unwrap_or_else(|_| {
                 PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"))
             });
-        PresetTable::load(include_str!("../presets.json"), Some(&presets_path))
+        PresetTable::load_from_path(&presets_path)
             .expect("games/breakthrough/presets.json must parse")
     })
 }
