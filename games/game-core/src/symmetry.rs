@@ -6,12 +6,16 @@
 //! boards. `KleinFour<ROWS, COLS>` (4 elements: identity, column flip,
 //! row flip, and their composition) applies to any rectangular board,
 //! square or not — a non-square board has no diagonal transpose to include
-//! since that would map it onto a differently-shaped board.
+//! since that would map it onto a differently-shaped board. `ColMirror<COLS>`
+//! (2 elements: identity, column flip) is `KleinFour`'s subgroup for boards
+//! where a row flip specifically *isn't* a valid symmetry — e.g. a
+//! gravity-based game, where row 0 is a fixed floor and flipping rows would
+//! swap which end gravity pulls toward.
 //!
-//! Both implement the shared [`SymmetryGroup`] trait, so callers that only
-//! need "map a cell index through symmetry element `sym`" / "which element
-//! inverts `sym`" can be generic over which group a given board's shape
-//! admits, without hardcoding D4.
+//! All three implement the shared [`SymmetryGroup`] trait, so callers that
+//! only need "map a cell index through symmetry element `sym`" / "which
+//! element inverts `sym`" can be generic over which group a given board's
+//! shape admits, without hardcoding D4.
 //!
 //! Rather than pre-computing permutation tables (which would require
 //! `[usize; S * S]` in a const-generic context, unstable on stable Rust),
@@ -432,6 +436,55 @@ impl<const ROWS: usize, const COLS: usize> SymmetryGroup for KleinFour<ROWS, COL
     }
 }
 
+/// Column-mirror symmetry group (2 elements: identity, column flip) for
+/// boards where a row flip is *not* a valid symmetry -- e.g. a gravity-based
+/// game (Connect Four) where row 0 is a fixed floor and flipping rows would
+/// swap which end gravity pulls toward. `KleinFour` is the right choice
+/// whenever both flips are valid; reach for `ColMirror` only when a row flip
+/// specifically isn't. (No `RowMirror` exists yet since nothing in this repo
+/// needs the row-only case -- add one the same way if that changes.)
+pub struct ColMirror<const COLS: usize>;
+
+impl<const COLS: usize> ColMirror<COLS> {
+    #[inline]
+    fn flip_cols(i: usize) -> usize {
+        flip_cols_index(i, COLS)
+    }
+
+    /// Produce both symmetric images of a cell index: `[identity, mirror]`.
+    #[inline]
+    pub fn index_symmetries(i: usize) -> [usize; 2] {
+        [i, Self::flip_cols(i)]
+    }
+
+    /// Map an index back through the inverse of a symmetry. The column flip
+    /// is its own inverse, so this is `index_symmetries(i)[sym_idx]` spelled
+    /// out for parity with `KleinFour::invert_symmetry`.
+    #[inline]
+    pub fn invert_symmetry(i: usize, sym_idx: usize) -> usize {
+        match sym_idx {
+            0 => i,
+            1 => Self::flip_cols(i),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl<const COLS: usize> SymmetryGroup for ColMirror<COLS> {
+    const ORDER: usize = 2;
+
+    #[inline]
+    fn apply_index(i: usize, sym: usize) -> usize {
+        Self::index_symmetries(i)[sym]
+    }
+
+    #[inline]
+    fn invert(sym: usize) -> usize {
+        // Both elements are their own inverse.
+        sym
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -717,6 +770,40 @@ mod tests {
                 }
                 assert!(seen.iter().all(|&x| x), "sym {sym_idx} is not surjective");
             }
+        }
+    }
+
+    #[test]
+    fn test_col_mirror_symmetry_group_round_trip() {
+        check_symmetry_group_round_trip::<ColMirror<7>>(42); // 6x7 Connect Four
+        check_symmetry_group_round_trip::<ColMirror<5>>(20); // 4x5 Connect Four
+    }
+
+    /// Verify flip_cols is a bijection on a rectangular grid, mirroring
+    /// `test_klein_four_permutations_rectangular`.
+    #[test]
+    fn test_col_mirror_permutations_rectangular() {
+        let (rows, cols) = (6usize, 7usize);
+        let n = rows * cols;
+        let mut seen = vec![false; n];
+        for i in 0..n {
+            let v = ColMirror::<7>::flip_cols(i);
+            assert!(v < n, "flip_cols[{i}] = {v} out of range");
+            assert!(!seen[v], "flip_cols is not injective (dupe at {v})");
+            seen[v] = true;
+        }
+        assert!(seen.iter().all(|&x| x), "flip_cols is not surjective");
+    }
+
+    /// `ColMirror`'s 2 elements must agree with `KleinFour`'s corresponding
+    /// 2 (identity, flip_cols) -- `ColMirror` is a subgroup of `KleinFour`,
+    /// not an independent definition that happens to look similar.
+    #[test]
+    fn test_col_mirror_is_klein_four_subgroup() {
+        for i in 0..(6 * 7) {
+            let k4 = KleinFour::<6, 7>::index_symmetries(i);
+            let cm = ColMirror::<7>::index_symmetries(i);
+            assert_eq!(cm, [k4[0], k4[1]]);
         }
     }
 
