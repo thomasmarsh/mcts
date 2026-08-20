@@ -13,7 +13,7 @@ import { fixtureDefaultConfig, fixtureSchema } from "./schema-fixture.js";
 afterEach(() => cleanup());
 
 /** A minimal controlled harness: owns the signal, re-renders on `onChange`,
- * same convention a real caller (GameShell's New Game dialog, Phase 5) would
+ * same convention a real caller (e.g. GameShell's New Game dialog) would
  * use. Also exposes the latest committed config for assertions. */
 function renderEditor(initial: CustomStrategySpec) {
   const [config, setConfig] = createSignal<CustomStrategySpec>(initial);

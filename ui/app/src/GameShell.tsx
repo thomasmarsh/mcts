@@ -32,8 +32,10 @@ type M = unknown;
 type V = unknown;
 
 /** Wraps a bare preset id as an `AiStrategyRef` -- the New Game dialog's
- * seat pickers only ever choose a named preset until Phase 5 adds a
- * "Custom…" option, so this is the one place that boundary is crossed. */
+ * seat pickers only ever choose a named preset, never build an `AiStrategyRef`
+ * directly, so this is the one place that boundary is crossed.
+ * TODO: a "Custom…" option would need to build other `AiStrategyRef` kinds
+ * here too. */
 function presetStrategy(id: string): AiStrategyRef {
   return { kind: "preset", id };
 }

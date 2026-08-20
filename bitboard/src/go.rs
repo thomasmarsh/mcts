@@ -761,10 +761,11 @@ mod tests {
     oracle_tests!(oracle_9x9, [u64; 2], const, 9, 9, 81);
     oracle_tests!(oracle_13x13, [u64; 3], const, 13, 13, 169);
     // Multi-word board outside today's supported sizes, exercising a shape
-    // Phase 7's wider size range will expose.
+    // no current game exercises yet -- larger than 13x13 but still
+    // multi-word, unlike the sub-word boards above.
     oracle_tests!(oracle_11x11, [u64; 2], const, 11, 11, 121);
     // `Dyn` dims, proving the flood oracle and the incremental engine agree
-    // on the runtime-sized path Phase 7 will actually use.
+    // on the runtime-sized path a variable-size game would actually use.
     oracle_tests!(oracle_9x9_dyn, [u64; 2], dyn, 9, 9, 81);
     oracle_tests!(oracle_13x13_dyn, [u64; 3], dyn, 13, 13, 169);
 }
