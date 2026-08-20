@@ -621,6 +621,97 @@ impl<R: Dim, C: Dim> Board<u64, R, C> {
     }
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+// O(1) word-parallel symmetry transforms. Unlike `D4Symmetry::apply_to_bits`
+// (`games/game-core/src/symmetry.rs`), which loops one set bit at a time via
+// `trailing_zeros` (O(popcount)), these permute every cell of the word at
+// once via a handful of masked shift/xor steps -- the classic SWAR
+// "butterfly network" technique `nego`'s `bitboard.rs` uses for
+// `rot90`/`flip_diag_a1h8`/etc. Cost is O(1) regardless of how full the
+// board is, which matters once canonicalization runs on every visited node
+// (`Game::canonical_representation`) rather than once per expansion.
+
+impl<R: Dim, C: Dim> Board<u64, R, C> {
+    /// Reverses the row-major order of every valid cell -- equivalent to
+    /// applying `flip_rows` then `flip_cols` (in either order), but done in
+    /// one step: reversing a contiguous row-major bit sequence end-to-end is
+    /// exactly a 180-degree rotation, independent of how the sequence is
+    /// partitioned into rows/cols. Works for any single-word board shape
+    /// (not just square), via `u64::reverse_bits` plus a realigning shift.
+    #[inline]
+    pub fn rot180(&self) -> Self {
+        let total = self.len();
+        let bits = if total == 0 {
+            0
+        } else {
+            self.bits.reverse_bits() >> (64 - total)
+        };
+        Self {
+            bits,
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+}
+
+impl Board<u64, crate::dim::Const<8>, crate::dim::Const<8>> {
+    /// Reverses column order within each row (col -> 7-col), rows
+    /// unchanged. An 8x8 board is byte-aligned (each row is exactly one
+    /// byte, since `index = row * 8 + col`), so this is "reverse the bit
+    /// order within each byte, for all 8 bytes at once" -- the standard
+    /// three-step SWAR delta-swap, done word-parallel across every row
+    /// simultaneously rather than one row (or one bit) at a time.
+    #[inline]
+    pub fn flip_cols(&self) -> Self {
+        let mut x = self.bits;
+        x = ((x & 0x5555_5555_5555_5555) << 1) | ((x >> 1) & 0x5555_5555_5555_5555);
+        x = ((x & 0x3333_3333_3333_3333) << 2) | ((x >> 2) & 0x3333_3333_3333_3333);
+        x = ((x & 0x0f0f_0f0f_0f0f_0f0f) << 4) | ((x >> 4) & 0x0f0f_0f0f_0f0f_0f0f);
+        Self {
+            bits: x,
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+
+    /// Reverses row order (row -> 7-row), columns unchanged. Each row is
+    /// exactly one byte on a byte-aligned 8x8 board (see `flip_cols`), so
+    /// reversing row order is exactly reversing byte order -- a single
+    /// `swap_bytes`.
+    #[inline]
+    pub fn flip_rows(&self) -> Self {
+        Self {
+            bits: self.bits.swap_bytes(),
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+
+    /// Transposes across the main diagonal: (row, col) -> (col, row). The
+    /// classic Hacker's Delight / chessprogramming-wiki `flipDiagA1H8`
+    /// delta-swap (three masked shift-xor steps), which assumes the same
+    /// `index = row * 8 + col` bit layout this crate already uses.
+    #[inline]
+    pub fn transpose(&self) -> Self {
+        const K1: u64 = 0x5500_5500_5500_5500;
+        const K2: u64 = 0x3333_0000_3333_0000;
+        const K4: u64 = 0x0f0f_0f0f_0000_0000;
+        let mut x = self.bits;
+        let mut t = K4 & (x ^ (x << 28));
+        x ^= t ^ (t >> 28);
+        t = K2 & (x ^ (x << 14));
+        x ^= t ^ (t >> 14);
+        t = K1 & (x ^ (x << 7));
+        x ^= t ^ (t >> 7);
+        Self {
+            bits: x,
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+}
+
 impl<const N: usize, const M: usize> Board<u64, crate::dim::Const<N>, crate::dim::Const<M>> {
     /// Builds a board directly from a raw row-major bitmask -- e.g. a
     /// literal winning-line pattern a game (or codegen) already knows at
@@ -1471,5 +1562,107 @@ mod tests {
         ) {
             check_flood8_against_oracle::<[u64; 2], Dyn, Dyn>(Dyn(9), Dyn(9), &bits, start_row, start_col);
         }
+    }
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    // O(1) symmetry transforms (`flip_cols`/`flip_rows`/`transpose`/`rot180`)
+    // vs. a brute-force per-bit permutation oracle -- independent of
+    // `game_core::symmetry::D4Symmetry`, since this crate doesn't depend on
+    // it (game-core depends on bitboard, not the reverse); the two are
+    // cross-checked against each other separately in game-core's own tests.
+
+    /// Applies a row/col index permutation to every set bit of `board`, one
+    /// bit at a time -- the "obviously correct" reference every O(1)
+    /// transform below is checked against.
+    fn permute_oracle<S: Storage, R: Dim, C: Dim>(
+        board: Board<S, R, C>,
+        f: impl Fn(usize, usize) -> (usize, usize),
+    ) -> Board<S, R, C> {
+        let mut out = board.empty_like();
+        for i in board.iter_set() {
+            let (r, c) = (i / board.cols(), i % board.cols());
+            let (nr, nc) = f(r, c);
+            out.set(nr, nc);
+        }
+        out
+    }
+
+    proptest! {
+        #[test]
+        fn rot180_matches_permutation_oracle_3x3(bits in proptest::collection::vec(0usize..9, 0..9)) {
+            let mut board: Board<u64, Const<3>, Const<3>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 3, i % 3);
+            }
+            let expected = permute_oracle(board, |r, c| (2 - r, 2 - c));
+            assert_eq!(board.rot180(), expected);
+        }
+
+        #[test]
+        fn rot180_matches_permutation_oracle_8x8(bits in proptest::collection::vec(0usize..64, 0..64)) {
+            let mut board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 8, i % 8);
+            }
+            let expected = permute_oracle(board, |r, c| (7 - r, 7 - c));
+            assert_eq!(board.rot180(), expected);
+        }
+
+        #[test]
+        fn rot180_matches_permutation_oracle_dyn_non_square(bits in proptest::collection::vec(0usize..30, 0..30)) {
+            let mut board: Board<u64, Dyn, Dyn> = Board::new(Dyn(5), Dyn(6));
+            for &i in &bits {
+                board.set(i / 6, i % 6);
+            }
+            let expected = permute_oracle(board, |r, c| (4 - r, 5 - c));
+            assert_eq!(board.rot180(), expected);
+        }
+
+        #[test]
+        fn flip_cols_matches_permutation_oracle_8x8(bits in proptest::collection::vec(0usize..64, 0..64)) {
+            let mut board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 8, i % 8);
+            }
+            let expected = permute_oracle(board, |r, c| (r, 7 - c));
+            assert_eq!(board.flip_cols(), expected);
+        }
+
+        #[test]
+        fn flip_rows_matches_permutation_oracle_8x8(bits in proptest::collection::vec(0usize..64, 0..64)) {
+            let mut board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 8, i % 8);
+            }
+            let expected = permute_oracle(board, |r, c| (7 - r, c));
+            assert_eq!(board.flip_rows(), expected);
+        }
+
+        #[test]
+        fn transpose_matches_permutation_oracle_8x8(bits in proptest::collection::vec(0usize..64, 0..64)) {
+            let mut board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 8, i % 8);
+            }
+            let expected = permute_oracle(board, |r, c| (c, r));
+            assert_eq!(board.transpose(), expected);
+        }
+
+        #[test]
+        fn flip_rows_then_flip_cols_matches_rot180_8x8(bits in proptest::collection::vec(0usize..64, 0..64)) {
+            let mut board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+            for &i in &bits {
+                board.set(i / 8, i % 8);
+            }
+            assert_eq!(board.flip_rows().flip_cols(), board.rot180());
+            assert_eq!(board.flip_cols().flip_rows(), board.rot180());
+        }
+    }
+
+    #[test]
+    fn rot180_empty_board_is_a_noop() {
+        let board: Board<u64, Const<8>, Const<8>> = Board::new_const();
+        assert_eq!(board.rot180(), board);
     }
 }

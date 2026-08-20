@@ -338,6 +338,37 @@ pub fn invert_words<const WORDS: usize>(
     out
 }
 
+/// O(1) word-parallel counterpart to calling `D4Symmetry::<8>::apply_to_bits`
+/// eight times (once per symmetry index): produces all 8 symmetric images of
+/// a single-word 8x8 `bitboard::Board` via `Board::flip_cols`/`flip_rows`/
+/// `transpose` (a handful of masked shift/xor steps each, independent of how
+/// many bits are set), in the same element order as
+/// `D4Symmetry::index_symmetries`/`apply_to_bits` (identity, flip_cols,
+/// flip_rows, transpose, flip_rows∘flip_cols, transpose∘flip_cols,
+/// transpose∘flip_rows, transpose∘flip_rows∘flip_cols) -- see
+/// `test_board_symmetries_8x8_matches_apply_to_bits` for the cross-check.
+/// The `Board`-level `flip_cols`/`flip_rows`/`transpose` primitives this
+/// composes only exist for `Const<8>, Const<8>`, so this helper is likewise
+/// 8x8-only; other board sizes still go through `D4Symmetry::apply_to_bits`.
+pub fn board_symmetries_8x8(
+    board: bitboard::Board<u64, bitboard::Const<8>, bitboard::Const<8>>,
+) -> [bitboard::Board<u64, bitboard::Const<8>, bitboard::Const<8>>; 8] {
+    let flip_cols = board.flip_cols();
+    let flip_rows = board.flip_rows();
+    let transpose = board.transpose();
+    let rot180 = flip_cols.flip_rows();
+    [
+        board,
+        flip_cols,
+        flip_rows,
+        transpose,
+        rot180,
+        flip_cols.transpose(),
+        flip_rows.transpose(),
+        rot180.transpose(),
+    ]
+}
+
 /// Klein four-group symmetries (identity, column flip, row flip, and their
 /// composition) for a `ROWS`×`COLS` board of any aspect ratio.
 ///
@@ -460,6 +491,41 @@ mod tests {
                 assert!(v < 64, "index_symmetries({i}) has out-of-range {v}");
             }
         }
+    }
+
+    /// Cross-checks `board_symmetries_8x8` (the O(1) word-parallel path)
+    /// against `D4Symmetry::<8>::apply_to_bits` (the O(popcount) per-bit
+    /// path already proven correct by `test_permutations_8x8`/
+    /// `test_index_symmetries_in_range` above) -- exhaustive over every
+    /// single-bit board (sufficient since both sides are bitwise-linear
+    /// permutations: correct on every basis vector implies correct on every
+    /// board), plus a handful of multi-bit boards for combination
+    /// confidence.
+    #[test]
+    fn test_board_symmetries_8x8_matches_apply_to_bits() {
+        let check = |bits: u64| {
+            let board: bitboard::Board<u64, bitboard::Const<8>, bitboard::Const<8>> =
+                bitboard::Board::from_bits(bits);
+            let got = board_symmetries_8x8(board);
+            for (sym_idx, image) in got.iter().enumerate() {
+                let expected = D4Symmetry::<8>::apply_to_bits(bits, sym_idx);
+                assert_eq!(
+                    image.bits(),
+                    expected,
+                    "sym {sym_idx} mismatch for board {bits:#x}"
+                );
+            }
+        };
+
+        for i in 0..64 {
+            check(1u64 << i);
+        }
+
+        check(0);
+        check(u64::MAX);
+        check(0x0000_0018_1800_0000); // the initial Othello position
+        check(0xDEAD_BEEF_1234_5678);
+        check(0xAAAA_AAAA_5555_5555);
     }
 
     /// Verify that invert_symmetry is the true inverse of index_symmetries.
