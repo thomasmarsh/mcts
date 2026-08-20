@@ -96,7 +96,10 @@ where
             self.reset_iter();
             let mut ctx = SearchContext::new(root_id, state.clone());
 
-            self.select(&mut ctx);
+            if let Some(utilities) = self.select(&mut ctx) {
+                self.backprop_correction(&utilities);
+                continue;
+            }
 
             let k = self.config.num_rollouts_per_leaf;
             let trials = if k > 1 {

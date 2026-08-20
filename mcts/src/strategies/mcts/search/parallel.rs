@@ -4,7 +4,8 @@ use crate::strategies::mcts::config::{GraphSearch, GraphStats};
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::shared::{
-    add_path_virtual_loss, backprop_step, last_tree_action, select_step, simulate_step,
+    add_path_virtual_loss, backprop_correction_step, backprop_step, last_tree_action, select_step,
+    simulate_step,
 };
 use crate::strategies::mcts::search::shared::{ActionTotal, Shared};
 use crate::strategies::mcts::search::TreeSearch;
@@ -154,6 +155,7 @@ where
             max_playout_depth: self.config.max_playout_depth,
             solver_loss_threshold: self.config.solver_loss_threshold,
             has_amaf: self.config.requirements().amaf,
+            mcgs_correction: self.config.mcgs_correction,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
         let k = self.config.num_rollouts_per_leaf.max(1);
@@ -196,7 +198,13 @@ where
 
                         let mut stack = Vec::new();
                         let mut ctx = SearchContext::new(root_id, state.clone());
-                        select_step(shared, &mut ctx, &mut stack, select_strategy, &mut rng);
+                        let correction =
+                            select_step(shared, &mut ctx, &mut stack, select_strategy, &mut rng);
+
+                        if let Some(utilities) = correction {
+                            backprop_correction_step(shared, &stack, &utilities);
+                            continue;
+                        }
 
                         let node_stack = NodeStack::<G::A>::new(stack.clone());
                         if k > 1 {

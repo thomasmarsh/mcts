@@ -8,8 +8,8 @@ use crate::strategies::mcts::node;
 use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{
-    add_path_virtual_loss, backprop_step, last_tree_action, proven_draw_child, proven_win_child,
-    select_step, simulate_step,
+    add_path_virtual_loss, backprop_correction_step, backprop_step, last_tree_action,
+    proven_draw_child, proven_win_child, select_step, simulate_step,
 };
 use crate::strategies::mcts::search::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
@@ -71,7 +71,7 @@ where
     G::S: std::fmt::Display,
 {
     #[inline]
-    pub fn select(&mut self, ctx: &mut SearchContext<G>) {
+    pub fn select(&mut self, ctx: &mut SearchContext<G>) -> Option<Vec<f64>> {
         debug_assert!(self.stack.is_empty());
         // `ctx` always starts a call at the root (`current_id`/`state` are
         // the root's own), so this is always correct and keeps
@@ -96,12 +96,13 @@ where
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
+                mcgs_correction: self.config.mcgs_correction,
             },
             ctx,
             &mut self.stack,
             &mut self.config.select,
             &mut self.config.rng,
-        );
+        )
     }
 
     #[inline]
@@ -251,11 +252,40 @@ where
                 max_playout_depth: self.config.max_playout_depth,
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
+                mcgs_correction: self.config.mcgs_correction,
             },
             &self.stack,
             &self.config.backprop,
             trial,
             flags,
+        );
+    }
+
+    /// See `shared::backprop_correction_step`'s doc comment -- called instead
+    /// of `simulate`/`backprop` whenever `select` returns `Some(utilities)`
+    /// (an `McgsCorrection::Residual` check fired partway through descent).
+    #[inline]
+    pub fn backprop_correction(&mut self, utilities: &[f64]) {
+        backprop_correction_step(
+            &Shared {
+                index: &self.index,
+                root_state: self.root_state.as_ref().unwrap(),
+                root_stats: &self.root_stats,
+                table: &self.table,
+                global: &self.stats,
+                expand_threshold: self.config.expand_threshold,
+                q_init: self.config.q_init,
+                use_transpositions: self.config.uses_transpositions(),
+                graph_stats: self.config.graph_stats(),
+                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
+                use_mcts_solver: self.config.use_mcts_solver,
+                max_playout_depth: self.config.max_playout_depth,
+                solver_loss_threshold: self.config.solver_loss_threshold,
+                has_amaf: self.config.requirements().amaf,
+                mcgs_correction: self.config.mcgs_correction,
+            },
+            &self.stack,
+            utilities,
         );
     }
 
