@@ -12,6 +12,7 @@
     "@mcts/gonnect": "workspace:*",
     "@mcts/hex-gen": "workspace:*",
     "@mcts/knightthrough": "workspace:*",
+    "@mcts/margo": "workspace:*",
     "@mcts/othello": "workspace:*",
     "@mcts/tak": "workspace:*",
     "@mcts/tanbo": "workspace:*",

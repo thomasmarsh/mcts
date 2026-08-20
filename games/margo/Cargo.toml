@@ -7,11 +7,18 @@ publish = false
 [lib]
 name = "game_margo"
 
+[[bin]]
+name = "game-margo"
+path = "src/main.rs"
+
 [dependencies]
 mcts = { path = "../../mcts" }
+mcts-tune = { path = "../../mcts-tune" }
+game-host = { path = "../../game-host" }
 bitboard = { path = "../../bitboard" }
 pyramid = { path = "../../pyramid" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 rand = { version = "0.8.5", features = ["small_rng"] }
 
 [lints]

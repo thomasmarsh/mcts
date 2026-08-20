@@ -486,11 +486,95 @@ impl State {
         self.turn
     }
 
+    /// This board's base width -- see `MIN_N`/`MAX_N`.
+    #[inline]
+    pub fn n(&self) -> usize {
+        self.occupied.n()
+    }
+
+    /// Total addressable cells for this board's size (see
+    /// `pyramid::total_cells`).
+    #[inline]
+    pub fn total_cells(&self) -> usize {
+        self.occupied.total_cells()
+    }
+
+    /// The `previous` ko snapshot as `(occupied, black)` flat-index lists,
+    /// for a wire adapter to serialize -- mirrors `occupied_indices`/
+    /// `black_indices` below, since `previous` stores the same shape of data
+    /// one ply back.
+    pub fn previous_indices(&self) -> Option<(Vec<usize>, Vec<usize>)> {
+        self.previous
+            .map(|(o, b)| (o.iter_set().collect(), b.iter_set().collect()))
+    }
+
+    /// Every occupied cell's flat index, for a wire adapter to serialize.
+    pub fn occupied_indices(&self) -> Vec<usize> {
+        self.occupied.iter_set().collect()
+    }
+
+    /// Every Black-occupied cell's flat index, for a wire adapter to
+    /// serialize.
+    pub fn black_indices(&self) -> Vec<usize> {
+        self.black.iter_set().collect()
+    }
+
+    /// Every zombie cell's flat index, for a wire adapter to serialize.
+    pub fn zombie_indices(&self) -> Vec<usize> {
+        self.zombie.iter_set().collect()
+    }
+
+    /// Reconstructs a `State` from flat-index lists -- the inverse of
+    /// `occupied_indices`/`black_indices`/`zombie_indices`/
+    /// `previous_indices`, for a wire adapter to deserialize a JSON request
+    /// back into a real `State` without going through legal play. No
+    /// legality checking is done here: the caller (a `GameAdapter`
+    /// round-tripping its own previously emitted wire format) is trusted to
+    /// pass back a state this crate itself produced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        n: usize,
+        occupied: &[usize],
+        black: &[usize],
+        zombie: &[usize],
+        previous: Option<(&[usize], &[usize])>,
+        turn: Player,
+        can_swap: bool,
+    ) -> Self {
+        let fill = |indices: &[usize]| {
+            let mut cells = Cells::new(Dyn(n));
+            for &index in indices {
+                cells.set_index(index);
+            }
+            cells
+        };
+        Self {
+            occupied: fill(occupied),
+            black: fill(black),
+            zombie: fill(zombie),
+            previous: previous.map(|(o, b)| (fill(o), fill(b))),
+            turn,
+            can_swap,
+        }
+    }
+
     /// Whether `Action::Swap` is currently legal -- see the field's own doc
     /// comment on [`State`].
     #[inline]
     pub fn can_swap(&self) -> bool {
         self.can_swap && self.occupied.count_ones() == 1
+    }
+
+    /// Whether the swap window has been permanently closed yet (the raw
+    /// `can_swap` field, distinct from [`can_swap`](Self::can_swap)'s
+    /// additional "exactly one piece on the board right now" check) -- a
+    /// wire adapter needs this to serialize/reconstruct the window's
+    /// open/closed bit itself, since `can_swap()`'s piece-count check would
+    /// otherwise make every non-ply-1 state round-trip as permanently
+    /// closed regardless of whether the window had actually been used yet.
+    #[inline]
+    pub fn swap_window_open(&self) -> bool {
+        self.can_swap
     }
 
     /// Attempts to place the player to move's piece at flat `index`,
