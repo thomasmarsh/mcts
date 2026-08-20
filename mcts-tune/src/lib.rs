@@ -1031,15 +1031,22 @@ mod tests {
     /// each playing a single round of `Nim` (fast, deterministic) to prove
     /// the concrete type actually builds and the declared params round-trip
     /// through `make_candidate` without error. `cost_from_losses` itself is
-    /// already covered above -- this only exercises dispatch.
+    /// already covered above -- this only exercises dispatch, so the
+    /// candidate is bounded to the same small iteration count as `baseline`
+    /// rather than left on `SearchBudget::default()`'s `MAX_ITER` (10,000),
+    /// which made each of these tests a real multi-second search.
     fn assert_family_round_trips(mut params: Value) {
         params["q_init"] = json!("Infinity");
+        let candidate_budget = SearchBudget {
+            max_iterations: Some(50),
+            ..SearchBudget::default()
+        };
         let outcome = strategy_tune_eval::<Nim>(
             &params,
             1,
             Some(0),
             false,
-            SearchBudget::default(),
+            candidate_budget,
             baseline,
             <Nim as Game>::S::default(),
             None,
