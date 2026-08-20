@@ -234,6 +234,85 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
             }
         }
     }
+
+    /// The (up to four) level-`(level - 1)` cells that physically support a
+    /// piece at `(col, row, level)`: a level-`k` piece sits centered over
+    /// the 2x2 block of level-`(k - 1)` cells at those coordinates, since
+    /// level `k - 1` is exactly one wider than level `k` and every in-range
+    /// `(col, row)` at level `k` therefore has all four of `(col, row)`,
+    /// `(col + 1, row)`, `(col, row + 1)`, `(col + 1, row + 1)` in range at
+    /// level `k - 1`. Empty for `level == 0` (the base, which always rests
+    /// on the table).
+    pub fn supporters(&self, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
+        if level == 0 {
+            Vec::new()
+        } else {
+            vec![
+                (col, row),
+                (col + 1, row),
+                (col, row + 1),
+                (col + 1, row + 1),
+            ]
+        }
+    }
+
+    /// Whether `(col, row, level)` rests on a fully occupied 2x2 block
+    /// below it -- the physical precondition for a piece to be there at
+    /// all. The base (`level == 0`) is always supported.
+    pub fn is_supported(&self, col: usize, row: usize, level: usize) -> bool {
+        level == 0
+            || self
+                .supporters(col, row, level)
+                .into_iter()
+                .all(|(c, r)| self.get(c, r, level - 1))
+    }
+
+    /// Whether a piece can legally be placed at `(col, row, level)`: in
+    /// bounds, currently empty, and supported.
+    pub fn can_place(&self, col: usize, row: usize, level: usize) -> bool {
+        self.in_bounds(col, row, level)
+            && !self.get(col, row, level)
+            && self.is_supported(col, row, level)
+    }
+
+    /// The occupied level-`(level + 1)` cells resting directly on `(col,
+    /// row, level)` -- the inverse of `supporters`: `(col, row, level)` is
+    /// one of their four support cells. Empty above the apex.
+    pub fn dependents(&self, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
+        if level + 1 >= self.n() {
+            return Vec::new();
+        }
+        let above_side = self.level_side(level + 1);
+        let mut out = Vec::new();
+        for c in col.saturating_sub(1)..=col {
+            for r in row.saturating_sub(1)..=row {
+                if c < above_side && r < above_side && self.get(c, r, level + 1) {
+                    out.push((c, r));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether anything rests directly on `(col, row, level)` at all --
+    /// the piece can be taken off the board outright only when this is
+    /// false, since there would otherwise be nothing left to hold up
+    /// whatever's above it.
+    pub fn is_removable(&self, col: usize, row: usize, level: usize) -> bool {
+        self.dependents(col, row, level).is_empty()
+    }
+
+    /// Whether `(col, row, level)` can be relocated to some other legal
+    /// position without leaving anything floating. A piece with nothing
+    /// resting on it is always movable. A piece supporting exactly one
+    /// other piece is still movable: that single piece has an unambiguous
+    /// place to drop into (the vacated cell) once the mover leaves. A piece
+    /// supporting two or more others is pinned and cannot move at all --
+    /// there is only one physical gap left behind, and it can't hold more
+    /// than one dropped piece.
+    pub fn is_movable(&self, col: usize, row: usize, level: usize) -> bool {
+        self.dependents(col, row, level).len() <= 1
+    }
 }
 
 impl<S: Storage, N: Dim> PartialEq for Pyramid<S, N> {
@@ -390,8 +469,8 @@ mod tests {
         );
     }
 
-    // Phase 1: level extraction/write-back round trips, checked against the
-    // same coordinate-walk oracle style as Phase 0's tests above, plus a
+    // Level extraction/write-back round trips, checked against the same
+    // coordinate-walk oracle style as the index/get/set tests above, plus a
     // check that a lateral op (`flood4`) behaves identically whether run
     // against a hand-built `Board` or one extracted from a `Pyramid`.
 
@@ -459,6 +538,136 @@ mod tests {
         assert!(
             pyramid.get(1, 1, 1),
             "level 1 must be untouched by writing back level 0"
+        );
+    }
+
+    // Support, placement, and (im)movability primitives, hand-verified
+    // against small N (2, 3, 4) manual diagrams rather than an oracle,
+    // since these relations (unlike index math) aren't independently
+    // re-derivable from a naive coordinate walk -- they *are* the
+    // definition being tested.
+
+    #[test]
+    fn base_is_always_supported() {
+        let pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        assert!(pyramid.supporters(2, 1, 0).is_empty());
+        assert!(pyramid.is_supported(2, 1, 0));
+        assert!(pyramid.can_place(2, 1, 0));
+    }
+
+    #[test]
+    fn higher_level_needs_all_four_supporters() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        assert_eq!(
+            pyramid.supporters(0, 0, 1),
+            vec![(0, 0), (1, 0), (0, 1), (1, 1)]
+        );
+        assert!(!pyramid.is_supported(0, 0, 1));
+        assert!(!pyramid.can_place(0, 0, 1));
+
+        pyramid.set(0, 0, 0);
+        pyramid.set(1, 0, 0);
+        pyramid.set(0, 1, 0);
+        assert!(
+            !pyramid.is_supported(0, 0, 1),
+            "three of four supporters is not enough"
+        );
+
+        pyramid.set(1, 1, 0);
+        assert!(pyramid.is_supported(0, 0, 1));
+        assert!(pyramid.can_place(0, 0, 1));
+
+        pyramid.set(0, 0, 1);
+        assert!(
+            !pyramid.can_place(0, 0, 1),
+            "an occupied cell can't be placed into again"
+        );
+    }
+
+    #[test]
+    fn dependents_is_the_inverse_of_supporters() {
+        // n = 3: level 0 is 3x3, level 1 is 2x2, level 2 is the apex.
+        let mut pyramid: Pyramid<u64, Const<3>> = Pyramid::new(Const);
+        for &(c, r) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(0, 0, 1);
+
+        assert_eq!(pyramid.dependents(0, 0, 0), vec![(0, 0)]);
+        // (1, 0, 0) is a supporter of both level-1 (0, 0) and (1, 0), but
+        // only (0, 0) is occupied.
+        assert_eq!(pyramid.dependents(1, 0, 0), vec![(0, 0)]);
+        assert_eq!(pyramid.dependents(0, 1, 0), vec![(0, 0)]);
+        assert_eq!(pyramid.dependents(1, 1, 0), vec![(0, 0)]);
+        // A corner far from the placed level-1 piece has no dependents.
+        assert!(pyramid.dependents(2, 2, 0).is_empty());
+        // The apex has no level above it.
+        assert!(pyramid.dependents(0, 0, 2).is_empty());
+    }
+
+    #[test]
+    fn removable_and_movable_agree_when_nothing_rests_above() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        pyramid.set(0, 0, 0);
+        assert!(pyramid.is_removable(0, 0, 0));
+        assert!(pyramid.is_movable(0, 0, 0));
+    }
+
+    #[test]
+    fn single_dependent_is_pinned_but_movable() {
+        // n = 2: level 0 is the 2x2 base, level 1 is the single apex cell,
+        // which is the only piece that can ever rest on a level-0 cell here.
+        let mut pyramid: Pyramid<u64, Const<2>> = Pyramid::new(Const);
+        pyramid.set(0, 0, 0);
+        pyramid.set(1, 0, 0);
+        pyramid.set(0, 1, 0);
+        pyramid.set(1, 1, 0);
+        pyramid.set(0, 0, 1);
+
+        for &(c, r) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+            assert_eq!(pyramid.dependents(c, r, 0), vec![(0, 0)]);
+            assert!(
+                !pyramid.is_removable(c, r, 0),
+                "the apex rests on every base cell"
+            );
+            assert!(
+                pyramid.is_movable(c, r, 0),
+                "exactly one piece above still has an unambiguous place to drop"
+            );
+        }
+    }
+
+    #[test]
+    fn two_or_more_dependents_are_pinned_and_immovable() {
+        // n = 3, with both level-1 cells that rest on level-0 (1, 1)
+        // occupied: (1, 1, 0) supports level-1 (0, 0) and (1, 1) both.
+        let mut pyramid: Pyramid<u64, Const<3>> = Pyramid::new(Const);
+        for &(c, r) in &[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(0, 0, 1);
+        pyramid.set(1, 1, 1);
+
+        let deps = pyramid.dependents(1, 1, 0);
+        assert_eq!(
+            deps.len(),
+            2,
+            "(1,1,0) supports two level-1 cells: {deps:?}"
+        );
+        assert!(!pyramid.is_removable(1, 1, 0));
+        assert!(
+            !pyramid.is_movable(1, 1, 0),
+            "two pieces can't both drop into one vacated gap"
         );
     }
 
