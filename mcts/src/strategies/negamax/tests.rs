@@ -207,6 +207,50 @@ fn principal_variation_search_toggle_agrees_with_plain_alpha_beta() {
 }
 
 #[test]
+fn history_heuristic_toggle_does_not_change_the_answer() {
+    let state = State { stones: 5, turn: 0 };
+    let mut with_history = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_history_heuristic(true),
+    );
+    let mut without_history = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_history_heuristic(false),
+    );
+    assert_eq!(
+        with_history.choose_action(&state),
+        without_history.choose_action(&state)
+    );
+    assert_eq!(with_history.root_score(), without_history.root_score());
+}
+
+#[test]
+fn singular_extension_toggle_does_not_change_the_answer() {
+    let state = State { stones: 5, turn: 0 };
+    let mut with_extension = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_singular_extension(true),
+    );
+    let mut without_extension = Negamax::<Subtraction, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(20)
+            .with_singular_extension(false),
+    );
+    assert_eq!(
+        with_extension.choose_action(&state),
+        without_extension.choose_action(&state)
+    );
+    assert_eq!(with_extension.root_score(), without_extension.root_score());
+}
+
+#[test]
 fn aspiration_window_does_not_change_the_answer() {
     let state = State { stones: 5, turn: 0 };
     let mut baseline = solver();
