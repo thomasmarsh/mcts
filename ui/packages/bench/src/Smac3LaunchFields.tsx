@@ -103,6 +103,14 @@ export const Smac3LaunchFields: Component<{
    * convention as `nWorkers`'s "auto". */
   maxIterations: string;
   onMaxIterationsChange: (v: string) => void;
+  /** Per-run wall-clock search budget in milliseconds, per move
+   * (`mcts_tune::SearchBudget::max_time` on the Rust side), forwarded as
+   * `target.max_time_ms=N` -- mutually exclusive with `maxIterations`
+   * (`game-host::run_tune_eval` rejects a `tune eval` invocation that sets
+   * both `--max-iterations` and `--max-time-ms`). Empty string means
+   * "unset", same convention as `maxIterations`. */
+  maxTimeMs: string;
+  onMaxTimeMsChange: (v: string) => void;
   /** Raw JSON text for the "Game config" field -- only rendered when the
    * selected game's `tuner().game_config` isn't `{}`. */
   gameConfig: string;
@@ -314,12 +322,28 @@ export const Smac3LaunchFields: Component<{
                 placeholder="auto"
                 value={props.maxIterations}
                 onInput={(e) => props.onMaxIterationsChange(e.currentTarget.value)}
-                disabled={props.disabled}
+                disabled={props.disabled || props.maxTimeMs.trim() !== ""}
               />
               <span class="smac3-field-hint">
                 MCTS iterations per move, applied to every trial's candidate (and its opponent, when
                 self-play). Blank uses the game binary's own default -- this is a compute budget, not
                 something SMAC3 tunes for you.
+              </span>
+            </label>
+
+            <label>
+              Time budget (ms)
+              <input
+                type="number"
+                min={1}
+                placeholder="auto"
+                value={props.maxTimeMs}
+                onInput={(e) => props.onMaxTimeMsChange(e.currentTarget.value)}
+                disabled={props.disabled || props.maxIterations.trim() !== ""}
+              />
+              <span class="smac3-field-hint">
+                Wall-clock milliseconds per move instead of a fixed iteration count -- mutually
+                exclusive with the iteration-budget field above (set one, leave the other blank).
               </span>
             </label>
 

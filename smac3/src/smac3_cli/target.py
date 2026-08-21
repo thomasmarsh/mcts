@@ -38,6 +38,36 @@ FLOOR_BASELINES: dict[str, dict] = {
     "random": {"family": "random", "q_init": "Infinity"},
 }
 
+_HEARTBEAT_INTERVAL_S = 30
+_TRIAL_TIMEOUT_S = 600
+
+
+def _run_with_heartbeat(cmd: list[str], *, timeout: float, seed: int) -> subprocess.CompletedProcess:
+    """Like ``subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)``,
+    but logs a "still running" line every ``_HEARTBEAT_INTERVAL_S`` seconds
+    instead of blocking silently until the process exits or the full timeout
+    fires. A trial that's merely slow (a big ``--max-iterations``/
+    ``--max-time-ms`` budget, a slow game) was otherwise indistinguishable
+    from a hung one until the 600s timeout killed it -- this only adds
+    liveness output to ``stdout.log``, it doesn't change what a timeout or
+    crash reports downstream (see ``train``'s own status tagging).
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    elapsed = 0.0
+    while True:
+        wait = min(_HEARTBEAT_INTERVAL_S, timeout - elapsed)
+        try:
+            stdout, stderr = proc.communicate(timeout=wait)
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            elapsed += wait
+            if elapsed >= timeout:
+                proc.kill()
+                proc.communicate()
+                raise
+            logger.info("Trial still running after %.0fs (seed=%s)", elapsed, seed)
+
+
 # ---------------------------------------------------------------------------
 # Target function factory
 # ---------------------------------------------------------------------------
@@ -78,6 +108,8 @@ def _build_cmd(
 
     if cfg.target.max_iterations is not None:
         cmd += ["--max-iterations", str(cfg.target.max_iterations)]
+    elif cfg.target.max_time_ms is not None:
+        cmd += ["--max-time-ms", str(cfg.target.max_time_ms)]
 
     if trace_path is not None:
         cmd += ["--trace-path", trace_path]
@@ -141,6 +173,13 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
     every trial -- the game binary's own `MoveTracer` opens it in append
     mode, so all trials in the run accumulate into the same file.
     """
+    if cfg.target.max_iterations is not None and cfg.target.max_time_ms is not None:
+        raise ValueError(
+            "target.max_iterations and target.max_time_ms are mutually exclusive "
+            "(matches game-host::run_tune_eval's own --max-iterations/--max-time-ms "
+            "constraint) -- unset one before launching"
+        )
+
     binary: Path = cfg.resolve_binary()
     if not binary.is_file():
         raise FileNotFoundError(
@@ -195,14 +234,9 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
         logger.debug("Running: %s", " ".join(cmd))
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 minutes per trial
-            )
+            result = _run_with_heartbeat(cmd, timeout=_TRIAL_TIMEOUT_S, seed=seed)
         except subprocess.TimeoutExpired:
-            logger.warning("Trial timed out after 600 s (seed=%s)", seed)
+            logger.warning("Trial timed out after %ds (seed=%s)", _TRIAL_TIMEOUT_S, seed)
             return 1.0, {"status": "timeout"}  # worst possible cost
 
         if result.returncode != 0:

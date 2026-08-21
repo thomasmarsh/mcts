@@ -41,6 +41,12 @@ function buildSmac3Overrides(opts: {
   /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
    * `maxIterations` prop doc comment. */
   maxIterations: string;
+  /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
+   * `maxTimeMs` prop doc comment. Mutually exclusive with `maxIterations`;
+   * the form itself keeps only one of the two fields enabled at a time, so
+   * both being non-empty here shouldn't happen, but this function doesn't
+   * re-validate that -- the server-side `target.py` rejects it either way. */
+  maxTimeMs: string;
 }): string[] {
   const overrides = [
     `optimizer.n_trials=${opts.nTrials}`,
@@ -54,6 +60,8 @@ function buildSmac3Overrides(opts: {
   }
   const maxIterations = opts.maxIterations.trim();
   if (maxIterations !== "") overrides.push(`target.max_iterations=${maxIterations}`);
+  const maxTimeMs = opts.maxTimeMs.trim();
+  if (maxTimeMs !== "") overrides.push(`target.max_time_ms=${maxTimeMs}`);
   if (opts.startingBaselines.size > 0) {
     const items = Array.from(opts.startingBaselines)
       .map((b) => `'${b}'`)
@@ -102,6 +110,10 @@ export const LaunchForm: Component<{
   // convention as `smac3NWorkers`. See Smac3LaunchFields.tsx's
   // `maxIterations` prop doc comment.
   const [smac3MaxIterations, setSmac3MaxIterations] = createSignal("");
+  // Per-run wall-clock search budget override -- "" means unset, mutually
+  // exclusive with `smac3MaxIterations`. See Smac3LaunchFields.tsx's
+  // `maxTimeMs` prop doc comment.
+  const [smac3MaxTimeMs, setSmac3MaxTimeMs] = createSignal("");
   // Raw JSON text for the "Game config" field -- only meaningful (and only
   // rendered by Smac3LaunchFields) when the selected game's tuner reports a
   // non-empty `game_config`.
@@ -246,6 +258,7 @@ export const LaunchForm: Component<{
             defaultRounds: tuner?.eval_rounds ?? null,
             startingBaselines: smac3StartingBaselines(),
             maxIterations: smac3MaxIterations(),
+            maxTimeMs: smac3MaxTimeMs(),
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)
             ? { game_config: JSON.parse(smac3GameConfig()) }
@@ -391,6 +404,8 @@ export const LaunchForm: Component<{
               onRoundsChange={setSmac3Rounds}
               maxIterations={smac3MaxIterations()}
               onMaxIterationsChange={setSmac3MaxIterations}
+              maxTimeMs={smac3MaxTimeMs()}
+              onMaxTimeMsChange={setSmac3MaxTimeMs}
               gameConfig={smac3GameConfig()}
               onGameConfigChange={setSmac3GameConfig}
               gameConfigError={smac3GameConfigError()}

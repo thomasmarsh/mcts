@@ -14,6 +14,7 @@ game-breakthrough = { path = "../games/breakthrough" }
 game-knightthrough = { path = "../games/knightthrough" }
 game-druid = { path = "../games/druid" }
 game-ttt = { path = "../games/ttt" }
+game-traffic-lights = { path = "../games/traffic-lights" }
 rustc-hash = "1.1.0"
 rand = "0.8.5"
 rand_core = "0.6.4"

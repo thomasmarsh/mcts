@@ -2,11 +2,12 @@
 dispatching a raw-config-backed instance id to `--baseline-config` instead
 of `--baseline`.
 
-`test_train_dispatches_...` mocks `subprocess.run` rather than shelling out
-to a real game binary -- unlike `test_resume.py`/`test_callback.py` (which
-exist specifically to catch drift in SMAC3's own behavior and would be
-pointless to fake), this is purely about which argv `train()` builds, not
-about what a real search returns.
+`test_train_dispatches_...` mocks `subprocess.Popen` (what `target.py`'s
+`_run_with_heartbeat` actually drives via `.communicate()`) rather than
+shelling out to a real game binary -- unlike `test_resume.py`/
+`test_callback.py` (which exist specifically to catch drift in SMAC3's own
+behavior and would be pointless to fake), this is purely about which argv
+`train()` builds, not about what a real search returns.
 """
 
 from __future__ import annotations
@@ -46,6 +47,44 @@ class _FakeCompletedProcess:
         self.returncode = 0
 
 
+class _FakePopen:
+    """Stand-in for `subprocess.Popen`, driven the same way `target.py`'s
+    `_run_with_heartbeat` drives a real one: repeated `.communicate(timeout=
+    ...)` calls until one returns instead of raising, then (only after a
+    real timeout) one final no-timeout drain call. `fake_run(cmd)` is called
+    on every timed `communicate()` -- if it returns a completed-process-like
+    object, that call succeeds immediately (as if the process had already
+    exited); if it raises `subprocess.TimeoutExpired`, this mirrors that so
+    the heartbeat loop keeps polling. The no-timeout drain call after
+    `kill()` never calls `fake_run` again -- a real killed process's final
+    `communicate()` doesn't re-run the command, just collects already-
+    buffered output.
+    """
+
+    def __init__(self, cmd, fake_run):
+        self._cmd = cmd
+        self._fake_run = fake_run
+        self.returncode = 0
+
+    def communicate(self, timeout=None):
+        if timeout is None:
+            return "", ""
+        result = self._fake_run(self._cmd)
+        self.returncode = getattr(result, "returncode", 0)
+        return result.stdout, result.stderr
+
+    def kill(self):
+        pass
+
+
+def _patch_popen(monkeypatch, fake_run):
+    """Patch `subprocess.Popen` so `target.py`'s `_run_with_heartbeat` (the
+    only thing that spawns a subprocess in `train()`) drives `fake_run`
+    through `_FakePopen` instead of a real process.
+    """
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: _FakePopen(cmd, fake_run))
+
+
 def test_train_dispatches_named_baseline_as_dash_dash_baseline(monkeypatch, tmp_path: Path):
     binary = tmp_path / "game-fake"
     binary.touch()
@@ -56,7 +95,7 @@ def test_train_dispatches_named_baseline_as_dash_dash_baseline(monkeypatch, tmp_
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.25}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(
         optimizer=OptimizerConfig(),
@@ -82,7 +121,7 @@ def test_train_serializes_numpy_scalar_config_values(monkeypatch, tmp_path: Path
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.25}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
     train = make_target(SearchConfig(target=TargetConfig(binary=binary)))
 
     cost, _ = train({"mcgs": np.bool_(True)}, seed=0)
@@ -98,7 +137,7 @@ def test_train_tags_timeout_as_status_extra(monkeypatch, tmp_path: Path):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 600))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)
@@ -117,7 +156,7 @@ def test_train_tags_nonzero_exit_as_status_crashed(monkeypatch, tmp_path: Path):
         stderr = "boom"
         returncode = 1
 
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: _FakeFailedProcess())
+    _patch_popen(monkeypatch, lambda cmd: _FakeFailedProcess())
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)
@@ -131,9 +170,7 @@ def test_train_tags_unparseable_output_as_status_crashed(monkeypatch, tmp_path: 
     binary = tmp_path / "game-fake"
     binary.touch()
 
-    monkeypatch.setattr(
-        subprocess, "run", lambda cmd, **kwargs: _FakeCompletedProcess("not json")
-    )
+    _patch_popen(monkeypatch, lambda cmd: _FakeCompletedProcess("not json"))
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)
@@ -155,7 +192,7 @@ def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.1}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     ladder_config = {"family": "ucb1", "final_action": "robust_child", "c": 1.4}
     cfg = SearchConfig(
@@ -199,7 +236,7 @@ def test_train_dispatches_floor_baseline_as_dash_dash_baseline_config(
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.1}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(
         optimizer=OptimizerConfig(),
@@ -225,7 +262,7 @@ def test_train_forwards_game_config_when_set(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     game_config = {"size": {"w": 9, "h": 9}}
     cfg = SearchConfig(
@@ -251,7 +288,7 @@ def test_train_omits_game_config_when_unset(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)
@@ -270,7 +307,7 @@ def test_train_forwards_max_iterations_when_set(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(
         optimizer=OptimizerConfig(),
@@ -294,13 +331,100 @@ def test_train_omits_max_iterations_when_unset(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)
     train({"family": "ucb1"}, seed=0)
 
     assert "--max-iterations" not in captured["cmd"]
+
+
+def test_train_forwards_max_time_ms_when_set(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    _patch_popen(monkeypatch, fake_run)
+
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(),
+        target=TargetConfig(binary=binary, rounds=4, max_time_ms=5000),
+    )
+    train = make_target(cfg)
+    cost, _ = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(0.5)
+    assert "--max-time-ms" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--max-time-ms") + 1] == "5000"
+    assert "--max-iterations" not in captured["cmd"]
+
+
+def test_train_omits_max_time_ms_when_unset(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
+
+    _patch_popen(monkeypatch, fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    train({"family": "ucb1"}, seed=0)
+
+    assert "--max-time-ms" not in captured["cmd"]
+
+
+def test_make_target_rejects_both_max_iterations_and_max_time_ms(tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(),
+        target=TargetConfig(binary=binary, rounds=4, max_iterations=1000, max_time_ms=5000),
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        make_target(cfg)
+
+
+def test_target_config_max_time_ms_defaults_none():
+    assert TargetConfig().max_time_ms is None
+
+
+def test_train_logs_heartbeat_while_waiting_on_a_slow_trial(monkeypatch, tmp_path: Path):
+    """A trial that takes longer than one heartbeat tick to finish should
+    log at least one "still running" heartbeat instead of blocking silently
+    -- this is what makes a slow-but-alive trial distinguishable from a hung
+    one in `stdout.log` before the full timeout kills it."""
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    calls: list[int] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return _FakeCompletedProcess(json.dumps({"cost": 0.75}))
+
+    _patch_popen(monkeypatch, fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    cost, extra = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(0.75)
+    assert extra == {}
+    assert len(calls) == 3
 
 
 def test_train_forwards_trace_path_when_set(monkeypatch, tmp_path: Path):
@@ -313,7 +437,7 @@ def test_train_forwards_trace_path_when_set(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     trace_path = str(tmp_path / "moves.jsonl")
@@ -335,7 +459,7 @@ def test_train_omits_trace_path_when_unset(monkeypatch, tmp_path: Path):
         captured["cmd"] = cmd
         return _FakeCompletedProcess(json.dumps({"cost": 0.5}))
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _patch_popen(monkeypatch, fake_run)
 
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     train = make_target(cfg)

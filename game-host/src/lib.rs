@@ -707,13 +707,17 @@ where
 }
 
 /// Parses `--config <json> --rounds <n> [--seed <n>] [--baseline <id> |
-/// --baseline-config <json>] [--game-config <json>] [--max-iterations <n>]`
-/// from the remaining CLI args, calls [`GameAdapter::tune_eval`], and prints
-/// its JSON result verbatim to `writer`. Returns the process exit code.
-/// `--baseline` and `--baseline-config` are mutually exclusive -- supplying
-/// both is rejected before the adapter is ever called. `--max-iterations`
-/// is the per-run compute-budget override -- see `tune_eval`'s own doc
-/// comment.
+/// --baseline-config <json>] [--game-config <json>] [--max-iterations <n> |
+/// --max-time-ms <n>]` from the remaining CLI args, calls
+/// [`GameAdapter::tune_eval`], and prints its JSON result verbatim to
+/// `writer`. Returns the process exit code. `--baseline` and
+/// `--baseline-config` are mutually exclusive -- supplying both is rejected
+/// before the adapter is ever called. `--max-iterations` and
+/// `--max-time-ms` are the per-run compute-budget overrides -- see
+/// `tune_eval`'s own doc comment; supplying both is likewise rejected
+/// (unlike `SearchBudget`, which tolerates both being set, a caller
+/// supplying both here almost certainly meant only one and the other is
+/// leftover from a prior override).
 fn run_tune_eval<I, W, A>(args: I, writer: &mut W, adapter: &A) -> i32
 where
     I: Iterator<Item = String>,
@@ -728,6 +732,7 @@ where
     let mut baseline_config: Option<String> = None;
     let mut game_config: Option<String> = None;
     let mut max_iterations: Option<usize> = None;
+    let mut max_time_ms: Option<u64> = None;
     let mut trace_path: Option<String> = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -738,6 +743,7 @@ where
             "--baseline-config" => baseline_config = args.next(),
             "--game-config" => game_config = args.next(),
             "--max-iterations" => max_iterations = args.next().and_then(|s| s.parse().ok()),
+            "--max-time-ms" => max_time_ms = args.next().and_then(|s| s.parse().ok()),
             "--trace-path" => trace_path = args.next(),
             _ => {}
         }
@@ -754,6 +760,11 @@ where
         if baseline.is_some() && baseline_config.is_some() {
             return Err(HostError::bad_request(
                 "--baseline and --baseline-config are mutually exclusive",
+            ));
+        }
+        if max_iterations.is_some() && max_time_ms.is_some() {
+            return Err(HostError::bad_request(
+                "--max-iterations and --max-time-ms are mutually exclusive",
             ));
         }
         let baseline_config = baseline_config
@@ -778,7 +789,7 @@ where
             baseline_config,
             game_config,
             max_iterations,
-            None,
+            max_time_ms,
             trace_path.map(std::path::PathBuf::from),
             &mut on_game,
         )
@@ -2218,6 +2229,28 @@ mod tests {
                 "strong",
                 "--baseline-config",
                 "{}",
+            ],
+            "",
+        );
+        assert_eq!(code, 1);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_run_cli_tune_eval_rejects_both_max_iterations_and_max_time_ms() {
+        let (out, code) = run_cli_capture_with(
+            TunableFakeAdapter,
+            &[
+                "tune",
+                "eval",
+                "--config",
+                "{}",
+                "--rounds",
+                "1",
+                "--max-iterations",
+                "100",
+                "--max-time-ms",
+                "1000",
             ],
             "",
         );

@@ -115,6 +115,32 @@ describe("LaunchForm / smac3", () => {
     expect(overridesWithBudget).toContain("target.max_iterations=1000");
   });
 
+  it("omits target.max_time_ms when blank, includes it when the field is set, and disables the other budget field", () => {
+    const seen: unknown[] = [];
+    const { store } = createTestStore({
+      launchRun: (_kind, _game, config) => {
+        seen.push(config);
+        return createMockBenchEnv().launchRun(_kind, _game, config);
+      },
+    });
+    render(() => <LaunchForm store={store} />);
+
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.click(screen.getByText("Launch"));
+
+    const overrides = (seen[0] as { overrides: string[] }).overrides;
+    expect(overrides.some((o) => o.startsWith("target.max_time_ms"))).toBe(false);
+
+    seen.length = 0;
+    fireEvent.input(screen.getByLabelText(/Time budget \(ms\)/), { target: { value: "5000" } });
+    expect(screen.getByLabelText(/Iteration budget/)).toBeDisabled();
+
+    fireEvent.click(screen.getByText("Launch"));
+    const overridesWithBudget = (seen[0] as { overrides: string[] }).overrides;
+    expect(overridesWithBudget).toContain("target.max_time_ms=5000");
+    expect(overridesWithBudget.some((o) => o.startsWith("target.max_iterations"))).toBe(false);
+  });
+
   it("submitting builds --override argv from the budget fields, not a strategies list", () => {
     const seen: { kind: string; game: string; config?: unknown }[] = [];
     const { store } = createTestStore({
