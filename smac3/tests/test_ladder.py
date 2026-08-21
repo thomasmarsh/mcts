@@ -63,9 +63,10 @@ def test_train_dispatches_named_baseline_as_dash_dash_baseline(monkeypatch, tmp_
         target=TargetConfig(binary=binary, rounds=4, baselines=["strong"]),
     )
     train = make_target(cfg)
-    cost = train({"family": "ucb1"}, instance="strong", seed=0)
+    cost, extra = train({"family": "ucb1"}, instance="strong", seed=0)
 
     assert cost == pytest.approx(0.25)
+    assert extra == {}
     assert "--baseline" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--baseline") + 1] == "strong"
     assert "--baseline-config" not in captured["cmd"]
@@ -84,9 +85,62 @@ def test_train_serializes_numpy_scalar_config_values(monkeypatch, tmp_path: Path
     monkeypatch.setattr(subprocess, "run", fake_run)
     train = make_target(SearchConfig(target=TargetConfig(binary=binary)))
 
-    assert train({"mcgs": np.bool_(True)}, seed=0) == pytest.approx(0.25)
+    cost, _ = train({"mcgs": np.bool_(True)}, seed=0)
+    assert cost == pytest.approx(0.25)
     sent = json.loads(captured["cmd"][captured["cmd"].index("--config") + 1])
     assert sent == {"mcgs": True}
+
+
+def test_train_tags_timeout_as_status_extra(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 600))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    cost, extra = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(1.0)
+    assert extra == {"status": "timeout"}
+
+
+def test_train_tags_nonzero_exit_as_status_crashed(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    class _FakeFailedProcess:
+        stdout = ""
+        stderr = "boom"
+        returncode = 1
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: _FakeFailedProcess())
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    cost, extra = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(1.0)
+    assert extra == {"status": "crashed"}
+
+
+def test_train_tags_unparseable_output_as_status_crashed(monkeypatch, tmp_path: Path):
+    binary = tmp_path / "game-fake"
+    binary.touch()
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kwargs: _FakeCompletedProcess("not json")
+    )
+
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
+    train = make_target(cfg)
+    cost, extra = train({"family": "ucb1"}, seed=0)
+
+    assert cost == pytest.approx(1.0)
+    assert extra == {"status": "crashed"}
 
 
 def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(
@@ -114,7 +168,7 @@ def test_train_dispatches_ladder_instance_as_dash_dash_baseline_config(
         ),
     )
     train = make_target(cfg)
-    cost = train({"family": "ucb1"}, instance="ladder1", seed=0)
+    cost, _ = train({"family": "ucb1"}, instance="ladder1", seed=0)
 
     assert cost == pytest.approx(0.1)
     assert "--baseline-config" in captured["cmd"]
@@ -152,7 +206,7 @@ def test_train_dispatches_floor_baseline_as_dash_dash_baseline_config(
         target=TargetConfig(binary=binary, rounds=4, baselines=[floor_id]),
     )
     train = make_target(cfg)
-    cost = train({"family": "ucb1"}, instance=floor_id, seed=0)
+    cost, _ = train({"family": "ucb1"}, instance=floor_id, seed=0)
 
     assert cost == pytest.approx(0.1)
     assert "--baseline-config" in captured["cmd"]
@@ -179,7 +233,7 @@ def test_train_forwards_game_config_when_set(monkeypatch, tmp_path: Path):
         target=TargetConfig(binary=binary, rounds=4, game_config=game_config),
     )
     train = make_target(cfg)
-    cost = train({"family": "ucb1"}, seed=0)
+    cost, _ = train({"family": "ucb1"}, seed=0)
 
     assert cost == pytest.approx(0.5)
     assert "--game-config" in captured["cmd"]
@@ -223,7 +277,7 @@ def test_train_forwards_max_iterations_when_set(monkeypatch, tmp_path: Path):
         target=TargetConfig(binary=binary, rounds=4, max_iterations=1000),
     )
     train = make_target(cfg)
-    cost = train({"family": "ucb1"}, seed=0)
+    cost, _ = train({"family": "ucb1"}, seed=0)
 
     assert cost == pytest.approx(0.5)
     assert "--max-iterations" in captured["cmd"]
@@ -264,7 +318,7 @@ def test_train_forwards_trace_path_when_set(monkeypatch, tmp_path: Path):
     cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
     trace_path = str(tmp_path / "moves.jsonl")
     train = make_target(cfg, trace_path=trace_path)
-    cost = train({"family": "ucb1"}, seed=0)
+    cost, _ = train({"family": "ucb1"}, seed=0)
 
     assert cost == pytest.approx(0.5)
     assert "--trace-path" in captured["cmd"]
