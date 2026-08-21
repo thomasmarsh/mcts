@@ -15,12 +15,8 @@
         "id": "strong",
         "label": "strong",
         "description": "",
-        "params": {
-            "family": "ucb1",
-            "c": 1.4142135623730951,
-            "q_init": "Loss",
-            "final_action": "robust_child"
-        },
-        "max_iterations": 5000
+        "params": 
+        {"c":2.6471732687205,"epsilon":0.1946547962725,"family":"ucb1_dm_nst","final_action":"max_avg","mcgs":false,"nst_backoff_threshold":17,"q_init":"Parent"},
+        "max_iterations": 500
     }
 ]
