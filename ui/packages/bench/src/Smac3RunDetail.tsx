@@ -374,6 +374,17 @@ export const Smac3RunDetail: Component<{
 
   const [helpOpen, setHelpOpen] = createSignal(false);
 
+  // `tuner.parameters` only lists an `"mcgs"` entry when this game's own
+  // adapter called `strategy_tuner_info_with_mcgs(.., true)` -- which itself
+  // only ever happens for a game with a sound `Game::zobrist_hash` (see that
+  // function's doc comment in mcts-tune/src/lib.rs). So its presence here is
+  // exactly the per-game `use_transpositions` capability flag every preset
+  // for this game must carry, independent of whether any *particular*
+  // trial's `mcgs` sample happened to be true or false.
+  const supportsTranspositions = createMemo(
+    () => props.tuner?.parameters.some((p) => p.name === "mcgs") ?? false,
+  );
+
   const [copied, setCopied] = createSignal(false);
   async function copyIncumbentConfig(): Promise<void> {
     const incumbent = props.incumbent;
@@ -381,6 +392,33 @@ export const Smac3RunDetail: Component<{
     await navigator.clipboard.writeText(JSON.stringify(incumbent.config));
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  }
+
+  const [copiedPreset, setCopiedPreset] = createSignal(false);
+  async function copyIncumbentAsPreset(): Promise<void> {
+    const incumbent = props.incumbent;
+    if (!incumbent) return;
+    // A ready-to-paste `presets.json` entry -- not just `incumbent.config`
+    // (that's `params`-shaped only, the right payload for `--baseline-config`
+    // above but *not* a valid preset on its own: `PresetSpec::use_transpositions`
+    // is a sibling field of `params`, never derived from `params.mcgs`, so a
+    // config with `mcgs: true` pasted in as `params` alone is silently
+    // rejected at AI-move time -- see `mcts_tune::resolve_graph_search`).
+    // `id`/`label`/`description` are left as placeholders to edit, and no
+    // budget field is set -- nothing here reports what budget this run's
+    // candidate searched with, and `PresetSpec`'s own `MAX_ITER` fallback
+    // (see `SearchBudget::iteration_limit`) is a safe default until the
+    // operator picks one deliberately.
+    const entry = {
+      id: "tuned",
+      label: "Tuned",
+      description: "SMAC3 tuned.",
+      params: incumbent.config,
+      use_transpositions: supportsTranspositions(),
+    };
+    await navigator.clipboard.writeText(JSON.stringify(entry, null, 4));
+    setCopiedPreset(true);
+    setTimeout(() => setCopiedPreset(false), 1500);
   }
 
   return (
@@ -396,6 +434,13 @@ export const Smac3RunDetail: Component<{
               title="Copy this config for a later run's --baseline-config"
             >
               {copied() ? "Copied!" : "Copy as baseline config"}
+            </button>
+            <button
+              id="smac3-copy-incumbent-preset-btn"
+              onClick={copyIncumbentAsPreset}
+              title="Copy a ready-to-paste presets.json entry (params plus the use_transpositions this game requires)"
+            >
+              {copiedPreset() ? "Copied!" : "Copy as preset"}
             </button>
           </div>
         )}
