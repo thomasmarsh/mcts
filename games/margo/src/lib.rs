@@ -31,6 +31,8 @@
 //! has no legal placement, and the winner is whoever has more pieces on the
 //! board (a draw if equal).
 
+mod heuristic;
+
 use std::fmt;
 
 use bitboard::{Board, Dyn};
@@ -38,6 +40,8 @@ use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;
 use pyramid::{Pyramid, PyramidD4, TouchingAdjacency};
 use serde::{Deserialize, Serialize};
+
+pub use heuristic::Heuristic;
 
 /// Smallest supported base width -- "Spargo", the size a physical Shibumi
 /// ball set (4x4x4) plays Margo on.
