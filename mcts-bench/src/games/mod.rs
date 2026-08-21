@@ -134,6 +134,7 @@ const GAME_KINDS: &[(&str, &str)] = &[
     ("druid", "game-druid"),
     ("gonnect", "game-gonnect"),
     ("knightthrough", "game-knightthrough"),
+    ("margo", "game-margo"),
     ("nim", "game-nim"),
     ("null", "game-null"),
     ("othello", "game-othello"),
