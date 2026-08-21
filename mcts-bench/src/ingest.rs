@@ -185,10 +185,15 @@ fn process_registry(conn: &Connection, registry_path: &Path) -> Result<(), Inges
                         )?;
                     }
                 } else {
+                    let status = if exit_code == Some(0) {
+                        "completed"
+                    } else {
+                        "crashed"
+                    };
                     conn.execute(
-                        "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = 'completed' \
-                         WHERE run_id = ?3 AND status = 'running'",
-                        params![ended_at, exit_code, run_id],
+                        "UPDATE runs SET ended_at = ?1, exit_code = ?2, status = ?3 \
+                         WHERE run_id = ?4 AND status = 'running'",
+                        params![ended_at, exit_code, status, run_id],
                     )?;
                 }
             }
@@ -698,6 +703,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(identity, ("run-2".into(), None, 1, "run-2".into()));
+    }
+
+    #[test]
+    fn test_registry_start_stop_marks_smac3_crashed_on_nonzero_exit() {
+        // A smac3 (or other non-experiment) run whose process exits nonzero
+        // -- e.g. it dies during SMAC's preflight check before spawning any
+        // trials -- must land as 'crashed', not silently as 'completed'.
+        // Only the 'experiment' kind used to check exit_code here; every
+        // other kind unconditionally marked itself 'completed'.
+        let ev_start = start_event(
+            "run-crash",
+            "smac3",
+            "traffic-lights",
+            99996,
+            "/tmp/nope4/log.jsonl",
+        );
+        let ev_stop = stop_event("run-crash", Some(1));
+        let fix = TestFixture::new(&[ev_start, ev_stop]);
+
+        ingest_once(&fix.db, &fix.bench_runs).unwrap();
+
+        assert_eq!(
+            fix.query_string("SELECT status FROM runs WHERE run_id = 'run-crash'"),
+            "crashed"
+        );
+        let exit_code: i64 = fix
+            .db
+            .query_row(
+                "SELECT exit_code FROM runs WHERE run_id = 'run-crash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exit_code, 1);
     }
 
     #[test]
