@@ -239,9 +239,10 @@ impl GameAdapter for BttAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
+        let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info(&["strong"], TUNE_EVAL_ROUNDS)
+            ..mcts_tune::strategy_tuner_info(&baselines, TUNE_EVAL_ROUNDS)
         })
     }
 
@@ -250,7 +251,7 @@ impl GameAdapter for BttAdapter {
         params: Value,
         rounds: u32,
         seed: Option<u64>,
-        _baseline: Option<String>,
+        baseline: Option<String>,
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
@@ -263,10 +264,10 @@ impl GameAdapter for BttAdapter {
         // doc comment.
         mcts_tune::generic_tune_eval::<BiddingTicTacToe>(
             presets(),
-            "strong",
             "games/bid_ttt/presets.json",
             false,
             PRESET_SEED,
+            baseline,
             params,
             rounds,
             seed,

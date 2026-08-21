@@ -292,9 +292,10 @@ impl GameAdapter for AtarigoAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
+        let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info(&["strong"], TUNE_EVAL_ROUNDS)
+            ..mcts_tune::strategy_tuner_info(&baselines, TUNE_EVAL_ROUNDS)
         })
     }
 
@@ -303,7 +304,7 @@ impl GameAdapter for AtarigoAdapter {
         params: Value,
         rounds: u32,
         seed: Option<u64>,
-        _baseline: Option<String>,
+        baseline: Option<String>,
         baseline_config: Option<Value>,
         game_config: Option<Value>,
         max_iterations: Option<usize>,
@@ -355,6 +356,9 @@ impl GameAdapter for AtarigoAdapter {
                 on_game,
             )?
         } else {
+            let baseline_id = baseline
+                .or_else(|| presets().ai_preset_ids().first().map(|s| s.to_string()))
+                .expect("games/atarigo/presets.json must declare at least one preset");
             mcts_tune::strategy_tune_eval(
                 &params,
                 rounds,
@@ -366,9 +370,9 @@ impl GameAdapter for AtarigoAdapter {
                     ..Default::default()
                 },
                 move || {
-                    presets()
-                        .build::<AtariGo>("strong", PRESET_SEED)
-                        .expect("games/atarigo/presets.json's \"strong\" preset must build")
+                    presets().build::<AtariGo>(&baseline_id, PRESET_SEED).unwrap_or_else(|e| {
+                        panic!("games/atarigo/presets.json's {baseline_id:?} preset must build: {e}")
+                    })
                 },
                 initial_state,
                 trace_path.as_deref(),

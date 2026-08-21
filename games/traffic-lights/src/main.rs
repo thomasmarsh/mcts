@@ -250,9 +250,10 @@ impl GameAdapter for TlAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
+        let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info_with_mcgs(&["strong"], TUNE_EVAL_ROUNDS, true)
+            ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
         })
     }
 
@@ -261,7 +262,7 @@ impl GameAdapter for TlAdapter {
         params: Value,
         rounds: u32,
         seed: Option<u64>,
-        _baseline: Option<String>,
+        baseline: Option<String>,
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
@@ -275,10 +276,10 @@ impl GameAdapter for TlAdapter {
         // `generic_tune_eval`'s doc comment).
         mcts_tune::generic_tune_eval::<TrafficLights>(
             presets(),
-            "strong",
             "games/traffic-lights/presets.json",
             true,
             PRESET_SEED,
+            baseline,
             params,
             rounds,
             seed,

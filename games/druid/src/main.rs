@@ -413,17 +413,15 @@ impl GameAdapter for DruidAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        // "master" is the same strategy shape as "strong", just with a
-        // longer thinking budget -- a genuine second, harder instance a
-        // candidate can still be ranked against once it's saturated 100%
-        // win rate against "strong" alone.
+        // Every preset this game's `presets.json` declares is a valid SMAC3
+        // baseline instance (e.g. "master" is the same strategy shape as
+        // "strong", just with a longer thinking budget -- a genuine second,
+        // harder instance a candidate can still be ranked against once it's
+        // saturated 100% win rate against an easier one).
+        let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info_with_mcgs(
-                &["strong", "master"],
-                TUNE_EVAL_ROUNDS,
-                true,
-            )
+            ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
         })
     }
 
@@ -476,7 +474,12 @@ impl GameAdapter for DruidAdapter {
                 on_game,
             )?
         } else {
-            let baseline = baseline.as_deref().unwrap_or("strong");
+            let default_baseline = presets()
+                .ai_preset_ids()
+                .first()
+                .map(|s| s.to_string())
+                .expect("games/druid/presets.json must declare at least one preset");
+            let baseline = baseline.as_deref().unwrap_or(&default_baseline);
             let cfg = presets()
                 .preset(baseline)
                 .map_err(|_| HostError::bad_request(format!("unknown baseline: {baseline}")))?;
@@ -703,13 +706,15 @@ mod tests {
     }
 
     #[test]
-    fn tuner_lists_strong_and_master_as_baselines() {
+    fn tuner_lists_every_preset_as_a_baseline() {
         let info = DruidAdapter::default()
             .tuner()
             .expect("druid supports tuning");
-        assert_eq!(
-            info.baselines,
-            vec!["strong".to_string(), "master".to_string()]
-        );
+        let expected: Vec<String> = presets()
+            .ai_preset_ids()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(info.baselines, expected);
     }
 }

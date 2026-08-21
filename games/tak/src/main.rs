@@ -400,9 +400,10 @@ impl GameAdapter for TakAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
+        let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info_with_mcgs(&["strong"], TUNE_EVAL_ROUNDS, true)
+            ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
         })
     }
 
@@ -411,7 +412,7 @@ impl GameAdapter for TakAdapter {
         params: Value,
         rounds: u32,
         seed: Option<u64>,
-        _baseline: Option<String>,
+        baseline: Option<String>,
         baseline_config: Option<Value>,
         _game_config: Option<Value>,
         max_iterations: Option<usize>,
@@ -425,10 +426,10 @@ impl GameAdapter for TakAdapter {
         // comment).
         mcts_tune::generic_tune_eval::<Tak<5>>(
             presets(),
-            "strong",
             "games/tak/presets.json",
             true,
             PRESET_SEED,
+            baseline,
             params,
             rounds,
             seed,
