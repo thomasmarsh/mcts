@@ -10,8 +10,12 @@
 //!
 //! A piece may be placed on any empty, supported cell (`Pyramid::can_place`).
 //! Capture is Go-style over the *visible* (non-buried, non-zombie)
-//! touching-adjacency graph: after a placement, any enemy group without a
-//! liberty is removed -- except a member pinned by a capturing-colour piece
+//! touching-adjacency graph, but a liberty is specifically an empty
+//! *board-level* (level 0) cell reachable through that graph -- an empty
+//! higher-level stacking point, even a fully-supported one, gives no group a
+//! liberty (Margo Basics, "Freedoms only exist on the board level"). After a
+//! placement, any enemy group without a liberty is removed -- except a
+//! member pinned by a capturing-colour piece
 //! resting directly on top of it, which survives in place as a "zombie"
 //! (still occupying its cell and still counted for scoring, but permanently
 //! excluded from future connectivity, like a buried piece). Suicide is
@@ -59,6 +63,20 @@ type GoBoard = Board<[u64; 7], Dyn, Dyn>;
 
 fn go_board(cells: usize) -> GoBoard {
     GoBoard::new(Dyn(1), Dyn(cells))
+}
+
+/// The level-0 (board-level) cells of a base-`n` pyramid, as a [`GoBoard`]
+/// mask -- "Freedoms only exist on the board level" (Margo Basics, Groups):
+/// an empty higher-level stacking point, even a fully-supported one, gives
+/// no group a liberty, only an empty *board hole* does. Level 0 is always
+/// flat indices `[0, n * n)` (`pyramid::level_offset(n, 0) == 0`, and level
+/// 0's side is `n` -- see `pyramid::level_side`).
+fn ground_mask(n: usize, cells: usize) -> GoBoard {
+    let mut mask = go_board(cells);
+    for index in 0..(n * n) {
+        mask.set_index(index);
+    }
+    mask
 }
 
 /// The visible (non-buried, non-zombie) subset of `black`/`white` occupancy,
@@ -117,13 +135,14 @@ fn resolve_captures(
     opp: GoBoard,
     index: usize,
     adjacency: &TouchingAdjacency,
+    ground: GoBoard,
 ) -> Option<GoBoard> {
     debug_assert!(own.get_index(index));
     debug_assert!(!opp.get_index(index));
     let occupied = own | opp;
     let group = bitboard::table_flood(own, adjacency, index);
     let group_adjacent = bitboard::table_neighbor_mask(group, adjacency);
-    let empty_adjacent = !occupied & group_adjacent;
+    let empty_adjacent = !occupied & group_adjacent & ground;
     let safe = !empty_adjacent.none_set();
 
     let occupied_adjacent = occupied & group_adjacent;
@@ -138,7 +157,7 @@ fn resolve_captures(
             let enemy_group = bitboard::table_flood(opp, adjacency, point);
             seen |= enemy_group;
             let enemy_adjacent = bitboard::table_neighbor_mask(enemy_group, adjacency);
-            let enemy_empty_adjacent = !occupied & enemy_adjacent;
+            let enemy_empty_adjacent = !occupied & enemy_adjacent & ground;
             if enemy_empty_adjacent.none_set() {
                 will_capture |= enemy_group;
             }
@@ -612,7 +631,8 @@ impl State {
             // capture anything -- so it's trivially legal with no captures.
             own_board.empty_like()
         } else {
-            resolve_captures(own_board, opp_board, index, adjacency)?
+            let ground = ground_mask(self.occupied.n(), self.occupied.total_cells());
+            resolve_captures(own_board, opp_board, index, adjacency, ground)?
         };
 
         let (new_occupied, new_black, new_zombie) =
@@ -1140,14 +1160,28 @@ mod tests {
         assert_eq!(next.previous, Some(pre_move));
     }
 
+    /// Black fills every cell below the apex -- levels 0 through 2 -- except
+    /// one level-0 hole, so the whole black mass is one group with a real
+    /// board-level liberty (the hole) and stays alive. White's apex
+    /// placement only touches that black mass, gains no liberty of its own,
+    /// and can't capture it (the hole keeps black's liberty open), so it
+    /// must be rejected as suicide.
     #[test]
     fn suicide_placement_rejected() {
         let mut state = State::new(MIN_N);
-        let supporters = [(0, 0, 2), (1, 0, 2), (0, 1, 2), (1, 1, 2)];
-        for &(col, row, level) in &supporters {
-            let idx = state.occupied.index(col, row, level);
-            state.occupied.set_index(idx);
-            state.black.set_index(idx);
+        let hole = state.occupied.index(3, 3, 0);
+        for level in 0..3 {
+            let side = state.occupied.level_side(level);
+            for row in 0..side {
+                for col in 0..side {
+                    let idx = state.occupied.index(col, row, level);
+                    if idx == hole {
+                        continue;
+                    }
+                    state.occupied.set_index(idx);
+                    state.black.set_index(idx);
+                }
+            }
         }
         state.turn = Player::White;
 
@@ -1194,7 +1228,8 @@ mod tests {
         }
 
         let adjacency = TouchingAdjacency::new(n);
-        let captured = resolve_captures(own, opp, apex, &adjacency)
+        let ground = ground_mask(n, cells);
+        let captured = resolve_captures(own, opp, apex, &adjacency, ground)
             .expect("capturing placement must be legal");
         for i in 0..cells {
             if i != apex {
