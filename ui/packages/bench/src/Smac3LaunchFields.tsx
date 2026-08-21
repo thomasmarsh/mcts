@@ -109,13 +109,15 @@ export const Smac3LaunchFields: Component<{
   onGameConfigChange: (v: string) => void;
   /** Parse error for `gameConfig`, or `null` when it's valid JSON. */
   gameConfigError: string | null;
-  /** Which opponent a fresh run's root rung starts against -- one of the
-   * selected game's own named presets (`tuner().baselines`) or a floor
-   * family (`FLOOR_BASELINES`). Forwarded as a `target.baselines=[...]`
-   * override at submit time (see `LaunchForm.tsx`'s `buildSmac3Overrides`)
-   * rather than defaulting to the tuner's full baseline list. */
-  startingBaseline: string;
-  onStartingBaselineChange: (v: string) => void;
+  /** Panel of opponents a fresh run's root rung starts against -- any subset
+   * of the selected game's own named presets (`tuner().baselines`) and/or a
+   * floor family (`FLOOR_BASELINES`). SMAC3 evaluates every trial against
+   * all selected instances and averages cost across them -- a single-entry
+   * panel behaves exactly as a single-baseline selector would. Forwarded as
+   * a `target.baselines=[...]` override at submit time (see
+   * `LaunchForm.tsx`'s `buildSmac3Overrides`). */
+  startingBaselines: Set<string>;
+  onToggleStartingBaseline: (v: string) => void;
   /** Whether this launch opts into the automated ladder driver
    * (`server/src/bench/mod.rs`'s `plan_ladder_advances`) -- when on, the
    * run's `config.ladder = {max_rungs, saturation_threshold}` is set, and
@@ -171,17 +173,35 @@ export const Smac3LaunchFields: Component<{
                   actually starts against -- that's the "Starting baseline"
                   selector below. Listing every named preset here just
                   documents what's available to pick from. */}
-              <label>
-                Starting baseline
-                <select
-                  value={props.startingBaseline}
-                  onChange={(e) => props.onStartingBaselineChange(e.currentTarget.value)}
-                  disabled={props.disabled}
-                >
-                  <For each={tuner().baselines}>{(b) => <option value={b}>{b}</option>}</For>
-                  <For each={FLOOR_BASELINES}>{(b) => <option value={b}>{b} (floor)</option>}</For>
-                </select>
-              </label>
+              <fieldset id="smac3-baseline-panel">
+                <legend>Starting baseline panel (select at least one)</legend>
+                <For each={tuner().baselines}>
+                  {(b) => (
+                    <label class="smac3-baseline-option">
+                      <input
+                        type="checkbox"
+                        checked={props.startingBaselines.has(b)}
+                        onChange={() => props.onToggleStartingBaseline(b)}
+                        disabled={props.disabled}
+                      />
+                      {b}
+                    </label>
+                  )}
+                </For>
+                <For each={FLOOR_BASELINES}>
+                  {(b) => (
+                    <label class="smac3-baseline-option">
+                      <input
+                        type="checkbox"
+                        checked={props.startingBaselines.has(b)}
+                        onChange={() => props.onToggleStartingBaseline(b)}
+                        disabled={props.disabled}
+                      />
+                      {b} (floor)
+                    </label>
+                  )}
+                </For>
+              </fieldset>
 
               <table id="smac3-param-table">
                 <thead>

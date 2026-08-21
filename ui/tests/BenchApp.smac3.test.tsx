@@ -138,21 +138,21 @@ describe("LaunchForm / smac3", () => {
         kind: "smac3",
         game: "traffic-lights",
         config: {
-          // Includes `target.baselines=['flat_mc']` -- the default
-          // starting baseline (the floor rung) differs from traffic-lights'
-          // own default named preset ("strong"), so the override is needed.
+          // Includes `target.baselines=['strong']` -- the default starting
+          // panel is every named preset the tuner reports, and
+          // traffic-lights' fixture ships exactly one ("strong").
           overrides: [
             "optimizer.n_trials=25",
             "optimizer.deterministic=True",
             "optimizer.seed=42",
-            "target.baselines=['flat_mc']",
+            "target.baselines=['strong']",
           ],
         },
       },
     ]);
   });
 
-  it("sends target.baselines when the starting baseline is a named preset", () => {
+  it("sends every checked entry in the starting-baseline panel", () => {
     const seen: unknown[] = [];
     const { store } = createTestStore({
       launchRun: (_kind, _game, config) => {
@@ -163,11 +163,19 @@ describe("LaunchForm / smac3", () => {
     render(() => <LaunchForm store={store} />);
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
-    fireEvent.change(screen.getByLabelText("Starting baseline"), { target: { value: "strong" } });
+    // Switch to druid, whose fixture ships two named presets ("strong",
+    // "master") -- both start checked (default panel = all presets).
+    fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides).toContain("target.baselines=['strong']");
+    expect(overrides).toContain("target.baselines=['strong', 'master']");
+
+    seen.length = 0;
+    fireEvent.click(screen.getByLabelText("master"));
+    fireEvent.click(screen.getByText("Launch"));
+    const overridesAfterUncheck = (seen[0] as { overrides: string[] }).overrides;
+    expect(overridesAfterUncheck).toContain("target.baselines=['strong']");
   });
 
   it("sets config.ladder only when the ladder checkbox is enabled", () => {

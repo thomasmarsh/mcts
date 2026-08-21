@@ -8,12 +8,11 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
-import { FLOOR_BASELINES, isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
+import { isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
 
 const SMAC3_KIND = "smac3";
 const DEFAULT_SMAC3_N_TRIALS = 100;
 const DEFAULT_SMAC3_SEED = 42;
-const DEFAULT_SMAC3_STARTING_BASELINE = FLOOR_BASELINES[0]; // "flat_mc"
 const DEFAULT_SMAC3_MAX_RUNGS = 5;
 const DEFAULT_SMAC3_SATURATION_THRESHOLD = 0.0;
 
@@ -23,9 +22,11 @@ const DEFAULT_SMAC3_SATURATION_THRESHOLD = 0.0;
  * matching `smac3/config/default.yaml`'s `null -> cpu_count // 2` default.
  * `rounds` is likewise omitted when it matches the tuner's own
  * `eval_rounds` default, so a run launched without touching the field
- * produces the same argv as before this field existed. `startingBaseline`
- * is always forwarded as `target.baselines=[...]`; tuner metadata lists
- * available presets but deliberately supplies no runtime default.
+ * produces the same argv as before this field existed. `startingBaselines`
+ * is always forwarded as `target.baselines=[...]` (one entry per selected
+ * panel member -- SMAC3 evaluates every trial against all of them and
+ * averages cost across instances); tuner metadata lists available presets
+ * but deliberately supplies no runtime default.
  * `smac3_cli`'s `_apply_overrides`
  * parses the value with `ast.literal_eval`, so a Python list literal
  * round-trips as-is (see `smac3/src/smac3_cli/__main__.py`). */
@@ -36,7 +37,7 @@ function buildSmac3Overrides(opts: {
   seed: number;
   rounds: number;
   defaultRounds: number | null;
-  startingBaseline: string;
+  startingBaselines: Set<string>;
   /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
    * `maxIterations` prop doc comment. */
   maxIterations: string;
@@ -53,8 +54,11 @@ function buildSmac3Overrides(opts: {
   }
   const maxIterations = opts.maxIterations.trim();
   if (maxIterations !== "") overrides.push(`target.max_iterations=${maxIterations}`);
-  if (opts.startingBaseline !== "") {
-    overrides.push(`target.baselines=['${opts.startingBaseline}']`);
+  if (opts.startingBaselines.size > 0) {
+    const items = Array.from(opts.startingBaselines)
+      .map((b) => `'${b}'`)
+      .join(", ");
+    overrides.push(`target.baselines=[${items}]`);
   }
   return overrides;
 }
@@ -102,10 +106,13 @@ export const LaunchForm: Component<{
   // rendered by Smac3LaunchFields) when the selected game's tuner reports a
   // non-empty `game_config`.
   const [smac3GameConfig, setSmac3GameConfig] = createSignal("");
-  // Which opponent a fresh run's root rung starts against, and whether it
-  // opts into the automated ladder driver -- see Smac3LaunchFields.tsx's
-  // prop doc comments and buildSmac3Overrides above.
-  const [smac3StartingBaseline, setSmac3StartingBaseline] = createSignal(DEFAULT_SMAC3_STARTING_BASELINE);
+  // Which opponent panel a fresh run's root rung starts against, and
+  // whether it opts into the automated ladder driver -- see
+  // Smac3LaunchFields.tsx's prop doc comments and buildSmac3Overrides
+  // above. Defaults to every named preset the selected game's tuner
+  // reports (see `defaultStartingBaselines` below), matching the old
+  // single-select behavior when a game has exactly one preset.
+  const [smac3StartingBaselines, setSmac3StartingBaselines] = createSignal<Set<string>>(new Set<string>());
   const [smac3LadderEnabled, setSmac3LadderEnabled] = createSignal(false);
   const [smac3MaxRungs, setSmac3MaxRungs] = createSignal(DEFAULT_SMAC3_MAX_RUNGS);
   const [smac3SaturationThreshold, setSmac3SaturationThreshold] = createSignal(
@@ -136,6 +143,15 @@ export const LaunchForm: Component<{
     return JSON.stringify(tuner.game_config, null, 2);
   }
 
+  // Default starting-baseline panel for a tuner: every named preset it
+  // reports, so a game shipping only "strong" still launches against that
+  // one instance (old single-select behavior) while a game with several
+  // presets (the common case -- see `games/*/presets.json`) starts with
+  // the full bracket already selected.
+  function defaultStartingBaselines(tuner: { baselines: string[] } | undefined): Set<string> {
+    return new Set(tuner?.baselines ?? []);
+  }
+
   // Reset game and strategies when kind changes.
   function onKindChange(kind: string): void {
     setSelectedKind(kind);
@@ -149,7 +165,7 @@ export const LaunchForm: Component<{
         setSelectedGame(first.game);
         setSmac3Rounds(first.tuner.eval_rounds);
         setSmac3GameConfig(gameConfigTextFor(first.tuner));
-        setSmac3StartingBaseline(DEFAULT_SMAC3_STARTING_BASELINE);
+        setSmac3StartingBaselines(defaultStartingBaselines(first.tuner));
       }
       return;
     }
@@ -173,7 +189,16 @@ export const LaunchForm: Component<{
     const tuner = smac3Games().find((g) => g.game === game)?.tuner;
     if (tuner) setSmac3Rounds(tuner.eval_rounds);
     setSmac3GameConfig(gameConfigTextFor(tuner));
-    setSmac3StartingBaseline(DEFAULT_SMAC3_STARTING_BASELINE);
+    setSmac3StartingBaselines(defaultStartingBaselines(tuner));
+  }
+
+  function toggleStartingBaseline(id: string): void {
+    setSmac3StartingBaselines((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function toggleStrategy(id: string): void {
@@ -200,7 +225,9 @@ export const LaunchForm: Component<{
 
   function canLaunch(): boolean {
     if (busy() || selectedKind() === "" || selectedGame() === "") return false;
-    if (isSmac3()) return smac3NTrials() >= 1 && smac3GameConfigError() === null;
+    if (isSmac3()) {
+      return smac3NTrials() >= 1 && smac3GameConfigError() === null && smac3StartingBaselines().size > 0;
+    }
     return selectedStrategies().size >= 2 && rounds() >= 1;
   }
 
@@ -217,7 +244,7 @@ export const LaunchForm: Component<{
             seed: smac3Seed(),
             rounds: smac3Rounds(),
             defaultRounds: tuner?.eval_rounds ?? null,
-            startingBaseline: smac3StartingBaseline(),
+            startingBaselines: smac3StartingBaselines(),
             maxIterations: smac3MaxIterations(),
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)
@@ -367,8 +394,8 @@ export const LaunchForm: Component<{
               gameConfig={smac3GameConfig()}
               onGameConfigChange={setSmac3GameConfig}
               gameConfigError={smac3GameConfigError()}
-              startingBaseline={smac3StartingBaseline()}
-              onStartingBaselineChange={setSmac3StartingBaseline}
+              startingBaselines={smac3StartingBaselines()}
+              onToggleStartingBaseline={toggleStartingBaseline}
               ladderEnabled={smac3LadderEnabled()}
               onLadderEnabledChange={setSmac3LadderEnabled}
               maxRungs={smac3MaxRungs()}
