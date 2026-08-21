@@ -91,6 +91,15 @@ class TargetConfig:
     # (`mcts-tune`'s `MAX_ITER` constant). Settable via `--max-iterations
     # <n>` or this same key in YAML.
     max_iterations: int | None = None
+    # Per-*run* search-effort ceiling forwarded as `--max-time-ms` instead of
+    # `--max-iterations` -- the Rust side's `SearchBudget` accepts either a
+    # fixed iteration count or a wall-clock budget per move (never both:
+    # `game-host::run_tune_eval` rejects a command line that sets both
+    # flags). Same launch-time-not-searched rationale as `max_iterations`
+    # above. `None` (the default) means "use `max_iterations`, or the game
+    # binary's own historical default if that's also unset." Settable via
+    # `--override target.max_time_ms=<n>` or this same key in YAML.
+    max_time_ms: int | None = None
 
 
 @dataclass
@@ -236,6 +245,7 @@ class SearchConfig:
                 baselines=list(tgt.get("baselines", [])),
                 game_config=tgt.get("game_config"),
                 max_iterations=tgt.get("max_iterations"),
+                max_time_ms=tgt.get("max_time_ms"),
             ),
             parameters=params,
             conditions=conds,

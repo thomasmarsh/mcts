@@ -1,7 +1,11 @@
+use crate::game::Canonical;
 use crate::game::Game;
+use crate::game::Real;
 use crate::strategies::mcts::index::Id;
+use crate::strategies::mcts::node;
 use crate::strategies::mcts::search::shared::MAX_REROOT_DEPTH;
 use crate::strategies::mcts::search::TreeSearch;
+use crate::symmetry::incoming_sym;
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -12,51 +16,59 @@ where
     crate::strategies::mcts::SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {
-    /// Breadth-first search, bounded to `MAX_REROOT_DEPTH` plies, for a node
-    /// reachable from `start` (inclusive) whose position hash is
-    /// `target_hash`, alongside the sequence of actions that reaches it.
-    /// Matching by hash rather than by "the action played" means this works
-    /// uniformly regardless of how many plies happened since `start` was
-    /// last searched -- 0 (repeated call on an unchanged position), 1 (this
-    /// search's own move, e.g. `self_play`'s single-engine-both-sides
-    /// pattern), or more (this engine's own move plus one or more other
-    /// movers' replies, e.g. `round_robin`'s alternating instances) -- with
-    /// no need to change `Search::choose_action`'s signature to thread an
-    /// explicit played action through from the caller.
+    /// Breadth-first search, bounded to `MAX_REROOT_DEPTH` plies, for a real
+    /// game state reachable from `start_state` (inclusive) whose position
+    /// hash is `target_hash`. Tracks the real board state at every frontier
+    /// node directly, translating each edge through `crate::symmetry::
+    /// incoming_sym` as the walk descends -- a non-root node's `ChildArray`
+    /// actions are stored in *that node's own* canonical orientation (see
+    /// `node::real_action`'s doc comment), not the literal board's, so
+    /// applying `children.action(i)` straight to a real state (as this used
+    /// to) can silently target the wrong cell whenever a hash collision
+    /// happens to land on a differently-oriented state. See `reroot.rs`'s
+    /// `find_reachable_graph`, which this mirrors.
     ///
-    /// A hash match here is a *candidate*, not proof -- see
-    /// `reuse_or_reset`, which replays the returned action path against the
-    /// real state it knows `start` represents and verifies full equality
-    /// before trusting it.
+    /// A hash match is a *candidate*, not proof by itself -- `try_promote`
+    /// still compares the returned state against the caller's own real
+    /// `state` before trusting it, but that comparison is now checking a
+    /// genuinely-replayed real state rather than re-deriving one from a
+    /// canonical action path.
     ///
-    /// Returns `Some((None, start, vec![]))` if `start` itself already
+    /// Returns `Some((None, start, start_state))` if `start` itself already
     /// matches (0 plies). Returns `Some((Some(parent_id), matched_id,
-    /// path))` otherwise, where `parent_id` is `matched_id`'s immediate
-    /// parent on the path found (needed to read the edge whose accumulated
-    /// stats become the new root's `root_stats`) and `path` is the actions
-    /// from `start` to `matched_id` in order. `None` if nothing matches
-    /// within the depth bound.
-    fn find_reachable(&self, start: Id, target_hash: u64) -> Option<(Option<Id>, Id, Vec<G::A>)> {
+    /// replayed_state))` otherwise, where `parent_id` is `matched_id`'s
+    /// immediate parent on the path found (needed to read the edge whose
+    /// accumulated stats become the new root's `root_stats`) and
+    /// `replayed_state` is the real state reached by following that path.
+    /// `None` if nothing matches within the depth bound.
+    fn find_reachable(
+        &self,
+        start: Id,
+        start_state: &G::S,
+        target_hash: u64,
+    ) -> Option<(Option<Id>, Id, G::S)> {
         if self.index.get(start).hash == target_hash {
-            return Some((None, start, Vec::new()));
+            return Some((None, start, start_state.clone()));
         }
-        let mut frontier: Vec<(Id, Vec<G::A>)> = vec![(start, Vec::new())];
+        let canonicalizes = self.config.uses_transpositions();
+        let mut frontier: Vec<(Id, G::S)> = vec![(start, start_state.clone())];
         for _ in 0..MAX_REROOT_DEPTH {
             let mut next = Vec::new();
-            for (id, path) in frontier {
+            for (id, real_state) in frontier {
                 let node = self.index.get(id);
                 if !node.is_expanded() {
                     continue;
                 }
                 let children = node.children();
+                let sym = incoming_sym::<G>(canonicalizes, node.is_root(), Real(&real_state));
                 for i in 0..children.len() {
                     if let Some(child_id) = children.node_id(i) {
-                        let mut child_path = path.clone();
-                        child_path.push(children.action(i).clone());
+                        let action = node::real_action::<G>(children, i, sym);
+                        let child_state = G::apply(real_state.clone(), &action);
                         if self.index.get(child_id).hash == target_hash {
-                            return Some((Some(id), child_id, child_path));
+                            return Some((Some(id), child_id, child_state));
                         }
-                        next.push((child_id, child_path));
+                        next.push((child_id, child_state));
                     }
                 }
             }
@@ -110,14 +122,30 @@ where
     /// "no verified match", i.e. the caller should fall back to `reset()`.
     fn try_promote(&mut self, state: &G::S, hash: u64) -> Option<Id> {
         let root_state = self.root_state.clone()?;
-        let (parent_id, matched_id, path) = self.find_reachable(self.root_id, hash)?;
+        let (parent_id, matched_id, replayed) =
+            self.find_reachable(self.root_id, &root_state, hash)?;
 
-        let replayed = path.iter().fold(root_state, |s, a| G::apply(s, a));
         if replayed != *state {
             return None;
         }
 
         if let Some(parent_id) = parent_id {
+            // `matched_id`'s own `ChildArray` (if any) was generated in its
+            // own canonical orientation -- correct while it had a parent,
+            // but `crate::symmetry::incoming_sym` hard-codes identity once
+            // `is_root()` is true. Retranslate its stored actions to the
+            // literal board now, before flipping `is_root` below makes every
+            // future `real_action` call for this node stop translating at
+            // all -- otherwise the first descent through it after promotion
+            // applies a still-canonical action straight to the real board.
+            let canonicalizes = self.config.uses_transpositions();
+            let sym = incoming_sym::<G>(canonicalizes, false, Real(state));
+            if let Some(children) = self.index.get_mut(matched_id).children_mut() {
+                children.retranslate_actions(|a| {
+                    G::invert_action(Canonical(a.clone()), sym).into_inner()
+                });
+            }
+
             let parent = self.index.get(parent_id);
             let idx = parent.child_index(matched_id);
             let children = parent.children();

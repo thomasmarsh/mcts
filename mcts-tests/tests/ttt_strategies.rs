@@ -1478,15 +1478,19 @@ fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
     };
     let next_state = G::apply(after_own_move, &reply);
 
-    // Corrupt the replay starting point to a different, but still real
-    // and legally-replayable, one-move position -- one extra piece on a
-    // cell neither `action` nor `reply` touch, so replaying those same
-    // two actions on top of it stays perfectly legal (no overwriting an
-    // occupied cell) while still landing on a provably different
-    // (3-piece, not 2-piece) final state than the real `next_state`.
-    let used_cells = [action.0, reply.0];
-    let safe_cell = (0u8..9).find(|c| !used_cells.contains(c)).unwrap();
-    ts.root_state = Some(G::apply(init_state, &Move(safe_cell)));
+    // Corrupt the replay starting point by flipping whose turn it is,
+    // leaving cell occupancy untouched. `find_reachable` now replays real
+    // states through every explored branch (not just the matched path) to
+    // translate canonical child actions back to the literal board, so a
+    // corruption has to stay legal against *every* cell any explored node
+    // might touch, not just `action`/`reply`'s own cells -- flipping only
+    // `turn` guarantees that (every cell's occupied/empty status is
+    // unchanged), while still landing on a provably different final state
+    // than the real `next_state` (the same two moves place the opposite
+    // piece at each cell, and/or produce a different winner).
+    let mut corrupted = init_state.position;
+    corrupted.turn = corrupted.turn.next();
+    ts.root_state = Some(HashedPosition::from_position(corrupted));
 
     let root_id = ts.reuse_or_reset(G::player_to_move(&next_state).to_index(), &next_state);
 
