@@ -31,7 +31,6 @@ import "./margo.css";
 const RADIUS = 0.505;
 const SOCKET_RADIUS = 0.32;
 const BLACK_COLOR = 0x2c2e35;
-const BLACK_OUTLINE_COLOR = 0x7d818f;
 const WHITE_COLOR = 0xf4ecdd;
 const MOVE_HILITE = 0x52c2ee;
 const ANALYSIS_HEAT_COLOR = 0xffa94d;
@@ -117,17 +116,6 @@ function buildZombieRing(): THREE.Mesh {
   return new THREE.Mesh(geo, mat);
 }
 
-/** A back-face-only, slightly-oversized shell around a black marble -- the
- * standard inverted-hull outline trick. Adjacent black marbles are both this
- * dark, so without it two touching black spheres read as one blob; the thin
- * lighter rim it leaves at each silhouette edge is what separates them. */
-function buildOutline(geo: THREE.SphereGeometry): THREE.Mesh {
-  const mat = new THREE.MeshBasicMaterial({ color: BLACK_OUTLINE_COLOR, side: THREE.BackSide });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.scale.setScalar(1.06);
-  return mesh;
-}
-
 export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameView>> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
 
@@ -173,12 +161,19 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     // built in; a recessed, darker, narrower cylinder standing in for the
     // hole opening reads the same way (marble sitting *in* something) from
     // any camera angle this board is viewed at.
-    const socketGeo = new THREE.CylinderGeometry(SOCKET_RADIUS, SOCKET_RADIUS * 0.9, 0.16, 24);
+    // Marbles rest at y = -RADIUS (that's where a level-0 sphere's bottom
+    // touches the board), so the socket's opening has to sit at or just
+    // below that same plane -- centering the cylinder there, as an earlier
+    // version did, put its *top* above -RADIUS and made it read as a boss
+    // poking up out of the board rather than a hole sunk into it.
+    const socketHeight = 0; // 0.14;
+    const socketTopY = -RADIUS - 0.002;
+    const socketGeo = new THREE.CylinderGeometry(SOCKET_RADIUS, SOCKET_RADIUS * 0.9, socketHeight, 24);
     const socketMat = new THREE.MeshStandardMaterial({ color: 0x3a362c, roughness: 1 });
     for (let row = 0; row < n; row++) {
       for (let col = 0; col < n; col++) {
         const socket = new THREE.Mesh(socketGeo, socketMat);
-        socket.position.set(col, -RADIUS - 0.02, row);
+        socket.position.set(col, socketTopY - socketHeight / 2, row);
         boardGroup.add(socket);
       }
     }
@@ -208,11 +203,6 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       const sphere = new THREE.Mesh(sphereGeo, mat);
       sphere.position.set(x, y, z);
       piecesGroup.add(sphere);
-      if (cell.piece === "Black") {
-        const outline = buildOutline(sphereGeo);
-        outline.position.set(x, y, z);
-        piecesGroup.add(outline);
-      }
       if (cell.zombie) {
         const ring = buildZombieRing();
         ring.position.set(x, y, z);
@@ -257,7 +247,7 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       // playable footprint the ring merely outlines.
       const pick = new THREE.Mesh(pickGeo, pickMat);
       pick.rotation.x = -Math.PI / 2;
-      pick.position.set(x, y - RADIUS + 0.02, z);
+      pick.position.set(x - 0.14 , y - RADIUS + 0.02, z);
       pick.userData.move = move;
       highlightGroup.add(pick);
       pickables.push(pick);
