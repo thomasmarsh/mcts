@@ -22,5 +22,20 @@
             "final_action": "robust_child"
         },
         "max_iterations": 10000
+    },
+    {
+        "id": "tuned",
+        "label": "Tuned",
+        "description": "Deep MCTS-Solver — smac3 tuned.",
+        "params": {
+            "c": 0.7002349961293,
+            "epsilon": 0.8166764873097,
+            "family": "ucb1_tuned_dm_mast",
+            "final_action": "robust_child",
+            "mcgs": true,
+            "q_init": "Infinity"
+        },
+        "max_iterations": 10000,
+        "use_transpositions": true
     }
 ]
