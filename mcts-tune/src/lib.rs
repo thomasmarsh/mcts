@@ -405,25 +405,26 @@ pub fn strategy_tune_eval<G: Game + 'static>(
 
 /// Implements the common shape of `GameAdapter::tune_eval` directly, for a
 /// game whose board is fixed at compile time -- it ignores `game_config` and
-/// always starts from `G::S::default()` -- and whose only named baseline is
-/// a single preset (`baseline_preset`, e.g. `"strong"`). That covers every
-/// current game except the handful with a runtime-configurable board (e.g.
+/// always starts from `G::S::default()`. `baseline` is a named entry of
+/// `presets`' own id list (whatever `tuner()` reports via `ai_preset_ids`),
+/// `None` meaning "the table's first/default entry" -- covers every current
+/// game except the handful with a runtime-configurable board (e.g.
 /// `games/druid`, whose `tune_eval` builds `initial_state` from its own
-/// `game_config` argument instead) or a `tuner()` with more than one
-/// baseline; those keep writing out `strategy_tune_eval`/`build_search`
-/// directly, matching what this function does internally.
+/// `game_config` argument instead); those keep writing out
+/// `strategy_tune_eval`/`build_search` directly, matching what this function
+/// does internally.
 ///
-/// `presets_source` names the preset file in the panic message if
-/// `baseline_preset` fails to build (e.g. `"games/ttt/presets.json"`) --
-/// this only fires if that file's own baseline preset is broken, which
-/// should never happen since it ships with the crate.
+/// `presets_source` names the preset file in the panic message if the
+/// resolved baseline preset fails to build (e.g. `"games/ttt/presets.json"`)
+/// -- this only fires if that file's own preset is broken, which should
+/// never happen since it ships with the crate.
 #[allow(clippy::too_many_arguments)]
 pub fn generic_tune_eval<G: Game + 'static>(
     presets: &presets::PresetTable,
-    baseline_preset: &str,
     presets_source: &str,
     use_transpositions: bool,
     preset_seed: u64,
+    baseline: Option<String>,
     params: Value,
     rounds: u32,
     seed: Option<u64>,
@@ -469,6 +470,10 @@ pub fn generic_tune_eval<G: Game + 'static>(
             on_game,
         )?
     } else {
+        let baseline_id = baseline
+            .as_deref()
+            .or_else(|| presets.ai_preset_ids().first().copied())
+            .expect("presets table must declare at least one preset");
         strategy_tune_eval::<G>(
             &params,
             rounds,
@@ -481,9 +486,9 @@ pub fn generic_tune_eval<G: Game + 'static>(
             },
             move || {
                 presets
-                    .build::<G>(baseline_preset, preset_seed)
+                    .build::<G>(baseline_id, preset_seed)
                     .unwrap_or_else(|e| {
-                        panic!("{presets_source}'s {baseline_preset:?} preset must build: {e}")
+                        panic!("{presets_source}'s {baseline_id:?} preset must build: {e}")
                     })
             },
             Default::default(),
