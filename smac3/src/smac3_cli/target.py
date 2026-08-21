@@ -148,7 +148,9 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
             f"cargo build --release -p game-traffic-lights"
         )
 
-    def train(config: Configuration, instance: str | None = None, seed: int = 0) -> float:
+    def train(
+        config: Configuration, instance: str | None = None, seed: int = 0
+    ) -> tuple[float, dict]:
         """Evaluate one hyperparameter configuration.
 
         Parameters
@@ -170,8 +172,15 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
 
         Returns
         -------
-        A ``float`` cost (lower = better), parsed from the ``{"cost": ...}``
-        JSON line the binary's ``tune eval`` subcommand prints on stdout.
+        ``(cost, additional_info)``. ``cost`` is a ``float`` (lower = better),
+        parsed from the ``{"cost": ...}`` JSON line the binary's ``tune eval``
+        subcommand prints on stdout. SMAC threads ``additional_info`` back to
+        ``TrialValue.additional_info`` unchanged; a trial that never actually
+        produced a real result (timeout, non-zero exit, unparseable output)
+        sets ``additional_info["status"]`` to ``"timeout"``/``"crashed"`` so
+        the cost=1.0 it still reports (SMAC needs a real float) can be told
+        apart from a genuine 100%-loss result downstream. A successful trial
+        returns an empty dict -- no ``"status"`` key at all.
         """
         cmd = _build_cmd(
             cfg,
@@ -194,7 +203,7 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
             )
         except subprocess.TimeoutExpired:
             logger.warning("Trial timed out after 600 s (seed=%s)", seed)
-            return 1.0  # worst possible cost
+            return 1.0, {"status": "timeout"}  # worst possible cost
 
         if result.returncode != 0:
             logger.error(
@@ -203,7 +212,7 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
                 result.stdout,
                 result.stderr,
             )
-            return 1.0
+            return 1.0, {"status": "crashed"}
 
         # Parse the trailing JSON line: {"cost": ..., "wins": ..., ...}
         for line in reversed(result.stdout.splitlines()):
@@ -215,13 +224,13 @@ def make_target(cfg: SearchConfig, *, trace_path: str | None = None):
             except json.JSONDecodeError:
                 continue
             if "cost" in payload:
-                return float(payload["cost"])
+                return float(payload["cost"]), {}
 
         logger.error(
             "No JSON 'cost' line found in output:\n%s\nstderr:\n%s",
             result.stdout,
             result.stderr,
         )
-        return 1.0
+        return 1.0, {"status": "crashed"}
 
     return train
