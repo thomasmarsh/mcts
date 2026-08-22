@@ -48,6 +48,10 @@ export const TunerRunDetail: Component<{
   tuner: TunerInfo | null;
   launchConfig?: unknown;
   incumbent?: IncumbentInfo | null;
+  /** Match count from the run detail — used in the empty state to show
+   * progress while the first trial is still evaluating. */
+  matchCount?: number;
+  trialCount?: number;
 }> = (props) => {
   const effectiveEntries = createMemo((): ChainedTrial[] => {
     if (props.chainedTrials.length > 0) {
@@ -100,7 +104,26 @@ export const TunerRunDetail: Component<{
 
       <Show
         when={scored().length > 0}
-        fallback={<div class="log-empty">No scored trials yet.</div>}
+        fallback={
+          <div class="tuner-empty-state">
+            <span class="tuner-empty-primary">
+              {props.matchCount && props.matchCount > 0
+                ? `Evaluating trial 1 — ${props.matchCount} game${props.matchCount === 1 ? "" : "s"} played so far`
+                : "Waiting for first trial to start…"}
+            </span>
+            <Show when={props.matchCount && props.matchCount > 0}>
+              <span class="tuner-empty-secondary">
+                Each trial plays multiple game pairs (matchmaking rounds × 5–15
+                steps) against the dynamic opponent pool before producing a
+                score. Games appear below as they complete.
+              </span>
+            </Show>
+            <span class="tuner-empty-hint">
+              Completed trials will appear here automatically when the ingest
+              loop processes them (every 5&nbsp;s).
+            </span>
+          </div>
+        }
       >
         <TunerSummaryStats
           totalTrials={effectiveEntries().length}

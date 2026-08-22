@@ -2000,3 +2000,124 @@ body.bench-active #analysis-panel {
   color: #4caf7a;
   font-weight: 600;
 }
+
+/* ── tuner empty state (no scored trials yet) ──────────────────── */
+
+.tuner-empty-state {
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tuner-empty-primary {
+  font-size: 13px;
+  color: #d7d8e0;
+  font-weight: 500;
+}
+
+.tuner-empty-secondary {
+  font-size: 11px;
+  color: #8a8b96;
+  line-height: 1.4;
+  max-width: 400px;
+}
+
+.tuner-empty-hint {
+  font-size: 10px;
+  color: #686a75;
+  font-style: italic;
+}
+
+/* ── tuner Games Progress ─────────────────────────────────────── */
+
+#tuner-games-progress {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 16px;
+  font-size: 12px;
+  min-height: 60px;
+}
+
+#tuner-games-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tuner-games-title {
+  font-weight: 600;
+  color: #d7d8e0;
+  font-size: 13px;
+}
+
+.tuner-games-meta {
+  display: flex;
+  gap: 10px;
+  color: #8a8b96;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+
+.tuner-games-stat strong {
+  color: #c7c9cf;
+}
+
+.tuner-games-pct {
+  color: #5b91d6;
+  font-weight: 600;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.tuner-games-waiting {
+  color: #8a8b96;
+  font-size: 11px;
+  padding: 6px 0;
+  font-style: italic;
+}
+
+.tuner-games-active {
+  color: #d7d8e0;
+  font-size: 11px;
+  padding: 6px 0;
+}
+
+.tuner-games-active strong {
+  color: #e8e8ec;
+}
+
+#tuner-games-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.tuner-games-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #1e1f26;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: #9a9ba5;
+  cursor: default;
+}
+
+.tuner-games-item-id {
+  color: #686a75;
+  font-variant-numeric: tabular-nums;
+}
+
+.tuner-games-item-outcome {
+  color: #b0b1bc;
+}
+
+.tuner-games-item-plies {
+  color: #686a75;
+}

@@ -9,6 +9,7 @@ import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
 import { TunerRunDetail } from "./TunerRunDetail.js";
+import { TunerGamesProgress } from "./tuner/TunerGamesProgress.js";
 import type { BenchSpectatorProps } from "./types.js";
 
 const MAX_VISIBLE_LINES = 500;
@@ -300,6 +301,8 @@ export const RunDetailPanel: Component<{
               tuner={tunerTuner()}
               launchConfig={detail()?.config ?? null}
               incumbent={detail()?.incumbent ?? null}
+              matchCount={detail()?.match_count ?? 0}
+              trialCount={detail()?.trial_count ?? 0}
             />
           </Show>
         </div>
@@ -308,60 +311,69 @@ export const RunDetailPanel: Component<{
           {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game ?? ""} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
         </Show>
 
-        <div id="log-panel">
-          <div id="log-header">
-            <span>Log Tail</span>
-            <Show when={tail()}>
-              <span class="log-status">
-                {tail()!.active ? (
-                  <>Polling (<code>{tail()!.offset}</code> bytes)…</>
-                ) : (
-                  <>Complete ({tail()!.lines.length} lines)</>
-                )}
-              </span>
-            </Show>
-            <button
-              id="show-stdout-btn"
-              onClick={fetchStdout}
-              disabled={stdoutLoading()}
-              title="Fetch the raw stdout.log (stderr output from the run process)"
-            >
-              {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stdout" : "Show Stdout Log"}
-            </button>
-          </div>
-          <Show when={tail()?.error}>
-            <div class="log-error">Error: {tail()!.error}</div>
-          </Show>
-          <div id="log-content" ref={logContainer} onScroll={onLogScroll}>
-            <Show
-              when={tail() && tail()!.lines.length > 0}
-              fallback={<div class="log-empty">Waiting for log output…</div>}
-            >
-              <For each={tail()!.lines.slice(-MAX_VISIBLE_LINES)}>
-                {(line) => <div class="log-line">{line}</div>}
-              </For>
-              <div ref={logEndRef} />
-            </Show>
-          </div>
-        </div>
-
-        <Show when={stdoutVisible() && stdoutContent() !== null}>
-          <div id="stdout-panel">
-            <div id="stdout-header">
-              <span>Stdout Log (stderr output)</span>
-              <button onClick={() => setStdoutVisible(false)}>Hide</button>
+        <Show when={!isTuner()}>
+          <div id="log-panel">
+            <div id="log-header">
+              <span>Log Tail</span>
+              <Show when={tail()}>
+                <span class="log-status">
+                  {tail()!.active ? (
+                    <>Polling (<code>{tail()!.offset}</code> bytes)…</>
+                  ) : (
+                    <>Complete ({tail()!.lines.length} lines)</>
+                  )}
+                </span>
+              </Show>
+              <button
+                id="show-stdout-btn"
+                onClick={fetchStdout}
+                disabled={stdoutLoading()}
+                title="Fetch the raw stdout.log (stderr output from the run process)"
+              >
+                {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stdout" : "Show Stdout Log"}
+              </button>
             </div>
-            <Show when={stdoutContent() && stdoutContent()!.length > 0}>
-              <pre id="stdout-content">{stdoutContent()}</pre>
+            <Show when={tail()?.error}>
+              <div class="log-error">Error: {tail()!.error}</div>
             </Show>
-            <Show when={stdoutContent() !== null && stdoutContent()!.length === 0}>
-              <div class="log-empty">stdout.log is empty</div>
-            </Show>
+            <div id="log-content" ref={logContainer} onScroll={onLogScroll}>
+              <Show
+                when={tail() && tail()!.lines.length > 0}
+                fallback={<div class="log-empty">Waiting for log output…</div>}
+              >
+                <For each={tail()!.lines.slice(-MAX_VISIBLE_LINES)}>
+                  {(line) => <div class="log-line">{line}</div>}
+                </For>
+                <div ref={logEndRef} />
+              </Show>
+            </div>
           </div>
+
+          <Show when={stdoutVisible() && stdoutContent() !== null}>
+            <div id="stdout-panel">
+              <div id="stdout-header">
+                <span>Stdout Log (stderr output)</span>
+                <button onClick={() => setStdoutVisible(false)}>Hide</button>
+              </div>
+              <Show when={stdoutContent() && stdoutContent()!.length > 0}>
+                <pre id="stdout-content">{stdoutContent()}</pre>
+              </Show>
+              <Show when={stdoutContent() !== null && stdoutContent()!.length === 0}>
+                <div class="log-empty">stdout.log is empty</div>
+              </Show>
+            </div>
+          </Show>
+
+          <Show when={stdoutError()}>
+            <div class="log-error">Stdout fetch error: {stdoutError()}</div>
+          </Show>
         </Show>
 
-        <Show when={stdoutError()}>
-          <div class="log-error">Stdout fetch error: {stdoutError()}</div>
+        <Show when={isTuner()}>
+          <TunerGamesProgress
+            detail={detail()}
+            games={openRun()?.games ?? []}
+          />
         </Show>
       </div>
     </Show>
