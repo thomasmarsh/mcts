@@ -1,16 +1,11 @@
-"""smac3 — SMAC3-driven hyperparameter optimisation for MCTS."""
+"""smac3 — Optuna-driven hyperparameter optimisation for MCTS."""
 
 from .config import ParamDef, SearchConfig
-from .space import build_space
-from .target import make_target
-from .callback import IncumbentTracker, TrialTracker
+from .target import play_game, preflight_check
 
 __all__ = [
-    "Config",
     "SearchConfig",
     "ParamDef",
-    "build_space",
-    "make_target",
-    "IncumbentTracker",
-    "TrialTracker",
+    "play_game",
+    "preflight_check",
 ]

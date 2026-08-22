@@ -13,13 +13,7 @@ import yaml
 
 
 def json_default(value: Any) -> Any:
-    """Convert scalar types from ConfigSpace's NumPy-backed configurations.
-
-    ConfigSpace exposes categorical boolean choices as ``numpy.bool_``.
-    Those values look like ordinary booleans in logs, but Python's standard
-    JSON encoder does not serialize them. NumPy scalar types provide
-    ``item()`` to recover the corresponding built-in Python scalar.
-    """
+    """Convert scalar-like values to built-in JSON types when needed."""
     item = getattr(value, "item", None)
     if callable(item):
         scalar = item()
@@ -29,7 +23,7 @@ def json_default(value: Any) -> Any:
 
 
 def json_dumps(value: Any) -> str:
-    """Serialize protocol values, including NumPy scalars from ConfigSpace."""
+    """Serialize protocol values accepted by the game binary."""
     return json.dumps(value, default=json_default)
 
 

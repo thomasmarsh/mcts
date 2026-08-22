@@ -1,37 +1,24 @@
 #!/usr/bin/env python3
-"""
-smac3 — command-line entry point.
-
-Run::
-
-    uv run --project smac3/ smac3 [--config path] [--override key=value] ...
-
-Or with the installed entry-point::
-
-    smac3 --help
-"""
+"""Optuna command-line entry point for MCTS hyperparameter optimisation."""
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import logging
-import os
-import warnings
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from smac import Scenario
-from smac.facade import HyperparameterOptimizationFacade
+import optuna
 
-from .callback import IncumbentTracker, TrialTracker
+from .callback import _resolve_git_sha, emit_incumbent_record, emit_trial_record
 from .config import SearchConfig
-from .resume import load_prior_runhistory
-from .space import build_space
-from .target import make_target, preflight_check
-
-warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
-warnings.filterwarnings("ignore", message="invalid value encountered", category=RuntimeWarning)
+from .matchmaking import play_trial
+from .pool import Anchor, OpponentPool
+from .space_optuna import suggest_config
+from .target import preflight_check
 
 logger = logging.getLogger("smac3_cli")
 
@@ -42,328 +29,121 @@ def _parse_overrides(raw: list[str]) -> dict[str, str]:
     for item in raw:
         if "=" not in item:
             raise ValueError(f"Override must be key=value, got {item!r}")
-        k, v = item.split("=", 1)
-        overrides[k] = v
+        key, value = item.split("=", 1)
+        overrides[key] = value
     return overrides
 
 
 def _parse_baseline_configs(raw: list[str]) -> dict[str, dict]:
-    """Parse ``id=json`` strings from repeated ``--baseline-config`` flags.
-
-    Not routed through ``_parse_overrides``/``_apply_overrides`` -- that
-    mechanism mutates a single scalar dotted field per flag, and this is a
-    dict keyed by ids only known at launch time (an automated-ladder rung's
-    own discovered baseline ids), not a fixed field name.
-    """
+    """Parse repeated ``--baseline-config id=json`` flags."""
     parsed: dict[str, dict] = {}
     for item in raw:
         if "=" not in item:
             raise ValueError(f"--baseline-config must be id=json, got {item!r}")
-        instance_id, raw_json = item.split("=", 1)
-        parsed[instance_id] = json.loads(raw_json)
+        anchor_id, raw_json = item.split("=", 1)
+        parsed[anchor_id] = json.loads(raw_json)
     return parsed
 
 
 def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
-    """Mutate *cfg* in-place from dotted overrides like ``optimizer.n_trials=500``."""
-    import ast
-    for key, raw_val in overrides.items():
-        parts = key.split(".")
+    """Mutate *cfg* in-place from dotted CLI overrides."""
+    for key, raw_value in overrides.items():
         obj: Any = cfg
-        for p in parts[:-1]:
-            obj = getattr(obj, p)
-        # A `Path`-typed field (e.g. `target.binary`) must stay a `Path` --
-        # `resolve_binary()` calls `.is_absolute()` on it, which a plain
-        # `str` doesn't have.
+        parts = key.split(".")
+        for part in parts[:-1]:
+            obj = getattr(obj, part)
         if isinstance(getattr(obj, parts[-1]), Path):
-            val = Path(raw_val)
+            value = Path(raw_value)
         else:
-            # Try to parse as Python literal first (int, float, bool, None)
             try:
-                val = ast.literal_eval(raw_val)
+                value = ast.literal_eval(raw_value)
             except (ValueError, SyntaxError):
-                val = raw_val  # fallback to string
-        setattr(obj, parts[-1], val)
+                value = raw_value
+        setattr(obj, parts[-1], value)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="smac3",
-        description="SMAC3 hyperparameter optimisation for MCTS (game binary).",
-    )
-    p.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="YAML config file (default: packaged config/default.yaml)",
-    )
-    p.add_argument(
-        "--override",
-        action="append",
-        default=[],
-        help="Override a config value (e.g. optimizer.n_trials=500)",
-    )
-    p.add_argument(
-        "--baseline-config",
-        action="append",
-        default=[],
-        metavar="ID=JSON",
-        help=(
-            "Add an extra baseline instance backed by a raw discovered "
-            "config rather than a named preset (e.g. an automated-ladder "
-            "rung's own incumbent). Repeatable. The id becomes a member of "
-            "Scenario(instances=...); train() forwards it to the game "
-            "binary as `tune eval --baseline-config <json>` instead of "
-            "`--baseline <id>`."
-        ),
-    )
-    p.add_argument(
-        "--game-config",
-        type=str,
-        default=None,
-        metavar="JSON",
-        help=(
-            "Game-setup config (e.g. Druid's board size) pinning every "
-            "trial in this run to a non-default game config instead of "
-            "the game binary's own default. Forwarded verbatim as `tune "
-            "eval --game-config <json>` on every trial."
-        ),
-    )
-    p.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    p.add_argument(
-        "--git-sha",
-        type=str,
-        default=None,
-        help="Git SHA for attribution (auto-detected if omitted)",
-    )
-    p.add_argument(
-        "--run-id",
-        type=str,
-        default=None,
-        help=(
-            "Pin Scenario.name to this id (default: SMAC3 auto-hashes a name "
-            "from the scenario contents). Makes this run's output directory "
-            "(smac3_output/<run-id>/<seed>/) discoverable for a later --resume."
-        ),
-    )
-    p.add_argument(
-        "--trace-path",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help=(
-            "Append per-ply move-trace JSONL lines to this file (opened in "
-            "append mode by each trial's game-binary subprocess, so every "
-            "trial in the run accumulates into the same file). Forwarded "
-            "verbatim as `tune eval --trace-path <path>` on every trial. "
-            "Omit to disable move tracing."
-        ),
-    )
-    p.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        metavar="RUN_ID",
-        help=(
-            "Seed this run's runhistory from a prior run's saved state "
-            "(that prior run's own --run-id), so already-evaluated configs "
-            "aren't re-evaluated. See resume.py for why this is done "
-            "manually rather than via SMAC3's own continue path."
-        ),
-    )
-    return p
+    parser = argparse.ArgumentParser(prog="smac3", description="Optuna hyperparameter optimisation for MCTS.")
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--override", action="append", default=[], help="Override key=value")
+    parser.add_argument("--baseline-config", action="append", default=[], metavar="ID=JSON",
+                        help="Seed an additional frozen raw-config pool anchor. Repeatable.")
+    parser.add_argument("--game-config", type=str, default=None, metavar="JSON")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--git-sha", type=str, default=None)
+    parser.add_argument("--run-id", type=str, default=None,
+                        help="Persistent run id; reusing it resumes its Optuna study and opponent pool.")
+    parser.add_argument("--trace-path", type=str, default=None, metavar="PATH")
+    return parser
 
 
-def build_optimizer(
+def run_optimization(
     cfg: SearchConfig,
     *,
-    run_id: str | None = None,
-    resume: str | None = None,
+    run_id: str,
     git_sha: str | None = None,
-    verbose: bool = False,
     trace_path: str | None = None,
-) -> HyperparameterOptimizationFacade:
-    """Build a ready-to-`.optimize()` SMAC3 facade from *cfg*.
-
-    Factored out of `main()` so tests can drive the resume path (build,
-    inspect/optimize, build again with `resume=`) without going through
-    `argparse`/a subprocess -- see `tests/test_resume.py`.
-    """
-    # -- search space, sourced from the binary itself -----------------------
-    # The game binary is the single source of truth for the search space
-    # (`tune describe`), not hand-maintained YAML -- see
-    # `SearchConfig.parameters_from_binary`'s docstring.
+) -> tuple[optuna.Study, OpponentPool]:
+    """Run the unfinished portion of a persistent Optuna study sequentially."""
     binary = cfg.resolve_binary()
-    parameters, conditions, advertised_baselines = SearchConfig.parameters_from_binary(binary)
+    parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(binary)
     cfg.parameters = parameters
     cfg.conditions = conditions
-    # `tune describe` advertises available named presets; it does not choose
-    # an opponent for the run. Require the caller to choose either a named
-    # preset or a raw discovered config. Automated ladder rungs intentionally
-    # clear the named presets and use only the prior incumbent's raw config.
-    if not cfg.target.baselines and not cfg.target.baseline_configs:
-        raise ValueError(
-            "a baseline must be explicitly provided through target.baselines "
-            "or --baseline-config "
-            f"(advertised named presets: {advertised_baselines})"
-        )
-    logger.info(
-        "Search space from %s: %d parameters, %d conditions, baselines=%s, baseline_configs=%s",
-        binary,
-        len(cfg.parameters),
-        len(cfg.conditions),
-        cfg.target.baselines,
-        list(cfg.target.baseline_configs),
+
+    output_dir = Path("optuna_output") / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pool_path = output_dir / "pool.json"
+    pool = OpponentPool.load(pool_path) if pool_path.exists() else OpponentPool.bootstrap(cfg)
+    for anchor_id, config in cfg.target.baseline_configs.items():
+        if not any(anchor.id == anchor_id for anchor in pool.anchors):
+            pool.anchors.append(Anchor(anchor_id, dict(config), mu=25.0, sigma=0.5))
+    pool.save(pool_path)
+
+    storage = f"sqlite:///{(output_dir / 'study.db').resolve()}"
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=run_id,
+        storage=storage,
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=cfg.optimizer.seed),
     )
 
-    # -- build configuration space -----------------------------------------
-    cs = build_space(cfg)
-    logger.info("ConfigSpace: %d parameters, %d conditions", len(cs), len(cs.conditions))
+    preflight_check(cfg, pool.closest(25.0).config, pool.closest(0.0).config)
+    resolved_sha = git_sha or _resolve_git_sha()
+    remaining = max(0, cfg.optimizer.n_trials - len(study.trials))
+    for _ in range(remaining):
+        trial = study.ask()
+        config = suggest_config(trial, cfg)
+        trial.set_user_attr("config", config)
+        seed = cfg.optimizer.seed + trial.number
+        mu, sigma, games = play_trial(cfg, binary, config, pool, seed_base=seed, trace_path=trace_path)
+        study.tell(trial, mu - 3 * sigma)
+        emit_trial_record(trial.number, config, seed, mu, sigma, games, resolved_sha)
+        if pool.maybe_insert(config, mu, sigma) is not None:
+            pool.save(pool_path)
+        if study.best_trial.number == trial.number:
+            emit_incumbent_record(config, mu, sigma)
 
-    # -- target function ---------------------------------------------------
-    train = make_target(cfg, trace_path=trace_path)
-
-    # -- SMAC scenario -----------------------------------------------------
-    n_workers = cfg.optimizer.n_workers
-    if n_workers is None:
-        n_workers = max(1, os.cpu_count() // 2)
-
-    # `instances` lets SMAC evaluate each trial config against multiple
-    # baseline opponents and aggregate cost across them -- without it, a
-    # config that reaches 100% win rate against the one fixed baseline
-    # floors `cost` at 0.0 and every top candidate ties, with no way to
-    # rank them further. Most games report a single-entry `baselines` list
-    # (an unchanged, single-instance scenario); druid today is the one game
-    # with a genuine second, harder preset ("master") in that list.
-    # `baseline_configs` adds further instances backed by a raw discovered
-    # config rather than a named preset -- `target.py`'s `train()` is what
-    # actually distinguishes the two kinds of instance id when dispatching
-    # to the game binary.
-    instances = [*cfg.target.baselines, *cfg.target.baseline_configs]
-
-    # Fail fast on a systemic misconfiguration (bad --game-config, unknown
-    # baseline, ...) rather than silently spending the entire n_trials
-    # budget scoring every trial cost=1.0 -- see `preflight_check`'s
-    # docstring.
-    preflight_check(cfg, cs.get_default_configuration(), instances=instances)
-
-    # A normal resume keeps the same objective instances, so its completed
-    # observations remain valid training data.  A ladder rung deliberately
-    # changes the opponent, however: importing costs measured against the
-    # old baseline both poisons the new surrogate and is rejected by SMAC's
-    # intensifier because those instance ids are absent from the new
-    # Scenario.  In that case start a fresh runhistory and express the
-    # logical-run budget as the number of evaluations still owed.  Count
-    # only finished trials; workers interrupted during the rung transition
-    # are saved as RUNNING entries but produced no sample.
-    prior = load_prior_runhistory(resume, cs) if resume else None
-    merge_prior = False
-    scenario_n_trials = cfg.optimizer.n_trials
-    if prior is not None:
-        prior_instances = {key.instance for key in prior.keys()}
-        merge_prior = prior_instances.issubset(set(instances))
-        if not merge_prior:
-            scenario_n_trials -= prior.finished
-            if scenario_n_trials <= 0:
-                raise ValueError(
-                    f"run {resume} already used its {cfg.optimizer.n_trials}-trial budget"
-                )
-            logger.info(
-                "Resuming from run %s with changed instances: %d finished "
-                "prior trial(s) consume the logical budget; starting a fresh "
-                "runhistory with %d trial(s)",
-                resume,
-                prior.finished,
-                scenario_n_trials,
-            )
-
-    scenario = Scenario(
-        cs,
-        name=run_id,
-        deterministic=cfg.optimizer.deterministic,
-        n_trials=scenario_n_trials,
-        n_workers=n_workers,
-        seed=cfg.optimizer.seed,
-        instances=instances,
-        termination_cost_threshold=cfg.optimizer.termination_cost_threshold,
-    )
-
-    smac = HyperparameterOptimizationFacade(
-        scenario,
-        train,
-        callbacks=[IncumbentTracker(), TrialTracker(git_sha=git_sha)],
-        logging_level=logging.INFO if not verbose else logging.DEBUG,
-        # `False` so that an accidental relaunch into the same (name-pinned)
-        # output directory with an *identical* scenario auto-continues
-        # rather than silently erasing prior runhistory. A relaunch with a
-        # genuinely different scenario (e.g. a bumped `n_trials`) is not
-        # routed through this gate at all -- see `--resume` below.
-        overwrite=False,
-    )
-
-    if prior is not None and merge_prior:
-        logger.info(
-            "Resuming from run %s: merging %d prior trial(s) into runhistory",
-            resume,
-            len(prior),
-        )
-        smac.runhistory.update(prior)
-
-    return smac
+    return study, pool
 
 
 def main() -> None:
     args = build_parser().parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    # -- load config -------------------------------------------------------
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
     cfg = SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
-    logger.info("Config: %s", cfg._source or "defaults")
-
-    overrides = _parse_overrides(args.override)
-    _apply_overrides(cfg, overrides)
-    if overrides:
-        logger.info("Applied overrides: %s", overrides)
-
-    baseline_configs = _parse_baseline_configs(args.baseline_config)
-    cfg.target.baseline_configs.update(baseline_configs)
-    if baseline_configs:
-        logger.info("Extra baseline instances: %s", list(baseline_configs))
-
+    _apply_overrides(cfg, _parse_overrides(args.override))
+    cfg.target.baseline_configs.update(_parse_baseline_configs(args.baseline_config))
     if args.game_config:
         cfg.target.game_config = json.loads(args.game_config)
-        logger.info("Game config: %s", cfg.target.game_config)
-
-    smac = build_optimizer(
-        cfg,
-        run_id=args.run_id,
-        resume=args.resume,
-        git_sha=args.git_sha,
-        verbose=args.verbose,
-        trace_path=args.trace_path,
-    )
-    cs = smac.scenario.configspace
-
-    # -- run optimisation --------------------------------------------------
-    incumbent = smac.optimize()
-
-    # -- report ------------------------------------------------------------
-    default_cost = smac.validate(cs.get_default_configuration())
+    run_id = args.run_id or f"run-{uuid4().hex[:12]}"
+    study, pool = run_optimization(cfg, run_id=run_id, git_sha=args.git_sha, trace_path=args.trace_path)
+    default = next(anchor for anchor in pool.anchors if anchor.id == "default")
     print(f"\n{'=' * 60}")
-    print(f"Best config:  {dict(incumbent)}")
-    best_cost = smac.validate(incumbent)
-    print(f"Best cost:    {best_cost:.6f}")
-    print(f"Default cost: {default_cost:.6f}")
+    print(f"Run id:       {run_id}")
+    print(f"Best config:  {study.best_trial.user_attrs['config']}")
+    print(f"Best score:   {study.best_value:.6f}")
+    print(f"Default:      mu={default.mu:.6f} sigma={default.sigma:.6f}")
     print(f"{'=' * 60}")
 
 
