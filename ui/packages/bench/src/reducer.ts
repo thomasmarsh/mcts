@@ -172,6 +172,7 @@ export type BenchAction =
   /** Load per-game tuner tuner metadata for the launch form + run detail. */
   | { tag: "tunerKinds"; action: TunerKindsAction }
   | { tag: "setTab"; tab: "projects" | "runs" | "leaderboard" }
+  | { tag: "setShowLaunchForm"; show: boolean }
   | { tag: "projectsRequest" }
   | { tag: "projectsLoaded"; projects: Project[] }
   | { tag: "projectsFailed"; error: string }
@@ -561,6 +562,7 @@ export function benchReducer(
   }
 
   if (action.tag === "openRun") {
+    draft.showLaunchForm = false;
     draft.openGeneration += 1;
     draft.selectedCellId = null;
     draft.experimentExportStatus = "idle";
@@ -850,6 +852,11 @@ export function benchReducer(
 
   if (action.tag === "deleteFailed") {
     draft.deleteError = action.error;
+    return null;
+  }
+
+  if (action.tag === "setShowLaunchForm") {
+    draft.showLaunchForm = action.show;
     return null;
   }
 

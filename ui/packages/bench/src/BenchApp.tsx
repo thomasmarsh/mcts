@@ -1,11 +1,12 @@
 // BenchApp.tsx — Top-level bench UI with tab navigation across:
-//   - Runs: run list, log tail, launch form (existing)
+//   - Runs: run list (sidebar), plus launch form or run detail in the main pane
 //   - Leaderboard: win-rate table with Wilson CI, filters, commit trends chart, and two-commit comparison
+//   - Projects
 //
 // Creates its own `createStore(benchReducer, benchEnv)` independent of the
 // game store. Fetches available kinds and the runs list on mount.
 
-import { onMount, Show, type Component } from "solid-js";
+import { createEffect, onMount, Show, type Component } from "solid-js";
 import { createStore, type Store } from "@mcts/core";
 import {
   benchReducer,
@@ -34,8 +35,26 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
     env,
   );
   const state = store.getState();
+  const dispatch = store.dispatch;
 
   const activeTab = () => state().activeTab;
+  const openRun = () => state().openRun;
+  const showLaunchForm = () => state().showLaunchForm;
+  const launchStatus = () => state().launch.status;
+
+  // When a launch completes successfully, open the new run and close the form.
+  // Guarded against re-dispatch: once the launched run is already open (its
+  // runId matches), do nothing — otherwise the dispatch mutates state, which
+  // triggers a new snapshot and re-runs this effect, creating an infinite loop
+  // that starves the browser's event loop (Safari tab goes gray/unresponsive).
+  createEffect(() => {
+    if (launchStatus() === "done" && state().launch.result) {
+      const result = state().launch.result;
+      if (result && state().openRun?.runId !== result.run_id) {
+        dispatch({ tag: "openRun", runId: result.run_id });
+      }
+    }
+  });
 
   // Fetch kinds metadata and the run list on mount.
   onMount(() => {
@@ -46,24 +65,29 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
     store.dispatch({ tag: "projectsRequest" });
   });
 
+  function onNewRun(): void {
+    dispatch({ tag: "closeRun" });
+    dispatch({ tag: "setShowLaunchForm", show: true });
+  }
+
   return (
     <div id="bench-app">
       <div id="bench-sub-tabs">
         <button
           class="sub-tab-btn"
           classList={{ active: activeTab() === "runs" }}
-          onClick={() => store.dispatch({ tag: "setTab", tab: "runs" })}
+          onClick={() => dispatch({ tag: "setTab", tab: "runs" })}
         >
           Runs
         </button>
         <button
           class="sub-tab-btn"
           classList={{ active: activeTab() === "leaderboard" }}
-          onClick={() => store.dispatch({ tag: "setTab", tab: "leaderboard" })}
+          onClick={() => dispatch({ tag: "setTab", tab: "leaderboard" })}
         >
           Leaderboard
         </button>
-        <button class="sub-tab-btn" classList={{ active: activeTab() === "projects" }} onClick={() => store.dispatch({ tag: "setTab", tab: "projects" })}>Projects</button>
+        <button class="sub-tab-btn" classList={{ active: activeTab() === "projects" }} onClick={() => dispatch({ tag: "setTab", tab: "projects" })}>Projects</button>
       </div>
 
       <Show when={activeTab() === "projects"}><ProjectsApp store={store} /></Show>
@@ -71,12 +95,16 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
       <Show when={activeTab() === "runs"}>
         <div id="bench-runs-layout">
           <div id="bench-sidebar">
-            <LaunchForm store={store} />
-            <RunList store={store} />
+            <RunList store={store} onNewRun={onNewRun} />
           </div>
-          <Show when={state().openRun !== null}>
-            <Show when={state().openRun?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
-          </Show>
+          <div id="bench-main-pane">
+            <Show when={openRun() !== null}>
+              <Show when={openRun()?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
+            </Show>
+            <Show when={openRun() === null && showLaunchForm()}>
+              <LaunchForm store={store} />
+            </Show>
+          </div>
         </div>
       </Show>
 

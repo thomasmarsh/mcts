@@ -137,6 +137,8 @@ export interface BenchState {
   advanceBaselineError: string | null;
   /** Last failed run deletion's message; cleared by the next delete. */
   deleteError: string | null;
+  /** True when the launch form should be shown in the main pane instead of the run detail panel. */
+  showLaunchForm: boolean;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
   /** Per-game tuner metadata for every tuner-tunable game, loaded on mount
@@ -179,6 +181,7 @@ export function initialBenchState(): BenchState {
     resumeError: null,
     advanceBaselineError: null,
     deleteError: null,
+    showLaunchForm: false,
     kinds: initialJobPollState<BenchKindInfo[]>(),
     tunerKinds: initialJobPollState<TunerGameInfo[]>(),
     experimentExportStatus: "idle",

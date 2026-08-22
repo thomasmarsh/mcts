@@ -1,4 +1,5 @@
-// RunList.tsx — Run list with status badges, filters, and row selection.
+// RunList.tsx — Run list with status badges, filters, row selection, and a
+// "New Run" button in the header.
 //
 // Displays the runs fetched from the bench store, with clickable rows that
 // dispatch `openRun` to view the detail/log-tail panel.  Filter controls
@@ -26,6 +27,7 @@ function statusLabel(status: RunStatus): string {
 
 export const RunList: Component<{
   store: Store<BenchState, BenchAction>;
+  onNewRun: () => void;
 }> = (props) => {
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
@@ -33,6 +35,7 @@ export const RunList: Component<{
   const runsStatus = createMemo(() => state().runs.status);
   const runs = createMemo(() => (state().runs.status === "done" ? state().runs.result ?? [] : []));
   const openRunId = createMemo(() => state().openRun?.runId ?? null);
+  const showLaunchForm = createMemo(() => state().showLaunchForm);
   const runFilters = createMemo(() => state().runFilters);
   const busy = createMemo(() => runsStatus() === "pending");
 
@@ -56,9 +59,18 @@ export const RunList: Component<{
     <div id="run-list-panel">
       <div id="run-list-header">
         <h3>Runs</h3>
-        <button id="refresh-runs" onClick={refresh} disabled={busy()} title="Refresh">
-          &#x21bb;
-        </button>
+        <div id="run-list-header-actions">
+          <button
+            id="new-run-btn"
+            classList={{ "new-run-active": showLaunchForm() }}
+            onClick={props.onNewRun}
+          >
+            {showLaunchForm() ? "Close" : "New Run"}
+          </button>
+          <button id="refresh-runs" onClick={refresh} disabled={busy()} title="Refresh">
+            &#x21bb;
+          </button>
+        </div>
       </div>
 
       <div id="run-filters">
@@ -88,7 +100,7 @@ export const RunList: Component<{
         fallback={
           <Show
             when={busy()}
-            fallback={<div class="run-list-empty">No runs yet. Launch one above!</div>}
+            fallback={<div class="run-list-empty">No runs yet. Click "New Run" above!</div>}
           >
             <div class="loading-bench">Loading runs…</div>
           </Show>

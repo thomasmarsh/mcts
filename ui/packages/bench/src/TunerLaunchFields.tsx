@@ -7,13 +7,14 @@
 //     (`GET /api/bench/tuner/kinds` — only games with a `tuner()` impl
 //     appear at all, so there's nothing to disable/grey out here);
 //   - a read-only summary of that game's search space (parameters,
-//     conditions, baselines, the tuner's *default* eval rounds/trial) so the
+//     conditions, the tuner's *default* eval rounds/trial) so the
 //     operator can see what a trial actually varies before committing a
 //     budget to it;
-//   - the actual editable fields: n_trials/n_workers/deterministic/seed and
-//     rounds/trial (`optimizer.*`/`target.rounds` overrides). The parameter
-//     *values* themselves aren't editable here — `tuner`'s CLI `--override`
-//     only reaches dotted dataclass attributes, not the list-shaped
+//   - the actual editable fields: n_trials/n_workers/deterministic/seed,
+//     rounds/trial, eta (OpenSkill sensitivity), and the per-run compute
+//     budget (`optimizer.*`/`target.*` overrides). The parameter *values*
+//     themselves aren't editable here — `tuner`'s CLI `--override` only
+//     reaches dotted dataclass attributes, not the list-shaped
 //     `parameters:` search space, so there is nothing for a form field to
 //     write to;
 //   - a raw-JSON "Game config" textarea, only for a game whose `tuner().
@@ -24,6 +25,11 @@
 //     (e.g. a board-size dropdown) so a future game with its own config
 //     needs no new UI code here.
 //
+// Former SMAC3-era fields (starting baselines panel, ladder/rung/saturation)
+// have been removed — the pool auto-seeds with "default" and "random"
+// anchors, and matchmaking is a flat iterative loop against the closest
+// anchor, not a multi-rung automated ladder.
+//
 // LaunchForm owns all of this component's state (same lifted-state
 // convention as the strategy picker) and builds the `--override` argv from
 // it at submit time — see `buildTunerOverrides` there.
@@ -31,14 +37,7 @@
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { TunerGameInfo, TunerParameter } from "./index.js";
 
-/** Baseline-only families (`mcts-tune`'s `make_candidate`) that exist purely
- * as ladder floor rungs -- never in any game's `tuner().baselines` (those
- * are named presets), never tuner-searchable, but always launchable as the
- * starting opponent via `target.baselines=[...]`. See `mcts-tune/src/
- * lib.rs`'s `"random"`/`"flat_mc"` match arms. */
-export const FLOOR_BASELINES = ["flat_mc", "random"] as const;
-
-/** Whether a `tuner().game_config` value means "nothing to configure" --
+/** Whether a `tuner().game_config` value means "nothing to configure" —
  * every game but Druid reports `{}` here. */
 export function isEmptyGameConfig(gameConfig: unknown): boolean {
   return (
@@ -50,7 +49,7 @@ export function isEmptyGameConfig(gameConfig: unknown): boolean {
 }
 
 /** Render one parameter's range/choices/value as a compact string. Full
- * text (not truncated) -- callers that display this in a narrow column
+ * text (not truncated) — callers that display this in a narrow column
  * truncate it themselves and rely on this being the `title` tooltip. */
 function paramRange(p: TunerParameter): string {
   switch (p.type) {
@@ -95,48 +94,35 @@ export const TunerLaunchFields: Component<{
   rounds: number;
   onRoundsChange: (n: number) => void;
   /** Per-run MCTS iteration ceiling (`mcts_tune::SearchBudget::max_iterations`
-   * on the Rust side) -- how much compute *every* trial's candidate (and,
+   * on the Rust side) — how much compute *every* trial's candidate (and,
    * for a `baseline_config`-backed opponent, that opponent too) gets, not a
    * hyperparameter tuner searches over. Empty string means "unset" (use the
    * game binary's own historical default, `mcts-tune`'s `MAX_ITER`
-   * constant) -- forwarded as `target.max_iterations=N` only when set, same
+   * constant) — forwarded as `target.max_iterations=N` only when set, same
    * convention as `nWorkers`'s "auto". */
   maxIterations: string;
   onMaxIterationsChange: (v: string) => void;
   /** Per-run wall-clock search budget in milliseconds, per move
    * (`mcts_tune::SearchBudget::max_time` on the Rust side), forwarded as
-   * `target.max_time_ms=N` -- mutually exclusive with `maxIterations`
+   * `target.max_time_ms=N` — mutually exclusive with `maxIterations`
    * (`game-host::run_tune_eval` rejects a `tune eval` invocation that sets
    * both `--max-iterations` and `--max-time-ms`). Empty string means
    * "unset", same convention as `maxIterations`. */
   maxTimeMs: string;
   onMaxTimeMsChange: (v: string) => void;
-  /** Raw JSON text for the "Game config" field -- only rendered when the
+  /** Raw JSON text for the "Game config" field — only rendered when the
    * selected game's `tuner().game_config` isn't `{}`. */
   gameConfig: string;
   onGameConfigChange: (v: string) => void;
   /** Parse error for `gameConfig`, or `null` when it's valid JSON. */
   gameConfigError: string | null;
-  /** Panel of opponents a fresh run's root rung starts against -- any subset
-   * of the selected game's own named presets (`tuner().baselines`) and/or a
-   * floor family (`FLOOR_BASELINES`). tuner evaluates every trial against
-   * all selected instances and averages cost across them -- a single-entry
-   * panel behaves exactly as a single-baseline selector would. Forwarded as
-   * a `target.baselines=[...]` override at submit time (see
-   * `LaunchForm.tsx`'s `buildTunerOverrides`). */
-  startingBaselines: Set<string>;
-  onToggleStartingBaseline: (v: string) => void;
-  /** Whether this launch opts into the automated ladder driver
-   * (`server/src/bench/mod.rs`'s `plan_ladder_advances`) -- when on, the
-   * run's `config.ladder = {max_rungs, saturation_threshold}` is set, and
-   * once this rung saturates, the driver stops it and relaunches facing
-   * only its own incumbent (see `replace_baseline_with_incumbent`). */
-  ladderEnabled: boolean;
-  onLadderEnabledChange: (v: boolean) => void;
-  maxRungs: number;
-  onMaxRungsChange: (n: number) => void;
-  saturationThreshold: number;
-  onSaturationThresholdChange: (n: number) => void;
+  /** Eta parameter for the OpenSkill matchmaking model — controls how
+   * sensitive the candidate's rating is to each game outcome. Higher values
+   * mean a single game changes the rating less; lower values mean each
+   * game matters more. Forwarded as `--override optimizer.eta=...` at
+   * submit time. */
+  eta: number;
+  onEtaChange: (n: number) => void;
   disabled: boolean;
 }> = (props) => {
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
@@ -172,44 +158,7 @@ export const TunerLaunchFields: Component<{
               <div class="tuner-tuner-meta">
                 <span class="meta-label">Tuner</span>
                 <span class="meta-value"><code>{tuner().id}</code></span>
-                <span class="meta-label">
-                  {tuner().baselines.length > 1 ? "Named presets" : "Named preset"}
-                </span>
-                <span class="meta-value">{tuner().baselines.join(", ")}</span>
               </div>
-              {/* This is metadata about the game's tuner, not what the run
-                  actually starts against -- that's the "Starting baseline"
-                  selector below. Listing every named preset here just
-                  documents what's available to pick from. */}
-              <fieldset id="tuner-baseline-panel">
-                <legend>Starting baseline panel (select at least one)</legend>
-                <For each={tuner().baselines}>
-                  {(b) => (
-                    <label class="tuner-baseline-option">
-                      <input
-                        type="checkbox"
-                        checked={props.startingBaselines.has(b)}
-                        onChange={() => props.onToggleStartingBaseline(b)}
-                        disabled={props.disabled}
-                      />
-                      {b}
-                    </label>
-                  )}
-                </For>
-                <For each={FLOOR_BASELINES}>
-                  {(b) => (
-                    <label class="tuner-baseline-option">
-                      <input
-                        type="checkbox"
-                        checked={props.startingBaselines.has(b)}
-                        onChange={() => props.onToggleStartingBaseline(b)}
-                        disabled={props.disabled}
-                      />
-                      {b} (floor)
-                    </label>
-                  )}
-                </For>
-              </fieldset>
 
               <table id="tuner-param-table">
                 <thead>
@@ -234,12 +183,6 @@ export const TunerLaunchFields: Component<{
                 </tbody>
               </table>
 
-              {/* Collapsible (open by default) rather than an always-expanded
-                  list -- a family parameter's condition can read like
-                  "family = ucb1 / ucb1_dm / ucb1_mast / ... → final_action"
-                  and a handful of those eat a lot of vertical space in a
-                  ~380px-wide sidebar for something most launches don't need
-                  to re-check every time. */}
               <Show when={tuner().conditions.length > 0}>
                 <details id="tuner-conditions">
                   <summary>Parameter conditions ({tuner().conditions.length})</summary>
@@ -315,6 +258,24 @@ export const TunerLaunchFields: Component<{
             </label>
 
             <label>
+              Eta (matchmaking sensitivity)
+              <input
+                type="number"
+                min={0.001}
+                step={0.01}
+                value={props.eta}
+                onInput={(e) => props.onEtaChange(parseFloat(e.currentTarget.value) || 0.001)}
+                disabled={props.disabled}
+              />
+              <span class="tuner-field-hint">
+                Controls how much a single game outcome changes the candidate's
+                OpenSkill rating. Higher values = more conservative (less
+                movement per game). Default 0.1 is a reasonable starting point
+                for most games.
+              </span>
+            </label>
+
+            <label>
               Iteration budget
               <input
                 type="number"
@@ -356,49 +317,6 @@ export const TunerLaunchFields: Component<{
               />
               Deterministic (single seed per config)
             </label>
-          </div>
-
-          <div id="tuner-ladder-fields">
-            <label class="tuner-checkbox-field">
-              <input
-                type="checkbox"
-                checked={props.ladderEnabled}
-                onChange={(e) => props.onLadderEnabledChange(e.currentTarget.checked)}
-                disabled={props.disabled}
-              />
-              Ladder (auto-widen to face own incumbent once saturated)
-            </label>
-
-            <Show when={props.ladderEnabled}>
-              <label>
-                Max rungs
-                <input
-                  type="number"
-                  min={1}
-                  value={props.maxRungs}
-                  onInput={(e) => props.onMaxRungsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
-                  disabled={props.disabled}
-                />
-              </label>
-
-              <label>
-                Saturation threshold (max incumbent loss rate, 0–1)
-                <input
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={props.saturationThreshold}
-                  onInput={(e) => props.onSaturationThresholdChange(parseFloat(e.currentTarget.value) || 0)}
-                  disabled={props.disabled}
-                />
-                <span class="tuner-field-hint">
-                  Widens once the incumbent's loss rate against the current baseline is at or below
-                  this (0 = must go undefeated; 0.1 = widen once losing at most 10% of games) -- a
-                  fraction of games lost, not a percent-complete or 0–100 scale.
-                </span>
-              </label>
-            </Show>
           </div>
         </Show>
       </Show>

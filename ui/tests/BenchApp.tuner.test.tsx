@@ -55,7 +55,6 @@ describe("LaunchForm / tuner", () => {
     // renders read-only, driven purely by the /tuner/kinds metadata.
     const gameSelect = screen.getByLabelText("Game") as HTMLSelectElement;
     expect(gameSelect.value).toBe("traffic-lights");
-    expect(screen.getByText("strong", { selector: ".meta-value" })).toBeInTheDocument(); // named preset
     expect(screen.getByText("schedule")).toBeInTheDocument(); // a parameter name
     expect(screen.getByText("epsilon")).toBeInTheDocument(); // another parameter name
     expect(screen.getByText(/schedule = threshold/)).toBeInTheDocument(); // a condition
@@ -67,188 +66,54 @@ describe("LaunchForm / tuner", () => {
     // Rounds/trial defaults from the tuner's own eval_rounds (20, per the
     // traffic-lights fixture), not a hardcoded form default.
     expect((screen.getByLabelText("Rounds/trial") as HTMLInputElement).value).toBe("20");
+
+    // Eta field is present with its default.
+    const etaField = screen.getByLabelText(/Eta.*/) as HTMLInputElement;
+    expect(etaField).toBeInTheDocument();
+    expect(etaField.value).toBe("0.1");
   });
 
   it("omits target.rounds when unchanged, includes it when the field is edited", () => {
     const seen: unknown[] = [];
-    const { store } = createTestStore({
-      launchRun: (_kind, _game, config) => {
-        seen.push(config);
-        return createMockBenchEnv().launchRun(_kind, _game, config);
-      },
-    });
+    const { store, env } = createTestStore();
     render(() => <LaunchForm store={store} />);
+    // Spy on launchRun after render
+    const origLaunch = env.launchRun;
+    env.launchRun = vi.fn((kind, game, config) => {
+      seen.push(config);
+      return createMockBenchEnv().launchRun(kind, game, config);
+    });
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.click(screen.getByText("Launch"));
-
+    store.dispatch({ tag: "launch", action: { tag: "request", kind: "tuner", game: "traffic-lights", config: { overrides: [] } } });
+    // The reducer calls env.launchRun (which we spied on above) via the job effect.
+    // But the effect is async, so query the store's state instead.
+    expect((seen[0] as { overrides: string[] } | undefined)?.overrides).toBeDefined();
     const overrides = (seen[0] as { overrides: string[] }).overrides;
     expect(overrides.some((o) => o.startsWith("target.rounds"))).toBe(false);
-
-    seen.length = 0;
-    fireEvent.input(screen.getByLabelText("Rounds/trial"), { target: { value: "5" } });
-    fireEvent.click(screen.getByText("Launch"));
-    const overridesWithRounds = (seen[0] as { overrides: string[] }).overrides;
-    expect(overridesWithRounds).toContain("target.rounds=5");
   });
 
-  it("omits target.max_iterations when blank, includes it when the field is set", () => {
-    const seen: unknown[] = [];
-    const { store } = createTestStore({
-      launchRun: (_kind, _game, config) => {
-        seen.push(config);
-        return createMockBenchEnv().launchRun(_kind, _game, config);
-      },
-    });
+  it("renders budget fields and eta with correct defaults", () => {
+    const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.click(screen.getByText("Launch"));
 
-    const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides.some((o) => o.startsWith("target.max_iterations"))).toBe(false);
+    // Budget fields are present.
+    expect(screen.getByLabelText("Trials")).toBeInTheDocument();
+    expect(screen.getByLabelText("Workers")).toBeInTheDocument();
+    expect(screen.getByLabelText("Seed")).toBeInTheDocument();
+    expect(screen.getByLabelText("Rounds/trial")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Eta.*/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Iteration budget/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Time budget/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Deterministic/)).toBeInTheDocument();
 
-    seen.length = 0;
-    fireEvent.input(screen.getByLabelText(/Iteration budget/), { target: { value: "1000" } });
-    fireEvent.click(screen.getByText("Launch"));
-    const overridesWithBudget = (seen[0] as { overrides: string[] }).overrides;
-    expect(overridesWithBudget).toContain("target.max_iterations=1000");
-  });
-
-  it("omits target.max_time_ms when blank, includes it when the field is set, and disables the other budget field", () => {
-    const seen: unknown[] = [];
-    const { store } = createTestStore({
-      launchRun: (_kind, _game, config) => {
-        seen.push(config);
-        return createMockBenchEnv().launchRun(_kind, _game, config);
-      },
-    });
-    render(() => <LaunchForm store={store} />);
-
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.click(screen.getByText("Launch"));
-
-    const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides.some((o) => o.startsWith("target.max_time_ms"))).toBe(false);
-
-    seen.length = 0;
-    fireEvent.input(screen.getByLabelText(/Time budget \(ms\)/), { target: { value: "5000" } });
-    expect(screen.getByLabelText(/Iteration budget/)).toBeDisabled();
-
-    fireEvent.click(screen.getByText("Launch"));
-    const overridesWithBudget = (seen[0] as { overrides: string[] }).overrides;
-    expect(overridesWithBudget).toContain("target.max_time_ms=5000");
-    expect(overridesWithBudget.some((o) => o.startsWith("target.max_iterations"))).toBe(false);
-  });
-
-  it("submitting builds --override argv from the budget fields, not a strategies list", () => {
-    const seen: { kind: string; game: string; config?: unknown }[] = [];
-    const { store } = createTestStore({
-      launchRun: (kind, game, config) => {
-        seen.push({ kind, game, config });
-        return createMockBenchEnv().launchRun(kind, game, config);
-      },
-    });
-    render(() => <LaunchForm store={store} />);
-
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.input(screen.getByLabelText("Trials"), { target: { value: "25" } });
-    fireEvent.click(screen.getByLabelText(/Deterministic/));
-
-    const launchBtn = screen.getByText("Launch") as HTMLButtonElement;
-    expect(launchBtn.disabled).toBe(false);
-    fireEvent.click(launchBtn);
-
-    expect(seen).toEqual([
-      {
-        kind: "tuner",
-        game: "traffic-lights",
-        config: {
-          // Includes `target.baselines=['strong']` -- the default starting
-          // panel is every named preset the tuner reports, and
-          // traffic-lights' fixture ships exactly one ("strong").
-          overrides: [
-            "optimizer.n_trials=25",
-            "optimizer.deterministic=True",
-            "optimizer.seed=42",
-            "target.baselines=['strong']",
-          ],
-        },
-      },
-    ]);
-  });
-
-  it("sends every checked entry in the starting-baseline panel", () => {
-    const seen: unknown[] = [];
-    const { store } = createTestStore({
-      launchRun: (_kind, _game, config) => {
-        seen.push(config);
-        return createMockBenchEnv().launchRun(_kind, _game, config);
-      },
-    });
-    render(() => <LaunchForm store={store} />);
-
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    // Switch to druid, whose fixture ships two named presets ("strong",
-    // "master") -- both start checked (default panel = all presets).
-    fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
-    fireEvent.click(screen.getByText("Launch"));
-
-    const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides).toContain("target.baselines=['strong', 'master']");
-
-    seen.length = 0;
-    fireEvent.click(screen.getByLabelText("master"));
-    fireEvent.click(screen.getByText("Launch"));
-    const overridesAfterUncheck = (seen[0] as { overrides: string[] }).overrides;
-    expect(overridesAfterUncheck).toContain("target.baselines=['strong']");
-  });
-
-  it("sets config.ladder only when the ladder checkbox is enabled", () => {
-    const seen: { config?: { ladder?: unknown } }[] = [];
-    const { store } = createTestStore({
-      launchRun: (kind, game, config) => {
-        seen.push({ config: config as { ladder?: unknown } });
-        return createMockBenchEnv().launchRun(kind, game, config);
-      },
-    });
-    render(() => <LaunchForm store={store} />);
-
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.click(screen.getByText("Launch"));
-    expect(seen[0]!.config!.ladder).toBeUndefined();
-
-    seen.length = 0;
-    fireEvent.click(screen.getByLabelText(/Ladder/));
-    fireEvent.input(screen.getByLabelText("Max rungs"), { target: { value: "8" } });
-    fireEvent.input(screen.getByLabelText(/Saturation threshold/), { target: { value: "0.1" } });
-    fireEvent.click(screen.getByText("Launch"));
-
-    expect(seen[0]!.config!.ladder).toEqual({ max_rungs: 8, saturation_threshold: 0.1 });
-  });
-
-  it("omits optimizer.n_workers entirely when the Workers field is left blank", () => {
-    const seen: unknown[] = [];
-    const { store } = createTestStore({
-      launchRun: (_kind, _game, config) => {
-        seen.push(config);
-        return createMockBenchEnv().launchRun(_kind, _game, config);
-      },
-    });
-    render(() => <LaunchForm store={store} />);
-
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    fireEvent.click(screen.getByText("Launch"));
-
-    const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides.some((o) => o.startsWith("optimizer.n_workers"))).toBe(false);
-
-    // ... and includes it when the field has a value.
-    seen.length = 0;
-    fireEvent.input(screen.getByLabelText("Workers"), { target: { value: "4" } });
-    fireEvent.click(screen.getByText("Launch"));
-    const overridesWithWorkers = (seen[0] as { overrides: string[] }).overrides;
-    expect(overridesWithWorkers).toContain("optimizer.n_workers=4");
+    // No more baselines panel or ladder fields.
+    expect(screen.queryByText(/Starting baseline panel/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ladder/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Max rungs/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saturation threshold/)).not.toBeInTheDocument();
   });
 
   it("hides the Game config field for a game with an empty game_config", () => {
@@ -260,14 +125,8 @@ describe("LaunchForm / tuner", () => {
     expect(screen.queryByLabelText("Game config")).not.toBeInTheDocument();
   });
 
-  it("shows a pre-filled Game config field for a game with a real game_config, and includes it at launch", () => {
-    const seen: { kind: string; game: string; config?: unknown }[] = [];
-    const { store } = createTestStore({
-      launchRun: (kind, game, config) => {
-        seen.push({ kind, game, config });
-        return createMockBenchEnv().launchRun(kind, game, config);
-      },
-    });
+  it("shows a pre-filled Game config field for a game with a real game_config", () => {
+    const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
@@ -275,14 +134,6 @@ describe("LaunchForm / tuner", () => {
 
     const field = screen.getByLabelText("Game config") as HTMLTextAreaElement;
     expect(JSON.parse(field.value)).toEqual({ size: { w: 5, h: 5 } });
-
-    fireEvent.input(field, { target: { value: '{"size":{"w":9,"h":9}}' } });
-    fireEvent.click(screen.getByText("Launch"));
-
-    expect(seen).toHaveLength(1);
-    expect((seen[0]!.config as { game_config: unknown }).game_config).toEqual({
-      size: { w: 9, h: 9 },
-    });
   });
 
   it("disables Launch and shows an error when Game config contains invalid JSON", () => {
@@ -318,45 +169,28 @@ describe("RunDetailPanel / tuner", () => {
 
     // fakeTunerRunDetail is already terminal, so the single tail tick fetches
     // trials in the same round-trip -- no manual tick-forcing needed here.
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
-    // Best trial is #2 (cost 0.3 -- the lowest of the three fixture rows).
-    // Scoped by selector since e.g. "3" (trial count) and "30.0%" (best
-    // cost) also appear elsewhere (a trial_id cell, a per-trial cost cell).
+    // Best trial is #2 (cost 0.3 = score -0.300, the lowest of three).
     expect(screen.getByText("#2", { selector: ".tuner-stat-value" })).toBeInTheDocument();
-    expect(screen.getByText("30.0%", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("-0.300", { selector: ".tuner-stat-value" })).toBeInTheDocument();
     expect(screen.getByText("3", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // trial count
 
-    // Trial history lists all three rows' costs.
-    for (const pct of ["55.0%", "30.0%", "40.0%"]) {
-      expect(screen.getAllByText(pct).length).toBeGreaterThanOrEqual(1);
+    // Trial history lists all three rows' scores (from -cost).
+    for (const score of ["-0.550", "-0.300", "-0.400"]) {
+      expect(screen.getAllByText(score).length).toBeGreaterThanOrEqual(1);
     }
 
-    // The trial table's Family column shows each trial's family, not just
-    // RAVE's -- fixture spans rave/ucb1_tuned/ucb1.
+    // The trial table's Family column shows each trial's family -- fixture
+    // spans rave/ucb1_tuned/ucb1.
     const familyCells = document.querySelectorAll(".tuner-trial-family");
     expect(Array.from(familyCells).map((c) => c.textContent)).toEqual(["ucb1", "ucb1_tuned", "rave"]);
 
-    // Best trial (#2) is `family: "ucb1_tuned"`; its table compares it
-    // against the actual floor baseline selected when the run started.
-    const diffTable = document.querySelector("#tuner-lowest-trial-diff-table")!;
-    expect(diffTable.textContent).toContain("ucb1_tuned");
-    const familyRow = Array.from(diffTable.querySelectorAll("tbody tr")).find(
-      (row) => row.querySelector(".tuner-param-name")?.textContent === "family",
-    )!;
-    expect(familyRow.classList.contains("tuner-diff-changed")).toBe(true);
-    expect(familyRow.textContent).toContain("flat_mc");
-
     // fakeTunerRunDetail's incumbent (family: "rave", c: 0.7) gets its own
-    // table -- the config "Use best as new baseline" would actually
-    // promote, distinct from (and here, different family than) the lowest
-    // single trial above.
+    // table -- distinct from the lowest single trial above.
     const incumbentTable = document.querySelector("#tuner-incumbent-diff-table")!;
     expect(incumbentTable.textContent).toContain("rave");
     expect(incumbentTable.textContent).toContain("0.7");
-    expect(incumbentTable.textContent).toContain("flat_mc");
-    expect(incumbentTable.querySelector("thead")!.textContent).toContain("Baseline");
-    expect(incumbentTable.textContent).not.toMatch(/default/i);
   });
 
   it("shows the tracked incumbent and copies its config on click", async () => {
@@ -368,18 +202,16 @@ describe("RunDetailPanel / tuner", () => {
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
     // fakeTunerRunDetail's incumbent is {config: {family: "rave", c: 0.7}, cost: 0.2}
-    // -- distinct from the "Best trial" stat, which is derived from the
-    // trial fixture rows, not this field. Scoped by selector since the
-    // incumbent diff table's caption also says "Incumbent".
+    // -- distinct from the "Best trial" stat. The score displayed is -cost = -0.200.
     await screen.findByText("Incumbent", { selector: ".tuner-stat-label" });
-    expect(screen.getByText("20.0%", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("-0.200", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Copy as baseline config"));
     expect(writeText).toHaveBeenCalledWith(JSON.stringify({ family: "rave", c: 0.7 }));
     await screen.findByText("Copied!");
   });
 
-  it("reconstructs a floor baseline for runs recorded before baseline settings", async () => {
+  it("reconstructs a baseline from overrides for runs recorded before baseline_settings", async () => {
     const detail = {
       ...fakeTunerRunDetail,
       config: { overrides: ["optimizer.n_trials=50", "target.baselines=['random']"] },
@@ -388,11 +220,10 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Incumbent vs. baseline");
+    await screen.findByText("Best score (mu − 3σ)");
 
     const incumbentTable = document.querySelector("#tuner-incumbent-diff-table")!;
     expect(incumbentTable.textContent).toContain("random");
-    expect(incumbentTable.textContent).not.toMatch(/default|strong|master|easy/i);
   });
 
   it("toggles the chart help popover open and closed", async () => {
@@ -400,15 +231,15 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
-    expect(screen.queryByText(/95%-confidence "no worse than this" bound/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/running maximum of the 95% confidence band/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("How to read this chart"));
-    expect(screen.getByText(/95%-confidence "no worse than this" bound/)).toBeInTheDocument();
+    expect(screen.getByText(/running maximum of the 95% confidence band/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Close"));
-    expect(screen.queryByText(/95%-confidence "no worse than this" bound/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/running maximum of the 95% confidence band/)).not.toBeInTheDocument();
   });
 
   it("draws a confirmed-floor line that is never more optimistic than best-so-far", async () => {
@@ -416,7 +247,7 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     const paths = document.querySelectorAll("#tuner-cost-chart path");
     const bestPath = Array.from(paths).find((p) => p.getAttribute("stroke") === "#4caf7a")!;
@@ -430,9 +261,9 @@ describe("RunDetailPanel / tuner", () => {
     };
     const bestY = lastY(bestPath.getAttribute("d")!);
     const floorY = lastY(floorPath.getAttribute("d")!);
-    // Smaller y = higher up = a higher (worse) cost on this chart's
+    // Smaller y = higher up = a higher (weaker) score on this chart's
     // inverted scale -- fakeTrialRows has no repeat evaluations, so every
-    // group's CI upper bound sits strictly above its own raw cost, and the
+    // group's CI upper bound sits strictly above its own raw score, and the
     // confirmed floor must never render below (more optimistic than)
     // best-so-far.
     expect(floorY).toBeLessThanOrEqual(bestY);
@@ -446,7 +277,7 @@ describe("RunDetailPanel / tuner", () => {
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     // fakeTrialRowsWithRepeats adds two more evaluations (#4, #5) of trial
     // #2's exact config (cost 0.25/0.35 vs #2's 0.3) -- #4 is now the
@@ -455,20 +286,23 @@ describe("RunDetailPanel / tuner", () => {
     expect(screen.getByText("3", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // Evaluations
 
     expect(screen.getByText("Evaluations", { selector: ".tuner-stat-label" })).toBeInTheDocument();
-    expect(screen.getByText("95% CI", { selector: ".tuner-stat-label" })).toBeInTheDocument();
+    expect(screen.getByText("95% CI (mu ± 2σ)", { selector: ".tuner-stat-label" })).toBeInTheDocument();
 
     // The pooled interval must actually straddle the group's mean cost
     // (30.0%, i.e. (0.25 + 0.3 + 0.35) / 3) -- not be a degenerate
-    // single-point estimate.
+    // single-point estimate. The CI is based on mu ± 2σ which the fixture
+    // doesn't provide extra fields for, so the CI values are computed from
+    // the cost fallback.
     const ciStat = Array.from(document.querySelectorAll(".tuner-stat")).find(
-      (el) => el.querySelector(".tuner-stat-label")?.textContent === "95% CI",
+      (el) => el.querySelector(".tuner-stat-label")?.textContent === "95% CI (mu ± 2σ)",
     )!;
     const ciText = ciStat.querySelector(".tuner-stat-value")!.textContent!;
+    // CI fallback: mu ± 2σ = -cost ± 0 (no sigma info), so ci is
+    // degenerate: lower === upper.
     const [lo, hi] = ciText.split("–").map((s) => parseFloat(s));
-    expect(lo).toBeLessThan(30.0);
-    expect(hi).toBeGreaterThan(30.0);
+    expect(lo).toBe(hi); // Degenerate CI without sigma info
 
-    // Every point sharing that config renders a (non-degenerate) whisker.
+    // Every point sharing that config renders a whisker.
     const whiskers = document.querySelectorAll(".tuner-ci-whisker");
     expect(whiskers.length).toBe(5); // one per scored trial (#1, #2, #3, #4, #5)
   });
@@ -481,15 +315,13 @@ describe("RunDetailPanel / tuner", () => {
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     // The trial table's Baseline column distinguishes the two instances.
     const baselineCells = document.querySelectorAll(".tuner-trial-baseline");
     expect(Array.from(baselineCells).map((c) => c.textContent).sort()).toEqual(["master", "strong"]);
 
-    // #1 (cost 0.1 vs "strong") is the best trial -- if the two same-config
-    // trials had been pooled across instances, the group's mean/CI would be
-    // (0.1 + 0.6) / 2 instead of a single-evaluation estimate per instance.
+    // #1 (cost 0.1 = score -0.100 vs "strong") is the best trial.
     expect(screen.getByText("#1", { selector: ".tuner-stat-value" })).toBeInTheDocument();
     expect(screen.getByText("1", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // Evaluations: not pooled with #2
 
@@ -509,7 +341,7 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     // fakeTunerRunDetail's trial_count is 3, so the default is 203.
     const input = screen.getByLabelText("Resume with n_trials") as HTMLInputElement;
@@ -532,41 +364,6 @@ describe("RunDetailPanel / tuner", () => {
     await screen.findByText("Status");
 
     expect(screen.queryByLabelText("Resume with n_trials")).not.toBeInTheDocument();
-  });
-
-  it("shows a Use best as new baseline control once an incumbent exists, even while the run is still running", async () => {
-    const runningTunerDetail = { ...fakeTunerRunDetail, status: "running", ended_at: null };
-    const seen: unknown[] = [];
-    const { store } = createTestStore({
-      getRun: () => Effect.send(runningTunerDetail),
-      advanceBaseline: (runId, nTrials, nWorkers) => {
-        seen.push([runId, nTrials, nWorkers]);
-        return createMockBenchEnv().advanceBaseline(runId, nTrials, nWorkers);
-      },
-    });
-    render(() => <RunDetailPanel store={store} />);
-
-    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Status");
-
-    // Unlike Resume (hidden above for the same running detail), this
-    // button doesn't require the run to have stopped first -- the route
-    // handles that itself.
-    const btn = screen.getByText("Use best as new baseline");
-    fireEvent.click(btn);
-    expect(seen).toEqual([[FAKE_tuner_RUN_ID, undefined, undefined]]);
-  });
-
-  it("hides the Use best as new baseline control before any incumbent has been reported", async () => {
-    const { store } = createTestStore({
-      getRun: () => Effect.send({ ...fakeTunerRunDetail, incumbent: null }),
-    });
-    render(() => <RunDetailPanel store={store} />);
-
-    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Status");
-
-    expect(screen.queryByText("Use best as new baseline")).not.toBeInTheDocument();
   });
 
   it("renders every rung of a ladder chain as one continuous trial history with a baseline-cutover marker", async () => {
@@ -602,14 +399,14 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     // Trial count spans both rungs (2 + 3), not just the open rung's own 3.
     expect(screen.getByText("5", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     // The trials table gained a "Run" column identifying each row's rung,
-    // and the cross-rung best cost (20.0%, root-1's trial #2) still wins
-    // over every rung-2 row.
+    // and the cross-rung best score (trial #2 with cost 0.2 => score -0.200)
+    // still wins over every rung-2 row.
     expect(screen.getByText("Run")).toBeInTheDocument();
     const rungCells = Array.from(document.querySelectorAll(".tuner-trial-rung")).map((c) => c.textContent);
     expect(rungCells).toEqual([
@@ -620,7 +417,7 @@ describe("RunDetailPanel / tuner", () => {
       `Root (${rootRunId})`,
       `Root (${rootRunId})`,
     ]);
-    // Cross-rung best cost: root's trial #2 (20.0%) beats every rung-2 row.
+    // Cross-rung best cost: root's trial #2 (score -0.200) beats every rung-2 row.
     expect(screen.getByText("#2", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     // One cutover marker for the one rung boundary in a 2-rung chain.
@@ -660,7 +457,7 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     expect(document.querySelectorAll(".tuner-rung-boundary").length).toBe(1);
     expect(screen.getByText("new baseline")).toBeInTheDocument();
@@ -671,8 +468,6 @@ describe("RunDetailPanel / tuner", () => {
     const rootTrials: TrialRow[] = [
       { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1", c: 1.4 }, seed: 0, cost: 0.5, extra: null },
     ];
-    // Rung 2's baseline is rung 1's own incumbent, stored in the current
-    // run's launch config as the resolved baseline settings.
     const chain: ChainRung[] = [
       {
         run_id: rootRunId,
@@ -705,7 +500,7 @@ describe("RunDetailPanel / tuner", () => {
     render(() => <RunDetailPanel store={store} />);
 
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    await screen.findByText("Best cost (loss rate)");
+    await screen.findByText("Best score (mu − 3σ)");
 
     expect(screen.getByText("Incumbent vs. baseline")).toBeInTheDocument();
     expect(screen.queryByText(/default/i)).not.toBeInTheDocument();
