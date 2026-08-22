@@ -1,4 +1,4 @@
-// Smac3RunDetail.tsx — Trial history for an open `kind: "smac3"` run:
+// TunerRunDetail.tsx — Trial history for an open `kind: "tuner"` run:
 // stats, a cost-over-trials chart (per-trial cost + running best-so-far),
 // and parameter tables comparing candidates with the baseline they faced.
 //
@@ -14,9 +14,9 @@
 // (`losses / (2 * rounds)`) over one trial's `rounds` self-play games, not
 // a single observation — the intensifier re-evaluating the *same* config
 // on a later seed (visible as two trial rows with identical `config`) is
-// SMAC building more confidence in that estimate, not noise to ignore. So
+// building more confidence in that estimate, not noise to ignore. So
 // trials are grouped by identical `config` *and* baseline instance (a run
-// using SMAC3's multi-instance mechanism scores the same config separately
+// using tuner's multi-instance mechanism scores the same config separately
 // against each baseline, and those costs shouldn't be pooled together —
 // see `groupKey`), each group's mean cost is treated as a pooled proportion
 // over `n = evaluations * 2 * rounds` Bernoulli trials, and a Wilson score
@@ -143,7 +143,7 @@ function baselineConfig(launchConfig: unknown): Record<string, unknown> | null {
 }
 
 /** The baseline instance a trial's cost was measured against, when the run
- * used SMAC3's multi-instance mechanism (`Scenario(instances=...)`) --
+ * used tuner's multi-instance mechanism (`Scenario(instances=...)`) --
  * `TrialTracker` (Python) stuffs it into the existing `extra` JSON column
  * as `{"instance": "master"}` rather than a new top-level DB column. `null`
  * for a single-instance run (nothing to disambiguate) or an older trial
@@ -185,7 +185,7 @@ interface RungBoundary {
   rung: ChainRung;
 }
 
-export const Smac3RunDetail: Component<{
+export const TunerRunDetail: Component<{
   /** This run's own trials -- used as a fallback source before `chain`/
    * `chainedTrials` resolve on the first tick (see `effectiveEntries`), and
    * always the value shown by the "Trials" stat when the chain is a single
@@ -203,7 +203,7 @@ export const Smac3RunDetail: Component<{
   /** `RunDetail.config` (the launch request body) — only consulted for a
    * `target.rounds=N` override; see `resolveRounds`. */
   launchConfig?: unknown;
-  /** `RunDetail.incumbent` -- SMAC3's own tracked best config, distinct
+  /** `RunDetail.incumbent` -- tuner's own tracked best config, distinct
    * from the "Best trial" stat below (which is just the lowest raw `cost`
    * among this run's trials, not aggregated across baseline instances).
    * `null`/absent before the run reports its first incumbent. */
@@ -214,7 +214,7 @@ export const Smac3RunDetail: Component<{
   // available; `trials` (this run alone) is only a fallback for the first
   // tick or two before the chain fetch resolves, to avoid a flash of "No
   // scored trials yet." Trial ids repeat across rungs (each is its own
-  // SMAC3 run starting from trial 1), so entries are ordered by rung first,
+  // tuner run starting from trial 1), so entries are ordered by rung first,
   // trial_id within a rung second -- never by trial_id alone.
   const effectiveEntries = createMemo((): ChainedTrial[] => {
     if (props.chainedTrials.length > 0) {
@@ -359,12 +359,12 @@ export const Smac3RunDetail: Component<{
 
   // Two distinct "best" configs, deliberately not conflated (see the chart
   // help popover's confirmed-floor/best-so-far split for the same
-  // distinction applied to the cost chart): the incumbent is SMAC3's own
+  // distinction applied to the cost chart): the incumbent is tuner's own
   // tracked champion -- re-challenged as the run progresses, and exactly
   // what "Use best as new baseline" actually promotes -- while the lowest
   // trial is just this chart's single cheapest observed dot, with no
   // confirmation behind it.
-  // This is recorded when the run is launched, before SMAC has an
+  // This is recorded when the run is launched, before the tuner has an
   // incumbent. It therefore remains the authoritative opponent for the
   // root rung as well as for later promoted rungs.
   const currentBaselineConfig = createMemo(() => baselineConfig(props.launchConfig));
@@ -412,7 +412,7 @@ export const Smac3RunDetail: Component<{
     const entry = {
       id: "tuned",
       label: "Tuned",
-      description: "SMAC3 tuned.",
+      description: "tuner tuned.",
       params: incumbent.config,
       use_transpositions: supportsTranspositions(),
     };
@@ -422,21 +422,21 @@ export const Smac3RunDetail: Component<{
   }
 
   return (
-    <div id="smac3-run-detail">
+    <div id="tuner-run-detail">
       <Show when={props.incumbent}>
         {(incumbent) => (
-          <div id="smac3-incumbent-row">
-            <span class="smac3-stat-label">Incumbent</span>
-            <span class="smac3-stat-value">{fmtCost(incumbent().cost)}</span>
+          <div id="tuner-incumbent-row">
+            <span class="tuner-stat-label">Incumbent</span>
+            <span class="tuner-stat-value">{fmtCost(incumbent().cost)}</span>
             <button
-              id="smac3-copy-incumbent-btn"
+              id="tuner-copy-incumbent-btn"
               onClick={copyIncumbentConfig}
               title="Copy this config for a later run's --baseline-config"
             >
               {copied() ? "Copied!" : "Copy as baseline config"}
             </button>
             <button
-              id="smac3-copy-incumbent-preset-btn"
+              id="tuner-copy-incumbent-preset-btn"
               onClick={copyIncumbentAsPreset}
               title="Copy a ready-to-paste presets.json entry (params plus the use_transpositions this game requires)"
             >
@@ -450,43 +450,43 @@ export const Smac3RunDetail: Component<{
         when={scored().length > 0}
         fallback={<div class="log-empty">No scored trials yet.</div>}
       >
-        <div id="smac3-stats-row">
-          <div class="smac3-stat">
-            <span class="smac3-stat-value">{sorted().length}</span>
-            <span class="smac3-stat-label">Trials</span>
+        <div id="tuner-stats-row">
+          <div class="tuner-stat">
+            <span class="tuner-stat-value">{sorted().length}</span>
+            <span class="tuner-stat-label">Trials</span>
           </div>
-          <div class="smac3-stat">
-            <span class="smac3-stat-value">{fmtCost(bestTrial()?.cost ?? null)}</span>
-            <span class="smac3-stat-label">Best cost (loss rate)</span>
+          <div class="tuner-stat">
+            <span class="tuner-stat-value">{fmtCost(bestTrial()?.cost ?? null)}</span>
+            <span class="tuner-stat-label">Best cost (loss rate)</span>
           </div>
-          <div class="smac3-stat">
-            <span class="smac3-stat-value">#{bestTrial()?.trial_id ?? "—"}</span>
-            <span class="smac3-stat-label">Best trial</span>
+          <div class="tuner-stat">
+            <span class="tuner-stat-value">#{bestTrial()?.trial_id ?? "—"}</span>
+            <span class="tuner-stat-label">Best trial</span>
           </div>
           <Show when={bestGroup()}>
             {(group) => (
               <>
-                <div class="smac3-stat">
-                  <span class="smac3-stat-value">{group().trials.length}</span>
-                  <span class="smac3-stat-label">Evaluations</span>
+                <div class="tuner-stat">
+                  <span class="tuner-stat-value">{group().trials.length}</span>
+                  <span class="tuner-stat-label">Evaluations</span>
                 </div>
-                <div class="smac3-stat">
-                  <span class="smac3-stat-value">
+                <div class="tuner-stat">
+                  <span class="tuner-stat-value">
                     {fmtCost(group().ci.lower)} – {fmtCost(group().ci.upper)}
                   </span>
-                  <span class="smac3-stat-label">95% CI</span>
+                  <span class="tuner-stat-label">95% CI</span>
                 </div>
               </>
             )}
           </Show>
         </div>
 
-        <div id="smac3-chart-wrapper">
-          <div id="smac3-chart-header">
-            <span id="smac3-chart-title">Cost history</span>
-            <div id="smac3-chart-help">
+        <div id="tuner-chart-wrapper">
+          <div id="tuner-chart-header">
+            <span id="tuner-chart-title">Cost history</span>
+            <div id="tuner-chart-help">
               <button
-                id="smac3-chart-help-btn"
+                id="tuner-chart-help-btn"
                 type="button"
                 aria-expanded={helpOpen()}
                 aria-label="How to read this chart"
@@ -495,9 +495,9 @@ export const Smac3RunDetail: Component<{
                 i
               </button>
               <Show when={helpOpen()}>
-                <div id="smac3-chart-help-popover" role="tooltip">
+                <div id="tuner-chart-help-popover" role="tooltip">
                   <button
-                    id="smac3-chart-help-close"
+                    id="tuner-chart-help-close"
                     type="button"
                     aria-label="Close"
                     onClick={() => setHelpOpen(false)}
@@ -518,13 +518,13 @@ export const Smac3RunDetail: Component<{
                       <dd>A vertical line marking where a run's incumbent was promoted to a new baseline and tuning continued against it.</dd>
                     </Show>
                     <dt>Incumbent</dt>
-                    <dd>SMAC3's own tracked best config, aggregated across every baseline instance and re-challenged as the run progresses. This is what "Use best as new baseline" actually promotes -- not the same as "Lowest single trial" below, which is just this chart's single cheapest dot, unconfirmed.</dd>
+                    <dd>tuner's own tracked best config, aggregated across every baseline instance and re-challenged as the run progresses. This is what "Use best as new baseline" actually promotes -- not the same as "Lowest single trial" below, which is just this chart's single cheapest dot, unconfirmed.</dd>
                   </dl>
                 </div>
               </Show>
             </div>
           </div>
-          <svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`} id="smac3-cost-chart">
+          <svg width={CHART_W} height={CHART_H} viewBox={`0 0 ${CHART_W} ${CHART_H}`} id="tuner-cost-chart">
             <For each={yTicks()}>
               {(tick) => {
                 const y = yScale()(tick);
@@ -583,7 +583,7 @@ export const Smac3RunDetail: Component<{
                     y2={yScale()(ci().upper)}
                     stroke="rgba(91,127,214,0.35)"
                     stroke-width="2"
-                    class="smac3-ci-whisker"
+                    class="tuner-ci-whisker"
                   />
                 );
               }}
@@ -622,7 +622,7 @@ export const Smac3RunDetail: Component<{
                     stroke="#c9a227"
                     stroke-width="1"
                     stroke-dasharray="3,3"
-                    class="smac3-rung-boundary"
+                    class="tuner-rung-boundary"
                   >
                     <title>
                       New baseline from {b.rung.run_id}
@@ -634,10 +634,10 @@ export const Smac3RunDetail: Component<{
               )}
             </For>
           </svg>
-          <div class="smac3-chart-legend">
+          <div class="tuner-chart-legend">
             <span><i class="legend-swatch legend-swatch-trial" /> trial cost</span>
-            <span class="smac3-legend-emphasized"><i class="legend-swatch legend-swatch-floor" /> confirmed floor</span>
-            <span class="smac3-legend-muted"><i class="legend-swatch legend-swatch-best" /> best so far</span>
+            <span class="tuner-legend-emphasized"><i class="legend-swatch legend-swatch-floor" /> confirmed floor</span>
+            <span class="tuner-legend-muted"><i class="legend-swatch legend-swatch-best" /> best so far</span>
             <span><i class="legend-swatch legend-swatch-ci" /> 95% CI</span>
             <Show when={props.chain.length > 1}>
               <span><i class="legend-swatch legend-swatch-boundary" /> new baseline</span>
@@ -646,7 +646,7 @@ export const Smac3RunDetail: Component<{
         </div>
 
         <Show when={incumbentVsBaseline().length > 0}>
-          <table id="smac3-incumbent-diff-table" class="smac3-diff-table smac3-diff-table-emphasized">
+          <table id="tuner-incumbent-diff-table" class="tuner-diff-table tuner-diff-table-emphasized">
             <caption>Incumbent vs. baseline</caption>
             <thead>
               <tr>
@@ -658,8 +658,8 @@ export const Smac3RunDetail: Component<{
             <tbody>
               <For each={incumbentVsBaseline()}>
                 {(row) => (
-                  <tr classList={{ "smac3-diff-changed": row.changed }}>
-                    <td class="smac3-param-name">{row.name}</td>
+                  <tr classList={{ "tuner-diff-changed": row.changed }}>
+                    <td class="tuner-param-name">{row.name}</td>
                     <td>{String(row.value)}</td>
                     <td>{row.baseline === undefined ? "—" : String(row.baseline)}</td>
                   </tr>
@@ -670,7 +670,7 @@ export const Smac3RunDetail: Component<{
         </Show>
 
         <Show when={lowestTrialVsBaseline().length > 0}>
-          <table id="smac3-lowest-trial-diff-table" class="smac3-diff-table">
+          <table id="tuner-lowest-trial-diff-table" class="tuner-diff-table">
             <caption>Lowest single trial (#{bestTrial()!.trial_id}) vs. baseline</caption>
             <thead>
               <tr>
@@ -682,8 +682,8 @@ export const Smac3RunDetail: Component<{
             <tbody>
               <For each={lowestTrialVsBaseline()}>
                 {(row) => (
-                  <tr classList={{ "smac3-diff-changed": row.changed }}>
-                    <td class="smac3-param-name">{row.name}</td>
+                  <tr classList={{ "tuner-diff-changed": row.changed }}>
+                    <td class="tuner-param-name">{row.name}</td>
                     <td>{String(row.value)}</td>
                     <td>{row.baseline === undefined ? "—" : String(row.baseline)}</td>
                   </tr>
@@ -694,8 +694,8 @@ export const Smac3RunDetail: Component<{
         </Show>
       </Show>
 
-      <div id="smac3-trials-scroll">
-        <table id="smac3-trials-table">
+      <div id="tuner-trials-scroll">
+        <table id="tuner-trials-table">
           <thead>
             <tr>
               <th>#</th>
@@ -712,13 +712,13 @@ export const Smac3RunDetail: Component<{
           <tbody>
             <For each={effectiveEntries().slice().reverse()}>
               {(e) => (
-                <tr classList={{ "smac3-trial-best": isBest(e) }} title={JSON.stringify(e.trial.config)}>
+                <tr classList={{ "tuner-trial-best": isBest(e) }} title={JSON.stringify(e.trial.config)}>
                   <td>{e.trial.trial_id}</td>
                   <Show when={props.chain.length > 1}>
-                    <td class="smac3-trial-rung">{chainRungLabel(props.chain[e.rungIndex]!, e.rungIndex)}</td>
+                    <td class="tuner-trial-rung">{chainRungLabel(props.chain[e.rungIndex]!, e.rungIndex)}</td>
                   </Show>
-                  <td class="smac3-trial-family">{typeof e.trial.config.family === "string" ? e.trial.config.family : "—"}</td>
-                  <td class="smac3-trial-baseline">{instanceOf(e.trial) ?? "—"}</td>
+                  <td class="tuner-trial-family">{typeof e.trial.config.family === "string" ? e.trial.config.family : "—"}</td>
+                  <td class="tuner-trial-baseline">{instanceOf(e.trial) ?? "—"}</td>
                   <td>{fmtCost(e.trial.cost)}</td>
                   <td>{e.trial.seed ?? "—"}</td>
                   <td>{e.trial.ts}</td>

@@ -532,7 +532,7 @@ mod tests {
 
     fn insert_run(conn: &Connection, run_id: &str, config: Option<&str>) {
         conn.execute(
-            "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, status, log_path) VALUES (?1, 'smac3', 'nim', ?2, 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/log')",
+            "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, status, log_path) VALUES (?1, 'tuner', 'nim', ?2, 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/log')",
             params![run_id, config],
         )
         .unwrap();
@@ -543,7 +543,7 @@ mod tests {
         let conn = db();
         insert_run(&conn, "root", None);
         let tx = conn.unchecked_transaction().unwrap();
-        create_root_identity(&tx, "root", "smac3", None, None, "2026-01-01T00:00:00Z").unwrap();
+        create_root_identity(&tx, "root", "tuner", None, None, "2026-01-01T00:00:00Z").unwrap();
         tx.commit().unwrap();
         insert_run(&conn, "child", Some(r#"{"resumed_from":"root"}"#));
         let parent = prepare_continuation(&conn, "root").unwrap();
@@ -559,12 +559,12 @@ mod tests {
         let conn = db();
         insert_run(&conn, "root", None);
         let tx = conn.unchecked_transaction().unwrap();
-        create_root_identity(&tx, "root", "smac3", None, None, "2026-01-01T00:00:00Z").unwrap();
+        create_root_identity(&tx, "root", "tuner", None, None, "2026-01-01T00:00:00Z").unwrap();
         tx.commit().unwrap();
 
         insert_run(&conn, "child", None);
         let tx = conn.unchecked_transaction().unwrap();
-        create_registry_root_identity(&tx, "child", "smac3", "2026-01-01T00:00:01Z").unwrap();
+        create_registry_root_identity(&tx, "child", "tuner", "2026-01-01T00:00:01Z").unwrap();
         tx.commit().unwrap();
 
         let parent = prepare_continuation(&conn, "root").unwrap();
@@ -666,7 +666,7 @@ mod tests {
         let conn = db();
         insert_run(&conn, "root", None);
         let tx = conn.unchecked_transaction().unwrap();
-        create_root_identity(&tx, "root", "smac3", None, None, "2026-01-01T00:00:00Z").unwrap();
+        create_root_identity(&tx, "root", "tuner", None, None, "2026-01-01T00:00:00Z").unwrap();
         tx.commit().unwrap();
         insert_run(&conn, "parent", Some(r#"{"resumed_from":"root"}"#));
 
@@ -720,10 +720,10 @@ mod tests {
         let conn = db();
         insert_run(&conn, "r", None);
         let tx = conn.unchecked_transaction().unwrap();
-        create_registry_root_identity(&tx, "r", "smac3", "2026-01-01T00:00:00Z").unwrap();
+        create_registry_root_identity(&tx, "r", "tuner", "2026-01-01T00:00:00Z").unwrap();
         tx.commit().unwrap();
         let tx = conn.unchecked_transaction().unwrap();
-        create_registry_root_identity(&tx, "r", "smac3", "2026-01-01T00:00:00Z").unwrap();
+        create_registry_root_identity(&tx, "r", "tuner", "2026-01-01T00:00:00Z").unwrap();
         tx.commit().unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM logical_runs", [], |r| r.get(0))

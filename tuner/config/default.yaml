@@ -1,5 +1,5 @@
 # Default hyperparameter search configuration for MCTS.
-# This file can be overridden with `smac3 --config my-config.yaml`.
+# This file can be overridden with `tuner --config my-config.yaml`.
 # All keys can also be overridden on the command line via `--override key=value`.
 #
 # The search space itself (`parameters:`/`conditions:`) is not configured
@@ -13,7 +13,7 @@
 # `target.baselines` through its config or a CLI override.
 
 # ---------------------------------------------------------------------------
-# SMAC3 optimisation engine settings
+# Optimisation engine settings
 # ---------------------------------------------------------------------------
 optimizer:
   # Maximum number of trial configurations to evaluate
@@ -29,11 +29,11 @@ optimizer:
   seed: 42
 
 # ---------------------------------------------------------------------------
-# Target evaluation — the game binary's `tune eval` subcommand SMAC invokes
+# Target evaluation — the game binary's `tune eval` subcommand the tuner invokes
 # ---------------------------------------------------------------------------
 target:
   # Path (relative to current working directory or absolute) to the game binary
-  # Typical invocation: cd /path/to/mcts && uv run --project smac3/ smac3
+  # Typical invocation: cd /path/to/mcts && uv run --project tuner/ tuner
   binary: target/release/game-traffic-lights
 
   # Number of self-play rounds (each round: candidate-first + baseline-first
@@ -42,10 +42,10 @@ target:
 
   # Per-*run* search-effort ceiling (MCTS iterations per move) forwarded as
   # `--max-iterations` to every `tune eval` call this run makes -- how much
-  # compute a trial's candidate gets, not a hyperparameter SMAC3 searches
+  # compute a trial's candidate gets, not a hyperparameter the tuner searches
   # over (that would just reward the trial with the biggest budget, not the
   # best hyperparameters at a fixed one -- see `family`/`c`/etc. above for
-  # what SMAC3 *does* search). Applies to a `baseline_config`-backed
+  # what the tuner *does* search). Applies to a `baseline_config`-backed
   # opponent too (a ladder rung's self-play baseline, or `random`/`flat_mc`),
   # so both sides of that match stay on equal footing regardless of the
   # value chosen. `null` (the default) means "use the game binary's own

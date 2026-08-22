@@ -15,7 +15,7 @@ export type {
   TunerParameter,
   TunerCondition,
   TunerInfo,
-  Smac3GameInfo,
+  TunerGameInfo,
   TrialRow,
   IncumbentInfo,
   ChainRung,
@@ -50,7 +50,7 @@ export type {
   LeaderboardAction,
   LaunchAction,
   KindsAction,
-  Smac3KindsAction,
+  TunerKindsAction,
 } from "./reducer.js";
 export {
   benchReducer,
@@ -65,10 +65,10 @@ export type { BenchApiClient } from "./api-client.js";
 export { createBenchApiClient, createBenchEnv } from "./api-client.js";
 
 export { LaunchForm } from "./LaunchForm.js";
-export { Smac3LaunchFields } from "./Smac3LaunchFields.js";
+export { TunerLaunchFields } from "./TunerLaunchFields.js";
 export { RunList } from "./RunList.js";
 export { RunDetailPanel } from "./RunDetailPanel.js";
-export { Smac3RunDetail } from "./Smac3RunDetail.js";
+export { TunerRunDetail } from "./TunerRunDetail.js";
 export { LeaderboardTable } from "./LeaderboardTable.js";
 export { WinRateChart } from "./WinRateChart.js";
 export { CommitComparison } from "./CommitComparison.js";

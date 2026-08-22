@@ -1,6 +1,6 @@
 //! DuckDB schema, connection helpers, and row types for the benchmark
 //! database.  Only the `server` process ever opens `bench.duckdb` read-write;
-//! `bin/bench` and the Python SMAC3 harness never link against DuckDB at all.
+//! `bin/bench` and the Python tuner harness never link against DuckDB at all.
 
 pub const CREATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS logical_runs (

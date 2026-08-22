@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import optuna
 
-from smac3_cli.config import SearchConfig
-from smac3_cli.space_optuna import default_config, suggest_config
+from tuner_cli.config import SearchConfig
+from tuner_cli.space_optuna import default_config, suggest_config
 
 _SPACE_YAML = """
 parameters:

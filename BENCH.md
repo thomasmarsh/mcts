@@ -1,12 +1,12 @@
-# Bench and SMAC3 Tuning Architecture
+# Bench and tuner Tuning Architecture
 
-This document describes the system built around SMAC3: how a tuning request moves through the TypeScript UI, Rust server and launcher, Python optimizer, game binary, append-only logs, DuckDB ingestion, and back to the UI. It intentionally does not explain Bayesian optimization or SMAC3's internal algorithms.
+This document describes the system built around tuner: how a tuning request moves through the TypeScript UI, Rust server and launcher, Python optimizer, game binary, append-only logs, DuckDB ingestion, and back to the UI. It intentionally does not explain Bayesian optimization or the tuner's internal algorithms.
 
 The most important architectural distinction is this:
 
 > A tuning session is one logical run, but it may be implemented by several physical processes and storage rows.
 
-A baseline ladder exposes that distinction. Each rung needs a new SMAC3 `Scenario`, output directory, process, log, and `runs` row, yet the operator should see one continuous experiment with one trial budget, one history, and visible baseline boundaries. Most serious regressions have come from allowing the physical representation to leak through that logical abstraction.
+A baseline ladder exposes that distinction. Each rung needs a new tuner `Scenario`, output directory, process, log, and `runs` row, yet the operator should see one continuous experiment with one trial budget, one history, and visible baseline boundaries. Most serious regressions have come from allowing the physical representation to leak through that logical abstraction.
 
 ## Design philosophy
 
@@ -16,11 +16,11 @@ The surrounding system follows a few principles.
 
 The server launches and stops processes, assigns run IDs, records launch configuration, ingests logs, serves the API, and advances ladders. It is the only process that opens `bench-runs/bench.duckdb` read-write. Neither Python nor the browser writes the database.
 
-Rust does not attempt to reconstruct SMAC3's optimizer state. Resumption uses SMAC3's saved runhistory, and incumbent selection comes from SMAC3 itself.
+Rust does not attempt to reconstruct the tuner's optimizer state. Resumption uses the tuner's saved runhistory, and incumbent selection comes from tuner itself.
 
-### Python is an adapter around SMAC3
+### Python is an adapter around tuner
 
-The `smac3` package translates repository configuration into a SMAC3 `Scenario`, obtains the search space from a game binary, invokes that binary for evaluations, and emits stable JSONL events. It does not own run discovery, UI state, ladder policy, or the DuckDB schema.
+The `tuner` package translates repository configuration into a tuner `Scenario`, obtains the search space from a game binary, invokes that binary for evaluations, and emits stable JSONL events. It does not own run discovery, UI state, ladder policy, or the DuckDB schema.
 
 ### Game binaries own legal tuning configurations and evaluation
 
@@ -53,7 +53,7 @@ Rust command builder and detached launcher
     +--> moves.jsonl           optional game traces
     |
     v
-bench smac3 -> Python smac3_cli -> game binary tune describe/eval
+bench tuner -> Python tuner_cli -> game binary tune describe/eval
     |
     v
 Rust ingest loop -> DuckDB
@@ -64,7 +64,7 @@ Rust ingest loop -> DuckDB
 
 ### 1. Launch configuration
 
-The launch form produces a free-form JSON configuration stored on the `runs` row. For SMAC3 this normally includes:
+The launch form produces a free-form JSON configuration stored on the `runs` row. For tuner this normally includes:
 
 - ordered `overrides`, such as `optimizer.n_trials=100` and `target.baselines=['flat_mc']`;
 - optional `game_config`;
@@ -74,7 +74,7 @@ The launch form produces a free-form JSON configuration stored on the `runs` row
 
 Overrides are deliberately ordered. Python parses them into a dictionary, so the final occurrence of a dotted key wins. Resume and ladder code may therefore append a replacement override without rewriting the original launch request.
 
-The server generates the physical `run_id` before spawning. The same ID is passed to Python as `--run-id`, used as the SMAC3 `Scenario.name`, stored in DuckDB, written to the registry, and used as the `bench-runs/<run_id>/` directory. This identity alignment is what makes later `--resume <run_id>` deterministic.
+The server generates the physical `run_id` before spawning. The same ID is passed to Python as `--run-id`, used as the tuner `Scenario.name`, stored in DuckDB, written to the registry, and used as the `bench-runs/<run_id>/` directory. This identity alignment is what makes later `--resume <run_id>` deterministic.
 
 For a new automatic ladder, the server injects `ladder_root = run_id` after the ID exists. Descendant rungs carry the same root and set `resumed_from` to their immediate parent.
 
@@ -95,7 +95,7 @@ An automatic transition may stop a healthy parent. That physical row being `stop
 
 ### 3. Python scenario construction
 
-`smac3/src/smac3_cli/__main__.py` loads YAML defaults, applies ordered command-line overrides, and asks the target game binary for its parameters, conditions, and advertised named baselines through `tune describe`.
+`tuner/src/tuner_cli/__main__.py` loads YAML defaults, applies ordered command-line overrides, and asks the target game binary for its parameters, conditions, and advertised named baselines through `tune describe`.
 
 A run must explicitly select at least one baseline. Scenario instances are the union of:
 
@@ -109,7 +109,7 @@ A run must explicitly select at least one baseline. Scenario instances are the u
 
 That distinction is semantic. Passing a floor family as though it were a named game preset turns evaluation errors into apparent cost `1.0` results.
 
-The Python target function invokes one game-binary subprocess per SMAC3 evaluation and returns the trailing JSON `cost`. Timeouts, nonzero exits, and missing cost output are scored as `1.0` and diagnosed in `stdout.log`.
+The Python target function invokes one game-binary subprocess per tuner evaluation and returns the trailing JSON `cost`. Timeouts, nonzero exits, and missing cost output are scored as `1.0` and diagnosed in `stdout.log`.
 
 ### 4. Rust evaluation
 
@@ -117,14 +117,14 @@ The game adapter exposes `tuner()` metadata and `tune_eval()`. Shared constructi
 
 Each evaluation builds a candidate from the sampled configuration, builds a fresh baseline search for every game, and plays both move orders for every round. The emitted cost is the candidate's losses divided by `2 * rounds`. The bench system treats this cost as an opaque optimizer metric except when applying a configured ladder saturation threshold.
 
-Game setup belongs to `game_config`; optimizer configuration belongs to the sampled parameter object. They must remain separate so every trial in a run uses the same board/rules while SMAC3 changes only the search strategy.
+Game setup belongs to `game_config`; optimizer configuration belongs to the sampled parameter object. They must remain separate so every trial in a run uses the same board/rules while tuner changes only the search strategy.
 
 ### 5. Structured output and ingestion
 
 Python callbacks emit two important records:
 
-- `trial`: one completed SMAC3 evaluation, including configuration, seed, cost, and baseline instance;
-- `incumbent`: SMAC3's current incumbent configuration and aggregated cost.
+- `trial`: one completed tuner evaluation, including configuration, seed, cost, and baseline instance;
+- `incumbent`: the tuner's current incumbent configuration and aggregated cost.
 
 The incumbent must come from `smbo.intensifier.get_incumbent()` and `runhistory.get_cost()`. It must never be reconstructed as the minimum raw trial cost: trials against different instances or seeds are not directly interchangeable, while the intensifier owns their aggregation.
 
@@ -139,9 +139,9 @@ The ingest loop runs periodically and processes:
 
 ## Resume semantics
 
-SMAC3's normal continuation path requires an identical scenario and may prompt interactively when settings change. The repository therefore creates a fresh scenario and explicitly loads the parent's `runhistory.json` through `smac3/src/smac3_cli/resume.py`.
+the tuner's normal continuation path requires an identical scenario and may prompt interactively when settings change. The repository therefore creates a fresh scenario and explicitly loads the parent's `runhistory.json` through `tuner/src/tuner_cli/resume.py`.
 
-For an ordinary resume with the same baseline instances, the saved runhistory is merged into the fresh facade. A ladder transition changes the objective: costs measured against the old opponent are neither valid training data for the new opponent nor legal SMAC runhistory entries for a scenario whose instance set contains only the new baseline. A new rung therefore starts with an empty runhistory and reduces its physical `Scenario.n_trials` by the number of completed trials in the parent history. In-flight entries saved as `RUNNING` during the transition do not consume the logical budget because they produced no sample.
+For an ordinary resume with the same baseline instances, the saved runhistory is merged into the fresh facade. A ladder transition changes the objective: costs measured against the old opponent are neither valid training data for the new opponent nor legal runhistory entries for a scenario whose instance set contains only the new baseline. A new rung therefore starts with an empty runhistory and reduces its physical `optimizer.n_trials` by the number of completed trials in the parent history. In-flight entries saved as `RUNNING` during the transition do not consume the logical budget because they produced no sample.
 
 `optimizer.n_trials` is a total logical budget, not a per-process or per-rung allocation. If a 100-trial run changes baseline after 28 completed trials, the launch configuration still carries the logical total of 100, while the Python adapter gives the fresh child scenario a physical budget of 72. Increasing the logical value at each rung silently expands the experiment.
 
@@ -180,7 +180,7 @@ The child faces only the promoted incumbent. `baseline_configs` is replaced, not
 
 Each child stores the promoted configuration in both `baseline_configs` for execution and `baseline_settings` for faithful UI comparison. The chain endpoint is the only active physical process.
 
-Manual “Use best as new baseline” uses the same stop, resume, and baseline-replacement semantics. It may create a ladder chain retroactively for a plain SMAC3 run, but does not add automatic ladder policy unless the original run opted into it.
+Manual “Use best as new baseline” uses the same stop, resume, and baseline-replacement semantics. It may create a ladder chain retroactively for a plain tuner run, but does not add automatic ladder policy unless the original run opted into it.
 
 ## Physical rows and logical runs
 
@@ -214,7 +214,7 @@ Opening a run starts a generation-tagged polling loop. Each tick fetches the cur
 
 When automatic laddering creates a child, the chain's newest ID differs from the currently open physical ID. The reducer must open that newest rung before treating the stopped parent as the end of observation. Manual advancement follows the same rule through its success action.
 
-The SMAC3 chart concatenates trials in chain order. Trial IDs may repeat between physical runs, so identity and ordering use `(rungIndex, trial_id)`, never `trial_id` alone. Baseline grouping must include the baseline instance so observations from different opponents are not pooled.
+The tuner chart concatenates trials in chain order. Trial IDs may repeat between physical runs, so identity and ordering use `(rungIndex, trial_id)`, never `trial_id` alone. Baseline grouping must include the baseline instance so observations from different opponents are not pooled.
 
 A rung boundary is a state transition, not a data point. The “new baseline” marker must appear as soon as the chain contains the new rung. If the new rung has not scored a trial yet, the marker is pinned to the previous rung's final point; once both sides have points it is placed between them.
 
@@ -227,7 +227,7 @@ Changes to this system should preserve these contracts:
 1. One ladder is one logical run.
 2. A baseline transition does not increase the total trial budget.
 3. Crossing the saturation threshold may transition a running rung immediately.
-4. Only SMAC3's tracked incumbent may be promoted.
+4. Only the tuner's tracked incumbent may be promoted.
 5. A promoted rung faces only that incumbent unless a different curriculum is deliberately designed.
 6. A parent process is fully stopped before its runhistory is loaded.
 7. Physical logs, PIDs, rows, and output directories remain distinct and inspectable.
@@ -286,9 +286,9 @@ Tests should use in-memory DuckDB, mocked environments, and fake game data. Slow
 Before changing laddering, resume, run lists, or charts, write down whether each affected value belongs to:
 
 - the logical tuning session;
-- one physical SMAC3 invocation;
+- one physical tuner invocation;
 - one baseline rung;
-- one SMAC3 trial;
+- one tuner trial;
 - one game inside a trial.
 
 Trial budget and the user-facing experiment belong to the logical session. PID, log cursor, exit code, and output directory belong to a physical invocation. Baseline settings and promoted incumbent belong to a rung. Candidate configuration, seed, cost, and instance belong to a trial. Move traces belong to games.

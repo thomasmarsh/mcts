@@ -370,7 +370,7 @@
   min-height: 0;
 }
 
-/* Wraps the meta row + (for a SMAC3 run) the chart/param/trial tables --
+/* Wraps the meta row + (for a tuner run) the chart/param/trial tables --
    everything between the header and the log tail. Its own scrollbar keeps
    a tall summary (many trials, a wide param diff table) from squeezing
    `#log-panel` down to nothing: previously that content had no bound of
@@ -1502,9 +1502,9 @@ body.bench-active #analysis-panel {
   white-space: nowrap;
 }
 
-/* ── SMAC3 Launch Fields ─────────────────────────────────────────────── */
+/* ── tuner Launch Fields ─────────────────────────────────────────────── */
 
-#smac3-launch-fields label {
+#tuner-launch-fields label {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1513,14 +1513,14 @@ body.bench-active #analysis-panel {
   margin-bottom: 10px;
 }
 
-#smac3-tuner-summary {
+#tuner-tuner-summary {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   padding: 8px 10px;
   margin-bottom: 10px;
 }
 
-.smac3-tuner-meta {
+.tuner-tuner-meta {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 2px 8px;
@@ -1528,24 +1528,24 @@ body.bench-active #analysis-panel {
   margin-bottom: 8px;
 }
 
-.smac3-tuner-meta .meta-label {
+.tuner-tuner-meta .meta-label {
   min-width: 0;
 }
 
-#smac3-baseline-panel {
+#tuner-baseline-panel {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   padding: 8px 10px;
   margin-bottom: 10px;
 }
 
-#smac3-baseline-panel legend {
+#tuner-baseline-panel legend {
   font-size: 12px;
   color: #b7b8c2;
   padding: 0 4px;
 }
 
-.smac3-baseline-option {
+.tuner-baseline-option {
   display: flex !important;
   flex-direction: row !important;
   align-items: center;
@@ -1554,11 +1554,11 @@ body.bench-active #analysis-panel {
   cursor: pointer;
 }
 
-.smac3-baseline-option input[type="checkbox"] {
+.tuner-baseline-option input[type="checkbox"] {
   accent-color: #5b7fd6;
 }
 
-#smac3-param-table {
+#tuner-param-table {
   table-layout: fixed;
   width: 100%;
   border-collapse: collapse;
@@ -1566,7 +1566,7 @@ body.bench-active #analysis-panel {
   margin-bottom: 6px;
 }
 
-#smac3-param-table th {
+#tuner-param-table th {
   text-align: left;
   padding: 3px 6px 3px 0;
   color: #8a8b96;
@@ -1577,7 +1577,7 @@ body.bench-active #analysis-panel {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-#smac3-param-table td {
+#tuner-param-table td {
   padding: 3px 6px 3px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   color: #c7c9cf;
@@ -1586,84 +1586,84 @@ body.bench-active #analysis-panel {
 /* Fixed column widths that sum within the sidebar's minimum width, plus
    ellipsis truncation on every cell -- a categorical param's choices (or a
    long condition) can far exceed any of these; the `title` attribute set
-   in Smac3LaunchFields.tsx surfaces the full text as a hover tooltip. */
-#smac3-param-table th,
-#smac3-param-table td {
+   in TunerLaunchFields.tsx surfaces the full text as a hover tooltip. */
+#tuner-param-table th,
+#tuner-param-table td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-#smac3-param-table th:nth-child(1),
-#smac3-param-table td:nth-child(1) {
+#tuner-param-table th:nth-child(1),
+#tuner-param-table td:nth-child(1) {
   width: 30%;
 }
 
-#smac3-param-table th:nth-child(2),
-#smac3-param-table td:nth-child(2) {
+#tuner-param-table th:nth-child(2),
+#tuner-param-table td:nth-child(2) {
   width: 16%;
 }
 
-#smac3-param-table th:nth-child(3),
-#smac3-param-table td:nth-child(3) {
+#tuner-param-table th:nth-child(3),
+#tuner-param-table td:nth-child(3) {
   width: 36%;
 }
 
-#smac3-param-table th:nth-child(4),
-#smac3-param-table td:nth-child(4) {
+#tuner-param-table th:nth-child(4),
+#tuner-param-table td:nth-child(4) {
   width: 18%;
 }
 
-.smac3-param-name {
+.tuner-param-name {
   font-weight: 600;
   color: #e8e8ec;
   font-family: monospace;
   cursor: default;
 }
 
-.smac3-param-type {
+.tuner-param-type {
   color: #8aaff0;
 }
 
-.smac3-param-range,
-.smac3-param-default {
+.tuner-param-range,
+.tuner-param-default {
   cursor: default;
 }
 
-#smac3-conditions {
+#tuner-conditions {
   margin: 6px 0 0;
   font-size: 10px;
   color: #8a8b96;
 }
 
-#smac3-conditions summary {
+#tuner-conditions summary {
   cursor: pointer;
   color: #b7b8c2;
   font-weight: 600;
   user-select: none;
 }
 
-#smac3-conditions summary:hover {
+#tuner-conditions summary:hover {
   color: #e8e8ec;
 }
 
-#smac3-conditions ul {
+#tuner-conditions ul {
   margin: 6px 0 0;
   padding-left: 16px;
 }
 
-#smac3-conditions li {
+#tuner-conditions li {
   margin-bottom: 2px;
 }
 
-#smac3-budget-fields {
+#tuner-budget-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0 10px;
 }
 
-#smac3-budget-fields input[type="number"],
-#smac3-ladder-fields input[type="number"] {
+#tuner-budget-fields input[type="number"],
+#tuner-ladder-fields input[type="number"] {
   width: 100%;
   box-sizing: border-box;
   background: #2a2c34;
@@ -1674,25 +1674,25 @@ body.bench-active #analysis-panel {
   font-size: 12px;
 }
 
-.smac3-checkbox-field {
+.tuner-checkbox-field {
   grid-column: 1 / -1;
   flex-direction: row !important;
   align-items: center;
   gap: 6px !important;
 }
 
-.smac3-checkbox-field input[type="checkbox"] {
+.tuner-checkbox-field input[type="checkbox"] {
   accent-color: #5b7fd6;
 }
 
-#smac3-ladder-fields {
+#tuner-ladder-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0 10px;
   margin-top: 8px;
 }
 
-.smac3-field-hint {
+.tuner-field-hint {
   grid-column: 1 / -1;
   display: block;
   margin-top: 2px;
@@ -1702,27 +1702,27 @@ body.bench-active #analysis-panel {
   line-height: 1.4;
 }
 
-/* ── SMAC3 Run Detail ────────────────────────────────────────────────── */
+/* ── tuner Run Detail ────────────────────────────────────────────────── */
 
-#smac3-run-detail {
+#tuner-run-detail {
   padding: 10px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-#smac3-stats-row {
+#tuner-stats-row {
   display: flex;
   gap: 20px;
   margin-bottom: 10px;
 }
 
-#smac3-incumbent-row {
+#tuner-incumbent-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
 
-#smac3-copy-incumbent-btn {
+#tuner-copy-incumbent-btn {
   background: #2e5f8a;
   border: 1px solid #2e5f8a;
   color: #d0e4f0;
@@ -1733,41 +1733,41 @@ body.bench-active #analysis-panel {
   cursor: pointer;
 }
 
-#smac3-copy-incumbent-btn:hover {
+#tuner-copy-incumbent-btn:hover {
   background: #3a72a4;
 }
 
-.smac3-stat {
+.tuner-stat {
   display: flex;
   flex-direction: column;
 }
 
-.smac3-stat-value {
+.tuner-stat-value {
   font-size: 18px;
   font-weight: 700;
   color: #e8e8ec;
   font-variant-numeric: tabular-nums;
 }
 
-.smac3-stat-label {
+.tuner-stat-label {
   font-size: 10px;
   color: #8a8b96;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
 
-#smac3-chart-wrapper {
+#tuner-chart-wrapper {
   margin-bottom: 10px;
 }
 
-#smac3-chart-header {
+#tuner-chart-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
 }
 
-#smac3-chart-title {
+#tuner-chart-title {
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
@@ -1775,11 +1775,11 @@ body.bench-active #analysis-panel {
   color: #8a8b96;
 }
 
-#smac3-chart-help {
+#tuner-chart-help {
   position: relative;
 }
 
-#smac3-chart-help-btn {
+#tuner-chart-help-btn {
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -1797,13 +1797,13 @@ body.bench-active #analysis-panel {
   justify-content: center;
 }
 
-#smac3-chart-help-btn:hover,
-#smac3-chart-help-btn[aria-expanded="true"] {
+#tuner-chart-help-btn:hover,
+#tuner-chart-help-btn[aria-expanded="true"] {
   border-color: #8aaff0;
   color: #8aaff0;
 }
 
-#smac3-chart-help-popover {
+#tuner-chart-help-popover {
   position: absolute;
   top: 22px;
   right: 0;
@@ -1818,7 +1818,7 @@ body.bench-active #analysis-panel {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
-#smac3-chart-help-close {
+#tuner-chart-help-close {
   position: absolute;
   top: 6px;
   right: 8px;
@@ -1831,15 +1831,15 @@ body.bench-active #analysis-panel {
   padding: 2px;
 }
 
-#smac3-chart-help-close:hover {
+#tuner-chart-help-close:hover {
   color: #e8e8ec;
 }
 
-#smac3-chart-help-popover dl {
+#tuner-chart-help-popover dl {
   margin: 0;
 }
 
-#smac3-chart-help-popover dt {
+#tuner-chart-help-popover dt {
   display: flex;
   align-items: center;
   color: #e8e8ec;
@@ -1847,23 +1847,23 @@ body.bench-active #analysis-panel {
   margin-top: 8px;
 }
 
-#smac3-chart-help-popover dt:first-child {
+#tuner-chart-help-popover dt:first-child {
   margin-top: 0;
 }
 
-#smac3-chart-help-popover dd {
+#tuner-chart-help-popover dd {
   margin: 2px 0 0;
   color: #b0b1bc;
 }
 
-#smac3-cost-chart {
+#tuner-cost-chart {
   display: block;
   width: 100%;
   max-width: 100%;
   height: auto;
 }
 
-.smac3-chart-legend {
+.tuner-chart-legend {
   display: flex;
   gap: 14px;
   font-size: 10px;
@@ -1871,12 +1871,12 @@ body.bench-active #analysis-panel {
   margin-top: 2px;
 }
 
-.smac3-legend-emphasized {
+.tuner-legend-emphasized {
   color: #e0904a;
   font-weight: 600;
 }
 
-.smac3-legend-muted {
+.tuner-legend-muted {
   opacity: 0.6;
 }
 
@@ -1910,21 +1910,21 @@ body.bench-active #analysis-panel {
   background: #c9a227;
 }
 
-.smac3-diff-table {
+.tuner-diff-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
   margin-bottom: 4px;
 }
 
-.smac3-diff-table caption {
+.tuner-diff-table caption {
   text-align: left;
   font-size: 11px;
   color: #8a8b96;
   padding-bottom: 4px;
 }
 
-.smac3-diff-table th {
+.tuner-diff-table th {
   text-align: left;
   padding: 3px 8px 3px 0;
   color: #8a8b96;
@@ -1935,7 +1935,7 @@ body.bench-active #analysis-panel {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.smac3-diff-table td {
+.tuner-diff-table td {
   padding: 3px 8px 3px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   color: #c7c9cf;
@@ -1944,22 +1944,22 @@ body.bench-active #analysis-panel {
 /* The incumbent diff table -- what "Use best as new baseline" actually
    promotes -- gets the same emphasis treatment as the confirmed-floor
    chart line, so the two "trust this" signals read as one visual language. */
-.smac3-diff-table-emphasized caption {
+.tuner-diff-table-emphasized caption {
   color: #e0904a;
   font-weight: 600;
 }
 
-.smac3-diff-table-emphasized {
+.tuner-diff-table-emphasized {
   border-left: 2px solid #e0904a;
   padding-left: 8px;
 }
 
-.smac3-diff-changed td:not(.smac3-param-name) {
+.tuner-diff-changed td:not(.tuner-param-name) {
   color: #d68b5b;
   font-weight: 600;
 }
 
-#smac3-trials-scroll {
+#tuner-trials-scroll {
   height: 260px;
   min-height: 120px;
   max-height: 70vh;
@@ -1969,13 +1969,13 @@ body.bench-active #analysis-panel {
   padding: 8px 0 0;
 }
 
-#smac3-trials-table {
+#tuner-trials-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
 }
 
-#smac3-trials-table th {
+#tuner-trials-table th {
   position: sticky;
   top: 0;
   background: #17181d;
@@ -1989,14 +1989,14 @@ body.bench-active #analysis-panel {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-#smac3-trials-table td {
+#tuner-trials-table td {
   padding: 3px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   color: #c7c9cf;
   font-variant-numeric: tabular-nums;
 }
 
-.smac3-trial-best td {
+.tuner-trial-best td {
   color: #4caf7a;
   font-weight: 600;
 }

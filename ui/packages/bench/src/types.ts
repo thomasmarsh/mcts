@@ -99,12 +99,12 @@ export interface RunDetail {
   incumbent: IncumbentInfo | null;
 }
 
-/** A SMAC3 run's current incumbent (its own intensifier's tracked best
+/** A tuner run's current incumbent (its own intensifier's tracked best
  * config, not a naive lowest-cost trial -- see `LogRecord::Incumbent`'s doc
  * comment on the Rust side for why that distinction matters once a run uses
  * multiple baseline instances). `config` is already in the exact shape
  * `tune eval --baseline-config` expects. `null` on `RunDetail` for a
- * non-SMAC3 run, or one that hasn't reported an incumbent yet. */
+ * non-tuner run, or one that hasn't reported an incumbent yet. */
 export interface IncumbentInfo {
   config: Record<string, unknown>;
   cost: number;
@@ -134,7 +134,7 @@ export interface GameTraceSummary {
 }
 
 /** One persisted trace position. `state` is wire JSON for round-robin and
- * display text for SMAC3 traces. */
+ * display text for tuner traces. */
 export interface GameMove {
   ply: number;
   ts: string;
@@ -262,8 +262,8 @@ export interface TunerCondition {
 
 /** A game's tunable search space, as reported by `tune describe`
  * (`game_host::TunerInfo`) and surfaced through `GET
- * /api/bench/smac3/kinds`. `baselines` is a list rather than a single id so
- * SMAC3 can evaluate each trial against multiple opponent strengths
+ * /api/bench/tuner/kinds`. `baselines` is a list rather than a single id so
+ * tuner can evaluate each trial against multiple opponent strengths
  * (`Scenario(instances=...)`) -- most games report one entry; a game with a
  * genuine second, harder preset (e.g. druid's "master") can list it as a
  * second instance. */
@@ -274,14 +274,14 @@ export interface TunerInfo {
   parameters: TunerParameter[];
   conditions: TunerCondition[];
   /** The game's own `default_config()` -- a game-setup axis (e.g. Druid's
-   * board size) SMAC3 never searches over, unlike `parameters`. `{}` means
+   * board size) tuner never searches over, unlike `parameters`. `{}` means
    * the game's board is fixed at compile time and there's nothing to
    * configure here. */
   game_config: unknown;
 }
 
-/** `GET /api/bench/smac3/kinds` element — one tunable game. */
-export interface Smac3GameInfo {
+/** `GET /api/bench/tuner/kinds` element — one tunable game. */
+export interface TunerGameInfo {
   game: string;
   tuner: TunerInfo;
 }
@@ -298,7 +298,7 @@ export interface TrialRow {
   extra: unknown | null;
 }
 
-/** One rung of a SMAC3 ladder chain, as reported by `GET
+/** One rung of a tuner ladder chain, as reported by `GET
  * /api/bench/runs/{run_id}/chain` -- oldest first. A run with no
  * `ladder_root` (a plain run, or a ladder run whose baseline was never
  * advanced) is a one-element chain containing just itself, so this always

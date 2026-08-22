@@ -266,7 +266,7 @@ impl<M: MoveEncoding> SimulateStrategy<DruidGame<M>> for DruidHeuristic<M> {
 /// `EpsilonGreedy`, same nesting Strong/Master's `RaveMastDm` uses for
 /// `Mast`) with `RaveMastDm`'s exact select/backprop/final-action
 /// configuration (`select::Rave`, `backprop::Classic`, `select::RobustChild`)
-/// -- so a search built from this type differs from the already-SMAC3-tuned
+/// -- so a search built from this type differs from the already-tuner tuned
 /// `RaveMastDm` config in server/main.rs's Strong/Master presets *only* in
 /// playout policy (`DruidHeuristic` in place of `Mast`), keeping the
 /// validation isolated to exactly that one change.

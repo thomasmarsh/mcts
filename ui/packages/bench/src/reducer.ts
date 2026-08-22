@@ -38,7 +38,7 @@ import {
   type RunFilters,
   type RunLogResponse,
   type RunSummary,
-  type Smac3GameInfo,
+  type TunerGameInfo,
   type StopResponse,
   type TrialRow,
   type GameTraceSummary,
@@ -78,7 +78,7 @@ export interface BenchEnv {
   fetchCommitTrends(game: string | null): Effect<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
-  /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
+  /** Relaunch a finished/stopped tuner run with a bigger trial budget,
    * seeded from its saved state. */
   resumeRun(runId: string, nTrials: number, nWorkers?: number): Effect<LaunchResponse>;
   /** Promote this run's current incumbent to a new baseline instance and
@@ -86,8 +86,8 @@ export interface BenchEnv {
    * it's still running. */
   advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Effect<LaunchResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
-  /** Per-game tuner metadata for every SMAC3-tunable game. */
-  getSmac3Kinds(): Effect<Smac3GameInfo[]>;
+  /** Per-game tuner metadata for every tuner-tunable game. */
+  getTunerKinds(): Effect<TunerGameInfo[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first. */
@@ -137,7 +137,7 @@ export type BenchAction =
       nextOffset: number;
       detail: RunDetail;
       /** Every tick's trial rows (see `tailTick` below for why this isn't
-       * gated on run kind). Empty for every non-`"smac3"` run. */
+       * gated on run kind). Empty for every non-`"tuner"` run. */
       trials: TrialRow[];
       /** This run's ladder chain and every rung's trials, concatenated in
        * chain order — see `tailTick`. */
@@ -169,8 +169,8 @@ export type BenchAction =
   | { tag: "deleteFailed"; runId: string; error: string }
   /** Load all available bench kinds/games/strategies for the launch form. */
   | { tag: "kinds"; action: KindsAction }
-  /** Load per-game SMAC3 tuner metadata for the launch form + run detail. */
-  | { tag: "smac3Kinds"; action: Smac3KindsAction }
+  /** Load per-game tuner tuner metadata for the launch form + run detail. */
+  | { tag: "tunerKinds"; action: TunerKindsAction }
   | { tag: "setTab"; tab: "projects" | "runs" | "leaderboard" }
   | { tag: "projectsRequest" }
   | { tag: "projectsLoaded"; projects: Project[] }
@@ -211,9 +211,9 @@ export type KindsAction =
   | { tag: "request" }
   | { tag: "job"; action: JobPollAction<BenchKindInfo[]> };
 
-export type Smac3KindsAction =
+export type TunerKindsAction =
   | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<Smac3GameInfo[]> };
+  | { tag: "job"; action: JobPollAction<TunerGameInfo[]> };
 
 /** Runs an `Effect` for its single value, as a `Promise` — lets the tick
  * branch combine `getRunLog` + `getRun` with `Promise.all` while still
@@ -403,7 +403,7 @@ export function benchReducer(
   if (action.tag === "experimentsLoaded") { draft.experiments = { ...draft.experiments, status: "done", result: action.experiments, error: null }; return null; }
   if (action.tag === "experimentsFailed") { draft.experiments = { ...draft.experiments, status: "error", result: null, error: action.error }; draft.experimentError = action.error; return null; }
   if (action.tag === "newExperiment") {
-    const first = draft.smac3Kinds.result?.[0];
+    const first = draft.tunerKinds.result?.[0];
     const spec = emptyExperimentSpec(first?.game ?? "nim");
     if (first) spec.games[0]!.game_config = first.tuner.game_config;
     draft.experimentDraft = { name: "", description: "", spec }; draft.experimentSavedDraft = null;
@@ -593,8 +593,8 @@ export function benchReducer(
     const since = open.tail.offset;
     const { generation } = action;
     // Trials have no incremental cursor (unlike the log), so this refetches
-    // the full list every tick -- fine at SMAC3's trial-count scale. Fetched
-    // unconditionally rather than gated on `detail.kind === "smac3"":
+    // the full list every tick -- fine at tuner's trial-count scale. Fetched
+    // unconditionally rather than gated on `detail.kind === "tuner"":
     // opening an *already-completed* run goes terminal on this very first
     // tick (before any prior tick could have told us the kind), which would
     // otherwise mean its trials are never fetched at all. The cost for
@@ -610,7 +610,7 @@ export function benchReducer(
       ]);
       // Refetched per rung every tick, same "just refetch the whole thing"
       // tradeoff `trials` above already makes rather than an incremental
-      // cursor -- fine at SMAC3's trial-count *and* chain-length scale.
+      // cursor -- fine at tuner's trial-count *and* chain-length scale.
       // This duplicates fetching `runId`'s own trials a second time when
       // it's already in the chain (rather than reusing `trials` above) --
       // deliberately, to keep this uniform across every rung instead of
@@ -653,7 +653,7 @@ export function benchReducer(
     open.games = action.games ?? open.games;
     const newestRung = action.chain.at(-1);
     if (newestRung && newestRung.run_id !== open.runId) {
-      // Automated laddering creates the next physical SMAC3 process behind
+      // Automated laddering creates the next physical tuner process behind
       // the UI's back. Follow it while retaining the chain as the logical
       // run, just as the explicit advance-baseline action does.
       return Effect.send<BenchAction>({ tag: "openRun", runId: newestRung.run_id });
@@ -816,7 +816,7 @@ export function benchReducer(
     // this one via `resumed_from`/`ladder_root` -- refresh the list, and if
     // the advanced run is still the one open in the detail panel, follow
     // the chain there so the operator keeps watching the same continuous
-    // graph rather than a now-frozen predecessor (see Smac3RunDetail's
+    // graph rather than a now-frozen predecessor (see TunerRunDetail's
     // chain-aware trial fetch, which renders every rung of the chain
     // regardless of which one is "open").
     const refreshEff = startRunsFetch(draft, env);
@@ -894,41 +894,41 @@ export function benchReducer(
       : null;
   }
 
-  if (action.tag === "smac3Kinds") {
+  if (action.tag === "tunerKinds") {
     const ka = action.action;
     if (ka.tag === "request") {
-      const jobEnv: JobPollEnv<Smac3GameInfo[]> = {
+      const jobEnv: JobPollEnv<TunerGameInfo[]> = {
         submitJob: () =>
-          env.getSmac3Kinds().map(
-            (result): JobSubmitResult<Smac3GameInfo[]> => ({
+          env.getTunerKinds().map(
+            (result): JobSubmitResult<TunerGameInfo[]> => ({
               status: "done",
               result,
             }),
           ),
         pollJob: () => {
           throw new Error(
-            "unreachable: smac3Kinds resolves synchronously (see submitJob above)",
+            "unreachable: tunerKinds resolves synchronously (see submitJob above)",
           );
         },
       };
-      const eff = jobPollReduce(draft.smac3Kinds, { tag: "start" }, jobEnv);
+      const eff = jobPollReduce(draft.tunerKinds, { tag: "start" }, jobEnv);
       return eff
         ? eff.map(
-            (a): BenchAction => ({ tag: "smac3Kinds", action: { tag: "job", action: a } }),
+            (a): BenchAction => ({ tag: "tunerKinds", action: { tag: "job", action: a } }),
           )
         : null;
     }
     const eff = jobPollReduce(
-      draft.smac3Kinds,
+      draft.tunerKinds,
       ka.action,
       unreachableJobEnv(
-        "unreachable: a forwarded smac3Kinds/job action never re-submits or polls",
+        "unreachable: a forwarded tunerKinds/job action never re-submits or polls",
       ),
     );
     return eff
       ? eff.map(
           (a): BenchAction => ({
-            tag: "smac3Kinds",
+            tag: "tunerKinds",
             action: { tag: "job", action: a },
           }),
         )

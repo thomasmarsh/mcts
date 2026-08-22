@@ -1,10 +1,11 @@
-# smac3 — SMAC3 hyperparameter optimisation for MCTS
+# tuner — Optuna + TrueSkill hyperparameter optimisation for MCTS
 
-Uses [SMAC3](https://github.com/automl/SMAC3) (Bayesian optimisation + racing) to
-find strong MCTS search strategies. Each trial invokes the game binary's
-`tune eval` subcommand to play a match between a candidate and a fixed
-baseline, and reports the loss rate. The search space has two levels: a
-top-level `family` choice (which `Strategy<G>` -- select/simulate/backprop/
+Uses [Optuna](https://optuna.org/) (TPE sampler) with TrueSkill-based
+matchmaking (ladder-of-trash) to find strong MCTS search strategies.
+Each trial invokes the game binary's `tune eval` subcommand to play a
+match between a candidate and a dynamically selected opponent, and
+reports the loss rate. The search space has two levels: a top-level
+`family` choice (which `Strategy<G>` -- select/simulate/backprop/
 final-action composition -- to run, e.g. `ucb1`, `ucb1_tuned`, `amaf_mast`,
 `rave`, ...; see `mcts-tune`'s crate doc comment for the full 14-entry
 catalog) and, within the chosen family, that family's own hyperparameters
@@ -22,17 +23,17 @@ no real 2-player search to tune).
 cargo build --release -p game-traffic-lights
 
 # 2. Run from the project root (cwd must be where target/release/ lives)
-uv run --project smac3/ smac3
+uv run --project tuner/ tuner
 ```
 
 This runs a 1000-trial optimisation over the full multi-family search space
 (default `target.binary` is `game-traffic-lights`; point it at any of the
 other 11 supported games' binaries with `--override target.binary=...`, or
-use `bench smac3 --game <name>` from the Rust side, which sets it for you).
-Results appear in `smac3_output/`.
+use `bench tuner --game <name>` from the Rust side, which sets it for you).
+Results appear in `tuner_output/`.
 
-> **Why `--project smac3/`?** The Rust project is managed by Cargo in the root;
-> the Python/SMAC tooling lives in `smac3/` as its own uv project. The game
+> **Why `--project tuner/`?** The Rust project is managed by Cargo in the root;
+> the Python/tuner tooling lives in `tuner/` as its own uv project. The game
 > binary path in the config is relative to the *current working directory*, so
 > running from the project root makes `target/release/game-traffic-lights`
 > resolve correctly.
@@ -46,7 +47,7 @@ Results appear in `smac3_output/`.
 Use `--override` to shrink the budget for quick smoke tests:
 
 ```bash
-uv run --project smac3/ smac3 \
+uv run --project tuner/ tuner \
     --override optimizer.n_trials=10 \
     --override optimizer.deterministic=True \
     --override optimizer.n_workers=1
@@ -65,15 +66,15 @@ uv run --project smac3/ smac3 \
 
 ### Full config file
 
-Edit `smac3/config/default.yaml` or create your own:
+Edit `tuner/config/default.yaml` or create your own:
 
 ```bash
-uv run --project smac3/ smac3 --config my-search.yaml --verbose
+uv run --project tuner/ tuner --config my-search.yaml --verbose
 ```
 
 The config file defines:
 
-- **`optimizer`** — SMAC settings (budget, parallelism, seed)
+- **`optimizer`** — Optuna settings (budget, parallelism, seed)
 - **`target`** — the game binary path (relative to CWD) and rounds per trial
 
 The search space itself (`parameters`/`conditions` — float, int, categorical,
@@ -96,7 +97,7 @@ binary actually accepts.
 
 ---
 
-## Adding SMAC3 to another game
+## Adding tuner support to another game
 
 12 games (atarigo, bid_ttt, breakthrough, druid, gonnect, knightthrough, nim,
 othello, tak, tanbo, traffic-lights, ttt) already support this via the shared
@@ -131,25 +132,24 @@ shape `strategy_tune_eval`'s `baseline_build` parameter wants), see
 The YAML search space (`parameters:`/`conditions:`) is shared across every
 game, not per-game -- it doesn't need editing to add a new game, only when
 the family catalog or a family's own parameters change (see "Adding a new
-parameter" above). `bench smac3 --game <name> ...` and the Bench UI's SMAC3
-launch form work unchanged once `/api/bench/smac3/kinds` reflects the new
+parameter" above). `bench tuner --game <name> ...` and the Bench UI's tuner
+launch form work unchanged once `/api/bench/tuner/kinds` reflects the new
 game's metadata.
 
 ## Output
 
-SMAC writes results to `smac3_output/<run-name>/<seed>/`. The final incumbent
-is printed at the end:
+The tuner writes results to `tuner_output/<run-name>/<seed>/`. The final
+incumbent is printed at the end:
 
 ```
 ============================================================
 Best config:  {'epsilon': 0.4, 'c': 0.32, 'rave': 1118, ...}
-Best cost:    0.375000
-Default cost: 0.425000
+Best score:   5.123
 ============================================================
 ```
 
-Cost is the loss rate of the candidate vs. a fixed baseline over 20 rounds
-(0.0 = always wins, 1.0 = always loses).
+Score is the TrueSkill mu - 3*sigma of the candidate against the opponent
+pool (higher is better).
 
 ---
 
@@ -159,7 +159,6 @@ All Python dependencies are managed by uv via `pyproject.toml`. Key packages:
 
 | Package | Version pin | Why |
 |---|---|---|
-| `smac` | >=2.4.0 | Bayesian optimisation engine |
-| `scikit-learn` | >=1.6.1, <1.9.0 | RF surrogate model (pinned below 1.9 which removed `DTYPE`) |
+| `optuna` | >=4.9.0 | Bayesian optimisation engine |
+| `trueskill` | >=0.4.5 | TrueSkill rating for matchmaking |
 | `pyyaml` | >=6.0 | Config file parsing |
-| `ConfigSpace` | >=1.0.0 | Hyperparameter search spaces |

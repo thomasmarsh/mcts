@@ -2,7 +2,7 @@
 // preset: the newly-wired `Strong` preset (RAVE select/backprop unchanged,
 // `DruidHeuristic`-guided playouts at the grid sweep's chosen epsilon=0.5 /
 // equal(1,1,1) weights) vs. the previously-shipped config it replaced
-// (`Mast`-guided playouts at epsilon=0.7775134, SMAC3-tuned). Both configs
+// (`Mast`-guided playouts at epsilon=0.7775134, tuner tuned). Both configs
 // run with `use_mcts_solver(true)` (matching what's actually shipped both
 // before and after this change), so the comparison isolates the playout
 // policy swap alone.

@@ -88,12 +88,12 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.init?.method).toBe("POST");
   });
 
-  it("getSmac3Kinds hits the smac3/kinds route", async () => {
+  it("getTunerKinds hits the tuner/kinds route", async () => {
     const calls = stubFetch([]);
     const client = createBenchApiClient();
 
-    await client.getSmac3Kinds();
-    expect(calls[0]!.url).toBe("/api/bench/smac3/kinds");
+    await client.getTunerKinds();
+    expect(calls[0]!.url).toBe("/api/bench/tuner/kinds");
   });
 
   it("getRunTrials passes an optional limit", async () => {

@@ -1,5 +1,5 @@
 //! Generic multi-family MCTS strategy tuning harness shared by every game
-//! crate that opts into SMAC3-style hyperparameter search. Everything here
+//! crate that opts into hyperparameter search. Everything here
 //! is generic over `G: Game` -- picking a concrete game, a baseline preset,
 //! and whether that game has a real `zobrist_hash` (see `use_transpositions`
 //! below) is the only per-game glue. See `games/traffic-lights/src/main.rs`
@@ -96,7 +96,7 @@ const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// here pits a single-threaded, tree-discarding-per-move, fixed-iteration
 /// search against a multi-core, tree-persisting, time-budgeted one -- a
 /// mismatch severe enough to produce a near-100%-loss streak on its own,
-/// independent of which family/hyperparameters SMAC3 samples. A game's own
+/// independent of which family/hyperparameters tuner samples. A game's own
 /// `tune_eval` is responsible for building a `SearchBudget` that mirrors
 /// whatever named preset it's dispatching to in that case (see
 /// `games/druid/src/main.rs`'s `tune_eval`).
@@ -104,7 +104,7 @@ const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// `max_iterations` is deliberately **not** part of `TrialParams` -- it's a
 /// per-*run* compute budget an operator sets once at launch (`--override
 /// target.max_iterations=N`, or the launch form's "Iteration budget"
-/// field), not a per-*trial* hyperparameter SMAC3 gets to search over
+/// field), not a per-*trial* hyperparameter tuner gets to search over
 /// (searching it would just reward configs that use the biggest budget
 /// available, not the best hyperparameters at a fixed budget). `None` here
 /// means "use this crate's historical constant" (`MAX_ITER`) -- see
@@ -258,7 +258,7 @@ fn make_candidate<G: Game + 'static>(
         // Baseline-only floor families -- deliberately *not* in
         // `strategy_tuner_info`'s searchable `family` choices (a candidate
         // sampled as `random`/`flat_mc` would just hover around a ~0.5 cost
-        // forever, wasting SMAC3's trial budget). Reachable only via
+        // forever, wasting the tuner's trial budget). Reachable only via
         // `build_search`/`--baseline-config`, e.g. as a ladder's floor rung.
         // Neither reads `q_init` or any other `TrialParams` field beyond
         // `family` itself. Not a `Compose<..>` `Strategy`, so these two stay
@@ -279,7 +279,7 @@ fn make_candidate<G: Game + 'static>(
 // Evaluation
 // ---------------------------------------------------------------------------
 
-/// Result of one `strategy_tune_eval` call: `cost` is what SMAC3 minimizes
+/// Result of one `strategy_tune_eval` call: `cost` is what tuner minimizes
 /// (the candidate's loss rate against the baseline); `wins`/`losses`/`draws`
 /// are from the candidate's perspective, for display.
 #[derive(Debug)]
@@ -506,7 +506,7 @@ pub fn generic_tune_eval<G: Game + 'static>(
 
 /// `cost = losses / (2*rounds)`: the candidate's loss rate across the
 /// `2*rounds` games it plays (moving first and second each round), the
-/// quantity SMAC3 minimizes. Draws and wins both count as "not a loss" --
+/// quantity tuner minimizes. Draws and wins both count as "not a loss" --
 /// this doesn't reward wins over draws, only penalizes outright losses.
 fn cost_from_losses(losses: u32, rounds: u32) -> f64 {
     let total = 2.0 * rounds as f64;
@@ -625,11 +625,11 @@ fn play_one<G: Game>(
 // ---------------------------------------------------------------------------
 
 /// Search-space metadata for the full multi-family catalog above, for `tune
-/// describe` to report to a SMAC3 harness or launch-form UI. `baselines` is
+/// describe` to report to a tuner harness or launch-form UI. `baselines` is
 /// the list of preset ids a caller's `tune_eval` can build a
 /// `strategy_tune_eval` `baseline_build` argument for -- most games report
 /// exactly one entry; a game with a genuine second, harder preset can list
-/// it as a second instance for SMAC3's multi-instance evaluation.
+/// it as a second instance for the tuner's multi-instance evaluation.
 ///
 /// `game_config` always comes back `{}` here -- this function only knows
 /// the strategy search space, not any per-game setup axis (that's
@@ -1801,7 +1801,7 @@ mod tests {
 
     /// `random`/`flat_mc` are floor families reachable only via
     /// `build_search`/`--baseline-config` (a ladder's floor rung), never
-    /// sampled as a SMAC3 candidate -- proven by their absence from
+    /// sampled as a tuner candidate -- proven by their absence from
     /// `strategy_tuner_info().parameters`'s `family` choices below.
     #[test]
     fn test_build_search_builds_random_floor_family() {
@@ -1841,7 +1841,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             !choices.contains(&"random") && !choices.contains(&"flat_mc"),
-            "floor families must never be SMAC3-searchable candidates: {choices:?}"
+            "floor families must never be tuner-searchable candidates: {choices:?}"
         );
     }
 
@@ -2006,7 +2006,7 @@ mod tests {
 
     /// The fixed point of "active" parameter names implied by
     /// `TunerInfo.conditions` for one fully-assigned trial config -- the
-    /// same any-of/if-then evaluation a SMAC3 `ConfigSpace` performs,
+    /// same any-of/if-then evaluation a tuner `ConfigSpace` performs,
     /// chasing multi-level conditions (e.g. `family: rave` activates
     /// `schedule`, whose own sampled value in turn activates one of
     /// `rave`/`k`/`bias`).
@@ -2051,7 +2051,7 @@ mod tests {
     fn test_tuner_info_conditions_cover_every_family_param_make_candidate_needs() {
         // Regression coverage for a real bug: `make_candidate`'s `rave` arm
         // always required `epsilon`, but `strategy_tuner_info`'s conditions
-        // never activated `epsilon` for `family: rave` -- so a real SMAC3
+        // never activated `epsilon` for `family: rave` -- so a real tuner
         // search built from this metadata could (and did) sample seemingly
         // valid `rave` configs the binary then rejected as missing a param.
         // For every family, every key its own round-trip fixture supplies

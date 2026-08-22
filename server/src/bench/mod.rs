@@ -167,10 +167,10 @@ pub struct RunDetail {
     pub exit_code: Option<i64>,
     pub match_count: i64,
     pub trial_count: i64,
-    /// SMAC3's own current best config for this run (from its intensifier,
+    /// tuner's own current best config for this run (from its intensifier,
     /// not a naive `MIN(cost)` over `trials` -- see `LogRecord::Incumbent`'s
     /// doc comment for why that distinction matters once multiple baseline
-    /// instances are in play). `None` for a non-SMAC3 run, or a SMAC3 run
+    /// instances are in play). `None` for a non-tuner run, or a tuner run
     /// that hasn't reported one yet.
     pub incumbent: Option<IncumbentInfo>,
 }
@@ -231,10 +231,10 @@ pub struct BenchGameInfo {
 }
 
 /// A game's tunable strategy search-space metadata, as reported by
-/// `GET /api/bench/smac3/kinds` -- the SMAC3 launch form's data-driven
+/// `GET /api/bench/tuner/kinds` -- the tuner launch form's data-driven
 /// counterpart to `BenchGameInfo`.
 #[derive(Serialize)]
-pub struct Smac3GameInfo {
+pub struct TunerGameInfo {
     pub game: String,
     pub tuner: TunerInfo,
 }
@@ -496,7 +496,7 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 
     Router::new()
         .route("/api/bench/kinds", get(list_kinds))
-        .route("/api/bench/smac3/kinds", get(list_smac3_kinds))
+        .route("/api/bench/tuner/kinds", get(list_tuner_kinds))
         .route(
             "/api/bench/projects",
             get(list_projects).post(create_project),
@@ -1134,7 +1134,7 @@ async fn list_runs(
         .collect();
 
     // A ladder is one logical run even though each baseline change needs a
-    // fresh SMAC3 process and therefore a fresh storage row. Rows arrive
+    // fresh tuner process and therefore a fresh storage row. Rows arrive
     // newest-first, so retain the newest rung's identity/status while
     // accumulating work from all of its physical rungs.
     let mut logical_runs: Vec<RunSummary> = Vec::new();
@@ -1468,9 +1468,9 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
             games,
         },
         BenchKindInfo {
-            kind: "smac3".to_string(),
-            label: "SMAC3 Tuning".to_string(),
-            description: "Runs a SMAC3 hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against one or more baseline instances per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/smac3/kinds for per-game tuner metadata (search space, baselines, eval rounds) instead of a strategies list."
+            kind: "tuner".to_string(),
+            label: "Tuner Tuning".to_string(),
+            description: "Runs a tuner hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against one or more baseline instances per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/tuner/kinds for per-game tuner metadata (search space, baselines, eval rounds) instead of a strategies list."
                 .to_string(),
             games: vec![],
         },
@@ -1479,7 +1479,7 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
     Json(kinds)
 }
 
-/// `GET /api/bench/smac3/kinds`
+/// `GET /api/bench/tuner/kinds`
 ///
 /// Per-game tuner metadata (search space, baselines, eval rounds), queried
 /// by spawning each of `mcts_bench`'s registered game binaries once with
@@ -1488,13 +1488,13 @@ async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
 /// registry only covers the games with a UI renderer, which used to leave
 /// tunable-but-UI-less games (e.g. `nim`) unable to appear here even though
 /// `POST /api/bench/launch` never needed a live session for them either
-/// (the smac3 CLI subprocess it spawns locates the game binary itself).
+/// (the tuner CLI subprocess it spawns locates the game binary itself).
 /// Only games that implement `tuner()` appear -- tuning support is opt-in
 /// per game.
-async fn list_smac3_kinds() -> Json<Vec<Smac3GameInfo>> {
-    let mut games: Vec<Smac3GameInfo> = mcts_bench::games::describe_tuners()
+async fn list_tuner_kinds() -> Json<Vec<TunerGameInfo>> {
+    let mut games: Vec<TunerGameInfo> = mcts_bench::games::describe_tuners()
         .into_iter()
-        .map(|(kind, tuner)| Smac3GameInfo {
+        .map(|(kind, tuner)| TunerGameInfo {
             game: kind.to_string(),
             tuner,
         })
@@ -1664,7 +1664,7 @@ async fn get_run_games(
 /// /api/bench/runs/{run_id}/games/{game_seq}/moves` -- `state`/`mv` are the
 /// same wire-JSON shape `GameAdapter::ai_move` already produces for
 /// round-robin traces, so the UI's existing per-game renderer can draw them
-/// with no new code. SMAC3 traces store `state` as a `Display`-text JSON
+/// with no new code. tuner traces store `state` as a `Display`-text JSON
 /// string instead -- not renderer-ready, but still fine to tail as text.
 #[derive(Serialize)]
 pub struct MoveRow {
@@ -1884,7 +1884,7 @@ struct LiveMoveEvent {
 /// Polls `game_moves` every 750ms for plies newer than the last one sent,
 /// on whichever `game_seq` is currently the highest for this run (the
 /// "in-flight" game -- a fresh game starting under the same run (next
-/// round-robin match / SMAC3 trial) is
+/// round-robin match / tuner trial) is
 /// picked up automatically by the `MAX(game_seq)` jumping, no restart
 /// needed. Ends when the client disconnects (the spawned polling task's
 /// `tx.send` starts failing once the `Sse` response's stream is dropped).
@@ -2075,7 +2075,7 @@ async fn delete_run(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// One rung of a SMAC3 ladder chain, as reported by `GET
+/// One rung of a tuner ladder chain, as reported by `GET
 /// /api/bench/runs/{run_id}/chain` -- a run's baseline history rendered as a
 /// continuous timeline stitches together each rung's own `trials` (fetched
 /// separately per rung, same route as a single run) using this list as the
@@ -2101,7 +2101,7 @@ pub struct ChainRung {
 /// `plan_manual_advance`'s doc comments) link a sequence of otherwise
 /// independent `runs` rows into one logical baseline-advance timeline. A run
 /// with no `ladder_root` at all is its own one-rung chain (every plain
-/// SMAC3 run, and every ladder run that's never had its baseline advanced
+/// tuner run, and every ladder run that's never had its baseline advanced
 /// yet), so this always returns at least one element for a run that exists.
 async fn get_run_chain(
     AxumState(state): AxumState<Arc<BenchState>>,
@@ -2139,7 +2139,7 @@ async fn get_run_chain(
          LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
            ON r.run_id = t.run_id \
          LEFT JOIN incumbents i ON r.run_id = i.run_id \
-         WHERE r.kind = 'smac3'",
+         WHERE r.kind = 'tuner'",
     )?;
     let mut rungs: Vec<ChainRung> = stmt
         .query_map([], |row| {
@@ -2212,12 +2212,12 @@ async fn launch_run(
 
 /// `POST /api/bench/runs/{run_id}/resume` — `{n_trials, n_workers?}`
 ///
-/// Relaunches a finished/stopped SMAC3 run with a bigger trial budget,
+/// Relaunches a finished/stopped tuner run with a bigger trial budget,
 /// picking up where it left off rather than starting over: the new process
-/// is launched with `--resume <old run_id>` (see `smac3_cli/resume.py`),
+/// is launched with `--resume <old run_id>` (see `tuner_cli/resume.py`),
 /// which seeds its runhistory from the old run's saved state before
 /// optimizing, so already-evaluated configs aren't re-evaluated. This is
-/// also the only way to change worker count "mid-run" -- SMAC3 has no live
+/// also the only way to change worker count "mid-run" -- tuner has no live
 /// API for either, only stop-and-relaunch.
 ///
 /// The old run's stored `config` (its `--config` path and any `--override`
@@ -2247,11 +2247,11 @@ async fn resume_run(
         }
     };
 
-    if kind != "smac3" {
+    if kind != "tuner" {
         return Err(BenchError {
             status: StatusCode::BAD_REQUEST,
             message: format!(
-                "run '{run_id}' is a '{kind}' run, not 'smac3' -- only SMAC3 runs support resume"
+                "run '{run_id}' is a '{kind}' run, not 'tuner' -- only tuner runs support resume"
             ),
         });
     }
@@ -2261,7 +2261,7 @@ async fn resume_run(
     let label = format!("resume of {run_id}");
     let resp = launch_and_record(
         &state,
-        "smac3",
+        "tuner",
         &game,
         Some(new_config),
         Some(&label),
@@ -2272,7 +2272,7 @@ async fn resume_run(
 }
 
 /// Shared by `launch_run` and `resume_run`: builds the command, pins a
-/// fresh `run_id` (baked into a SMAC3 launch's own `--run-id`/`--resume`
+/// fresh `run_id` (baked into a tuner launch's own `--run-id`/`--resume`
 /// argv, not just the outer bench-runs bookkeeping -- see
 /// `launch::launch_with_run_id`'s doc comment for why they must match),
 /// spawns it, and inserts the `runs` row so it appears immediately in the
@@ -2299,7 +2299,7 @@ fn inject_ladder_root_if_new_ladder(config: Option<Value>, run_id: &str) -> Opti
 }
 
 /// Persist the exact settings of a floor baseline alongside the launch
-/// request. The SMAC3 runner already resolves these ids to raw params when
+/// request. The tuner runner already resolves these ids to raw params when
 /// it invokes `tune eval`; keeping the same params in the run record lets
 /// the detail view compare the eventual incumbent with the opponent it was
 /// actually evaluated against from the first trial onward.
@@ -2351,7 +2351,7 @@ async fn launch_and_record(
     resume_from: Option<&str>,
 ) -> Result<LaunchResponse, BenchError> {
     let run_id = launch::generate_run_id(kind, game, crate::BUILD_INFO);
-    let config = if kind == "smac3" {
+    let config = if kind == "tuner" {
         record_floor_baseline_settings(config)
     } else {
         config
@@ -2365,10 +2365,10 @@ async fn launch_and_record(
     let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
-    // `--run-id`/`--resume` are SMAC3-specific flags (see `smac3_cli`'s
+    // `--run-id`/`--resume` are tuner-specific flags (see `tuner_cli`'s
     // `--run-id`/`--resume`); other kinds (round_robin) have no concept of
     // a resumable optimizer run to pin.
-    if kind == "smac3" {
+    if kind == "tuner" {
         cmd.push("--run-id".into());
         cmd.push(run_id.clone());
         if let Some(resume_id) = resume_from {
@@ -2542,7 +2542,7 @@ async fn launch_and_record(
 // Automated ladder driver
 // ---------------------------------------------------------------------------
 
-/// Snapshot of one `smac3` run's bookkeeping, as read from `runs`.
+/// Snapshot of one `tuner` run's bookkeeping, as read from `runs`.
 struct LadderRunRow {
     run_id: String,
     game: String,
@@ -2588,11 +2588,11 @@ fn resumed_from_of(r: &LadderRunRow) -> Option<&str> {
 ///   dropped, not merged into.
 /// - Any `target.baselines=[...]` override inherited the same way (e.g. the
 ///   root rung's own chosen starting baseline) is neutralized with a
-///   trailing `target.baselines=[]` override -- `smac3_cli`'s
+///   trailing `target.baselines=[]` override -- `tuner_cli`'s
 ///   `_apply_overrides` applies overrides as a dict keyed by dotted path,
 ///   so the last occurrence of a repeated key wins, and `Scenario.
 ///   instances = [*target.baselines, *baseline_configs]`
-///   (`smac3/src/smac3_cli/__main__.py`) would otherwise still include the
+///   (`tuner/src/tuner_cli/__main__.py`) would otherwise still include the
 ///   old named baseline alongside the new incumbent, right back to the
 ///   multi-instance-averaging problem this ladder redesign exists to avoid.
 ///
@@ -2624,7 +2624,7 @@ fn configured_n_trials(config: &Value) -> Option<i64> {
         .find_map(|text| text.strip_prefix("optimizer.n_trials=")?.parse().ok())
 }
 
-/// Scans every active or completed SMAC3 run for a ladder-enabled rung that hasn't
+/// Scans every active or completed tuner run for a ladder-enabled rung that hasn't
 /// been widened yet and decides whether it saturated its current baseline
 /// set -- the decision half of an automated stop -> extract incumbent ->
 /// widen instances -> resume cycle (`incumbents` is keyed by `run_id`,
@@ -2635,7 +2635,7 @@ fn configured_n_trials(config: &Value) -> Option<i64> {
 /// `config` -- see `build_resume_config`'s doc comment for why this rides
 /// in the existing free-form `config` JSON rather than a new table or
 /// column. A run with no `ladder` key is left alone entirely, so this is a
-/// no-op for every pre-existing/non-ladder SMAC3 run.
+/// no-op for every pre-existing/non-ladder tuner run.
 fn plan_ladder_advances(
     runs: &[LadderRunRow],
     trial_counts: &HashMap<String, i64>,
@@ -2683,7 +2683,7 @@ fn plan_ladder_advances(
         }
 
         // Saturation is judged from the durable per-run incumbent (the
-        // `incumbents` table, SMAC3's own tracked best config aggregated
+        // `incumbents` table, tuner's own tracked best config aggregated
         // across every active instance) -- not `Scenario.
         // termination_cost_threshold`, which only averages the
         // instance-seed pairs recorded so far for a config and so is
@@ -2732,16 +2732,16 @@ fn plan_ladder_advances(
     advances
 }
 
-/// Read every SMAC3 run's ladder-relevant bookkeeping from `runs`. Shared by
+/// Read every tuner run's ladder-relevant bookkeeping from `runs`. Shared by
 /// the automated driver (`advance_ladders_once`) and the manual
 /// `advance_baseline` route -- both need the same chain-walking data
 /// (`ladder_root`/`resumed_from`/`config`), just with different decision
 /// logic layered on top (`plan_ladder_advances` vs. `plan_manual_advance`).
-fn fetch_smac3_runs(state: &Arc<BenchState>) -> Result<Vec<LadderRunRow>, BenchError> {
+fn fetch_tuner_runs(state: &Arc<BenchState>) -> Result<Vec<LadderRunRow>, BenchError> {
     let db = state.db.lock().unwrap();
     let mut stmt = db.prepare(
         "SELECT run_id, game, status, exit_code, CAST(config AS TEXT) FROM runs \
-         WHERE kind = 'smac3'",
+         WHERE kind = 'tuner'",
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -2804,11 +2804,11 @@ fn fetch_incumbents(state: &Arc<BenchState>) -> Result<HashMap<String, (Value, f
 }
 
 /// IO wrapper around `plan_ladder_advances`: reads `runs`/`trials`/
-/// `incumbents` for every SMAC3 run, then calls `launch_and_record` for
+/// `incumbents` for every tuner run, then calls `launch_and_record` for
 /// each decided widen. Called once per tick from a background poll loop in
 /// `main.rs`, the same shape as the existing ingest loop.
 pub async fn advance_ladders_once(state: &Arc<BenchState>) {
-    let runs = match fetch_smac3_runs(state) {
+    let runs = match fetch_tuner_runs(state) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ladder driver: query error: {}", e.message);
@@ -2867,7 +2867,7 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
         }
         if let Err(e) = launch_and_record(
             state,
-            "smac3",
+            "tuner",
             &advance.game,
             Some(advance.widened_config),
             Some(&advance.label),
@@ -2889,7 +2889,7 @@ pub async fn advance_ladders_once(state: &Arc<BenchState>) {
 
 #[derive(Deserialize, Default)]
 pub struct AdvanceBaselineBody {
-    /// Total trial budget for the widened run (SMAC3's `optimizer.n_trials`
+    /// Total trial budget for the widened run (tuner's `optimizer.n_trials`
     /// is cumulative once a runhistory is seeded via `--resume`, same as
     /// `ResumeBody::n_trials`). Defaults to giving the new rung as many
     /// fresh trials as the chain's root rung originally had, mirroring the
@@ -2916,7 +2916,7 @@ struct ManualAdvance {
 /// the manual counterpart to `plan_ladder_advances`, which only ever
 /// widens a rung that opted into `ladder: {max_rungs, saturation_threshold}`
 /// at launch time and only once it judges the rung saturated. This instead
-/// works on *any* SMAC3 run, the moment an operator (not the threshold)
+/// works on *any* tuner run, the moment an operator (not the threshold)
 /// decides its incumbent is good enough to promote to a baseline -- an
 /// operator watching the cost chart approach 0% doesn't need to have
 /// pre-configured `ladder` at launch, or wait for `saturation_threshold` to
@@ -2939,7 +2939,7 @@ fn plan_manual_advance(
     let run = runs
         .iter()
         .find(|r| r.run_id == run_id)
-        .ok_or_else(|| format!("run '{run_id}' not found among SMAC3 runs"))?;
+        .ok_or_else(|| format!("run '{run_id}' not found among tuner runs"))?;
 
     let Some((incumbent_config, _incumbent_cost)) = incumbents.get(run_id) else {
         return Err(format!(
@@ -2995,13 +2995,13 @@ fn plan_manual_advance(
 /// this run's current incumbent to a new baseline instance and relaunches
 /// with a widened `baseline_configs`, same mechanism as a scheduled ladder
 /// widen (`plan_ladder_advances`) but firing on demand rather than once
-/// `ladder.saturation_threshold` trips -- and it works on any SMAC3 run, not
+/// `ladder.saturation_threshold` trips -- and it works on any tuner run, not
 /// just one that opted into `ladder` at launch (see `plan_manual_advance`).
 ///
 /// If the run is still `running`, it's stopped first (same SIGTERM-to-
 /// process-group as `POST .../stop`) and this waits for the process to
 /// actually exit before relaunching -- `--resume` reads the old run's
-/// `runhistory.json` from disk (see `smac3_cli/resume.py`), so racing a
+/// `runhistory.json` from disk (see `tuner_cli/resume.py`), so racing a
 /// relaunch against the old process still flushing it on the way out would
 /// risk a torn read. This is exactly the ordering an operator doing it by
 /// hand (click Stop, wait, click Resume) already gets, just automated.
@@ -3028,11 +3028,11 @@ async fn advance_baseline(
         }
     };
 
-    if kind != "smac3" {
+    if kind != "tuner" {
         return Err(BenchError {
             status: StatusCode::BAD_REQUEST,
             message: format!(
-                "run '{run_id}' is a '{kind}' run, not 'smac3' -- only SMAC3 runs support baseline advance"
+                "run '{run_id}' is a '{kind}' run, not 'tuner' -- only tuner runs support baseline advance"
             ),
         });
     }
@@ -3056,7 +3056,7 @@ async fn advance_baseline(
         }
     }
 
-    let runs = fetch_smac3_runs(&state)?;
+    let runs = fetch_tuner_runs(&state)?;
     let trial_counts = fetch_trial_counts(&state)?;
     let incumbents = fetch_incumbents(&state)?;
 
@@ -3084,7 +3084,7 @@ async fn advance_baseline(
 
     let resp = launch_and_record(
         &state,
-        "smac3",
+        "tuner",
         &advance.game,
         Some(advance.widened_config),
         Some(&advance.label),
@@ -3152,7 +3152,7 @@ fn project_legacy_stop(
     Ok(ended_at)
 }
 
-/// Build the launch `config` JSON for a resumed SMAC3 run: clones the old
+/// Build the launch `config` JSON for a resumed tuner run: clones the old
 /// run's config *wholesale* and patches only `overrides` (old entries plus
 /// `optimizer.n_trials`/`optimizer.n_workers`, appended so they win -- the
 /// Python side's `_apply_overrides` keeps the last value for a repeated
@@ -3200,8 +3200,8 @@ fn build_resume_config(
 ///
 /// Supported kinds:
 /// - `"round_robin"` — runs `bench round-robin --game ... --strategies ... --rounds ...`
-/// - `"smac3"` — runs `bench smac3 --game ... [--config ...] [--override k=v ...]`
-///   in the foreground; the server's own `launch::launch` (not `bench smac3`'s
+/// - `"tuner"` — runs `bench tuner --game ... [--config ...] [--override k=v ...]`
+///   in the foreground; the server's own `launch::launch` (not `bench tuner`'s
 ///   own `--background` flag) is what detaches and captures its JSONL output,
 ///   same as every other launch kind.
 ///
@@ -3215,10 +3215,10 @@ fn build_command(
     let bench_binary = find_bench_binary();
 
     match kind {
-        "smac3" => {
+        "tuner" => {
             let mut cmd = vec![
                 bench_binary.to_string_lossy().to_string(),
-                "smac3".into(),
+                "tuner".into(),
                 "--game".into(),
                 game.to_owned(),
             ];
@@ -3331,7 +3331,7 @@ fn build_command(
         }
         unknown => Err(BenchError {
             status: StatusCode::BAD_REQUEST,
-            message: format!("unknown run kind '{unknown}'; expected one of: round_robin, smac3"),
+            message: format!("unknown run kind '{unknown}'; expected one of: round_robin, tuner"),
         }),
     }
 }
@@ -3656,9 +3656,9 @@ mod tests {
             "INSERT INTO runs
              (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path)
              VALUES
-             ('root-1', 'smac3', 'druid', '{\"ladder_root\":\"root-1\"}', 'abc', false, 'host', NULL,
+             ('root-1', 'tuner', 'druid', '{\"ladder_root\":\"root-1\"}', 'abc', false, 'host', NULL,
               '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z', 'stopped', '/tmp/root/log.jsonl'),
-             ('rung-2', 'smac3', 'druid', '{\"ladder_root\":\"root-1\",\"resumed_from\":\"root-1\"}', 'abc', false, 'host', 42,
+             ('rung-2', 'tuner', 'druid', '{\"ladder_root\":\"root-1\",\"resumed_from\":\"root-1\"}', 'abc', false, 'host', 42,
               '2026-01-01T00:10:01Z', NULL, 'running', '/tmp/rung2/log.jsonl');
              INSERT INTO trials (run_id, trial_id, ts, config, cost) VALUES
              ('root-1', 1, '2026-01-01T00:00:01Z', '{}', 0.1),
@@ -4383,12 +4383,12 @@ mod tests {
         assert_eq!(body_json(&body)["code"], 404);
     }
 
-    fn insert_smac3_run(conn: &duckdb::Connection, run_id: &str, started_at: &str, config: &Value) {
+    fn insert_tuner_run(conn: &duckdb::Connection, run_id: &str, started_at: &str, config: &Value) {
         conn.execute(
             "INSERT INTO runs \
              (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
               started_at, ended_at, status, log_path) \
-             VALUES (?1, 'smac3', 'nim', ?2, 'abc1234', false, 'testhost', NULL, \
+             VALUES (?1, 'tuner', 'nim', ?2, 'abc1234', false, 'testhost', NULL, \
                      ?3, ?3, 'completed', '/tmp/nope/log.jsonl')",
             duckdb::params![run_id, config.to_string(), started_at],
         )
@@ -4398,7 +4398,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_run_chain_single_rung_for_a_plain_run() {
         let app = seeded_app(|conn, _dir| {
-            insert_smac3_run(
+            insert_tuner_run(
                 conn,
                 "root-1",
                 "2026-01-01T00:00:00Z",
@@ -4417,19 +4417,19 @@ mod tests {
     #[tokio::test]
     async fn test_get_run_chain_orders_every_rung_oldest_first() {
         let app = seeded_app(|conn, _dir| {
-            insert_smac3_run(
+            insert_tuner_run(
                 conn,
                 "root-1",
                 "2026-01-01T00:00:00Z",
                 &json!({"ladder_root": "root-1"}),
             );
-            insert_smac3_run(
+            insert_tuner_run(
                 conn,
                 "root-1-rung3",
                 "2026-01-03T00:00:00Z",
                 &json!({"ladder_root": "root-1", "resumed_from": "root-1-rung2"}),
             );
-            insert_smac3_run(
+            insert_tuner_run(
                 conn,
                 "root-1-rung2",
                 "2026-01-02T00:00:00Z",
@@ -4437,7 +4437,7 @@ mod tests {
             );
             // A run from a *different* chain (different ladder_root) must
             // not leak into this chain's result.
-            insert_smac3_run(
+            insert_tuner_run(
                 conn,
                 "other-root",
                 "2026-01-02T12:00:00Z",
@@ -4624,29 +4624,29 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_list_kinds_includes_round_robin_and_smac3() {
+    async fn test_list_kinds_includes_round_robin_and_tuner() {
         let app = seeded_app(|_, _| {}).0;
         let (status, body) = http_get(app, "/api/bench/kinds").await;
         assert_eq!(status, HttpStatusCode::OK);
         let kinds = body_json(&body).as_array().unwrap().clone();
         let kind_names: Vec<&str> = kinds.iter().map(|k| k["kind"].as_str().unwrap()).collect();
         assert!(kind_names.contains(&"round_robin"));
-        assert!(kind_names.contains(&"smac3"));
+        assert!(kind_names.contains(&"tuner"));
     }
 
     // -------------------------------------------------------------------
-    // GET /api/bench/smac3/kinds
+    // GET /api/bench/tuner/kinds
     // -------------------------------------------------------------------
 
-    /// `/api/bench/smac3/kinds` itself now just forwards
+    /// `/api/bench/tuner/kinds` itself now just forwards
     /// `mcts_bench::games::describe_tuners()` -- see that function's own
     /// tests in `mcts-bench/src/games/mod.rs` for the exit-code/JSON
     /// dispatch this route depends on (`Some(TunerInfo)` vs `None` vs a
     /// missing binary). Spawning real `game-*` binaries from this crate's
     /// tests isn't practical here, so there's no fake-adapter-based
     /// HTTP-level test of the *contents* of this route the way earlier
-    /// commits had -- `test_list_kinds_includes_round_robin_and_smac3`
-    /// above only checks that the `smac3` kind name is present, same
+    /// commits had -- `test_list_kinds_includes_round_robin_and_tuner`
+    /// above only checks that the `tuner` kind name is present, same
     /// shallow level this route gets today.
 
     // -------------------------------------------------------------------
@@ -4654,12 +4654,12 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_build_command_smac3_includes_config_and_overrides() {
+    fn test_build_command_tuner_includes_config_and_overrides() {
         let cmd = build_command(
-            "smac3",
+            "tuner",
             "traffic-lights",
             &Some(json!({
-                "config": "smac3/config/default.yaml",
+                "config": "tuner/config/default.yaml",
                 "overrides": ["optimizer.n_trials=10", "optimizer.n_workers=2"],
             })),
             "test-run",
@@ -4672,11 +4672,11 @@ mod tests {
         assert_eq!(
             cmd[1..cmd.len() - 2],
             vec![
-                "smac3",
+                "tuner",
                 "--game",
                 "traffic-lights",
                 "--config",
-                "smac3/config/default.yaml",
+                "tuner/config/default.yaml",
                 "--override",
                 "optimizer.n_trials=10",
                 "--override",
@@ -4686,18 +4686,18 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command_smac3_with_no_config_is_just_game() {
-        let cmd = build_command("smac3", "druid", &None, "test-run").unwrap();
-        assert_eq!(cmd[1..cmd.len() - 2], vec!["smac3", "--game", "druid"]);
+    fn test_build_command_tuner_with_no_config_is_just_game() {
+        let cmd = build_command("tuner", "druid", &None, "test-run").unwrap();
+        assert_eq!(cmd[1..cmd.len() - 2], vec!["tuner", "--game", "druid"]);
     }
 
     #[test]
-    fn test_build_command_smac3_includes_trace_path_derived_from_run_id() {
+    fn test_build_command_tuner_includes_trace_path_derived_from_run_id() {
         let cmd = build_command(
-            "smac3",
+            "tuner",
             "druid",
             &None,
-            "smac3-druid-20260101T000000-abcdef",
+            "tuner-druid-20260101T000000-abcdef",
         )
         .unwrap();
         let idx = cmd
@@ -4706,14 +4706,14 @@ mod tests {
             .expect("--trace-path flag present");
         assert_eq!(
             cmd[idx + 1],
-            "bench-runs/smac3-druid-20260101T000000-abcdef/moves.jsonl"
+            "bench-runs/tuner-druid-20260101T000000-abcdef/moves.jsonl"
         );
     }
 
     #[test]
-    fn test_build_command_smac3_includes_game_config() {
+    fn test_build_command_tuner_includes_game_config() {
         let cmd = build_command(
-            "smac3",
+            "tuner",
             "druid",
             &Some(json!({
                 "game_config": {"size": {"w": 9, "h": 9}},
@@ -4730,9 +4730,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command_smac3_omits_null_game_config() {
+    fn test_build_command_tuner_omits_null_game_config() {
         let cmd = build_command(
-            "smac3",
+            "tuner",
             "druid",
             &Some(json!({
                 "game_config": null,
@@ -4744,9 +4744,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command_smac3_includes_baseline_configs() {
+    fn test_build_command_tuner_includes_baseline_configs() {
         let cmd = build_command(
-            "smac3",
+            "tuner",
             "nim",
             &Some(json!({
                 "overrides": ["optimizer.n_trials=10"],
@@ -4761,7 +4761,7 @@ mod tests {
         assert_eq!(
             cmd[1..cmd.len() - 2],
             vec![
-                "smac3",
+                "tuner",
                 "--game",
                 "nim",
                 "--override",
@@ -4773,9 +4773,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command_unknown_kind_lists_smac3_as_supported() {
+    fn test_build_command_unknown_kind_lists_tuner_as_supported() {
         let err = build_command("nope", "druid", &None, "test-run").unwrap_err();
-        assert!(err.message.contains("smac3"));
+        assert!(err.message.contains("tuner"));
     }
 
     #[test]
@@ -5018,9 +5018,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_launch_smac3_reaches_the_launcher() {
+    async fn test_launch_tuner_reaches_the_launcher() {
         // Same shape as test_launch_spawns_bench_and_returns_run_id above,
-        // for the "smac3" kind -- proves build_command's smac3 arm produces
+        // for the "tuner" kind -- proves build_command's tuner arm produces
         // a request the handler accepts and forwards to launch::launch
         // (a 400 here would mean it was rejected as an unknown kind before
         // ever reaching the launcher).
@@ -5033,10 +5033,10 @@ mod tests {
             app,
             "/api/bench/launch",
             json!({
-                "kind": "smac3",
+                "kind": "tuner",
                 "game": "traffic-lights",
                 "config": {
-                    "config": "smac3/config/default.yaml",
+                    "config": "tuner/config/default.yaml",
                     "overrides": ["optimizer.n_trials=1"]
                 }
             }),
@@ -5045,13 +5045,13 @@ mod tests {
 
         assert!(
             status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
-            "smac3 launch returned unexpected status {status}: body={}",
+            "tuner launch returned unexpected status {status}: body={}",
             String::from_utf8_lossy(&body),
         );
     }
 
     #[tokio::test]
-    async fn test_fresh_round_robin_and_smac3_launches_create_identity_roots() {
+    async fn test_fresh_round_robin_and_tuner_launches_create_identity_roots() {
         let (app, _, state) = seeded_app_with_state(
             |_, _| {},
             Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
@@ -5060,7 +5060,7 @@ mod tests {
 
         for (kind, game, config) in [
             ("round_robin", "druid", json!({"rounds": 1})),
-            ("smac3", "traffic-lights", json!({"overrides": []})),
+            ("tuner", "traffic-lights", json!({"overrides": []})),
         ] {
             let (status, body) = http_post_json(
                 app.clone(),
@@ -5094,12 +5094,12 @@ mod tests {
         let (app, _, state) = seeded_app_with_state(
             |conn, _| {
                 conn.execute(
-                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('resume-parent', 'smac3', 'traffic-lights', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/resume.log')",
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('resume-parent', 'tuner', 'traffic-lights', '{\"config\":\"tuner/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/resume.log')",
                     [],
                 )
                 .unwrap();
                 conn.execute(
-                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('promotion-parent', 'smac3', 'druid', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/promotion.log')",
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('promotion-parent', 'tuner', 'druid', '{\"config\":\"tuner/config/default.yaml\",\"overrides\":[]}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/promotion.log')",
                     [],
                 )
                 .unwrap();
@@ -5165,7 +5165,7 @@ mod tests {
         let (_, _, state) = seeded_app_with_state(
             |conn, _| {
                 conn.execute(
-                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) VALUES ('auto-parent', 'smac3', 'traffic-lights', '{\"config\":\"smac3/config/default.yaml\",\"overrides\":[\"optimizer.n_trials=10\"],\"ladder\":{\"max_rungs\":2,\"saturation_threshold\":0.1},\"ladder_root\":\"auto-parent\"}', 'sha', false, 'host', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/auto.log')",
+                    "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) VALUES ('auto-parent', 'tuner', 'traffic-lights', '{\"config\":\"tuner/config/default.yaml\",\"overrides\":[\"optimizer.n_trials=10\"],\"ladder\":{\"max_rungs\":2,\"saturation_threshold\":0.1},\"ladder_root\":\"auto-parent\"}', 'sha', false, 'host', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/auto.log')",
                     [],
                 )
                 .unwrap();
@@ -5186,7 +5186,7 @@ mod tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id <> 'auto-parent' AND kind = 'smac3' ORDER BY started_at DESC LIMIT 1",
+                "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id <> 'auto-parent' AND kind = 'tuner' ORDER BY started_at DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -5222,11 +5222,11 @@ mod tests {
     #[test]
     fn test_build_resume_config_carries_forward_old_config_and_overrides() {
         let old = Some(json!({
-            "config": "smac3/config/default.yaml",
+            "config": "tuner/config/default.yaml",
             "overrides": ["target.rounds=30"],
         }));
         let config = build_resume_config("old-run-1", &old, 500, None);
-        assert_eq!(config["config"], json!("smac3/config/default.yaml"));
+        assert_eq!(config["config"], json!("tuner/config/default.yaml"));
         assert_eq!(
             config["overrides"].as_array().unwrap(),
             &[json!("target.rounds=30"), json!("optimizer.n_trials=500")]
@@ -5414,7 +5414,7 @@ mod tests {
         // prior widen (or a hand-launched `--baseline-config`) -- the new
         // widen must *replace* it with just the new incumbent, not merge
         // alongside it, matching "always face the current incumbent" rather
-        // than SMAC3's multi-instance averaging.
+        // than tuner's multi-instance averaging.
         let mut root = ladder_root_run("root-1", 5, 0.0);
         root.config.as_mut().unwrap()["baseline_configs"] =
             json!({"ladder1": {"family": "ucb1", "c": 0.5}});
@@ -5717,7 +5717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_advance_baseline_rejects_non_smac3_run() {
+    async fn test_advance_baseline_rejects_non_tuner_run() {
         // DEFAULT_RUN_ID is seeded as a 'round_robin' run.
         let app = seeded_app(default_seed).0;
         let (status, body) = http_post_json(
@@ -5739,8 +5739,8 @@ mod tests {
                 "INSERT INTO runs \
                  (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
                   started_at, ended_at, status, log_path) \
-                 VALUES ('smac3-no-incumbent', 'smac3', 'traffic-lights', \
-                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                 VALUES ('tuner-no-incumbent', 'tuner', 'traffic-lights', \
+                         '{\"config\": \"tuner/config/default.yaml\", \"overrides\": []}', \
                          'abc1234', false, 'testhost', NULL, \
                          '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
                 duckdb::params![],
@@ -5751,7 +5751,7 @@ mod tests {
 
         let (status, body) = http_post_json(
             app,
-            "/api/bench/runs/smac3-no-incumbent/advance-baseline",
+            "/api/bench/runs/tuner-no-incumbent/advance-baseline",
             json!({}),
         )
         .await;
@@ -5761,9 +5761,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_advance_baseline_smac3_reaches_the_launcher() {
+    async fn test_advance_baseline_tuner_reaches_the_launcher() {
         // Same "reaches the launcher, doesn't get rejected as a bad
-        // request" shape as test_resume_smac3_reaches_the_launcher: a
+        // request" shape as test_resume_tuner_reaches_the_launcher: a
         // completed (non-running) run with a recorded incumbent should sail
         // past the stop-and-wait step (a no-op for a non-running run) and
         // the plan_manual_advance validation, reaching launch_and_record.
@@ -5773,8 +5773,8 @@ mod tests {
                 "INSERT INTO runs \
                  (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
                   started_at, ended_at, status, log_path) \
-                 VALUES ('smac3-advance-src', 'smac3', 'traffic-lights', \
-                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                 VALUES ('tuner-advance-src', 'tuner', 'traffic-lights', \
+                         '{\"config\": \"tuner/config/default.yaml\", \"overrides\": []}', \
                          'abc1234', false, 'testhost', NULL, \
                          '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
                 duckdb::params![],
@@ -5782,7 +5782,7 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO incumbents (run_id, ts, config, cost) \
-                 VALUES ('smac3-advance-src', '2026-01-01T00:30:00Z', '{\"family\": \"ucb1\"}', 0.02)",
+                 VALUES ('tuner-advance-src', '2026-01-01T00:30:00Z', '{\"family\": \"ucb1\"}', 0.02)",
                 duckdb::params![],
             )
             .unwrap();
@@ -5791,7 +5791,7 @@ mod tests {
 
         let (status, body) = http_post_json(
             app,
-            "/api/bench/runs/smac3-advance-src/advance-baseline",
+            "/api/bench/runs/tuner-advance-src/advance-baseline",
             json!({}),
         )
         .await;
@@ -5821,7 +5821,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resume_rejects_non_smac3_run() {
+    async fn test_resume_rejects_non_tuner_run() {
         // DEFAULT_RUN_ID is seeded as a 'round_robin' run.
         let app = seeded_app(default_seed).0;
         let (status, body) = http_post_json(
@@ -5836,9 +5836,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resume_smac3_reaches_the_launcher() {
+    async fn test_resume_tuner_reaches_the_launcher() {
         // Same "reaches the launcher, doesn't get rejected as a bad
-        // request" shape as test_launch_smac3_reaches_the_launcher: proves
+        // request" shape as test_launch_tuner_reaches_the_launcher: proves
         // the old run's kind/config are read back out of the DB and turned
         // into a launch the handler forwards, rather than being rejected
         // before ever reaching launch::launch_with_run_id.
@@ -5848,8 +5848,8 @@ mod tests {
                 "INSERT INTO runs \
                  (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
                   started_at, ended_at, status, log_path) \
-                 VALUES ('smac3-resume-src', 'smac3', 'traffic-lights', \
-                         '{\"config\": \"smac3/config/default.yaml\", \"overrides\": []}', \
+                 VALUES ('tuner-resume-src', 'tuner', 'traffic-lights', \
+                         '{\"config\": \"tuner/config/default.yaml\", \"overrides\": []}', \
                          'abc1234', false, 'testhost', NULL, \
                          '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
                 duckdb::params![],
@@ -5860,7 +5860,7 @@ mod tests {
 
         let (status, body) = http_post_json(
             app,
-            "/api/bench/runs/smac3-resume-src/resume",
+            "/api/bench/runs/tuner-resume-src/resume",
             json!({ "n_trials": 500 }),
         )
         .await;

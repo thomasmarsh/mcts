@@ -127,7 +127,7 @@ impl PresetTable {
     /// hand-written `&["strong"]` baseline list: a `tuner()` reports
     /// whichever presets this game's own `presets.json` actually declares,
     /// so a game with `easy`/`strong` (or more) exposes all of them as
-    /// SMAC3 baseline instances instead of one hardcoded name.
+    /// tuner baseline instances instead of one hardcoded name.
     pub fn ai_preset_ids(&self) -> Vec<&str> {
         self.presets.iter().map(|p| p.id.as_str()).collect()
     }

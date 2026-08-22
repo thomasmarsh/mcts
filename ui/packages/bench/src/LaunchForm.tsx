@@ -8,29 +8,29 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
-import { isEmptyGameConfig, Smac3LaunchFields } from "./Smac3LaunchFields.js";
+import { isEmptyGameConfig, TunerLaunchFields } from "./TunerLaunchFields.js";
 
-const SMAC3_KIND = "smac3";
-const DEFAULT_SMAC3_N_TRIALS = 100;
-const DEFAULT_SMAC3_SEED = 42;
-const DEFAULT_SMAC3_MAX_RUNGS = 5;
-const DEFAULT_SMAC3_SATURATION_THRESHOLD = 0.0;
+const tuner_KIND = "tuner";
+const DEFAULT_TUNER_N_TRIALS = 100;
+const DEFAULT_TUNER_SEED = 42;
+const DEFAULT_TUNER_MAX_RUNGS = 5;
+const DEFAULT_tuner_SATURATION_THRESHOLD = 0.0;
 
 /** Build the `--override key=value` argv (as `config.overrides`, per
- * `build_command`'s `"smac3"` arm in `server/src/bench/mod.rs`) from the
+ * `build_command`'s `"tuner"` arm in `server/src/bench/mod.rs`) from the
  * budget fields. `n_workers` is omitted entirely when left blank ("auto"),
- * matching `smac3/config/default.yaml`'s `null -> cpu_count // 2` default.
+ * matching `tuner/config/default.yaml`'s `null -> cpu_count // 2` default.
  * `rounds` is likewise omitted when it matches the tuner's own
  * `eval_rounds` default, so a run launched without touching the field
  * produces the same argv as before this field existed. `startingBaselines`
  * is always forwarded as `target.baselines=[...]` (one entry per selected
- * panel member -- SMAC3 evaluates every trial against all of them and
+ * panel member -- tuner evaluates every trial against all of them and
  * averages cost across instances); tuner metadata lists available presets
  * but deliberately supplies no runtime default.
- * `smac3_cli`'s `_apply_overrides`
+ * `tuner_cli`'s `_apply_overrides`
  * parses the value with `ast.literal_eval`, so a Python list literal
- * round-trips as-is (see `smac3/src/smac3_cli/__main__.py`). */
-function buildSmac3Overrides(opts: {
+ * round-trips as-is (see `tuner/src/tuner_cli/__main__.py`). */
+function buildTunerOverrides(opts: {
   nTrials: number;
   nWorkers: string;
   deterministic: boolean;
@@ -38,10 +38,10 @@ function buildSmac3Overrides(opts: {
   rounds: number;
   defaultRounds: number | null;
   startingBaselines: Set<string>;
-  /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
+  /** Empty string means "unset" -- see `TunerLaunchFields.tsx`'s
    * `maxIterations` prop doc comment. */
   maxIterations: string;
-  /** Empty string means "unset" -- see `Smac3LaunchFields.tsx`'s
+  /** Empty string means "unset" -- see `TunerLaunchFields.tsx`'s
    * `maxTimeMs` prop doc comment. Mutually exclusive with `maxIterations`;
    * the form itself keeps only one of the two fields enabled at a time, so
    * both being non-empty here shouldn't happen, but this function doesn't
@@ -81,11 +81,11 @@ export const LaunchForm: Component<{
     const k = state().kinds;
     return k.status === "done" ? (k.result ?? []) : [];
   });
-  const smac3Games = createMemo(() => {
-    const k = state().smac3Kinds;
+  const tunerGames = createMemo(() => {
+    const k = state().tunerKinds;
     return k.status === "done" ? (k.result ?? []) : [];
   });
-  const smac3GamesLoading = createMemo(() => state().smac3Kinds.status === "pending");
+  const tunerGamesLoading = createMemo(() => state().tunerKinds.status === "pending");
 
   // Starts collapsed if a run is already open when this mounts (e.g. after
   // a page reload) -- the detail panel is usually what the operator wants
@@ -100,42 +100,42 @@ export const LaunchForm: Component<{
   const [selectedStrategies, setSelectedStrategies] = createSignal<Set<string>>(new Set<string>());
   const [rounds, setRounds] = createSignal(1);
 
-  // SMAC3-only budget fields (see Smac3LaunchFields.tsx / buildSmac3Overrides).
-  const [smac3NTrials, setSmac3NTrials] = createSignal(DEFAULT_SMAC3_N_TRIALS);
-  const [smac3NWorkers, setSmac3NWorkers] = createSignal("");
-  const [smac3Deterministic, setSmac3Deterministic] = createSignal(false);
-  const [smac3Seed, setSmac3Seed] = createSignal(DEFAULT_SMAC3_SEED);
-  const [smac3Rounds, setSmac3Rounds] = createSignal(1);
+  // tuner-only budget fields (see TunerLaunchFields.tsx / buildTunerOverrides).
+  const [tunerNTrials, setTunerNTrials] = createSignal(DEFAULT_TUNER_N_TRIALS);
+  const [tunerNWorkers, setTunerNWorkers] = createSignal("");
+  const [tunerDeterministic, setTunerDeterministic] = createSignal(false);
+  const [tunerSeed, setTunerSeed] = createSignal(DEFAULT_TUNER_SEED);
+  const [tunerRounds, setTunerRounds] = createSignal(1);
   // Per-run MCTS iteration ceiling override -- "" means unset/auto, same
-  // convention as `smac3NWorkers`. See Smac3LaunchFields.tsx's
+  // convention as `tunerNWorkers`. See TunerLaunchFields.tsx's
   // `maxIterations` prop doc comment.
-  const [smac3MaxIterations, setSmac3MaxIterations] = createSignal("");
+  const [tunerMaxIterations, setTunerMaxIterations] = createSignal("");
   // Per-run wall-clock search budget override -- "" means unset, mutually
-  // exclusive with `smac3MaxIterations`. See Smac3LaunchFields.tsx's
+  // exclusive with `tunerMaxIterations`. See TunerLaunchFields.tsx's
   // `maxTimeMs` prop doc comment.
-  const [smac3MaxTimeMs, setSmac3MaxTimeMs] = createSignal("");
+  const [tunerMaxTimeMs, setTunerMaxTimeMs] = createSignal("");
   // Raw JSON text for the "Game config" field -- only meaningful (and only
-  // rendered by Smac3LaunchFields) when the selected game's tuner reports a
+  // rendered by TunerLaunchFields) when the selected game's tuner reports a
   // non-empty `game_config`.
-  const [smac3GameConfig, setSmac3GameConfig] = createSignal("");
+  const [tunerGameConfig, setTunerGameConfig] = createSignal("");
   // Which opponent panel a fresh run's root rung starts against, and
   // whether it opts into the automated ladder driver -- see
-  // Smac3LaunchFields.tsx's prop doc comments and buildSmac3Overrides
+  // TunerLaunchFields.tsx's prop doc comments and buildTunerOverrides
   // above. Defaults to every named preset the selected game's tuner
   // reports (see `defaultStartingBaselines` below), matching the old
   // single-select behavior when a game has exactly one preset.
-  const [smac3StartingBaselines, setSmac3StartingBaselines] = createSignal<Set<string>>(new Set<string>());
-  const [smac3LadderEnabled, setSmac3LadderEnabled] = createSignal(false);
-  const [smac3MaxRungs, setSmac3MaxRungs] = createSignal(DEFAULT_SMAC3_MAX_RUNGS);
-  const [smac3SaturationThreshold, setSmac3SaturationThreshold] = createSignal(
-    DEFAULT_SMAC3_SATURATION_THRESHOLD,
+  const [tunerStartingBaselines, setTunerStartingBaselines] = createSignal<Set<string>>(new Set<string>());
+  const [tunerLadderEnabled, setTunerLadderEnabled] = createSignal(false);
+  const [tunerMaxRungs, setTunerMaxRungs] = createSignal(DEFAULT_TUNER_MAX_RUNGS);
+  const [tunerSaturationThreshold, setTunerSaturationThreshold] = createSignal(
+    DEFAULT_tuner_SATURATION_THRESHOLD,
   );
 
   // Derived from kinds metadata.
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
   const currentGame = createMemo(() => currentKind()?.games.find((g) => g.game === selectedGame()));
-  const isSmac3 = createMemo(() => selectedKind() === SMAC3_KIND);
-  const currentSmac3Tuner = createMemo(() => smac3Games().find((g) => g.game === selectedGame())?.tuner ?? null);
+  const isTuner = createMemo(() => selectedKind() === tuner_KIND);
+  const currentTunerTuner = createMemo(() => tunerGames().find((g) => g.game === selectedGame())?.tuner ?? null);
 
   const launchStatus = createMemo(() => state().launch.status);
   const launchError = createMemo(() => (state().launch.status === "error" ? state().launch.error : null));
@@ -169,15 +169,15 @@ export const LaunchForm: Component<{
     setSelectedKind(kind);
     setSelectedGame("");
     setSelectedStrategies(new Set<string>());
-    if (kind === SMAC3_KIND) {
+    if (kind === tuner_KIND) {
       // Pre-select the first tunable game, if the metadata has loaded, and
       // default rounds/trial to that game's tuner-declared eval_rounds.
-      if (smac3Games().length > 0) {
-        const first = smac3Games()[0]!;
+      if (tunerGames().length > 0) {
+        const first = tunerGames()[0]!;
         setSelectedGame(first.game);
-        setSmac3Rounds(first.tuner.eval_rounds);
-        setSmac3GameConfig(gameConfigTextFor(first.tuner));
-        setSmac3StartingBaselines(defaultStartingBaselines(first.tuner));
+        setTunerRounds(first.tuner.eval_rounds);
+        setTunerGameConfig(gameConfigTextFor(first.tuner));
+        setTunerStartingBaselines(defaultStartingBaselines(first.tuner));
       }
       return;
     }
@@ -196,16 +196,16 @@ export const LaunchForm: Component<{
 
   // Reset rounds/trial and the game-config field to the newly selected
   // game's tuner defaults.
-  function onSmac3GameChange(game: string): void {
+  function onTunerGameChange(game: string): void {
     setSelectedGame(game);
-    const tuner = smac3Games().find((g) => g.game === game)?.tuner;
-    if (tuner) setSmac3Rounds(tuner.eval_rounds);
-    setSmac3GameConfig(gameConfigTextFor(tuner));
-    setSmac3StartingBaselines(defaultStartingBaselines(tuner));
+    const tuner = tunerGames().find((g) => g.game === game)?.tuner;
+    if (tuner) setTunerRounds(tuner.eval_rounds);
+    setTunerGameConfig(gameConfigTextFor(tuner));
+    setTunerStartingBaselines(defaultStartingBaselines(tuner));
   }
 
   function toggleStartingBaseline(id: string): void {
-    setSmac3StartingBaselines((prev) => {
+    setTunerStartingBaselines((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -224,11 +224,11 @@ export const LaunchForm: Component<{
 
   // `null` when the field is hidden (nothing to configure) or valid; an
   // error message when shown and its contents don't parse as JSON.
-  const smac3GameConfigError = createMemo(() => {
-    const tuner = currentSmac3Tuner();
+  const tunerGameConfigError = createMemo(() => {
+    const tuner = currentTunerTuner();
     if (!tuner || isEmptyGameConfig(tuner.game_config)) return null;
     try {
-      JSON.parse(smac3GameConfig());
+      JSON.parse(tunerGameConfig());
       return null;
     } catch (e) {
       return e instanceof Error ? e.message : "invalid JSON";
@@ -237,8 +237,8 @@ export const LaunchForm: Component<{
 
   function canLaunch(): boolean {
     if (busy() || selectedKind() === "" || selectedGame() === "") return false;
-    if (isSmac3()) {
-      return smac3NTrials() >= 1 && smac3GameConfigError() === null && smac3StartingBaselines().size > 0;
+    if (isTuner()) {
+      return tunerNTrials() >= 1 && tunerGameConfigError() === null && tunerStartingBaselines().size > 0;
     }
     return selectedStrategies().size >= 2 && rounds() >= 1;
   }
@@ -246,32 +246,32 @@ export const LaunchForm: Component<{
   function onSubmit(e: Event): void {
     e.preventDefault();
     if (!canLaunch()) return;
-    const tuner = currentSmac3Tuner();
-    const config = isSmac3()
+    const tuner = currentTunerTuner();
+    const config = isTuner()
       ? {
-          overrides: buildSmac3Overrides({
-            nTrials: smac3NTrials(),
-            nWorkers: smac3NWorkers(),
-            deterministic: smac3Deterministic(),
-            seed: smac3Seed(),
-            rounds: smac3Rounds(),
+          overrides: buildTunerOverrides({
+            nTrials: tunerNTrials(),
+            nWorkers: tunerNWorkers(),
+            deterministic: tunerDeterministic(),
+            seed: tunerSeed(),
+            rounds: tunerRounds(),
             defaultRounds: tuner?.eval_rounds ?? null,
-            startingBaselines: smac3StartingBaselines(),
-            maxIterations: smac3MaxIterations(),
-            maxTimeMs: smac3MaxTimeMs(),
+            startingBaselines: tunerStartingBaselines(),
+            maxIterations: tunerMaxIterations(),
+            maxTimeMs: tunerMaxTimeMs(),
           }),
           ...(tuner && !isEmptyGameConfig(tuner.game_config)
-            ? { game_config: JSON.parse(smac3GameConfig()) }
+            ? { game_config: JSON.parse(tunerGameConfig()) }
             : {}),
           // Consumed by `inject_ladder_root_if_new_ladder`
           // (`server/src/bench/mod.rs`) -- this launch becomes a new
           // ladder's root rung, and `plan_ladder_advances`'s background
           // poll loop takes it from there once it saturates.
-          ...(smac3LadderEnabled()
+          ...(tunerLadderEnabled()
             ? {
                 ladder: {
-                  max_rungs: smac3MaxRungs(),
-                  saturation_threshold: smac3SaturationThreshold(),
+                  max_rungs: tunerMaxRungs(),
+                  saturation_threshold: tunerSaturationThreshold(),
                 },
               }
             : {}),
@@ -339,7 +339,7 @@ export const LaunchForm: Component<{
             </select>
           </label>
 
-          <Show when={isSmac3()} fallback={
+          <Show when={isTuner()} fallback={
             <>
               <Show when={currentKind()}>
                 <label>
@@ -387,36 +387,36 @@ export const LaunchForm: Component<{
               </Show>
             </>
           }>
-            <Smac3LaunchFields
-              games={smac3Games()}
-              gamesLoading={smac3GamesLoading()}
+            <TunerLaunchFields
+              games={tunerGames()}
+              gamesLoading={tunerGamesLoading()}
               game={selectedGame()}
-              onGameChange={onSmac3GameChange}
-              nTrials={smac3NTrials()}
-              onNTrialsChange={setSmac3NTrials}
-              nWorkers={smac3NWorkers()}
-              onNWorkersChange={setSmac3NWorkers}
-              deterministic={smac3Deterministic()}
-              onDeterministicChange={setSmac3Deterministic}
-              seed={smac3Seed()}
-              onSeedChange={setSmac3Seed}
-              rounds={smac3Rounds()}
-              onRoundsChange={setSmac3Rounds}
-              maxIterations={smac3MaxIterations()}
-              onMaxIterationsChange={setSmac3MaxIterations}
-              maxTimeMs={smac3MaxTimeMs()}
-              onMaxTimeMsChange={setSmac3MaxTimeMs}
-              gameConfig={smac3GameConfig()}
-              onGameConfigChange={setSmac3GameConfig}
-              gameConfigError={smac3GameConfigError()}
-              startingBaselines={smac3StartingBaselines()}
+              onGameChange={onTunerGameChange}
+              nTrials={tunerNTrials()}
+              onNTrialsChange={setTunerNTrials}
+              nWorkers={tunerNWorkers()}
+              onNWorkersChange={setTunerNWorkers}
+              deterministic={tunerDeterministic()}
+              onDeterministicChange={setTunerDeterministic}
+              seed={tunerSeed()}
+              onSeedChange={setTunerSeed}
+              rounds={tunerRounds()}
+              onRoundsChange={setTunerRounds}
+              maxIterations={tunerMaxIterations()}
+              onMaxIterationsChange={setTunerMaxIterations}
+              maxTimeMs={tunerMaxTimeMs()}
+              onMaxTimeMsChange={setTunerMaxTimeMs}
+              gameConfig={tunerGameConfig()}
+              onGameConfigChange={setTunerGameConfig}
+              gameConfigError={tunerGameConfigError()}
+              startingBaselines={tunerStartingBaselines()}
               onToggleStartingBaseline={toggleStartingBaseline}
-              ladderEnabled={smac3LadderEnabled()}
-              onLadderEnabledChange={setSmac3LadderEnabled}
-              maxRungs={smac3MaxRungs()}
-              onMaxRungsChange={setSmac3MaxRungs}
-              saturationThreshold={smac3SaturationThreshold()}
-              onSaturationThresholdChange={setSmac3SaturationThreshold}
+              ladderEnabled={tunerLadderEnabled()}
+              onLadderEnabledChange={setTunerLadderEnabled}
+              maxRungs={tunerMaxRungs()}
+              onMaxRungsChange={setTunerMaxRungs}
+              saturationThreshold={tunerSaturationThreshold()}
+              onSaturationThresholdChange={setTunerSaturationThreshold}
               disabled={busy()}
             />
           </Show>

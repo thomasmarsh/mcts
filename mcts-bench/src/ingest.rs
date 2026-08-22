@@ -220,7 +220,7 @@ fn process_run_logs(conn: &Connection) -> Result<(), IngestError> {
         // `log.jsonl` (see `LogRecord::Move`'s doc comment for why they're
         // kept out of the main log) -- same directory, derived rather than
         // stored as its own `runs` column. Not every run kind writes one
-        // (only round-robin/SMAC3 launches that pass `--trace-path`;
+        // (only round-robin/tuner launches that pass `--trace-path`;
         // ad hoc `bench round-robin` runs without it don't), so a missing
         // file here is normal, not an error.
         let moves_path = Path::new(log_path_str).with_file_name("moves.jsonl");
@@ -644,12 +644,12 @@ mod tests {
 
     #[test]
     fn registry_replay_does_not_clobber_server_identity() {
-        let ev = start_event("child-run", "smac3", "nim", 99996, "/tmp/child/log.jsonl");
+        let ev = start_event("child-run", "tuner", "nim", 99996, "/tmp/child/log.jsonl");
         let fix = TestFixture::new(&[ev]);
         fix.db
             .execute(
-                "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-root', 'smac3', CURRENT_TIMESTAMP, 'child-run');
-                 INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, parent_attempt_id, attempt_ordinal) VALUES ('child-run', 'smac3', 'nim', 'server', false, 'server', CURRENT_TIMESTAMP, 'running', '/tmp/server/log.jsonl', 'logical-root', 'parent-run', 2)",
+                "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-root', 'tuner', CURRENT_TIMESTAMP, 'child-run');
+                 INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, parent_attempt_id, attempt_ordinal) VALUES ('child-run', 'tuner', 'nim', 'server', false, 'server', CURRENT_TIMESTAMP, 'running', '/tmp/server/log.jsonl', 'logical-root', 'parent-run', 2)",
                 [],
             )
             .unwrap();
@@ -706,15 +706,15 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_start_stop_marks_smac3_crashed_on_nonzero_exit() {
-        // A smac3 (or other non-experiment) run whose process exits nonzero
-        // -- e.g. it dies during SMAC's preflight check before spawning any
+    fn test_registry_start_stop_marks_tuner_crashed_on_nonzero_exit() {
+        // A tuner (or other non-experiment) run whose process exits nonzero
+        // -- e.g. it dies during the tuner's preflight check before spawning any
         // trials -- must land as 'crashed', not silently as 'completed'.
         // Only the 'experiment' kind used to check exit_code here; every
         // other kind unconditionally marked itself 'completed'.
         let ev_start = start_event(
             "run-crash",
-            "smac3",
+            "tuner",
             "traffic-lights",
             99996,
             "/tmp/nope4/log.jsonl",
@@ -748,7 +748,7 @@ mod tests {
         // races against (may land before or after) whatever else already
         // set the terminal status. See the `AND status = 'running'` guard
         // this test exercises.
-        let ev_start = start_event("run-3", "smac3", "nim", 99997, "/tmp/nope3/log.jsonl");
+        let ev_start = start_event("run-3", "tuner", "nim", 99997, "/tmp/nope3/log.jsonl");
         let fix = TestFixture::new(&[ev_start]);
         ingest_once(&fix.db, &fix.bench_runs).unwrap();
         fix.db
@@ -763,7 +763,7 @@ mod tests {
             fix.bench_runs.join("registry.log"),
             format!(
                 "{}\n{}\n",
-                start_event("run-3", "smac3", "nim", 99997, "/tmp/nope3/log.jsonl").to_json_line(),
+                start_event("run-3", "tuner", "nim", 99997, "/tmp/nope3/log.jsonl").to_json_line(),
                 stop_event("run-3", Some(0)).to_json_line(),
             ),
         )
@@ -1127,13 +1127,13 @@ mod tests {
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
 
-            let run_id = "smac3-run";
+            let run_id = "tuner-run";
             let run_dir = bench_runs.join(run_id);
             fs::create_dir_all(&run_dir).unwrap();
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "smac3", "druid", 99992, &log_path_str)];
+            let reg_events = vec![start_event(run_id, "tuner", "druid", 99992, &log_path_str)];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());
@@ -1181,7 +1181,7 @@ mod tests {
 
         let cost: f64 = db
             .query_row(
-                "SELECT cost FROM trials WHERE run_id = 'smac3-run' AND trial_id = 1",
+                "SELECT cost FROM trials WHERE run_id = 'tuner-run' AND trial_id = 1",
                 [],
                 |row| row.get(0),
             )
@@ -1190,7 +1190,7 @@ mod tests {
 
         let seed: Option<i64> = db
             .query_row(
-                "SELECT seed FROM trials WHERE run_id = 'smac3-run' AND trial_id = 1",
+                "SELECT seed FROM trials WHERE run_id = 'tuner-run' AND trial_id = 1",
                 [],
                 |row| row.get(0),
             )
@@ -1199,7 +1199,7 @@ mod tests {
 
         let extra: Option<String> = db
             .query_row(
-                "SELECT extra FROM trials WHERE run_id = 'smac3-run' AND trial_id = 2",
+                "SELECT extra FROM trials WHERE run_id = 'tuner-run' AND trial_id = 2",
                 [],
                 |row| row.get(0),
             )
@@ -1218,13 +1218,13 @@ mod tests {
             let bench_runs = dir.join("bench-runs");
             fs::create_dir_all(&bench_runs).unwrap();
 
-            let run_id = "smac3-run";
+            let run_id = "tuner-run";
             let run_dir = bench_runs.join(run_id);
             fs::create_dir_all(&run_dir).unwrap();
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "smac3", "druid", 99993, &log_path_str)];
+            let reg_events = vec![start_event(run_id, "tuner", "druid", 99993, &log_path_str)];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());
@@ -1273,7 +1273,7 @@ mod tests {
         let (cost, config_str, extra_str): (f64, String, Option<String>) = db
             .query_row(
                 "SELECT cost, CAST(config AS TEXT), CAST(extra AS TEXT) \
-                 FROM incumbents WHERE run_id = 'smac3-run'",
+                 FROM incumbents WHERE run_id = 'tuner-run'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -1380,7 +1380,7 @@ mod tests {
             let log_path = run_dir.join("log.jsonl");
             let log_path_str = log_path.to_string_lossy().to_string();
 
-            let reg_events = vec![start_event(run_id, "smac3", "druid", 99994, &log_path_str)];
+            let reg_events = vec![start_event(run_id, "tuner", "druid", 99994, &log_path_str)];
             let mut reg_content = String::new();
             for ev in &reg_events {
                 reg_content.push_str(&ev.to_json_line());

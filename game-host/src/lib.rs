@@ -186,10 +186,10 @@ pub struct ConfiguredComparisonSummary {
 }
 
 // ---------------------------------------------------------------------------
-// Tuner metadata (SMAC3-style hyperparameter search)
+// Tuner metadata (hyperparameter search)
 // ---------------------------------------------------------------------------
 
-/// One parameter in a tuner's search space (mirrors the shape of the SMAC3
+/// One parameter in the tuner's search space (mirrors the shape of the tuner
 /// harness's YAML search space), reported by `tuner()` so a launch form or
 /// CLI consumer can render/validate fields without a per-game hardcoded
 /// schema. `spec` carries the type-specific keys verbatim (`type`/`bounds`/
@@ -216,11 +216,11 @@ pub struct TunerCondition {
 
 /// Metadata describing a game's tunable strategy search space, as reported
 /// by the `tune describe` subcommand -- the parameter space and baseline
-/// instances a SMAC3-style harness needs to run trials, without embedding
+/// instances a tuner-style harness needs to run trials, without embedding
 /// the actual search/eval logic (that stays behind `tune_eval`).
 ///
 /// `baselines` is a list rather than a single id so a harness can evaluate
-/// each trial config against multiple opponent strengths (SMAC3's
+/// each trial config against multiple opponent strengths (the tuner's
 /// `Scenario(instances=...)` mechanism) instead of one fixed baseline --
 /// once a config saturates 100% win rate against an easy baseline, cost
 /// floors at `0.0` and a harder second instance is the only way to keep
@@ -236,7 +236,7 @@ pub struct TunerInfo {
     pub conditions: Vec<TunerCondition>,
     /// The game's own `default_config()` -- a game-setup axis (e.g. Druid's
     /// board size) that's separate from `parameters` (the strategy search
-    /// space) entirely: SMAC3 never searches over it, `tune_eval`'s
+    /// space) entirely: the tuner never searches over it, `tune_eval`'s
     /// `game_config` argument just pins every trial in a run to it. `{}` for
     /// every game whose board is fixed at compile time (everything but
     /// Druid today) -- a caller should treat that as "nothing to configure",
@@ -328,7 +328,7 @@ pub trait GameAdapter: Send + Sync {
     ) -> Result<Analysis, HostError>;
 
     /// Tunable strategy search-space metadata, for games that support
-    /// SMAC3-style hyperparameter tuning via `tune_eval`. `None` (the
+    /// tuner-style hyperparameter tuning via `tune_eval`. `None` (the
     /// default) for every game that doesn't -- tuning support is opt-in per
     /// game, not a universal requirement.
     fn tuner(&self) -> Option<TunerInfo> {
@@ -447,7 +447,7 @@ pub trait GameAdapter: Send + Sync {
     /// returns `{}`) has nothing to vary here and ignores this argument.
     ///
     /// `max_iterations` is an operator-set, per-*run* compute budget (not a
-    /// per-trial hyperparameter SMAC3 searches over -- see
+    /// per-trial hyperparameter tuner searches over -- see
     /// `mcts_tune::SearchBudget`'s doc comment for why), forwarded verbatim
     /// from `--max-iterations`. `None` means "use `mcts-tune`'s own
     /// historical default." An implementation threading this into
@@ -459,7 +459,7 @@ pub trait GameAdapter: Send + Sync {
     /// `trace_path`, forwarded verbatim from `--trace-path`, is a plain
     /// file path a `mcts_tune::trace::MoveTracer` appends move-trace JSON
     /// lines to as self-play games are played -- for live monitoring/
-    /// sanity-checking a SMAC3 run in progress. `None` disables tracing
+    /// sanity-checking a tuner run in progress. `None` disables tracing
     /// entirely (no file opened, no per-ply overhead).
     #[allow(unused_variables)]
     #[allow(clippy::too_many_arguments)]

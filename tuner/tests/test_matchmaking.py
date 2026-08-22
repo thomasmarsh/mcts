@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import yaml
 
-from smac3_cli import matchmaking
-from smac3_cli.config import SearchConfig
-from smac3_cli.pool import OpponentPool
+from tuner_cli import matchmaking
+from tuner_cli.config import SearchConfig
+from tuner_cli.pool import OpponentPool
 
 _SPACE_YAML = """
 parameters:

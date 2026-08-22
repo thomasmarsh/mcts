@@ -731,8 +731,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         ensure_schema(&conn).unwrap();
         conn.execute_batch(
-            "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical', 'smac3', CURRENT_TIMESTAMP, 'attempt');
-             INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES ('attempt', 'smac3', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log', 'logical', 1);",
+            "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical', 'tuner', CURRENT_TIMESTAMP, 'attempt');
+             INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES ('attempt', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log', 'logical', 1);",
         )
         .unwrap();
         conn
@@ -977,7 +977,7 @@ mod tests {
         tx.commit().unwrap();
 
         conn.execute(
-            "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('no-identity', 'smac3', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log')",
+            "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('no-identity', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log')",
             [],
         )
         .unwrap();
@@ -1239,8 +1239,8 @@ mod tests {
     fn initialized_attempts_are_isolated() {
         let mut conn = database();
         conn.execute_batch(
-            "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-two', 'smac3', CURRENT_TIMESTAMP, 'attempt-two');
-             INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES ('attempt-two', 'smac3', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log', 'logical-two', 1);",
+            "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-two', 'tuner', CURRENT_TIMESTAMP, 'attempt-two');
+             INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES ('attempt-two', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log', 'logical-two', 1);",
         )
         .unwrap();
         initialize(&mut conn, "attempt");

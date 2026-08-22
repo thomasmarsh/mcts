@@ -12,7 +12,7 @@ Current features:
 * MAST
 * Decisive Moves
 * Transposition tables
-* Hyperparameter tuning with [SMAC3](https://automl.github.io/SMAC3/main/)
+* Hyperparameter tuning with [tuner](https://automl.github.io/tuner/main/)
 * Arena allocation (just a `Vec`, inspired by [indextree](https://github.com/saschagrunert/indextree))
 * Preliminary benchmarking tools
 * A growing number of [game implementations](games)

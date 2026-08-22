@@ -1,7 +1,7 @@
 [project]
-name = "mcts-smac3"
+name = "mcts-tuner"
 version = "0.1.0"
-description = "SMAC3 hyperparameter optimization for MCTS"
+description = "Optuna + TrueSkill hyperparameter optimization for MCTS"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "pyyaml>=6.0",
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-smac3 = "smac3_cli.__main__:main"
+tuner = "tuner_cli.__main__:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]

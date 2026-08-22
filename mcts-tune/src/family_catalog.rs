@@ -53,7 +53,7 @@ macro_rules! register_field {
     ) => {
         /// One trial's candidate parameters, deserialized from the `params`
         /// JSON object `strategy_tune_eval` receives -- the merged
-        /// active-parameter set a SMAC3 harness builds from its search-space
+        /// active-parameter set a tuner harness builds from its search-space
         /// YAML. `family` selects which of the fields below are actually
         /// required; everything except `family`/`q_init` is `Option`
         /// because it's only meaningful for a subset of families (validated
@@ -296,7 +296,7 @@ register_family! {
         contempt_factor: None,
     }),
     // `mode` is fixed per family (like every other `*_dm*` row below) rather
-    // than exposed as its own tunable field, so a SMAC3 search that wants to
+    // than exposed as its own tunable field, so a tuner search that wants to
     // compare Teytaud & Teytaud 2010's decisive-move-only check against the
     // pricier anti-decisive one (see `simulate::DecisiveMoveMode::AntiDecisive`'s
     // doc comment) needs both named explicitly -- this is `ucb1_dm`'s
@@ -563,7 +563,7 @@ register_family! {
     }),
     // Tesauro/Rajan/Segal 2010's Bayesian MCTS: `select`/`backprop` have to
     // travel together (`config_ir.rs`'s `needs_posterior`), so these two
-    // families each pin one concrete pairing for SMAC3 to tune rather than
+    // families each pin one concrete pairing for tuner to tune rather than
     // leaving the select<->backprop choice free (only `build_custom`'s
     // Custom-UI path composes those two axes independently).
     "bayes_uct1_gaussian" => [c, prior_variance, obs_variance, final_action] => |p: &TrialParams| Ok(FamilySpec {

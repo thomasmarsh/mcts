@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from smac3_cli.config import SearchConfig
+from tuner_cli.config import SearchConfig
 
 
 def test_config_parses_parameter_types_and_conditions():

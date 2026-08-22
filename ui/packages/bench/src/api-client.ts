@@ -23,7 +23,7 @@ import type {
   RunFilters,
   RunLogResponse,
   RunSummary,
-  Smac3GameInfo,
+  TunerGameInfo,
   StopResponse,
   TrialRow,
   GameTraceSummary,
@@ -57,7 +57,7 @@ export interface BenchApiClient {
   fetchCommitTrends(game: string | null): Promise<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
-  /** Relaunch a finished/stopped SMAC3 run with a bigger trial budget,
+  /** Relaunch a finished/stopped tuner run with a bigger trial budget,
    * seeded from its saved state (`POST /api/bench/runs/{run_id}/resume`). */
   resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse>;
   /** Promote this run's current incumbent to a new baseline instance and
@@ -66,8 +66,8 @@ export interface BenchApiClient {
    * it's still running. `nTrials` defaults server-side when omitted. */
   advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Promise<LaunchResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
-  /** Per-game tuner metadata for every game that supports SMAC3 tuning. */
-  getSmac3Kinds(): Promise<Smac3GameInfo[]>;
+  /** Per-game tuner metadata for every game that supports tuner tuning. */
+  getTunerKinds(): Promise<TunerGameInfo[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
@@ -214,8 +214,8 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getBenchKinds(): Promise<BenchKindInfo[]> {
       return fetchJson(url("/api/bench/kinds"));
     },
-    async getSmac3Kinds(): Promise<Smac3GameInfo[]> {
-      return fetchJson(url("/api/bench/smac3/kinds"));
+    async getTunerKinds(): Promise<TunerGameInfo[]> {
+      return fetchJson(url("/api/bench/tuner/kinds"));
     },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
@@ -261,7 +261,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     advanceBaseline: (runId: string, nTrials?: number, nWorkers?: number) =>
       lift(() => api.advanceBaseline(runId, nTrials, nWorkers)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
-    getSmac3Kinds: () => lift(() => api.getSmac3Kinds()),
+    getTunerKinds: () => lift(() => api.getTunerKinds()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),

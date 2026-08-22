@@ -1,6 +1,6 @@
 """Per-trial matchmaking -- plays a candidate config against the opponent pool.
 
-Unlike SMAC3's fixed-instance cost aggregation, a trial's rating is built up
+Unlike the tuner's fixed-instance cost aggregation, a trial's rating is built up
 one game at a time against whichever pool anchor is currently closest to the
 candidate's own live TrueSkill rating ("ladder of trash"): a brand-new
 strategy starts near an unrated 25.0 mu, gets matched against `"default"`

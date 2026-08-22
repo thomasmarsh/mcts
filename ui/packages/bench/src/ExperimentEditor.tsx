@@ -41,7 +41,7 @@ export const ExperimentEditor: Component<{ store: Store<BenchState, BenchAction>
       update((spec) => apply(spec, value));
     } catch (error) { setJsonErrors((old) => ({ ...old, [key]: error instanceof SyntaxError ? "Enter valid JSON." : error instanceof Error ? error.message : "Enter valid JSON." })); }
   };
-  const gameOptions = createMemo(() => state().smac3Kinds.result ?? []);
+  const gameOptions = createMemo(() => state().tunerKinds.result ?? []);
   const dirty = () => { const current = draft(); return current !== null && JSON.stringify(current) !== JSON.stringify(state().experimentSavedDraft); };
   const localInvalid = () => Object.keys(jsonErrors()).length > 0;
   const fieldError = (path: string) => state().experimentFieldErrors[path];

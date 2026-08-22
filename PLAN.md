@@ -13,8 +13,8 @@ things implemented (perhaps only partially) are checked off on the list.
 ### Benchmarking / Tuning
 - [x] Battle royale
 - [x] Round robin
-- [x] SMAC3 ad hoc integration
-- [x] Automatic SMAC3 tuning
+- [x] tuner ad hoc integration
+- [x] Automatic tuner tuning
 - [ ] Generalize benchmarking (WIP)
 
 ### Selection

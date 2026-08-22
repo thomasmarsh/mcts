@@ -17,7 +17,7 @@ import type {
   RunDetail,
   RunFilters,
   RunSummary,
-  Smac3GameInfo,
+  TunerGameInfo,
   TrialRow,
   Project,
   Experiment,
@@ -65,9 +65,9 @@ export interface OpenRunState {
    * to wait on, and the status/match counts stay live for free. */
   detail: RunDetail | null;
   tail: LogTailState;
-  /** Trial rows for a `kind: "smac3"` run, refetched in full (the trials
+  /** Trial rows for a `kind: "tuner"` run, refetched in full (the trials
    * route has no incremental cursor, unlike the log) on every tail tick
-   * once `detail.kind` is known to be `"smac3"` — see reducer.ts. Empty for
+   * once `detail.kind` is known to be `"tuner"` — see reducer.ts. Empty for
    * every other run kind. */
   trials: TrialRow[];
   /** This run's ladder chain, oldest rung first — a one-element list
@@ -78,7 +78,7 @@ export interface OpenRunState {
    * rung index — the data source for the chained cost chart. Refetched
    * alongside `chain` on every tick, same "just refetch the whole thing"
    * tradeoff `trials` already makes (see reducer.ts). Empty for a
-   * non-`"smac3"` run. */
+   * non-`"tuner"` run. */
   chainedTrials: ChainedTrial[];
   cells: ExperimentCell[];
   games: GameTraceSummary[];
@@ -139,10 +139,10 @@ export interface BenchState {
   deleteError: string | null;
   /** Available run kinds loaded on mount — populates the launch form. */
   kinds: JobPollState<BenchKindInfo[]>;
-  /** Per-game tuner metadata for every SMAC3-tunable game, loaded on mount
-   * — populates the SMAC3 launch fields' game picker and the run-detail
+  /** Per-game tuner metadata for every tuner-tunable game, loaded on mount
+   * — populates the tuner launch fields' game picker and the run-detail
    * baseline parameter comparison. */
-  smac3Kinds: JobPollState<Smac3GameInfo[]>;
+  tunerKinds: JobPollState<TunerGameInfo[]>;
   experimentExportStatus: "idle" | "pending";
   experimentExportError: string | null;
 }
@@ -180,7 +180,7 @@ export function initialBenchState(): BenchState {
     advanceBaselineError: null,
     deleteError: null,
     kinds: initialJobPollState<BenchKindInfo[]>(),
-    smac3Kinds: initialJobPollState<Smac3GameInfo[]>(),
+    tunerKinds: initialJobPollState<TunerGameInfo[]>(),
     experimentExportStatus: "idle",
     experimentExportError: null,
   };

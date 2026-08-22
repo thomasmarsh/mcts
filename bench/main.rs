@@ -1,4 +1,4 @@
-//! CLI for the benchmark / tournament / SMAC3 harness.
+//! CLI for the benchmark / tournament / tuner harness.
 //!
 //! Default behaviour (`bench round-robin ...`) runs the tournament in the
 //! foreground and streams JSONL results to stdout, matching the existing
@@ -31,7 +31,7 @@ const BUILD_INFO: launch::BuildInfo<'static> = launch::BuildInfo {
 };
 
 #[derive(Parser)]
-#[command(name = "bench", about = "Benchmark, tournament, and SMAC3 harness")]
+#[command(name = "bench", about = "Benchmark, tournament, and tuner harness")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -78,7 +78,7 @@ enum Command {
     /// `registry.log`, and returns immediately.  The run survives the
     /// launching process.
     Launch {
-        /// Machine-readable kind string (e.g. "round_robin", "smac3").
+        /// Machine-readable kind string (e.g. "round_robin", "tuner").
         #[arg(long)]
         kind: String,
 
@@ -96,33 +96,33 @@ enum Command {
         cmd: Vec<String>,
     },
 
-    /// Launch a SMAC3 hyperparameter-optimisation run.  Runs
-    /// ``uv run --project smac3/ smac3 ...`` in the foreground
+    /// Launch a tuner hyperparameter-optimisation run.  Runs
+    /// ``uv run --project tuner/ tuner ...`` in the foreground
     /// (streaming JSONL to stdout) or, with ``--background``, through the
     /// detached-process launcher so the run survives the launching
     /// process and appears in DuckDB/the UI.
-    Smac3 {
-        /// Path to the SMAC3 YAML config file (passed through to
-        /// ``smac3 --config``).
+    Tuner {
+        /// Path to the tuner YAML config file (passed through to
+        /// ``tuner --config``).
         #[arg(long)]
         config: Option<String>,
 
         /// Config override (``key=value``, repeatable).  Passed through
-        /// as ``smac3 --override key=value``.
+        /// as ``tuner --override key=value``.
         #[arg(long = "override", default_values_t = Vec::<String>::new())]
         overrides: Vec<String>,
 
         /// Extra baseline instance backed by a raw discovered config
         /// (``id=json``, repeatable), for evaluating a candidate against an
         /// opponent that isn't one of the game's named presets.  Passed
-        /// through as ``smac3 --baseline-config id=json``.
+        /// through as ``tuner --baseline-config id=json``.
         #[arg(long = "baseline-config", default_values_t = Vec::<String>::new())]
         baseline_configs: Vec<String>,
 
         /// Game-setup config (JSON object, e.g. Druid's `{"size":{"w":9,
         /// "h":9}}`) pinning every trial in this run to a non-default game
         /// config instead of the game's own `default_config()`.  Passed
-        /// through as ``smac3 --game-config <json>``.
+        /// through as ``tuner --game-config <json>``.
         #[arg(long = "game-config")]
         game_config: Option<String>,
 
@@ -134,20 +134,20 @@ enum Command {
         #[arg(long)]
         label: Option<String>,
 
-        /// Pin the launched run's `Scenario.name` to this id (passed
-        /// through as `smac3 --run-id`), so its output directory is
+        /// Pin the launched run's study name to this id (passed
+        /// through as `tuner --run-id`), so its output directory is
         /// discoverable later for `--resume`.
         #[arg(long = "run-id")]
         run_id: Option<String>,
 
         /// Resume a prior run by its `--run-id` (passed through as
-        /// `smac3 --resume`).
+        /// `tuner --resume`).
         #[arg(long)]
         resume: Option<String>,
 
         /// Optional path to append per-ply move-trace JSONL lines to
         /// (opened in append mode by each trial's game-binary subprocess,
-        /// same file across the whole run). Passed through as `smac3
+        /// same file across the whole run). Passed through as `tuner
         /// --trace-path`. Omit to disable move tracing entirely.
         #[arg(long)]
         trace_path: Option<String>,
@@ -204,7 +204,7 @@ fn main() {
             cmd,
         } => cmd_launch(&kind, &game, label.as_deref(), &cmd),
 
-        Command::Smac3 {
+        Command::Tuner {
             config,
             overrides,
             baseline_configs,
@@ -215,7 +215,7 @@ fn main() {
             resume,
             trace_path,
             background,
-        } => cmd_smac3(
+        } => cmd_tuner(
             config.as_deref(),
             &overrides,
             &baseline_configs,
@@ -389,19 +389,19 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
-/// Build the argv for a ``uv run --project smac3/ smac3 ...``
+/// Build the argv for a ``uv run --project tuner/ tuner ...``
 /// invocation, incorporating the config file, overrides, and git SHA.
 ///
 /// `game` is translated into a `target.binary=target/release/game-<game>`
 /// override so the launched run actually tunes the selected game --
-/// `smac3/config/default.yaml`'s `target.binary` is just a fallback default
+/// `tuner/config/default.yaml`'s `target.binary` is just a fallback default
 /// (currently `game-traffic-lights`, the reference wiring's game), not
-/// something any caller of `bench smac3 --game ...` should rely on. This is
+/// something any caller of `bench tuner --game ...` should rely on. This is
 /// pushed before `overrides` so an explicit `target.binary=...` override
 /// from the caller still wins (the Python side's `_apply_overrides` keeps
 /// the last value for a repeated key).
 #[allow(clippy::too_many_arguments)]
-fn build_smac3_command(
+fn build_tuner_command(
     config: Option<&str>,
     overrides: &[String],
     baseline_configs: &[String],
@@ -415,8 +415,8 @@ fn build_smac3_command(
         "uv".to_string(),
         "run".to_string(),
         "--project".to_string(),
-        "smac3/".to_string(),
-        "smac3".to_string(),
+        "tuner/".to_string(),
+        "tuner".to_string(),
     ];
 
     if let Some(config_path) = config {
@@ -473,7 +473,7 @@ fn build_smac3_command(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cmd_smac3(
+fn cmd_tuner(
     config: Option<&str>,
     overrides: &[String],
     baseline_configs: &[String],
@@ -490,12 +490,12 @@ fn cmd_smac3(
         // generate one internally) so the same id both names the
         // bench-runs directory/registry entry *and* is baked into the
         // child's own `--run-id` argv -- otherwise the two would disagree
-        // and a later `--resume <bench-run-id>` couldn't find the SMAC3
+        // and a later `--resume <bench-run-id>` couldn't find the tuner
         // output directory it actually needs.
         let run_id = run_id
             .map(str::to_string)
-            .unwrap_or_else(|| launch::generate_run_id("smac3", game, BUILD_INFO));
-        let cmd = build_smac3_command(
+            .unwrap_or_else(|| launch::generate_run_id("tuner", game, BUILD_INFO));
+        let cmd = build_tuner_command(
             config,
             overrides,
             baseline_configs,
@@ -512,10 +512,10 @@ fn cmd_smac3(
             pid,
             log_path,
             ..
-        } = match launch::launch_with_run_id(run_id, cmd, "smac3", game, label, BUILD_INFO) {
+        } = match launch::launch_with_run_id(run_id, cmd, "tuner", game, label, BUILD_INFO) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("error: failed to launch SMAC3 run: {e}");
+                eprintln!("error: failed to launch tuner run: {e}");
                 std::process::exit(1);
             }
         };
@@ -524,7 +524,7 @@ fn cmd_smac3(
             "run_id": run_id,
             "pid": pid,
             "log_path": log_path.to_string_lossy(),
-            "kind": "smac3",
+            "kind": "tuner",
             "game": game,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -537,7 +537,7 @@ fn cmd_smac3(
         // caller that wraps this in its *own* launcher, e.g. the server,
         // is responsible for passing a `--run-id` that matches whatever it
         // used for that outer entry).
-        let cmd = build_smac3_command(
+        let cmd = build_tuner_command(
             config,
             overrides,
             baseline_configs,
@@ -613,8 +613,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_smac3_command_overrides_target_binary_from_game() {
-        let cmd = build_smac3_command(None, &[], &[], None, "breakthrough", None, None, None);
+    fn test_build_tuner_command_overrides_target_binary_from_game() {
+        let cmd = build_tuner_command(None, &[], &[], None, "breakthrough", None, None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-breakthrough")
@@ -624,12 +624,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_smac3_command_game_override_precedes_caller_overrides() {
+    fn test_build_tuner_command_game_override_precedes_caller_overrides() {
         // The Python side's `_apply_overrides` keeps the last value for a
         // repeated key, so an explicit caller override for the same key
         // must come after (and thus win over) the game-derived one.
         let overrides = vec!["target.binary=custom/path".to_string()];
-        let cmd = build_smac3_command(None, &overrides, &[], None, "druid", None, None, None);
+        let cmd = build_tuner_command(None, &overrides, &[], None, "druid", None, None, None);
         let game_idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-druid")
@@ -642,41 +642,41 @@ mod tests {
     }
 
     #[test]
-    fn test_build_smac3_command_forwards_run_id_and_resume() {
-        let cmd = build_smac3_command(
+    fn test_build_tuner_command_forwards_run_id_and_resume() {
+        let cmd = build_tuner_command(
             None,
             &[],
             &[],
             None,
             "druid",
-            Some("smac3-druid-run-1"),
-            Some("smac3-druid-run-0"),
+            Some("tuner-druid-run-1"),
+            Some("tuner-druid-run-0"),
             None,
         );
         let run_id_idx = cmd
             .iter()
             .position(|a| a == "--run-id")
             .expect("--run-id flag present");
-        assert_eq!(cmd[run_id_idx + 1], "smac3-druid-run-1");
+        assert_eq!(cmd[run_id_idx + 1], "tuner-druid-run-1");
 
         let resume_idx = cmd
             .iter()
             .position(|a| a == "--resume")
             .expect("--resume flag present");
-        assert_eq!(cmd[resume_idx + 1], "smac3-druid-run-0");
+        assert_eq!(cmd[resume_idx + 1], "tuner-druid-run-0");
     }
 
     #[test]
-    fn test_build_smac3_command_omits_run_id_and_resume_when_absent() {
-        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
+    fn test_build_tuner_command_omits_run_id_and_resume_when_absent() {
+        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
     }
 
     #[test]
-    fn test_build_smac3_command_forwards_baseline_configs() {
+    fn test_build_tuner_command_forwards_baseline_configs() {
         let baseline_configs = vec![r#"ladder1={"family":"ucb1"}"#.to_string()];
-        let cmd = build_smac3_command(None, &[], &baseline_configs, None, "nim", None, None, None);
+        let cmd = build_tuner_command(None, &[], &baseline_configs, None, "nim", None, None, None);
         let idx = cmd
             .iter()
             .position(|a| a == "--baseline-config")
@@ -685,8 +685,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_smac3_command_forwards_game_config() {
-        let cmd = build_smac3_command(
+    fn test_build_tuner_command_forwards_game_config() {
+        let cmd = build_tuner_command(
             None,
             &[],
             &[],
@@ -704,14 +704,14 @@ mod tests {
     }
 
     #[test]
-    fn test_build_smac3_command_omits_game_config_when_absent() {
-        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
+    fn test_build_tuner_command_omits_game_config_when_absent() {
+        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
         assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
 
     #[test]
-    fn test_build_smac3_command_forwards_trace_path() {
-        let cmd = build_smac3_command(
+    fn test_build_tuner_command_forwards_trace_path() {
+        let cmd = build_tuner_command(
             None,
             &[],
             &[],
@@ -719,18 +719,18 @@ mod tests {
             "druid",
             None,
             None,
-            Some("bench-runs/smac3-druid-run-1/moves.jsonl"),
+            Some("bench-runs/tuner-druid-run-1/moves.jsonl"),
         );
         let idx = cmd
             .iter()
             .position(|a| a == "--trace-path")
             .expect("--trace-path flag present");
-        assert_eq!(cmd[idx + 1], "bench-runs/smac3-druid-run-1/moves.jsonl");
+        assert_eq!(cmd[idx + 1], "bench-runs/tuner-druid-run-1/moves.jsonl");
     }
 
     #[test]
-    fn test_build_smac3_command_omits_trace_path_when_absent() {
-        let cmd = build_smac3_command(None, &[], &[], None, "druid", None, None, None);
+    fn test_build_tuner_command_omits_trace_path_when_absent() {
+        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
         assert!(!cmd.iter().any(|a| a == "--trace-path"));
     }
 }

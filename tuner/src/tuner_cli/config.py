@@ -40,7 +40,7 @@ class OptimizerConfig:
     seed: int = 42
     # `Scenario(termination_cost_threshold=...)` -- ends `optimize()` early
     # once a config's cost drops at/below this. Only safe to set below
-    # `math.inf` when the scenario has exactly one active instance: SMAC3
+    # `math.inf` when the scenario has exactly one active instance: the tuner
     # checks it via `RunHistory.average_cost(config, instance_seed_budget_
     # keys=None)`, which averages over whatever instance-seed pairs have
     # been recorded *so far* for that config, not necessarily every active
@@ -53,7 +53,7 @@ class OptimizerConfig:
 class TargetConfig:
     binary: Path = Path("target/release/game-traffic-lights")
     rounds: int = 20
-    # Baseline instance ids to evaluate each trial config against (SMAC3's
+    # Baseline instance ids to evaluate each trial config against (the tuner's
     # `Scenario(instances=...)`). Must be provided explicitly for every run;
     # the binary's `tune describe` baselines are available choices, not a
     # default selection.
@@ -68,7 +68,7 @@ class TargetConfig:
     baseline_configs: dict[str, dict] = field(default_factory=dict)
     # Game-setup config (e.g. Druid's board size) pinning every trial in
     # this run to a non-default `GameAdapter::default_config()` -- an axis
-    # SMAC3 never searches over, unlike `parameters`/`conditions` (the
+    # tuner never searches over, unlike `parameters`/`conditions` (the
     # strategy search space). `None` means "use the game binary's own
     # default"; `train()` only forwards `--game-config` when this is set.
     # Settable via `--game-config <json>` or this same key in YAML.
@@ -78,8 +78,8 @@ class TargetConfig:
     # `max_iterations` on the Rust side. Deliberately a launch-time setting,
     # not a `parameters:` entry: it's how *much* compute a trial's candidate
     # (and, for a `baseline_config`-backed opponent, that opponent too) gets
-    # to spend, not a hyperparameter SMAC3 should search over -- letting
-    # SMAC3 tune this would just reward whichever trial got the biggest
+    # to spend, not a hyperparameter the tuner should search over -- letting
+    # the tuner tune this would just reward whichever trial got the biggest
     # budget, not the best hyperparameters at a fixed budget. `None` (the
     # default) means "use the game binary's own historical default"
     # (`mcts-tune`'s `MAX_ITER` constant). Settable via `--max-iterations

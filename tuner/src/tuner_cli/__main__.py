@@ -20,7 +20,7 @@ from .pool import Anchor, OpponentPool
 from .space_optuna import suggest_config
 from .target import preflight_check
 
-logger = logging.getLogger("smac3_cli")
+logger = logging.getLogger("tuner_cli")
 
 
 def _parse_overrides(raw: list[str]) -> dict[str, str]:
@@ -63,7 +63,7 @@ def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="smac3", description="Optuna hyperparameter optimisation for MCTS.")
+    parser = argparse.ArgumentParser(prog="tuner", description="Optuna hyperparameter optimisation for MCTS.")
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--override", action="append", default=[], help="Override key=value")
     parser.add_argument("--baseline-config", action="append", default=[], metavar="ID=JSON",

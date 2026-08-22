@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from smac3_cli.__main__ import run_optimization
-from smac3_cli.config import OptimizerConfig, SearchConfig, TargetConfig
+from tuner_cli.__main__ import run_optimization
+from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
 
 
 def _cfg(binary: Path) -> SearchConfig:

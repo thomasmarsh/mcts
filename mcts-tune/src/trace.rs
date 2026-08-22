@@ -1,5 +1,5 @@
 //! Optional per-ply move tracing for `strategy_tune_eval`'s self-play
-//! games, for live monitoring/sanity-checking a SMAC3 tuning run in
+//! games, for live monitoring/sanity-checking a tuner tuning run in
 //! progress.
 //!
 //! Deliberately dependency-light, matching this crate's own charter (see

@@ -1,4 +1,4 @@
-"""Shared fixtures for the ``smac3_cli`` test suite."""
+"""Shared fixtures for the ``tuner_cli`` test suite."""
 
 from __future__ import annotations
 

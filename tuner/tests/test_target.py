@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from smac3_cli.__main__ import _parse_baseline_configs
-from smac3_cli.config import OptimizerConfig, SearchConfig, TargetConfig
-from smac3_cli.target import play_game
+from tuner_cli.__main__ import _parse_baseline_configs
+from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
+from tuner_cli.target import play_game
 
 
 def test_parse_baseline_configs_parses_id_equals_json():

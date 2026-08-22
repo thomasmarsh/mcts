@@ -1,4 +1,4 @@
-// tests/BenchApp.smac3.test.tsx — Component-level tests for the SMAC3
+// tests/BenchApp.tuner.test.tsx — Component-level tests for the tuner
 // launch fields and run-detail panel, following the same pattern as
 // BenchApp.test.tsx: `@solidjs/testing-library` + a real `createStore`
 // against a mocked `BenchEnv` from `fixtures/fake-bench.js`, no live
@@ -20,9 +20,9 @@ import {
 } from "@mcts/bench";
 import {
   createMockBenchEnv,
-  FAKE_SMAC3_RUN_ID,
+  FAKE_tuner_RUN_ID,
   fakeKinds,
-  fakeSmac3RunDetail,
+  fakeTunerRunDetail,
   fakeTrialRows,
   fakeTrialRowsWithRepeats,
   fakeTrialRowsMultiInstance,
@@ -32,7 +32,7 @@ function createTestStore(envOverrides?: Partial<BenchEnv>) {
   const env = createMockBenchEnv(envOverrides);
   const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, env);
   store.dispatch({ tag: "kinds", action: { tag: "request" } });
-  store.dispatch({ tag: "smac3Kinds", action: { tag: "request" } });
+  store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
   store.dispatch({ tag: "runs", action: { tag: "request" } });
   return { store, env };
 }
@@ -41,18 +41,18 @@ afterEach(() => {
   cleanup();
 });
 
-describe("LaunchForm / smac3", () => {
-  it("selecting the smac3 kind auto-selects the tunable game and renders its parameter space", () => {
+describe("LaunchForm / tuner", () => {
+  it("selecting the tuner kind auto-selects the tunable game and renders its parameter space", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
 
-    // The regular round_robin strategy picker never appears for smac3.
+    // The regular round_robin strategy picker never appears for tuner.
     expect(screen.queryByText(/select at least 2/i)).not.toBeInTheDocument();
 
     // Game auto-selects the (only) tunable game, and its search space
-    // renders read-only, driven purely by the /smac3/kinds metadata.
+    // renders read-only, driven purely by the /tuner/kinds metadata.
     const gameSelect = screen.getByLabelText("Game") as HTMLSelectElement;
     expect(gameSelect.value).toBe("traffic-lights");
     expect(screen.getByText("strong", { selector: ".meta-value" })).toBeInTheDocument(); // named preset
@@ -79,7 +79,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
@@ -102,7 +102,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
@@ -125,7 +125,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
@@ -151,7 +151,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.input(screen.getByLabelText("Trials"), { target: { value: "25" } });
     fireEvent.click(screen.getByLabelText(/Deterministic/));
 
@@ -161,7 +161,7 @@ describe("LaunchForm / smac3", () => {
 
     expect(seen).toEqual([
       {
-        kind: "smac3",
+        kind: "tuner",
         game: "traffic-lights",
         config: {
           // Includes `target.baselines=['strong']` -- the default starting
@@ -188,7 +188,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     // Switch to druid, whose fixture ships two named presets ("strong",
     // "master") -- both start checked (default panel = all presets).
     fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
@@ -214,7 +214,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.click(screen.getByText("Launch"));
     expect(seen[0]!.config!.ladder).toBeUndefined();
 
@@ -237,7 +237,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.click(screen.getByText("Launch"));
 
     const overrides = (seen[0] as { overrides: string[] }).overrides;
@@ -255,7 +255,7 @@ describe("LaunchForm / smac3", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     // Auto-selected game is traffic-lights (game_config: {}).
     expect(screen.queryByLabelText("Game config")).not.toBeInTheDocument();
   });
@@ -270,7 +270,7 @@ describe("LaunchForm / smac3", () => {
     });
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
 
     const field = screen.getByLabelText("Game config") as HTMLTextAreaElement;
@@ -289,7 +289,7 @@ describe("LaunchForm / smac3", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "smac3" } });
+    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     fireEvent.change(screen.getByLabelText("Game"), { target: { value: "druid" } });
 
     const field = screen.getByLabelText("Game config") as HTMLTextAreaElement;
@@ -299,7 +299,7 @@ describe("LaunchForm / smac3", () => {
     expect(launchBtn.disabled).toBe(true);
   });
 
-  it("falls back to the round_robin games list for other kinds, unaffected by smac3Kinds", () => {
+  it("falls back to the round_robin games list for other kinds, unaffected by tunerKinds", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
@@ -309,23 +309,23 @@ describe("LaunchForm / smac3", () => {
   });
 });
 
-describe("RunDetailPanel / smac3", () => {
+describe("RunDetailPanel / tuner", () => {
   it("renders trial stats, baseline comparisons, and the trial history once trials land", async () => {
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    // fakeSmac3RunDetail is already terminal, so the single tail tick fetches
+    // fakeTunerRunDetail is already terminal, so the single tail tick fetches
     // trials in the same round-trip -- no manual tick-forcing needed here.
     await screen.findByText("Best cost (loss rate)");
 
     // Best trial is #2 (cost 0.3 -- the lowest of the three fixture rows).
     // Scoped by selector since e.g. "3" (trial count) and "30.0%" (best
     // cost) also appear elsewhere (a trial_id cell, a per-trial cost cell).
-    expect(screen.getByText("#2", { selector: ".smac3-stat-value" })).toBeInTheDocument();
-    expect(screen.getByText("30.0%", { selector: ".smac3-stat-value" })).toBeInTheDocument();
-    expect(screen.getByText("3", { selector: ".smac3-stat-value" })).toBeInTheDocument(); // trial count
+    expect(screen.getByText("#2", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("30.0%", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("3", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // trial count
 
     // Trial history lists all three rows' costs.
     for (const pct of ["55.0%", "30.0%", "40.0%"]) {
@@ -334,24 +334,24 @@ describe("RunDetailPanel / smac3", () => {
 
     // The trial table's Family column shows each trial's family, not just
     // RAVE's -- fixture spans rave/ucb1_tuned/ucb1.
-    const familyCells = document.querySelectorAll(".smac3-trial-family");
+    const familyCells = document.querySelectorAll(".tuner-trial-family");
     expect(Array.from(familyCells).map((c) => c.textContent)).toEqual(["ucb1", "ucb1_tuned", "rave"]);
 
     // Best trial (#2) is `family: "ucb1_tuned"`; its table compares it
     // against the actual floor baseline selected when the run started.
-    const diffTable = document.querySelector("#smac3-lowest-trial-diff-table")!;
+    const diffTable = document.querySelector("#tuner-lowest-trial-diff-table")!;
     expect(diffTable.textContent).toContain("ucb1_tuned");
     const familyRow = Array.from(diffTable.querySelectorAll("tbody tr")).find(
-      (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
+      (row) => row.querySelector(".tuner-param-name")?.textContent === "family",
     )!;
-    expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(familyRow.classList.contains("tuner-diff-changed")).toBe(true);
     expect(familyRow.textContent).toContain("flat_mc");
 
-    // fakeSmac3RunDetail's incumbent (family: "rave", c: 0.7) gets its own
+    // fakeTunerRunDetail's incumbent (family: "rave", c: 0.7) gets its own
     // table -- the config "Use best as new baseline" would actually
     // promote, distinct from (and here, different family than) the lowest
     // single trial above.
-    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    const incumbentTable = document.querySelector("#tuner-incumbent-diff-table")!;
     expect(incumbentTable.textContent).toContain("rave");
     expect(incumbentTable.textContent).toContain("0.7");
     expect(incumbentTable.textContent).toContain("flat_mc");
@@ -359,20 +359,20 @@ describe("RunDetailPanel / smac3", () => {
     expect(incumbentTable.textContent).not.toMatch(/default/i);
   });
 
-  it("shows the SMAC-tracked incumbent and copies its config on click", async () => {
+  it("shows the tracked incumbent and copies its config on click", async () => {
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    // fakeSmac3RunDetail's incumbent is {config: {family: "rave", c: 0.7}, cost: 0.2}
+    // fakeTunerRunDetail's incumbent is {config: {family: "rave", c: 0.7}, cost: 0.2}
     // -- distinct from the "Best trial" stat, which is derived from the
     // trial fixture rows, not this field. Scoped by selector since the
     // incumbent diff table's caption also says "Incumbent".
-    await screen.findByText("Incumbent", { selector: ".smac3-stat-label" });
-    expect(screen.getByText("20.0%", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+    await screen.findByText("Incumbent", { selector: ".tuner-stat-label" });
+    expect(screen.getByText("20.0%", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Copy as baseline config"));
     expect(writeText).toHaveBeenCalledWith(JSON.stringify({ family: "rave", c: 0.7 }));
@@ -381,16 +381,16 @@ describe("RunDetailPanel / smac3", () => {
 
   it("reconstructs a floor baseline for runs recorded before baseline settings", async () => {
     const detail = {
-      ...fakeSmac3RunDetail,
+      ...fakeTunerRunDetail,
       config: { overrides: ["optimizer.n_trials=50", "target.baselines=['random']"] },
     };
     const { store } = createTestStore({ getRun: () => Effect.send(detail) });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Incumbent vs. baseline");
 
-    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    const incumbentTable = document.querySelector("#tuner-incumbent-diff-table")!;
     expect(incumbentTable.textContent).toContain("random");
     expect(incumbentTable.textContent).not.toMatch(/default|strong|master|easy/i);
   });
@@ -399,7 +399,7 @@ describe("RunDetailPanel / smac3", () => {
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
     expect(screen.queryByText(/95%-confidence "no worse than this" bound/)).not.toBeInTheDocument();
@@ -415,10 +415,10 @@ describe("RunDetailPanel / smac3", () => {
     const { store } = createTestStore();
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
-    const paths = document.querySelectorAll("#smac3-cost-chart path");
+    const paths = document.querySelectorAll("#tuner-cost-chart path");
     const bestPath = Array.from(paths).find((p) => p.getAttribute("stroke") === "#4caf7a")!;
     const floorPath = Array.from(paths).find((p) => p.getAttribute("stroke") === "#e0904a")!;
     expect(bestPath).toBeTruthy();
@@ -444,32 +444,32 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
     await screen.findByText("Best cost (loss rate)");
 
     // fakeTrialRowsWithRepeats adds two more evaluations (#4, #5) of trial
     // #2's exact config (cost 0.25/0.35 vs #2's 0.3) -- #4 is now the
     // lowest single cost, but all three share one group.
-    expect(screen.getByText("#4", { selector: ".smac3-stat-value" })).toBeInTheDocument();
-    expect(screen.getByText("3", { selector: ".smac3-stat-value" })).toBeInTheDocument(); // Evaluations
+    expect(screen.getByText("#4", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("3", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // Evaluations
 
-    expect(screen.getByText("Evaluations", { selector: ".smac3-stat-label" })).toBeInTheDocument();
-    expect(screen.getByText("95% CI", { selector: ".smac3-stat-label" })).toBeInTheDocument();
+    expect(screen.getByText("Evaluations", { selector: ".tuner-stat-label" })).toBeInTheDocument();
+    expect(screen.getByText("95% CI", { selector: ".tuner-stat-label" })).toBeInTheDocument();
 
     // The pooled interval must actually straddle the group's mean cost
     // (30.0%, i.e. (0.25 + 0.3 + 0.35) / 3) -- not be a degenerate
     // single-point estimate.
-    const ciStat = Array.from(document.querySelectorAll(".smac3-stat")).find(
-      (el) => el.querySelector(".smac3-stat-label")?.textContent === "95% CI",
+    const ciStat = Array.from(document.querySelectorAll(".tuner-stat")).find(
+      (el) => el.querySelector(".tuner-stat-label")?.textContent === "95% CI",
     )!;
-    const ciText = ciStat.querySelector(".smac3-stat-value")!.textContent!;
+    const ciText = ciStat.querySelector(".tuner-stat-value")!.textContent!;
     const [lo, hi] = ciText.split("–").map((s) => parseFloat(s));
     expect(lo).toBeLessThan(30.0);
     expect(hi).toBeGreaterThan(30.0);
 
     // Every point sharing that config renders a (non-degenerate) whisker.
-    const whiskers = document.querySelectorAll(".smac3-ci-whisker");
+    const whiskers = document.querySelectorAll(".tuner-ci-whisker");
     expect(whiskers.length).toBe(5); // one per scored trial (#1, #2, #3, #4, #5)
   });
 
@@ -479,26 +479,26 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
     await screen.findByText("Best cost (loss rate)");
 
     // The trial table's Baseline column distinguishes the two instances.
-    const baselineCells = document.querySelectorAll(".smac3-trial-baseline");
+    const baselineCells = document.querySelectorAll(".tuner-trial-baseline");
     expect(Array.from(baselineCells).map((c) => c.textContent).sort()).toEqual(["master", "strong"]);
 
     // #1 (cost 0.1 vs "strong") is the best trial -- if the two same-config
     // trials had been pooled across instances, the group's mean/CI would be
     // (0.1 + 0.6) / 2 instead of a single-evaluation estimate per instance.
-    expect(screen.getByText("#1", { selector: ".smac3-stat-value" })).toBeInTheDocument();
-    expect(screen.getByText("1", { selector: ".smac3-stat-value" })).toBeInTheDocument(); // Evaluations: not pooled with #2
+    expect(screen.getByText("#1", { selector: ".tuner-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: ".tuner-stat-value" })).toBeInTheDocument(); // Evaluations: not pooled with #2
 
     // Two distinct (single-evaluation) whiskers, not one pooled group.
-    const whiskers = document.querySelectorAll(".smac3-ci-whisker");
+    const whiskers = document.querySelectorAll(".tuner-ci-whisker");
     expect(whiskers.length).toBe(2);
   });
 
-  it("shows a Resume control for a finished smac3 run and dispatches resumeRun with the entered trial count", async () => {
+  it("shows a Resume control for a finished tuner run and dispatches resumeRun with the entered trial count", async () => {
     const seen: unknown[] = [];
     const { store } = createTestStore({
       resumeRun: (runId, nTrials, nWorkers) => {
@@ -508,37 +508,37 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
-    // fakeSmac3RunDetail's trial_count is 3, so the default is 203.
+    // fakeTunerRunDetail's trial_count is 3, so the default is 203.
     const input = screen.getByLabelText("Resume with n_trials") as HTMLInputElement;
     expect(input.value).toBe("203");
 
     fireEvent.input(input, { target: { value: "500" } });
     fireEvent.click(screen.getByText("Resume"));
 
-    expect(seen).toEqual([[FAKE_SMAC3_RUN_ID, 500, undefined]]);
+    expect(seen).toEqual([[FAKE_tuner_RUN_ID, 500, undefined]]);
   });
 
   it("hides the Resume control while the run is still running", async () => {
-    const runningSmac3Detail = { ...fakeSmac3RunDetail, status: "running", ended_at: null };
+    const runningTunerDetail = { ...fakeTunerRunDetail, status: "running", ended_at: null };
     const { store } = createTestStore({
-      getRun: () => Effect.send(runningSmac3Detail),
+      getRun: () => Effect.send(runningTunerDetail),
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Status");
 
     expect(screen.queryByLabelText("Resume with n_trials")).not.toBeInTheDocument();
   });
 
   it("shows a Use best as new baseline control once an incumbent exists, even while the run is still running", async () => {
-    const runningSmac3Detail = { ...fakeSmac3RunDetail, status: "running", ended_at: null };
+    const runningTunerDetail = { ...fakeTunerRunDetail, status: "running", ended_at: null };
     const seen: unknown[] = [];
     const { store } = createTestStore({
-      getRun: () => Effect.send(runningSmac3Detail),
+      getRun: () => Effect.send(runningTunerDetail),
       advanceBaseline: (runId, nTrials, nWorkers) => {
         seen.push([runId, nTrials, nWorkers]);
         return createMockBenchEnv().advanceBaseline(runId, nTrials, nWorkers);
@@ -546,7 +546,7 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Status");
 
     // Unlike Resume (hidden above for the same running detail), this
@@ -554,23 +554,23 @@ describe("RunDetailPanel / smac3", () => {
     // handles that itself.
     const btn = screen.getByText("Use best as new baseline");
     fireEvent.click(btn);
-    expect(seen).toEqual([[FAKE_SMAC3_RUN_ID, undefined, undefined]]);
+    expect(seen).toEqual([[FAKE_tuner_RUN_ID, undefined, undefined]]);
   });
 
   it("hides the Use best as new baseline control before any incumbent has been reported", async () => {
     const { store } = createTestStore({
-      getRun: () => Effect.send({ ...fakeSmac3RunDetail, incumbent: null }),
+      getRun: () => Effect.send({ ...fakeTunerRunDetail, incumbent: null }),
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Status");
 
     expect(screen.queryByText("Use best as new baseline")).not.toBeInTheDocument();
   });
 
   it("renders every rung of a ladder chain as one continuous trial history with a baseline-cutover marker", async () => {
-    const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
+    const rootRunId = "tuner-traffic-lights-20260201T000000-abc1234";
     const rootTrials: TrialRow[] = [
       { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1" }, seed: 0, cost: 0.5, extra: null },
       { trial_id: 2, ts: "2026-02-01T00:00:02Z", config: { family: "ucb1" }, seed: 0, cost: 0.2, extra: null },
@@ -586,7 +586,7 @@ describe("RunDetailPanel / smac3", () => {
         incumbent: null,
       },
       {
-        run_id: FAKE_SMAC3_RUN_ID,
+        run_id: FAKE_tuner_RUN_ID,
         label: "baseline advance from " + rootRunId,
         status: "completed",
         started_at: "2026-03-01T00:00:00Z",
@@ -601,35 +601,35 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
     // Trial count spans both rungs (2 + 3), not just the open rung's own 3.
-    expect(screen.getByText("5", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("5", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     // The trials table gained a "Run" column identifying each row's rung,
     // and the cross-rung best cost (20.0%, root-1's trial #2) still wins
     // over every rung-2 row.
     expect(screen.getByText("Run")).toBeInTheDocument();
-    const rungCells = Array.from(document.querySelectorAll(".smac3-trial-rung")).map((c) => c.textContent);
+    const rungCells = Array.from(document.querySelectorAll(".tuner-trial-rung")).map((c) => c.textContent);
     expect(rungCells).toEqual([
       // Table renders newest first: rung 2's 3 rows, then root's 2.
-      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
-      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
-      `Rung 2 (${FAKE_SMAC3_RUN_ID})`,
+      `Rung 2 (${FAKE_tuner_RUN_ID})`,
+      `Rung 2 (${FAKE_tuner_RUN_ID})`,
+      `Rung 2 (${FAKE_tuner_RUN_ID})`,
       `Root (${rootRunId})`,
       `Root (${rootRunId})`,
     ]);
     // Cross-rung best cost: root's trial #2 (20.0%) beats every rung-2 row.
-    expect(screen.getByText("#2", { selector: ".smac3-stat-value" })).toBeInTheDocument();
+    expect(screen.getByText("#2", { selector: ".tuner-stat-value" })).toBeInTheDocument();
 
     // One cutover marker for the one rung boundary in a 2-rung chain.
-    expect(document.querySelectorAll(".smac3-rung-boundary").length).toBe(1);
+    expect(document.querySelectorAll(".tuner-rung-boundary").length).toBe(1);
     expect(screen.getByText("new baseline")).toBeInTheDocument();
   });
 
   it("shows the new-baseline flagpost before the new rung has scored a trial", async () => {
-    const rootRunId = "smac3-traffic-lights-root";
+    const rootRunId = "tuner-traffic-lights-root";
     const rootTrials: TrialRow[] = [
       { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1" }, seed: 0, cost: 0.025, extra: null },
     ];
@@ -644,7 +644,7 @@ describe("RunDetailPanel / smac3", () => {
         incumbent: null,
       },
       {
-        run_id: FAKE_SMAC3_RUN_ID,
+        run_id: FAKE_tuner_RUN_ID,
         label: "ladder rung 2 of " + rootRunId,
         status: "running",
         started_at: "2026-02-01T00:10:01Z",
@@ -659,15 +659,15 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
-    expect(document.querySelectorAll(".smac3-rung-boundary").length).toBe(1);
+    expect(document.querySelectorAll(".tuner-rung-boundary").length).toBe(1);
     expect(screen.getByText("new baseline")).toBeInTheDocument();
   });
 
   it("diffs the incumbent/lowest-trial tables against the latest rung's recorded baseline", async () => {
-    const rootRunId = "smac3-traffic-lights-20260201T000000-abc1234";
+    const rootRunId = "tuner-traffic-lights-20260201T000000-abc1234";
     const rootTrials: TrialRow[] = [
       { trial_id: 1, ts: "2026-02-01T00:00:01Z", config: { family: "ucb1", c: 1.4 }, seed: 0, cost: 0.5, extra: null },
     ];
@@ -684,7 +684,7 @@ describe("RunDetailPanel / smac3", () => {
         incumbent: null,
       },
       {
-        run_id: FAKE_SMAC3_RUN_ID,
+        run_id: FAKE_tuner_RUN_ID,
         label: "baseline advance from " + rootRunId,
         status: "completed",
         started_at: "2026-03-01T00:00:00Z",
@@ -694,7 +694,7 @@ describe("RunDetailPanel / smac3", () => {
       },
     ];
     const detail = {
-      ...fakeSmac3RunDetail,
+      ...fakeTunerRunDetail,
       config: { baseline_settings: { ladder2: { family: "ucb1", c: 1.4 } } },
     };
     const { store } = createTestStore({
@@ -704,25 +704,25 @@ describe("RunDetailPanel / smac3", () => {
     });
     render(() => <RunDetailPanel store={store} />);
 
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     await screen.findByText("Best cost (loss rate)");
 
     expect(screen.getByText("Incumbent vs. baseline")).toBeInTheDocument();
     expect(screen.queryByText(/default/i)).not.toBeInTheDocument();
 
-    const incumbentTable = document.querySelector("#smac3-incumbent-diff-table")!;
+    const incumbentTable = document.querySelector("#tuner-incumbent-diff-table")!;
     expect(incumbentTable.querySelector("thead")!.textContent).toContain("Baseline");
     // Incumbent (family: "rave", c: 0.7) vs. the rung's baseline
     // (family: "ucb1", c: 1.4): both params differ.
     const familyRow = Array.from(incumbentTable.querySelectorAll("tbody tr")).find(
-      (row) => row.querySelector(".smac3-param-name")?.textContent === "family",
+      (row) => row.querySelector(".tuner-param-name")?.textContent === "family",
     )!;
-    expect(familyRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(familyRow.classList.contains("tuner-diff-changed")).toBe(true);
     expect(familyRow.textContent).toContain("ucb1");
     const cRow = Array.from(incumbentTable.querySelectorAll("tbody tr")).find(
-      (row) => row.querySelector(".smac3-param-name")?.textContent === "c",
+      (row) => row.querySelector(".tuner-param-name")?.textContent === "c",
     )!;
-    expect(cRow.classList.contains("smac3-diff-changed")).toBe(true);
+    expect(cRow.classList.contains("tuner-diff-changed")).toBe(true);
     expect(cRow.textContent).toContain("1.4");
   });
 });

@@ -23,7 +23,7 @@ import {
   type BenchEnv,
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
-import type { ChainRung, Experiment, ExperimentCell, LaunchResponse, LeaderboardEntry, Project, RunDetail, RunFilters, RunSummary, Smac3GameInfo, TrialRow } from "../src/types.js";
+import type { ChainRung, Experiment, ExperimentCell, LaunchResponse, LeaderboardEntry, Project, RunDetail, RunFilters, RunSummary, TunerGameInfo, TrialRow } from "../src/types.js";
 import { deriveSeed, expandExperimentSpec } from "../src/experiment-grid.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -74,8 +74,8 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
 
 const runningDetail = makeDetail();
 const terminalDetail = makeDetail({ status: "completed", ended_at: "2026-01-01T01:00:00Z", exit_code: 0 });
-const smac3TerminalDetail = makeDetail({
-  kind: "smac3",
+const tunerTerminalDetail = makeDetail({
+  kind: "tuner",
   game: "traffic-lights",
   status: "completed",
   ended_at: "2026-01-01T01:00:00Z",
@@ -126,7 +126,7 @@ const mockEnv: BenchEnv = {
   resumeRun: () => Effect.none(),
   advanceBaseline: () => Effect.none(),
   getBenchKinds: () => Effect.none(),
-  getSmac3Kinds: () => Effect.none(),
+  getTunerKinds: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
@@ -542,7 +542,7 @@ describe("benchReducer / log tail", () => {
   it("fetches trials on every tail tick and stores them on openRun -- even for a run that's already terminal on the very first tick", async () => {
     // A completed run opened straight from the run list (the common case
     // for browsing history) goes terminal on tick 1 itself -- there is no
-    // earlier tick that could have told the loop "this is a smac3 run" --
+    // earlier tick that could have told the loop "this is a tuner run" --
     // so the fetch can't be gated on already knowing the kind (see
     // reducer.ts's tailTick comment). Exercising that exact scenario here.
     const trialRows: TrialRow[] = [
@@ -552,7 +552,7 @@ describe("benchReducer / log tail", () => {
     const env: BenchEnv = {
       ...mockEnv,
       getRunLog: () => Effect.send({ lines: [], next_offset: 0 }),
-      getRun: () => Effect.send(smac3TerminalDetail),
+      getRun: () => Effect.send(tunerTerminalDetail),
       getRunTrials: () => {
         trialsCalls++;
         return Effect.send(trialRows);
@@ -577,9 +577,9 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: smac3TerminalDetail, trials: trialRows, chain: [], chainedTrials: [] },
+      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: tunerTerminalDetail, trials: trialRows, chain: [], chainedTrials: [] },
       (s) => {
-        s.openRun!.detail = smac3TerminalDetail;
+        s.openRun!.detail = tunerTerminalDetail;
         s.openRun!.trials = trialRows;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
@@ -631,7 +631,7 @@ describe("benchReducer / log tail", () => {
     const env: BenchEnv = {
       ...mockEnv,
       getRunLog: () => Effect.send({ lines: [], next_offset: 0 }),
-      getRun: () => Effect.send({ ...smac3TerminalDetail, run_id: "root-1-ladder2" }),
+      getRun: () => Effect.send({ ...tunerTerminalDetail, run_id: "root-1-ladder2" }),
       getRunChain: () => Effect.send(chain),
       getRunTrials: (runId: string) =>
         Effect.send(runId === "root-1" ? rootTrials : runId === "root-1-ladder2" ? rung2Trials : []),
@@ -664,13 +664,13 @@ describe("benchReducer / log tail", () => {
         generation: 1,
         lines: [],
         nextOffset: 0,
-        detail: { ...smac3TerminalDetail, run_id: "root-1-ladder2" },
+        detail: { ...tunerTerminalDetail, run_id: "root-1-ladder2" },
         trials: rung2Trials,
         chain,
         chainedTrials: expectedChainedTrials,
       },
       (s) => {
-        s.openRun!.detail = { ...smac3TerminalDetail, run_id: "root-1-ladder2" };
+        s.openRun!.detail = { ...tunerTerminalDetail, run_id: "root-1-ladder2" };
         s.openRun!.trials = rung2Trials;
         s.openRun!.chain = chain;
         s.openRun!.chainedTrials = expectedChainedTrials;
@@ -729,13 +729,13 @@ describe("benchReducer / log tail", () => {
         generation: 1,
         lines: [],
         nextOffset: 0,
-        detail: { ...smac3TerminalDetail, run_id: "root-1", status: "stopped" },
+        detail: { ...tunerTerminalDetail, run_id: "root-1", status: "stopped" },
         trials: [],
         chain,
         chainedTrials: [],
       },
       (s) => {
-        s.openRun!.detail = { ...smac3TerminalDetail, run_id: "root-1", status: "stopped" };
+        s.openRun!.detail = { ...tunerTerminalDetail, run_id: "root-1", status: "stopped" };
         s.openRun!.chain = chain;
       },
     );
@@ -755,7 +755,7 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 2 });
   });
 
-  it("also fetches (empty) trials for a non-smac3 run, harmlessly", async () => {
+  it("also fetches (empty) trials for a non-tuner run, harmlessly", async () => {
     let trialsCalls = 0;
     const env: BenchEnv = {
       ...mockEnv,
@@ -846,10 +846,10 @@ describe("benchReducer / log tail", () => {
   });
 });
 
-// ── SMAC3 kinds ─────────────────────────────────────────────────────────────
+// ── tuner kinds ─────────────────────────────────────────────────────────────
 
-describe("benchReducer / smac3Kinds", () => {
-  const tlKind: Smac3GameInfo = {
+describe("benchReducer / tunerKinds", () => {
+  const tlKind: TunerGameInfo = {
     game: "traffic-lights",
     tuner: {
       id: "rave",
@@ -862,20 +862,20 @@ describe("benchReducer / smac3Kinds", () => {
   };
 
   it("request -> submitted('done') populates the tuner metadata", () => {
-    const env: BenchEnv = { ...mockEnv, getSmac3Kinds: () => Effect.send([tlKind]) };
+    const env: BenchEnv = { ...mockEnv, getTunerKinds: () => Effect.send([tlKind]) };
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
-    ts.send({ tag: "smac3Kinds", action: { tag: "request" } }, (s) => {
-      s.smac3Kinds.status = "pending";
+    ts.send({ tag: "tunerKinds", action: { tag: "request" } }, (s) => {
+      s.tunerKinds.status = "pending";
     });
     ts.receive(
       {
-        tag: "smac3Kinds",
+        tag: "tunerKinds",
         action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [tlKind] } } },
       },
       (s) => {
-        s.smac3Kinds.status = "done";
-        s.smac3Kinds.result = [tlKind];
+        s.tunerKinds.status = "done";
+        s.tunerKinds.result = [tlKind];
       },
     );
   });
@@ -1069,15 +1069,15 @@ describe("benchReducer / resumeRun", () => {
       ...mockEnv,
       resumeRun: (runId, nTrials, nWorkers) => {
         seen = [runId, nTrials, nWorkers];
-        return Effect.send({ run_id: "smac3-run-2", pid: 999, log_path: "/x/log.jsonl" });
+        return Effect.send({ run_id: "tuner-run-2", pid: 999, log_path: "/x/log.jsonl" });
       },
       listRuns: () => Effect.send([summary]),
     };
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
-    ts.send({ tag: "resumeRun", runId: "smac3-run-1", nTrials: 500 });
-    expect(seen).toEqual(["smac3-run-1", 500, undefined]);
-    ts.receive({ tag: "resumeFinished", runId: "smac3-run-1" }, (s) => {
+    ts.send({ tag: "resumeRun", runId: "tuner-run-1", nTrials: 500 });
+    expect(seen).toEqual(["tuner-run-1", 500, undefined]);
+    ts.receive({ tag: "resumeFinished", runId: "tuner-run-1" }, (s) => {
       s.runs.status = "pending";
     });
     ts.receive(
@@ -1096,9 +1096,9 @@ describe("benchReducer / resumeRun", () => {
     };
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
-    ts.send({ tag: "resumeRun", runId: "smac3-run-1", nTrials: 500 });
+    ts.send({ tag: "resumeRun", runId: "tuner-run-1", nTrials: 500 });
     await ts.drain();
-    ts.receive({ tag: "resumeFailed", runId: "smac3-run-1", error: "Error: nope" }, (s) => {
+    ts.receive({ tag: "resumeFailed", runId: "tuner-run-1", error: "Error: nope" }, (s) => {
       s.resumeError = "Error: nope";
     });
   });
@@ -1133,20 +1133,20 @@ describe("benchReducer / advanceBaseline", () => {
     // on what openEff dispatches.
     const effect = benchReducer(
       draft,
-      { tag: "advanceBaselineFinished", runId: "root-1", newRunId: "smac3-run-2" },
+      { tag: "advanceBaselineFinished", runId: "root-1", newRunId: "tuner-run-2" },
       mockEnv,
     );
     expect(draft.runs.status).toBe("pending"); // startRunsFetch's synchronous mutation
 
     const sent: BenchAction[] = [];
     void effect?.execute((a) => sent.push(a));
-    expect(sent).toEqual([{ tag: "openRun", runId: "smac3-run-2" }]);
+    expect(sent).toEqual([{ tag: "openRun", runId: "tuner-run-2" }]);
   });
 
   it("does not follow the chain when a different run was opened before advanceBaseline resolved", async () => {
     const env: BenchEnv = {
       ...mockEnv,
-      advanceBaseline: () => Effect.send({ run_id: "smac3-run-2", pid: 999, log_path: "/x/log.jsonl" }),
+      advanceBaseline: () => Effect.send({ run_id: "tuner-run-2", pid: 999, log_path: "/x/log.jsonl" }),
       listRuns: () => Effect.send([]),
     };
     const ts = createTestStore(benchReducer, env, initialBenchState());
@@ -1155,7 +1155,7 @@ describe("benchReducer / advanceBaseline", () => {
     // No run is open at all -- advanceBaselineFinished must not synthesize
     // one; it only refreshes the list.
     await ts.drain();
-    ts.receive({ tag: "advanceBaselineFinished", runId: "root-1", newRunId: "smac3-run-2" }, (s) => {
+    ts.receive({ tag: "advanceBaselineFinished", runId: "root-1", newRunId: "tuner-run-2" }, (s) => {
       s.runs.status = "pending";
     });
     ts.receive(

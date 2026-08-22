@@ -20,7 +20,7 @@ import {
   RunList,
   RunDetailPanel,
 } from "@mcts/bench";
-import { createMockBenchEnv, FAKE_RUN_ID, FAKE_SMAC3_RUN_ID } from "./fixtures/fake-bench.js";
+import { createMockBenchEnv, FAKE_RUN_ID, FAKE_tuner_RUN_ID } from "./fixtures/fake-bench.js";
 import type { BenchEnv } from "@mcts/bench";
 
 /** Create a seeded test store with a mocked bench env. */
@@ -163,16 +163,16 @@ describe("RunDetailPanel", () => {
     expect(screen.queryByText("Run Detail")).not.toBeInTheDocument();
   });
 
-  it("shows SMAC3 progress and makes its text traces available", async () => {
+  it("shows tuner progress and makes its text traces available", async () => {
     const { store } = createTestStore();
     const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
       <div data-testid="spectator">{props.runId}:{props.kind}</div>
     );
     render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
-    store.dispatch({ tag: "openRun", runId: FAKE_SMAC3_RUN_ID });
+    store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
     await vi.waitFor(() => expect(screen.getByText("3 / 50 (6%) complete")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Browse games"));
-    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_SMAC3_RUN_ID}:smac3`);
+    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_tuner_RUN_ID}:tuner`);
   });
 });

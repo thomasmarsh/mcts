@@ -1,6 +1,6 @@
 """The dynamic opponent pool -- TrueSkill-rated anchors matchmaking plays against.
 
-Unlike SMAC3's fixed named-baseline instances, this pool starts with just two
+Unlike the tuner's fixed named-baseline instances, this pool starts with just two
 frozen anchors (`"default"`, `"random"`) and grows over the course of a run:
 a finished trial's config becomes a new anchor whenever it's either a new
 champion (higher `mu` than every existing anchor) or fills a new skill band

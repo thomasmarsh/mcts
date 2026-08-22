@@ -26,7 +26,7 @@
     {
         "id": "tuned",
         "label": "Tuned",
-        "description": "Deep MCTS-Solver — smac3 tuned.",
+        "description": "Deep MCTS-Solver — tuner tuned.",
         "params": {
             "c": 0.7002349961293,
             "epsilon": 0.8166764873097,

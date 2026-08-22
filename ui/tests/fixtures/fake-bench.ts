@@ -13,7 +13,7 @@ import type {
   LaunchResponse,
   StopResponse,
   LeaderboardEntry,
-  Smac3GameInfo,
+  TunerGameInfo,
   TrialRow,
   GameTraceSummary,
   GameMove,
@@ -90,12 +90,12 @@ export const fakeRunningDetail: RunDetail = {
   trial_count: 2,
 };
 
-export const FAKE_SMAC3_RUN_ID = "smac3-traffic-lights-20260301T000000-abc1234";
+export const FAKE_tuner_RUN_ID = "tuner-traffic-lights-20260301T000000-abc1234";
 
-export const fakeSmac3RunDetail: RunDetail = {
+export const fakeTunerRunDetail: RunDetail = {
   ...fakeRunDetail,
-  run_id: FAKE_SMAC3_RUN_ID,
-  kind: "smac3",
+  run_id: FAKE_tuner_RUN_ID,
+  kind: "tuner",
   game: "traffic-lights",
   config: {
     overrides: ["optimizer.n_trials=50", "target.baselines=[\"flat_mc\"]"],
@@ -112,7 +112,7 @@ export const fakeSmac3RunDetail: RunDetail = {
 // families/params rather than the full ~14-family catalog -- enough to
 // exercise multi-level conditions and a non-RAVE best trial (see
 // fakeTrialRows below).
-export const fakeSmac3Kinds: Smac3GameInfo[] = [
+export const fakeTunerKinds: TunerGameInfo[] = [
   {
     game: "traffic-lights",
     tuner: {
@@ -230,7 +230,7 @@ export const fakeTrialRowsWithRepeats: TrialRow[] = [
   },
 ];
 
-// Same `config` evaluated against two different baseline instances (SMAC3's
+// Same `config` evaluated against two different baseline instances (tuner's
 // `Scenario(instances=...)`, e.g. druid's "strong"/"master") -- unlike
 // fakeTrialRowsWithRepeats' same-instance re-evaluation, these must render
 // as two *separate* confidence-band groups, not pool together, since a
@@ -272,11 +272,11 @@ export const fakeKinds: BenchKindInfo[] = [
     ],
   },
   {
-    kind: "smac3",
-    label: "SMAC3 Tuning",
-    description: "Runs a SMAC3 hyperparameter-optimization sweep.",
-    // Mirrors the real server: smac3's per-game info comes from
-    // GET /api/bench/smac3/kinds (fakeSmac3Kinds), not this list.
+    kind: "tuner",
+    label: "Tuner Tuning",
+    description: "Runs a tuner hyperparameter-optimization sweep.",
+    // Mirrors the real server: tuner's per-game info comes from
+    // GET /api/bench/tuner/kinds (fakeTunerKinds), not this list.
     games: [],
   },
 ];
@@ -296,7 +296,7 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     listRuns: () => Effect.send(fakeRunSummaries),
     getRun: (runId: string) =>
       Effect.send(
-        runId === FAKE_RUN_ID ? fakeRunDetail : runId === FAKE_SMAC3_RUN_ID ? fakeSmac3RunDetail : fakeRunningDetail,
+        runId === FAKE_RUN_ID ? fakeRunDetail : runId === FAKE_tuner_RUN_ID ? fakeTunerRunDetail : fakeRunningDetail,
       ),
     getRunLog: (_runId: string, _since: number): Effect<RunLogResponse> =>
       Effect.send({ lines: ['{"type":"match_result","seq":1}'], next_offset: 42 }),
@@ -310,10 +310,10 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     advanceBaseline: (_runId: string, _nTrials?: number, _nWorkers?: number): Effect<LaunchResponse> =>
       Effect.send({ run_id: "advanced-run-123", pid: 99997, log_path: "/tmp/advanced/log.jsonl" }),
     getBenchKinds: () => Effect.send(fakeKinds),
-    getSmac3Kinds: () => Effect.send(fakeSmac3Kinds),
+    getTunerKinds: () => Effect.send(fakeTunerKinds),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),
     // A single-rung chain containing just the requested run -- the common
-    // case (a plain SMAC3 run, never baseline-advanced). Tests exercising
+    // case (a plain tuner run, never baseline-advanced). Tests exercising
     // an actual multi-rung chain override this directly.
     getRunChain: (runId: string): Effect<ChainRung[]> =>
       Effect.send([

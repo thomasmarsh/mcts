@@ -8,7 +8,7 @@ import { createEffect, createMemo, createSignal, For, Show, type Component } fro
 import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
-import { Smac3RunDetail } from "./Smac3RunDetail.js";
+import { TunerRunDetail } from "./TunerRunDetail.js";
 import type { BenchSpectatorProps } from "./types.js";
 
 const MAX_VISIBLE_LINES = 500;
@@ -26,7 +26,7 @@ function configOverride(config: unknown, key: string): number | null {
 
 function progress(detail: NonNullable<BenchState["openRun"]>["detail"]): { completed: number; total: number | null; workers: number | null } {
   if (!detail) return { completed: 0, total: null, workers: null };
-  if (detail.kind === "smac3") {
+  if (detail.kind === "tuner") {
     return {
       completed: detail.trial_count,
       total: configOverride(detail.config, "optimizer.n_trials"),
@@ -59,7 +59,7 @@ export const RunDetailPanel: Component<{
   const [spectatorVisible, setSpectatorVisible] = createSignal(false);
   const [deleteArmed, setDeleteArmed] = createSignal(false);
 
-  const isSmac3 = createMemo(() => detail()?.kind === "smac3");
+  const isTuner = createMemo(() => detail()?.kind === "tuner");
   const runProgress = createMemo(() => progress(detail()));
   const progressPercent = createMemo(() => {
     const { completed, total } = runProgress();
@@ -68,7 +68,7 @@ export const RunDetailPanel: Component<{
   // A run can only be resumed once it's stopped producing new trials --
   // resuming a still-running one would launch a second process racing the
   // first over the same prior state.
-  const canResume = createMemo(() => isSmac3() && detail() !== null && detail()!.status !== "running");
+  const canResume = createMemo(() => isTuner() && detail() !== null && detail()!.status !== "running");
   // A reasonable starting point for "how many more trials" -- the operator
   // can always change it before clicking Resume.
   const resumeDefaultTrials = createMemo(() => (detail()?.trial_count ?? 0) + 200);
@@ -78,7 +78,7 @@ export const RunDetailPanel: Component<{
   // `advance_baseline` doc comment), so the operator doesn't have to click
   // Stop and wait before promoting the current incumbent. The only real
   // precondition is having an incumbent to promote at all.
-  const canAdvanceBaseline = createMemo(() => isSmac3() && detail()?.incumbent != null);
+  const canAdvanceBaseline = createMemo(() => isTuner() && detail()?.incumbent != null);
   const [advancing, setAdvancing] = createSignal(false);
   // Clears the optimistic "in flight" flag once the request settles --
   // success replaces `openRun` with the new rung (see reducer.ts's
@@ -90,9 +90,9 @@ export const RunDetailPanel: Component<{
     void _runId;
     setAdvancing(false);
   });
-  const smac3Tuner = createMemo(() => {
+  const tunerTuner = createMemo(() => {
     const d = detail();
-    const kinds = state().smac3Kinds;
+    const kinds = state().tunerKinds;
     if (!d || kinds.status !== "done") return null;
     return kinds.result?.find((g) => g.game === d.game)?.tuner ?? null;
   });
@@ -260,7 +260,7 @@ export const RunDetailPanel: Component<{
                 <span class="meta-label">Progress</span>
                 <span class="meta-value">
                   {runProgress().completed}{runProgress().total !== null ? ` / ${runProgress().total} (${progressPercent()}%) complete` : " completed"}
-                  <Show when={isSmac3() && detail()!.status === "running"}>
+                  <Show when={isTuner() && detail()!.status === "running"}>
                     {` · ${runProgress().workers ?? "auto"} workers`}
                   </Show>
                   <Show when={runProgress().total !== null}>
@@ -292,12 +292,12 @@ export const RunDetailPanel: Component<{
             </div>
           </Show>
 
-          <Show when={isSmac3()}>
-            <Smac3RunDetail
+          <Show when={isTuner()}>
+            <TunerRunDetail
               trials={openRun()?.trials ?? []}
               chain={openRun()?.chain ?? []}
               chainedTrials={openRun()?.chainedTrials ?? []}
-              tuner={smac3Tuner()}
+              tuner={tunerTuner()}
               launchConfig={detail()?.config ?? null}
               incumbent={detail()?.incumbent ?? null}
             />

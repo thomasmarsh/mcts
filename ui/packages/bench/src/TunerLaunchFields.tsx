@@ -1,10 +1,10 @@
-// Smac3LaunchFields.tsx — The `smac3`-kind portion of the launch form.
+// TunerLaunchFields.tsx — The `tuner`-kind portion of the launch form.
 //
-// Unlike round_robin (pick strategies to pit against each other), a SMAC3
+// Unlike round_robin (pick strategies to pit against each other), a tuner
 // run's "config" is an optimizer budget over a search space the *game*
 // defines, not the launcher. So this renders:
 //   - a game picker restricted to games that report tuner metadata
-//     (`GET /api/bench/smac3/kinds` — only games with a `tuner()` impl
+//     (`GET /api/bench/tuner/kinds` — only games with a `tuner()` impl
 //     appear at all, so there's nothing to disable/grey out here);
 //   - a read-only summary of that game's search space (parameters,
 //     conditions, baselines, the tuner's *default* eval rounds/trial) so the
@@ -12,13 +12,13 @@
 //     budget to it;
 //   - the actual editable fields: n_trials/n_workers/deterministic/seed and
 //     rounds/trial (`optimizer.*`/`target.rounds` overrides). The parameter
-//     *values* themselves aren't editable here — `smac3`'s CLI `--override`
+//     *values* themselves aren't editable here — `tuner`'s CLI `--override`
 //     only reaches dotted dataclass attributes, not the list-shaped
 //     `parameters:` search space, so there is nothing for a form field to
 //     write to;
 //   - a raw-JSON "Game config" textarea, only for a game whose `tuner().
 //     game_config` isn't `{}` (today, only Druid) — a game-setup axis (e.g.
-//     board size) separate from the strategy search space above: SMAC3
+//     board size) separate from the strategy search space above: tuner
 //     never searches over it, it just pins every trial in the run to it.
 //     Deliberately a generic JSON field rather than a typed per-game picker
 //     (e.g. a board-size dropdown) so a future game with its own config
@@ -26,14 +26,14 @@
 //
 // LaunchForm owns all of this component's state (same lifted-state
 // convention as the strategy picker) and builds the `--override` argv from
-// it at submit time — see `buildSmac3Overrides` there.
+// it at submit time — see `buildTunerOverrides` there.
 
 import { createMemo, For, Show, type Component } from "solid-js";
-import type { Smac3GameInfo, TunerParameter } from "./index.js";
+import type { TunerGameInfo, TunerParameter } from "./index.js";
 
 /** Baseline-only families (`mcts-tune`'s `make_candidate`) that exist purely
  * as ladder floor rungs -- never in any game's `tuner().baselines` (those
- * are named presets), never SMAC3-searchable, but always launchable as the
+ * are named presets), never tuner-searchable, but always launchable as the
  * starting opponent via `target.baselines=[...]`. See `mcts-tune/src/
  * lib.rs`'s `"random"`/`"flat_mc"` match arms. */
 export const FLOOR_BASELINES = ["flat_mc", "random"] as const;
@@ -72,14 +72,14 @@ function paramDefault(p: TunerParameter): string {
 }
 
 /** Human-readable summary of one condition, e.g. "schedule = threshold -> rave". */
-function conditionLabel(cond: Smac3GameInfo["tuner"]["conditions"][number]): string {
+function conditionLabel(cond: TunerGameInfo["tuner"]["conditions"][number]): string {
   const [parent, value] = Object.entries(cond.if)[0] ?? ["?", "?"];
   const valueLabel = Array.isArray(value) ? value.join(" / ") : String(value);
   return `${parent} = ${valueLabel} → ${cond.then.join(", ")}`;
 }
 
-export const Smac3LaunchFields: Component<{
-  games: Smac3GameInfo[];
+export const TunerLaunchFields: Component<{
+  games: TunerGameInfo[];
   gamesLoading: boolean;
   game: string;
   onGameChange: (game: string) => void;
@@ -97,7 +97,7 @@ export const Smac3LaunchFields: Component<{
   /** Per-run MCTS iteration ceiling (`mcts_tune::SearchBudget::max_iterations`
    * on the Rust side) -- how much compute *every* trial's candidate (and,
    * for a `baseline_config`-backed opponent, that opponent too) gets, not a
-   * hyperparameter SMAC3 searches over. Empty string means "unset" (use the
+   * hyperparameter tuner searches over. Empty string means "unset" (use the
    * game binary's own historical default, `mcts-tune`'s `MAX_ITER`
    * constant) -- forwarded as `target.max_iterations=N` only when set, same
    * convention as `nWorkers`'s "auto". */
@@ -119,11 +119,11 @@ export const Smac3LaunchFields: Component<{
   gameConfigError: string | null;
   /** Panel of opponents a fresh run's root rung starts against -- any subset
    * of the selected game's own named presets (`tuner().baselines`) and/or a
-   * floor family (`FLOOR_BASELINES`). SMAC3 evaluates every trial against
+   * floor family (`FLOOR_BASELINES`). tuner evaluates every trial against
    * all selected instances and averages cost across them -- a single-entry
    * panel behaves exactly as a single-baseline selector would. Forwarded as
    * a `target.baselines=[...]` override at submit time (see
-   * `LaunchForm.tsx`'s `buildSmac3Overrides`). */
+   * `LaunchForm.tsx`'s `buildTunerOverrides`). */
   startingBaselines: Set<string>;
   onToggleStartingBaseline: (v: string) => void;
   /** Whether this launch opts into the automated ladder driver
@@ -142,14 +142,14 @@ export const Smac3LaunchFields: Component<{
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
 
   return (
-    <div id="smac3-launch-fields">
+    <div id="tuner-launch-fields">
       <Show when={props.gamesLoading}>
         <div class="loading-bench">Loading tunable games…</div>
       </Show>
 
       <Show when={!props.gamesLoading && props.games.length === 0}>
         <div class="launch-empty">
-          No game implements a SMAC3 tuner yet — see <code>tuner()</code> on <code>GameAdapter</code>.
+          No game implements a tuner tuner yet — see <code>tuner()</code> on <code>GameAdapter</code>.
         </div>
       </Show>
 
@@ -168,8 +168,8 @@ export const Smac3LaunchFields: Component<{
 
         <Show when={currentTuner()}>
           {(tuner) => (
-            <div id="smac3-tuner-summary">
-              <div class="smac3-tuner-meta">
+            <div id="tuner-tuner-summary">
+              <div class="tuner-tuner-meta">
                 <span class="meta-label">Tuner</span>
                 <span class="meta-value"><code>{tuner().id}</code></span>
                 <span class="meta-label">
@@ -181,11 +181,11 @@ export const Smac3LaunchFields: Component<{
                   actually starts against -- that's the "Starting baseline"
                   selector below. Listing every named preset here just
                   documents what's available to pick from. */}
-              <fieldset id="smac3-baseline-panel">
+              <fieldset id="tuner-baseline-panel">
                 <legend>Starting baseline panel (select at least one)</legend>
                 <For each={tuner().baselines}>
                   {(b) => (
-                    <label class="smac3-baseline-option">
+                    <label class="tuner-baseline-option">
                       <input
                         type="checkbox"
                         checked={props.startingBaselines.has(b)}
@@ -198,7 +198,7 @@ export const Smac3LaunchFields: Component<{
                 </For>
                 <For each={FLOOR_BASELINES}>
                   {(b) => (
-                    <label class="smac3-baseline-option">
+                    <label class="tuner-baseline-option">
                       <input
                         type="checkbox"
                         checked={props.startingBaselines.has(b)}
@@ -211,7 +211,7 @@ export const Smac3LaunchFields: Component<{
                 </For>
               </fieldset>
 
-              <table id="smac3-param-table">
+              <table id="tuner-param-table">
                 <thead>
                   <tr>
                     <th>Parameter</th>
@@ -224,10 +224,10 @@ export const Smac3LaunchFields: Component<{
                   <For each={tuner().parameters}>
                     {(p) => (
                       <tr>
-                        <td class="smac3-param-name" title={p.name}>{p.name}</td>
-                        <td class="smac3-param-type">{p.type}</td>
-                        <td class="smac3-param-range" title={paramRange(p)}>{paramRange(p)}</td>
-                        <td class="smac3-param-default" title={paramDefault(p)}>{paramDefault(p)}</td>
+                        <td class="tuner-param-name" title={p.name}>{p.name}</td>
+                        <td class="tuner-param-type">{p.type}</td>
+                        <td class="tuner-param-range" title={paramRange(p)}>{paramRange(p)}</td>
+                        <td class="tuner-param-default" title={paramDefault(p)}>{paramDefault(p)}</td>
                       </tr>
                     )}
                   </For>
@@ -241,7 +241,7 @@ export const Smac3LaunchFields: Component<{
                   ~380px-wide sidebar for something most launches don't need
                   to re-check every time. */}
               <Show when={tuner().conditions.length > 0}>
-                <details id="smac3-conditions">
+                <details id="tuner-conditions">
                   <summary>Parameter conditions ({tuner().conditions.length})</summary>
                   <ul>
                     <For each={tuner().conditions}>{(c) => <li>{conditionLabel(c)}</li>}</For>
@@ -253,7 +253,7 @@ export const Smac3LaunchFields: Component<{
                 <label>
                   Game config
                   <textarea
-                    id="smac3-game-config"
+                    id="tuner-game-config"
                     rows={4}
                     value={props.gameConfig}
                     onInput={(e) => props.onGameConfigChange(e.currentTarget.value)}
@@ -269,7 +269,7 @@ export const Smac3LaunchFields: Component<{
         </Show>
 
         <Show when={props.game}>
-          <div id="smac3-budget-fields">
+          <div id="tuner-budget-fields">
             <label>
               Trials
               <input
@@ -324,10 +324,10 @@ export const Smac3LaunchFields: Component<{
                 onInput={(e) => props.onMaxIterationsChange(e.currentTarget.value)}
                 disabled={props.disabled || props.maxTimeMs.trim() !== ""}
               />
-              <span class="smac3-field-hint">
+              <span class="tuner-field-hint">
                 MCTS iterations per move, applied to every trial's candidate (and its opponent, when
                 self-play). Blank uses the game binary's own default -- this is a compute budget, not
-                something SMAC3 tunes for you.
+                something tuner tunes for you.
               </span>
             </label>
 
@@ -341,13 +341,13 @@ export const Smac3LaunchFields: Component<{
                 onInput={(e) => props.onMaxTimeMsChange(e.currentTarget.value)}
                 disabled={props.disabled || props.maxIterations.trim() !== ""}
               />
-              <span class="smac3-field-hint">
+              <span class="tuner-field-hint">
                 Wall-clock milliseconds per move instead of a fixed iteration count -- mutually
                 exclusive with the iteration-budget field above (set one, leave the other blank).
               </span>
             </label>
 
-            <label class="smac3-checkbox-field">
+            <label class="tuner-checkbox-field">
               <input
                 type="checkbox"
                 checked={props.deterministic}
@@ -358,8 +358,8 @@ export const Smac3LaunchFields: Component<{
             </label>
           </div>
 
-          <div id="smac3-ladder-fields">
-            <label class="smac3-checkbox-field">
+          <div id="tuner-ladder-fields">
+            <label class="tuner-checkbox-field">
               <input
                 type="checkbox"
                 checked={props.ladderEnabled}
@@ -392,7 +392,7 @@ export const Smac3LaunchFields: Component<{
                   onInput={(e) => props.onSaturationThresholdChange(parseFloat(e.currentTarget.value) || 0)}
                   disabled={props.disabled}
                 />
-                <span class="smac3-field-hint">
+                <span class="tuner-field-hint">
                   Widens once the incumbent's loss rate against the current baseline is at or below
                   this (0 = must go undefeated; 0.1 = widen once losing at most 10% of games) -- a
                   fraction of games lost, not a percent-complete or 0–100 scale.

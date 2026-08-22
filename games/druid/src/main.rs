@@ -118,7 +118,7 @@ struct NewGameConfig {
 
 /// Builds a fresh board from a `new_state`/`tune_eval`-shaped config value,
 /// falling back to `game_druid::DEFAULT_SIZE` when `config` is `None` --
-/// shared by `new_state` (a human starting a game) and `tune_eval` (a SMAC3
+/// shared by `new_state` (a human starting a game) and `tune_eval` (a tuner
 /// trial's game_config axis pinning every self-play game in the run to a
 /// non-default board), so the two paths can never validate a size
 /// differently.
@@ -413,7 +413,7 @@ impl GameAdapter for DruidAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        // Every preset this game's `presets.json` declares is a valid SMAC3
+        // Every preset this game's `presets.json` declares is a valid tuner
         // baseline instance (e.g. "master" is the same strategy shape as
         // "strong", just with a longer thinking budget -- a genuine second,
         // harder instance a candidate can still be ranked against once it's
@@ -492,13 +492,13 @@ impl GameAdapter for DruidAdapter {
             // candidate on the default here would pit a fixed-iteration
             // search against a time-budgeted one, a mismatch severe enough
             // to produce a near-100%-loss streak on its own, independent of
-            // which family/hyperparameters SMAC3 samples.
+            // which family/hyperparameters tuner samples.
             //
             // Deliberately *not* matching thread count, though -- pin both
             // sides to a single thread instead of this preset's own
-            // deployed thread count (all cores, for strong/master). SMAC3
+            // deployed thread count (all cores, for strong/master). tuner
             // already runs `n_workers` trials concurrently
-            // (`smac3/config/default.yaml`'s `optimizer.n_workers`, sized
+            // (`tuner/config/default.yaml`'s `optimizer.n_workers`, sized
             // assuming ~1 core per worker); every trial subprocess also
             // claiming every core for its own tree search means
             // `n_workers`-many processes all fighting for the whole

@@ -287,7 +287,7 @@ async fn main() {
     });
 
     // Open (or create) the benchmark database.  Only the server process ever
-    // opens `bench.duckdb` read-write; `bin/bench` and the Python SMAC3
+    // opens `bench.duckdb` read-write; `bin/bench` and the Python tuner
     // harness communicate via JSONL files and the registry log instead.
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
@@ -345,7 +345,7 @@ async fn main() {
     }
 
     // Start the background ladder driver.  Same cadence and shape as the
-    // ingest loop above -- every 5 seconds it scans completed SMAC3 runs
+    // ingest loop above -- every 5 seconds it scans completed tuner runs
     // for a saturated, ladder-enabled rung with budget left and, if found,
     // launches the next one.  A no-op for every run that never opted into
     // `config.ladder`.

@@ -51,7 +51,7 @@ pub enum LogRecord {
         completed_games: u64,
         error: String,
     },
-    /// A single trial from a hyperparameter-optimization run (SMAC3, etc.).
+    /// A single trial from a hyperparameter-optimization run (tuner, etc.).
     Trial {
         trial_id: u64,
         config: serde_json::Value,
@@ -60,7 +60,7 @@ pub enum LogRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         extra: Option<serde_json::Value>,
     },
-    /// The current incumbent (SMAC3's own best-so-far config, as tracked by
+    /// The current incumbent (the tuner's own best-so-far config, as tracked by
     /// its intensifier) of a hyperparameter-optimization run. Emitted once
     /// per *change* of incumbent, not once per trial -- unlike `Trial`,
     /// only the latest one matters, so ingest overwrites rather than
@@ -79,7 +79,7 @@ pub enum LogRecord {
     /// replay through the same per-game UI renderer used for interactive
     /// play. `game_seq` is the existing per-run game identifier: it's
     /// `MatchResult.seq` for a round_robin run, `Trial.trial_id` for a
-    /// smac3 run -- deliberately reused rather than minting a new id, so a
+    /// tuner run -- deliberately reused rather than minting a new id, so a
     /// trace joins straight onto `match_results`/`trials` with no mapping
     /// table.
     Move {
