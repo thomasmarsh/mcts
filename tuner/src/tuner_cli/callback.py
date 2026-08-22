@@ -21,7 +21,7 @@ def _resolve_git_sha() -> str:
 
 
 def _cost(mu: float, sigma: float) -> float:
-    """Encode a higher-is-better TrueSkill estimate for the legacy cost wire field."""
+    """Encode a higher-is-better OpenSkill estimate for the legacy cost wire field."""
     return -(mu - 3 * sigma)
 
 

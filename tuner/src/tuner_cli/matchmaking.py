@@ -2,23 +2,29 @@
 
 Unlike the tuner's fixed-instance cost aggregation, a trial's rating is built up
 one game at a time against whichever pool anchor is currently closest to the
-candidate's own live TrueSkill rating ("ladder of trash"): a brand-new
+candidate's own live OpenSkill rating ("ladder of trash"): a brand-new
 strategy starts near an unrated 25.0 mu, gets matched against `"default"`
 first, and if it loses badly enough its rating drops toward `"random"`'s
 anchor -- producing a usable gradient instead of a flat loss against a fixed
 baseline. Anchors are frozen: the candidate's rating updates every game, the
 opponent's never does.
+
+Uses the Thurstone-Mosteller Partial model (`ThurstoneMostellerPart`) which is
+the closest OpenSkill counterpart to the TrueSkill algorithm
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import trueskill
+from openskill.models import ThurstoneMostellerPart
 
 from .config import SearchConfig
 from .pool import OpponentPool
 from .target import play_game
+
+# Shared model instance for per-trial matchmaking.
+_MODEL = ThurstoneMostellerPart()
 
 _MIN_GAMES = 5
 _MAX_GAMES = 15
@@ -42,7 +48,7 @@ def play_trial(
     Each step plays one ``play_game`` match (``cfg.target.rounds``
     round-robin pairs) against ``pool.closest(rating.mu)`` and folds every
     individual round's win/loss/draw outcome into the candidate's own rating
-    via ``trueskill.rate_1vs1``, discarding the opponent's updated rating
+    via ``_MODEL.rate``, discarding the opponent's updated rating
     each time (pool anchors never mutate from matchmaking). Stops once at
     least ``min_games`` steps (``play_game`` matches, not individual rounds)
     have been played and either ``max_games`` steps have run or the
@@ -55,13 +61,13 @@ def play_trial(
     ``{"opponent": anchor_id, "outcome": "win"|"loss"|"draw"}`` dicts, one per
     individual round across every step, for the trial JSONL ``extra``.
     """
-    rating = trueskill.Rating()
+    rating = _MODEL.rating()
     games: list[dict] = []
 
     step = 0
     while step < min_games or (step < max_games and rating.sigma >= sigma_threshold):
         anchor = pool.closest(rating.mu)
-        opponent_rating = trueskill.Rating(mu=anchor.mu, sigma=anchor.sigma)
+        opponent_rating = _MODEL.rating(mu=anchor.mu, sigma=anchor.sigma)
 
         wins, losses, draws, status = play_game(
             cfg,
@@ -77,13 +83,16 @@ def play_trial(
             continue
 
         for _ in range(wins):
-            rating, _ = trueskill.rate_1vs1(rating, opponent_rating)
+            result = _MODEL.rate([[rating], [opponent_rating]])
+            rating = result[0][0]
             games.append({"opponent": anchor.id, "outcome": "win"})
         for _ in range(losses):
-            _, rating = trueskill.rate_1vs1(opponent_rating, rating)
+            result = _MODEL.rate([[opponent_rating], [rating]])
+            rating = result[1][0]
             games.append({"opponent": anchor.id, "outcome": "loss"})
         for _ in range(draws):
-            rating, _ = trueskill.rate_1vs1(rating, opponent_rating, drawn=True)
+            result = _MODEL.rate([[rating], [opponent_rating]], scores=[0, 0])
+            rating = result[0][0]
             games.append({"opponent": anchor.id, "outcome": "draw"})
 
     return rating.mu, rating.sigma, games

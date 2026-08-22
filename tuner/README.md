@@ -1,7 +1,8 @@
-# tuner — Optuna + TrueSkill hyperparameter optimisation for MCTS
+# tuner — Optuna + OpenSkill hyperparameter optimisation for MCTS
 
-Uses [Optuna](https://optuna.org/) (TPE sampler) with TrueSkill-based
-matchmaking (ladder-of-trash) to find strong MCTS search strategies.
+Uses [Optuna](https://optuna.org/) (TPE sampler) with OpenSkill-based
+matchmaking (ladder-of-trash, **Thurstone-Mosteller Partial** model) to find
+strong MCTS search strategies.
 Each trial invokes the game binary's `tune eval` subcommand to play a
 match between a candidate and a dynamically selected opponent, and
 reports the loss rate. The search space has two levels: a top-level
@@ -148,8 +149,8 @@ Best score:   5.123
 ============================================================
 ```
 
-Score is the TrueSkill mu - 3*sigma of the candidate against the opponent
-pool (higher is better).
+Score is the OpenSkill mu - 3*sigma (Thurstone-Mosteller Partial model)
+estimate of the candidate against the opponent pool (higher is better).
 
 ---
 
@@ -160,5 +161,5 @@ All Python dependencies are managed by uv via `pyproject.toml`. Key packages:
 | Package | Version pin | Why |
 |---|---|---|
 | `optuna` | >=4.9.0 | Bayesian optimisation engine |
-| `trueskill` | >=0.4.5 | TrueSkill rating for matchmaking |
+| `openskill` | >=6.2.0 | OpenSkill rating (Thurstone-Mosteller Partial) for matchmaking |
 | `pyyaml` | >=6.0 | Config file parsing |

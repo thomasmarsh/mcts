@@ -1,12 +1,12 @@
 [project]
 name = "mcts-tuner"
 version = "0.1.0"
-description = "Optuna + TrueSkill hyperparameter optimization for MCTS"
+description = "Optuna + OpenSkill hyperparameter optimization for MCTS"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "pyyaml>=6.0",
     "optuna>=4.9.0",
-    "trueskill>=0.4.5",
+    "openskill>=6.2.0",
 ]
 
 [project.scripts]
@@ -14,6 +14,11 @@ tuner = "tuner_cli.__main__:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+# e2e/ tests run a real game-nim binary and are excluded from the fast suite.
+# Run them manually: uv run python tests/e2e/run_e2e.py
+norecursedirs = ["tests/e2e"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

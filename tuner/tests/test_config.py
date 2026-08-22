@@ -1,8 +1,6 @@
-"""Search-config parsing and binary-provided search-space metadata."""
+"""Search-config parsing -- pure dict/YAML parsing, no binary required."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from tuner_cli.config import SearchConfig
 
@@ -22,10 +20,3 @@ def test_config_parses_parameter_types_and_conditions():
     assert [parameter.name for parameter in cfg.parameters] == ["family", "depth", "enabled", "fixed"]
     assert cfg.conditions[0].parent == "family"
     assert cfg.conditions[0].values == ["b"]
-
-
-def test_parameters_from_binary_reports_search_space_and_baselines(game_nim_binary: Path):
-    parameters, conditions, baselines = SearchConfig.parameters_from_binary(game_nim_binary)
-    assert parameters
-    assert isinstance(conditions, list)
-    assert "strong" in baselines

@@ -1,4 +1,4 @@
-"""The dynamic opponent pool -- TrueSkill-rated anchors matchmaking plays against.
+"""The dynamic opponent pool -- OpenSkill-rated anchors matchmaking plays against.
 
 Unlike the tuner's fixed named-baseline instances, this pool starts with just two
 frozen anchors (`"default"`, `"random"`) and grows over the course of a run:
@@ -26,8 +26,8 @@ from .target import FLOOR_BASELINES
 _NEW_BAND_DELTA_MU = 1.5
 
 # Frozen anchors never accumulate more games, so their `sigma` is fixed at a
-# small nonzero value (not 0.0 -- `trueskill.rate_1vs1` divides by variance
-# terms derived from both players' sigma) rather than ever being updated.
+# small nonzero value (not 0.0 -- `_MODEL.rate` divides by variance terms
+# derived from both players' sigma) rather than ever being updated.
 _ANCHOR_SIGMA = 0.5
 
 _DEFAULT_ANCHOR_MU = 25.0
