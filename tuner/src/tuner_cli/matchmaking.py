@@ -31,6 +31,23 @@ _MAX_GAMES = 15
 _SIGMA_THRESHOLD = 2.0
 
 
+def evaluate_trial_worker(
+    cfg: SearchConfig,
+    binary: Path,
+    candidate_config: dict,
+    pool: OpponentPool,
+    seed: int,
+    trace_path: str | None = None,
+) -> tuple[float, float, list[dict]]:
+    """Standalone wrapper around ``play_trial`` for ``ProcessPoolExecutor`` workers.
+
+    Defined at module level so it can be pickled across process boundaries.
+    Each worker re-imports this module and gets its own ``_MODEL`` instance,
+    so there is no shared-memory footgun.
+    """
+    return play_trial(cfg, binary, candidate_config, pool, seed_base=seed, trace_path=trace_path)
+
+
 def play_trial(
     cfg: SearchConfig,
     binary: Path,

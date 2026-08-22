@@ -7,6 +7,8 @@ import argparse
 import ast
 import json
 import logging
+import os
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,7 +17,7 @@ import optuna
 
 from .callback import _resolve_git_sha, emit_incumbent_record, emit_trial_record
 from .config import SearchConfig
-from .matchmaking import play_trial
+from .matchmaking import evaluate_trial_worker
 from .pool import Anchor, OpponentPool
 from .space_optuna import suggest_config
 from .target import preflight_check
@@ -84,7 +86,13 @@ def run_optimization(
     git_sha: str | None = None,
     trace_path: str | None = None,
 ) -> tuple[optuna.Study, OpponentPool]:
-    """Run the unfinished portion of a persistent Optuna study sequentially."""
+    """Run the unfinished portion of a persistent Optuna study, with parallel workers.
+
+    ``optimizer.n_workers`` controls the process pool size (``None`` →
+    ``cpu_count // 2``).  The main process alone calls ``study.ask()`` / ``study.tell()``
+    and mutates the opponent pool; each worker is a pure evaluator that
+    receives a snapshot of the pool at submission time.
+    """
     binary = cfg.resolve_binary()
     parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(binary)
     cfg.parameters = parameters
@@ -111,18 +119,54 @@ def run_optimization(
     preflight_check(cfg, pool.closest(25.0).config, pool.closest(0.0).config)
     resolved_sha = git_sha or _resolve_git_sha()
     remaining = max(0, cfg.optimizer.n_trials - len(study.trials))
-    for _ in range(remaining):
-        trial = study.ask()
-        config = suggest_config(trial, cfg)
-        trial.set_user_attr("config", config)
-        seed = cfg.optimizer.seed + trial.number
-        mu, sigma, games = play_trial(cfg, binary, config, pool, seed_base=seed, trace_path=trace_path)
-        study.tell(trial, mu - 3 * sigma)
-        emit_trial_record(trial.number, config, seed, mu, sigma, games, resolved_sha)
-        if pool.maybe_insert(config, mu, sigma) is not None:
-            pool.save(pool_path)
-        if study.best_trial.number == trial.number:
-            emit_incumbent_record(config, mu, sigma)
+
+    if remaining == 0:
+        return study, pool
+
+    n_workers = cfg.optimizer.n_workers
+    if n_workers is None:
+        n_workers = max(1, (os.cpu_count() or 2) // 2)
+
+    # Map from Future to the (trial, config, seed) triple so we can call
+    # study.tell() and emit records in the main process once the worker
+    # finishes.  Workers are pure evaluators: they get a snapshot of the
+    # pool at submission time and never mutate it.
+    futures: dict[Any, tuple[optuna.Trial, dict, int]] = {}
+
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit the initial batch — one per worker.
+        for _ in range(min(n_workers, remaining)):
+            trial = study.ask()
+            config = suggest_config(trial, cfg)
+            trial.set_user_attr("config", config)
+            seed = cfg.optimizer.seed + trial.number
+            future = executor.submit(
+                evaluate_trial_worker, cfg, binary, config, pool, seed, trace_path
+            )
+            futures[future] = (trial, config, seed)
+
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                trial, config, seed = futures.pop(future)
+                mu, sigma, games = future.result()
+                study.tell(trial, mu - 3 * sigma)
+                emit_trial_record(trial.number, config, seed, mu, sigma, games, resolved_sha)
+                if pool.maybe_insert(config, mu, sigma) is not None:
+                    pool.save(pool_path)
+                if study.best_trial.number == trial.number:
+                    emit_incumbent_record(config, mu, sigma)
+
+                remaining -= 1
+                if remaining > 0:
+                    trial = study.ask()
+                    config = suggest_config(trial, cfg)
+                    trial.set_user_attr("config", config)
+                    seed = cfg.optimizer.seed + trial.number
+                    future = executor.submit(
+                        evaluate_trial_worker, cfg, binary, config, pool, seed, trace_path
+                    )
+                    futures[future] = (trial, config, seed)
 
     return study, pool
 

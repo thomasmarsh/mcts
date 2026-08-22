@@ -2,12 +2,12 @@
 plan/
 Cargo.lock
 __pycache__
-smac3_output
+optuna_output
 /profile.json
 .DS_Store
 node_modules
 # Python virtual environment (uv project)
-smac3/.venv/
+tuner/.venv/
 # setuptools build metadata
 *.egg-info/
 # pnpm workspace (ui/)
