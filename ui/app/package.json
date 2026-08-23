@@ -14,6 +14,7 @@
     "@mcts/knightthrough": "workspace:*",
     "@mcts/margo": "workspace:*",
     "@mcts/othello": "workspace:*",
+    "@mcts/search-inspector": "workspace:*",
     "@mcts/tak": "workspace:*",
     "@mcts/tanbo": "workspace:*",
     "@mcts/traffic-lights": "workspace:*",

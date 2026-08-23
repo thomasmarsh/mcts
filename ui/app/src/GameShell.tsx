@@ -25,6 +25,7 @@ import { GAME_META, GAME_MODULES } from "./games.js";
 // the user actually starts a game (`state().epoch >= 1`).
 const MoveListPanel = lazy(() => import("./MoveListPanel.js").then((m) => ({ default: m.MoveListPanel })));
 const AnalysisPanel = lazy(() => import("./AnalysisPanel.js").then((m) => ({ default: m.AnalysisPanel })));
+const MoveSearchPanel = lazy(() => import("./MoveSearchPanel.js").then((m) => ({ default: m.MoveSearchPanel })));
 const SaveLoadPanel = lazy(() => import("./SaveLoadPanel.js").then((m) => ({ default: m.SaveLoadPanel })));
 
 type S = unknown;
@@ -423,6 +424,7 @@ export const GameShell: Component<{
                 formatMove={m().formatMove}
                 onJump={(id) => dispatch({ tag: "tree", action: { tag: "jumpTo", id } })}
               />
+              <MoveSearchPanel tree={state().tree} formatMove={m().formatMove} />
               <AnalysisPanel
                 analysis={state().analysis}
                 presets={presetOptions()}

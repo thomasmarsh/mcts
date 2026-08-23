@@ -335,6 +335,57 @@ button.mode:disabled, #new-game:disabled, #ai-move:disabled {
   font-size: 13px;
 }
 
+#move-search-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  min-width: 300px;
+  max-width: min(460px, calc(100vw - 24px));
+  max-height: 50vh;
+  overflow: auto;
+  padding: 10px 12px;
+  color: #e8e8ec;
+  background: rgba(20, 21, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+}
+
+#move-search-panel h2,
+#move-search-panel h3,
+#analysis-panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+#move-search-panel dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 10px;
+  margin: 0 0 10px;
+}
+
+#move-search-panel dd {
+  margin: 0;
+}
+
+#move-search-panel table,
+#analysis-panel table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#move-search-panel th,
+#move-search-panel td,
+#analysis-panel th,
+#analysis-panel td {
+  padding: 3px 5px;
+  text-align: left;
+}
+
 .analysis-header {
   display: flex;
   gap: 6px;

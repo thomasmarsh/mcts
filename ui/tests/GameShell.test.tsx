@@ -30,11 +30,11 @@
 // `@solidjs/testing-library` + happy-dom.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { Effect } from "@mcts/core";
-import type { AiMoveResult, Env, LegalMovesResult, StateAndView } from "@mcts/game";
+import type { AiMoveResult, Analysis, Env, LegalMovesResult, SearchReport, StateAndView } from "@mcts/game";
 import { createTestStore, fixtureAxisSchema, mockEnv, mockFetchStrategySchema } from "./helpers.js";
-import { mountLog, resetMountLog, TERMINAL_AT, viewFor } from "./fixtures/fake-game.js";
+import { type FakeView, mountLog, resetMountLog, TERMINAL_AT, viewFor } from "./fixtures/fake-game.js";
 
 vi.mock("../app/src/games.js", () => import("./fixtures/fake-games-registry.js"));
 
@@ -62,6 +62,61 @@ function makeFakeEnv(): Env {
       if (cur >= TERMINAL_AT) throw new Error("aiMove called at/after TERMINAL_AT -- the frontier guard regressed");
       const next = cur + 1;
       return Effect.send({ move: "inc", state: next, view: viewFor(next) }) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
+    },
+  };
+}
+
+function searchReport(iterations: number, status: SearchReport<string>["status"] = "available"): SearchReport<string> {
+  return {
+    status,
+    schema_version: 1,
+    reason: status === "unavailable" ? "strategy_unsupported" : null,
+    elapsed_seconds: 0.01,
+    iteration_limit: iterations,
+    time_limit_seconds: null,
+    completed_iterations: iterations,
+    termination: "iterations",
+    selected_action: "inc",
+    actions: [{ action: "inc", visits: iterations, share: 1, mean_value: 0.5, is_proven: false }],
+    principal_variation: ["inc"],
+    root_visits: iterations,
+    tree_nodes: iterations,
+    mean_depth: 1,
+    max_depth: 1,
+    graph_mode: "tree",
+    tt_reads: 0,
+    tt_writes: 0,
+    tt_hits: 0,
+    tt_hit_ratio: 0,
+    iterations_per_second: iterations * 100,
+    warnings: status === "partial" ? ["actions_truncated"] : [],
+  };
+}
+
+function analysisResult(search?: SearchReport<string> | null): Analysis<string> {
+  return {
+    actions: [{ action: "inc", visits: 12, mean_value: 0.5, is_proven: false }],
+    principal_variation: ["inc"],
+    total_visits: 12,
+    suggested_move: "inc",
+    ...(search === undefined ? {} : { search }),
+  };
+}
+
+function makeInspectorEnv(options: { analysis?: Analysis<string>; aiSearch?: SearchReport<string> | null } = {}): Env {
+  return {
+    ...makeFakeEnv(),
+    aiPresets: () => Effect.send([{ id: "strong", label: "Strong", description: "test" }]),
+    analyze: <M2>() => Effect.send(options.analysis ?? analysisResult(searchReport(17))) as unknown as Effect<Analysis<M2>>,
+    aiMove: <S2, M2, V2 = unknown>(_kind: string, state: S2) => {
+      const current = state as unknown as number;
+      const result: AiMoveResult<number, string, FakeView> = {
+        move: "inc",
+        state: current + 1,
+        view: viewFor(current + 1),
+        ...(options.aiSearch === undefined ? { search: searchReport(5) } : { search: options.aiSearch }),
+      };
+      return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
     },
   };
 }
@@ -216,5 +271,122 @@ describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real
       kind: "custom",
       spec: { search: { select: { kind: "epsilon_greedy", inner: { kind: "ucb1" } } } },
     });
+  });
+});
+
+describe("GameShell live search inspection (fake game, no real server)", () => {
+  it("keeps a completed explicit analysis distinct from the retained AI report", async () => {
+    const { store } = createTestStore("fake", makeInspectorEnv());
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "AI Move" }));
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n1"));
+    await vi.waitFor(() => expect(within(document.getElementById("move-search-panel")!).getByText("Completed iterations")).toBeInTheDocument());
+    expect(within(document.getElementById("move-search-panel")!).getAllByText("5").length).toBeGreaterThan(0);
+    expect(within(document.getElementById("move-search-panel")!).getAllByText("inc#0").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await vi.waitFor(() => expect(within(document.getElementById("analysis-panel")!).getByText("Completed iterations")).toBeInTheDocument());
+    expect(within(document.getElementById("analysis-panel")!).getAllByText("17").length).toBeGreaterThan(0);
+    expect(within(document.getElementById("move-search-panel")!).getAllByText("5").length).toBeGreaterThan(0);
+    const summaryIds = Array.from(document.querySelectorAll("h3"))
+      .filter((heading) => heading.textContent === "Search summary")
+      .map((heading) => heading.id);
+    expect(new Set(summaryIds).size).toBe(2);
+  });
+
+  it("keeps legacy analysis actions and PV under a reduced-capability label", async () => {
+    const { store } = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult() }));
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Legacy analysis (reduced capability)" })).toBeInTheDocument());
+    const panel = document.getElementById("analysis-panel")!;
+    expect(within(panel).getByText("inc#0")).toBeInTheDocument();
+    expect(within(panel).queryByText("Search summary")).toBeNull();
+  });
+
+  it("shows that a human move has no retained search report", async () => {
+    const { store } = createTestStore("fake", makeInspectorEnv());
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    store.dispatch({ tag: "move", action: { tag: "request", move: "inc" } });
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n1"));
+    const panel = document.getElementById("move-search-panel")!;
+    expect(within(panel).getByText("Search that selected this move")).toBeInTheDocument();
+    expect(within(panel).getByRole("status")).toHaveTextContent("played by a human");
+  });
+
+  it("changes the retained report with undo, redo, and history selection without analyzing", async () => {
+    let analyzeCalls = 0;
+    const env: Env = {
+      ...makeInspectorEnv(),
+      analyze: () => {
+        analyzeCalls++;
+        return Effect.none();
+      },
+    };
+    const { store } = createTestStore("fake", env);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    store.dispatch({ tag: "move", action: { tag: "request", move: "inc" } });
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n1"));
+    fireEvent.click(screen.getByRole("button", { name: "AI Move" }));
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n2"));
+    expect(within(document.getElementById("move-search-panel")!).getAllByText("5").length).toBeGreaterThan(0);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n1"));
+    expect(within(document.getElementById("move-search-panel")!).getByRole("status")).toHaveTextContent("played by a human");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n2"));
+    expect(within(document.getElementById("move-search-panel")!).getAllByText("5").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText("Start").closest("button")!);
+    await vi.waitFor(() => expect(store.state.tree.currentId).toBe("n0"));
+    expect(within(document.getElementById("move-search-panel")!).getByRole("status")).toHaveTextContent("starting position");
+    expect(analyzeCalls).toBe(0);
+  });
+
+  it("renders unavailable and partial explicit reports without falling back to legacy output", async () => {
+    const partial = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult(searchReport(3, "partial")) }));
+    const rendered = render(() => <GameShell store={partial.store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await vi.waitFor(() => expect(within(document.getElementById("analysis-panel")!).getByRole("status")).toHaveTextContent("evidence is partial"));
+    expect(screen.getByText("The action list was truncated before every root action could be retained.")).toBeInTheDocument();
+    rendered.unmount();
+
+    const unavailable = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult(searchReport(3, "unavailable")) }));
+    render(() => <GameShell store={unavailable.store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await vi.waitFor(() => expect(within(document.getElementById("analysis-panel")!).getByRole("status")).toHaveTextContent("evidence unavailable"));
+    expect(screen.queryByRole("heading", { name: "Legacy analysis (reduced capability)" })).toBeNull();
+  });
+
+  it("drops an analysis response that completes after a new game", async () => {
+    let resolveAnalysis: ((result: Analysis<string>) => void) | undefined;
+    const env: Env = {
+      ...makeInspectorEnv(),
+      analyze: <M2>() => Effect.fromPromise(() => new Promise<Analysis<string>>((resolve) => { resolveAnalysis = resolve; })) as unknown as Effect<Analysis<M2>>,
+    };
+    const { store } = createTestStore("fake", env);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await vi.waitFor(() => expect(store.state.analysis.status).toBe("pending"));
+    fireEvent.click(screen.getByRole("button", { name: "New Game" }));
+    fireEvent.click(document.getElementById("new-game-start")!);
+    await vi.waitFor(() => expect(store.state.epoch).toBe(2));
+    resolveAnalysis!(analysisResult(searchReport(99)));
+    await vi.waitFor(() => expect(store.state.analysis.status).toBe("idle"));
+    expect(document.getElementById("analysis-panel")?.textContent).not.toContain("99");
   });
 });

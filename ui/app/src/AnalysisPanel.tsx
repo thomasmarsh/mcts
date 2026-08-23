@@ -1,9 +1,9 @@
-// AnalysisPanel.tsx — Analysis panel: dispatches
-// `analyze` (job-poll wiring), renders a scrollable table of
-// candidate moves by visit share / mean value, the principal variation, and
-// an "Analyze" button -- analysis is real compute, so it never fires
-// automatically on navigation (see GameShell.tsx, which only ever dispatches
-// it in response to this panel's `onAnalyze`).
+// AnalysisPanel.tsx — Analysis controls and presentation for an explicit
+// `analyze` request. Modern final-search evidence is delegated to the shared
+// inspector; legacy responses retain the compact candidate/PV view. Analysis
+// is real compute, so it never fires automatically on navigation (see
+// GameShell.tsx, which only ever dispatches it in response to this panel's
+// `onAnalyze`).
 //
 // Per the hard rule, this component never touches the network --
 // its only outputs are `onSelectPreset`/`onAnalyze`/`onHoverMove`, which
@@ -16,6 +16,7 @@ import { type Component, createMemo, For, Show } from "solid-js";
 import type { AiPresetInfo, Analysis } from "@mcts/game";
 import { moveEquals } from "@mcts/game";
 import type { JobPollState } from "@mcts/core";
+import { SearchInspector } from "@mcts/search-inspector";
 
 type S = unknown;
 type M = unknown;
@@ -92,29 +93,39 @@ export const AnalysisPanel: Component<{
       <Show when={result()}>
         {(r) => (
           <>
-            <div class="analysis-summary">{r().total_visits} visits</div>
-            <Show when={pvLabel()}>{(pv) => <div class="analysis-pv">PV: {pv()}</div>}</Show>
-            <ul class="analysis-candidates">
-              <For each={rows()}>
-                {(row) => (
-                  <li
-                    classList={{ suggested: row.isSuggested, hovered: props.hoveredMove !== null && moveEquals(props.hoveredMove, row.move) }}
-                    onMouseEnter={() => props.onHoverMove(row.move)}
-                    onMouseLeave={() => props.onHoverMove(null)}
-                  >
-                    <span class="candidate-bar" style={{ width: `${Math.round(row.visitShare * 100)}%` }} />
-                    <span class="candidate-label">{row.label}</span>
-                    <Show when={row.isProven}>
-                      <span class="candidate-proven" title="Proven win">
-                        ✓
-                      </span>
-                    </Show>
-                    <span class="candidate-share">{Math.round(row.visitShare * 100)}%</span>
-                    <span class="candidate-value">{row.meanValue.toFixed(2)}</span>
-                  </li>
-                )}
-              </For>
-            </ul>
+            <Show
+              when={r().search}
+              fallback={(
+                <section aria-label="Legacy analysis">
+                  <h3>Legacy analysis (reduced capability)</h3>
+                  <div class="analysis-summary">{r().total_visits} visits</div>
+                  <Show when={pvLabel()}>{(pv) => <div class="analysis-pv">PV: {pv()}</div>}</Show>
+                  <ul class="analysis-candidates">
+                    <For each={rows()}>
+                      {(row) => (
+                        <li
+                          classList={{ suggested: row.isSuggested, hovered: props.hoveredMove !== null && moveEquals(props.hoveredMove, row.move) }}
+                          onMouseEnter={() => props.onHoverMove(row.move)}
+                          onMouseLeave={() => props.onHoverMove(null)}
+                        >
+                          <span class="candidate-bar" style={{ width: `${Math.round(row.visitShare * 100)}%` }} />
+                          <span class="candidate-label">{row.label}</span>
+                          <Show when={row.isProven}>
+                            <span class="candidate-proven" title="Outcome proven">
+                              ✓
+                            </span>
+                          </Show>
+                          <span class="candidate-share">{Math.round(row.visitShare * 100)}%</span>
+                          <span class="candidate-value">{row.meanValue.toFixed(2)}</span>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </section>
+              )}
+            >
+              {(search) => <SearchInspector report={search()} before={props.before} formatMove={props.formatMove} />}
+            </Show>
           </>
         )}
       </Show>

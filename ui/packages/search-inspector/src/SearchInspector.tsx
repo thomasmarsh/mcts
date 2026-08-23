@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, createUniqueId, For, Show, type JSX } from "solid-js";
 import { moveEquals, type SearchReport, type SearchWarning } from "@mcts/game";
 
 export interface SearchInspectorPoint<M> {
@@ -133,6 +133,12 @@ function TrendChart<M>(props: { points: SearchInspectorPoint<M>[]; metric: Metri
 }
 
 export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
+  const id = createUniqueId();
+  const warningHeadingId = `${id}-warnings`;
+  const summaryHeadingId = `${id}-summary`;
+  const actionsHeadingId = `${id}-actions`;
+  const pvHeadingId = `${id}-pv`;
+  const trendHeadingId = `${id}-trend`;
   const [metricKey, setMetricKey] = createSignal<SearchMetric>("iterations");
   const trendPoints = createMemo(() => props.points ?? []);
   const metric = createMemo(() => metrics.find((entry) => entry.key === metricKey()) as MetricDefinition<M>);
@@ -156,16 +162,16 @@ export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
             </Show>
 
             <Show when={report().warnings.length > 0}>
-              <section aria-labelledby="search-warnings-heading">
-                <h3 id="search-warnings-heading">Warnings</h3>
+              <section aria-labelledby={warningHeadingId}>
+                <h3 id={warningHeadingId}>Warnings</h3>
                 <ul>
                   <For each={report().warnings}>{(warning) => <li>{warningDetail[warning]}</li>}</For>
                 </ul>
               </section>
             </Show>
 
-            <section aria-labelledby="search-summary-heading">
-              <h3 id="search-summary-heading">Search summary</h3>
+            <section aria-labelledby={summaryHeadingId}>
+              <h3 id={summaryHeadingId}>Search summary</h3>
               <dl>
                 <dt>Iteration limit</dt><dd>{nullableNumber(report().iteration_limit)}</dd>
                 <dt>Time limit</dt><dd>{seconds(report().time_limit_seconds)}</dd>
@@ -185,8 +191,8 @@ export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
               </dl>
             </section>
 
-            <section aria-labelledby="search-actions-heading">
-              <h3 id="search-actions-heading">Root actions</h3>
+            <section aria-labelledby={actionsHeadingId}>
+              <h3 id={actionsHeadingId}>Root actions</h3>
               <table>
                 <thead><tr><th scope="col">Action</th><th scope="col">Visits</th><th scope="col">Share</th><th scope="col">Mean</th><th scope="col">Outcome proven</th><th scope="col">Selected</th></tr></thead>
                 <tbody>
@@ -198,8 +204,8 @@ export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
             </section>
 
             <Show when={report().principal_variation.length > 0}>
-              <section aria-labelledby="search-pv-heading">
-                <h3 id="search-pv-heading">Principal variation</h3>
+              <section aria-labelledby={pvHeadingId}>
+                <h3 id={pvHeadingId}>Principal variation</h3>
                 <p>{report().principal_variation.map(pvLabel).join(" → ")}</p>
               </section>
             </Show>
@@ -208,8 +214,8 @@ export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
       </Show>
 
       <Show when={trendPoints().length >= 2}>
-        <section aria-labelledby="search-trend-heading">
-          <h3 id="search-trend-heading">Per-ply search trend</h3>
+        <section aria-labelledby={trendHeadingId}>
+          <h3 id={trendHeadingId}>Per-ply search trend</h3>
           <label>
             Metric
             <select value={metricKey()} onChange={(event) => setMetricKey(event.currentTarget.value as SearchMetric)}>
