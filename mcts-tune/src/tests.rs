@@ -10,10 +10,7 @@ use mcts::strategies::mcts::{
 use mcts::strategies::Search;
 use serde_json::{json, Value};
 
-mod tests {
-    use super::*;
-
-    #[test]
+#[test]
     fn test_cost_from_losses_hand_verified() {
         // 20 rounds -> 40 games; 15 losses -> cost 0.375.
         assert_eq!(cost_from_losses(15, 20), 0.375);
@@ -1384,4 +1381,3 @@ mod tests {
             }
         }
     }
-}

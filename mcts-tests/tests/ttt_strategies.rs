@@ -2587,7 +2587,7 @@ fn test_final_search_report_tracks_only_the_latest_search() {
     assert_eq!(first.iteration_limit, Some(24));
     assert_eq!(first.completed_iterations, 24);
     assert_eq!(first.root_visits, 24);
-    assert_eq!(first.selected_action, Some(selected.clone()));
+    assert_eq!(first.selected_action, Some(selected));
     assert_eq!(first.principal_variation.first(), Some(&selected));
     assert_eq!(first.graph_mode, Some(SearchGraphMode::Transpositions));
     assert!(first.tree_nodes > 1);
@@ -2754,7 +2754,7 @@ fn test_final_search_report_aggregates_root_parallel_workers() {
         .warnings
         .contains(&SearchWarning::RootParallelPvSingleTree));
     assert_eq!(report.completed_iterations, 24);
-    assert_eq!(report.selected_action, Some(selected.clone()));
+    assert_eq!(report.selected_action, Some(selected));
     let selected_row = report
         .actions
         .iter()

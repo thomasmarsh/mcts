@@ -174,7 +174,8 @@ fn trial_reports_project_consecutive_resources_and_replay_idempotently() {
         ),
         ApplyDisposition::Rejected
     );
-    let reports: Vec<(u64, String, String, bool, Option<String>, Option<u64>)> = conn
+    type TrialReportRow = (u64, String, String, bool, Option<String>, Option<u64>);
+    let reports: Vec<TrialReportRow> = conn
         .prepare("SELECT completed_pairs, outcome, reason, pruning_exempt, bracket_id, rung_resource FROM tuning_trial_reports ORDER BY completed_pairs")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
