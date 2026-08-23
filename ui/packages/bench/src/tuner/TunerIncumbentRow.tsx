@@ -8,16 +8,13 @@
 import { createSignal, Show, type Component } from "solid-js";
 import type { IncumbentInfo } from "../index.js";
 import { fmtScore } from "./tuner-helpers.js";
+import { buildPresetSpec, copyPreset, serializeRecordedParams, type PresetCopyState } from "../tuning/preset-copy.js";
 
 export const TunerIncumbentRow: Component<{
   incumbent: IncumbentInfo | null;
-  /** `true` when this game supports transpositions (`mcgs` appears in the
-   * parameter list — it's a per-game capability flag, not a per-trial
-   * boolean). Affects the preset JSON shape. */
-  supportsTranspositions: boolean;
 }> = (props) => {
   const [copied, setCopied] = createSignal(false);
-  const [copiedPreset, setCopiedPreset] = createSignal(false);
+  const [presetCopy, setPresetCopy] = createSignal<PresetCopyState | null>(null);
 
   const displayScore = (): string => {
     if (!props.incumbent) return "—";
@@ -27,7 +24,9 @@ export const TunerIncumbentRow: Component<{
   async function copyIncumbentConfig(): Promise<void> {
     const incumbent = props.incumbent;
     if (!incumbent) return;
-    await navigator.clipboard.writeText(JSON.stringify(incumbent.config));
+    const text = serializeRecordedParams(incumbent.config);
+    if (text === null) return;
+    await navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
@@ -35,16 +34,14 @@ export const TunerIncumbentRow: Component<{
   async function copyIncumbentAsPreset(): Promise<void> {
     const incumbent = props.incumbent;
     if (!incumbent) return;
-    const entry = {
-      id: "tuned",
-      label: "Tuned",
-      description: "tuner tuned.",
+    const status = await copyPreset(buildPresetSpec({
+      kind: "candidate",
+      sourceId: "incumbent",
+      sourceDescription: "Candidate snapshot from the recorded incumbent.",
       params: incumbent.config,
-      use_transpositions: props.supportsTranspositions,
-    };
-    await navigator.clipboard.writeText(JSON.stringify(entry, null, 4));
-    setCopiedPreset(true);
-    setTimeout(() => setCopiedPreset(false), 1500);
+    }), navigator.clipboard);
+    setPresetCopy(status);
+    if (status.status === "success") setTimeout(() => setPresetCopy(null), 1500);
   }
 
   return (
@@ -62,9 +59,10 @@ export const TunerIncumbentRow: Component<{
           <button
             id="tuner-copy-incumbent-preset-btn"
             onClick={copyIncumbentAsPreset}
-            title="Copy a ready-to-paste presets.json entry (params plus the use_transpositions this game requires)"
+            title="Copy a ready-to-paste presets.json entry from this recorded configuration"
+            aria-label={presetCopy()?.announcement ?? "Copy as preset"}
           >
-            {copiedPreset() ? "Copied!" : "Copy as preset"}
+            {presetCopy()?.status === "success" ? "Copied!" : presetCopy()?.status === "failure" ? "Copy failed" : presetCopy()?.status === "disabled" ? "Preset unavailable" : "Copy as preset"}
           </button>
         </div>
     </Show>

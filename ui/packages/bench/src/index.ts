@@ -52,6 +52,25 @@ export type {
   TuningPair,
   TuningTrial,
   TuningSessionDetail,
+  TuningCursorBoundary,
+  TuningAnalysisObjective,
+  TuningAnalysisPairCoverage,
+  TuningAnalysisPointCoverage,
+  TuningAnalysisCoverage,
+  TuningBracketResourceAggregate,
+  TuningDecisionAggregate,
+  TuningAnalysisPoint,
+  TuningPoolAnchor,
+  TuningPoolRevision,
+  TuningAnalysisOverview,
+  TuningTrialPageQuery,
+  TuningTrialSummary,
+  TuningTrialPage,
+  TuningReplayReference,
+  TuningTrialDetailGame,
+  TuningTrialDetailPair,
+  TuningTrialDetailView,
+  TuningTrialDetail,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 export { deriveSeed, expandExperimentSpec, cellFromResponse, JS_MAX_SAFE_INTEGER } from "./experiment-grid.js";
@@ -65,6 +84,57 @@ export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, Chained
 export { initialBenchState } from "./state.js";
 export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction } from "./tuning-navigation.js";
 export { initialTuningNavigationState, tuningNavigationReducer, TUNING_DETAIL_REFRESH_MS } from "./tuning-navigation.js";
+export {
+  UNASSIGNED_BRACKET,
+  analysisSampleMetadata,
+  bracketFacets,
+  resourceDomains,
+  exactPlotRows,
+  stateSymbol,
+  reasonSymbol,
+  decisionGroupRows,
+  rungFunnelRows,
+  trialTrajectories,
+  trialPageSummary,
+  poolRevisionCoverage,
+  opponentDistances,
+  highlightSelectedTrial,
+} from "./tuning/analysis-models.js";
+export type {
+  AnalysisSampleMetadata,
+  BracketFacet,
+  ResourceDomains,
+  AnalysisPlotRow,
+  DecisionSymbol,
+  DecisionGroupRow,
+  RungFunnelRow,
+  TrialTrajectory,
+  WldSummary,
+  ComputeSummary,
+  TrialSummaryRow,
+  TrialPageSummary,
+  PoolRevisionCoverage,
+  OpponentDistance,
+} from "./tuning/analysis-models.js";
+export {
+  safePresetId,
+  serializeRecordedParams,
+  serializePresetSpec,
+  buildPresetSpec,
+  candidatePresetSource,
+  opponentPresetSource,
+  copyPreset,
+} from "./tuning/preset-copy.js";
+export type {
+  JsonObject,
+  PresetBudgetSnapshot,
+  PresetSource,
+  PresetSpec,
+  PresetDisabledReason,
+  PresetBuildResult,
+  ClipboardWriter,
+  PresetCopyState,
+} from "./tuning/preset-copy.js";
 
 export type {
   BenchEnv,

@@ -94,15 +94,10 @@ export const TunerRunDetail: Component<{
     return best ? groups().get(groupKey(best)) ?? null : null;
   });
 
-  const supportsTranspositions = createMemo(
-    () => props.tuner?.parameters.some((p) => p.name === "mcgs") ?? false,
-  );
-
   return (
     <div id="tuner-run-detail">
       <TunerIncumbentRow
         incumbent={props.incumbent ?? null}
-        supportsTranspositions={supportsTranspositions()}
       />
 
       <Show
