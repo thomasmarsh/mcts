@@ -153,6 +153,54 @@ pub const CREATE_TABLES: &[&str] = &[
         launch_result TEXT,
         launch_diagnostic TEXT
     )",
+    "CREATE TABLE IF NOT EXISTS tuning_sessions (
+        session_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK (status IN ('active', 'idle')),
+        manifest JSON NOT NULL,
+        manifest_fingerprint TEXT,
+        target_trial_count BIGINT,
+        created_at TIMESTAMP NOT NULL,
+        last_sequence BIGINT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        bench_run_id TEXT REFERENCES runs(run_id),
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'stopped')),
+        started_at TIMESTAMP NOT NULL,
+        ended_at TIMESTAMP,
+        failure TEXT
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_trials (
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        trial_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL REFERENCES tuning_attempts(attempt_id),
+        trial_number BIGINT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'complete', 'failed', 'pruned', 'cancelled')),
+        config JSON,
+        created_at TIMESTAMP NOT NULL,
+        started_at TIMESTAMP,
+        ended_at TIMESTAMP,
+        score DOUBLE,
+        mu DOUBLE,
+        sigma DOUBLE,
+        failure TEXT,
+        PRIMARY KEY (session_id, trial_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_lifecycle_events (
+        event_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        session_sequence BIGINT NOT NULL,
+        timestamp TIMESTAMP NOT NULL,
+        event_type TEXT NOT NULL,
+        payload JSON NOT NULL,
+        raw JSON NOT NULL,
+        source_path TEXT NOT NULL,
+        source_offset BIGINT NOT NULL,
+        accepted BOOLEAN,
+        rejection_reason TEXT
+    )",
 ];
 
 pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
@@ -240,6 +288,10 @@ mod tests {
             "game_moves",
             "_ingest_cursor",
             "attempt_events",
+            "tuning_sessions",
+            "tuning_attempts",
+            "tuning_trials",
+            "tuning_lifecycle_events",
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }

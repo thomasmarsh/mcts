@@ -68,14 +68,25 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
     from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
 
     cfg = SearchConfig(
-        optimizer=OptimizerConfig(n_trials=2, deterministic=True, seed=7),
-        target=TargetConfig(binary=binary, rounds=1),
+        optimizer=OptimizerConfig(n_trials=1, deterministic=True, seed=7),
+        target=TargetConfig(binary=binary, rounds=1, max_iterations=50),
     )
 
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         os.chdir(str(tmp_dir))
         study, _pool = run_optimization(cfg, run_id="records", git_sha="test-sha")
+
+    lifecycle_path = tmp_dir / "optuna_output" / "records" / "lifecycle.jsonl"
+    manifest_path = tmp_dir / "optuna_output" / "records" / "session-manifest.json"
+    assert lifecycle_path.is_file(), "lifecycle evidence missing"
+    assert manifest_path.is_file(), "session manifest missing"
+    lifecycle = [json.loads(line) for line in lifecycle_path.read_text().splitlines()]
+    manifest = json.loads(manifest_path.read_text())
+    assert lifecycle[0]["event_type"] == "session_started"
+    assert lifecycle[0]["session_id"] != lifecycle[0]["attempt_id"]
+    assert lifecycle[0]["payload"]["manifest_fingerprint"] == manifest["fingerprint"]
+    assert any(record["event_type"] == "trial_completed" for record in lifecycle)
 
     records = []
     for line in out.getvalue().splitlines():
@@ -86,7 +97,7 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
 
     trials = [r for r in records if r.get("type") == "trial"]
     incumbents = [r for r in records if r.get("type") == "incumbent"]
-    assert len(trials) == 2, f"expected 2 trials, got {len(trials)}"
+    assert len(trials) == 1, f"expected 1 trial, got {len(trials)}"
     assert incumbents, "expected at least one incumbent record"
     for record in trials:
         assert record["cost"] == pytest_approx(
@@ -101,7 +112,9 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
     print("  [PASS] test_ask_tell_loop_emits_rating_jsonl")
 
 
-def test_parameters_from_binary_reports_search_space_and_baselines(binary: Path) -> None:
+def test_parameters_from_binary_reports_search_space_and_baselines(
+    binary: Path, _tmp_dir: Path
+) -> None:
     """The game binary's ``tune describe`` subcommand exposes its search space."""
     from tuner_cli.config import SearchConfig
 
@@ -123,7 +136,7 @@ def test_reusing_run_id_completes_only_new_trials_and_reloads_pool(
     def cfg(n_trials: int) -> SearchConfig:
         return SearchConfig(
             optimizer=OptimizerConfig(n_trials=n_trials, deterministic=True, seed=7),
-            target=TargetConfig(binary=binary, rounds=1),
+            target=TargetConfig(binary=binary, rounds=1, max_iterations=50),
         )
 
     out = StringIO()

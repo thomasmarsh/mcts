@@ -11,6 +11,7 @@ pub mod orchestration;
 pub mod supervised_launch;
 pub mod supervisor;
 pub mod tournament;
+pub mod tuning_lifecycle;
 
 #[cfg(feature = "duckdb")]
 pub mod attempt_store;
@@ -23,6 +24,8 @@ pub mod projects_attempt;
 pub mod projects_attempt_duckdb;
 #[cfg(feature = "duckdb")]
 pub mod schema;
+#[cfg(feature = "duckdb")]
+pub mod tuning_store;
 
 #[cfg(all(test, feature = "duckdb"))]
 mod projects_attempt_duckdb_tests;

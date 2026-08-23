@@ -4,7 +4,7 @@ use crate::launch::iso_timestamp;
 
 use super::IngestError;
 
-pub(super) fn get_cursor(conn: &Connection, log_path: &str) -> Result<u64, IngestError> {
+pub(crate) fn get_cursor(conn: &Connection, log_path: &str) -> Result<u64, IngestError> {
     match conn.query_row(
         "SELECT byte_offset FROM _ingest_cursor WHERE log_path = ?1",
         params![log_path],
@@ -16,7 +16,7 @@ pub(super) fn get_cursor(conn: &Connection, log_path: &str) -> Result<u64, Inges
     }
 }
 
-pub(super) fn set_cursor(
+pub(crate) fn set_cursor(
     conn: &Connection,
     log_path: &str,
     byte_offset: u64,

@@ -11,6 +11,8 @@ mod projects;
 mod router;
 mod runs;
 mod traces;
+mod tuning;
+mod tuning_types;
 mod types;
 
 pub use projects::validate_experiment_spec;
@@ -24,6 +26,8 @@ pub(crate) use ladder::*;
 pub(crate) use projects::*;
 pub(crate) use runs::*;
 pub(crate) use traces::*;
+pub(crate) use tuning::*;
+pub(crate) use tuning_types::*;
 pub(crate) use types::*;
 
 #[cfg(test)]

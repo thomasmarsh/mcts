@@ -152,6 +152,18 @@ enum Command {
         #[arg(long)]
         trace_path: Option<String>,
 
+        /// Opaque logical tuning session identity.
+        #[arg(long)]
+        session_id: Option<String>,
+
+        /// Opaque physical tuning attempt identity.
+        #[arg(long)]
+        attempt_id: Option<String>,
+
+        /// Append-only typed lifecycle evidence path.
+        #[arg(long)]
+        lifecycle_path: Option<String>,
+
         /// Launch in the background (detached process) instead of
         /// running in the foreground.
         #[arg(long)]
@@ -214,6 +226,9 @@ fn main() {
             run_id,
             resume,
             trace_path,
+            session_id,
+            attempt_id,
+            lifecycle_path,
             background,
         } => cmd_tuner(
             config.as_deref(),
@@ -225,6 +240,9 @@ fn main() {
             run_id.as_deref(),
             resume.as_deref(),
             trace_path.as_deref(),
+            session_id.as_deref(),
+            attempt_id.as_deref(),
+            lifecycle_path.as_deref(),
             background,
         ),
 
@@ -410,6 +428,9 @@ fn build_tuner_command(
     run_id: Option<&str>,
     resume: Option<&str>,
     trace_path: Option<&str>,
+    session_id: Option<&str>,
+    attempt_id: Option<&str>,
+    lifecycle_path: Option<&str>,
 ) -> Vec<String> {
     let mut cmd = vec![
         "uv".to_string(),
@@ -469,7 +490,50 @@ fn build_tuner_command(
         cmd.push(path.to_string());
     }
 
+    append_tuner_lifecycle_arguments(&mut cmd, game, session_id, attempt_id, lifecycle_path);
+
     cmd
+}
+
+fn append_tuner_lifecycle_arguments(
+    cmd: &mut Vec<String>,
+    game: &str,
+    session_id: Option<&str>,
+    attempt_id: Option<&str>,
+    lifecycle_path: Option<&str>,
+) {
+    if let Some(id) = session_id {
+        cmd.push("--session-id".to_string());
+        cmd.push(id.to_string());
+    }
+    if let Some(id) = attempt_id {
+        cmd.push("--attempt-id".to_string());
+        cmd.push(id.to_string());
+    }
+    if let Some(path) = lifecycle_path {
+        cmd.push("--lifecycle-path".to_string());
+        cmd.push(path.to_string());
+    }
+    cmd.push("--game-kind".to_string());
+    cmd.push(game.to_string());
+}
+
+struct BackgroundTunerLifecycleArguments {
+    session_id: String,
+    attempt_id: String,
+    lifecycle_path: String,
+}
+
+fn derive_background_tuner_lifecycle_arguments(run_id: &str) -> BackgroundTunerLifecycleArguments {
+    BackgroundTunerLifecycleArguments {
+        session_id: format!("tuning-session-{run_id}"),
+        attempt_id: format!("tuning-attempt-{run_id}"),
+        lifecycle_path: std::path::Path::new(launch::BENCH_RUNS_DIR)
+            .join(run_id)
+            .join("lifecycle.jsonl")
+            .to_string_lossy()
+            .to_string(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,6 +547,9 @@ fn cmd_tuner(
     run_id: Option<&str>,
     resume: Option<&str>,
     trace_path: Option<&str>,
+    session_id: Option<&str>,
+    attempt_id: Option<&str>,
+    lifecycle_path: Option<&str>,
     background: bool,
 ) {
     if background {
@@ -495,6 +562,7 @@ fn cmd_tuner(
         let run_id = run_id
             .map(str::to_string)
             .unwrap_or_else(|| launch::generate_run_id("tuner", game, BUILD_INFO));
+        let lifecycle = derive_background_tuner_lifecycle_arguments(&run_id);
         let cmd = build_tuner_command(
             config,
             overrides,
@@ -504,6 +572,9 @@ fn cmd_tuner(
             Some(&run_id),
             resume,
             trace_path,
+            session_id.or(Some(&lifecycle.session_id)),
+            attempt_id.or(Some(&lifecycle.attempt_id)),
+            lifecycle_path.or(Some(&lifecycle.lifecycle_path)),
         );
 
         // Launch via the detached-process launcher.
@@ -546,6 +617,9 @@ fn cmd_tuner(
             run_id,
             resume,
             trace_path,
+            session_id,
+            attempt_id,
+            lifecycle_path,
         );
         let mut child = match StdCommand::new(&cmd[0])
             .args(&cmd[1..])
@@ -614,7 +688,19 @@ mod tests {
 
     #[test]
     fn test_build_tuner_command_overrides_target_binary_from_game() {
-        let cmd = build_tuner_command(None, &[], &[], None, "breakthrough", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &[],
+            None,
+            "breakthrough",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-breakthrough")
@@ -629,7 +715,19 @@ mod tests {
         // repeated key, so an explicit caller override for the same key
         // must come after (and thus win over) the game-derived one.
         let overrides = vec!["target.binary=custom/path".to_string()];
-        let cmd = build_tuner_command(None, &overrides, &[], None, "druid", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &overrides,
+            &[],
+            None,
+            "druid",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let game_idx = cmd
             .iter()
             .position(|a| a == "target.binary=target/release/game-druid")
@@ -652,6 +750,9 @@ mod tests {
             Some("tuner-druid-run-1"),
             Some("tuner-druid-run-0"),
             None,
+            None,
+            None,
+            None,
         );
         let run_id_idx = cmd
             .iter()
@@ -668,7 +769,19 @@ mod tests {
 
     #[test]
     fn test_build_tuner_command_omits_run_id_and_resume_when_absent() {
-        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &[],
+            None,
+            "druid",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
     }
@@ -676,7 +789,19 @@ mod tests {
     #[test]
     fn test_build_tuner_command_forwards_baseline_configs() {
         let baseline_configs = vec![r#"ladder1={"family":"ucb1"}"#.to_string()];
-        let cmd = build_tuner_command(None, &[], &baseline_configs, None, "nim", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &baseline_configs,
+            None,
+            "nim",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let idx = cmd
             .iter()
             .position(|a| a == "--baseline-config")
@@ -695,6 +820,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -705,7 +833,19 @@ mod tests {
 
     #[test]
     fn test_build_tuner_command_omits_game_config_when_absent() {
-        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &[],
+            None,
+            "druid",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
 
@@ -720,6 +860,9 @@ mod tests {
             None,
             None,
             Some("bench-runs/tuner-druid-run-1/moves.jsonl"),
+            None,
+            None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -730,7 +873,19 @@ mod tests {
 
     #[test]
     fn test_build_tuner_command_omits_trace_path_when_absent() {
-        let cmd = build_tuner_command(None, &[], &[], None, "druid", None, None, None);
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &[],
+            None,
+            "druid",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!cmd.iter().any(|a| a == "--trace-path"));
     }
 }

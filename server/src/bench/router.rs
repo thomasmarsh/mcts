@@ -31,7 +31,9 @@ use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
 
-use super::{commands::*, ladder::*, projects::*, runs::*, traces::*, types::*};
+use super::{
+    commands::*, ladder::*, projects::*, runs::*, traces::*, tuning::get_tuning_session, types::*,
+};
 // Router constructor
 // ---------------------------------------------------------------------------
 
@@ -64,6 +66,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
     Router::new()
         .route("/api/bench/kinds", get(list_kinds))
         .route("/api/bench/tuner/kinds", get(list_tuner_kinds))
+        .route(
+            "/api/bench/tuner/sessions/{session_id}",
+            get(get_tuning_session),
+        )
         .route(
             "/api/bench/projects",
             get(list_projects).post(create_project),

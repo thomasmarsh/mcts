@@ -519,6 +519,7 @@ pub(crate) fn build_command(
                     .to_string_lossy()
                     .to_string(),
             );
+            append_tuner_lifecycle_arguments(&mut cmd, run_id);
 
             Ok(cmd)
         }
@@ -592,6 +593,21 @@ pub(crate) fn build_experiment_command(
             .to_string_lossy()
             .into_owned(),
     ])
+}
+
+fn append_tuner_lifecycle_arguments(cmd: &mut Vec<String>, run_id: &str) {
+    cmd.push("--session-id".into());
+    cmd.push(format!("tuning-session-{run_id}"));
+    cmd.push("--attempt-id".into());
+    cmd.push(format!("tuning-attempt-{run_id}"));
+    cmd.push("--lifecycle-path".into());
+    cmd.push(
+        std::path::Path::new(launch::BENCH_RUNS_DIR)
+            .join(run_id)
+            .join("lifecycle.jsonl")
+            .to_string_lossy()
+            .to_string(),
+    );
 }
 
 /// Find the `bench` binary, preferring a sibling of the current executable

@@ -9,6 +9,7 @@ mod liveness;
 mod logs;
 mod projects;
 mod registry;
+mod tuning_lifecycle;
 
 pub use error::IngestError;
 
@@ -24,6 +25,7 @@ use registry::process as process_registry;
 /// Incorporate newly-written registry, lifecycle, and run-log records.
 pub fn ingest_once(conn: &Connection, bench_runs_dir: &Path) -> Result<(), IngestError> {
     registry::process(conn, &bench_runs_dir.join("registry.log"))?;
+    tuning_lifecycle::process(conn)?;
     let observation_error = projects::observe(conn).err();
     logs::process_runs(conn)?;
     liveness::reconcile(conn)?;

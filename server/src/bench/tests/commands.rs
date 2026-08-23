@@ -27,10 +27,9 @@ fn test_build_command_tuner_includes_config_and_overrides() {
     .unwrap();
 
     // First element is the (unresolved-in-test) bench binary path --
-    // everything after it is the argv this test actually cares about
-    // (trailing --trace-path is asserted separately, below).
+    // First element is the (unresolved-in-test) bench binary path.
     assert_eq!(
-        cmd[1..cmd.len() - 2],
+        cmd[1..],
         vec![
             "tuner",
             "--game",
@@ -41,6 +40,14 @@ fn test_build_command_tuner_includes_config_and_overrides() {
             "optimizer.n_trials=10",
             "--override",
             "optimizer.n_workers=2",
+            "--trace-path",
+            "bench-runs/test-run/moves.jsonl",
+            "--session-id",
+            "tuning-session-test-run",
+            "--attempt-id",
+            "tuning-attempt-test-run",
+            "--lifecycle-path",
+            "bench-runs/test-run/lifecycle.jsonl",
         ]
     );
 }
@@ -48,7 +55,22 @@ fn test_build_command_tuner_includes_config_and_overrides() {
 #[test]
 fn test_build_command_tuner_with_no_config_is_just_game() {
     let cmd = build_command("tuner", "druid", &None, "test-run").unwrap();
-    assert_eq!(cmd[1..cmd.len() - 2], vec!["tuner", "--game", "druid"]);
+    assert_eq!(
+        cmd[1..],
+        vec![
+            "tuner",
+            "--game",
+            "druid",
+            "--trace-path",
+            "bench-runs/test-run/moves.jsonl",
+            "--session-id",
+            "tuning-session-test-run",
+            "--attempt-id",
+            "tuning-attempt-test-run",
+            "--lifecycle-path",
+            "bench-runs/test-run/lifecycle.jsonl",
+        ]
+    );
 }
 
 #[test]
@@ -119,7 +141,7 @@ fn test_build_command_tuner_includes_baseline_configs() {
     .unwrap();
 
     assert_eq!(
-        cmd[1..cmd.len() - 2],
+        cmd[1..],
         vec![
             "tuner",
             "--game",
@@ -128,6 +150,14 @@ fn test_build_command_tuner_includes_baseline_configs() {
             "optimizer.n_trials=10",
             "--baseline-config",
             r#"ladder1={"c":1.5,"family":"ucb1"}"#,
+            "--trace-path",
+            "bench-runs/test-run/moves.jsonl",
+            "--session-id",
+            "tuning-session-test-run",
+            "--attempt-id",
+            "tuning-attempt-test-run",
+            "--lifecycle-path",
+            "bench-runs/test-run/lifecycle.jsonl",
         ]
     );
 }
