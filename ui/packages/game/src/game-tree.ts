@@ -8,12 +8,16 @@
 // has, for `pullback`/`combine` compatibility).
 
 import type { Effect } from "@mcts/core";
+import type { SearchReport } from "./types.js";
 
 export interface GameTreeNode<S, M> {
   id: string;
   state: S;
   /** `null` only for the root -- every other node was reached by a move. */
   move: M | null;
+  /** Final search evidence that selected this node's move. Human moves and
+   * the root have none; the report therefore describes the parent state. */
+  search: SearchReport<M> | null;
   parentId: string | null;
   childIds: string[];
 }
@@ -33,7 +37,7 @@ export function initialGameTree<S, M>(rootState: S): GameTree<S, M> {
   const rootId = "n0";
   return {
     nodes: {
-      [rootId]: { id: rootId, state: rootState, move: null, parentId: null, childIds: [] },
+      [rootId]: { id: rootId, state: rootState, move: null, search: null, parentId: null, childIds: [] },
     },
     rootId,
     currentId: rootId,
@@ -42,7 +46,7 @@ export function initialGameTree<S, M>(rootState: S): GameTree<S, M> {
 }
 
 export type GameTreeAction<S, M> =
-  | { tag: "applyMove"; move: M; state: S }
+  | { tag: "applyMove"; move: M; state: S; search?: SearchReport<M> | null }
   | { tag: "undo" }
   | { tag: "redo"; childId?: string }
   | { tag: "jumpTo"; id: string }
@@ -86,12 +90,23 @@ export function gameTreeReducer<S, M>(
       return child !== undefined && child.move !== null && moveEquals(child.move, action.move);
     });
     if (existingChildId !== undefined) {
+      const child = draft.nodes[existingChildId];
+      if (child && child.search === null && action.search !== undefined && action.search !== null) {
+        child.search = action.search;
+      }
       draft.currentId = existingChildId;
       return null;
     }
     const id = `n${draft.nextId}`;
     draft.nextId += 1;
-    draft.nodes[id] = { id, state: action.state, move: action.move, parentId: current.id, childIds: [] };
+    draft.nodes[id] = {
+      id,
+      state: action.state,
+      move: action.move,
+      search: action.search ?? null,
+      parentId: current.id,
+      childIds: [],
+    };
     current.childIds.push(id);
     draft.currentId = id;
     return null;

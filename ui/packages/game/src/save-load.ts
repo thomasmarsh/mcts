@@ -8,9 +8,8 @@
 
 import type { GameTree, GameTreeNode } from "./game-tree.js";
 
-/** Bumped whenever `GameTree`'s node shape changes in a way that would make
- * an older save unreadable -- costs nothing today and avoids an unreadable-
- * old-save problem the first time that happens. */
+/** The omitted `search` field from older nodes is upgraded to `null`, so this
+ * remains compatible with existing v1 save files. */
 export const SAVE_FORMAT_VERSION = 1;
 
 export interface SaveFile<S, M> {
@@ -73,5 +72,9 @@ export function parseSave<S, M>(text: string): SaveFile<S, M> {
   if (!isGameTree(d.tree)) {
     throw new Error('Missing or malformed "tree".');
   }
-  return { formatVersion: d.formatVersion, gameKind: d.gameKind, config: d.config, tree: d.tree as GameTree<S, M> };
+  const tree = d.tree as GameTree<S, M>;
+  const nodes = Object.fromEntries(
+    Object.entries(tree.nodes).map(([id, node]) => [id, { ...node, search: node.search ?? null }]),
+  ) as Record<string, GameTreeNode<S, M>>;
+  return { formatVersion: d.formatVersion, gameKind: d.gameKind, config: d.config, tree: { ...tree, nodes } };
 }

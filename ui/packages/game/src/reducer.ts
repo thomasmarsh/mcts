@@ -392,8 +392,8 @@ export function appReducer<S, M, V = unknown>(
       unreachableJobEnv("unreachable: a forwarded aiMove/job action never re-submits or polls"),
     );
     if (draft.aiMove.status === "done" && draft.aiMove.result) {
-      const { move, state } = draft.aiMove.result;
-      gameTreeReducer(draft.tree, { tag: "applyMove", move, state }, undefined);
+      const { move, state, search } = draft.aiMove.result;
+      gameTreeReducer(draft.tree, { tag: "applyMove", move, state, search }, undefined);
       // Same staleness reasoning as the "tree" branch above -- currentId
       // just changed, so both `analysis` and `position` must be dropped in
       // this same reduction to preserve the "`position` is null or matches

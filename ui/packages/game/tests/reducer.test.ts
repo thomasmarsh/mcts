@@ -13,11 +13,38 @@ import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type AppAction, type Env } from "../src/reducer.js";
 import { initialAppState, type AppState } from "../src/state.js";
 import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
-import type { AiMoveResult, AiStrategyRef, Analysis, StateAndView } from "../src/types.js";
+import type { AiMoveResult, AiStrategyRef, Analysis, SearchReport, StateAndView } from "../src/types.js";
 
 // Test-only state/move types -- appReducer never inspects their shape.
 type S = number;
 type M = string;
+
+function searchReport(selectedAction: M): SearchReport<M> {
+  return {
+    status: "available",
+    schema_version: 1,
+    reason: null,
+    elapsed_seconds: 0.5,
+    iteration_limit: 100,
+    time_limit_seconds: null,
+    completed_iterations: 100,
+    termination: "iterations",
+    selected_action: selectedAction,
+    actions: [],
+    principal_variation: [selectedAction],
+    root_visits: 100,
+    tree_nodes: 101,
+    mean_depth: 2,
+    max_depth: 4,
+    graph_mode: "tree",
+    tt_reads: 0,
+    tt_writes: 0,
+    tt_hits: 0,
+    tt_hit_ratio: null,
+    iterations_per_second: 200,
+    warnings: [],
+  };
+}
 
 const mockEnv: Env = {
   getGames: () => Effect.none(),
@@ -32,7 +59,8 @@ const mockEnv: Env = {
 
 describe("appReducer / aiMove", () => {
   it("request -> submitted('done') resolves synchronously, same as a real poll loop's terminal state", () => {
-    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {} };
+    const report = searchReport("b");
+    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {}, search: report };
     const seen: { kind: string; state: S; strategy: AiStrategyRef }[] = [];
     const env: Env = {
       ...mockEnv,
@@ -66,7 +94,7 @@ describe("appReducer / aiMove", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: report, parentId: rootId, childIds: [] };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
       },
@@ -77,6 +105,22 @@ describe("appReducer / aiMove", () => {
     // draft.gameKind / draft.tree.nodes[draft.tree.currentId]) actually wires
     // through, not just the job-poll status machinery.
     expect(seen).toEqual([{ kind: "druid", state: 7, strategy: { kind: "preset", id: "master" } }]);
+  });
+
+  it("drops a stale AI completion without creating a move or retaining its report", () => {
+    const init = initialAppState<S, M>("druid", 7);
+    init.epoch = 1;
+    const ts = createTestStore(appReducer<S, M>, mockEnv, init);
+    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {}, search: searchReport("b") };
+
+    ts.send({
+      tag: "aiMove",
+      action: { tag: "job", action: { tag: "submitted", result: { status: "done", result } } },
+      epoch: 0,
+    });
+
+    expect(ts.getState().tree.nodes[ts.getState().tree.rootId]?.search).toBeNull();
+    expect(Object.keys(ts.getState().tree.nodes)).toHaveLength(1);
   });
 
   // A `{kind: "custom", spec}` strategy must reach `env.aiMove` unchanged --
@@ -123,7 +167,7 @@ describe("appReducer / aiMove", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: null, parentId: rootId, childIds: [] };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
       },
@@ -167,7 +211,13 @@ describe("appReducer / aiMove", () => {
 
 describe("appReducer / analysis", () => {
   it("request -> submitted('done') resolves synchronously, same as a real poll loop's terminal state", () => {
-    const result: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const result: Analysis<M> = {
+      actions: [],
+      principal_variation: [],
+      total_visits: 5,
+      suggested_move: null,
+      search: searchReport("analysis-only"),
+    };
     const env: Env = {
       ...mockEnv,
       analyze: <M2>() => Effect.send(result) as unknown as Effect<Analysis<M2>>,
@@ -312,7 +362,7 @@ describe("appReducer / analysis", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", search: null, parentId: rootId, childIds: [] };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.analysis.status = "idle";
@@ -388,7 +438,7 @@ describe("appReducer / position", () => {
         s.move.result = moveResult;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", parentId: s.tree.rootId, childIds: [] };
+        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", search: null, parentId: s.tree.rootId, childIds: [] };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.position = null;
@@ -417,7 +467,7 @@ describe("appReducer / position", () => {
         s.aiMove.result = result;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, parentId: s.tree.rootId, childIds: [] };
+        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: null, parentId: s.tree.rootId, childIds: [] };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.position = null;
@@ -434,6 +484,7 @@ describe("appReducer / newGame", () => {
       newGame: <S2, V2 = unknown>() => Effect.send(result) as unknown as Effect<StateAndView<S2, V2>>,
     };
     const init = initialAppState<S, M>("druid", 0);
+    gameTreeReducer(init.tree, { tag: "applyMove", move: "old-ai", state: 1, search: searchReport("old-ai") }, undefined);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
     ts.send({ tag: "newGame", action: { tag: "request", config: { size: { w: 7, h: 7 } } } }, (s) => {
