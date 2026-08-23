@@ -156,6 +156,7 @@ pub(crate) struct TuningCapabilities {
     pub(crate) has_pairs: bool,
     pub(crate) has_renderer_trace: bool,
     pub(crate) has_search_reports: bool,
+    pub(crate) has_trial_reports: bool,
 }
 
 #[derive(Serialize)]

@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use duckdb::{params, Connection};
+use game_host::{SearchReport, SearchReportReason, SearchReportStatus};
 
 use crate::launch::iso_timestamp;
 
@@ -231,12 +232,15 @@ fn process_one_log_file(
                 )?;
             }
             LogRecord::Move {
+                trace_schema_version,
                 game_seq,
                 ply,
                 state,
                 mv,
                 player,
+                search,
             } => {
+                let search = project_search_report(trace_schema_version, search.as_ref())?;
                 let ts = iso_timestamp();
                 let state_json = serde_json::to_string(&state).expect("Value -> String");
                 let mv_json = mv
@@ -244,17 +248,28 @@ fn process_one_log_file(
                     .map(|v| serde_json::to_string(v).expect("Value -> String"));
                 conn.execute(
                     "INSERT INTO game_moves \
-                         (run_id, game_seq, ply, ts, state, mv, player) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                         (run_id, game_seq, ply, ts, trace_schema_version, state, mv, player, \
+                          search_report, search_status, search_completed_iterations, search_elapsed_ms, \
+                          search_nodes, search_mean_depth, search_max_depth, search_tt_hit_ratio) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
                          ON CONFLICT (run_id, game_seq, ply) DO NOTHING",
                     params![
                         run_id,
                         game_seq as i64,
                         ply as i64,
                         ts,
+                        trace_schema_version,
                         state_json,
                         mv_json,
-                        player
+                        player,
+                        search.as_ref().map(|value| value.json.as_str()),
+                        search.as_ref().map(|value| value.status),
+                        search.as_ref().map(|value| value.completed_iterations),
+                        search.as_ref().map(|value| value.elapsed_ms),
+                        search.as_ref().map(|value| value.nodes),
+                        search.as_ref().and_then(|value| value.mean_depth),
+                        search.as_ref().and_then(|value| value.max_depth),
+                        search.as_ref().and_then(|value| value.tt_hit_ratio),
                     ],
                 )?;
             }
@@ -265,6 +280,155 @@ fn process_one_log_file(
     set_cursor(conn, &cursor_key, file_len)?;
 
     Ok(())
+}
+
+struct SearchProjection {
+    json: String,
+    status: &'static str,
+    completed_iterations: u64,
+    elapsed_ms: Option<f64>,
+    nodes: u64,
+    mean_depth: Option<f64>,
+    max_depth: Option<u64>,
+    tt_hit_ratio: Option<f64>,
+}
+
+fn project_search_report(
+    trace_schema_version: Option<u32>,
+    search: Option<&serde_json::Value>,
+) -> Result<Option<SearchProjection>, IngestError> {
+    match (trace_schema_version, search) {
+        (None, None) => return Ok(None),
+        (Some(1), None) => return Ok(None),
+        (Some(version), None) => {
+            return invalid_report(format!("unsupported trace schema version {version}"))
+        }
+        (None, Some(_)) => {
+            return invalid_report("a search report requires trace schema version 1")
+        }
+        (Some(1), Some(_)) => {}
+        (Some(version), Some(_)) => {
+            return invalid_report(format!("unsupported trace schema version {version}"));
+        }
+    }
+
+    let search = search.expect("covered by the match above");
+    let report: SearchReport =
+        serde_json::from_value(search.clone()).map_err(|error| IngestError::InvalidMoveReport {
+            message: format!("does not match the canonical wire shape: {error}"),
+        })?;
+    validate_search_report(&report)?;
+
+    Ok(Some(SearchProjection {
+        json: serde_json::to_string(search).expect("JSON value is serializable"),
+        status: match report.status {
+            SearchReportStatus::Available => "available",
+            SearchReportStatus::Partial => "partial",
+            SearchReportStatus::Unavailable => "unavailable",
+        },
+        completed_iterations: report.completed_iterations as u64,
+        elapsed_ms: elapsed_milliseconds(report.elapsed_seconds)?,
+        nodes: report.tree_nodes as u64,
+        mean_depth: report.mean_depth,
+        max_depth: report.max_depth.map(|depth| depth as u64),
+        tt_hit_ratio: report.tt_hit_ratio,
+    }))
+}
+
+fn validate_search_report(report: &SearchReport) -> Result<(), IngestError> {
+    if report.schema_version != 1 {
+        return invalid_report(format!(
+            "unsupported search schema version {}",
+            report.schema_version
+        ));
+    }
+    match (report.status, report.reason) {
+        (SearchReportStatus::Available, None)
+        | (SearchReportStatus::Partial, Some(SearchReportReason::RootParallelPvSingleTree))
+        | (
+            SearchReportStatus::Unavailable,
+            Some(SearchReportReason::StrategyUnsupported | SearchReportReason::SearchNotRun),
+        ) => {}
+        _ => return invalid_report("status and reason are not a valid combination"),
+    }
+
+    for (name, value) in [
+        ("elapsed_seconds", report.elapsed_seconds),
+        ("time_limit_seconds", report.time_limit_seconds),
+        ("mean_depth", report.mean_depth),
+        ("tt_hit_ratio", report.tt_hit_ratio),
+        ("iterations_per_second", report.iterations_per_second),
+    ] {
+        if let Some(value) = value {
+            if !value.is_finite() {
+                return invalid_report(format!("{name} must be finite"));
+            }
+            if value < 0.0 {
+                return invalid_report(format!("{name} must not be negative"));
+            }
+        }
+    }
+    for action in &report.actions {
+        if !action.share.is_finite() || !(0.0..=1.0).contains(&action.share) {
+            return invalid_report("action share must be finite and in [0, 1]");
+        }
+        if !action.mean_value.is_finite() || !(-1.0..=1.0).contains(&action.mean_value) {
+            return invalid_report("action mean value must be finite and in [-1, 1]");
+        }
+    }
+    let action_share_total: f64 = report.actions.iter().map(|action| action.share).sum();
+    if action_share_total > 1.0 + 1e-9 {
+        return invalid_report("action shares must not sum to more than one");
+    }
+    if report
+        .iteration_limit
+        .is_some_and(|limit| report.completed_iterations > limit)
+    {
+        return invalid_report("completed iterations must not exceed the iteration limit");
+    }
+    if let Some(max_depth) = report.max_depth {
+        if report
+            .mean_depth
+            .is_some_and(|mean_depth| mean_depth > max_depth as f64)
+        {
+            return invalid_report("mean depth must not exceed max depth");
+        }
+    }
+    if report.tt_hits > report.tt_reads {
+        return invalid_report("TT hits must not exceed TT reads");
+    }
+    match (report.tt_reads, report.tt_hit_ratio) {
+        (0, None) => {}
+        (0, Some(_)) => return invalid_report("TT hit ratio requires TT reads"),
+        (reads, Some(ratio)) => {
+            if ratio > 1.0 {
+                return invalid_report("TT hit ratio must be in [0, 1]");
+            }
+            let expected = report.tt_hits as f64 / reads as f64;
+            if (ratio - expected).abs() > 1e-9 {
+                return invalid_report("TT hit ratio does not match TT hits and reads");
+            }
+        }
+        (_, None) => return invalid_report("TT reads require a TT hit ratio"),
+    }
+    Ok(())
+}
+
+fn elapsed_milliseconds(seconds: Option<f64>) -> Result<Option<f64>, IngestError> {
+    let Some(seconds) = seconds else {
+        return Ok(None);
+    };
+    let milliseconds = seconds * 1_000.0;
+    if !milliseconds.is_finite() {
+        return invalid_report("elapsed milliseconds must be finite");
+    }
+    Ok(Some(milliseconds))
+}
+
+fn invalid_report<T>(message: impl Into<String>) -> Result<T, IngestError> {
+    Err(IngestError::InvalidMoveReport {
+        message: message.into(),
+    })
 }
 
 fn ensure_cell_belongs(conn: &Connection, run_id: &str, cell_id: &str) -> Result<(), IngestError> {

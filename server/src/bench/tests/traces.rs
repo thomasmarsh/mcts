@@ -83,6 +83,39 @@ async fn test_get_run_game_moves_ordered_by_ply() {
 }
 
 #[tokio::test]
+async fn test_get_run_game_moves_preserves_the_typed_search_report() {
+    let app = seeded_app(|conn, dir| {
+        game_moves_seed(conn, dir);
+        let report = json!({
+            "schema_version": 1, "status": "partial", "reason": "root_parallel_pv_single_tree",
+            "elapsed_seconds": 0.25, "iteration_limit": 100, "time_limit_seconds": null,
+            "completed_iterations": 80, "termination": "time", "selected_action": {"ptn":"a1"},
+            "actions": [{"action":{"ptn":"a1"},"visits":80,"share":1.0,"mean_value":0.5,"is_proven":false}],
+            "principal_variation": [{"ptn":"a1"}], "root_visits": 80, "tree_nodes": 91,
+            "mean_depth": 4.0, "max_depth": 7, "graph_mode": "dag_both",
+            "tt_reads": 10, "tt_writes": 8, "tt_hits": 3, "tt_hit_ratio": 0.3,
+            "iterations_per_second": 320.0, "warnings": ["root_parallel_pv_single_tree"]
+        });
+        conn.execute(
+            "UPDATE game_moves SET trace_schema_version = 1, search_report = ?1 WHERE run_id = ?2 AND game_seq = 1 AND ply = 1",
+            duckdb::params![report.to_string(), DEFAULT_RUN_ID],
+        ).unwrap();
+    }).0;
+
+    let (status, body) = http_get(
+        app,
+        &format!("/api/bench/runs/{DEFAULT_RUN_ID}/games/1/moves"),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let moves = body_json(&body);
+    assert!(moves[0]["search"].is_null());
+    assert_eq!(moves[1]["search"]["status"], "partial");
+    assert_eq!(moves[1]["search"]["completed_iterations"], 80);
+    assert_eq!(moves[1]["search"]["selected_action"], json!({"ptn":"a1"}));
+}
+
+#[tokio::test]
 async fn test_get_run_game_moves_empty_for_unknown_game_seq() {
     let app = seeded_app(game_moves_seed).0;
     let (status, body) = http_get(
@@ -116,7 +149,20 @@ async fn test_delete_run_409_while_running() {
 
 #[tokio::test]
 async fn test_delete_run_removes_all_rows_and_files() {
-    let (app, tmp_dir) = seeded_app(game_moves_seed);
+    let (app, tmp_dir, state) = seeded_app_with_state(
+        game_moves_seed,
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    );
+    state
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE game_moves SET search_report = '{}' WHERE run_id = ?1",
+            duckdb::params![DEFAULT_RUN_ID],
+        )
+        .unwrap();
     let run_dir = tmp_dir.join("bench-runs").join(DEFAULT_RUN_ID);
     std::fs::create_dir_all(&run_dir).unwrap();
     std::fs::write(run_dir.join("log.jsonl"), "{}\n").unwrap();
@@ -139,6 +185,17 @@ async fn test_delete_run_removes_all_rows_and_files() {
     );
 
     assert!(!run_dir.exists(), "run directory should be removed");
+    let report_rows: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM game_moves WHERE run_id = ?1 AND search_report IS NOT NULL",
+            duckdb::params![DEFAULT_RUN_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(report_rows, 0);
 }
 
 // -------------------------------------------------------------------

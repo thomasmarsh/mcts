@@ -79,7 +79,9 @@ async fn tuning_sessions_list_projects_counts_attempts_capabilities_and_order() 
         vec!["tuner-projected"]
     );
     assert_eq!(sessions[0]["capabilities"]["has_pairs"], true);
-    assert_eq!(sessions[0]["capabilities"]["has_renderer_trace"], true);
+    assert_eq!(sessions[0]["capabilities"]["has_renderer_trace"], false);
+    assert_eq!(sessions[0]["capabilities"]["has_search_reports"], false);
+    assert_eq!(sessions[0]["capabilities"]["has_trial_reports"], false);
     assert_ne!(sessions[0]["last_activity_at"], sessions[0]["created_at"]);
     assert!(sessions[1]["game"].is_null());
 }
@@ -143,6 +145,7 @@ async fn tuning_session_detail_projects_counts_attempts_and_capabilities() {
     assert_eq!(value["capabilities"]["has_lifecycle"], true);
     assert_eq!(value["capabilities"]["has_pairs"], false);
     assert_eq!(value["capabilities"]["has_search_reports"], false);
+    assert_eq!(value["capabilities"]["has_trial_reports"], false);
     assert!(value["policy"].is_null());
     assert_eq!(value["trials"][0]["stop_reason"], serde_json::Value::Null);
     assert_eq!(value["trials"][0]["reports"], serde_json::json!([]));
@@ -188,7 +191,8 @@ async fn tuning_session_detail_loads_all_reports_without_per_trial_queries() {
             }
         ])
     );
-    assert_eq!(value["capabilities"]["has_search_reports"], true);
+    assert_eq!(value["capabilities"]["has_search_reports"], false);
+    assert_eq!(value["capabilities"]["has_trial_reports"], true);
 }
 
 #[tokio::test]
@@ -259,5 +263,32 @@ async fn tuning_session_detail_nests_projected_pairs_games_and_trace_capability(
         99
     );
     assert_eq!(value["capabilities"]["has_pairs"], true);
-    assert_eq!(value["capabilities"]["has_renderer_trace"], true);
+    assert_eq!(value["capabilities"]["has_renderer_trace"], false);
+}
+
+#[tokio::test]
+async fn tuning_capabilities_require_the_authoritative_run_move_join() {
+    let app = seeded_app(|conn, _| {
+        conn.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('bench-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/bench-run.log')", []).unwrap();
+        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-join', 'idle', '{}', CURRENT_TIMESTAMP, 1)", []).unwrap();
+        conn.execute("INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at) VALUES ('attempt-join', 'session-join', 'bench-run', 'completed', CURRENT_TIMESTAMP)", []).unwrap();
+        conn.execute("INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at) VALUES ('session-join', 'trial-join', 'attempt-join', 1, 'complete', '{}', CURRENT_TIMESTAMP)", []).unwrap();
+        conn.execute("INSERT INTO tuning_evaluation_pairs (session_id, pair_id, trial_id, attempt_id, pair_index, status, seed, round, opponent, pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, started_at) VALUES ('session-join', 'pair-join', 'trial-join', 'attempt-join', 1, 'complete', 7, 1, '{\"anchor_id\":\"a\",\"config\":{},\"mu\":25.0,\"sigma\":1.0}', 'pool', 25.0, 1.0, CURRENT_TIMESTAMP)", []).unwrap();
+        conn.execute("INSERT INTO tuning_games (session_id, pair_id, game_id, candidate_side, outcome, seed, round, trace_game_seq, plies, elapsed_ms, candidate_metrics, baseline_metrics, finished_at) VALUES ('session-join', 'pair-join', 'game-join', 'first', 'draw', 7, 1, 41, 1, 1, '{\"iterations_total\":1,\"iterations_first_half\":1,\"move_time_ms\":1}', '{\"iterations_total\":1,\"iterations_first_half\":1,\"move_time_ms\":1}', CURRENT_TIMESTAMP)", []).unwrap();
+        conn.execute("INSERT INTO game_moves (run_id, game_seq, ply, ts, trace_schema_version, state, search_report) VALUES ('bench-run', 41, 0, CURRENT_TIMESTAMP, 1, '{}', NULL), ('bench-run', 41, 1, CURRENT_TIMESTAMP, 1, '{}', '{}')", []).unwrap();
+    }).0;
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/session-join").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let capabilities = &body_json(&body)["capabilities"];
+    assert_eq!(capabilities["has_renderer_trace"], true);
+    assert_eq!(capabilities["has_search_reports"], true);
+    assert_eq!(capabilities["has_trial_reports"], false);
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let capabilities = &body_json(&body)["sessions"][0]["capabilities"];
+    assert_eq!(capabilities["has_renderer_trace"], true);
+    assert_eq!(capabilities["has_search_reports"], true);
+    assert_eq!(capabilities["has_trial_reports"], false);
 }

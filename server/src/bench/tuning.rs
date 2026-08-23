@@ -55,10 +55,19 @@ fn load_tuning_session_list_rows(
                     SUM(status = 'pruned') AS pruned, SUM(status = 'cancelled') AS cancelled \
              FROM tuning_trials GROUP BY session_id \
          ), pair_capabilities AS ( \
-             SELECT pairs.session_id, COUNT(*) AS pair_count, COUNT(games.trace_game_seq) AS trace_count \
+             SELECT pairs.session_id, COUNT(*) AS pair_count, \
+                    COUNT(DISTINCT renderer_moves.run_id || ':' || renderer_moves.game_seq) AS renderer_trace_count, \
+                    COUNT(DISTINCT report_moves.run_id || ':' || report_moves.game_seq) AS search_report_count \
              FROM tuning_evaluation_pairs pairs \
              LEFT JOIN tuning_games games USING (session_id, pair_id) \
+             LEFT JOIN tuning_attempts attempts ON attempts.attempt_id = pairs.attempt_id \
+             LEFT JOIN (SELECT DISTINCT run_id, game_seq FROM game_moves WHERE trace_schema_version = 1) renderer_moves \
+                    ON renderer_moves.run_id = attempts.bench_run_id AND renderer_moves.game_seq = games.trace_game_seq \
+             LEFT JOIN (SELECT DISTINCT run_id, game_seq FROM game_moves WHERE search_report IS NOT NULL) report_moves \
+                    ON report_moves.run_id = attempts.bench_run_id AND report_moves.game_seq = games.trace_game_seq \
              GROUP BY pairs.session_id \
+         ), trial_report_capabilities AS ( \
+             SELECT session_id, COUNT(*) AS trial_report_count FROM tuning_trial_reports GROUP BY session_id \
          ), activity AS ( \
              SELECT session_id, created_at AS occurred_at FROM tuning_sessions \
              UNION ALL SELECT session_id, started_at FROM tuning_attempts \
@@ -77,15 +86,18 @@ fn load_tuning_session_list_rows(
                 COALESCE(trial_counts.running, 0), COALESCE(trial_counts.terminal, 0), \
                 COALESCE(trial_counts.completed, 0), COALESCE(trial_counts.failed, 0), \
                 COALESCE(trial_counts.pruned, 0), COALESCE(trial_counts.cancelled, 0), \
-                COALESCE(pair_capabilities.pair_count, 0), COALESCE(pair_capabilities.trace_count, 0) \
+                COALESCE(pair_capabilities.pair_count, 0), COALESCE(pair_capabilities.renderer_trace_count, 0), \
+                COALESCE(pair_capabilities.search_report_count, 0), COALESCE(trial_report_capabilities.trial_report_count, 0) \
          FROM tuning_sessions sessions \
          LEFT JOIN trial_counts USING (session_id) \
          LEFT JOIN pair_capabilities USING (session_id) \
+         LEFT JOIN trial_report_capabilities USING (session_id) \
          JOIN activity USING (session_id) \
          GROUP BY sessions.session_id, sessions.status, sessions.target_trial_count, sessions.manifest, \
                   sessions.created_at, trial_counts.total, trial_counts.queued, trial_counts.running, \
                   trial_counts.terminal, trial_counts.completed, trial_counts.failed, trial_counts.pruned, \
-                  trial_counts.cancelled, pair_capabilities.pair_count, pair_capabilities.trace_count \
+                  trial_counts.cancelled, pair_capabilities.pair_count, pair_capabilities.renderer_trace_count, \
+                  pair_capabilities.search_report_count, trial_report_capabilities.trial_report_count \
          ORDER BY MAX(activity.occurred_at) DESC, sessions.session_id DESC",
     )?;
     query
@@ -193,7 +205,8 @@ impl TuningSessionListRow {
                 has_lifecycle: true,
                 has_pairs: row.get::<_, i64>(14)? > 0,
                 has_renderer_trace: row.get::<_, i64>(15)? > 0,
-                has_search_reports: false,
+                has_search_reports: row.get::<_, i64>(16)? > 0,
+                has_trial_reports: row.get::<_, i64>(17)? > 0,
             },
         })
     }
@@ -286,10 +299,8 @@ fn load_tuning_session_detail(
     let counts = load_trial_counts(db, session_id)?;
     let attempts = load_attempts(db, session_id)?;
     let reports = load_trial_reports(db, session_id)?;
-    let has_search_reports = !reports.is_empty();
     let trials = load_trials(db, session_id, reports)?;
-    let mut capabilities = load_capabilities(db, session_id)?;
-    capabilities.has_search_reports = has_search_reports;
+    let capabilities = load_capabilities(db, session_id)?;
     let manifest = decode_manifest(&session.manifest)?;
 
     Ok(Some(assemble_session_detail(
@@ -583,9 +594,34 @@ fn load_capabilities(
     session_id: &str,
 ) -> Result<TuningCapabilities, duckdb::Error> {
     db.query_row(
-        "SELECT COUNT(*), COUNT(trace_game_seq) FROM tuning_evaluation_pairs LEFT JOIN tuning_games USING (session_id, pair_id) WHERE session_id = ?1",
+        "WITH joined_games AS ( \
+             SELECT pairs.session_id, pairs.attempt_id, games.trace_game_seq \
+             FROM tuning_evaluation_pairs pairs \
+             LEFT JOIN tuning_games games USING (session_id, pair_id) \
+             WHERE pairs.session_id = ?1 \
+         ), renderer_moves AS ( \
+             SELECT DISTINCT run_id, game_seq FROM game_moves WHERE trace_schema_version = 1 \
+         ), report_moves AS ( \
+             SELECT DISTINCT run_id, game_seq FROM game_moves WHERE search_report IS NOT NULL \
+         ) \
+         SELECT COUNT(*), \
+                COUNT(DISTINCT renderer_moves.run_id || ':' || renderer_moves.game_seq), \
+                COUNT(DISTINCT report_moves.run_id || ':' || report_moves.game_seq), \
+                (SELECT COUNT(*) FROM tuning_trial_reports WHERE session_id = ?1) \
+         FROM joined_games \
+         LEFT JOIN tuning_attempts attempts ON attempts.attempt_id = joined_games.attempt_id \
+         LEFT JOIN renderer_moves ON renderer_moves.run_id = attempts.bench_run_id AND renderer_moves.game_seq = joined_games.trace_game_seq \
+         LEFT JOIN report_moves ON report_moves.run_id = attempts.bench_run_id AND report_moves.game_seq = joined_games.trace_game_seq",
         duckdb::params![session_id],
-        |row| Ok(TuningCapabilities { has_lifecycle: true, has_pairs: row.get::<_, i64>(0)? > 0, has_renderer_trace: row.get::<_, i64>(1)? > 0, has_search_reports: false }),
+        |row| {
+            Ok(TuningCapabilities {
+                has_lifecycle: true,
+                has_pairs: row.get::<_, i64>(0)? > 0,
+                has_renderer_trace: row.get::<_, i64>(1)? > 0,
+                has_search_reports: row.get::<_, i64>(2)? > 0,
+                has_trial_reports: row.get::<_, i64>(3)? > 0,
+            })
+        },
     )
 }
 

@@ -83,6 +83,10 @@ pub enum LogRecord {
     /// trace joins straight onto `match_results`/`trials` with no mapping
     /// table.
     Move {
+        /// Version of the per-ply trace envelope. Absent rows predate the
+        /// renderer trace contract.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace_schema_version: Option<u32>,
         game_seq: u64,
         ply: u32,
         /// Wire-format game state after this ply, in the same shape
@@ -96,6 +100,11 @@ pub enum LogRecord {
         /// Preset/strategy id that made this move, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         player: Option<String>,
+        /// Final-search evidence for the move. A null or absent value keeps
+        /// older and report-less producers distinct from an unavailable
+        /// strategy report.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        search: Option<serde_json::Value>,
     },
     /// Periodic liveness heartbeat.
     Heartbeat { games_played: u64 },
@@ -189,11 +198,13 @@ mod tests {
     #[test]
     fn log_record_move_round_trips() {
         let rec = LogRecord::Move {
+            trace_schema_version: Some(1),
             game_seq: 3,
             ply: 5,
             state: serde_json::json!({"board": [1, 0, 2]}),
             mv: Some(serde_json::json!({"cell": 4})),
             player: Some("strong".into()),
+            search: Some(serde_json::json!({"schema_version": 1})),
         };
         let json = rec.to_json_line();
         let parsed: LogRecord = serde_json::from_str(&json).unwrap();

@@ -117,9 +117,18 @@ pub const CREATE_TABLES: &[&str] = &[
         game_seq    BIGINT NOT NULL,
         ply         INTEGER NOT NULL,
         ts          TIMESTAMP NOT NULL,
+        trace_schema_version UINTEGER,
         state       JSON NOT NULL,
         mv          JSON,
         player      TEXT,
+        search_report JSON,
+        search_status TEXT,
+        search_completed_iterations UBIGINT,
+        search_elapsed_ms DOUBLE,
+        search_nodes UBIGINT,
+        search_mean_depth DOUBLE,
+        search_max_depth UBIGINT,
+        search_tt_hit_ratio DOUBLE,
         PRIMARY KEY (run_id, game_seq, ply)
     )",
     "CREATE TABLE IF NOT EXISTS _ingest_cursor (
@@ -290,6 +299,15 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE runs ADD COLUMN attempt_exit_code INTEGER",
         "ALTER TABLE runs ADD COLUMN attempt_version UINTEGER",
         "ALTER TABLE tuning_trials ADD COLUMN stop_reason TEXT",
+        "ALTER TABLE game_moves ADD COLUMN trace_schema_version UINTEGER",
+        "ALTER TABLE game_moves ADD COLUMN search_report JSON",
+        "ALTER TABLE game_moves ADD COLUMN search_status TEXT",
+        "ALTER TABLE game_moves ADD COLUMN search_completed_iterations UBIGINT",
+        "ALTER TABLE game_moves ADD COLUMN search_elapsed_ms DOUBLE",
+        "ALTER TABLE game_moves ADD COLUMN search_nodes UBIGINT",
+        "ALTER TABLE game_moves ADD COLUMN search_mean_depth DOUBLE",
+        "ALTER TABLE game_moves ADD COLUMN search_max_depth UBIGINT",
+        "ALTER TABLE game_moves ADD COLUMN search_tt_hit_ratio DOUBLE",
     ] {
         let _ = conn.execute_batch(ddl);
     }
@@ -365,6 +383,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cell_seed, ("cell_seed".into(), true));
+        let move_report_columns: Vec<String> = conn
+            .prepare(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'game_moves' AND column_name IN ('trace_schema_version', 'search_report', 'search_status', 'search_completed_iterations', 'search_elapsed_ms', 'search_nodes', 'search_mean_depth', 'search_max_depth', 'search_tt_hit_ratio') ORDER BY column_name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            move_report_columns,
+            vec![
+                "search_completed_iterations",
+                "search_elapsed_ms",
+                "search_max_depth",
+                "search_mean_depth",
+                "search_nodes",
+                "search_report",
+                "search_status",
+                "search_tt_hit_ratio",
+                "trace_schema_version",
+            ]
+        );
         let identity_columns: Vec<(String, String)> = conn
             .prepare(
                 "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'runs' AND column_name IN ('logical_run_id', 'parent_attempt_id', 'attempt_ordinal') ORDER BY column_name",
@@ -551,5 +592,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(seed, None);
+    }
+
+    #[test]
+    fn upgrades_legacy_move_rows_without_backfilling_search_evidence() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, game TEXT, git_sha TEXT NOT NULL, git_dirty BOOLEAN NOT NULL, host TEXT NOT NULL, started_at TIMESTAMP NOT NULL, status TEXT NOT NULL, log_path TEXT NOT NULL);
+             CREATE TABLE game_moves (run_id TEXT NOT NULL, game_seq BIGINT NOT NULL, ply INTEGER NOT NULL, ts TIMESTAMP NOT NULL, state JSON NOT NULL, mv JSON, player TEXT, PRIMARY KEY (run_id, game_seq, ply));
+             INSERT INTO runs VALUES ('legacy', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/log');
+             INSERT INTO game_moves VALUES ('legacy', 1, 0, CURRENT_TIMESTAMP, '{}', NULL, NULL);",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+
+        let row: (Option<u32>, Option<String>, Option<u64>) = conn
+            .query_row(
+                "SELECT trace_schema_version, search_status, search_completed_iterations FROM game_moves WHERE run_id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (None, None, None));
     }
 }

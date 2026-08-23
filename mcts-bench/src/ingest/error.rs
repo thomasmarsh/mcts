@@ -5,6 +5,7 @@ pub enum IngestError {
     DuckDb(duckdb::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
+    InvalidMoveReport { message: String },
     OrphanCell { run_id: String, cell_id: String },
     Attempt(projects_attempt::ProjectsError),
 }
@@ -15,6 +16,9 @@ impl std::fmt::Display for IngestError {
             IngestError::DuckDb(e) => write!(f, "DuckDB error: {e}"),
             IngestError::Io(e) => write!(f, "I/O error: {e}"),
             IngestError::Json(e) => write!(f, "JSON error: {e}"),
+            IngestError::InvalidMoveReport { message } => {
+                write!(f, "invalid move search report: {message}")
+            }
             IngestError::OrphanCell { run_id, cell_id } => {
                 write!(f, "cell '{cell_id}' does not belong to run '{run_id}'")
             }

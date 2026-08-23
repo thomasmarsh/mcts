@@ -719,11 +719,13 @@ fn test_ingest_tails_moves_jsonl_sibling_of_log_jsonl() {
 
         // ...while the moves live in the sibling file.
         let mv = LogRecord::Move {
+            trace_schema_version: None,
             game_seq: 1,
             ply: 0,
             state: serde_json::json!({"board": []}),
             mv: None,
             player: None,
+            search: None,
         };
         fs::write(&moves_path, format!("{}\n", mv.to_json_line())).unwrap();
 
@@ -773,18 +775,22 @@ fn test_ingest_moves() {
 
         let records = vec![
             LogRecord::Move {
+                trace_schema_version: None,
                 game_seq: 7,
                 ply: 0,
                 state: serde_json::json!({"board": []}),
                 mv: None,
                 player: None,
+                search: None,
             },
             LogRecord::Move {
+                trace_schema_version: None,
                 game_seq: 7,
                 ply: 1,
                 state: serde_json::json!({"board": [1]}),
                 mv: Some(serde_json::json!({"cell": 0})),
                 player: Some("strong".into()),
+                search: None,
             },
         ];
         let mut log_content = String::new();
@@ -822,6 +828,15 @@ fn test_ingest_moves() {
     let mv: serde_json::Value = serde_json::from_str(&mv_str.unwrap()).unwrap();
     assert_eq!(mv["cell"], 0);
     assert_eq!(player.as_deref(), Some("strong"));
+    let projection: (Option<u32>, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT trace_schema_version, search_status, CAST(search_report AS TEXT) \
+             FROM game_moves WHERE run_id = 'moves-run' AND game_seq = 7 AND ply = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(projection, (None, None, None));
 
     // Idempotent re-ingest should not duplicate rows.
     ingest_once(&db, &bench_runs).unwrap();
@@ -1360,4 +1375,134 @@ fn nonzero_experiment_exit_cleans_running_and_pending_cells() {
         .unwrap(),
         "crashed"
     );
+}
+
+fn report(status: &str, reason: serde_json::Value) -> serde_json::Value {
+    let unavailable = status == "unavailable";
+    serde_json::json!({
+        "schema_version": 1, "status": status, "reason": reason,
+        "elapsed_seconds": if unavailable { serde_json::Value::Null } else { serde_json::json!(0.25) },
+        "iteration_limit": if unavailable { serde_json::Value::Null } else { serde_json::json!(100) },
+        "time_limit_seconds": null, "completed_iterations": if unavailable { 0 } else { 80 },
+        "termination": if unavailable { serde_json::Value::Null } else { serde_json::json!("time") },
+        "selected_action": if unavailable { serde_json::Value::Null } else { serde_json::json!({"ptn":"a1"}) },
+        "actions": if unavailable { serde_json::json!([]) } else { serde_json::json!([{"action":{"ptn":"a1"},"visits":80,"share":1.0,"mean_value":0.5,"is_proven":false}]) },
+        "principal_variation": if unavailable { serde_json::json!([]) } else { serde_json::json!([{"ptn":"a1"}]) },
+        "root_visits": if unavailable { 0 } else { 80 }, "tree_nodes": if unavailable { 0 } else { 91 },
+        "mean_depth": if unavailable { serde_json::Value::Null } else { serde_json::json!(4.0) },
+        "max_depth": if unavailable { serde_json::Value::Null } else { serde_json::json!(7) },
+        "graph_mode": if unavailable { serde_json::Value::Null } else { serde_json::json!("dag_both") },
+        "tt_reads": if unavailable { 0 } else { 10 }, "tt_writes": if unavailable { 0 } else { 8 },
+        "tt_hits": if unavailable { 0 } else { 3 },
+        "tt_hit_ratio": if unavailable { serde_json::Value::Null } else { serde_json::json!(0.3) },
+        "iterations_per_second": if unavailable { serde_json::Value::Null } else { serde_json::json!(320.0) },
+        "warnings": if status == "partial" { serde_json::json!(["root_parallel_pv_single_tree"]) } else { serde_json::json!([]) },
+    })
+}
+
+fn move_log_fixture(records: Vec<LogRecord>) -> (TestFixture, std::path::PathBuf) {
+    let fixture = TestFixture::new(&[]);
+    let run_dir = fixture.bench_runs.join("search-report-run");
+    fs::create_dir_all(&run_dir).unwrap();
+    let log_path = run_dir.join("log.jsonl");
+    let content = records
+        .iter()
+        .map(LogRecord::to_json_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&log_path, format!("{content}\n")).unwrap();
+    fixture.db.execute(
+        "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
+         VALUES ('search-report-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', ?1)",
+        duckdb::params![log_path.to_string_lossy().to_string()],
+    ).unwrap();
+    (fixture, log_path)
+}
+
+#[test]
+fn ingest_projects_available_partial_and_unavailable_search_reports() {
+    let move_record = |ply, status, reason| LogRecord::Move {
+        trace_schema_version: Some(1),
+        game_seq: 7,
+        ply,
+        state: serde_json::json!({}),
+        mv: Some(serde_json::json!("a1")),
+        player: Some("a".into()),
+        search: Some(report(status, reason)),
+    };
+    let (fixture, log_path) = move_log_fixture(vec![
+        LogRecord::Move {
+            trace_schema_version: Some(1),
+            game_seq: 7,
+            ply: 0,
+            state: serde_json::json!({}),
+            mv: None,
+            player: None,
+            search: None,
+        },
+        move_record(1, "available", serde_json::Value::Null),
+        move_record(
+            2,
+            "partial",
+            serde_json::json!("root_parallel_pv_single_tree"),
+        ),
+        move_record(3, "unavailable", serde_json::json!("strategy_unsupported")),
+    ]);
+
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    let rows: Vec<(i64, Option<String>, Option<u64>, Option<f64>, Option<String>)> = fixture.db
+        .prepare("SELECT ply, search_status, search_completed_iterations, search_elapsed_ms, CAST(search_report AS TEXT) FROM game_moves ORDER BY ply")
+        .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+        .unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(rows[0], (0, None, None, None, None));
+    assert_eq!(rows[1].1.as_deref(), Some("available"));
+    assert_eq!(rows[2].1.as_deref(), Some("partial"));
+    assert_eq!(rows[3].1.as_deref(), Some("unavailable"));
+    assert_eq!(rows[1].2, Some(80));
+    assert_eq!(rows[1].3, Some(250.0));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(rows[3].4.as_deref().unwrap()).unwrap()["reason"],
+        "strategy_unsupported"
+    );
+
+    fixture
+        .db
+        .execute(
+            "DELETE FROM _ingest_cursor WHERE log_path = ?1",
+            duckdb::params![log_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(
+        fixture.count("game_moves"),
+        4,
+        "replaying moves must be idempotent"
+    );
+}
+
+#[test]
+fn malformed_search_report_does_not_advance_the_move_cursor() {
+    let mut malformed = report("available", serde_json::Value::Null);
+    malformed["tt_hit_ratio"] = serde_json::json!(0.9);
+    let (fixture, log_path) = move_log_fixture(vec![LogRecord::Move {
+        trace_schema_version: Some(1),
+        game_seq: 1,
+        ply: 1,
+        state: serde_json::json!({}),
+        mv: Some(serde_json::json!("a1")),
+        player: Some("a".into()),
+        search: Some(malformed),
+    }]);
+
+    assert!(ingest_once(&fixture.db, &fixture.bench_runs).is_err());
+    let cursor: Option<u64> = fixture
+        .db
+        .query_row(
+            "SELECT byte_offset FROM _ingest_cursor WHERE log_path = ?1",
+            duckdb::params![log_path.to_string_lossy().to_string()],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
+    assert_eq!(cursor, None);
+    assert_eq!(fixture.count("game_moves"), 0);
 }

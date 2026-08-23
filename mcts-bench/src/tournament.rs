@@ -116,11 +116,15 @@ pub fn wilson_interval(successes: f64, total: usize, z: f64) -> (f64, f64) {
 
 fn write_move(writer: &mut dyn Write, game_seq: u64, ev: crate::PlyEvent) {
     let rec = LogRecord::Move {
+        // The round-robin renderer trace has adopted the versioned envelope,
+        // but this producer does not capture final search evidence yet.
+        trace_schema_version: Some(1),
         game_seq,
         ply: ev.ply,
         state: ev.state.clone(),
         mv: ev.mv.cloned(),
         player: ev.player.map(|p| p.to_owned()),
+        search: None,
     };
     let mut line = rec.to_json_line();
     line.push('\n');

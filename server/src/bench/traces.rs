@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
-use game_host::TunerInfo;
+use game_host::{SearchReport, TunerInfo};
 use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
@@ -190,8 +190,7 @@ pub(crate) async fn get_run_games(
 /// /api/bench/runs/{run_id}/games/{game_seq}/moves` -- `state`/`mv` are the
 /// same wire-JSON shape `GameAdapter::ai_move` already produces for
 /// round-robin traces, so the UI's existing per-game renderer can draw them
-/// with no new code. tuner traces store `state` as a `Display`-text JSON
-/// string instead -- not renderer-ready, but still fine to tail as text.
+/// with no new code.
 #[derive(Serialize)]
 pub struct MoveRow {
     pub ply: i64,
@@ -199,6 +198,7 @@ pub struct MoveRow {
     pub state: Value,
     pub mv: Option<Value>,
     pub player: Option<String>,
+    pub search: Option<SearchReport>,
 }
 
 /// `GET /api/bench/runs/{run_id}/games/{game_seq}/moves`
@@ -214,19 +214,21 @@ pub(crate) async fn get_run_game_moves(
     let db = state.db.lock().unwrap();
 
     let mut stmt = db.prepare(
-        "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player \
+        "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player, CAST(search_report AS TEXT) \
          FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 ORDER BY ply ASC",
     )?;
     let rows: Vec<MoveRow> = stmt
         .query_map(duckdb::params![&run_id, game_seq], |row| {
             let state_str: String = row.get(2)?;
             let mv_str: Option<String> = row.get(3)?;
+            let search_str: Option<String> = row.get(5)?;
             Ok(MoveRow {
                 ply: row.get(0)?,
                 ts: row.get(1)?,
                 state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
                 mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
                 player: row.get(4)?,
+                search: search_str.and_then(|value| serde_json::from_str(&value).ok()),
             })
         })?
         .filter_map(|r| r.ok())
