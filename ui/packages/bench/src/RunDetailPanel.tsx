@@ -266,6 +266,7 @@ export const RunDetailPanel: Component<{
               incumbent={detail()?.incumbent ?? null}
               matchCount={detail()?.match_count ?? 0}
               trialCount={detail()?.trial_count ?? 0}
+              status={detail()?.status}
             />
           </Show>
         </div>
@@ -287,14 +288,6 @@ export const RunDetailPanel: Component<{
                   )}
                 </span>
               </Show>
-              <button
-                id="show-stdout-btn"
-                onClick={fetchStdout}
-                disabled={stdoutLoading()}
-                title="Fetch the raw stdout.log (stderr output from the run process)"
-              >
-                {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stdout" : "Show Stdout Log"}
-              </button>
             </div>
             <Show when={tail()?.error}>
               <div class="log-error">Error: {tail()!.error}</div>
@@ -311,6 +304,21 @@ export const RunDetailPanel: Component<{
               </Show>
             </div>
           </div>
+        </Show>
+
+        {/* Stdout button + content shown for every run kind — the raw
+            stderr output (clap errors, panic traces) is the primary
+            diagnostic for a crashed run, regardless of kind.
+            TODO: rename the backend's file to avoid "stdout" for stderr output. */}
+        <div id="run-stdout-section">
+          <button
+            id="show-stdout-btn"
+            onClick={fetchStdout}
+            disabled={stdoutLoading()}
+            title="Fetch the raw stdout.log (stderr output from the run process)"
+          >
+            {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stderr Log" : "Show Stderr Log"}
+          </button>
 
           <Show when={stdoutVisible() && stdoutContent() !== null}>
             <div id="stdout-panel">
@@ -330,7 +338,7 @@ export const RunDetailPanel: Component<{
           <Show when={stdoutError()}>
             <div class="log-error">Stdout fetch error: {stdoutError()}</div>
           </Show>
-        </Show>
+        </div>
 
         <Show when={isTuner()}>
           <TunerGamesProgress

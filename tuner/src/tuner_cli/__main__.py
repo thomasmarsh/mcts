@@ -48,13 +48,24 @@ def _parse_baseline_configs(raw: list[str]) -> dict[str, dict]:
 
 
 def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
-    """Mutate *cfg* in-place from dotted CLI overrides."""
+    """Mutate *cfg* in-place from dotted CLI overrides.
+
+    Unknown keys (no matching dataclass field) are logged as warnings
+    rather than crashing, so a misspelled or removed override doesn't
+    abort the entire run.
+    """
     for key, raw_value in overrides.items():
         obj: Any = cfg
         parts = key.split(".")
-        for part in parts[:-1]:
-            obj = getattr(obj, part)
-        if isinstance(getattr(obj, parts[-1]), Path):
+        try:
+            for part in parts[:-1]:
+                obj = getattr(obj, part)
+            attr = getattr(obj, parts[-1])
+        except AttributeError:
+            logger.warning("Ignoring unknown override '%s=%s' — no such field on %s",
+                           key, raw_value, type(obj).__name__)
+            continue
+        if isinstance(attr, Path):
             value = Path(raw_value)
         else:
             try:

@@ -70,7 +70,7 @@ describe("LaunchForm / tuner", () => {
     // Eta field is present with its default.
     const etaField = screen.getByLabelText(/Eta.*/) as HTMLInputElement;
     expect(etaField).toBeInTheDocument();
-    expect(etaField.value).toBe("0.1");
+    expect(etaField.value).toBe("3");
   });
 
   it("omits target.rounds when unchanged, includes it when the field is edited", () => {

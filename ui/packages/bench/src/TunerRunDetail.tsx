@@ -52,6 +52,9 @@ export const TunerRunDetail: Component<{
    * progress while the first trial is still evaluating. */
   matchCount?: number;
   trialCount?: number;
+  /** Run status — used to distinguish "still running, no data yet" from
+   * "terminated without ever producing a trial" (i.e. crashed on startup). */
+  status?: string;
 }> = (props) => {
   const effectiveEntries = createMemo((): ChainedTrial[] => {
     if (props.chainedTrials.length > 0) {
@@ -107,15 +110,24 @@ export const TunerRunDetail: Component<{
         fallback={
           <div class="tuner-empty-state">
             <span class="tuner-empty-primary">
-              {props.matchCount && props.matchCount > 0
-                ? `Evaluating trial 1 — ${props.matchCount} game${props.matchCount === 1 ? "" : "s"} played so far`
-                : "Waiting for first trial to start…"}
+              {props.status && props.status !== "running"
+                ? `Run terminated (${props.status}) without producing any scored trials.`
+                : props.matchCount && props.matchCount > 0
+                  ? `Evaluating trial 1 — ${props.matchCount} game${props.matchCount === 1 ? "" : "s"} played so far`
+                  : "Waiting for first trial to start…"}
             </span>
-            <Show when={props.matchCount && props.matchCount > 0}>
+            <Show when={(!props.status || props.status === "running") && props.matchCount && props.matchCount > 0}>
               <span class="tuner-empty-secondary">
                 Each trial plays multiple game pairs (matchmaking rounds × 5–15
                 steps) against the dynamic opponent pool before producing a
                 score. Games appear below as they complete.
+              </span>
+            </Show>
+            <Show when={props.status && props.status !== "running"}>
+              <span class="tuner-empty-secondary">
+                Click "Show Stderr Log" (below) for clap errors, missing game
+                binaries, or panic traces that may explain why the process exited
+                without running any trials.
               </span>
             </Show>
             <span class="tuner-empty-hint">

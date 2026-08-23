@@ -258,20 +258,20 @@ export const TunerLaunchFields: Component<{
             </label>
 
             <label>
-              Eta (matchmaking sensitivity)
+              Eta (Hyperband reduction factor)
               <input
                 type="number"
-                min={0.001}
-                step={0.01}
+                min={2}
+                step={0.5}
                 value={props.eta}
-                onInput={(e) => props.onEtaChange(parseFloat(e.currentTarget.value) || 0.001)}
+                onInput={(e) => props.onEtaChange(parseFloat(e.currentTarget.value) || 3.0)}
                 disabled={props.disabled}
               />
               <span class="tuner-field-hint">
-                Controls how much a single game outcome changes the candidate's
-                OpenSkill rating. Higher values = more conservative (less
-                movement per game). Default 0.1 is a reasonable starting point
-                for most games.
+                Elimination rate for Successive Halving / Hyperband multi-fidelity
+                pruning. Higher = more aggressive (fewer trials survive each rung).
+                Standard value is 3; 4 is more aggressive. Not yet wired to an
+                Optuna pruner on the server side.
               </span>
             </label>
 

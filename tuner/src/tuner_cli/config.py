@@ -46,6 +46,11 @@ class OptimizerConfig:
     # been recorded *so far* for that config, not necessarily every active
     # instance -- with more than one instance, a config could trip this
     # after being evaluated against only the easiest one.
+    # Hyperband reduction factor ($\eta$ — the elimination rate for Successive
+    # Halving / Hyperband multi-fidelity pruning). Higher values = more
+    # aggressive pruning (fewer trials survive each rung). 3 is the standard
+    # default from the Hyperband literature; 4 is more aggressive.
+    eta: float = 3.0
     termination_cost_threshold: float = math.inf
 
 
@@ -232,6 +237,7 @@ class SearchConfig:
                 deterministic=opt.get("deterministic", False),
                 n_workers=opt.get("n_workers"),
                 seed=opt.get("seed", 42),
+                eta=opt.get("eta", 3.0),
             ),
             target=TargetConfig(
                 binary=Path(tgt.get("binary", "target/release/game-traffic-lights")),

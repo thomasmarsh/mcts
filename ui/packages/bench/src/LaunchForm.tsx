@@ -15,7 +15,7 @@ import { isEmptyGameConfig, TunerLaunchFields } from "./TunerLaunchFields.js";
 
 const DEFAULT_TUNER_N_TRIALS = 100;
 const DEFAULT_TUNER_SEED = 42;
-const DEFAULT_TUNER_ETA = 0.1;
+const DEFAULT_TUNER_ETA = 3.0;
 
 function buildTunerOverrides(opts: {
   nTrials: number;
@@ -33,9 +33,9 @@ function buildTunerOverrides(opts: {
    * both being non-empty here shouldn't happen, but this function doesn't
    * re-validate that — the server-side `target.py` rejects it either way. */
   maxTimeMs: string;
-  /** Eta parameter for the OpenSkill matchmaking model — controls rating
-   * sensitivity (how much a single game result moves the candidate's rating).
-   * Forwarded as `--override optimizer.eta=...` */
+  /** Eta parameter for the Optuna Hyperband reduction factor — controls
+   * how aggressively to prune unpromising trials. Forwarded as
+   * `--override optimizer.eta=...` */
   eta: number;
 }): string[] {
   const overrides = [
@@ -217,12 +217,13 @@ export const LaunchForm: Component<{
         <div class="launch-success">
           Run launched: <code>{state().launch.result?.run_id}</code>
         </div>
-        <Show when={launchResponseError()}>
-          <div class="launch-error launch-error-response">
-            <strong>Launch error:</strong>
-            <pre>{launchResponseError()}</pre>
-          </div>
-        </Show>
+      </Show>
+
+      <Show when={launchStatus() === "done" && launchResponseError()}>
+        <div class="launch-error launch-error-response">
+          <strong>Launch error:</strong>
+          <pre>{launchResponseError()}</pre>
+        </div>
       </Show>
 
       <Show when={launchError()}>
