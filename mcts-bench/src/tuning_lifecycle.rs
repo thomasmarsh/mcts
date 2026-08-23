@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use payload::{
-    AttemptStartedPayload, AttemptTerminalPayload, SessionStartedPayload, TrialCreatedPayload,
-    TrialStartedPayload, TrialTerminalPayload, TuningPayload,
+    AttemptStartedPayload, AttemptTerminalPayload, CandidateSide, GameFinishedPayload,
+    OpponentSnapshot, PairFailedPayload, PairFinishedPayload, PairStartedPayload, Rating,
+    SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialStartedPayload,
+    TrialTerminalPayload, TuningGameOutcome, TuningPayload,
 };
 
 pub const TUNING_LIFECYCLE_SCHEMA_VERSION: u32 = 1;
@@ -37,6 +39,8 @@ opaque_id!(TuningSessionId);
 opaque_id!(TuningAttemptId);
 opaque_id!(TuningEventId);
 opaque_id!(TuningTrialId);
+opaque_id!(TuningPairId);
+opaque_id!(TuningGameId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +53,10 @@ pub enum TuningEventType {
     TrialPruned,
     TrialFailed,
     TrialCancelled,
+    PairStarted,
+    GameFinished,
+    PairFinished,
+    PairFailed,
     AttemptCompleted,
     AttemptFailed,
     AttemptStopped,
@@ -65,6 +73,14 @@ impl TuningEventType {
                 | Self::TrialPruned
                 | Self::TrialFailed
                 | Self::TrialCancelled
+        )
+    }
+
+    #[must_use]
+    pub const fn is_pair(&self) -> bool {
+        matches!(
+            self,
+            Self::PairStarted | Self::GameFinished | Self::PairFinished | Self::PairFailed
         )
     }
 
@@ -95,6 +111,10 @@ impl TuningEventType {
             Self::TrialPruned => "trial_pruned",
             Self::TrialFailed => "trial_failed",
             Self::TrialCancelled => "trial_cancelled",
+            Self::PairStarted => "pair_started",
+            Self::GameFinished => "game_finished",
+            Self::PairFinished => "pair_finished",
+            Self::PairFailed => "pair_failed",
             Self::AttemptCompleted => "attempt_completed",
             Self::AttemptFailed => "attempt_failed",
             Self::AttemptStopped => "attempt_stopped",
@@ -176,6 +196,10 @@ impl TuningLifecycleEvent {
             | TuningPayload::TrialPruned(value)
             | TuningPayload::TrialFailed(value)
             | TuningPayload::TrialCancelled(value) => Some(value.trial_id),
+            TuningPayload::PairStarted(value) => Some(value.trial_id),
+            TuningPayload::GameFinished(value) => Some(value.trial_id),
+            TuningPayload::PairFinished(value) => Some(value.trial_id),
+            TuningPayload::PairFailed(value) => Some(value.trial_id),
             _ => None,
         })
     }

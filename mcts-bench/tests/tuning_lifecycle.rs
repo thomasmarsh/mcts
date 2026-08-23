@@ -42,8 +42,8 @@ fn fixture() -> Connection {
 #[test]
 fn schema_and_v1_event_shape_are_available() {
     let conn = fixture();
-    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tuning_sessions', 'tuning_attempts', 'tuning_trials', 'tuning_lifecycle_events')", [], |r| r.get(0)).unwrap();
-    assert_eq!(tables, 4);
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tuning_sessions', 'tuning_attempts', 'tuning_trials', 'tuning_evaluation_pairs', 'tuning_games', 'tuning_lifecycle_events')", [], |r| r.get(0)).unwrap();
+    assert_eq!(tables, 6);
     let invalid = event(
         "e0",
         1,
@@ -51,6 +51,184 @@ fn schema_and_v1_event_shape_are_available() {
         serde_json::json!({"manifest": {}, "manifest_fingerprint": "f"}),
     );
     assert!(invalid.validate_shape().is_ok());
+}
+
+fn started_trial_events() -> Vec<TuningLifecycleEvent> {
+    vec![
+        event(
+            "e1",
+            1,
+            "session_started",
+            serde_json::json!({"manifest": {}, "manifest_fingerprint": "f"}),
+        ),
+        event(
+            "e2",
+            2,
+            "attempt_started",
+            serde_json::json!({"run_id": "run-1"}),
+        ),
+        event(
+            "e3",
+            3,
+            "trial_created",
+            serde_json::json!({"trial_id": "trial-1", "trial_number": 0, "config": {}}),
+        ),
+        event(
+            "e4",
+            4,
+            "trial_started",
+            serde_json::json!({"trial_id": "trial-1", "trial_number": 0}),
+        ),
+    ]
+}
+
+fn pair_started(sequence: u64) -> TuningLifecycleEvent {
+    event(
+        "pair-start",
+        sequence,
+        "pair_started",
+        serde_json::json!({
+            "trial_id": "trial-1", "pair_id": "pair-1", "pair_index": 0, "seed": 7, "round": 1,
+            "opponent": {"anchor_id": "anchor-1", "config": {"family": "ucb"}, "mu": 25.0, "sigma": 1.0},
+            "pool_snapshot_fingerprint": "pool-1", "rating_before": {"mu": 24.0, "sigma": 2.0}
+        }),
+    )
+}
+
+fn game_finished(sequence: u64, side: &str) -> TuningLifecycleEvent {
+    event(
+        &format!("game-{side}-{sequence}"),
+        sequence,
+        "game_finished",
+        serde_json::json!({
+            "trial_id": "trial-1", "pair_id": "pair-1", "game_id": format!("pair-1-{side}"),
+            "candidate_side": side, "outcome": "candidate_win", "seed": 7, "round": 1,
+            "trace_game_seq": 100 + sequence, "plies": 12, "elapsed_ms": 30,
+            "candidate": {"iterations_total": 20, "iterations_first_half": 9, "move_time_ms": 14},
+            "baseline": {"iterations_total": 18, "iterations_first_half": 8, "move_time_ms": 13}
+        }),
+    )
+}
+
+fn pair_finished(sequence: u64) -> TuningLifecycleEvent {
+    event(
+        "pair-finished",
+        sequence,
+        "pair_finished",
+        serde_json::json!({
+            "trial_id": "trial-1", "pair_id": "pair-1", "pair_index": 0, "rating_before": {"mu": 24.0, "sigma": 2.0},
+            "rating_after": {"mu": 25.0, "sigma": 1.5}, "score": 20.5
+        }),
+    )
+}
+
+#[test]
+fn pair_replay_projects_two_games_and_their_trace_references() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    let events = [
+        pair_started(5),
+        game_finished(6, "first"),
+        game_finished(7, "second"),
+        pair_finished(8),
+    ];
+    for item in &events {
+        assert_eq!(apply(&conn, item), ApplyDisposition::Applied);
+    }
+    assert_eq!(apply(&conn, &events[3]), ApplyDisposition::Replay);
+    let projection: (String, i64, i64) = conn.query_row(
+        "SELECT p.status, COUNT(g.game_id), COUNT(g.trace_game_seq) FROM tuning_evaluation_pairs p LEFT JOIN tuning_games g USING (session_id, pair_id) WHERE p.pair_id = 'pair-1' GROUP BY p.status",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(projection, ("complete".into(), 2, 2));
+}
+
+#[test]
+fn incomplete_or_duplicate_pair_evidence_is_rejected_without_terminal_projection() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        apply(&conn, &item);
+    }
+    assert_eq!(apply(&conn, &pair_started(5)), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(&conn, &game_finished(6, "first")),
+        ApplyDisposition::Applied
+    );
+    assert_eq!(apply(&conn, &pair_finished(7)), ApplyDisposition::Rejected);
+    assert_eq!(
+        apply(&conn, &game_finished(8, "first")),
+        ApplyDisposition::Rejected
+    );
+    let projection: (String, i64) = conn.query_row(
+        "SELECT p.status, COUNT(g.game_id) FROM tuning_evaluation_pairs p LEFT JOIN tuning_games g USING (session_id, pair_id) WHERE p.pair_id = 'pair-1' GROUP BY p.status",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(projection, ("running".into(), 1));
+}
+
+#[test]
+fn unknown_and_post_terminal_pair_events_are_rejected() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        apply(&conn, &item);
+    }
+    assert_eq!(
+        apply(&conn, &game_finished(5, "first")),
+        ApplyDisposition::Rejected
+    );
+    assert_eq!(apply(&conn, &pair_started(5)), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(&conn, &game_finished(6, "first")),
+        ApplyDisposition::Applied
+    );
+    assert_eq!(
+        apply(&conn, &game_finished(7, "second")),
+        ApplyDisposition::Applied
+    );
+    assert_eq!(apply(&conn, &pair_finished(8)), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(&conn, &game_finished(9, "first")),
+        ApplyDisposition::Rejected
+    );
+    let trial = event(
+        "trial-complete",
+        9,
+        "trial_completed",
+        serde_json::json!({"trial_id": "trial-1", "score": 20.5}),
+    );
+    assert_eq!(apply(&conn, &trial), ApplyDisposition::Applied);
+    let late_pair = event("late-pair", 10, "pair_started", pair_started(10).payload);
+    assert_eq!(apply(&conn, &late_pair), ApplyDisposition::Rejected);
+}
+
+#[test]
+fn pair_failure_precedes_trial_failure_without_score_or_rating() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        apply(&conn, &item);
+    }
+    assert_eq!(apply(&conn, &pair_started(5)), ApplyDisposition::Applied);
+    let failed = event(
+        "pair-failed",
+        6,
+        "pair_failed",
+        serde_json::json!({"trial_id": "trial-1", "pair_id": "pair-1", "pair_index": 0, "error": "timeout"}),
+    );
+    assert_eq!(apply(&conn, &failed), ApplyDisposition::Applied);
+    let terminal = event(
+        "trial-failed",
+        7,
+        "trial_failed",
+        serde_json::json!({"trial_id": "trial-1", "error": "timeout"}),
+    );
+    assert_eq!(apply(&conn, &terminal), ApplyDisposition::Applied);
+    let projection: (String, Option<f64>, Option<f64>, String) = conn.query_row(
+        "SELECT p.status, p.score, p.rating_after_mu, t.status FROM tuning_evaluation_pairs p JOIN tuning_trials t ON t.session_id = p.session_id AND t.trial_id = p.trial_id WHERE p.pair_id = 'pair-1'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).unwrap();
+    assert_eq!(projection, ("failed".into(), None, None, "failed".into()));
 }
 
 #[test]
@@ -272,4 +450,35 @@ fn lifecycle_artifact_reaches_persistence_without_consuming_a_partial_record() {
         .unwrap();
     assert_eq!(projection, ("complete".into(), "idle".into(), 6));
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+#[ignore = "requires MCTS_TUNING_LIFECYCLE_PATH from the real tuner e2e"]
+fn real_tuner_artifact_projects_complete_pairs_and_trace_links() {
+    let path = std::env::var("MCTS_TUNING_LIFECYCLE_PATH")
+        .expect("MCTS_TUNING_LIFECYCLE_PATH must name the real lifecycle artifact");
+    let conn = fixture();
+    let source = std::fs::read_to_string(&path).unwrap();
+    for (offset, line) in source.lines().enumerate() {
+        let item: TuningLifecycleEvent = serde_json::from_str(line).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let disposition = apply_event(&tx, &item, "run-1", &path, offset as u64).unwrap();
+        assert_eq!(disposition, ApplyDisposition::Applied);
+        tx.commit().unwrap();
+    }
+
+    let (pairs, games, traces, incomplete): (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM tuning_evaluation_pairs), \
+                    (SELECT COUNT(*) FROM tuning_games), \
+                    (SELECT COUNT(trace_game_seq) FROM tuning_games), \
+                    (SELECT COUNT(*) FROM tuning_evaluation_pairs WHERE status <> 'complete')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert!((5..=15).contains(&pairs));
+    assert_eq!(games, pairs * 2);
+    assert_eq!(traces, games);
+    assert_eq!(incomplete, 0);
 }

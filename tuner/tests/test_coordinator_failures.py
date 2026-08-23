@@ -1,115 +1,274 @@
+"""One-pair scheduling and failure ordering tests."""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 import optuna
-import pytest
 
-from tuner_cli import coordinator
+from tuner_cli import attempt
 from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
-from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId
+from tuner_cli.evaluation import (
+    GameResult,
+    OpponentSnapshot,
+    PairResult,
+    PairTask,
+    Rating,
+    StrategyMetrics,
+    configured_game_seed,
+    game_id_for,
+)
+from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId
+from tuner_cli import pair_orchestration
+from tuner_cli.pair_orchestration import ScheduledPair
+from tuner_cli.pool import Anchor, OpponentPool
 
 
 class _Future:
-    def __init__(self, *, cancelled: bool = False, error: Exception | None = None):
-        self._cancelled, self._error = cancelled, error
+    def __init__(self, error: Exception | None = None):
+        self.error = error
 
     def cancelled(self):
-        return self._cancelled
+        return False
 
     def result(self):
-        if self._error:
-            raise self._error
-        return (25.0, 2.0, [])
+        if self.error:
+            raise self.error
+        raise AssertionError("result was not configured")
 
     def cancel(self):
         return True
 
 
 class _Executor:
-    future: _Future
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.futures: list[_Future] = []
 
-    def __init__(self, *, future: _Future, **_kwargs):
-        self.future = future
-
-    def submit(self, *_args):
-        return self.future
-
-    def shutdown(self, **_kwargs):
-        pass
-
-
-class _Pool:
-    def closest(self, _mu):
-        return type("Anchor", (), {"config": {}})()
-
-    def maybe_insert(self, *_args):
-        return None
+    def submit(self, *args):
+        self.calls.append(args)
+        future = _Future()
+        self.futures.append(future)
+        return future
 
 
-@pytest.mark.parametrize(
-    ("future", "event_type"),
-    [(_Future(error=RuntimeError("worker boom")), "trial_failed"), (_Future(cancelled=True), "trial_cancelled")],
-)
-def test_worker_failure_and_cancellation_leave_typed_terminal_evidence(
-    monkeypatch, tmp_path: Path, future: _Future, event_type: str
-):
+def _active(study) -> attempt._ActiveTrial:
+    trial = study.ask()
+    trial.set_user_attr("config", {"family": "rave"})
+    return attempt._ActiveTrial(trial, TrialId("trial"), {"family": "rave"}, 7)
+
+
+def _task(active: attempt._ActiveTrial) -> PairTask:
+    return PairTask(
+        SessionId("session"),
+        active.trial_id,
+        "pair",
+        0,
+        7,
+        active.config,
+        OpponentSnapshot("random", {"family": "random"}, 0.0, 0.5),
+        "pool",
+        Rating(25.0, 8.3),
+    )
+
+
+def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     cfg = SearchConfig(
-        optimizer=OptimizerConfig(n_trials=1, n_workers=1),
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.submit_next_pair(
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+            attempt._terminalize_from_pair(writer),
+        )
+    assert len(futures) == 1
+    assert executor.calls[0][0] is pair_orchestration.evaluate_pair
+    task = executor.calls[0][3]
+    assert task.pair_index == 0
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["event_type"] == "pair_started"
+    assert records[-1]["payload"]["seed"] == configured_game_seed(task.seed)
+    assert records[-1]["payload"]["round"] == 1
+
+
+def test_initial_scheduling_keeps_multiple_trials_active_with_one_pair_each(
+    tmp_path: Path,
+):
+    study = optuna.create_study(direction="maximize")
+    executor, futures, active = _Executor(), {}, {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_workers=2),
         target=TargetConfig(binary=Path("game-nim")),
     )
-    cfg.parameters, cfg.conditions = [], []
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.schedule_initial_trials(
+            2,
+            2,
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+        )
+    assert len(active) == len(futures) == len(executor.calls) == 2
+    assert all(call[0] is pair_orchestration.evaluate_pair for call in executor.calls)
+    assert {call[3].trial_id for call in executor.calls} == set(active)
+
+
+def test_worker_failure_emits_pair_failure_before_trial_terminal(tmp_path: Path):
     study = optuna.create_study(direction="maximize")
-    with LifecycleWriter(tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")) as writer:
-        monkeypatch.setattr(coordinator, "ProcessPoolExecutor", lambda **kw: _Executor(future=future, **kw))
-        monkeypatch.setattr(coordinator, "wait", lambda *_args, **_kwargs: ({future}, set()))
-        monkeypatch.setattr(coordinator, "preflight_check", lambda *_args: None)
-        with pytest.raises(RuntimeError):
-            coordinator._run_attempt(
-                cfg,
-                binary=Path("game-nim"),
-                pool=_Pool(),
-                pool_path=tmp_path / "pool.json",
-                study=study,
-                lifecycle=writer,
-                resolved_sha="sha",
-                trace_path=None,
+    active = _active(study)
+    scheduled = ScheduledPair(active, _task(active))
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        assert (
+            attempt.worker_result(
+                _Future(RuntimeError("boom")),
+                study,
+                writer,
+                scheduled,
+                attempt._terminalize_from_pair(writer),
             )
-    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert any(record["event_type"] == event_type for record in records)
-    assert records[-1]["event_type"] == "attempt_failed"
+            is None
+        )
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+    ]
+    assert [record["event_type"] for record in records] == [
+        "pair_failed",
+        "trial_failed",
+    ]
 
 
-def test_success_preserves_legacy_trial_pool_and_incumbent_order(monkeypatch, tmp_path: Path):
-    """Compatibility output remains ordered around the pool checkpoint."""
-    from tuner_cli import attempt
+def test_coordinator_cancellation_fails_running_pair_before_trial(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    future = _Future()
+    scheduled = ScheduledPair(active, _task(active))
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.cancel_active_trials(
+            {future: scheduled}, {active.trial_id: active}, study, writer
+        )
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+    ]
+    assert [record["event_type"] for record in records] == [
+        "pair_failed",
+        "trial_cancelled",
+    ]
 
+
+def test_pair_completion_emits_ordered_physical_evidence_before_pair_terminal(
+    tmp_path: Path,
+):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    task = _task(active)
+    metrics = StrategyMetrics(1, 1, 1)
+    result = PairResult(
+        task,
+        (
+            GameResult(
+                game_id_for(task.pair_id, "first"),
+                "first",
+                "candidate_win",
+                7,
+                1,
+                4,
+                2,
+                3,
+                metrics,
+                metrics,
+            ),
+            GameResult(
+                game_id_for(task.pair_id, "second"),
+                "second",
+                "draw",
+                7,
+                1,
+                5,
+                4,
+                6,
+                metrics,
+                metrics,
+            ),
+        ),
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.finish_pair(writer, active, result)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text().splitlines()
+    ]
+    assert [record["event_type"] for record in records] == [
+        "game_finished",
+        "game_finished",
+        "pair_finished",
+    ]
+    assert set(records[0]["payload"]) == {
+        "trial_id",
+        "pair_id",
+        "game_id",
+        "candidate_side",
+        "outcome",
+        "seed",
+        "round",
+        "trace_game_seq",
+        "plies",
+        "elapsed_ms",
+        "candidate",
+        "baseline",
+    }
+    assert records[2]["payload"]["pair_index"] == 0
+
+
+def test_success_preserves_legacy_trial_pool_and_incumbent_order(
+    monkeypatch, tmp_path: Path
+):
     events: list[str] = []
-    active_trial = type(
-        "ActiveTrial",
-        (),
-        {
-            "trial_id": "trial-1",
-            "trial": type("Trial", (), {"number": 0})(),
-            "config": {"c": 1},
-            "seed": 7,
-        },
-    )()
-    future = object()
-    futures = {future: active_trial}
-    active = {active_trial.trial_id: active_trial}
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    active.evaluation.rating = Rating(25.0, 2.0)
 
-    monkeypatch.setattr(attempt, "worker_result", lambda *args: (25.0, 2.0, []))
     monkeypatch.setattr(
         attempt,
         "record_completed_trial",
         lambda *args: events.append("lifecycle trial_completed"),
     )
     monkeypatch.setattr(
-        attempt,
-        "emit_legacy_trial",
-        lambda *args: events.append("legacy trial"),
+        attempt, "emit_legacy_trial", lambda *args: events.append("legacy trial")
     )
     monkeypatch.setattr(
         attempt,
@@ -122,25 +281,9 @@ def test_success_preserves_legacy_trial_pool_and_incumbent_order(monkeypatch, tm
         lambda *args: events.append("legacy incumbent"),
     )
 
-    class _Executor:
-        pass
-
-    attempt.drain_scheduled_trials(
-        1,
-        _Executor(),
-        futures,
-        active,
-        cfg=None,
-        binary=Path("game-nim"),
-        pool=object(),
-        pool_path=tmp_path / "pool.json",
-        study=object(),
-        lifecycle=object(),
-        resolved_sha="sha",
-        trace_path=None,
-        wait_for_completion=lambda *_args, **_kwargs: ({future}, set()),
+    attempt.complete_trial(
+        study, object(), active, object(), tmp_path / "pool.json", "sha"
     )
-
     assert events == [
         "lifecycle trial_completed",
         "legacy trial",

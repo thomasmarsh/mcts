@@ -1,149 +1,128 @@
-"""`matchmaking.play_trial`: closest-opponent selection, min/max game bounds,
-sigma-threshold early stop -- with `target.play_game` monkeypatched to return
-scripted win/loss/draw sequences so no real subprocess runs.
-"""
+"""Typed pair rating-state and pool-snapshot tests."""
 
 from __future__ import annotations
 
-import yaml
+from types import SimpleNamespace
 
-from tuner_cli import matchmaking
-from tuner_cli.config import SearchConfig
+from tuner_cli.evaluation import (
+    GameResult,
+    OpponentSnapshot,
+    PairResult,
+    PairTask,
+    Rating,
+    StrategyMetrics,
+    TrialEvaluationState,
+    game_id_for,
+    pair_id_for,
+    pool_snapshot_fingerprint,
+)
+from tuner_cli.lifecycle import SessionId, TrialId
+from tuner_cli.pool import Anchor
+from tuner_cli.pair_orchestration import make_next_pair_task
 from tuner_cli.pool import OpponentPool
 
-_SPACE_YAML = """
-parameters:
-  family:
-    type: categorical
-    choices: [rave, ucb1_pn]
-    default: rave
-"""
 
-
-def _cfg() -> SearchConfig:
-    return SearchConfig._from_dict(yaml.safe_load(_SPACE_YAML))
-
-
-def _pool() -> OpponentPool:
-    return OpponentPool.bootstrap(_cfg())  # anchors: "default" mu=25.0, "random" mu=0.0
-
-
-def test_min_games_floor_even_when_sigma_drops_early(monkeypatch):
-    """5 lopsided wins would normally crash sigma below threshold fast, but
-    the loop must still run at least `min_games` steps."""
-    calls = []
-
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        calls.append(opponent_config)
-        return 20, 0, 0, None
-
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
-
-    mu, sigma, games = matchmaking.play_trial(
-        _cfg(),
-        "binary",
+def _task(index: int = 0) -> PairTask:
+    session, trial = SessionId("session"), TrialId("trial")
+    pair_id = pair_id_for(session, trial, index)
+    return PairTask(
+        session,
+        trial,
+        pair_id,
+        index,
+        7 + index,
         {"family": "rave"},
-        _pool(),
-        seed_base=0,
-        sigma_threshold=100.0,
+        OpponentSnapshot("default", {"family": "ucb1"}, 25.0, 0.5),
+        "pool",
+        Rating(25.0, 8.3),
     )
 
-    assert len(calls) == matchmaking._MIN_GAMES
-    assert len(games) == matchmaking._MIN_GAMES * 20
-    assert all(g["outcome"] == "win" for g in games)
 
-
-def test_max_games_ceiling_when_sigma_never_converges(monkeypatch):
-    """Alternating win/loss keeps sigma high; the loop must still stop at
-    `max_games` steps."""
-
-    calls = []
-
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        calls.append(seed)
-        return 0, 0, 0, "crashed"
-
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
-
-    mu, sigma, games = matchmaking.play_trial(
-        _cfg(), "binary", {"family": "rave"}, _pool(), seed_base=0
+def _pair(outcomes: tuple[str, str]) -> PairResult:
+    task = _task()
+    metrics = StrategyMetrics(1, 1, 1)
+    games = tuple(
+        GameResult(
+            game_id_for(task.pair_id, side),
+            side,
+            outcome,
+            7,
+            1,
+            None,
+            2,
+            3,
+            metrics,
+            metrics,
+        )
+        for side, outcome in zip(("first", "second"), outcomes, strict=True)
     )
-
-    assert len(calls) == matchmaking._MAX_GAMES
-    assert games == []
+    return PairResult(task, games)
 
 
-def test_sigma_threshold_stops_early_past_min_games(monkeypatch):
-    """A big fixed win-count each step should converge sigma below the
-    threshold well before `max_games`, so the loop stops in between.
-
-    Note: OpenSkill's Thurstone-Mosteller Partial model has a sigma plateau
-    around ~4.68 (unlike vanilla TrueSkill which converges toward zero), so the
-    threshold used here is higher than the module default.
-    """
-
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        return 20, 0, 0, None
-
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
-
-    mu, sigma, games = matchmaking.play_trial(
-        _cfg(), "binary", {"family": "rave"}, _pool(), seed_base=0,
-        sigma_threshold=5.0,
+def test_pair_and_game_ids_are_stable_and_side_specific():
+    assert pair_id_for(SessionId("s"), TrialId("t"), 1) == pair_id_for(
+        SessionId("s"), TrialId("t"), 1
     )
-
-    assert sigma < 5.0
-    assert matchmaking._MIN_GAMES <= len(games) < matchmaking._MAX_GAMES * 20
-
-
-def test_closest_opponent_changes_as_rating_moves(monkeypatch):
-    """Winning repeatedly should raise the candidate's mu enough that
-    closest() picks a higher-mu anchor than the one it started against."""
-    opponents_seen = []
-
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        opponents_seen.append(opponent_config["family"])
-        return 1, 0, 0, None
-
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
-
-    pool = _pool()
-    pool.maybe_insert({"family": "strong"}, mu=40.0, sigma=1.0)  # new champion anchor
-
-    matchmaking.play_trial(_cfg(), "binary", {"family": "ucb1_pn"}, pool, seed_base=0)
-
-    # An unrated candidate (mu=25.0) starts against "default" (also mu=25.0).
-    assert opponents_seen[0] == "rave"
-    # Enough wins should climb the candidate's mu past 25 and toward "strong".
-    assert opponents_seen[-1] == "strong"
+    pair_id = pair_id_for(SessionId("s"), TrialId("t"), 1)
+    assert game_id_for(pair_id, "first") != game_id_for(pair_id, "second")
 
 
-def test_crashed_step_counts_toward_bounds_but_logs_no_game(monkeypatch):
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        return 0, 0, 0, "crashed"
+def test_full_pool_fingerprint_changes_with_any_anchor_snapshot_field():
+    anchors = [Anchor("a", {"family": "random"}, 0.0, 0.5)]
+    before = pool_snapshot_fingerprint(anchors)
+    anchors[0].config["q_init"] = "Infinity"
+    assert pool_snapshot_fingerprint(anchors) != before
 
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
 
-    mu, sigma, games = matchmaking.play_trial(
-        _cfg(), "binary", {"family": "rave"}, _pool(), seed_base=0
+def test_state_applies_two_physical_outcomes_in_order_and_preserves_legacy_shape():
+    state = TrialEvaluationState()
+    before = state.rating
+    state.apply_pair(_pair(("candidate_win", "baseline_win")))
+    assert state.completed_pairs == 1
+    assert state.rating != before
+    assert state.legacy_games() == [
+        {"opponent": "default", "outcome": "win"},
+        {"opponent": "default", "outcome": "loss"},
+    ]
+    assert state.should_continue()
+
+
+def test_game_order_changes_rating_deterministically():
+    win_then_loss = TrialEvaluationState()
+    loss_then_win = TrialEvaluationState()
+    win_then_loss.apply_pair(_pair(("candidate_win", "baseline_win")))
+    loss_then_win.apply_pair(_pair(("baseline_win", "candidate_win")))
+    assert win_then_loss.rating != loss_then_win.rating
+
+
+def test_pair_stopping_keeps_five_pair_floor_and_fifteen_pair_ceiling():
+    state = TrialEvaluationState(rating=Rating(25.0, 1.0), completed_pairs=4)
+    assert state.should_continue()
+    state.completed_pairs = 5
+    assert not state.should_continue()
+
+    state.rating = Rating(25.0, 8.0)
+    state.completed_pairs = 14
+    assert state.should_continue()
+    state.completed_pairs = 15
+    assert not state.should_continue()
+
+
+def test_next_pair_selects_against_updated_candidate_rating(tmp_path):
+    state = TrialEvaluationState()
+    active = SimpleNamespace(
+        evaluation=state,
+        trial_id=TrialId("trial"),
+        seed=7,
+        config={"family": "rave"},
     )
+    pool = OpponentPool([Anchor("initial", {"family": "ucb1"}, 25.0, 0.5)])
 
-    assert games == []
-    from openskill.models import ThurstoneMostellerPart
-    _model = ThurstoneMostellerPart()
-    assert mu == _model.rating().mu
-
-
-def test_opponent_rating_never_mutates_pool_anchor(monkeypatch):
-    def fake_play_game(cfg, binary, candidate_config, opponent_config, *, seed, trace_path=None):
-        return 1, 0, 0, None
-
-    monkeypatch.setattr(matchmaking, "play_game", fake_play_game)
-
-    pool = _pool()
-    before = [(a.id, a.mu, a.sigma) for a in pool.anchors]
-
-    matchmaking.play_trial(_cfg(), "binary", {"family": "rave"}, pool, seed_base=0)
-
-    after = [(a.id, a.mu, a.sigma) for a in pool.anchors]
-    assert before == after
+    state.apply_pair(_pair(("candidate_win", "candidate_win")))
+    pool.anchors.append(
+        Anchor("updated", {"family": "rave"}, state.rating.mu, 0.5)
+    )
+    lifecycle = SimpleNamespace(session_id=SessionId("session"))
+    task = make_next_pair_task(active, pool, lifecycle, str(tmp_path / "trace.jsonl"))
+    assert task.opponent.anchor_id == "updated"
+    assert task.rating_before == state.rating

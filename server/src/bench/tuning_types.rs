@@ -42,6 +42,60 @@ pub(crate) struct TuningTrialView {
     pub(crate) mu: Option<f64>,
     pub(crate) sigma: Option<f64>,
     pub(crate) failure: Option<String>,
+    pub(crate) pairs: Vec<TuningPairView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningOpponentView {
+    pub(crate) anchor_id: String,
+    pub(crate) config: Value,
+    pub(crate) mu: f64,
+    pub(crate) sigma: f64,
+    pub(crate) label: Option<String>,
+    pub(crate) provenance: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningRatingView {
+    pub(crate) mu: f64,
+    pub(crate) sigma: f64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningStrategyMetricsView {
+    pub(crate) iterations_total: u64,
+    pub(crate) iterations_first_half: u64,
+    pub(crate) move_time_ms: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningGameView {
+    pub(crate) game_id: String,
+    pub(crate) candidate_side: String,
+    pub(crate) outcome: String,
+    pub(crate) seed: u64,
+    pub(crate) round: u32,
+    pub(crate) trace_game_seq: Option<u64>,
+    pub(crate) plies: u32,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) candidate: TuningStrategyMetricsView,
+    pub(crate) baseline: TuningStrategyMetricsView,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningPairView {
+    pub(crate) pair_id: String,
+    pub(crate) pair_index: u32,
+    pub(crate) status: String,
+    pub(crate) seed: u64,
+    pub(crate) round: u32,
+    pub(crate) opponent: TuningOpponentView,
+    pub(crate) pool_snapshot_fingerprint: String,
+    pub(crate) rating_before: TuningRatingView,
+    pub(crate) rating_after: Option<TuningRatingView>,
+    pub(crate) score: Option<f64>,
+    pub(crate) failure: Option<String>,
+    pub(crate) games: Vec<TuningGameView>,
 }
 
 #[derive(Serialize)]

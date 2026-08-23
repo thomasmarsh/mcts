@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections import Counter, defaultdict
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -57,13 +58,38 @@ def _ensure_on_path(root: Path) -> None:
         os.environ["PATH"] = f"{debug_dir}:{env_path}"
 
 
+def _assert_rust_projection(lifecycle_path: Path) -> None:
+    """Replay the real Python artifact through the Rust persistence contract."""
+    env = os.environ.copy()
+    env["MCTS_TUNING_LIFECYCLE_PATH"] = str(lifecycle_path)
+    subprocess.run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "mcts-bench",
+            "--test",
+            "tuning_lifecycle",
+            "real_tuner_artifact_projects_complete_pairs_and_trace_links",
+            "--",
+            "--ignored",
+            "--exact",
+        ],
+        cwd=_repo_root(),
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
-    """The Optuna driver emits benchmark-compatible trial and incumbent records."""
+    """One real tuning trial preserves pair/game and legacy evidence."""
     from tuner_cli.__main__ import run_optimization
     from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
 
@@ -71,11 +97,14 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
         optimizer=OptimizerConfig(n_trials=1, deterministic=True, seed=7),
         target=TargetConfig(binary=binary, rounds=1, max_iterations=50),
     )
+    trace_path = tmp_dir / "traces.jsonl"
 
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         os.chdir(str(tmp_dir))
-        study, _pool = run_optimization(cfg, run_id="records", git_sha="test-sha")
+        study, _pool = run_optimization(
+            cfg, run_id="records", git_sha="test-sha", trace_path=str(trace_path)
+        )
 
     lifecycle_path = tmp_dir / "optuna_output" / "records" / "lifecycle.jsonl"
     manifest_path = tmp_dir / "optuna_output" / "records" / "session-manifest.json"
@@ -87,6 +116,29 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
     assert lifecycle[0]["session_id"] != lifecycle[0]["attempt_id"]
     assert lifecycle[0]["payload"]["manifest_fingerprint"] == manifest["fingerprint"]
     assert any(record["event_type"] == "trial_completed" for record in lifecycle)
+
+    pair_starts = [r for r in lifecycle if r["event_type"] == "pair_started"]
+    pair_finishes = [r for r in lifecycle if r["event_type"] == "pair_finished"]
+    games_by_pair: dict[str, list[dict]] = defaultdict(list)
+    for record in lifecycle:
+        if record["event_type"] == "game_finished":
+            games_by_pair[record["payload"]["pair_id"]].append(record["payload"])
+    assert 5 <= len(pair_starts) <= 15, "pair count must follow the 5/15 stopping bounds"
+    assert len(pair_finishes) == len(pair_starts)
+    assert [r["payload"]["pair_index"] for r in pair_starts] == list(range(len(pair_starts)))
+    assert len({r["payload"]["pair_id"] for r in pair_starts}) == len(pair_starts)
+    for started in pair_starts:
+        payload = started["payload"]
+        games = games_by_pair[payload["pair_id"]]
+        assert len(games) == 2
+        assert [game["candidate_side"] for game in games] == ["first", "second"]
+        assert len({game["game_id"] for game in games}) == 2
+        assert all(isinstance(game["game_id"], str) and game["game_id"] for game in games)
+        assert all(isinstance(game["trace_game_seq"], int) for game in games)
+        assert len({game["trace_game_seq"] for game in games}) == 2
+        assert all(game["seed"] == payload["seed"] and game["round"] == 1 for game in games)
+    assert trace_path.is_file() and trace_path.read_text().strip(), "trace evidence missing"
+    _assert_rust_projection(lifecycle_path)
 
     records = []
     for line in out.getvalue().splitlines():
@@ -104,7 +156,20 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
             -(record["extra"]["mu"] - 3 * record["extra"]["sigma"])
         ), f"cost mismatch in trial {record['trial_id']}"
         assert record["extra"]["git_sha"] == "test-sha", "git_sha not propagated"
-        assert isinstance(record["extra"]["opponents"], list), "opponents missing"
+        opponents = record["extra"]["opponents"]
+        assert isinstance(opponents, list), "opponents missing"
+        expected = Counter()
+        legacy_outcome = {
+            "candidate_win": "win",
+            "baseline_win": "loss",
+            "draw": "draw",
+        }
+        for started in pair_starts:
+            opponent = started["payload"]["opponent"]["anchor_id"]
+            for game in games_by_pair[started["payload"]["pair_id"]]:
+                expected[(opponent, legacy_outcome[game["outcome"]])] += 1
+        actual = Counter((entry["opponent"], entry["outcome"]) for entry in opponents)
+        assert actual == expected, "legacy opponents must derive from physical games"
     last_incumbent = incumbents[-1]
     assert last_incumbent["config"] == study.best_trial.user_attrs["config"], "incumbent config mismatch"
     assert last_incumbent["cost"] == pytest_approx(-study.best_value), "incumbent cost mismatch"

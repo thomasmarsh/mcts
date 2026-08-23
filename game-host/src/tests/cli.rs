@@ -263,15 +263,27 @@ fn test_run_cli_compare_eval_streams_games_then_summary() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0]["type"], "configured_match_result");
-    assert_eq!(lines[0]["seq"], 1);
-    assert_eq!(lines[0]["candidate_side"], "first");
-    assert_eq!(lines[1]["seq"], 2);
-    assert_eq!(lines[1]["candidate_side"], "second");
+    let games = &lines[..2];
+    assert!(games
+        .iter()
+        .all(|game| game["type"] == "configured_match_result"));
+    assert_eq!(games[0]["seq"], 1);
+    assert_eq!(games[1]["seq"], 2);
+    assert_eq!(games[0]["candidate_side"], "first");
+    assert_eq!(games[1]["candidate_side"], "second");
+    assert!(games.iter().all(|game| game["round"] == 1));
+    assert!(games.iter().all(|game| game["seed"] == derive_seed(42, 0)));
     assert_eq!(lines[2]["type"], "configured_comparison_summary");
     assert_eq!(lines[2]["games"], 2);
     assert_eq!(lines[2]["wins"], 1);
     assert_eq!(lines[2]["losses"], 1);
+    assert_eq!(lines[2]["draws"], 0);
+    assert_eq!(
+        lines[2]["games"].as_u64().unwrap(),
+        lines[2]["wins"].as_u64().unwrap()
+            + lines[2]["losses"].as_u64().unwrap()
+            + lines[2]["draws"].as_u64().unwrap()
+    );
 }
 
 #[test]

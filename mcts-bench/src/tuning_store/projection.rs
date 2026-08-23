@@ -17,11 +17,75 @@ pub(super) fn apply(
             mark_trial_started(tx, event)?;
             touch_session(tx, event)?;
         }
+        TuningEventType::PairStarted => project_pair_started(tx, event)?,
+        TuningEventType::GameFinished => project_game_finished(tx, event)?,
+        TuningEventType::PairFinished => project_pair_finished(tx, event)?,
+        TuningEventType::PairFailed => project_pair_failed(tx, event)?,
         event_type if event_type.is_trial_terminal() => project_trial_terminal(tx, event)?,
         event_type if event_type.is_attempt_terminal() => project_attempt_terminal(tx, event)?,
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn project_pair_started(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::PairStarted(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "INSERT INTO tuning_evaluation_pairs (session_id, pair_id, trial_id, attempt_id, pair_index, status, seed, round, opponent, pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, started_at) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![event.session_id.as_str(), payload.pair_id.as_str(), payload.trial_id.as_str(), event.attempt_id.as_str(), payload.pair_index, payload.seed, payload.round, serde_json::to_string(&payload.opponent)?, payload.pool_snapshot_fingerprint, payload.rating_before.mu, payload.rating_before.sigma, &event.timestamp],
+    )?;
+    touch_session(tx, event)
+}
+
+fn project_game_finished(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::GameFinished(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "INSERT INTO tuning_games (session_id, pair_id, game_id, candidate_side, outcome, seed, round, trace_game_seq, plies, elapsed_ms, candidate_metrics, baseline_metrics, finished_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![event.session_id.as_str(), payload.pair_id.as_str(), payload.game_id.as_str(), payload.candidate_side.as_str(), payload.outcome.as_str(), payload.seed, payload.round, payload.trace_game_seq, payload.plies, payload.elapsed_ms, serde_json::to_string(&payload.candidate)?, serde_json::to_string(&payload.baseline)?, &event.timestamp],
+    )?;
+    touch_session(tx, event)
+}
+
+fn project_pair_finished(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::PairFinished(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "UPDATE tuning_evaluation_pairs SET status = 'complete', ended_at = ?1, rating_after_mu = ?2, rating_after_sigma = ?3, score = ?4 WHERE session_id = ?5 AND pair_id = ?6",
+        params![&event.timestamp, payload.rating_after.mu, payload.rating_after.sigma, payload.score, event.session_id.as_str(), payload.pair_id.as_str()],
+    )?;
+    touch_session(tx, event)
+}
+
+fn project_pair_failed(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::PairFailed(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "UPDATE tuning_evaluation_pairs SET status = 'failed', ended_at = ?1, failure = ?2 WHERE session_id = ?3 AND pair_id = ?4",
+        params![&event.timestamp, payload.error, event.session_id.as_str(), payload.pair_id.as_str()],
+    )?;
+    touch_session(tx, event)
 }
 
 fn project_session_started(

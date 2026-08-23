@@ -1,386 +1,182 @@
-"""`target.py`'s `play_game`: argv construction, wins/losses/draws parsing,
-and timeout/crashed/unparseable-output status tagging.
-
-Mocks `subprocess.Popen` (what `play_game`'s `_run_with_heartbeat` actually
-drives via `.communicate()`) rather than shelling out to a real game binary
--- unlike `test_resume.py`/`test_callback.py` (which exist specifically to
-catch drift in the real ask/tell loop's behavior and would be pointless to
-fake), this is purely about which argv `play_game` builds and how it parses
-a match result, not about what a real search returns.
-"""
+"""Strict configured-comparison pair transport tests."""
 
 from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from tuner_cli.__main__ import _parse_baseline_configs
 from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
-from tuner_cli.target import play_game
+from tuner_cli.evaluation import (
+    OpponentSnapshot,
+    PairTask,
+    Rating,
+    configured_game_seed,
+)
+from tuner_cli.lifecycle import SessionId, TrialId
+from tuner_cli.target import (
+    PairExecutionError,
+    _build_pair_cmd,
+    evaluate_pair,
+    parse_pair_output,
+)
 
 
-def test_parse_baseline_configs_parses_id_equals_json():
+def _task() -> PairTask:
+    return PairTask(
+        SessionId("session"),
+        TrialId("trial"),
+        "pair-1",
+        0,
+        42,
+        {"family": "ucb1"},
+        OpponentSnapshot("random", {"family": "random"}, 0.0, 0.5),
+        "pool",
+        Rating(25.0, 8.3),
+    )
+
+
+def _output() -> str:
+    seed = configured_game_seed(42)
+    metrics = {"iterations_total": 12, "iterations_first_half": 5, "move_time_ms": 7}
+    records = [
+        {
+            "type": "configured_match_result",
+            "seq": 1,
+            "round": 1,
+            "seed": seed,
+            "candidate_side": "first",
+            "outcome": "candidate_win",
+            "trace_game_seq": 40,
+            "plies": 8,
+            "elapsed_ms": 9,
+            "candidate": metrics,
+            "baseline": metrics,
+        },
+        {
+            "type": "configured_match_result",
+            "seq": 2,
+            "round": 1,
+            "seed": seed,
+            "candidate_side": "second",
+            "outcome": "baseline_win",
+            "trace_game_seq": 41,
+            "plies": 10,
+            "elapsed_ms": 11,
+            "candidate": metrics,
+            "baseline": metrics,
+        },
+        {
+            "type": "configured_comparison_summary",
+            "games": 2,
+            "wins": 1,
+            "losses": 1,
+            "draws": 0,
+        },
+    ]
+    return "\n".join(json.dumps(record) for record in records)
+
+
+def _cfg() -> SearchConfig:
+    return SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-fake"))
+    )
+
+
+def test_parse_baseline_configs_preserves_id_and_raw_config():
     parsed = _parse_baseline_configs(
         ['strong-plus=' + json.dumps({"family": "ucb1", "c": 1.5})]
     )
     assert parsed == {"strong-plus": {"family": "ucb1", "c": 1.5}}
 
 
-def test_parse_baseline_configs_rejects_missing_equals():
+def test_parse_baseline_configs_rejects_missing_separator():
     with pytest.raises(ValueError):
         _parse_baseline_configs(["not-a-kv-pair"])
 
 
-def test_parse_baseline_configs_empty_list_is_empty_dict():
-    assert _parse_baseline_configs([]) == {}
+def test_pair_command_uses_one_configured_comparison_and_default_budget():
+    cmd = _build_pair_cmd(_cfg(), Path("game-fake"), _task())
+    assert cmd[:3] == ["game-fake", "compare", "eval"]
+    assert cmd[cmd.index("--rounds") + 1] == "1"
+    assert "--config" not in cmd
+    assert cmd[cmd.index("--max-iterations") + 1] == "10000"
 
 
-class _FakeCompletedProcess:
-    def __init__(self, stdout: str):
-        self.stdout = stdout
-        self.stderr = ""
-        self.returncode = 0
-
-
-class _FakePopen:
-    """Stand-in for `subprocess.Popen`, driven the same way `target.py`'s
-    `_run_with_heartbeat` drives a real one: repeated `.communicate(timeout=
-    ...)` calls until one returns instead of raising, then (only after a
-    real timeout) one final no-timeout drain call. `fake_run(cmd)` is called
-    on every timed `communicate()` -- if it returns a completed-process-like
-    object, that call succeeds immediately (as if the process had already
-    exited); if it raises `subprocess.TimeoutExpired`, this mirrors that so
-    the heartbeat loop keeps polling. The no-timeout drain call after
-    `kill()` never calls `fake_run` again -- a real killed process's final
-    `communicate()` doesn't re-run the command, just collects already-
-    buffered output.
-    """
-
-    def __init__(self, cmd, fake_run):
-        self._cmd = cmd
-        self._fake_run = fake_run
-        self.returncode = 0
-
-    def communicate(self, timeout=None):
-        if timeout is None:
-            return "", ""
-        result = self._fake_run(self._cmd)
-        self.returncode = getattr(result, "returncode", 0)
-        return result.stdout, result.stderr
-
-    def kill(self):
-        pass
-
-
-def _patch_popen(monkeypatch, fake_run):
-    """Patch `subprocess.Popen` so `target.py`'s `_run_with_heartbeat` (the
-    only thing that spawns a subprocess in `play_game`) drives `fake_run`
-    through `_FakePopen` instead of a real process.
-    """
-    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: _FakePopen(cmd, fake_run))
-
-
-def _result(wins=1, losses=0, draws=0):
-    return _FakeCompletedProcess(json.dumps({"wins": wins, "losses": losses, "draws": draws}))
-
-
-def test_play_game_forwards_candidate_and_opponent_configs(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result(wins=3, losses=1, draws=0)
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    opponent = {"family": "random", "q_init": "Infinity"}
-    wins, losses, draws, status = play_game(
-        cfg, binary, {"family": "ucb1"}, opponent, seed=0
-    )
-
-    assert (wins, losses, draws, status) == (3, 1, 0, None)
-    assert json.loads(captured["cmd"][captured["cmd"].index("--config") + 1]) == {
-        "family": "ucb1"
-    }
-    assert json.loads(captured["cmd"][captured["cmd"].index("--baseline-config") + 1]) == opponent
-    assert "--baseline" not in captured["cmd"]
-
-
-def test_play_game_tags_timeout_as_status(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    def fake_run(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 600))
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    wins, losses, draws, status = play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert (wins, losses, draws) == (0, 0, 0)
-    assert status == "timeout"
-
-
-def test_play_game_tags_nonzero_exit_as_crashed(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    class _FakeFailedProcess:
-        stdout = ""
-        stderr = "boom"
-        returncode = 1
-
-    _patch_popen(monkeypatch, lambda cmd: _FakeFailedProcess())
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    wins, losses, draws, status = play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert (wins, losses, draws) == (0, 0, 0)
-    assert status == "crashed"
-
-
-def test_play_game_tags_unparseable_output_as_crashed(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    _patch_popen(monkeypatch, lambda cmd: _FakeCompletedProcess("not json"))
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    wins, losses, draws, status = play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert (wins, losses, draws) == (0, 0, 0)
-    assert status == "crashed"
-
-
-def test_play_game_forwards_game_config_when_set(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    game_config = {"size": {"w": 9, "h": 9}}
+def test_pair_command_forwards_configs_time_budget_game_config_and_trace():
     cfg = SearchConfig(
         optimizer=OptimizerConfig(),
-        target=TargetConfig(binary=binary, rounds=4, game_config=game_config),
+        target=TargetConfig(
+            binary=Path("game-fake"),
+            game_config={"size": 7},
+            max_time_ms=25,
+        ),
     )
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--game-config" in captured["cmd"]
-    sent = json.loads(captured["cmd"][captured["cmd"].index("--game-config") + 1])
-    assert sent == game_config
-
-
-def test_play_game_omits_game_config_when_unset(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--game-config" not in captured["cmd"]
+    task = replace(_task(), trace_path="moves.jsonl")
+    cmd = _build_pair_cmd(cfg, Path("game-fake"), task)
+    assert json.loads(cmd[cmd.index("--candidate-config") + 1]) == task.candidate_config
+    assert json.loads(cmd[cmd.index("--baseline-config") + 1]) == task.opponent.config
+    assert json.loads(cmd[cmd.index("--game-config") + 1]) == {"size": 7}
+    assert cmd[cmd.index("--max-time-ms") + 1] == "25"
+    assert cmd[cmd.index("--trace-path") + 1] == "moves.jsonl"
+    assert "--max-iterations" not in cmd
 
 
-def test_play_game_forwards_max_iterations_when_set(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(),
-        target=TargetConfig(binary=binary, rounds=4, max_iterations=1000),
-    )
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--max-iterations" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--max-iterations") + 1] == "1000"
+def test_parser_returns_two_ordered_physical_games_with_trace_ids():
+    pair = parse_pair_output(_output(), _task())
+    assert [game.candidate_side for game in pair.games] == ["first", "second"]
+    assert [game.trace_game_seq for game in pair.games] == [40, 41]
+    assert [game.outcome for game in pair.games] == ["candidate_win", "baseline_win"]
+    assert pair.games[0].game_id != pair.games[1].game_id
 
 
-def test_play_game_omits_max_iterations_when_unset(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    _patch_popen(monkeypatch, lambda cmd, **kwargs: _result())
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--max-iterations" not in captured["cmd"]
-
-
-def test_play_game_forwards_max_time_ms_when_set(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(),
-        target=TargetConfig(binary=binary, rounds=4, max_time_ms=5000),
-    )
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--max-time-ms" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--max-time-ms") + 1] == "5000"
-    assert "--max-iterations" not in captured["cmd"]
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda records: records.pop(1), "exactly two"),
+        (lambda records: records.insert(1, dict(records[0])), "exactly two"),
+        (
+            lambda records: records.__setitem__(
+                1, {**records[1], "candidate_side": "first"}
+            ),
+            "sequence",
+        ),
+        (lambda records: records.__setitem__(slice(0, 2), records[1::-1]), "ordered"),
+        (
+            lambda records: records.__setitem__(1, {**records[1], "seed": 1}),
+            "unexpected round or seed",
+        ),
+        (lambda records: records.__setitem__(2, {**records[2], "wins": 2}), "summary"),
+    ],
+)
+def test_parser_rejects_incomplete_or_inconsistent_pairs(mutate, message):
+    records = [json.loads(line) for line in _output().splitlines()]
+    mutate(records)
+    with pytest.raises(ValueError, match=message):
+        parse_pair_output("\n".join(json.dumps(record) for record in records), _task())
 
 
-def test_play_game_omits_max_time_ms_when_unset(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
+def test_evaluate_pair_turns_timeout_and_invalid_output_into_pair_errors(monkeypatch):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("game-fake", 1)
 
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--max-time-ms" not in captured["cmd"]
+    monkeypatch.setattr("tuner_cli.target._run_with_heartbeat", timeout)
+    with pytest.raises(PairExecutionError, match="timed out"):
+        evaluate_pair(_cfg(), Path("game-fake"), _task())
 
 
-def test_play_game_rejects_both_max_iterations_and_max_time_ms(tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
+def test_evaluate_pair_rejects_nonzero_exit_and_mutually_exclusive_budgets(monkeypatch):
+    failed = subprocess.CompletedProcess([], 2, "", "bad config")
+    monkeypatch.setattr("tuner_cli.target._run_with_heartbeat", lambda *_args, **_kwargs: failed)
+    with pytest.raises(PairExecutionError, match="code 2"):
+        evaluate_pair(_cfg(), Path("game-fake"), _task())
 
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(),
-        target=TargetConfig(binary=binary, rounds=4, max_iterations=1000, max_time_ms=5000),
-    )
+    cfg = _cfg()
+    cfg.target.max_iterations = 10
+    cfg.target.max_time_ms = 10
     with pytest.raises(ValueError, match="mutually exclusive"):
-        play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-
-def test_target_config_max_time_ms_defaults_none():
-    assert TargetConfig().max_time_ms is None
-
-
-def test_play_game_logs_heartbeat_while_waiting_on_a_slow_trial(monkeypatch, tmp_path: Path):
-    """A trial that takes longer than one heartbeat tick to finish should
-    log at least one "still running" heartbeat instead of blocking silently
-    -- this is what makes a slow-but-alive trial distinguishable from a hung
-    one in `stdout.log` before the full timeout kills it."""
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    calls: list[int] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(1)
-        if len(calls) < 3:
-            raise subprocess.TimeoutExpired(cmd, 30)
-        return _result(wins=2, losses=2, draws=0)
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    wins, losses, draws, status = play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert (wins, losses, draws, status) == (2, 2, 0, None)
-    assert len(calls) == 3
-
-
-def test_play_game_forwards_trace_path_when_set(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    trace_path = str(tmp_path / "moves.jsonl")
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0, trace_path=trace_path)
-
-    assert "--trace-path" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--trace-path") + 1] == trace_path
-
-
-def test_play_game_omits_trace_path_when_unset(monkeypatch, tmp_path: Path):
-    binary = tmp_path / "game-fake"
-    binary.touch()
-
-    captured: dict = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return _result()
-
-    _patch_popen(monkeypatch, fake_run)
-
-    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=binary, rounds=4))
-    play_game(cfg, binary, {"family": "ucb1"}, {"family": "random"}, seed=0)
-
-    assert "--trace-path" not in captured["cmd"]
-
-
-def test_optimizer_config_termination_cost_threshold_defaults_to_inf():
-    import math
-
-    assert OptimizerConfig().termination_cost_threshold == math.inf
-
-
-def test_target_config_baseline_configs_defaults_empty():
-    assert TargetConfig().baseline_configs == {}
-
-
-def test_target_config_max_iterations_defaults_none():
-    assert TargetConfig().max_iterations is None
-
-
-def test_target_config_game_config_defaults_none():
-    assert TargetConfig().game_config is None
-
-
-def test_search_config_from_dict_reads_game_config_from_yaml():
-    cfg = SearchConfig._from_dict({"target": {"game_config": {"size": {"w": 7, "h": 7}}}})
-    assert cfg.target.game_config == {"size": {"w": 7, "h": 7}}
+        evaluate_pair(cfg, Path("game-fake"), _task())

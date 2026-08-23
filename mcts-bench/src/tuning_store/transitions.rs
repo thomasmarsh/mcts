@@ -14,6 +14,16 @@ struct TrialState {
     status: String,
 }
 
+struct PairState {
+    trial_id: String,
+    pair_index: u32,
+    status: String,
+    seed: u64,
+    round: u32,
+    rating_before_mu: f64,
+    rating_before_sigma: f64,
+}
+
 pub(super) fn validate(
     tx: &Transaction<'_>,
     event: &TuningLifecycleEvent,
@@ -44,6 +54,9 @@ pub(super) fn validate(
     };
     if let Some(reason) = validate_attempt(&attempt, event) {
         return Ok(Some(reason));
+    }
+    if event.event_type.is_pair() {
+        return validate_pair(tx, event);
     }
     if event.event_type.is_trial() {
         return validate_trial(tx, event);
@@ -187,9 +200,143 @@ fn valid_trial_transition(
             Ok(status.is_none() && number_exists == 0)
         }
         TuningEventType::TrialStarted => Ok(status == Some("queued")),
-        event_type if event_type.is_trial_terminal() => {
-            Ok(matches!(status, Some("queued") | Some("running")))
-        }
+        event_type if event_type.is_trial_terminal() => Ok(matches!(
+            status,
+            Some("queued") | Some("running")
+        ) && !has_running_pairs(tx, event)?),
         _ => Ok(false),
     }
+}
+
+fn has_running_pairs(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<bool, TuningStoreError> {
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_evaluation_pairs WHERE session_id = ?1 AND trial_id = ?2 AND status = 'running'",
+        params![event.session_id.as_str(), event.trial_id().expect("validated trial payload").expect("trial event has trial").as_str()],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn validate_pair(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<Option<String>, TuningStoreError> {
+    let trial_id = event
+        .trial_id()
+        .expect("validated pair payload")
+        .expect("pair event has trial id");
+    let trial = load_trial(tx, event, trial_id.as_str())?;
+    if let Some(reason) = validate_trial_attempt(trial.as_ref(), event) {
+        return Ok(Some(reason));
+    }
+    if trial.as_ref().map(|value| value.status.as_str()) != Some("running") {
+        return Ok(Some("pair event requires a running trial".into()));
+    }
+    match event.typed_payload().expect("validated payload") {
+        TuningPayload::PairStarted(payload) => validate_pair_start(tx, event, &payload),
+        TuningPayload::GameFinished(payload) => validate_game_finished(tx, event, &payload),
+        TuningPayload::PairFinished(payload) => validate_pair_finished(tx, event, &payload),
+        TuningPayload::PairFailed(payload) => validate_pair_failed(tx, event, &payload),
+        _ => unreachable!(),
+    }
+}
+
+fn validate_pair_start(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    payload: &crate::tuning_lifecycle::PairStartedPayload,
+) -> Result<Option<String>, TuningStoreError> {
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_evaluation_pairs WHERE session_id = ?1 AND (pair_id = ?2 OR (trial_id = ?3 AND pair_index = ?4))",
+        params![event.session_id.as_str(), payload.pair_id.as_str(), payload.trial_id.as_str(), payload.pair_index],
+        |row| row.get(0),
+    )?;
+    Ok((count != 0).then_some("pair id or pair index already exists".into()))
+}
+
+fn validate_game_finished(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    payload: &crate::tuning_lifecycle::GameFinishedPayload,
+) -> Result<Option<String>, TuningStoreError> {
+    let Some(pair) = load_pair(tx, event, payload.pair_id.as_str())? else {
+        return Ok(Some("game references an unknown pair".into()));
+    };
+    if pair.trial_id != payload.trial_id.as_str() {
+        return Ok(Some("game pair belongs to a different trial".into()));
+    }
+    if pair.status != "running" {
+        return Ok(Some("game follows pair terminal evidence".into()));
+    }
+    if pair.seed != payload.seed || pair.round != payload.round {
+        return Ok(Some("game seed or round differs from its pair".into()));
+    }
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_games WHERE session_id = ?1 AND (game_id = ?2 OR (pair_id = ?3 AND candidate_side = ?4))",
+        params![event.session_id.as_str(), payload.game_id.as_str(), payload.pair_id.as_str(), payload.candidate_side.as_str()],
+        |row| row.get(0),
+    )?;
+    Ok((count != 0).then_some("game id or candidate side already exists".into()))
+}
+
+fn validate_pair_finished(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    payload: &crate::tuning_lifecycle::PairFinishedPayload,
+) -> Result<Option<String>, TuningStoreError> {
+    let Some(pair) = load_pair(tx, event, payload.pair_id.as_str())? else {
+        return Ok(Some("pair_finished references an unknown pair".into()));
+    };
+    if pair.trial_id != payload.trial_id.as_str()
+        || pair.pair_index != payload.pair_index
+        || pair.status != "running"
+    {
+        return Ok(Some(
+            "pair_finished requires a running pair in its trial".into(),
+        ));
+    }
+    if !same_rating(&pair, &payload.rating_before) {
+        return Ok(Some(
+            "pair_finished rating_before differs from pair_started".into(),
+        ));
+    }
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_games WHERE session_id = ?1 AND pair_id = ?2 AND seed = ?3 AND round = ?4",
+        params![event.session_id.as_str(), payload.pair_id.as_str(), pair.seed, pair.round],
+        |row| row.get(0),
+    )?;
+    Ok((count != 2).then_some("pair_finished requires two matching games".into()))
+}
+
+fn validate_pair_failed(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    payload: &crate::tuning_lifecycle::PairFailedPayload,
+) -> Result<Option<String>, TuningStoreError> {
+    let Some(pair) = load_pair(tx, event, payload.pair_id.as_str())? else {
+        return Ok(Some("pair_failed references an unknown pair".into()));
+    };
+    Ok((pair.trial_id != payload.trial_id.as_str()
+        || pair.pair_index != payload.pair_index
+        || pair.status != "running")
+        .then_some("pair_failed requires a running pair in its trial".into()))
+}
+
+fn load_pair(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    pair_id: &str,
+) -> Result<Option<PairState>, TuningStoreError> {
+    Ok(tx.query_row(
+        "SELECT trial_id, pair_index, status, seed, round, rating_before_mu, rating_before_sigma FROM tuning_evaluation_pairs WHERE session_id = ?1 AND pair_id = ?2",
+        params![event.session_id.as_str(), pair_id],
+        |row| Ok(PairState { trial_id: row.get(0)?, pair_index: row.get(1)?, status: row.get(2)?, seed: row.get(3)?, round: row.get(4)?, rating_before_mu: row.get(5)?, rating_before_sigma: row.get(6)? }),
+    ).ok())
+}
+
+fn same_rating(pair: &PairState, rating: &crate::tuning_lifecycle::Rating) -> bool {
+    pair.rating_before_mu == rating.mu && pair.rating_before_sigma == rating.sigma
 }

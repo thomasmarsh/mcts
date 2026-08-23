@@ -23,11 +23,11 @@ pub use types::{
 };
 
 #[cfg(test)]
+pub(crate) use cli::run_cli_with;
+
+#[cfg(test)]
 mod tests {
     mod book;
     mod cli;
     mod support;
 }
-
-#[cfg(test)]
-pub(crate) use cli::run_cli_with;
