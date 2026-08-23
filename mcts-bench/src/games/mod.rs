@@ -130,19 +130,16 @@ const GAME_KINDS: &[(&str, &str)] = &[
     ("bid-ttt", "game-bid-ttt"),
     ("breakthrough", "game-breakthrough"),
     ("congo", "game-congo"),
-    ("count", "game-count"),
     ("druid", "game-druid"),
     ("gonnect", "game-gonnect"),
     ("knightthrough", "game-knightthrough"),
     ("margo", "game-margo"),
     ("nim", "game-nim"),
-    ("null", "game-null"),
     ("othello", "game-othello"),
     ("tak", "game-tak"),
     ("tanbo", "game-tanbo"),
     ("traffic-lights", "game-traffic-lights"),
     ("ttt", "game-ttt"),
-    ("unit", "game-unit"),
 ];
 
 struct SubprocessBenchGame {
