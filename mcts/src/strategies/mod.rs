@@ -52,6 +52,7 @@ pub enum SearchWarning {
     ActionsTruncated,
     PrincipalVariationTruncated,
     StructuralDiagnosticsOmitted,
+    RootParallelPvSingleTree,
 }
 
 /// One root action's final-search evidence. `share` is based on the visits

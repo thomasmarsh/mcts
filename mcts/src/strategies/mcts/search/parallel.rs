@@ -23,6 +23,82 @@ use rustc_hash::FxHashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// One completed independent worker's reportable totals. This is collected
+/// only after a worker has stopped, so root-parallel reporting adds no work or
+/// synchronization to the simulation hot path.
+#[derive(Debug, Clone)]
+pub(crate) struct RootParallelWorker<A> {
+    pub action_totals: Vec<ActionTotal<A>>,
+    pub completed_iterations: usize,
+    pub tree_nodes: usize,
+    pub accum_depth: usize,
+    pub max_depth: usize,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+}
+
+/// The numerical part of a root-parallel final report. Independent trees have
+/// no globally mergeable structure, but their root totals and per-search work
+/// counters do compose exactly.
+#[derive(Debug, Clone)]
+pub(crate) struct RootParallelTotals<A> {
+    pub action_totals: Vec<ActionTotal<A>>,
+    pub completed_iterations: usize,
+    pub tree_nodes: usize,
+    pub accum_depth: usize,
+    pub max_depth: usize,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+}
+
+/// Merges finished worker snapshots without treating the coordinator as an
+/// extra tree. The caller supplies it once alongside the spawned workers.
+pub(crate) fn merge_root_parallel_workers<A>(
+    workers: impl IntoIterator<Item = RootParallelWorker<A>>,
+) -> RootParallelTotals<A>
+where
+    A: Eq + std::hash::Hash,
+{
+    let mut actions: FxHashMap<A, (u32, Vec<f64>)> = FxHashMap::default();
+    let mut totals = RootParallelTotals {
+        action_totals: vec![],
+        completed_iterations: 0,
+        tree_nodes: 0,
+        accum_depth: 0,
+        max_depth: 0,
+        tt_reads: 0,
+        tt_writes: 0,
+        tt_hits: 0,
+    };
+    for worker in workers {
+        totals.completed_iterations = totals
+            .completed_iterations
+            .saturating_add(worker.completed_iterations);
+        totals.tree_nodes = totals.tree_nodes.saturating_add(worker.tree_nodes);
+        totals.accum_depth = totals.accum_depth.saturating_add(worker.accum_depth);
+        totals.max_depth = totals.max_depth.max(worker.max_depth);
+        totals.tt_reads = totals.tt_reads.saturating_add(worker.tt_reads);
+        totals.tt_writes = totals.tt_writes.saturating_add(worker.tt_writes);
+        totals.tt_hits = totals.tt_hits.saturating_add(worker.tt_hits);
+        for (action, visits, scores) in worker.action_totals {
+            let entry = actions
+                .entry(action)
+                .or_insert_with(|| (0, vec![0.; scores.len()]));
+            entry.0 = entry.0.saturating_add(visits);
+            for (i, score) in scores.into_iter().enumerate() {
+                entry.1[i] += score;
+            }
+        }
+    }
+    totals.action_totals = actions
+        .into_iter()
+        .map(|(action, (visits, scores))| (action, visits, scores))
+        .collect();
+    totals
+}
+
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
@@ -53,6 +129,23 @@ where
             .collect()
     }
 
+    fn root_parallel_worker_report(&self) -> RootParallelWorker<G::A> {
+        let run = self
+            .last_search_run
+            .as_ref()
+            .expect("root-parallel workers always finish their own search report");
+        RootParallelWorker {
+            action_totals: self.root_action_totals(),
+            completed_iterations: self.stats.iter_count.load(Relaxed),
+            tree_nodes: self.index.len(),
+            accum_depth: self.stats.accum_depth.load(Relaxed),
+            max_depth: self.stats.max_depth.load(Relaxed),
+            tt_reads: run.tt_reads,
+            tt_writes: run.tt_writes,
+            tt_hits: run.tt_hits,
+        }
+    }
+
     pub(crate) fn choose_action_root_parallel(&mut self, state: &G::S) -> G::A {
         let num_threads = self.config.num_threads.max(1);
         debug_assert!(num_threads > 1);
@@ -66,7 +159,7 @@ where
         let seeds: Vec<u64> = (0..num_threads).map(|_| self.config.rng.gen()).collect();
         let mut workers: Vec<Self> = (0..num_threads - 1).map(|_| self.clone()).collect();
 
-        let totals = std::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             let handles: Vec<_> = workers
                 .iter_mut()
                 .zip(&seeds)
@@ -75,7 +168,6 @@ where
                     worker.config.rng = SmallRng::seed_from_u64(seed);
                     scope.spawn(move || {
                         worker.choose_action(state);
-                        worker.root_action_totals()
                     })
                 })
                 .collect();
@@ -84,35 +176,63 @@ where
             self.config.rng = SmallRng::seed_from_u64(seeds[num_threads - 1]);
             self.choose_action(state);
 
-            let mut totals = vec![self.root_action_totals()];
-            totals.extend(handles.into_iter().map(|h| h.join().unwrap()));
-            totals
+            for handle in handles {
+                handle.join().unwrap();
+            }
         });
 
         self.config.num_threads = num_threads;
 
-        let mut merged: FxHashMap<G::A, (u32, Vec<f64>)> = FxHashMap::default();
-        for worker_totals in totals {
-            for (action, visits, scores) in worker_totals {
-                let entry = merged
-                    .entry(action)
-                    .or_insert_with(|| (0, vec![0.; scores.len()]));
-                entry.0 += visits;
-                for (i, s) in scores.into_iter().enumerate() {
-                    entry.1[i] += s;
-                }
-            }
-        }
-
-        let merged: Vec<ActionTotal<G::A>> = merged
-            .into_iter()
-            .map(|(action, (visits, scores))| (action, visits, scores))
-            .collect();
-        random_best(&merged, &mut self.config.rng, |(_, visits, _)| {
-            *visits as f64
-        })
+        let mut worker_reports = vec![self.root_parallel_worker_report()];
+        worker_reports.extend(workers.iter().map(Self::root_parallel_worker_report));
+        let merged = merge_root_parallel_workers(worker_reports.clone());
+        let selected = random_best(
+            &merged.action_totals,
+            &mut self.config.rng,
+            |(_, visits, _)| *visits as f64,
+        )
         .map(|(action, _, _)| action.clone())
-        .unwrap()
+        .unwrap();
+
+        let (pv_worker, _) = worker_reports
+            .iter()
+            .enumerate()
+            .map(|(i, worker)| {
+                let visits = worker
+                    .action_totals
+                    .iter()
+                    .find(|(action, _, _)| action == &selected)
+                    .map_or(0, |(_, visits, _)| *visits);
+                (i, visits)
+            })
+            .max_by_key(|&(i, visits)| (visits, std::cmp::Reverse(i)))
+            .expect("at least the coordinator worker exists");
+        let principal_variation = if pv_worker == 0 {
+            self.compute_pv(state, Some(&selected));
+            self.pv.clone()
+        } else {
+            let worker = &mut workers[pv_worker - 1];
+            worker.compute_pv(state, Some(&selected));
+            worker.pv.clone()
+        };
+        let principal_variation = if principal_variation.first() == Some(&selected) {
+            principal_variation
+        } else {
+            vec![]
+        };
+        self.pv = principal_variation.clone();
+        self.root_parallel_report = Some(super::RootParallelReport {
+            actions: merged.action_totals,
+            principal_variation,
+            completed_iterations: merged.completed_iterations,
+            tree_nodes: merged.tree_nodes,
+            accum_depth: merged.accum_depth,
+            max_depth: merged.max_depth,
+            tt_reads: merged.tt_reads,
+            tt_writes: merged.tt_writes,
+            tt_hits: merged.tt_hits,
+        });
+        selected
     }
 
     pub(crate) fn choose_action_tree_parallel(
@@ -265,5 +385,51 @@ where
         self.verbose_summary(state, num_threads);
         self.finish_search_report(report_start, time_expired, solved, false);
         selected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_root_parallel_workers, RootParallelWorker};
+
+    #[test]
+    fn merge_root_parallel_workers_sums_work_and_keeps_largest_depth() {
+        let merged = merge_root_parallel_workers([
+            RootParallelWorker {
+                action_totals: vec![(1_u8, 3, vec![1.5, -1.5]), (2, 2, vec![0.0, 0.0])],
+                completed_iterations: 5,
+                tree_nodes: 7,
+                accum_depth: 9,
+                max_depth: 4,
+                tt_reads: 11,
+                tt_writes: 3,
+                tt_hits: 2,
+            },
+            RootParallelWorker {
+                action_totals: vec![(1, 4, vec![2.0, -2.0]), (3, 1, vec![-1.0, 1.0])],
+                completed_iterations: 5,
+                tree_nodes: 8,
+                accum_depth: 12,
+                max_depth: 6,
+                tt_reads: 13,
+                tt_writes: 5,
+                tt_hits: 7,
+            },
+        ]);
+        let action_one = merged
+            .action_totals
+            .iter()
+            .find(|(action, _, _)| *action == 1)
+            .unwrap();
+        assert_eq!(action_one.1, 7);
+        assert_eq!(action_one.2, vec![3.5, -3.5]);
+        assert_eq!(merged.completed_iterations, 10);
+        assert_eq!(merged.tree_nodes, 15);
+        assert_eq!(merged.accum_depth, 21);
+        assert_eq!(merged.max_depth, 6);
+        assert_eq!(
+            (merged.tt_reads, merged.tt_writes, merged.tt_hits),
+            (24, 8, 9)
+        );
     }
 }

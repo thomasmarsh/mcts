@@ -21,6 +21,7 @@ use super::node::NodeStats;
 use super::simulate::Trial;
 use super::table::TranspositionTable;
 use crate::game::Game;
+use crate::strategies::mcts::search::shared::ActionTotal;
 use crate::timer;
 use std::time::Instant;
 
@@ -32,14 +33,31 @@ pub(crate) struct SearchReportStart {
     pub tt_hits: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SearchRun {
+#[derive(Debug, Clone)]
+pub(crate) struct SearchRun<A> {
     pub elapsed_seconds: f64,
     pub tt_reads: usize,
     pub tt_writes: usize,
     pub tt_hits: usize,
     pub termination: crate::strategies::SearchTermination,
-    pub partial_root_parallel: bool,
+    pub root_parallel: Option<RootParallelReport<A>>,
+}
+
+/// Final evidence aggregated from independent root-parallel worker trees.
+/// There is deliberately no merged arena: the PV remains the best available
+/// path from one contributing worker, while every numeric field is a sum (or
+/// the appropriate aggregate) across all workers.
+#[derive(Debug, Clone)]
+pub(crate) struct RootParallelReport<A> {
+    pub actions: Vec<ActionTotal<A>>,
+    pub principal_variation: Vec<A>,
+    pub completed_iterations: usize,
+    pub tree_nodes: usize,
+    pub accum_depth: usize,
+    pub max_depth: usize,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
 }
 
 #[derive(Clone)]
@@ -75,7 +93,11 @@ where
     pub stats: TreeStats<G>,
     /// Evidence for the last completed `choose_action`; absent until an
     /// action has actually been selected.
-    pub(crate) last_search_run: Option<SearchRun>,
+    pub(crate) last_search_run: Option<SearchRun<G::A>>,
+    /// Root-parallel aggregation produced during the current call. It is
+    /// moved into `last_search_run` when the outer call finishes, and cleared
+    /// before every new call so it cannot leak into a later serial search.
+    pub(crate) root_parallel_report: Option<RootParallelReport<G::A>>,
     /// The root->leaf descent path from the most recent `select`/`select_step`
     /// call, as `(Id, idx)` pairs -- `idx` is the slot in the *previous*
     /// entry's `ChildArray` that was actually selected to reach this entry
@@ -144,6 +166,7 @@ where
             timer: timer::Timer::new(),
             stats: Default::default(),
             last_search_run: None,
+            root_parallel_report: None,
         }
     }
 

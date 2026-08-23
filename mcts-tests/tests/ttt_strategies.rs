@@ -2723,5 +2723,116 @@ fn test_final_search_report_is_available_for_tree_parallel_search() {
     let selected = search.choose_action(&state);
     let report = search.search_report(&state, &selected);
     assert_eq!(report.status, SearchReportStatus::Available);
+    assert_eq!(report.reason, None);
     assert_eq!(report.completed_iterations, 24);
+}
+
+#[test]
+fn test_final_search_report_aggregates_root_parallel_workers() {
+    let _guard = parallel_test_guard();
+    use game_ttt::*;
+    use mcts::strategies::{SearchReportReason, SearchReportStatus, SearchWarning};
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(12)
+            .num_threads(2)
+            .use_transpositions(true)
+            .seed(41),
+    );
+    let selected = search.choose_action(&state);
+    let report = search.search_report(&state, &selected);
+    assert_eq!(report.status, SearchReportStatus::Partial);
+    assert_eq!(
+        report.reason,
+        Some(SearchReportReason::RootParallelPvSingleTree)
+    );
+    assert!(report
+        .warnings
+        .contains(&SearchWarning::RootParallelPvSingleTree));
+    assert_eq!(report.completed_iterations, 24);
+    assert_eq!(report.selected_action, Some(selected.clone()));
+    let selected_row = report
+        .actions
+        .iter()
+        .find(|action| action.action == selected)
+        .expect("the merge winner is retained in the action report");
+    assert!(
+        report
+            .actions
+            .iter()
+            .all(|action| selected_row.visits >= action.visits),
+        "the selected action must be the root-total merge winner"
+    );
+    assert_eq!(
+        report.root_visits,
+        report
+            .actions
+            .iter()
+            .map(|action| action.visits)
+            .sum::<u32>()
+    );
+    assert!(
+        (report
+            .actions
+            .iter()
+            .map(|action| action.share)
+            .sum::<f64>()
+            - 1.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(report.tree_nodes >= search.arena_len());
+    assert!(report.tt_reads > 0);
+    assert!(
+        report.principal_variation.is_empty()
+            || report.principal_variation.first() == Some(&selected)
+    );
+
+    let selected_again = search.choose_action(&state);
+    let second = search.search_report(&state, &selected_again);
+    assert_eq!(second.completed_iterations, 24);
+    assert!(
+        second.tt_reads > 0,
+        "TT counters reset for each worker search"
+    );
+
+    search.config.num_threads = 1;
+    let serial_selected = search.choose_action(&state);
+    let serial = search.search_report(&state, &serial_selected);
+    assert_eq!(serial.status, SearchReportStatus::Available);
+    assert_eq!(serial.reason, None);
+    assert_eq!(serial.completed_iterations, 12);
+}
+
+#[test]
+fn test_final_search_report_aggregates_hybrid_root_and_tree_parallel_work() {
+    let _guard = parallel_test_guard();
+    use game_ttt::*;
+    use mcts::strategies::{SearchReportReason, SearchReportStatus};
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(12)
+            .num_threads(2)
+            .num_tree_threads(2)
+            .use_transpositions(true)
+            .seed(43),
+    );
+    let selected = search.choose_action(&state);
+    let report = search.search_report(&state, &selected);
+    assert_eq!(report.status, SearchReportStatus::Partial);
+    assert_eq!(
+        report.reason,
+        Some(SearchReportReason::RootParallelPvSingleTree)
+    );
+    assert_eq!(report.completed_iterations, 24);
+    assert!(report.tree_nodes >= search.arena_len());
+    assert!(report.tt_reads > 0);
 }

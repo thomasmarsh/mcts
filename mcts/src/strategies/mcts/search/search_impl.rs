@@ -57,6 +57,7 @@ where
 {
     fn begin_search_report(&mut self) -> super::SearchReportStart {
         self.last_search_run = None;
+        self.root_parallel_report = None;
         super::SearchReportStart {
             started_at: std::time::Instant::now(),
             tt_reads: self.table.reads.load(Relaxed),
@@ -76,24 +77,39 @@ where
         let completed_iterations = self.stats.iter_count.load(Relaxed);
         self.last_search_run = Some(super::SearchRun {
             elapsed_seconds,
-            tt_reads: self
-                .table
-                .reads
-                .load(Relaxed)
-                .saturating_sub(start.tt_reads),
-            tt_writes: self
-                .table
-                .writes
-                .load(Relaxed)
-                .saturating_sub(start.tt_writes),
-            tt_hits: self.table.hits.load(Relaxed).saturating_sub(start.tt_hits),
+            tt_reads: self.root_parallel_report.as_ref().map_or_else(
+                || {
+                    self.table
+                        .reads
+                        .load(Relaxed)
+                        .saturating_sub(start.tt_reads)
+                },
+                |report| report.tt_reads,
+            ),
+            tt_writes: self.root_parallel_report.as_ref().map_or_else(
+                || {
+                    self.table
+                        .writes
+                        .load(Relaxed)
+                        .saturating_sub(start.tt_writes)
+                },
+                |report| report.tt_writes,
+            ),
+            tt_hits: self.root_parallel_report.as_ref().map_or_else(
+                || self.table.hits.load(Relaxed).saturating_sub(start.tt_hits),
+                |report| report.tt_hits,
+            ),
             termination: classify_termination(
                 (self.config.max_iterations != usize::MAX).then_some(self.config.max_iterations),
                 completed_iterations,
                 time_expired,
                 solved,
             ),
-            partial_root_parallel,
+            root_parallel: partial_root_parallel.then(|| {
+                self.root_parallel_report
+                    .take()
+                    .expect("root-parallel searches always produce an aggregate report")
+            }),
         });
     }
 }
@@ -271,24 +287,33 @@ where
         self.pv.clone()
     }
 
-    // Reads `self.index`/`self.root_stats` directly, which is exactly right
-    // for the single-threaded and tree-parallel paths (`choose_action_tree_parallel`
-    // in parallel.rs): both leave the real, complete root stats in `self`
-    // when `choose_action` returns, since there's one shared tree either way.
-    // Root parallelism (`choose_action_root_parallel`) is the one path this
-    // under-reports for: it merges each worker's totals into a local `merged`
-    // map to pick the final action but never writes that merge back into
-    // `self`, so `root_report` after a root-parallel call would only reflect
-    // this thread's own final worker tree, not the true cross-worker totals.
-    // Not fixed here because no current preset (`server/main.rs`'s
-    // `build_ai`) sets `num_threads > 1` -- Strong/Master use tree
-    // parallelism (`num_tree_threads`) instead: it strictly dominates root
-    // parallelism at every tested board size. If a preset ever does turn
-    // root parallelism back
-    // on, `choose_action_root_parallel` would need to cache its merged
-    // `ActionTotal`s somewhere `root_report` can read, mirroring this
-    // method's shape.
     fn root_report(&self, state: &G::S) -> RootReport<G::A> {
+        if let Some(root_parallel) = self
+            .last_search_run
+            .as_ref()
+            .and_then(|run| run.root_parallel.as_ref())
+        {
+            return RootReport {
+                actions: root_parallel
+                    .actions
+                    .iter()
+                    .map(|(action, visits, scores)| ActionReport {
+                        action: action.clone(),
+                        visits: *visits,
+                        mean_value: finite(
+                            scores[G::player_to_move(state).to_index()] / *visits as f64,
+                        )
+                        .clamp(-1.0, 1.0),
+                        is_proven: false,
+                    })
+                    .collect(),
+                principal_variation: root_parallel.principal_variation.clone(),
+                total_visits: root_parallel
+                    .actions
+                    .iter()
+                    .fold(0_u32, |total, (_, visits, _)| total.saturating_add(*visits)),
+            };
+        }
         let player = G::player_to_move(state).to_index();
         let root = self.index.get(self.root_id);
         let children = root.children();
@@ -328,32 +353,50 @@ where
     }
 
     fn search_report(&self, state: &G::S, selected_action: &G::A) -> SearchReport<G::A> {
-        let Some(run) = self.last_search_run else {
+        let Some(run) = self.last_search_run.as_ref() else {
             return SearchReport::unavailable(SearchReportReason::SearchNotRun);
         };
 
         let player = G::player_to_move(state).to_index();
-        let root = self.index.get(self.root_id);
-        let children = root.children();
-        let mut actions: Vec<_> = (0..children.len())
-            .filter(|&i| children.is_explored(i))
-            .map(|i| {
-                let child_id = children.node_id(i).unwrap();
-                let is_proven = self.index.get(child_id).proven() != Proven::Unproven;
-                let snap = if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
-                    self.index.get(child_id).stats.snapshot(player)
-                } else {
-                    children.snapshot(i, player)
-                };
-                (
-                    i,
-                    children.action(i).clone(),
-                    snap.num_visits,
-                    finite(snap.expected_score()),
-                    is_proven,
-                )
-            })
-            .collect();
+        let root_parallel = run.root_parallel.as_ref();
+        let mut actions: Vec<_> = if let Some(root_parallel) = root_parallel {
+            root_parallel
+                .actions
+                .iter()
+                .enumerate()
+                .map(|(i, (action, visits, scores))| {
+                    (
+                        i,
+                        action.clone(),
+                        *visits,
+                        finite(scores[player] / *visits as f64),
+                        false,
+                    )
+                })
+                .collect()
+        } else {
+            let root = self.index.get(self.root_id);
+            let children = root.children();
+            (0..children.len())
+                .filter(|&i| children.is_explored(i))
+                .map(|i| {
+                    let child_id = children.node_id(i).unwrap();
+                    let is_proven = self.index.get(child_id).proven() != Proven::Unproven;
+                    let snap = if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
+                        self.index.get(child_id).stats.snapshot(player)
+                    } else {
+                        children.snapshot(i, player)
+                    };
+                    (
+                        i,
+                        children.action(i).clone(),
+                        snap.num_visits,
+                        finite(snap.expected_score()),
+                        is_proven,
+                    )
+                })
+                .collect()
+        };
         let all_action_visits: u64 = actions
             .iter()
             .map(|(_, _, visits, _, _)| *visits as u64)
@@ -395,12 +438,22 @@ where
             )
             .collect();
 
-        let pv_truncated = self.pv.len() > PRINCIPAL_VARIATION_LIMIT;
-        let mut principal_variation = self.pv.clone();
+        let pv = root_parallel.map_or(&self.pv, |report| &report.principal_variation);
+        let pv_truncated = pv.len() > PRINCIPAL_VARIATION_LIMIT;
+        let mut principal_variation = pv.clone();
         principal_variation.truncate(PRINCIPAL_VARIATION_LIMIT);
-        let completed_iterations = self.stats.iter_count.load(Relaxed);
+        let completed_iterations = root_parallel.map_or_else(
+            || self.stats.iter_count.load(Relaxed),
+            |report| report.completed_iterations,
+        );
         let mean_depth = (completed_iterations > 0).then(|| {
-            finite(self.stats.accum_depth.load(Relaxed) as f64 / completed_iterations as f64)
+            finite(
+                root_parallel.map_or_else(
+                    || self.stats.accum_depth.load(Relaxed),
+                    |report| report.accum_depth,
+                ) as f64
+                    / completed_iterations as f64,
+            )
         });
         let tt_hit_ratio =
             (run.tt_reads > 0).then(|| finite(run.tt_hits as f64 / run.tt_reads as f64));
@@ -415,6 +468,9 @@ where
             GraphSearch::Dag(GraphStats::Both) => SearchGraphMode::DagBoth,
         };
         let mut warnings = vec![SearchWarning::StructuralDiagnosticsOmitted];
+        if root_parallel.is_some() {
+            warnings.push(SearchWarning::RootParallelPvSingleTree);
+        }
         if actions_truncated {
             warnings.push(SearchWarning::ActionsTruncated);
         }
@@ -423,13 +479,14 @@ where
         }
         SearchReport {
             schema_version: 1,
-            status: if run.partial_root_parallel {
+            status: if root_parallel.is_some() {
                 SearchReportStatus::Partial
             } else {
                 SearchReportStatus::Available
             },
             reason: run
-                .partial_root_parallel
+                .root_parallel
+                .is_some()
                 .then_some(SearchReportReason::RootParallelPvSingleTree),
             elapsed_seconds: Some(run.elapsed_seconds),
             iteration_limit: (self.config.max_iterations != usize::MAX)
@@ -441,18 +498,33 @@ where
             selected_action: Some(selected_action.clone()),
             actions,
             principal_variation,
-            root_visits: if self
-                .config
-                .graph_stats()
-                .is_some_and(GraphStats::uses_nodes)
-            {
-                self.index.get(self.root_id).stats.num_visits()
-            } else {
-                self.root_stats.num_visits()
-            },
-            tree_nodes: self.index.len(),
+            root_visits: root_parallel.map_or_else(
+                || {
+                    if self
+                        .config
+                        .graph_stats()
+                        .is_some_and(GraphStats::uses_nodes)
+                    {
+                        self.index.get(self.root_id).stats.num_visits()
+                    } else {
+                        self.root_stats.num_visits()
+                    }
+                },
+                |report| {
+                    report
+                        .actions
+                        .iter()
+                        .fold(0_u32, |total, (_, visits, _)| total.saturating_add(*visits))
+                },
+            ),
+            tree_nodes: root_parallel.map_or_else(|| self.index.len(), |report| report.tree_nodes),
             mean_depth,
-            max_depth: (completed_iterations > 0).then(|| self.stats.max_depth.load(Relaxed)),
+            max_depth: (completed_iterations > 0).then(|| {
+                root_parallel.map_or_else(
+                    || self.stats.max_depth.load(Relaxed),
+                    |report| report.max_depth,
+                )
+            }),
             graph_mode: Some(graph_mode),
             tt_reads: run.tt_reads,
             tt_writes: run.tt_writes,
