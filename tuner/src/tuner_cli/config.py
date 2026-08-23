@@ -351,7 +351,7 @@ class SearchConfig:
         self._nonnegative_int(
             sampler.startup_trials, "optimizer.sampler.startup_trials"
         )
-        if pruning.enabled and opt.n_workers != 1:
+        if pruning.enabled and opt.n_workers is not None and opt.n_workers != 1:
             raise ValueError("optimizer.pruning.enabled requires optimizer.n_workers=1")
 
     @staticmethod

@@ -86,9 +86,15 @@ class PairResult:
     games: tuple[GameResult, GameResult]
 
 
-TrialReportOutcome = Literal["continue", "complete"]
+TrialReportOutcome = Literal["continue", "complete", "prune"]
 TrialReportReason = Literal[
-    "below_min_pairs", "pruning_disabled", "confidence", "max_pairs"
+    "below_min_pairs",
+    "pruning_disabled",
+    "confidence",
+    "max_pairs",
+    "startup_exempt",
+    "hyperband_keep",
+    "hyperband_pruned",
 ]
 
 
@@ -96,6 +102,9 @@ TrialReportReason = Literal[
 class TrialReportDecision:
     outcome: TrialReportOutcome
     reason: TrialReportReason
+    pruning_exempt: bool = False
+    bracket_id: int | None = None
+    rung_resource: int | None = None
 
 
 @dataclass

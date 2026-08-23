@@ -13,6 +13,7 @@ from tuner_cli import attempt
 from tuner_cli import coordinator
 from tuner_cli.config import (
     OptimizerConfig,
+    PruningPolicy,
     RatingPolicy,
     ResourcePolicy,
     SearchConfig,
@@ -29,6 +30,7 @@ from tuner_cli.evaluation import (
     game_id_for,
     TrialEvaluationState,
 )
+from tuner_cli.hyperband import HyperbandDecision
 from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId
 from tuner_cli import pair_orchestration
 from tuner_cli.pair_orchestration import ScheduledPair
@@ -63,6 +65,21 @@ class _Executor:
         return future
 
 
+class _ScriptedPruningAdapter:
+    def __init__(self, decisions: list[HyperbandDecision]):
+        self.decisions = iter(decisions)
+        self.created = 0
+        self.observed = 0
+
+    def create_trial(self, study):
+        self.created += 1
+        return SimpleNamespace(trial=study.ask())
+
+    def observe_after_report(self, _trial):
+        self.observed += 1
+        return next(self.decisions)
+
+
 def test_open_study_configures_tpe_startup_trials_without_a_pruner(
     monkeypatch, tmp_path: Path
 ):
@@ -86,6 +103,16 @@ def test_open_study_configures_tpe_startup_trials_without_a_pruner(
     assert sampler_kwargs == {"seed": 42, "n_startup_trials": 17}
     assert study_kwargs["sampler"] == "sampler"
     assert "pruner" not in study_kwargs
+
+
+def test_open_study_constructs_the_configured_hyperband_pruner(tmp_path: Path):
+    cfg = SearchConfig._from_dict({"optimizer": {"pruning": {"enabled": True}}})
+
+    study, _storage = coordinator._open_study(tmp_path, "study", cfg)
+
+    assert study.pruner.__class__.__name__ == "HyperbandPruner"
+    assert study.pruner._min_resource == cfg.optimizer.resource.min_pairs
+    assert study.pruner._max_resource == cfg.optimizer.resource.max_pairs
 
 
 def _active(study) -> attempt._ActiveTrial:
@@ -156,6 +183,354 @@ def _context(
 ) -> attempt._AttemptContext:
     return attempt._AttemptContext(
         cfg, Path("game-nim"), pool, pool_path, study, writer, "sha", None
+    )
+
+
+def _pruning_config(
+    *, min_pairs: int = 1, max_pairs: int = 3, sigma_stop: float | None = None
+) -> SearchConfig:
+    return SearchConfig(
+        optimizer=OptimizerConfig(
+            resource=ResourcePolicy(min_pairs=min_pairs, max_pairs=max_pairs),
+            rating=RatingPolicy(sigma_stop=sigma_stop),
+            pruning=PruningPolicy(enabled=True),
+        ),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+
+
+def _event_records(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _tell_calls(monkeypatch, study: optuna.Study) -> list[tuple[tuple, dict]]:
+    calls: list[tuple[tuple, dict]] = []
+    original_tell = study.tell
+
+    def tell(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_tell(*args, **kwargs)
+
+    monkeypatch.setattr(study, "tell", tell)
+    return calls
+
+
+def test_pruning_uses_one_automatic_worker_and_snapshots_the_adapter_trial():
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config()
+    adapter = _ScriptedPruningAdapter([])
+
+    active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
+
+    assert attempt.worker_count(cfg) == 1
+    assert adapter.created == 1
+    assert active.hyperband_trial is not None
+
+
+def test_disabled_pruning_reports_then_completes_and_only_completion_updates_pool(
+    monkeypatch, tmp_path: Path
+):
+    study = optuna.create_study(direction="maximize")
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(
+            n_workers=1,
+            resource=ResourcePolicy(min_pairs=1, max_pairs=2),
+            rating=RatingPolicy(sigma_stop=None),
+        ),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+    active = _active(study)
+    active.evaluation = TrialEvaluationState(
+        cfg.optimizer.resource, cfg.optimizer.rating
+    )
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    inserted: list[object] = []
+    monkeypatch.setattr(
+        attempt, "save_inserted_pool_anchor", lambda *args: inserted.append(args)
+    )
+    tells = _tell_calls(monkeypatch, study)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = _context(cfg, study, writer, pool, tmp_path / "pool.json")
+        scheduled = ScheduledPair(active, _task(active))
+        assert attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+        scheduled = futures.popitem()[1]
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+
+    records = _event_records(event_path)
+    reports = [r["payload"] for r in records if r["event_type"] == "trial_reported"]
+    assert [report["completed_pairs"] for report in reports] == [1, 2]
+    assert [report["reason"] for report in reports] == ["pruning_disabled", "max_pairs"]
+    assert [r["event_type"] for r in records].count("trial_completed") == 1
+    assert not futures
+    assert len(executor.calls) == len(reports) - 1 == 1
+    assert len(tells) == len(inserted) == 1
+
+
+def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config(min_pairs=2)
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 4, 2)])
+    active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    tells = _tell_calls(monkeypatch, study)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = attempt._AttemptContext(
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            None,
+            adapter,
+        )
+        scheduled = ScheduledPair(active, _task(active))
+        assert attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+        scheduled = futures.popitem()[1]
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+
+    records = _event_records(event_path)
+    reports = [r["payload"] for r in records if r["event_type"] == "trial_reported"]
+    pruned = [r["payload"] for r in records if r["event_type"] == "trial_pruned"]
+    assert [report["completed_pairs"] for report in reports] == [1, 2]
+    assert [report["reason"] for report in reports] == [
+        "below_min_pairs",
+        "hyperband_pruned",
+    ]
+    assert adapter.observed == 1
+    assert len(tells) == len(pruned) == 1
+    assert pruned[0]["bracket_id"] == 4
+    assert pruned[0]["rung_resource"] == 2
+    assert not futures
+    assert len(executor.calls) == 1
+
+
+def test_startup_exempt_trial_is_not_delegated_before_max_completion(
+    monkeypatch, tmp_path: Path
+):
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config(max_pairs=2)
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, True, None, None)])
+    active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    tells = _tell_calls(monkeypatch, study)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = attempt._AttemptContext(
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            None,
+            adapter,
+        )
+        scheduled = ScheduledPair(active, _task(active))
+        assert attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+        scheduled = futures.popitem()[1]
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+
+    reports = [
+        r["payload"]
+        for r in _event_records(event_path)
+        if r["event_type"] == "trial_reported"
+    ]
+    assert [report["reason"] for report in reports] == ["startup_exempt", "max_pairs"]
+    assert reports[0]["pruning_exempt"] is True
+    assert adapter.observed == 1
+    assert len(tells) == 1
+    assert not futures
+    assert len(executor.calls) == 1
+
+
+def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output(
+    monkeypatch, tmp_path: Path
+):
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config()
+    adapter = _ScriptedPruningAdapter(
+        [HyperbandDecision(False, False, 0, 1), HyperbandDecision(True, False, 0, 2)]
+    )
+    active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    tells = _tell_calls(monkeypatch, study)
+    legacy_or_pool: list[str] = []
+    monkeypatch.setattr(
+        attempt, "emit_legacy_trial", lambda *args: legacy_or_pool.append("trial")
+    )
+    monkeypatch.setattr(
+        attempt,
+        "emit_legacy_incumbent",
+        lambda *args: legacy_or_pool.append("incumbent"),
+    )
+    monkeypatch.setattr(
+        attempt,
+        "save_inserted_pool_anchor",
+        lambda *args: legacy_or_pool.append("pool"),
+    )
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = attempt._AttemptContext(
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            None,
+            adapter,
+        )
+        scheduled = ScheduledPair(active, _task(active))
+        assert attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+        scheduled = futures.popitem()[1]
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+
+    records = _event_records(event_path)
+    reports = [r["payload"] for r in records if r["event_type"] == "trial_reported"]
+    terminals = [r for r in records if r["event_type"] == "trial_pruned"]
+    assert [report["reason"] for report in reports] == [
+        "hyperband_keep",
+        "hyperband_pruned",
+    ]
+    assert [report["completed_pairs"] for report in reports] == [1, 2]
+    assert len(tells) == len(terminals) == 1
+    assert terminals[0]["payload"]["score"] == reports[-1]["score"]
+    assert not legacy_or_pool
+    assert not futures
+    assert len(executor.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("sigma_stop", "max_pairs", "expected_reason"),
+    [(100.0, 3, "confidence"), (None, 1, "max_pairs")],
+)
+def test_completion_precedes_a_pending_prune(
+    monkeypatch, tmp_path: Path, sigma_stop, max_pairs, expected_reason
+):
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config(sigma_stop=sigma_stop, max_pairs=max_pairs)
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 0, 1)])
+    active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
+    executor, futures = _Executor(), {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    tells = _tell_calls(monkeypatch, study)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = attempt._AttemptContext(
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            None,
+            adapter,
+        )
+        scheduled = ScheduledPair(active, _task(active))
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+
+    records = _event_records(event_path)
+    reports = [r["payload"] for r in records if r["event_type"] == "trial_reported"]
+    assert reports[0]["reason"] == expected_reason
+    assert adapter.observed == 0
+    assert len(tells) == 1
+    assert [r["event_type"] for r in records][-2:] == [
+        "trial_reported",
+        "trial_completed",
+    ]
+    assert not futures
+    assert not executor.calls
+
+
+def test_pruned_terminal_replenishes_the_sequential_scheduler(
+    monkeypatch, tmp_path: Path
+):
+    study = optuna.create_study(direction="maximize")
+    cfg = _pruning_config()
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 0, 1)])
+    executor, futures, active = _Executor(), {}, {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    tells = _tell_calls(monkeypatch, study)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        context = attempt._AttemptContext(
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            None,
+            adapter,
+        )
+        attempt.schedule_trial(
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+            adapter,
+        )
+        future, scheduled = futures.popitem()
+        assert not attempt.continue_trial(
+            executor, futures, scheduled, _result(scheduled.task), context
+        )
+        active.pop(scheduled.active_trial.trial_id)
+        remaining = attempt.replenish_trial(2, executor, futures, active, context)
+
+    assert remaining == 1
+    assert len(tells) == 1
+    assert adapter.created == 2
+    assert len(active) == len(futures) == 1
+    assert (
+        next(iter(futures.values())).active_trial.trial_id
+        != scheduled.active_trial.trial_id
     )
 
 
@@ -371,7 +746,9 @@ def test_partial_pair_cannot_emit_completion_or_trial_report(tmp_path: Path):
     assert (tmp_path / "events.jsonl").read_text() == ""
 
 
-def test_complete_pairs_report_consecutive_resources_before_max_terminal(tmp_path: Path):
+def test_complete_pairs_report_consecutive_resources_before_max_terminal(
+    tmp_path: Path,
+):
     study = optuna.create_study(direction="maximize")
     cfg = SearchConfig(
         optimizer=OptimizerConfig(

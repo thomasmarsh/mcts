@@ -96,10 +96,19 @@ def test_legacy_eta_sets_reduction_factor_but_conflicting_aliases_fail():
         ({"sampler": {"kind": "random"}}, "must be 'tpe'"),
         ({"pruning": {"kind": "median"}}, "must be 'hyperband'"),
         ({"sampler": {"startup_trials": -1}}, "nonnegative integer"),
-        ({"pruning": {"enabled": True}}, "requires optimizer.n_workers=1"),
+        (
+            {"n_workers": 2, "pruning": {"enabled": True}},
+            "requires optimizer.n_workers=1",
+        ),
         ({"resource": {"minimum_pairs": 5}}, "unsupported keys"),
     ],
 )
 def test_invalid_policy_values_are_rejected(optimizer, message):
     with pytest.raises(ValueError, match=message):
         SearchConfig._from_dict({"optimizer": optimizer})
+
+
+def test_pruning_resolves_automatic_workers_sequentially():
+    cfg = SearchConfig._from_dict({"optimizer": {"pruning": {"enabled": True}}})
+
+    assert cfg.optimizer.n_workers is None

@@ -19,6 +19,7 @@ from .attempt import (
 from .callback import _resolve_git_sha
 from .config import SearchConfig
 from .lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId, make_attempt_id
+from .hyperband import OptunaHyperbandAdapter
 from .manifest import build_session_manifest, write_manifest_atomic
 from .pool import Anchor, OpponentPool
 from .target import preflight_check
@@ -45,7 +46,8 @@ def run_optimization(
     _resolve_search_space(cfg, binary)
     pool_path = output_dir / "pool.json"
     pool = _load_or_initialize_pool(cfg, pool_path)
-    study, storage = _open_study(output_dir, run_id, cfg)
+    pruning_adapter = _pruning_adapter(cfg)
+    study, storage = _open_study(output_dir, run_id, cfg, pruning_adapter)
     resolved_sha = git_sha or _resolve_git_sha()
     manifest, manifest_path = _write_session_manifest(
         cfg, game_kind, binary, resolved_sha, run_id, storage, output_dir
@@ -70,6 +72,7 @@ def run_optimization(
             lifecycle=lifecycle,
             resolved_sha=resolved_sha,
             trace_path=trace_path,
+            pruning_adapter=pruning_adapter,
         )
     return study, pool
 
@@ -98,11 +101,19 @@ def _load_or_initialize_pool(cfg: SearchConfig, pool_path: Path) -> OpponentPool
 
 
 def _open_study(
-    output_dir: Path, run_id: str, cfg: SearchConfig
+    output_dir: Path,
+    run_id: str,
+    cfg: SearchConfig,
+    pruning_adapter: OptunaHyperbandAdapter | None = None,
 ) -> tuple[optuna.Study, str]:
     """Open the run-compatible persistent Optuna study."""
     output_dir.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{(output_dir / 'study.db').resolve()}"
+    if pruning_adapter is None:
+        pruning_adapter = _pruning_adapter(cfg)
+    kwargs: dict[str, Any] = {}
+    if pruning_adapter is not None:
+        kwargs["pruner"] = pruning_adapter.pruner
     study = optuna.create_study(
         direction="maximize",
         study_name=run_id,
@@ -112,8 +123,16 @@ def _open_study(
             seed=cfg.optimizer.seed,
             n_startup_trials=cfg.optimizer.sampler.startup_trials,
         ),
+        **kwargs,
     )
     return study, storage
+
+
+def _pruning_adapter(cfg: SearchConfig) -> OptunaHyperbandAdapter | None:
+    """Construct the one sequential-pruning boundary when configured."""
+    if not cfg.optimizer.pruning.enabled:
+        return None
+    return OptunaHyperbandAdapter(cfg.optimizer.resource, cfg.optimizer.pruning)
 
 
 def _write_session_manifest(
@@ -186,6 +205,7 @@ def _run_attempt(
     lifecycle: LifecycleWriter,
     resolved_sha: str,
     trace_path: str | None,
+    pruning_adapter: OptunaHyperbandAdapter | None = None,
 ) -> None:
     futures: dict[Any, _ActiveTrial] = {}
     active: dict[TrialId, _ActiveTrial] = {}
@@ -208,6 +228,7 @@ def _run_attempt(
             study,
             lifecycle,
             trace_path,
+            pruning_adapter,
         )
         drain_scheduled_trials(
             remaining,
@@ -223,6 +244,7 @@ def _run_attempt(
             resolved_sha,
             trace_path,
             wait,
+            pruning_adapter,
         )
 
         lifecycle.emit(
