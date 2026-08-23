@@ -2,7 +2,7 @@ use crate::family_catalog::{family_choices, TrialParams};
 use crate::*;
 use game_host::{ConfiguredCandidateSide, ConfiguredOutcome, HostError, TunerInfo};
 use game_nim::Nim;
-use mcts::game::Game;
+use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
 use mcts::strategies::mcts::{
     node::QInit, simulate, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
@@ -12,6 +12,76 @@ use serde_json::{json, Value};
 
 fn nim_action_value(state: &<Nim as Game>::S, action: &<Nim as Game>::A) -> Value {
     Value::String(Nim::notation(state, action))
+}
+
+fn nim_trace_state_value(_: &<Nim as Game>::S) -> Value {
+    json!({"canonical": "nim"})
+}
+
+fn nim_trace_move_value(_: &<Nim as Game>::S, action: &<Nim as Game>::A) -> Option<Value> {
+    Some(serde_json::to_value(action).expect("Nim action always serializes"))
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TraceState(u8);
+
+impl std::fmt::Display for TraceState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "trace state {}", self.0)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize)]
+struct TraceAction;
+
+#[derive(Clone, Debug)]
+enum TracePlayer {
+    First,
+    Second,
+}
+
+impl PlayerIndex for TracePlayer {
+    fn to_index(&self) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Second => 1,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TraceGame;
+
+impl Game for TraceGame {
+    type S = TraceState;
+    type A = TraceAction;
+    type P = TracePlayer;
+
+    fn apply(state: Self::S, _: &Self::A) -> Self::S {
+        TraceState(state.0 + 1)
+    }
+
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        if state.0 < 2 {
+            actions.push(TraceAction);
+        }
+    }
+
+    fn is_terminal(state: &Self::S) -> bool {
+        state.0 == 2
+    }
+
+    fn winner(_: &Self::S) -> Option<Self::P> {
+        None
+    }
+
+    fn player_to_move(state: &Self::S) -> Self::P {
+        if state.0 == 0 {
+            TracePlayer::First
+        } else {
+            TracePlayer::Second
+        }
+    }
 }
 
 #[test]
@@ -84,6 +154,79 @@ fn test_cost_from_losses_hand_verified() {
 #[test]
 fn test_cost_from_losses_zero_rounds_is_zero() {
     assert_eq!(cost_from_losses(0, 0), 0.0);
+}
+
+#[test]
+fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
+    let path = std::env::temp_dir().join(format!(
+        "mcts_tune_renderer_trace_{}_{}.jsonl",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let params = json!({"family": "random", "q_init": "Infinity"});
+    let budget = SearchBudget {
+        max_iterations: Some(1),
+        ..Default::default()
+    };
+    let mut records = Vec::new();
+    strategy_tune_eval::<TraceGame>(
+        &params,
+        1,
+        Some(7),
+        false,
+        budget,
+        || Box::new(mcts::strategies::random::Random::<TraceGame>::new()),
+        TraceState::default(),
+        |state| json!({"position": state.0}),
+        |state, _| Some(json!({"kind": "advance", "from": state.0})),
+        Some(&path),
+        &mut |record| {
+            records.push(record);
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let rows: Vec<Value> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(rows.len(), 6);
+    for (game, rows) in rows.chunks_exact(3).enumerate() {
+        assert!(rows.iter().all(|row| row["state"].is_object()));
+        assert!(rows.iter().all(|row| row["trace_schema_version"] == 1));
+        assert_eq!(rows[0]["ply"], 0);
+        assert!(rows[0]["mv"].is_null());
+        assert!(rows[0]["player"].is_null());
+        assert!(rows[0]["search"].is_null());
+        for row in &rows[1..] {
+            assert!(row["mv"].is_object());
+            assert!(row["search"].is_object());
+            assert_eq!(
+                row["state"]["position"],
+                row["mv"]["from"].as_u64().unwrap() + 1
+            );
+        }
+        let players = if game == 0 {
+            ["candidate", "baseline"]
+        } else {
+            ["baseline", "candidate"]
+        };
+        for (row, player) in rows[1..].iter().zip(players) {
+            assert_eq!(row["player"], player);
+            assert_eq!(row["search"]["status"], "unavailable");
+            assert_eq!(
+                row["search"]["reason"], "strategy_unsupported",
+                "{player} report must be explicit rather than null"
+            );
+        }
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 // Bounded, unlike production `baseline_build` callers (which always pass
@@ -166,6 +309,8 @@ fn configured_eval_streams_alternating_results_and_matches_aggregate() {
         budget,
         || build_search::<Nim>(&params, 0, false, &budget).unwrap(),
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut sink,
     )
@@ -232,6 +377,8 @@ fn configured_eval_sink_error_stops_before_later_games() {
         budget,
         || build_search::<Nim>(&params, 0, false, &budget).unwrap(),
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut sink,
     )
@@ -277,6 +424,8 @@ fn test_tune_eval_rejects_params_missing_required_field() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -299,6 +448,8 @@ fn zero_round_internal_validation_builds_candidate_without_playing() {
         },
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -318,6 +469,8 @@ fn test_tune_eval_rejects_unknown_schedule() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -337,6 +490,8 @@ fn test_tune_eval_rejects_unknown_final_action() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -356,6 +511,8 @@ fn test_tune_eval_rejects_unknown_contempt() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -376,6 +533,8 @@ fn test_tune_eval_rejects_contempt_on_missing_contempt_factor() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -395,6 +554,8 @@ fn test_tune_eval_rejects_unknown_family() {
         SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -424,6 +585,8 @@ fn assert_family_round_trips(mut params: Value) {
         candidate_budget,
         baseline,
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )
@@ -1161,6 +1324,8 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
                 .expect("baseline_params is a valid ucb1 config")
         },
         <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
         None,
         &mut |_| Ok(()),
     )

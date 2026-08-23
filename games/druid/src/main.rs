@@ -31,8 +31,8 @@ const TUNE_EVAL_ROUNDS: u32 = 20;
 const PRESET_SEED: u64 = 0;
 
 use game_druid::{
-    apply_placed, Druid, HashedState, Move, Orientation, Piece, PieceKind, PlacedPiece, Player,
-    Size, Square, State,
+    apply_placed, Druid, HashedState, Move, Orientation, Pending, Piece, PieceKind, PlacedPiece,
+    Player, Size, Square, State,
 };
 use mcts::game::Game;
 use mcts::strategies::Search;
@@ -154,6 +154,18 @@ struct GameView<'a> {
 
 fn state_to_value(state: &HashedState) -> Value {
     serde_json::to_value(state.state()).expect("State always serializes")
+}
+
+fn trace_move_to_value(state: &HashedState, action: &Move) -> Option<Value> {
+    let Move::Cell(cell) = action else {
+        return None;
+    };
+    let piece = match state.state().pending {
+        Pending::Piece(PieceKind::Sarsen) => Piece::Sarsen,
+        Pending::Oriented(orientation) => Piece::Lintel(orientation),
+        Pending::None | Pending::Piece(PieceKind::Lintel) => return None,
+    };
+    Some(serde_json::to_value(PlacedPiece(piece, *cell)).expect("PlacedPiece always serializes"))
 }
 
 /// Deserializes a client-supplied state `Value` back into a `HashedState`.
@@ -458,6 +470,8 @@ impl GameAdapter for DruidAdapter {
                         .expect("baseline_config already validated above")
                 },
                 initial_state,
+                state_to_value,
+                trace_move_to_value,
                 trace_path.as_deref(),
                 on_game,
             )?
@@ -516,6 +530,8 @@ impl GameAdapter for DruidAdapter {
                         .expect("games/druid/presets.json's baseline preset must build")
                 },
                 initial_state,
+                state_to_value,
+                trace_move_to_value,
                 trace_path.as_deref(),
                 on_game,
             )?
@@ -536,6 +552,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_converter_emits_only_complete_placed_piece_moves() {
+        let state = initial_state_from_config(None).unwrap();
+        let choose_piece = Move::Piece(PieceKind::Sarsen);
+        assert_eq!(trace_move_to_value(&state, &choose_piece), None);
+
+        let state = Druid::apply(state, &choose_piece);
+        let mut actions = Vec::new();
+        Druid::generate_actions(&state, &mut actions);
+        let cell = actions
+            .into_iter()
+            .find(|action| matches!(action, Move::Cell(_)))
+            .expect("a sarsen choice has a legal placement");
+        let Move::Cell(index) = cell else {
+            unreachable!();
+        };
+        assert_eq!(
+            trace_move_to_value(&state, &cell),
+            Some(serde_json::to_value(PlacedPiece(Piece::Sarsen, index)).unwrap())
+        );
+    }
 
     #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts (seconds for small games, tens of minutes for large boards like druid) -- mcts-tune's own crate has a fast per-family unit suite covering dispatch; this only additionally proves this game's own Game impl round-trips end to end. Run explicitly with `cargo test --bins -- --ignored`."]
     #[test]

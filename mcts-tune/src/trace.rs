@@ -7,10 +7,9 @@
 //! adapter machinery). A `Game::S` has no `Serialize` bound -- only
 //! `Display` -- so there's no wire-JSON shape to convert it to without
 //! pulling in a per-game `GameAdapter`, which this crate is not going to
-//! start depending on. Instead, `MoveTracer` only needs a *destination*
-//! (a file path): it renders each state via `Display` and appends one JSON
-//! line per ply. `Game::A: Action` already requires `Serialize`, so moves
-//! (unlike states) round-trip as real structured JSON, not text.
+//! start depending on. Instead, the concrete game adapter supplies the
+//! canonical state and move JSON while `MoveTracer` only owns the destination
+//! and JSONL sequencing.
 //!
 //! The emitted lines use the same `{"type": "move", ...}` tagged shape as
 //! `mcts_bench::log::LogRecord::Move`, so a run's existing ingest loop can
@@ -22,7 +21,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use game_host::SearchReport;
+use serde_json::Value;
 
 /// Appends move-trace JSON lines to a file, one per ply. Opens its
 /// destination once and keeps it open (append mode) for the lifetime of
@@ -64,24 +64,26 @@ impl MoveTracer {
         seq
     }
 
-    /// Writes one ply. `state` is rendered via `Display`; `mv` (the move
-    /// applied to reach `state`, `None` for the initial ply) via
-    /// `Serialize`.
-    pub fn write_ply<S: std::fmt::Display, A: Serialize>(
+    /// Writes one already-encoded canonical game-host ply. `mv` and `search`
+    /// are null only for the initial state.
+    pub fn write_ply(
         &mut self,
         game_seq: u64,
         ply: u32,
-        state: &S,
-        mv: Option<&A>,
+        state: Value,
+        mv: Option<Value>,
         player: Option<&str>,
+        search: Option<SearchReport>,
     ) {
         let line = serde_json::json!({
             "type": "move",
+            "trace_schema_version": 1,
             "game_seq": game_seq,
             "ply": ply,
-            "state": state.to_string(),
-            "mv": mv.map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null)),
+            "state": state,
+            "mv": mv,
             "player": player,
+            "search": search,
         });
         let mut text = line.to_string();
         text.push('\n');
@@ -109,13 +111,44 @@ mod tests {
 
         let mut tracer = MoveTracer::open(&path).unwrap();
         let seq = tracer.start_game();
-        tracer.write_ply::<String, u32>(seq, 0, &"initial".to_owned(), None, None);
+        tracer.write_ply(
+            seq,
+            0,
+            serde_json::json!({"turn": "first"}),
+            None,
+            None,
+            None,
+        );
         tracer.write_ply(
             seq,
             1,
-            &"after one move".to_owned(),
-            Some(&7u32),
+            serde_json::json!({"turn": "second"}),
+            Some(serde_json::json!({"ptn": "a1"})),
             Some("candidate"),
+            Some(SearchReport {
+                schema_version: 1,
+                status: game_host::SearchReportStatus::Unavailable,
+                reason: Some(game_host::SearchReportReason::StrategyUnsupported),
+                elapsed_seconds: None,
+                iteration_limit: None,
+                time_limit_seconds: None,
+                completed_iterations: 0,
+                termination: None,
+                selected_action: None,
+                actions: vec![],
+                principal_variation: vec![],
+                root_visits: 0,
+                tree_nodes: 0,
+                mean_depth: None,
+                max_depth: None,
+                graph_mode: None,
+                tt_reads: 0,
+                tt_writes: 0,
+                tt_hits: 0,
+                tt_hit_ratio: None,
+                iterations_per_second: None,
+                warnings: vec![],
+            }),
         );
         drop(tracer);
 
@@ -127,13 +160,16 @@ mod tests {
         assert_eq!(first["type"], "move");
         assert_eq!(first["game_seq"], seq);
         assert_eq!(first["ply"], 0);
-        assert_eq!(first["state"], "initial");
+        assert_eq!(first["trace_schema_version"], 1);
+        assert_eq!(first["state"], serde_json::json!({"turn": "first"}));
         assert!(first["mv"].is_null());
+        assert!(first["search"].is_null());
 
         let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(second["ply"], 1);
-        assert_eq!(second["mv"], 7);
+        assert_eq!(second["mv"], serde_json::json!({"ptn": "a1"}));
         assert_eq!(second["player"], "candidate");
+        assert_eq!(second["search"]["status"], "unavailable");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

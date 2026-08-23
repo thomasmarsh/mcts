@@ -430,6 +430,10 @@ impl GameAdapter for GonnectAdapter {
                         .expect("baseline_config already validated above")
                 },
                 initial_state,
+                state_to_value,
+                |_, action| {
+                    Some(serde_json::to_value(action).expect("Gonnect action always serializes"))
+                },
                 trace_path.as_deref(),
                 on_game,
             )?
@@ -453,6 +457,10 @@ impl GameAdapter for GonnectAdapter {
                     })
                 },
                 initial_state,
+                state_to_value,
+                |_, action| {
+                    Some(serde_json::to_value(action).expect("Gonnect action always serializes"))
+                },
                 trace_path.as_deref(),
                 on_game,
             )?

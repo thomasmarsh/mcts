@@ -329,6 +329,8 @@ impl GameAdapter for CongoAdapter {
             baseline_config,
             max_iterations,
             max_time_ms,
+            state_to_value,
+            |_, action| Some(move_to_value(action)),
             trace_path,
             on_game,
         )

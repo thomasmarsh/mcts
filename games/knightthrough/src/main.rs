@@ -270,6 +270,13 @@ impl GameAdapter for KtAdapter {
             baseline_config,
             max_iterations,
             max_time_ms,
+            state_to_value,
+            |_, action| {
+                Some(Value::Array(vec![
+                    Value::from(action.0 as u64),
+                    Value::from(action.1 as u64),
+                ]))
+            },
             trace_path,
             on_game,
         )

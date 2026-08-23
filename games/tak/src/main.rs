@@ -258,6 +258,8 @@ impl GameAdapter for TakAdapter {
             baseline_config,
             max_iterations,
             max_time_ms,
+            state_to_value,
+            |_, action| Some(Value::String(move_to_ptn(*action))),
             trace_path,
             on_game,
         )

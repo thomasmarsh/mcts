@@ -291,6 +291,8 @@ impl GameAdapter for OthAdapter {
             baseline_config,
             max_iterations,
             max_time_ms,
+            state_to_value,
+            |_, action| Some(Value::from(action.0 as u64)),
             trace_path,
             on_game,
         )

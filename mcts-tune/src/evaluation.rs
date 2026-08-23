@@ -1,6 +1,6 @@
 use game_host::{
     ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
-    HostError,
+    HostError, SearchReport,
 };
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::Search;
@@ -9,6 +9,9 @@ use serde_json::{json, Value};
 use crate::{
     build_search, family_catalog::TrialParams, presets, search::make_candidate, trace, SearchBudget,
 };
+
+type StateEncoder<'a, G> = dyn Fn(&<G as Game>::S) -> Value + 'a;
+type MoveEncoder<'a, G> = dyn Fn(&<G as Game>::S, &<G as Game>::A) -> Option<Value> + 'a;
 
 /// Result of one `strategy_tune_eval` call: `cost` is what tuner minimizes
 /// (the candidate's loss rate against the baseline); `wins`/`losses`/`draws`
@@ -58,6 +61,8 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     candidate_budget: SearchBudget,
     baseline_build: impl Fn() -> Box<dyn Search<G = G>>,
     initial_state: G::S,
+    state_to_value: impl Fn(&G::S) -> Value,
+    move_to_value: impl Fn(&G::S, &G::A) -> Option<Value>,
     trace_path: Option<&std::path::Path>,
     on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<TuneEvalOutcome, HostError> {
@@ -91,6 +96,8 @@ pub fn strategy_tune_eval<G: Game + 'static>(
             candidate.as_mut(),
             baseline.as_mut(),
             initial_state.clone(),
+            &state_to_value,
+            &move_to_value,
             tracer.as_mut(),
             round,
             seq,
@@ -112,6 +119,8 @@ pub fn strategy_tune_eval<G: Game + 'static>(
             baseline.as_mut(),
             candidate.as_mut(),
             initial_state.clone(),
+            &state_to_value,
+            &move_to_value,
             tracer.as_mut(),
             round,
             seq,
@@ -162,6 +171,8 @@ pub fn generic_tune_eval<G: Game + 'static>(
     baseline_config: Option<Value>,
     max_iterations: Option<usize>,
     max_time_ms: Option<u64>,
+    state_to_value: impl Fn(&G::S) -> Value,
+    move_to_value: impl Fn(&G::S, &G::A) -> Option<Value>,
     trace_path: Option<std::path::PathBuf>,
     on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<Value, HostError> {
@@ -197,6 +208,8 @@ pub fn generic_tune_eval<G: Game + 'static>(
                     .expect("baseline_config already validated above")
             },
             Default::default(),
+            &state_to_value,
+            &move_to_value,
             trace_path.as_deref(),
             on_game,
         )?
@@ -223,6 +236,8 @@ pub fn generic_tune_eval<G: Game + 'static>(
                     })
             },
             Default::default(),
+            &state_to_value,
+            &move_to_value,
             trace_path.as_deref(),
             on_game,
         )?
@@ -261,6 +276,8 @@ fn play_one<G: Game>(
     first: &mut dyn Search<G = G>,
     second: &mut dyn Search<G = G>,
     initial_state: G::S,
+    state_to_value: &StateEncoder<'_, G>,
+    move_to_value: &MoveEncoder<'_, G>,
     mut tracer: Option<&mut trace::MoveTracer>,
     round: u32,
     seq: u64,
@@ -271,31 +288,36 @@ fn play_one<G: Game>(
     let game_seq = tracer.as_mut().map(|t| t.start_game());
     let mut state = initial_state;
     let mut ply = 0u32;
+    let mut trace_ply = 0u32;
     let mut measurements = Vec::new();
 
     if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
-        t.write_ply::<G::S, G::A>(seq, ply, &state, None, None);
+        t.write_ply(seq, ply, state_to_value(&state), None, None, None);
     }
 
     while !G::is_terminal(&state) {
         let mover = G::player_to_move(&state).to_index();
         let pre_move_state = state.clone();
         let move_started = std::time::Instant::now();
-        let action = if mover == 0 {
-            first.choose_action(&state)
+        let (action, search): (G::A, SearchReport) = if mover == 0 {
+            crate::choose_action_with_report(first, &state, |action| {
+                move_to_value(&pre_move_state, action).unwrap_or(Value::Null)
+            })
         } else {
-            second.choose_action(&state)
+            crate::choose_action_with_report(second, &state, |action| {
+                move_to_value(&pre_move_state, action).unwrap_or(Value::Null)
+            })
         };
-        let visits = if mover == 0 {
-            first.root_report(&pre_move_state).total_visits
-        } else {
-            second.root_report(&pre_move_state).total_visits
-        };
+        let visits = search.root_visits;
         state = G::apply(state, &action);
         ply += 1;
         measurements.push((mover, visits as u64, move_started.elapsed()));
 
-        if let (Some(t), Some(seq)) = (tracer.as_mut(), game_seq) {
+        if let (Some(t), Some(seq), Some(mv)) = (
+            tracer.as_mut(),
+            game_seq,
+            move_to_value(&pre_move_state, &action),
+        ) {
             let player = if mover == 0 {
                 if candidate_side == ConfiguredCandidateSide::First {
                     "candidate"
@@ -309,7 +331,15 @@ fn play_one<G: Game>(
                     "baseline"
                 }
             };
-            t.write_ply(seq, ply, &state, Some(&action), Some(player));
+            t.write_ply(
+                seq,
+                trace_ply + 1,
+                state_to_value(&state),
+                Some(mv),
+                Some(player),
+                Some(search),
+            );
+            trace_ply += 1;
         }
     }
     let outcome = match G::winner(&state) {

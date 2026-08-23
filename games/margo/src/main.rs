@@ -347,6 +347,10 @@ impl GameAdapter for MargoAdapter {
                             .expect("baseline_config already validated above")
                     },
                     initial_state,
+                    state_to_value,
+                    |_, action| {
+                        Some(serde_json::to_value(action).expect("Margo action always serializes"))
+                    },
                     trace_path.as_deref(),
                     on_game,
                 )?
@@ -366,6 +370,10 @@ impl GameAdapter for MargoAdapter {
                     })
                     },
                     initial_state,
+                    state_to_value,
+                    |_, action| {
+                        Some(serde_json::to_value(action).expect("Margo action always serializes"))
+                    },
                     trace_path.as_deref(),
                     on_game,
                 )?

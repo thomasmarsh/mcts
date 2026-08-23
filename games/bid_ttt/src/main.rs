@@ -262,6 +262,13 @@ impl GameAdapter for BttAdapter {
             baseline_config,
             max_iterations,
             max_time_ms,
+            state_to_value,
+            |_, action| {
+                Some(
+                    serde_json::to_value(action)
+                        .expect("BiddingTicTacToe action always serializes"),
+                )
+            },
             trace_path,
             on_game,
         )

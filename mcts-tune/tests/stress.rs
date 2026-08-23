@@ -37,6 +37,8 @@ fn test_family_meta_mcts_round_trips() {
         mcts_tune::SearchBudget::default(),
         baseline,
         <Nim as Game>::S::default(),
+        |_| json!({"canonical": "nim"}),
+        |_, action| Some(serde_json::to_value(action).expect("Nim action always serializes")),
         None,
         &mut |_| Ok(()),
     )
