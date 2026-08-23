@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, services::ServeDir, timeout::TimeoutLayer};
 
-use adapter::{AdapterError, AiPresetInfo, Analysis, GameAdapter};
+use adapter::{AdapterError, AiMoveResult, AiPresetInfo, Analysis, GameAdapter};
+use game_host::SearchReport;
 
 // A stateless server still shouldn't let a client tie up a `spawn_blocking`
 // thread indefinitely -- this bounds `ai_move`/`analyze` well above the
@@ -181,6 +182,18 @@ struct AiMoveRequest {
     custom: Option<Value>,
 }
 
+/// `ai_move` preserves the host's final-search report while adding the view
+/// the HTTP client needs to render the returned state.
+#[derive(Serialize)]
+struct AiMoveResponse {
+    #[serde(rename = "move")]
+    mv: Value,
+    state: Value,
+    view: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search: Option<SearchReport>,
+}
+
 // Runs on a blocking thread -- the search is CPU-bound for its whole
 // thinking budget (up to Master's 8s) and would otherwise stall the async
 // executor. Unlike the old session-`Mutex`-based server, there's no shared
@@ -191,7 +204,7 @@ async fn post_ai_move(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<AiMoveRequest>,
-) -> Result<Json<Value>, AdapterError> {
+) -> Result<Json<AiMoveResponse>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
     let search_adapter = adapter.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -199,10 +212,14 @@ async fn post_ai_move(
     })
     .await
     .map_err(|e| AdapterError::internal(e.to_string()))??;
-    let view = adapter.view(&result.state)?;
-    Ok(Json(
-        json!({ "move": result.mv, "state": result.state, "view": view }),
-    ))
+    let AiMoveResult { mv, state, search } = result;
+    let view = adapter.view(&state)?;
+    Ok(Json(AiMoveResponse {
+        mv,
+        state,
+        view,
+        search,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -401,6 +418,10 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode as HttpStatusCode};
+    use game_host::{
+        AnalysisAction, SearchGraphMode, SearchReportReason, SearchReportStatus, SearchTermination,
+        SearchWarning,
+    };
     use std::time::Instant;
     use tower::ServiceExt;
 
@@ -413,6 +434,135 @@ mod tests {
                 .get_or_init(|| Arc::new(adapter::registry()))
                 .clone(),
         }))
+    }
+
+    fn transport_report(status: SearchReportStatus) -> SearchReport {
+        let (reason, warnings) = match status {
+            SearchReportStatus::Available => (None, vec![]),
+            SearchReportStatus::Partial => (
+                Some(SearchReportReason::RootParallelPvSingleTree),
+                vec![SearchWarning::RootParallelPvSingleTree],
+            ),
+            SearchReportStatus::Unavailable => {
+                (Some(SearchReportReason::StrategyUnsupported), vec![])
+            }
+        };
+        SearchReport {
+            schema_version: 1,
+            status,
+            reason,
+            elapsed_seconds: None,
+            iteration_limit: Some(10),
+            time_limit_seconds: None,
+            completed_iterations: 10,
+            termination: Some(SearchTermination::Iterations),
+            selected_action: Some(json!("chosen")),
+            actions: vec![],
+            principal_variation: vec![json!("chosen")],
+            root_visits: 10,
+            tree_nodes: 11,
+            mean_depth: None,
+            max_depth: None,
+            graph_mode: Some(SearchGraphMode::Tree),
+            tt_reads: 0,
+            tt_writes: 0,
+            tt_hits: 0,
+            tt_hit_ratio: None,
+            iterations_per_second: None,
+            warnings,
+        }
+    }
+
+    fn transport_search(preset: &str) -> Option<SearchReport> {
+        match preset {
+            "available" => Some(transport_report(SearchReportStatus::Available)),
+            "partial" => Some(transport_report(SearchReportStatus::Partial)),
+            "unavailable" => Some(transport_report(SearchReportStatus::Unavailable)),
+            "legacy" => None,
+            other => panic!("unexpected transport test preset: {other}"),
+        }
+    }
+
+    struct TransportAdapter;
+
+    impl GameAdapter for TransportAdapter {
+        fn kind(&self) -> &'static str {
+            "transport"
+        }
+
+        fn label(&self) -> &'static str {
+            "Transport"
+        }
+
+        fn description(&self) -> &'static str {
+            "Search-report transport test adapter"
+        }
+
+        fn default_config(&self) -> Value {
+            json!({})
+        }
+
+        fn new_state(&self, _config: Value) -> Result<Value, AdapterError> {
+            Ok(json!({ "position": "initial" }))
+        }
+
+        fn legal_moves(&self, _state: &Value) -> Result<Vec<Value>, AdapterError> {
+            Ok(vec![json!("chosen")])
+        }
+
+        fn apply(&self, _state: &Value, _mv: &Value) -> Result<Value, AdapterError> {
+            Ok(json!({ "position": "after" }))
+        }
+
+        fn view(&self, state: &Value) -> Result<Value, AdapterError> {
+            Ok(json!({ "view_of": state["position"] }))
+        }
+
+        fn ai_presets(&self) -> Vec<AiPresetInfo> {
+            vec![]
+        }
+
+        fn ai_move(
+            &self,
+            _state: &Value,
+            preset: &str,
+            _custom: Option<&Value>,
+        ) -> Result<AiMoveResult, AdapterError> {
+            Ok(AiMoveResult {
+                mv: json!("chosen"),
+                state: json!({ "position": "after" }),
+                search: transport_search(preset),
+            })
+        }
+
+        fn analyze(
+            &self,
+            _state: &Value,
+            preset: &str,
+            _custom: Option<&Value>,
+            _budget_ms: Option<u64>,
+        ) -> Result<Analysis, AdapterError> {
+            Ok(Analysis {
+                actions: vec![AnalysisAction {
+                    action: json!("chosen"),
+                    visits: 10,
+                    mean_value: 0.5,
+                    is_proven: false,
+                }],
+                principal_variation: vec![json!("chosen")],
+                total_visits: 10,
+                suggested_move: Some(json!("chosen")),
+                search: transport_search(preset),
+            })
+        }
+    }
+
+    fn transport_test_app() -> Router {
+        let games: Arc<HashMap<&'static str, Arc<dyn GameAdapter>>> = Arc::new(HashMap::from([(
+            "transport",
+            Arc::new(TransportAdapter) as Arc<dyn GameAdapter>,
+        )]));
+        api_router(Arc::new(AppState { games }))
     }
 
     async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
@@ -454,6 +604,44 @@ mod tests {
 
     fn body_json(body: &axum::body::Bytes) -> serde_json::Value {
         serde_json::from_slice(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_search_reports_survive_ai_move_and_analyze_transport() {
+        let app = transport_test_app();
+        for (preset, expected_status) in [
+            ("available", Some("available")),
+            ("partial", Some("partial")),
+            ("unavailable", Some("unavailable")),
+            ("legacy", None),
+        ] {
+            let request = json!({ "state": { "position": "before" }, "preset": preset });
+            let (status, body) =
+                http_post_json(app.clone(), "/api/games/transport/ai_move", request.clone()).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            let ai_move = body_json(&body);
+            assert_eq!(ai_move["move"], "chosen");
+            assert_eq!(ai_move["state"]["position"], "after");
+            assert_eq!(ai_move["view"], json!({ "view_of": "after" }));
+
+            let (status, body) =
+                http_post_json(app.clone(), "/api/games/transport/analyze", request).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            let analysis = body_json(&body);
+            assert_eq!(analysis["suggested_move"], "chosen");
+            assert_eq!(analysis["actions"][0]["action"], "chosen");
+
+            for response in [&ai_move, &analysis] {
+                match expected_status {
+                    Some(expected_status) => {
+                        assert_eq!(response["search"]["status"], expected_status);
+                        assert!(response["search"]["elapsed_seconds"].is_null());
+                        assert!(response["search"]["time_limit_seconds"].is_null());
+                    }
+                    None => assert!(response.get("search").is_none()),
+                }
+            }
+        }
     }
 
     /// Like `http_post_json`, but takes a pre-built raw body instead of a

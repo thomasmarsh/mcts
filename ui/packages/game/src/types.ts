@@ -34,12 +34,81 @@ export interface AnalysisAction<M> {
   is_proven: boolean;
 }
 
+/** Why a final search report is unavailable or partial. */
+export type SearchReportReason = "strategy_unsupported" | "search_not_run" | "root_parallel_pv_single_tree";
+
+/** The condition that stopped the most recent search. */
+export type SearchTermination = "iterations" | "time" | "solved" | "unknown";
+
+/** The retained search structure represented by a report. */
+export type SearchGraphMode = "tree" | "transpositions" | "dag_edges" | "dag_nodes" | "dag_both";
+
+/** A non-fatal qualification attached to a final report. */
+export type SearchWarning =
+  | "actions_truncated"
+  | "principal_variation_truncated"
+  | "structural_diagnostics_omitted"
+  | "root_parallel_pv_single_tree";
+
+/** One root action's final-search evidence. */
+export interface SearchActionReport<M> {
+  action: M;
+  visits: number;
+  share: number;
+  mean_value: number;
+  is_proven: boolean;
+}
+
+interface SearchReportBase<M> {
+  schema_version: number;
+  reason: SearchReportReason | null;
+  elapsed_seconds: number | null;
+  iteration_limit: number | null;
+  time_limit_seconds: number | null;
+  completed_iterations: number;
+  termination: SearchTermination | null;
+  selected_action: M | null;
+  actions: SearchActionReport<M>[];
+  principal_variation: M[];
+  root_visits: number;
+  tree_nodes: number;
+  mean_depth: number | null;
+  max_depth: number | null;
+  graph_mode: SearchGraphMode | null;
+  tt_reads: number;
+  tt_writes: number;
+  tt_hits: number;
+  tt_hit_ratio: number | null;
+  iterations_per_second: number | null;
+  warnings: SearchWarning[];
+}
+
+/** Complete final-search evidence when the selected strategy retained it. */
+export interface AvailableSearchReport<M> extends SearchReportBase<M> {
+  status: "available";
+}
+
+/** Complete final-search evidence with an explicit qualification. */
+export interface PartialSearchReport<M> extends SearchReportBase<M> {
+  status: "partial";
+}
+
+/** A modern strategy that does not expose final-search evidence. */
+export interface UnavailableSearchReport<M> extends SearchReportBase<M> {
+  status: "unavailable";
+}
+
+/** Versioned final-search evidence, discriminated by its availability. */
+export type SearchReport<M> = AvailableSearchReport<M> | PartialSearchReport<M> | UnavailableSearchReport<M>;
+
 /** `POST /api/games/{kind}/analyze` response, mirroring `server::adapters::Analysis`. */
 export interface Analysis<M> {
   actions: AnalysisAction<M>[];
   principal_variation: M[];
   total_visits: number;
   suggested_move: M | null;
+  /** Omitted by legacy producers; `null` is also accepted for compatibility. */
+  search?: SearchReport<M> | null;
 }
 
 /** `POST /api/games/{kind}/new` and `POST /api/games/{kind}/apply` share this
@@ -55,6 +124,8 @@ export interface AiMoveResult<S, M, V = unknown> {
   move: M;
   state: S;
   view: V;
+  /** Omitted by legacy producers; `null` is also accepted for compatibility. */
+  search?: SearchReport<M> | null;
 }
 
 /** `POST /api/games/{kind}/legal_moves` response. */

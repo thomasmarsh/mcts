@@ -20,6 +20,8 @@ use game_host::GameAdapter as _; // trait with methods SubprocessAdapter impleme
 use serde::Serialize;
 use serde_json::Value;
 
+pub use game_host::{AiMoveResult, AiPresetInfo, Analysis};
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -78,47 +80,6 @@ impl IntoResponse for AdapterError {
         )
             .into_response()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AiPresetInfo {
-    pub id: String,
-    pub label: String,
-    pub description: String,
-}
-
-/// The result of a completed `ai_move`: the move chosen and the resulting
-/// state, so a stateless client can apply both without a second round trip.
-pub struct AiMoveResult {
-    pub mv: Value,
-    pub state: Value,
-}
-
-/// One candidate root action from `analyze`, mirroring
-/// `mcts::strategies::ActionReport` but with the action encoded as JSON
-/// instead of a generic `G::A` -- see that type's doc comment for field
-/// meaning.
-#[derive(Serialize)]
-pub struct AnalysisAction {
-    pub action: Value,
-    pub visits: u32,
-    pub mean_value: f64,
-    pub is_proven: bool,
-}
-
-#[derive(Serialize)]
-pub struct Analysis {
-    pub actions: Vec<AnalysisAction>,
-    pub principal_variation: Vec<Value>,
-    pub total_visits: u32,
-    /// The top candidate: a proven win if one exists among `actions`,
-    /// otherwise the most-visited action -- matching the engine's own
-    /// MCTS-Solver priority for `select_final_action`/`RobustChild`.
-    pub suggested_move: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,15 +178,7 @@ impl GameAdapter for SubprocessGameAdapter {
     }
 
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        self.inner
-            .ai_presets()
-            .into_iter()
-            .map(|p| AiPresetInfo {
-                id: p.id,
-                label: p.label,
-                description: p.description,
-            })
-            .collect()
+        self.inner.ai_presets()
     }
 
     fn ai_move(
@@ -236,10 +189,6 @@ impl GameAdapter for SubprocessGameAdapter {
     ) -> Result<AiMoveResult, AdapterError> {
         self.inner
             .ai_move(state, preset, custom)
-            .map(|r| AiMoveResult {
-                mv: r.mv,
-                state: r.state,
-            })
             .map_err(host_to_adapter)
     }
 
@@ -252,21 +201,6 @@ impl GameAdapter for SubprocessGameAdapter {
     ) -> Result<Analysis, AdapterError> {
         self.inner
             .analyze(state, preset, custom, budget_ms)
-            .map(|r| Analysis {
-                actions: r
-                    .actions
-                    .into_iter()
-                    .map(|a| AnalysisAction {
-                        action: a.action,
-                        visits: a.visits,
-                        mean_value: a.mean_value,
-                        is_proven: a.is_proven,
-                    })
-                    .collect(),
-                principal_variation: r.principal_variation,
-                total_visits: r.total_visits,
-                suggested_move: r.suggested_move,
-            })
             .map_err(host_to_adapter)
     }
 }
