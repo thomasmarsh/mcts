@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,8 @@ from .callback import emit_incumbent_record, emit_trial_record
 from .config import SearchConfig
 from .evaluation import (
     PairResult,
+    SCORE_FORMULA_VERSION,
+    TrialReportDecision,
     TrialEvaluationState,
 )
 from .lifecycle import LifecycleWriter, SessionId, TrialId, trial_id_for
@@ -38,7 +40,7 @@ class _ActiveTrial:
     trial_id: TrialId
     config: dict
     seed: int
-    evaluation: TrialEvaluationState = field(default_factory=TrialEvaluationState)
+    evaluation: TrialEvaluationState
 
 
 @dataclass(frozen=True)
@@ -117,7 +119,13 @@ def create_active_trial(
     config = suggest_config(trial, cfg)
     trial.set_user_attr("config", config)
     seed = cfg.optimizer.seed + trial.number
-    return _ActiveTrial(trial, trial_id_for(session_id, trial.number), config, seed)
+    return _ActiveTrial(
+        trial,
+        trial_id_for(session_id, trial.number),
+        config,
+        seed,
+        TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating),
+    )
 
 
 def emit_trial_created_and_started(
@@ -193,7 +201,8 @@ def continue_trial(
     """Finish a valid pair and report whether its trial received another pair."""
     active_trial = scheduled.active_trial
     finish_pair(context.lifecycle, active_trial, result)
-    if not active_trial.evaluation.should_continue():
+    score, decision = report_trial(context.lifecycle, active_trial)
+    if decision.outcome == "complete":
         complete_trial(
             context.study,
             context.lifecycle,
@@ -201,6 +210,8 @@ def continue_trial(
             context.pool,
             context.pool_path,
             context.resolved_sha,
+            score,
+            decision.reason,
         )
         return False
     submit_next_pair(
@@ -216,6 +227,35 @@ def continue_trial(
         _terminalize_from_pair(context.lifecycle),
     )
     return True
+
+
+def report_trial(
+    lifecycle: LifecycleWriter, active_trial: _ActiveTrial
+) -> tuple[float, TrialReportDecision]:
+    """Report one completed evaluation resource and preserve its decision evidence."""
+    evaluation = active_trial.evaluation
+    score = evaluation.score()
+    active_trial.trial.report(score, evaluation.completed_pairs)
+    decision = evaluation.decision()
+    lifecycle.emit(
+        "trial_reported",
+        {
+            "trial_id": active_trial.trial_id,
+            "trial_number": active_trial.trial.number,
+            "completed_pairs": evaluation.completed_pairs,
+            "mu": evaluation.rating.mu,
+            "sigma": evaluation.rating.sigma,
+            "score": score,
+            "score_formula_version": SCORE_FORMULA_VERSION,
+            "conservative_k": evaluation.rating_policy.conservative_k,
+            "outcome": decision.outcome,
+            "reason": decision.reason,
+            "pruning_exempt": False,
+            "bracket_id": None,
+            "rung_resource": None,
+        },
+    )
+    return score, decision
 
 
 def replenish_trial(
@@ -249,12 +289,16 @@ def complete_trial(
     pool: OpponentPool,
     pool_path: Path,
     resolved_sha: str,
+    score: float,
+    stop_reason: str,
 ) -> None:
     """Preserve the successful Optuna, lifecycle, legacy, pool, incumbent order."""
+    if lifecycle.has_trial_terminal(active_trial.trial_id):
+        return
     rating = active_trial.evaluation.rating
     games = active_trial.evaluation.legacy_games()
     record_completed_trial(
-        study, lifecycle, active_trial, rating.mu, rating.sigma, games
+        study, lifecycle, active_trial, rating.mu, rating.sigma, games, score, stop_reason
     )
     emit_legacy_trial(active_trial, rating.mu, rating.sigma, games, resolved_sha)
     save_inserted_pool_anchor(pool, pool_path, active_trial, rating.mu, rating.sigma)
@@ -268,9 +312,10 @@ def record_completed_trial(
     mu: float,
     sigma: float,
     games: list[dict],
+    score: float,
+    stop_reason: str,
 ) -> None:
     """Commit Optuna and lifecycle terminal evidence for a successful trial."""
-    score = mu - 3 * sigma
     study.tell(active_trial.trial, score)
     lifecycle.emit_trial_terminal(
         "trial_completed",
@@ -282,6 +327,13 @@ def record_completed_trial(
             "mu": mu,
             "sigma": sigma,
             "score": score,
+            "completed_pairs": active_trial.evaluation.completed_pairs,
+            "score_formula_version": SCORE_FORMULA_VERSION,
+            "conservative_k": active_trial.evaluation.rating_policy.conservative_k,
+            "reason": stop_reason,
+            "pruning_exempt": False,
+            "bracket_id": None,
+            "rung_resource": None,
             "games": games,
         },
     )

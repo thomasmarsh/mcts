@@ -13,6 +13,9 @@ from openskill.models import ThurstoneMostellerPart
 from .lifecycle import SessionId, TrialId, strict_json_dumps
 
 if TYPE_CHECKING:
+    from .config import RatingPolicy, ResourcePolicy
+
+if TYPE_CHECKING:
     from .pool import Anchor
 
 PairId = NewType("PairId", str)
@@ -21,9 +24,7 @@ CandidateSide = Literal["first", "second"]
 Outcome = Literal["candidate_win", "baseline_win", "draw"]
 
 _MODEL = ThurstoneMostellerPart()
-_MIN_PAIRS = 5
-_MAX_PAIRS = 15
-_SIGMA_THRESHOLD = 2.0
+SCORE_FORMULA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -85,18 +86,48 @@ class PairResult:
     games: tuple[GameResult, GameResult]
 
 
+TrialReportOutcome = Literal["continue", "complete"]
+TrialReportReason = Literal[
+    "below_min_pairs", "pruning_disabled", "confidence", "max_pairs"
+]
+
+
+@dataclass(frozen=True)
+class TrialReportDecision:
+    outcome: TrialReportOutcome
+    reason: TrialReportReason
+
+
 @dataclass
 class TrialEvaluationState:
+    resource_policy: ResourcePolicy
+    rating_policy: RatingPolicy
     rating: Rating = field(default_factory=lambda: Rating(25.0, _MODEL.rating().sigma))
     completed_pairs: int = 0
     games: list[tuple[OpponentSnapshot, GameResult]] = field(default_factory=list)
 
     def should_continue(self) -> bool:
-        return self.completed_pairs < _MIN_PAIRS or (
-            self.completed_pairs < _MAX_PAIRS and self.rating.sigma >= _SIGMA_THRESHOLD
-        )
+        return self.decision().outcome == "continue"
+
+    def score(self) -> float:
+        return conservative_score(self.rating, self.rating_policy.conservative_k)
+
+    def decision(self) -> TrialReportDecision:
+        if (
+            self.completed_pairs >= self.resource_policy.min_pairs
+            and self.rating_policy.sigma_stop is not None
+            and self.rating.sigma <= self.rating_policy.sigma_stop
+        ):
+            return TrialReportDecision("complete", "confidence")
+        if self.completed_pairs >= self.resource_policy.max_pairs:
+            return TrialReportDecision("complete", "max_pairs")
+        if self.completed_pairs < self.resource_policy.min_pairs:
+            return TrialReportDecision("continue", "below_min_pairs")
+        return TrialReportDecision("continue", "pruning_disabled")
 
     def apply_pair(self, result: PairResult) -> Rating:
+        if len(result.games) != 2:
+            raise ValueError("an evaluation pair must contain exactly two games")
         for game in result.games:
             self.rating = _rate_game(self.rating, result.task.opponent, game.outcome)
             self.games.append((result.task.opponent, game))
@@ -146,6 +177,11 @@ def configured_game_seed(seed: int) -> int:
     value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & ((1 << 64) - 1)
     value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & ((1 << 64) - 1)
     return (value ^ (value >> 31)) & 9_007_199_254_740_991
+
+
+def conservative_score(rating: Rating, conservative_k: float) -> float:
+    """Return the version-1 maximization objective for a candidate rating."""
+    return rating.mu - conservative_k * rating.sigma
 
 
 def _rate_game(rating: Rating, opponent: OpponentSnapshot, outcome: Outcome) -> Rating:

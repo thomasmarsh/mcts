@@ -150,6 +150,8 @@ def finish_pair(
     lifecycle: LifecycleWriter, active_trial: Any, result: PairResult
 ) -> None:
     """Emit physical games, update rating in their order, then finish the pair."""
+    if len(result.games) != 2:
+        raise ValueError("an evaluation pair must contain exactly two games")
     for game in result.games:
         lifecycle.emit("game_finished", game_finished_payload(result.task, game))
     rating_after = active_trial.evaluation.apply_pair(result)
@@ -161,7 +163,7 @@ def finish_pair(
             "pair_index": result.task.pair_index,
             "rating_before": rating_payload(result.task.rating_before),
             "rating_after": rating_payload(rating_after),
-            "score": rating_after.mu - 3 * rating_after.sigma,
+            "score": active_trial.evaluation.score(),
         },
     )
 

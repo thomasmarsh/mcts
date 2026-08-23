@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from tuner_cli.config import RatingPolicy, ResourcePolicy
 from tuner_cli.evaluation import (
     GameResult,
     OpponentSnapshot,
@@ -20,6 +21,10 @@ from tuner_cli.lifecycle import SessionId, TrialId
 from tuner_cli.pool import Anchor
 from tuner_cli.pair_orchestration import make_next_pair_task
 from tuner_cli.pool import OpponentPool
+
+
+def _state(**kwargs) -> TrialEvaluationState:
+    return TrialEvaluationState(ResourcePolicy(), RatingPolicy(), **kwargs)
 
 
 def _task(index: int = 0) -> PairTask:
@@ -75,7 +80,7 @@ def test_full_pool_fingerprint_changes_with_any_anchor_snapshot_field():
 
 
 def test_state_applies_two_physical_outcomes_in_order_and_preserves_legacy_shape():
-    state = TrialEvaluationState()
+    state = _state()
     before = state.rating
     state.apply_pair(_pair(("candidate_win", "baseline_win")))
     assert state.completed_pairs == 1
@@ -88,15 +93,15 @@ def test_state_applies_two_physical_outcomes_in_order_and_preserves_legacy_shape
 
 
 def test_game_order_changes_rating_deterministically():
-    win_then_loss = TrialEvaluationState()
-    loss_then_win = TrialEvaluationState()
+    win_then_loss = _state()
+    loss_then_win = _state()
     win_then_loss.apply_pair(_pair(("candidate_win", "baseline_win")))
     loss_then_win.apply_pair(_pair(("baseline_win", "candidate_win")))
     assert win_then_loss.rating != loss_then_win.rating
 
 
 def test_pair_stopping_keeps_five_pair_floor_and_fifteen_pair_ceiling():
-    state = TrialEvaluationState(rating=Rating(25.0, 1.0), completed_pairs=4)
+    state = _state(rating=Rating(25.0, 1.0), completed_pairs=4)
     assert state.should_continue()
     state.completed_pairs = 5
     assert not state.should_continue()
@@ -108,8 +113,29 @@ def test_pair_stopping_keeps_five_pair_floor_and_fifteen_pair_ceiling():
     assert not state.should_continue()
 
 
+def test_stopping_decision_uses_resolved_policy_precedence_and_disabled_sigma():
+    resource = ResourcePolicy(min_pairs=3, max_pairs=5)
+    state = TrialEvaluationState(
+        resource,
+        RatingPolicy(sigma_stop=2.0, conservative_k=2.5),
+        rating=Rating(25.0, 1.0),
+        completed_pairs=2,
+    )
+    assert state.decision().reason == "below_min_pairs"
+
+    state.completed_pairs = 3
+    assert state.decision().reason == "confidence"
+
+    state.completed_pairs = 5
+    assert state.decision().reason == "confidence"
+
+    state.rating_policy = RatingPolicy(sigma_stop=None, conservative_k=2.5)
+    assert state.decision().reason == "max_pairs"
+    assert state.score() == 22.5
+
+
 def test_next_pair_selects_against_updated_candidate_rating(tmp_path):
-    state = TrialEvaluationState()
+    state = _state()
     active = SimpleNamespace(
         evaluation=state,
         trial_id=TrialId("trial"),
