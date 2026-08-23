@@ -64,6 +64,71 @@ pub struct OpponentSnapshot {
     pub extra: serde_json::Map<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolAnchorProvenance {
+    BootstrapDefault,
+    BootstrapRandom,
+    Configured,
+    Trial,
+    LegacyUnknown,
+}
+
+impl PoolAnchorProvenance {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BootstrapDefault => "bootstrap_default",
+            Self::BootstrapRandom => "bootstrap_random",
+            Self::Configured => "configured",
+            Self::Trial => "trial",
+            Self::LegacyUnknown => "legacy_unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolAnchorInsertionReason {
+    Bootstrap,
+    Configured,
+    Champion,
+    SkillBand,
+    LegacyUnknown,
+}
+
+impl PoolAnchorInsertionReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bootstrap => "bootstrap",
+            Self::Configured => "configured",
+            Self::Champion => "champion",
+            Self::SkillBand => "skill_band",
+            Self::LegacyUnknown => "legacy_unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq)]
+pub struct PoolAnchorSnapshot {
+    pub anchor_id: String,
+    pub config: Value,
+    pub mu: f64,
+    pub sigma: f64,
+    pub provenance: PoolAnchorProvenance,
+    pub insertion_reason: PoolAnchorInsertionReason,
+    pub source_trial_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PoolRevisedPayload {
+    pub pool_snapshot_fingerprint: String,
+    pub anchors: Vec<PoolAnchorSnapshot>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionStartedPayload {
     pub manifest: Value,
@@ -272,6 +337,7 @@ pub struct PairFailedPayload {
 pub enum TuningPayload {
     SessionStarted(SessionStartedPayload),
     AttemptStarted(AttemptStartedPayload),
+    PoolRevised(PoolRevisedPayload),
     TrialCreated(TrialCreatedPayload),
     TrialStarted(TrialStartedPayload),
     TrialReported(TrialReportedPayload),
@@ -303,6 +369,7 @@ pub(super) fn parse_typed(
     match event_type {
         TuningEventType::SessionStarted => parse(value).map(TuningPayload::SessionStarted),
         TuningEventType::AttemptStarted => parse(value).map(TuningPayload::AttemptStarted),
+        TuningEventType::PoolRevised => parse(value).map(TuningPayload::PoolRevised),
         TuningEventType::TrialCreated => parse(value).map(TuningPayload::TrialCreated),
         TuningEventType::TrialStarted => parse(value).map(TuningPayload::TrialStarted),
         TuningEventType::TrialReported => parse(value).map(TuningPayload::TrialReported),

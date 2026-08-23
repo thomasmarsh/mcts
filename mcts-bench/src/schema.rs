@@ -180,6 +180,31 @@ pub const CREATE_TABLES: &[&str] = &[
         ended_at TIMESTAMP,
         failure TEXT
     )",
+    "CREATE TABLE IF NOT EXISTS tuning_pool_revisions (
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        pool_snapshot_fingerprint TEXT NOT NULL,
+        display_ordinal UINTEGER NOT NULL,
+        first_event_id TEXT NOT NULL,
+        first_attempt_id TEXT NOT NULL REFERENCES tuning_attempts(attempt_id),
+        observed_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (session_id, pool_snapshot_fingerprint),
+        UNIQUE (session_id, display_ordinal)
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_pool_anchors (
+        session_id TEXT NOT NULL,
+        pool_snapshot_fingerprint TEXT NOT NULL,
+        anchor_ordinal UINTEGER NOT NULL,
+        anchor_id TEXT NOT NULL,
+        config JSON NOT NULL,
+        mu DOUBLE NOT NULL,
+        sigma DOUBLE NOT NULL,
+        provenance TEXT NOT NULL CHECK (provenance IN ('bootstrap_default', 'bootstrap_random', 'configured', 'trial', 'legacy_unknown')),
+        insertion_reason TEXT NOT NULL CHECK (insertion_reason IN ('bootstrap', 'configured', 'champion', 'skill_band', 'legacy_unknown')),
+        source_trial_id TEXT,
+        PRIMARY KEY (session_id, pool_snapshot_fingerprint, anchor_ordinal),
+        UNIQUE (session_id, pool_snapshot_fingerprint, anchor_id),
+        FOREIGN KEY (session_id, pool_snapshot_fingerprint) REFERENCES tuning_pool_revisions(session_id, pool_snapshot_fingerprint)
+    )",
     "CREATE TABLE IF NOT EXISTS tuning_trials (
         session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
         trial_id TEXT NOT NULL,
@@ -369,6 +394,8 @@ mod tests {
             "attempt_events",
             "tuning_sessions",
             "tuning_attempts",
+            "tuning_pool_revisions",
+            "tuning_pool_anchors",
             "tuning_trials",
             "tuning_trial_reports",
             "tuning_lifecycle_events",

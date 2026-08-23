@@ -377,7 +377,9 @@ def complete_trial(
         stop_reason,
     )
     emit_legacy_trial(active_trial, rating.mu, rating.sigma, games, resolved_sha)
-    save_inserted_pool_anchor(pool, pool_path, active_trial, rating.mu, rating.sigma)
+    save_inserted_pool_anchor(
+        pool, pool_path, lifecycle, active_trial, rating.mu, rating.sigma
+    )
     emit_legacy_incumbent(study, active_trial, rating.mu, rating.sigma)
 
 
@@ -478,13 +480,19 @@ def emit_legacy_incumbent(
 def save_inserted_pool_anchor(
     pool: OpponentPool,
     pool_path: Path,
+    lifecycle: LifecycleWriter,
     active_trial: _ActiveTrial,
     mu: float,
     sigma: float,
 ) -> None:
     """Persist the pool only when this completed trial adds an anchor."""
-    if pool.maybe_insert(active_trial.config, mu, sigma) is not None:
+    if (
+        pool.maybe_insert(active_trial.config, mu, sigma, active_trial.trial_id)
+        is not None
+    ):
         pool.save(pool_path)
+        if lifecycle.has_session_started:
+            lifecycle.emit("pool_revised", pool.revision_payload())
 
 
 def terminalize_trial(

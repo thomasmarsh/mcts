@@ -21,7 +21,7 @@ from .config import SearchConfig
 from .lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId, make_attempt_id
 from .hyperband import OptunaHyperbandAdapter
 from .manifest import build_session_manifest, write_manifest_atomic
-from .pool import Anchor, OpponentPool
+from .pool import OpponentPool
 from .target import preflight_check
 
 
@@ -63,6 +63,7 @@ def run_optimization(
             lifecycle, manifest, manifest_path, run_id, cfg.optimizer.n_trials
         )
         _emit_attempt_started(lifecycle, run_id, storage, cfg.optimizer.n_trials)
+        _emit_pool_revised(lifecycle, pool)
         _run_attempt(
             cfg,
             binary=binary,
@@ -95,7 +96,7 @@ def _load_or_initialize_pool(cfg: SearchConfig, pool_path: Path) -> OpponentPool
     )
     for anchor_id, config in cfg.target.baseline_configs.items():
         if not any(anchor.id == anchor_id for anchor in pool.anchors):
-            pool.anchors.append(Anchor(anchor_id, dict(config), mu=25.0, sigma=0.5))
+            pool.add_configured_anchor(anchor_id, config)
     pool.save(pool_path)
     return pool
 
@@ -193,6 +194,11 @@ def _emit_attempt_started(
             "target_trial_count": target_trial_count,
         },
     )
+
+
+def _emit_pool_revised(lifecycle: LifecycleWriter, pool: OpponentPool) -> None:
+    """Record the loaded pool after the attempt can be associated with it."""
+    lifecycle.emit("pool_revised", pool.revision_payload())
 
 
 def _run_attempt(

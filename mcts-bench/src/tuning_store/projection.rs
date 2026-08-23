@@ -12,6 +12,7 @@ pub(super) fn apply(
     match event.event_type {
         TuningEventType::SessionStarted => project_session_started(tx, event)?,
         TuningEventType::AttemptStarted => project_attempt_started(tx, event, bench_run_id)?,
+        TuningEventType::PoolRevised => project_pool_revised(tx, event)?,
         TuningEventType::TrialCreated => project_trial_created(tx, event)?,
         TuningEventType::TrialStarted => {
             mark_trial_started(tx, event)?;
@@ -27,6 +28,39 @@ pub(super) fn apply(
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn project_pool_revised(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::PoolRevised(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    let existing: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_pool_revisions WHERE session_id = ?1 AND pool_snapshot_fingerprint = ?2",
+        params![event.session_id.as_str(), &payload.pool_snapshot_fingerprint],
+        |row| row.get(0),
+    )?;
+    if existing == 0 {
+        let display_ordinal: i64 = tx.query_row(
+            "SELECT COUNT(*) + 1 FROM tuning_pool_revisions WHERE session_id = ?1",
+            params![event.session_id.as_str()],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO tuning_pool_revisions (session_id, pool_snapshot_fingerprint, display_ordinal, first_event_id, first_attempt_id, observed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![event.session_id.as_str(), &payload.pool_snapshot_fingerprint, display_ordinal, event.event_id.as_str(), event.attempt_id.as_str(), &event.timestamp],
+        )?;
+        for (ordinal, anchor) in payload.anchors.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO tuning_pool_anchors (session_id, pool_snapshot_fingerprint, anchor_ordinal, anchor_id, config, mu, sigma, provenance, insertion_reason, source_trial_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![event.session_id.as_str(), &payload.pool_snapshot_fingerprint, ordinal as i64, &anchor.anchor_id, serde_json::to_string(&anchor.config)?, anchor.mu, anchor.sigma, anchor.provenance.as_str(), anchor.insertion_reason.as_str(), &anchor.source_trial_id],
+            )?;
+        }
+    }
+    touch_session(tx, event)
 }
 
 fn project_trial_reported(

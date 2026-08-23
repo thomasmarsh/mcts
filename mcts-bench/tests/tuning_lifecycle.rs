@@ -42,8 +42,8 @@ fn fixture() -> Connection {
 #[test]
 fn schema_and_v1_event_shape_are_available() {
     let conn = fixture();
-    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tuning_sessions', 'tuning_attempts', 'tuning_trials', 'tuning_evaluation_pairs', 'tuning_games', 'tuning_lifecycle_events')", [], |r| r.get(0)).unwrap();
-    assert_eq!(tables, 6);
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('tuning_sessions', 'tuning_attempts', 'tuning_trials', 'tuning_pool_revisions', 'tuning_pool_anchors', 'tuning_evaluation_pairs', 'tuning_games', 'tuning_lifecycle_events')", [], |r| r.get(0)).unwrap();
+    assert_eq!(tables, 8);
     let invalid = event(
         "e0",
         1,
@@ -80,6 +80,161 @@ fn started_trial_events() -> Vec<TuningLifecycleEvent> {
             serde_json::json!({"trial_id": "trial-1", "trial_number": 0}),
         ),
     ]
+}
+
+fn pool_revision(
+    id: &str,
+    sequence: u64,
+    fingerprint: &str,
+    anchors: serde_json::Value,
+) -> TuningLifecycleEvent {
+    event(
+        id,
+        sequence,
+        "pool_revised",
+        serde_json::json!({
+            "pool_snapshot_fingerprint": fingerprint,
+            "anchors": anchors,
+        }),
+    )
+}
+
+fn bootstrap_anchor() -> serde_json::Value {
+    serde_json::json!({
+        "anchor_id": "default",
+        "config": {"family": "rave"},
+        "mu": 25.0,
+        "sigma": 0.5,
+        "provenance": "bootstrap_default",
+        "insertion_reason": "bootstrap",
+        "source_trial_id": null,
+    })
+}
+
+#[test]
+fn pool_revisions_project_full_anchors_in_first_observation_order() {
+    let conn = fixture();
+    for item in started_trial_events().into_iter().take(2) {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    let first = pool_revision(
+        "pool-1",
+        3,
+        "pool-a",
+        serde_json::json!([bootstrap_anchor()]),
+    );
+    let second = pool_revision(
+        "pool-2",
+        4,
+        "pool-b",
+        serde_json::json!([
+            bootstrap_anchor(),
+            {
+                "anchor_id": "trial-4",
+                "config": {"family": "ucb", "c": 1.4},
+                "mu": 30.0,
+                "sigma": 2.0,
+                "provenance": "trial",
+                "insertion_reason": "champion",
+                "source_trial_id": "trial-4",
+            }
+        ]),
+    );
+    assert_eq!(apply(&conn, &first), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &second), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &second), ApplyDisposition::Replay);
+    assert_eq!(
+        apply(
+            &conn,
+            &pool_revision(
+                "pool-duplicate",
+                5,
+                "pool-a",
+                serde_json::json!([bootstrap_anchor()])
+            ),
+        ),
+        ApplyDisposition::Applied
+    );
+
+    let revisions: Vec<(String, u32)> = conn
+        .prepare("SELECT pool_snapshot_fingerprint, display_ordinal FROM tuning_pool_revisions ORDER BY display_ordinal")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(revisions, vec![("pool-a".into(), 1), ("pool-b".into(), 2)]);
+    let anchor: (String, String, f64, f64, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT anchor_id, CAST(config AS TEXT), mu, sigma, provenance, insertion_reason, source_trial_id FROM tuning_pool_anchors WHERE pool_snapshot_fingerprint = 'pool-b' AND anchor_ordinal = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .unwrap();
+    assert_eq!(anchor.0, "trial-4");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&anchor.1).unwrap(),
+        serde_json::json!({"family": "ucb", "c": 1.4})
+    );
+    assert_eq!(anchor.2, 30.0);
+    assert_eq!(anchor.3, 2.0);
+    assert_eq!(anchor.4, "trial");
+    assert_eq!(anchor.5, "champion");
+    assert_eq!(anchor.6.as_deref(), Some("trial-4"));
+}
+
+#[test]
+fn invalid_or_conflicting_pool_revision_is_rejected_without_projection() {
+    let conn = fixture();
+    for item in started_trial_events().into_iter().take(2) {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    let invalid = pool_revision(
+        "pool-invalid",
+        3,
+        "pool-a",
+        serde_json::json!([{
+            "anchor_id": "trial-1", "config": {}, "mu": 20.0, "sigma": 1.0,
+            "provenance": "trial", "insertion_reason": "champion", "source_trial_id": null,
+        }]),
+    );
+    assert_eq!(apply(&conn, &invalid), ApplyDisposition::Rejected);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM tuning_pool_revisions", [], |row| row
+            .get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM tuning_pool_anchors", [], |row| row
+            .get(0))
+            .unwrap(),
+        0
+    );
+
+    let valid = pool_revision(
+        "pool-valid",
+        3,
+        "pool-a",
+        serde_json::json!([bootstrap_anchor()]),
+    );
+    assert_eq!(apply(&conn, &valid), ApplyDisposition::Applied);
+    let conflicting = pool_revision(
+        "pool-conflict",
+        4,
+        "pool-a",
+        serde_json::json!([{
+            "anchor_id": "default", "config": {"family": "ucb"}, "mu": 25.0, "sigma": 0.5,
+            "provenance": "bootstrap_default", "insertion_reason": "bootstrap", "source_trial_id": null,
+        }]),
+    );
+    assert_eq!(apply(&conn, &conflicting), ApplyDisposition::Rejected);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM tuning_pool_anchors", [], |row| row
+            .get(0))
+            .unwrap(),
+        1
+    );
 }
 
 fn pair_started(sequence: u64) -> TuningLifecycleEvent {

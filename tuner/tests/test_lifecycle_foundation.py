@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tuner_cli.config import SearchConfig
@@ -14,6 +15,8 @@ from tuner_cli.lifecycle import (
     strict_json_dumps,
     trial_id_for,
 )
+from tuner_cli.pool import Anchor, OpponentPool
+from tuner_cli.attempt import save_inserted_pool_anchor
 from tuner_cli.manifest import (
     build_session_manifest,
     manifest_fingerprint,
@@ -57,6 +60,76 @@ def test_writer_accepts_trial_reported_events(tmp_path: Path):
             },
         )
     assert record["event_type"] == "trial_reported"
+
+
+def test_pool_revisions_follow_attempt_start_and_duplicate_loaded_snapshot(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    pool = OpponentPool(
+        [
+            Anchor(
+                "default",
+                {"family": "rave"},
+                25.0,
+                0.5,
+                "bootstrap_default",
+                "bootstrap",
+            )
+        ]
+    )
+    with LifecycleWriter(path, SessionId("s"), AttemptId("a1")) as writer:
+        writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
+        writer.emit("attempt_started", {})
+        first = writer.emit("pool_revised", pool.revision_payload())
+    with LifecycleWriter(path, SessionId("s"), AttemptId("a2")) as writer:
+        writer.emit("attempt_started", {})
+        second = writer.emit("pool_revised", pool.revision_payload())
+
+    assert first["payload"] == second["payload"]
+    assert first["payload"]["anchors"] == [
+        {
+            "anchor_id": "default",
+            "config": {"family": "rave"},
+            "mu": 25.0,
+            "sigma": 0.5,
+            "provenance": "bootstrap_default",
+            "insertion_reason": "bootstrap",
+            "source_trial_id": None,
+        }
+    ]
+
+
+def test_pool_revision_cannot_precede_session_start(tmp_path: Path):
+    pool = OpponentPool([Anchor("old", {}, 1.0, 1.0)])
+    with LifecycleWriter(tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")) as writer:
+        with pytest.raises(ValueError, match="requires session_started"):
+            writer.emit("pool_revised", pool.revision_payload())
+
+
+def test_inserted_anchor_emits_a_revision_after_durable_pool_save(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    pool_path = tmp_path / "pool.json"
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    active_trial = SimpleNamespace(
+        config={"family": "rave"}, trial_id=TrialId("trial-9")
+    )
+    with LifecycleWriter(path, SessionId("s"), AttemptId("a")) as writer:
+        writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
+        writer.emit("attempt_started", {})
+        save_inserted_pool_anchor(pool, pool_path, writer, active_trial, 30.0, 2.0)
+        assert pool_path.exists()
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    revision = records[-1]
+    assert revision["event_type"] == "pool_revised"
+    assert revision["payload"]["anchors"][-1] == {
+        "anchor_id": "trial-1",
+        "config": {"family": "rave"},
+        "mu": 30.0,
+        "sigma": 2.0,
+        "provenance": "trial",
+        "insertion_reason": "champion",
+        "source_trial_id": "trial-9",
+    }
 
 
 def test_fingerprint_is_deterministic_independent_of_mapping_order():

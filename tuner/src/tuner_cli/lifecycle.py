@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, NewType
+from typing import Any, Final, NewType, Sequence
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
 from .config import json_default
@@ -23,6 +24,7 @@ EVENT_TYPES: Final = frozenset(
     {
         "session_started",
         "attempt_started",
+        "pool_revised",
         "trial_created",
         "trial_started",
         "trial_reported",
@@ -89,6 +91,22 @@ def strict_json_dumps(value: Any, *, sort_keys: bool = False) -> str:
     )
 
 
+def pool_snapshot_fingerprint(anchors: Sequence[Any]) -> str:
+    """Fingerprint ordered matchmaking identity without provenance metadata."""
+    snapshot = [
+        {
+            "anchor_id": anchor.id,
+            "config": anchor.config,
+            "mu": anchor.mu,
+            "sigma": anchor.sigma,
+        }
+        for anchor in anchors
+    ]
+    return hashlib.sha256(
+        strict_json_dumps(snapshot, sort_keys=True).encode()
+    ).hexdigest()
+
+
 class LifecycleWriter:
     """Append ordered lifecycle records for one attempt.
 
@@ -146,6 +164,8 @@ class LifecycleWriter:
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Write and flush one versioned lifecycle event."""
+        if event_type == "pool_revised" and not self._session_started:
+            raise ValueError("pool_revised requires session_started")
         record = self._build_record(event_type, payload)
         self._append_record(record)
         if event_type == "session_started":

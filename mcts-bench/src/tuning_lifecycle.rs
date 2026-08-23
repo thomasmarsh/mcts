@@ -7,8 +7,9 @@ use serde_json::Value;
 
 pub use payload::{
     AttemptStartedPayload, AttemptTerminalPayload, CandidateSide, GameFinishedPayload,
-    OpponentSnapshot, PairFailedPayload, PairFinishedPayload, PairStartedPayload, Rating,
-    SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialReportOutcome,
+    OpponentSnapshot, PairFailedPayload, PairFinishedPayload, PairStartedPayload,
+    PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, PoolRevisedPayload,
+    Rating, SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialReportOutcome,
     TrialReportReason, TrialReportedPayload, TrialStartedPayload, TrialTerminalPayload,
     TuningGameOutcome, TuningPayload,
 };
@@ -48,6 +49,7 @@ opaque_id!(TuningGameId);
 pub enum TuningEventType {
     SessionStarted,
     AttemptStarted,
+    PoolRevised,
     TrialCreated,
     TrialStarted,
     TrialReported,
@@ -108,6 +110,7 @@ impl TuningEventType {
         match self {
             Self::SessionStarted => "session_started",
             Self::AttemptStarted => "attempt_started",
+            Self::PoolRevised => "pool_revised",
             Self::TrialCreated => "trial_created",
             Self::TrialStarted => "trial_started",
             Self::TrialReported => "trial_reported",

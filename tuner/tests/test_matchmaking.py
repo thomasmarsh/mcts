@@ -72,9 +72,12 @@ def test_pair_and_game_ids_are_stable_and_side_specific():
     assert game_id_for(pair_id, "first") != game_id_for(pair_id, "second")
 
 
-def test_full_pool_fingerprint_changes_with_any_anchor_snapshot_field():
+def test_pool_fingerprint_excludes_anchor_provenance_metadata():
     anchors = [Anchor("a", {"family": "random"}, 0.0, 0.5)]
     before = pool_snapshot_fingerprint(anchors)
+    anchors[0].provenance = "configured"
+    anchors[0].insertion_reason = "configured"
+    assert pool_snapshot_fingerprint(anchors) == before
     anchors[0].config["q_init"] = "Infinity"
     assert pool_snapshot_fingerprint(anchors) != before
 

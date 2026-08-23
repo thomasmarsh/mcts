@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, NewType, Sequence
@@ -10,7 +9,11 @@ from uuid import NAMESPACE_URL, uuid5
 
 from openskill.models import ThurstoneMostellerPart
 
-from .lifecycle import SessionId, TrialId, strict_json_dumps
+from .lifecycle import (
+    SessionId,
+    TrialId,
+    pool_snapshot_fingerprint as _pool_snapshot_fingerprint,
+)
 
 if TYPE_CHECKING:
     from .config import RatingPolicy, ResourcePolicy
@@ -166,18 +169,7 @@ def game_id_for(pair_id: PairId, candidate_side: CandidateSide) -> GameId:
 
 def pool_snapshot_fingerprint(anchors: Sequence[Anchor]) -> str:
     """Fingerprint the complete frozen pool snapshot available to a pair."""
-    snapshot = [
-        {
-            "anchor_id": anchor.id,
-            "config": anchor.config,
-            "mu": anchor.mu,
-            "sigma": anchor.sigma,
-        }
-        for anchor in anchors
-    ]
-    return hashlib.sha256(
-        strict_json_dumps(snapshot, sort_keys=True).encode()
-    ).hexdigest()
+    return _pool_snapshot_fingerprint(anchors)
 
 
 def configured_game_seed(seed: int) -> int:

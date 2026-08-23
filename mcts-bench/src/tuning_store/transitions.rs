@@ -1,6 +1,9 @@
 use duckdb::{params, Transaction};
 
-use crate::tuning_lifecycle::{TuningEventType, TuningLifecycleEvent, TuningPayload};
+use crate::tuning_lifecycle::{
+    PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, TuningEventType,
+    TuningLifecycleEvent, TuningPayload,
+};
 
 use super::TuningStoreError;
 
@@ -55,6 +58,9 @@ pub(super) fn validate(
     if let Some(reason) = validate_attempt(&attempt, event) {
         return Ok(Some(reason));
     }
+    if event.event_type == TuningEventType::PoolRevised {
+        return validate_pool_revision(tx, event);
+    }
     if event.event_type.is_pair() {
         return validate_pair(tx, event);
     }
@@ -62,6 +68,108 @@ pub(super) fn validate(
         return validate_trial(tx, event);
     }
     Ok(None)
+}
+
+fn validate_pool_revision(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<Option<String>, TuningStoreError> {
+    let TuningPayload::PoolRevised(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    if payload.pool_snapshot_fingerprint.is_empty()
+        || payload.anchors.is_empty()
+        || !anchors_are_valid(&payload.anchors)
+    {
+        return Ok(Some("invalid pool revision snapshot".into()));
+    }
+    let exists: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_pool_revisions WHERE session_id = ?1 AND pool_snapshot_fingerprint = ?2",
+        params![event.session_id.as_str(), &payload.pool_snapshot_fingerprint],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(None);
+    }
+    let stored = stored_pool_anchors(tx, event, &payload.pool_snapshot_fingerprint)?;
+    Ok((stored != payload.anchors)
+        .then_some("pool revision fingerprint has conflicting anchor snapshot".into()))
+}
+
+fn anchors_are_valid(anchors: &[PoolAnchorSnapshot]) -> bool {
+    anchors.iter().enumerate().all(|(index, anchor)| {
+        !anchor.anchor_id.is_empty()
+            && anchor.mu.is_finite()
+            && anchor.sigma.is_finite()
+            && anchors[..index]
+                .iter()
+                .all(|previous| previous.anchor_id != anchor.anchor_id)
+            && provenance_matches_reason(anchor)
+    })
+}
+
+fn provenance_matches_reason(anchor: &PoolAnchorSnapshot) -> bool {
+    match (anchor.provenance, anchor.insertion_reason) {
+        (
+            PoolAnchorProvenance::BootstrapDefault | PoolAnchorProvenance::BootstrapRandom,
+            PoolAnchorInsertionReason::Bootstrap,
+        )
+        | (PoolAnchorProvenance::Configured, PoolAnchorInsertionReason::Configured)
+        | (PoolAnchorProvenance::LegacyUnknown, PoolAnchorInsertionReason::LegacyUnknown) => {
+            anchor.source_trial_id.is_none()
+        }
+        (
+            PoolAnchorProvenance::Trial,
+            PoolAnchorInsertionReason::Champion | PoolAnchorInsertionReason::SkillBand,
+        ) => anchor
+            .source_trial_id
+            .as_ref()
+            .is_some_and(|trial_id| !trial_id.is_empty()),
+        _ => false,
+    }
+}
+
+fn stored_pool_anchors(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    fingerprint: &str,
+) -> Result<Vec<PoolAnchorSnapshot>, TuningStoreError> {
+    let mut statement = tx.prepare(
+        "SELECT anchor_id, CAST(config AS TEXT), mu, sigma, provenance, insertion_reason, source_trial_id FROM tuning_pool_anchors WHERE session_id = ?1 AND pool_snapshot_fingerprint = ?2 ORDER BY anchor_ordinal",
+    )?;
+    let anchors = statement
+        .query_map(params![event.session_id.as_str(), fingerprint], |row| {
+            let config: String = row.get(1)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                config,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    anchors
+        .into_iter()
+        .map(
+            |(anchor_id, config, mu, sigma, provenance, insertion_reason, source_trial_id)| {
+                Ok(PoolAnchorSnapshot {
+                    anchor_id,
+                    config: serde_json::from_str(&config)?,
+                    mu,
+                    sigma,
+                    provenance: serde_json::from_value(serde_json::Value::String(provenance))?,
+                    insertion_reason: serde_json::from_value(serde_json::Value::String(
+                        insertion_reason,
+                    ))?,
+                    source_trial_id,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, TuningStoreError>>()
 }
 
 fn validate_sequence(
