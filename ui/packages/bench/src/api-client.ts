@@ -34,6 +34,10 @@ import type {
   ExperimentCell,
   TuningSessionDetail,
   TuningSessionsResponse,
+  TuningAnalysisOverview,
+  TuningTrialDetail,
+  TuningTrialPage,
+  TuningTrialPageQuery,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -74,6 +78,9 @@ export interface BenchApiClient {
   listTuningSessions(): Promise<TuningSessionsResponse>;
   /** Complete version-1 evidence snapshot for one logical tuning session. */
   getTuningSession(sessionId: string): Promise<TuningSessionDetail>;
+  getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview>;
+  getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Promise<TuningTrialPage>;
+  getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
@@ -137,10 +144,10 @@ async function deleteRequest(url: string): Promise<void> {
 }
 
 /** Build a `?k=v&...` suffix, skipping null/undefined values. */
-function queryString(params: Record<string, string | number | null | undefined>): string {
+function queryString(params: object): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
-    if (v !== null && v !== undefined) q.set(k, String(v));
+    if (typeof v === "string" || typeof v === "number") q.set(k, String(v));
   }
   const s = q.toString();
   return s ? `?${s}` : "";
@@ -229,6 +236,15 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getTuningSession(sessionId: string): Promise<TuningSessionDetail> {
       return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}`));
     },
+    async getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview> {
+      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/analysis`));
+    },
+    async getTuningTrialPage(sessionId: string, query: TuningTrialPageQuery = {}): Promise<TuningTrialPage> {
+      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials${queryString(query)}`));
+    },
+    async getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail> {
+      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials/${encodeURIComponent(trialId)}`));
+    },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
     },
@@ -276,6 +292,9 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getTunerKinds: () => lift(() => api.getTunerKinds()),
     listTuningSessions: () => lift(() => api.listTuningSessions()),
     getTuningSession: (sessionId: string) => lift(() => api.getTuningSession(sessionId)),
+    getTuningAnalysisOverview: (sessionId: string) => lift(() => api.getTuningAnalysisOverview(sessionId)),
+    getTuningTrialPage: (sessionId: string, query?: TuningTrialPageQuery) => lift(() => api.getTuningTrialPage(sessionId, query)),
+    getTuningTrialDetail: (sessionId: string, trialId: string) => lift(() => api.getTuningTrialDetail(sessionId, trialId)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),

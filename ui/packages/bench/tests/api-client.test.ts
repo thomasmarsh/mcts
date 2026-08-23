@@ -106,6 +106,18 @@ describe("createBenchApiClient", () => {
     calls.length = 0;
     await client.getTuningSession("session/a");
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa");
+
+    calls.length = 0;
+    await client.getTuningAnalysisOverview("session/a");
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/analysis");
+
+    calls.length = 0;
+    await client.getTuningTrialPage("session/a", { state: "complete", bracket: "unassigned", q: "rave c", sort: "score", direction: "asc", limit: 25, cursor: "next/+" });
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/trials?state=complete&bracket=unassigned&q=rave+c&sort=score&direction=asc&limit=25&cursor=next%2F%2B");
+
+    calls.length = 0;
+    await client.getTuningTrialDetail("session/a", "trial/b");
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/trials/trial%2Fb");
   });
 
   it("getRunTrials passes an optional limit", async () => {

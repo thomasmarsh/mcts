@@ -9,179 +9,159 @@ import {
   type TuningNavigationState,
 } from "../src/tuning-navigation.js";
 import type { BenchEnv } from "../src/reducer.js";
-import type { TuningSessionDetail, TuningSessionsResponse } from "../src/types.js";
+import type { TuningAnalysisOverview, TuningSessionsResponse, TuningTrialDetail, TuningTrialPage } from "../src/types.js";
 
 const sessions: TuningSessionsResponse = {
   schema_version: 1,
   sessions: [{
-    session_id: "session-1", game: "nim", label: null, status: "idle", target_trial_count: 2,
-    counts: { total: 1, queued: 0, running: 0, terminal: 1, completed: 1, failed: 0, pruned: 0, cancelled: 0 },
-    created_at: "2026-08-23 12:00:00", last_activity_at: "2026-08-23 12:01:00",
-    attempts: [{ attempt_id: "attempt-1", bench_run_id: "run-1", status: "completed", started_at: "2026-08-23 12:00:00", ended_at: "2026-08-23 12:01:00", failure: null }],
-    capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false, has_trial_reports: false },
+    session_id: "session-1", game: "nim", label: null, status: "active", target_trial_count: 2,
+    counts: { total: 1, queued: 0, running: 1, terminal: 0, completed: 0, failed: 0, pruned: 0, cancelled: 0 },
+    created_at: "2026-08-23T12:00:00Z", last_activity_at: "2026-08-23T12:01:00Z", attempts: [],
+    capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false, has_trial_reports: true },
   }],
 };
-
-function detail(status = "idle", includeGame = true): TuningSessionDetail {
+const overview = (sequence = 1): TuningAnalysisOverview => ({
+  schema_version: 1, policy: null, objective: { metric: "score", direction: "maximize", complete_trials_only: true },
+  cursor: { session_sequence: sequence },
+  coverage: { trials: sessions.sessions[0]!.counts, reports: 0, pairs: { total: 0, running: 0, complete: 0, failed: 0, unmatched_pool_revisions: 0 }, points: { total: 0, returned: 0, sampled: false } },
+  bracket_resources: [], decision_groups: [], points: [], best: null, pool_revisions: [],
+});
+const page = (cursor: number, next_cursor: string | null = null): TuningTrialPage => ({
+  schema_version: 1, trials: [], total_count: 0, limit: 50, next_cursor, cursor: { session_sequence: cursor },
+});
+const detail = (trialId = "trial-1", pairs: TuningTrialDetail["trial"]["pairs"] = []): TuningTrialDetail => ({
+  schema_version: 1,
+  trial: { trial_id: trialId, trial_number: 1, attempt_id: "attempt-1", state: "complete", config: {}, score: 1, rating: { mu: 2, sigma: 1 }, reason: "max_pairs", failure: null, reports: [], pairs },
+  cursor: { session_sequence: 1 },
+});
+function env(overrides: Partial<BenchEnv> = {}): BenchEnv {
   return {
-    schema_version: 1,
-    policy: null,
-    summary: { session_id: "session-1", status, target_trial_count: 2, counts: sessions.sessions[0]!.counts },
-    attempts: sessions.sessions[0]!.attempts,
-    trials: [{
-      trial_id: "trial-1", trial_number: 1, attempt_id: "attempt-1", status: "complete", config: { family: "ucb1" }, score: 1, mu: 2, sigma: 0.5, stop_reason: null, failure: null,
-      pairs: [{
-        pair_id: "pair-1", pair_index: 0, status: "complete", seed: 7, round: 1,
-        opponent: { anchor_id: "anchor-1", config: {}, mu: 1, sigma: 0.5, label: null, provenance: null },
-        pool_snapshot_fingerprint: "pool", rating_before: { mu: 1, sigma: 1 }, rating_after: { mu: 2, sigma: 0.5 }, score: 1, failure: null,
-        games: includeGame ? [{ game_id: "game-1", candidate_side: "first", outcome: "candidate_win", seed: 7, round: 1, trace_game_seq: 8, plies: 10, elapsed_ms: 2, candidate: { iterations_total: 3, iterations_first_half: 2, move_time_ms: 1 }, baseline: { iterations_total: 3, iterations_first_half: 2, move_time_ms: 1 } }] : [],
-      }],
-      reports: [],
-    }],
-    manifest: {}, fingerprint: null,
-    capabilities: sessions.sessions[0]!.capabilities,
-    cursor: { session_sequence: 1 },
-  };
-}
-
-function without(entity: "attempt" | "trial" | "pair"): TuningSessionDetail {
-  const snapshot = detail();
-  if (entity === "attempt") return { ...snapshot, attempts: [] };
-  if (entity === "trial") return { ...snapshot, trials: [] };
-  return { ...snapshot, trials: snapshot.trials.map((trial) => ({ ...trial, pairs: [] })) };
-}
-
-function env(list = sessions, ...snapshots: TuningSessionDetail[]): BenchEnv {
-  let index = 0;
-  return {
-    listTuningSessions: () => Effect.send(list),
-    getTuningSession: () => Effect.send(snapshots[Math.min(index++, snapshots.length - 1)] ?? detail()),
+    listTuningSessions: () => Effect.none(),
+    getTuningSession: () => Effect.none(),
+    getTuningAnalysisOverview: () => Effect.none(),
+    getTuningTrialPage: () => Effect.none(),
+    getTuningTrialDetail: () => Effect.none(),
+    ...overrides,
   } as unknown as BenchEnv;
 }
-
 const reducer = (state: TuningNavigationState, action: TuningNavigationAction, environment: BenchEnv) =>
   tuningNavigationReducer(state, action, environment);
 
-describe("tuningNavigationReducer", () => {
-  it("ignores a stale list response without replacing the newer snapshot", () => {
-    const ts = createTestStore(reducer, env(), initialTuningNavigationState());
-    ts.send({ tag: "listRequest" }, (state) => { state.list.status = "loading"; state.list.generation = 1; });
-    ts.send({ tag: "listRequest" }, (state) => { state.list.generation = 2; });
-    ts.receive({ tag: "listLoaded", generation: 1, response: sessions });
-    ts.receive({ tag: "listLoaded", generation: 2, response: sessions }, (state) => {
-      state.list.status = "done"; state.list.snapshot = sessions;
+describe("tuningNavigationReducer analysis state", () => {
+  it("defaults to a game tab, but capable sessions open Progress without changing evidence selection", () => {
+    expect(initialTuningNavigationState()).toMatchObject({
+      tab: "game", filters: { state: null, bracket: null, reason: null, family: null, q: null }, sort: { sort: "trial", direction: "desc" },
     });
-  });
-
-  it("preserves selection and expansion when a list refresh adds a sibling", () => {
-    const sibling: TuningSessionsResponse = {
-      schema_version: 1,
-      sessions: [...sessions.sessions, { ...sessions.sessions[0]!, session_id: "session-2" }],
-    };
     const initial = initialTuningNavigationState();
-    initial.list = { ...initial.list, status: "done", snapshot: sessions };
-    initial.selection = { sessionId: "session-1", attemptId: "attempt-1", trialId: "trial-1", pairId: "pair-1", gameId: "game-1" };
-    initial.expandedIds = ["session-1", "attempt-1"];
-    const ts = createTestStore(reducer, env(sibling), initial);
-
-    ts.send({ tag: "listRequest" }, (state) => { state.list.status = "loading"; state.list.generation = 1; });
-    ts.receive({ tag: "listLoaded", generation: 1, response: sibling }, (state) => {
-      state.list.status = "done"; state.list.snapshot = sibling;
-    });
-  });
-
-  it("falls back only to the pair when a selected game disappears", () => {
-    const ts = createTestStore(reducer, env(sessions, detail(), detail("idle", false)), initialTuningNavigationState());
-    ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => { state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1; });
-    ts.receive({ tag: "detailLoaded", generation: 1, sessionId: "session-1", detail: detail() }, (state) => { state.detail.status = "done"; state.detail.snapshot = detail(); });
-    ts.send({ tag: "selectAttempt", attemptId: "attempt-1" }, (state) => { state.selection.attemptId = "attempt-1"; });
-    ts.send({ tag: "selectTrial", trialId: "trial-1" }, (state) => { state.selection.trialId = "trial-1"; });
-    ts.send({ tag: "selectPair", pairId: "pair-1" }, (state) => { state.selection.pairId = "pair-1"; });
-    ts.send({ tag: "selectGame", gameId: "game-1" }, (state) => { state.selection.gameId = "game-1"; });
-    ts.send({ tag: "detailRequest", sessionId: "session-1" }, (state) => { state.detail.status = "loading"; state.detail.generation = 2; });
-    ts.receive({ tag: "detailLoaded", generation: 2, sessionId: "session-1", detail: detail("idle", false) }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = detail("idle", false);
-      state.selection.gameId = null; state.unavailable = "game unavailable";
-    });
-  });
-
-  it.each([
-    { entity: "attempt" as const, selection: { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null } },
-    { entity: "trial" as const, selection: { sessionId: "session-1", attemptId: "attempt-1", trialId: null, pairId: null, gameId: null } },
-    { entity: "pair" as const, selection: { sessionId: "session-1", attemptId: "attempt-1", trialId: "trial-1", pairId: null, gameId: null } },
-  ])("falls back to the nearest ancestor when an $entity disappears", ({ entity, selection }) => {
-    const ts = createTestStore(reducer, env(sessions, detail(), without(entity)), initialTuningNavigationState());
+    initial.list.snapshot = sessions;
+    const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
-    });
-    ts.receive({ tag: "detailLoaded", generation: 1, sessionId: "session-1", detail: detail() }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = detail();
-    });
-    ts.send({ tag: "selectGame", gameId: "game-1" }, (state) => {
-      state.selection = { sessionId: "session-1", attemptId: "attempt-1", trialId: "trial-1", pairId: "pair-1", gameId: "game-1" };
-    });
-    ts.send({ tag: "detailRequest", sessionId: "session-1" }, (state) => { state.detail.status = "loading"; state.detail.generation = 2; });
-    ts.receive({ tag: "detailLoaded", generation: 2, sessionId: "session-1", detail: without(entity) }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = without(entity); state.selection = selection; state.unavailable = `${entity} unavailable`;
+      state.tab = "progress"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
+      state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
+      state.overview.status = "loading"; state.overview.sessionId = "session-1"; state.overview.generation = 2;
+      state.trialPage.generation = 1;
     });
   });
 
-  it("refreshes only a selected active detail snapshot", () => {
-    const ts = createTestStore(reducer, env(sessions, detail("active")), initialTuningNavigationState());
-    ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => { state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1; });
-    ts.receive({ tag: "detailLoaded", generation: 1, sessionId: "session-1", detail: detail("active") }, (state) => { state.detail.status = "done"; state.detail.snapshot = detail("active"); });
+  it("drops stale overview, page, and keyed-detail responses", () => {
+    const initial = initialTuningNavigationState();
+    initial.selection.sessionId = "session-1";
+    initial.tab = "progress";
+    const ts = createTestStore(reducer, env(), initial);
+    ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.status = "loading"; s.overview.sessionId = "session-1"; s.overview.generation = 1; });
+    ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.generation = 2; });
+    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(1) });
+    ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.status = "loading"; s.trialPage.sessionId = "session-1"; s.trialPage.generation = 1; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); });
+    ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.generation = 2; });
+    ts.send({ tag: "trialPageLoaded", sessionId: "session-1", generation: 1, queryKey: ts.getState().trialPage.queryKey!, page: page(1) });
+    ts.send({ tag: "selectTrial", trialId: "trial-1" }, (s) => { s.selection.trialId = "trial-1"; s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"]!.generation = 2; });
+    ts.send({ tag: "trialDetailLoaded", sessionId: "session-1", trialId: "trial-1", generation: 1, detail: detail() });
+  });
+
+  it("invalidates page identity on rapid session, filter, and tab changes without changing selection", () => {
+    const initial = initialTuningNavigationState();
+    initial.selection = { sessionId: "session-1", attemptId: "a", trialId: "trial-1", pairId: null, gameId: null };
+    initial.tab = "progress";
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: "old", generation: 4 };
+    const ts = createTestStore(reducer, env(), initial);
+    ts.send({ tag: "setTrialFilters", filters: { state: "complete", q: "rave" } }, (s) => {
+      s.filters.state = "complete"; s.filters.q = "rave"; s.trialPage = { ...initialTuningNavigationState().trialPage, generation: 5, sessionId: "session-1" };
+      s.trialPage.status = "loading"; s.trialPage.generation = 6; s.trialPage.queryKey = JSON.stringify({ state: "complete", bracket: null, reason: null, family: null, q: "rave", sort: "trial", direction: "desc", cursor: null });
+    });
+    ts.send({ tag: "setAnalysisTab", tab: "game" }, (s) => { s.tab = "game"; });
+    expect(ts.getState().selection).toEqual({ sessionId: "session-1", attemptId: "a", trialId: "trial-1", pairId: null, gameId: null });
+  });
+
+  it("invalidates in-flight analysis when a newer session wins a rapid switch", () => {
+    const initial = initialTuningNavigationState();
+    initial.list.snapshot = { ...sessions, sessions: [...sessions.sessions, { ...sessions.sessions[0]!, session_id: "session-2" }] };
+    const ts = createTestStore(reducer, env(), initial);
+    ts.send({ tag: "selectSession", sessionId: "session-1" });
+    ts.send({ tag: "selectSession", sessionId: "session-2" }, (s) => {
+      s.selection = { sessionId: "session-2", attemptId: null, trialId: null, pairId: null, gameId: null };
+      s.tab = "progress"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
+      s.overview.sessionId = "session-2"; s.overview.generation = 4; s.trialPage.generation = 2;
+    });
+    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 2, overview: overview(9) });
+  });
+
+  it("refreshes the visible page and selected detail only after an overview cursor advances", () => {
+    let pages = 0;
+    let details = 0;
+    const initial = initialTuningNavigationState();
+    initial.tab = "progress"; initial.selection = { sessionId: "session-1", attemptId: null, trialId: "trial-1", pairId: null, gameId: null };
+    initial.list.snapshot = sessions;
+    initial.overview = { status: "loading", snapshot: overview(1), error: null, generation: 1, sessionId: "session-1" };
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }), generation: 1 };
+    const ts = createTestStore(reducer, env({ getTuningTrialPage: () => { pages += 1; return Effect.none(); }, getTuningTrialDetail: () => { details += 1; return Effect.none(); } }), initial);
+    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(2) }, (s) => { s.overview.status = "done"; s.overview.snapshot = overview(2); s.trialPage.status = "loading"; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    expect({ pages, details }).toEqual({ pages: 1, details: 1 });
     ts.advance(TUNING_DETAIL_REFRESH_MS);
-    ts.receive({ tag: "detailRefreshTick", sessionId: "session-1", generation: 1 }, (state) => {
-      state.detail.status = "loading"; state.detail.generation = 2;
-    });
-    ts.send({ tag: "clearSession" }, (state) => {
-      state.selection = { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null };
-      state.detail = { status: "idle", snapshot: null, error: null, generation: 3, sessionId: null };
-    });
-    ts.receive({ tag: "detailLoaded", generation: 2, sessionId: "session-1", detail: detail("active") });
+    ts.receive({ tag: "overviewRefreshTick", sessionId: "session-1", generation: 1 }, (s) => { s.overview.status = "loading"; s.overview.generation = 2; });
   });
 
-  it("drops an active timer after a newer idle snapshot replaces it", () => {
-    const ts = createTestStore(reducer, env(sessions, detail("active"), detail("idle")), initialTuningNavigationState());
-    ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
-    });
-    ts.receive({ tag: "detailLoaded", generation: 1, sessionId: "session-1", detail: detail("active") }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = detail("active");
-    });
-    ts.send({ tag: "detailRequest", sessionId: "session-1" }, (state) => { state.detail.status = "loading"; state.detail.generation = 2; });
-    ts.receive({ tag: "detailLoaded", generation: 2, sessionId: "session-1", detail: detail("idle") }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = detail("idle");
-    });
-    ts.advance(TUNING_DETAIL_REFRESH_MS);
-    ts.receive({ tag: "detailRefreshTick", sessionId: "session-1", generation: 1 });
-  });
-
-  it("does not schedule a timer for an idle detail snapshot", () => {
-    const ts = createTestStore(reducer, env(sessions, detail("idle")), initialTuningNavigationState());
-    ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
-    });
-    ts.receive({ tag: "detailLoaded", generation: 1, sessionId: "session-1", detail: detail("idle") }, (state) => {
-      state.detail.status = "done"; state.detail.snapshot = detail("idle");
-    });
+  it("does not poll an already terminal session", () => {
+    const initial = initialTuningNavigationState();
+    initial.selection.sessionId = "session-1";
+    initial.list.snapshot = { ...sessions, sessions: [{ ...sessions.sessions[0]!, status: "completed" }] };
+    initial.overview = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1" };
+    const ts = createTestStore(reducer, env(), initial);
+    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(1) }, (s) => { s.overview.status = "done"; s.overview.snapshot = overview(1); });
     expect(ts.scheduler.pendingCount).toBe(0);
   });
 
-  it("ignores stale detail failures while preserving the latest request error", () => {
-    const noResponse = {
-      listTuningSessions: () => Effect.none(),
-      getTuningSession: () => Effect.none(),
-    } as unknown as BenchEnv;
-    const ts = createTestStore(reducer, noResponse, initialTuningNavigationState());
+  it("retains successful snapshots while newer overview, page, and detail requests fail", () => {
+    const initial = initialTuningNavigationState();
+    initial.selection.sessionId = "session-1";
+    initial.overview = { status: "done", snapshot: overview(1), error: null, generation: 0, sessionId: "session-1" };
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }) };
+    initial.trialDetails["trial-1"] = { status: "done", snapshot: detail(), error: null, generation: 0, sessionId: "session-1", trialId: "trial-1" };
+    const ts = createTestStore(reducer, env(), initial);
+    ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.status = "loading"; s.overview.generation = 1; });
+    ts.send({ tag: "overviewFailed", sessionId: "session-1", generation: 1, error: "offline" }, (s) => { s.overview.status = "error"; s.overview.error = "offline"; });
+    ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.status = "loading"; s.trialPage.generation = 1; });
+    ts.send({ tag: "trialPageFailed", sessionId: "session-1", generation: 1, queryKey: sQuery(ts), error: "offline" }, (s) => { s.trialPage.status = "error"; s.trialPage.error = "offline"; });
+    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"]!.status = "loading"; s.trialDetails["trial-1"]!.generation = 1; });
+    ts.send({ tag: "trialDetailFailed", sessionId: "session-1", trialId: "trial-1", generation: 1, error: "offline" }, (s) => { s.trialDetails["trial-1"]!.status = "error"; s.trialDetails["trial-1"]!.error = "offline"; });
+  });
 
-    ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.selection.sessionId = "session-1"; state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
-    });
-    ts.send({ tag: "detailRequest", sessionId: "session-1" }, (state) => { state.detail.generation = 2; });
-    ts.send({ tag: "detailFailed", generation: 1, sessionId: "session-1", error: "old" });
-    ts.send({ tag: "detailFailed", generation: 2, sessionId: "session-1", error: "new" }, (state) => {
-      state.detail.status = "error"; state.detail.error = "new";
-    });
+  it("keeps expansion and selection stable, pages forward and back, and reconciles missing child detail to its trial", () => {
+    const initial = initialTuningNavigationState();
+    initial.selection = { sessionId: "session-1", attemptId: "attempt-1", trialId: "trial-1", pairId: "pair-old", gameId: "game-old" };
+    initial.tab = "progress";
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1, "next"), sessionId: "session-1", queryKey: "old", generation: 1 };
+    const seen: (string | null | undefined)[] = [];
+    const ts = createTestStore(reducer, env({ getTuningTrialPage: (_id, query) => { seen.push(query?.cursor); return Effect.none(); } }), initial);
+    ts.send({ tag: "toggleExpanded", id: "trial:trial-1" }, (s) => { s.expandedIds = ["trial:trial-1"]; });
+    ts.send({ tag: "nextTrialPage" }, (s) => { s.trialPage.previousCursors = [null]; s.trialPage.cursor = "next"; s.trialPage.status = "loading"; s.trialPage.snapshot = null; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: "next" }); });
+    ts.send({ tag: "previousTrialPage" }, (s) => { s.trialPage.previousCursors = []; s.trialPage.cursor = null; s.trialPage.status = "loading"; s.trialPage.generation = 3; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); });
+    expect(seen).toEqual(["next", null]);
+    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    ts.send({ tag: "trialDetailLoaded", sessionId: "session-1", trialId: "trial-1", generation: 1, detail: detail() }, (s) => { s.trialDetails["trial-1"]!.status = "done"; s.trialDetails["trial-1"]!.snapshot = detail(); s.selection.pairId = null; s.selection.gameId = null; s.unavailable = "pair unavailable"; });
   });
 });
+
+function sQuery(ts: { getState(): TuningNavigationState }): string {
+  return ts.getState().trialPage.queryKey!;
+}

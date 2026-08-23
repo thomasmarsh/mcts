@@ -232,6 +232,199 @@ export interface TuningSessionDetail {
   cursor: { session_sequence: number };
 }
 
+/** The shared freshness boundary on every version-1 analysis response. */
+export interface TuningCursorBoundary { session_sequence: number }
+
+export interface TuningAnalysisObjective {
+  metric: string;
+  direction: string;
+  complete_trials_only: boolean;
+}
+
+export interface TuningAnalysisPairCoverage {
+  total: number;
+  running: number;
+  complete: number;
+  failed: number;
+  unmatched_pool_revisions: number;
+}
+
+export interface TuningAnalysisPointCoverage {
+  total: number;
+  returned: number;
+  sampled: boolean;
+}
+
+export interface TuningAnalysisCoverage {
+  trials: TuningTrialCounts;
+  reports: number;
+  pairs: TuningAnalysisPairCoverage;
+  points: TuningAnalysisPointCoverage;
+}
+
+export interface TuningBracketResourceAggregate {
+  bracket_id: string | null;
+  resource: number;
+  rung_resource: number | null;
+  reports: number;
+  trials: number;
+}
+
+export interface TuningDecisionAggregate {
+  outcome: string;
+  reason: string;
+  pruning_exempt: boolean;
+  reports: number;
+}
+
+export interface TuningAnalysisPoint {
+  trial_id: string;
+  trial_number: number;
+  trial_status: string;
+  resource: number;
+  rating: TuningRating;
+  score: number;
+  outcome: string;
+  reason: string;
+  pruning_exempt: boolean;
+  bracket_id: string | null;
+  rung_resource: number | null;
+}
+
+export interface TuningPoolAnchor {
+  anchor_ordinal: number;
+  anchor_id: string;
+  config: JsonValue;
+  rating: TuningRating;
+  provenance: string;
+  insertion_reason: string;
+  source_trial_id: string | null;
+}
+
+export interface TuningPoolRevision {
+  pool_snapshot_fingerprint: string;
+  display_ordinal: number;
+  observed_at: string;
+  pair_count: number;
+  anchors: TuningPoolAnchor[];
+}
+
+/** Compact analysis data from `GET .../sessions/{id}/analysis`. */
+export interface TuningAnalysisOverview {
+  schema_version: 1;
+  policy: TuningPolicy | null;
+  objective: TuningAnalysisObjective;
+  cursor: TuningCursorBoundary;
+  coverage: TuningAnalysisCoverage;
+  bracket_resources: TuningBracketResourceAggregate[];
+  decision_groups: TuningDecisionAggregate[];
+  points: TuningAnalysisPoint[];
+  best: { score: number; trial_ids: string[] } | null;
+  pool_revisions: TuningPoolRevision[];
+}
+
+/** Server query keys for a compact trial page. `bracket: "unassigned"`
+ * selects trials without a bracket, matching the route's documented facet. */
+export interface TuningTrialPageQuery {
+  state?: string | null;
+  bracket?: string | null;
+  reason?: string | null;
+  family?: string | null;
+  q?: string | null;
+  sort?: "trial" | "state" | "score" | "mu" | "sigma" | "resource" | "family";
+  direction?: "asc" | "desc";
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface TuningTrialSummary {
+  trial_id: string;
+  trial_number: number;
+  attempt_id: string;
+  state: string;
+  reason: string | null;
+  rating: TuningRating | null;
+  score: number | null;
+  family: string | null;
+  config_summary: string | null;
+  bracket_id: string | null;
+  resource: number | null;
+  pair_count: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  elapsed_ms: number;
+  search_iterations_total: number;
+  search_move_time_ms: number;
+  has_detail: boolean;
+}
+
+export interface TuningTrialPage {
+  schema_version: 1;
+  trials: TuningTrialSummary[];
+  total_count: number;
+  limit: number;
+  next_cursor: string | null;
+  cursor: TuningCursorBoundary;
+}
+
+export interface TuningReplayReference {
+  run_id: string;
+  game_seq: number;
+  has_renderer_trace: boolean;
+  has_search_reports: boolean;
+}
+
+export interface TuningTrialDetailGame {
+  game_id: string;
+  candidate_side: string;
+  outcome: string;
+  seed: number;
+  round: number;
+  plies: number;
+  elapsed_ms: number;
+  candidate: TuningStrategyMetrics;
+  baseline: TuningStrategyMetrics;
+  replay: TuningReplayReference | null;
+}
+
+export interface TuningTrialDetailPair {
+  pair_id: string;
+  pair_index: number;
+  state: string;
+  seed: number;
+  round: number;
+  opponent: TuningOpponent;
+  pool_snapshot_fingerprint: string;
+  pool_revision: TuningPoolRevision | null;
+  rating_before: TuningRating;
+  rating_after: TuningRating | null;
+  score: number | null;
+  failure: string | null;
+  games: TuningTrialDetailGame[];
+}
+
+export interface TuningTrialDetailView {
+  trial_id: string;
+  trial_number: number;
+  attempt_id: string;
+  state: string;
+  config: JsonValue | null;
+  score: number | null;
+  rating: TuningRating | null;
+  reason: string | null;
+  failure: string | null;
+  reports: TuningTrialReport[];
+  pairs: TuningTrialDetailPair[];
+}
+
+/** Lazy, one-trial evidence response from the analysis workspace route. */
+export interface TuningTrialDetail {
+  schema_version: 1;
+  trial: TuningTrialDetailView;
+  cursor: TuningCursorBoundary;
+}
+
 /** A run is finished once its status leaves "running". Its log file is
  * complete at that point — the run process writes it directly, so process
  * exit means fully flushed — which is what lets a log tail stop polling
