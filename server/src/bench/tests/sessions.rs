@@ -292,3 +292,197 @@ async fn tuning_capabilities_require_the_authoritative_run_move_join() {
     assert_eq!(capabilities["has_search_reports"], true);
     assert_eq!(capabilities["has_trial_reports"], false);
 }
+
+#[tokio::test]
+async fn tuning_analysis_overview_keeps_full_coverage_and_compact_evidence() {
+    let app = seeded_app(|conn, _| {
+        conn.execute_batch(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
+             VALUES ('analysis', 'idle', '{\"semantic_inputs\":{\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":8},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_terminal_trials\":5}},\"rating\":{\"model\":\"tm\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":null,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 17);
+             INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at)
+             VALUES ('attempt', 'analysis', 'completed', '2026-01-01T00:00:00Z');
+             INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at, score)
+             VALUES ('analysis', 'trial-1', 'attempt', 1, 'complete', '{\"secret\":true}', CURRENT_TIMESTAMP, 30),
+                    ('analysis', 'trial-2', 'attempt', 2, 'complete', '{\"secret\":true}', CURRENT_TIMESTAMP, 30),
+                    ('analysis', 'trial-3', 'attempt', 3, 'pruned', '{\"secret\":true}', CURRENT_TIMESTAMP, 999),
+                    ('analysis', 'trial-4', 'attempt', 4, 'failed', '{\"secret\":true}', CURRENT_TIMESTAMP, NULL),
+                    ('analysis', 'trial-5', 'attempt', 5, 'cancelled', '{\"secret\":true}', CURRENT_TIMESTAMP, NULL);
+             INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource)
+             VALUES ('analysis', 'trial-1', 1, 1, 'report-1', CURRENT_TIMESTAMP, 21, 3, 12, 1, 3, 'continue', 'below_min_pairs', false, NULL, NULL),
+                    ('analysis', 'trial-1', 1, 2, 'report-2', CURRENT_TIMESTAMP, 22, 3, 13, 1, 3, 'continue', 'pruning_disabled', false, 'alpha', 99),
+                    ('analysis', 'trial-1', 1, 4, 'report-3', CURRENT_TIMESTAMP, 23, 2, 17, 1, 3, 'continue', 'startup_exempt', true, 'alpha', 99),
+                    ('analysis', 'trial-1', 1, 6, 'report-4', CURRENT_TIMESTAMP, 24, 2, 19, 1, 3, 'continue', 'hyperband_keep', false, 'alpha', 99),
+                    ('analysis', 'trial-1', 1, 8, 'report-5', CURRENT_TIMESTAMP, 25, 1, 30, 1, 3, 'complete', 'confidence', false, 'beta', 100),
+                    ('analysis', 'trial-2', 2, 8, 'report-6', CURRENT_TIMESTAMP, 26, 1, 30, 1, 3, 'complete', 'max_pairs', false, 'beta', 100),
+                    ('analysis', 'trial-3', 3, 3, 'report-7', CURRENT_TIMESTAMP, 20, 4, 4, 1, 3, 'prune', 'hyperband_prune', false, 'alpha', NULL);
+             INSERT INTO tuning_pool_revisions (session_id, pool_snapshot_fingerprint, display_ordinal, first_event_id, first_attempt_id, observed_at)
+             VALUES ('analysis', 'pool-a', 1, 'pool-event-a', 'attempt', '2026-01-01T00:00:00Z'),
+                    ('analysis', 'pool-b', 2, 'pool-event-b', 'attempt', '2026-01-01T00:01:00Z');
+             INSERT INTO tuning_pool_anchors (session_id, pool_snapshot_fingerprint, anchor_ordinal, anchor_id, config, mu, sigma, provenance, insertion_reason, source_trial_id)
+             VALUES ('analysis', 'pool-a', 0, 'bootstrap', '{\"family\":\"rave\"}', 25, 1, 'bootstrap_default', 'bootstrap', NULL),
+                    ('analysis', 'pool-b', 0, 'champion', '{\"family\":\"ucb\"}', 30, 2, 'trial', 'champion', 'trial-1');
+             INSERT INTO tuning_evaluation_pairs (session_id, pair_id, trial_id, attempt_id, pair_index, status, seed, round, opponent, pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, started_at)
+             VALUES ('analysis', 'pair-a', 'trial-1', 'attempt', 1, 'complete', 1, 1, '{\"anchor_id\":\"a\",\"config\":{},\"mu\":25,\"sigma\":1}', 'pool-a', 25, 1, CURRENT_TIMESTAMP),
+                    ('analysis', 'pair-b', 'trial-2', 'attempt', 1, 'running', 2, 1, '{\"anchor_id\":\"b\",\"config\":{},\"mu\":25,\"sigma\":1}', 'pool-b', 25, 1, CURRENT_TIMESTAMP),
+                    ('analysis', 'pair-orphan', 'trial-3', 'attempt', 1, 'failed', 3, 1, '{\"anchor_id\":\"c\",\"config\":{},\"mu\":25,\"sigma\":1}', 'missing-pool', 25, 1, CURRENT_TIMESTAMP);",
+        )
+        .unwrap();
+    })
+    .0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/analysis/analysis").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(
+        value["objective"],
+        serde_json::json!({"metric":"score", "direction":"maximize", "complete_trials_only":true})
+    );
+    assert_eq!(value["cursor"]["session_sequence"], 17);
+    assert_eq!(
+        value["coverage"]["trials"],
+        serde_json::json!({"total":5, "queued":0, "running":0, "terminal":5, "completed":2, "failed":1, "pruned":1, "cancelled":1})
+    );
+    assert_eq!(value["coverage"]["reports"], 7);
+    assert_eq!(
+        value["coverage"]["pairs"],
+        serde_json::json!({"total":3, "running":1, "complete":1, "failed":1, "unmatched_pool_revisions":1})
+    );
+    assert_eq!(
+        value["coverage"]["points"],
+        serde_json::json!({"total":7, "returned":7, "sampled":false})
+    );
+    assert_eq!(value["decision_groups"].as_array().unwrap().len(), 7);
+    assert!(value["decision_groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|group| group == &serde_json::json!({"outcome":"continue", "reason":"startup_exempt", "pruning_exempt":true, "reports":1})));
+    assert_eq!(
+        value["bracket_resources"][0]["bracket_id"],
+        serde_json::Value::Null
+    );
+    let alpha_resources: Vec<_> = value["bracket_resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["bracket_id"] == "alpha")
+        .map(|row| row["resource"].as_u64().unwrap())
+        .collect();
+    assert_eq!(alpha_resources, vec![2, 3, 4, 6]);
+    assert_eq!(
+        value["best"],
+        serde_json::json!({"score":30.0, "trial_ids":["trial-1", "trial-2"]})
+    );
+    assert_eq!(
+        value["pool_revisions"][0]["pool_snapshot_fingerprint"],
+        "pool-a"
+    );
+    assert_eq!(value["pool_revisions"][0]["pair_count"], 1);
+    assert_eq!(
+        value["pool_revisions"][1]["anchors"][0]["source_trial_id"],
+        "trial-1"
+    );
+    assert!(value.get("trials").is_none());
+    assert!(value["points"].as_array().unwrap()[0]
+        .get("config")
+        .is_none());
+}
+
+#[tokio::test]
+async fn tuning_analysis_overview_handles_empty_missing_and_malformed_policy_sessions() {
+    let app = seeded_app(|conn, _| {
+        conn.execute_batch(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
+             VALUES ('empty', 'idle', '{}', CURRENT_TIMESTAMP, 2),
+                    ('malformed', 'idle', '{\"semantic_inputs\":{\"optimizer\":{}}}', CURRENT_TIMESTAMP, 3);",
+        )
+        .unwrap();
+    })
+    .0;
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/empty/analysis").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert!(value["policy"].is_null());
+    assert_eq!(value["coverage"]["reports"], 0);
+    assert_eq!(
+        value["coverage"]["points"],
+        serde_json::json!({"total":0, "returned":0, "sampled":false})
+    );
+    assert_eq!(value["best"], serde_json::Value::Null);
+    assert_eq!(value["pool_revisions"], serde_json::json!([]));
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/missing/analysis").await;
+    assert_eq!(status, HttpStatusCode::NOT_FOUND);
+    assert_eq!(body_json(&body)["code"], 404);
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/malformed/analysis").await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&body)["code"], 400);
+}
+
+#[tokio::test]
+async fn tuning_analysis_overview_returns_a_structured_error_for_malformed_pool_evidence() {
+    let app = seeded_app(|conn, _| {
+        conn.execute_batch(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
+             VALUES ('corrupt', 'idle', '{}', CURRENT_TIMESTAMP, 1);
+             INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at)
+             VALUES ('attempt', 'corrupt', 'completed', CURRENT_TIMESTAMP);
+             INSERT INTO tuning_pool_revisions (session_id, pool_snapshot_fingerprint, display_ordinal, first_event_id, first_attempt_id, observed_at)
+             VALUES ('corrupt', 'pool', 1, 'event', 'attempt', CURRENT_TIMESTAMP);
+             DROP TABLE tuning_pool_anchors;
+             CREATE TABLE tuning_pool_anchors (
+                 session_id TEXT, pool_snapshot_fingerprint TEXT, anchor_ordinal UINTEGER,
+                 anchor_id TEXT, config TEXT, mu DOUBLE, sigma DOUBLE, provenance TEXT,
+                 insertion_reason TEXT, source_trial_id TEXT
+             );
+             INSERT INTO tuning_pool_anchors VALUES
+             ('corrupt', 'pool', 0, 'bad-anchor', 'not-json', 25, 1, 'trial', 'champion', NULL);",
+        )
+        .unwrap();
+    })
+    .0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/corrupt/analysis").await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
+}
+
+#[tokio::test]
+async fn tuning_analysis_overview_caps_points_deterministically_without_losing_rare_outcomes() {
+    let app = seeded_app(|conn, _| {
+        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('sampled', 'idle', '{}', CURRENT_TIMESTAMP, 1)", []).unwrap();
+        conn.execute("INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at) VALUES ('attempt', 'sampled', 'completed', CURRENT_TIMESTAMP)", []).unwrap();
+        for number in 0..2_001_i64 {
+            conn.execute(
+                "INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at) VALUES (?1, ?2, 'attempt', ?3, 'complete', '{}', CURRENT_TIMESTAMP)",
+                duckdb::params!["sampled", format!("trial-{number:04}"), number],
+            )
+            .unwrap();
+            let rare = number == 2_000;
+            conn.execute(
+                "INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource) VALUES (?1, ?2, ?3, 1, ?4, CURRENT_TIMESTAMP, 25, 1, ?5, 1, 3, ?6, ?7, false, ?8, NULL)",
+                duckdb::params!["sampled", format!("trial-{number:04}"), number, format!("report-{number:04}"), number as f64, if rare { "prune" } else { "continue" }, if rare { "hyperband_prune" } else { "below_min_pairs" }, if rare { "rare" } else { "common" }],
+            )
+            .unwrap();
+        }
+    })
+    .0;
+
+    let (_, first) = http_get(app.clone(), "/api/bench/tuner/sessions/sampled/analysis").await;
+    let (status, second) = http_get(app, "/api/bench/tuner/sessions/sampled/analysis").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(first, second);
+    let value = body_json(&second);
+    assert_eq!(
+        value["coverage"]["points"],
+        serde_json::json!({"total":2001, "returned":2000, "sampled":true})
+    );
+    assert!(value["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|point| point["outcome"] == "prune"));
+}

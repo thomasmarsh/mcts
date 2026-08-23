@@ -214,3 +214,111 @@ pub(crate) struct TuningSessionDetail {
     pub(crate) capabilities: TuningCapabilities,
     pub(crate) cursor: TuningCursorBoundary,
 }
+
+/// Compact, bounded evidence used by the tuning analysis views.  Detailed
+/// trial, pair, and game evidence is intentionally served by separate routes.
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisOverview {
+    pub(crate) schema_version: u32,
+    pub(crate) policy: Option<TuningPolicyView>,
+    pub(crate) objective: TuningAnalysisObjective,
+    pub(crate) cursor: TuningCursorBoundary,
+    pub(crate) coverage: TuningAnalysisCoverage,
+    pub(crate) bracket_resources: Vec<TuningBracketResourceAggregate>,
+    pub(crate) decision_groups: Vec<TuningDecisionAggregate>,
+    pub(crate) points: Vec<TuningAnalysisPoint>,
+    pub(crate) best: Option<TuningAnalysisBest>,
+    pub(crate) pool_revisions: Vec<TuningPoolRevisionView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisObjective {
+    pub(crate) metric: &'static str,
+    pub(crate) direction: &'static str,
+    pub(crate) complete_trials_only: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisCoverage {
+    pub(crate) trials: TuningTrialCounts,
+    pub(crate) reports: i64,
+    pub(crate) pairs: TuningAnalysisPairCoverage,
+    pub(crate) points: TuningAnalysisPointCoverage,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisPairCoverage {
+    pub(crate) total: i64,
+    pub(crate) running: i64,
+    pub(crate) complete: i64,
+    pub(crate) failed: i64,
+    pub(crate) unmatched_pool_revisions: i64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisPointCoverage {
+    pub(crate) total: i64,
+    pub(crate) returned: i64,
+    pub(crate) sampled: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningBracketResourceAggregate {
+    pub(crate) bracket_id: Option<String>,
+    /// The resource consumed by a report, always its completed pair count.
+    pub(crate) resource: u64,
+    /// The optional rung reported by the tuner is retained as evidence and is
+    /// never substituted for `resource`.
+    pub(crate) rung_resource: Option<u64>,
+    pub(crate) reports: i64,
+    pub(crate) trials: i64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningDecisionAggregate {
+    pub(crate) outcome: mcts_bench::tuning_lifecycle::TrialReportOutcome,
+    pub(crate) reason: mcts_bench::tuning_lifecycle::TrialReportReason,
+    pub(crate) pruning_exempt: bool,
+    pub(crate) reports: i64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisPoint {
+    pub(crate) trial_id: String,
+    pub(crate) trial_number: i64,
+    pub(crate) trial_status: String,
+    pub(crate) resource: u64,
+    pub(crate) rating: TuningRatingView,
+    pub(crate) score: f64,
+    pub(crate) outcome: mcts_bench::tuning_lifecycle::TrialReportOutcome,
+    pub(crate) reason: mcts_bench::tuning_lifecycle::TrialReportReason,
+    pub(crate) pruning_exempt: bool,
+    pub(crate) bracket_id: Option<String>,
+    pub(crate) rung_resource: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAnalysisBest {
+    pub(crate) score: f64,
+    pub(crate) trial_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningPoolRevisionView {
+    pub(crate) pool_snapshot_fingerprint: String,
+    pub(crate) display_ordinal: u32,
+    pub(crate) observed_at: String,
+    pub(crate) pair_count: i64,
+    pub(crate) anchors: Vec<TuningPoolAnchorView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningPoolAnchorView {
+    pub(crate) anchor_ordinal: u32,
+    pub(crate) anchor_id: String,
+    pub(crate) config: Value,
+    pub(crate) rating: TuningRatingView,
+    pub(crate) provenance: mcts_bench::tuning_lifecycle::PoolAnchorProvenance,
+    pub(crate) insertion_reason: mcts_bench::tuning_lifecycle::PoolAnchorInsertionReason,
+    pub(crate) source_trial_id: Option<String>,
+}
