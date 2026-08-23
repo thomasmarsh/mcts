@@ -31,6 +31,20 @@ export type {
   Experiment,
   ExperimentCell,
   BenchSpectatorProps,
+  JsonValue,
+  TuningTrialCounts,
+  TuningCapabilities,
+  TuningAttempt,
+  TuningSessionSummary,
+  TuningSessionListItem,
+  TuningSessionsResponse,
+  TuningRating,
+  TuningStrategyMetrics,
+  TuningOpponent,
+  TuningGame,
+  TuningPair,
+  TuningTrial,
+  TuningSessionDetail,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 export { deriveSeed, expandExperimentSpec, cellFromResponse, JS_MAX_SAFE_INTEGER } from "./experiment-grid.js";
@@ -42,6 +56,8 @@ export { formatRate, formatInterval, formatWld, formatProgress, formatObservedRe
 
 export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, ChainedTrial } from "./state.js";
 export { initialBenchState } from "./state.js";
+export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction } from "./tuning-navigation.js";
+export { initialTuningNavigationState, tuningNavigationReducer, TUNING_DETAIL_REFRESH_MS } from "./tuning-navigation.js";
 
 export type {
   BenchEnv,

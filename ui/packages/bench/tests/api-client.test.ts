@@ -96,6 +96,18 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.url).toBe("/api/bench/tuner/kinds");
   });
 
+  it("uses the additive logical-session routes", async () => {
+    const calls = stubFetch({ schema_version: 1, sessions: [] });
+    const client = createBenchApiClient();
+
+    await client.listTuningSessions();
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions");
+
+    calls.length = 0;
+    await client.getTuningSession("session/a");
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa");
+  });
+
   it("getRunTrials passes an optional limit", async () => {
     const calls = stubFetch([]);
     const client = createBenchApiClient();

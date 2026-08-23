@@ -32,6 +32,8 @@ import type {
   Experiment,
   ExperimentSpecV1,
   ExperimentCell,
+  TuningSessionDetail,
+  TuningSessionsResponse,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -68,6 +70,10 @@ export interface BenchApiClient {
   getBenchKinds(): Promise<BenchKindInfo[]>;
   /** Per-game tuner metadata for every game that supports tuner tuning. */
   getTunerKinds(): Promise<TunerGameInfo[]>;
+  /** Logical tuning-session navigator rows, newest activity first. */
+  listTuningSessions(): Promise<TuningSessionsResponse>;
+  /** Complete version-1 evidence snapshot for one logical tuning session. */
+  getTuningSession(sessionId: string): Promise<TuningSessionDetail>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
@@ -217,6 +223,12 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getTunerKinds(): Promise<TunerGameInfo[]> {
       return fetchJson(url("/api/bench/tuner/kinds"));
     },
+    async listTuningSessions(): Promise<TuningSessionsResponse> {
+      return fetchJson(url("/api/bench/tuner/sessions"));
+    },
+    async getTuningSession(sessionId: string): Promise<TuningSessionDetail> {
+      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}`));
+    },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
     },
@@ -262,6 +274,8 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
       lift(() => api.advanceBaseline(runId, nTrials, nWorkers)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
     getTunerKinds: () => lift(() => api.getTunerKinds()),
+    listTuningSessions: () => lift(() => api.listTuningSessions()),
+    getTuningSession: (sessionId: string) => lift(() => api.getTuningSession(sessionId)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),

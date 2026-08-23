@@ -1,15 +1,15 @@
-/** TunerGamesProgress — live progress view for an active tuner run.
+/** TunerGamesProgress — legacy progress view for an unprojected tuner run.
  *
  * Instead of the log tail (which is always-empty JSONL for optuna runs),
  * this shows:
- *   - Trial completion progress (match_count / expected games per trial)
+ *   - Legacy trial counts and configured trial target
  *   - Worker count from the launch config
  *   - Recent completed games from `GameTraceSummary[]`
  *   - PID of the running process
  *
  * The games list is updated every tail tick, same as the trial/chart data.
- * Games are shown most-recent-first with opponent/outcome, since they form
- * the "this is what's happening right now" signal. */
+ * Games are shown most-recent-first with opponent/outcome. It cannot provide
+ * projected evaluation-pair evidence for these historical runs. */
 
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { GameTraceSummary, RunDetail } from "../index.js";
@@ -64,9 +64,8 @@ export const TunerGamesProgress: Component<{
   const nTrials = createMemo(() => resolveTrials(props.detail?.config));
   const workers = createMemo(() => resolveWorkers(props.detail?.config));
 
-  // Estimate: per trial, `rounds` game pairs per matchmaking step,
-  // with 5-15 steps per trial (matchmaking's min_games..max_games).
-  // A rough lower bound is rounds * min_games (5) pairs.
+  // Legacy tuning did not persist pair boundaries. This is only a configured
+  // range for interpreting old output, never projected evidence.
   const gamesPerTrialLow = createMemo(() => rounds() * 5);
   const gamesPerTrialHigh = createMemo(() => rounds() * 15);
 
@@ -90,14 +89,14 @@ export const TunerGamesProgress: Component<{
     <div id="tuner-games-progress">
       <div id="tuner-games-header">
         <span class="tuner-games-title">
-          {isRunning() ? "Running" : "Completed"}
+          Legacy estimate · {isRunning() ? "Running" : "Completed"}
         </span>
         <span class="tuner-games-meta">
           <span class="tuner-games-stat">
-            <strong>{matchCount()}</strong> game{matchCount() === 1 ? "" : "s"}
+            <strong>{matchCount()}</strong> recorded game{matchCount() === 1 ? "" : "s"}
           </span>
           <span class="tuner-games-stat">
-            <strong>{trialCount()}</strong> / {nTrials() ?? "?"} trial{trialCount() === 1 ? "" : "s"}
+            <strong>{trialCount()}</strong> / {nTrials() ?? "?"} legacy trial{trialCount() === 1 ? "" : "s"}
           </span>
           <Show when={pid()}>
             <span class="tuner-games-stat">PID {pid()}</span>
@@ -120,15 +119,15 @@ export const TunerGamesProgress: Component<{
 
       <Show when={trialCount() === 0 && matchCount() > 0}>
         <div class="tuner-games-waiting">
-          Evaluating trial 1 — {matchCount()} game{matchCount() === 1 ? "" : "s"} played
-          (≈ {gamesPerTrialLow()}–{gamesPerTrialHigh()} expected for first trial)
+          Legacy estimate: {matchCount()} recorded games; a trial historically used about {gamesPerTrialLow()}–{gamesPerTrialHigh()} games.
+          Projected pair evidence is unavailable.
         </div>
       </Show>
 
       <Show when={trialCount() > 0}>
         <div class="tuner-games-active">
-          <strong>Trial {trialCount() + 1}</strong> in progress after
-          {" "}{trialCount()} completed — {matchCount() - trialCount() * gamesPerTrialHigh()} games into it
+          <strong>Legacy estimate:</strong> {trialCount()} terminal trial{trialCount() === 1 ? "" : "s"} and {matchCount()} recorded games.
+          A historical trial used about {gamesPerTrialLow()}–{gamesPerTrialHigh()} games; projected pair evidence is unavailable.
         </div>
       </Show>
 

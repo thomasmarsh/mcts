@@ -26,6 +26,7 @@ import {
   type JobSubmitResult,
 } from "@mcts/core";
 import type { BenchState, ChainedTrial } from "./state.js";
+import { tuningNavigationReducer, type TuningNavigationAction } from "./tuning-navigation.js";
 import {
   isTerminalStatus,
   type BenchKindInfo,
@@ -47,6 +48,8 @@ import {
   type Experiment,
   type ExperimentCell,
   type ExperimentSpecV1,
+  type TuningSessionDetail,
+  type TuningSessionsResponse,
 } from "./types.js";
 import { expandExperimentSpec } from "./experiment-grid.js";
 import { serializeExperimentRunCsv, serializeExperimentRunJson, sanitizeExportRunId } from "./experiment-export.js";
@@ -88,6 +91,8 @@ export interface BenchEnv {
   getBenchKinds(): Effect<BenchKindInfo[]>;
   /** Per-game tuner metadata for every tuner-tunable game. */
   getTunerKinds(): Effect<TunerGameInfo[]>;
+  listTuningSessions(): Effect<TuningSessionsResponse>;
+  getTuningSession(sessionId: string): Effect<TuningSessionDetail>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first. */
@@ -124,6 +129,7 @@ export type LaunchAction =
 
 export type BenchAction =
   | { tag: "runs"; action: RunsAction }
+  | { tag: "tuningNavigation"; action: TuningNavigationAction }
   /** Replace the run-list filters and refetch with them. */
   | { tag: "setRunFilters"; status: string | null; game: string | null; project_id?: string | null; experiment_id?: string | null }
   | { tag: "openRun"; runId: string }
@@ -261,6 +267,15 @@ function startRunsFetch(draft: BenchState, env: BenchEnv): Effect<BenchAction> |
   return eff ? eff.map((a): BenchAction => ({ tag: "runs", action: { tag: "job", action: a } })) : null;
 }
 
+/** Keep the logical-session navigator current whenever physical run rows refresh. */
+function refreshRunViews(draft: BenchState, env: BenchEnv): Effect<BenchAction> | null {
+  const runs = startRunsFetch(draft, env);
+  const sessions = tuningNavigationReducer(draft.tuningNavigation, { tag: "listRequest" }, env)
+    ?.map((action): BenchAction => ({ tag: "tuningNavigation", action }));
+  if (runs && sessions) return Effect.merge(runs, sessions);
+  return runs ?? sessions ?? null;
+}
+
 function startLeaderboardFetch(draft: BenchState, env: BenchEnv): Effect<BenchAction> | null {
   const filters: LeaderboardFilters = { ...draft.leaderboardFilters };
   const jobEnv: JobPollEnv<LeaderboardEntry[]> = {
@@ -374,6 +389,10 @@ export function benchReducer(
   env: BenchEnv,
 ): Effect<BenchAction> | null {
   if (action.tag === "setTab") { draft.activeTab = action.tab; return null; }
+  if (action.tag === "tuningNavigation") {
+    const effect = tuningNavigationReducer(draft.tuningNavigation, action.action, env);
+    return effect?.map((next): BenchAction => ({ tag: "tuningNavigation", action: next })) ?? null;
+  }
   if (action.tag === "projectsRequest") {
     draft.projects = { ...draft.projects, status: "pending", result: null, error: null };
     return requestProjects(env);
@@ -397,7 +416,7 @@ export function benchReducer(
     draft.activeTab = "projects"; draft.selectedProjectId = action.projectId; draft.selectedExperimentId = null; draft.experimentDraft = null;
     draft.runFilters = { status: null, game: null, project_id: action.projectId, experiment_id: null };
     const project = draft.projects.result?.find((value) => value.project_id === action.projectId) ?? null; draft.selectedProject = project;
-    const runsEffect = startRunsFetch(draft, env);
+    const runsEffect = refreshRunViews(draft, env);
     const effects = Effect.merge(env.getProject(action.projectId).map((value): BenchAction => ({ tag: "projectCreated", project: value })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) })), env.listExperiments(action.projectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
     return runsEffect ? Effect.merge(effects, runsEffect) : effects;
   }
@@ -417,7 +436,7 @@ export function benchReducer(
     draft.experimentFieldErrors = {}; draft.experimentError = null;
     draft.runFilters = { status: null, game: null, project_id: null, experiment_id: action.experimentId };
     const experimentEffect = env.getExperiment(action.experimentId).map((experiment): BenchAction => ({ tag: "experimentLoaded", experiment })).catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
-    const runsEffect = startRunsFetch(draft, env);
+    const runsEffect = refreshRunViews(draft, env);
     return runsEffect ? Effect.merge(experimentEffect, runsEffect) : experimentEffect;
   }
   if (action.tag === "experimentLoaded") {
@@ -542,7 +561,7 @@ export function benchReducer(
   }
   if (action.tag === "runs") {
     const ra = action.action;
-    if (ra.tag === "request") return startRunsFetch(draft, env);
+    if (ra.tag === "request") return refreshRunViews(draft, env);
     const eff = jobPollReduce(
       draft.runs,
       ra.action,
@@ -558,10 +577,13 @@ export function benchReducer(
       ...(action.project_id !== undefined ? { project_id: action.project_id } : {}),
       ...(action.experiment_id !== undefined ? { experiment_id: action.experiment_id } : {}),
     };
-    return startRunsFetch(draft, env);
+    return refreshRunViews(draft, env);
   }
 
   if (action.tag === "openRun") {
+    if (draft.tuningNavigation.selection.sessionId) {
+      tuningNavigationReducer(draft.tuningNavigation, { tag: "clearSession" }, env);
+    }
     draft.showLaunchForm = false;
     draft.openGeneration += 1;
     draft.selectedCellId = null;
@@ -653,13 +675,6 @@ export function benchReducer(
     open.chainedTrials = action.chainedTrials;
     open.cells = action.cells ?? open.cells;
     open.games = action.games ?? open.games;
-    const newestRung = action.chain.at(-1);
-    if (newestRung && newestRung.run_id !== open.runId) {
-      // Automated laddering creates the next physical tuner process behind
-      // the UI's back. Follow it while retaining the chain as the logical
-      // run, just as the explicit advance-baseline action does.
-      return Effect.send<BenchAction>({ tag: "openRun", runId: newestRung.run_id });
-    }
     if (isTerminalStatus(action.detail.status)) {
       // The run's log file is complete once the process is done — one last
       // append (this tick's lines) and the loop stops. The runs list just
@@ -667,7 +682,7 @@ export function benchReducer(
       // reduction rather than waiting for the next manual poll.
       open.tail.active = false;
       open.tail.idleAttempts = 0;
-      return startRunsFetch(draft, env);
+      return refreshRunViews(draft, env);
     }
     open.tail.idleAttempts = action.lines.length > 0 ? 0 : open.tail.idleAttempts + 1;
     return Effect.delay(tailDelayMs(open.tail.idleAttempts), {
@@ -757,7 +772,7 @@ export function benchReducer(
     const launchEff = eff ? eff.map((a): BenchAction => ({ tag: "launch", action: { tag: "job", action: a } })) : null;
     // A completed launch means the runs table just gained a row — refresh
     // the list so the new run shows up without a manual reload.
-    const refreshEff = draft.launch.status === "done" ? startRunsFetch(draft, env) : null;
+    const refreshEff = draft.launch.status === "done" ? refreshRunViews(draft, env) : null;
     if (launchEff && refreshEff) return Effect.merge(launchEff, refreshEff);
     return launchEff ?? refreshEff;
   }
@@ -776,7 +791,7 @@ export function benchReducer(
     // stale until refetched. If the stopped run is the open one, the next
     // tail tick observes the terminal status and winds the loop down on
     // its own — nothing extra to do for that case here.
-    return startRunsFetch(draft, env);
+    return refreshRunViews(draft, env);
   }
 
   if (action.tag === "stopFailed") {
@@ -796,7 +811,7 @@ export function benchReducer(
   if (action.tag === "resumeFinished") {
     // The resumed run is a brand-new row (its own run_id) -- refresh the
     // list so it shows up without a manual reload, same as a fresh launch.
-    return startRunsFetch(draft, env);
+    return refreshRunViews(draft, env);
   }
 
   if (action.tag === "resumeFailed") {
@@ -814,19 +829,9 @@ export function benchReducer(
   }
 
   if (action.tag === "advanceBaselineFinished") {
-    // The widened rung is a brand-new row (its own run_id), chained back to
-    // this one via `resumed_from`/`ladder_root` -- refresh the list, and if
-    // the advanced run is still the one open in the detail panel, follow
-    // the chain there so the operator keeps watching the same continuous
-    // graph rather than a now-frozen predecessor (see TunerRunDetail's
-    // chain-aware trial fetch, which renders every rung of the chain
-    // regardless of which one is "open").
-    const refreshEff = startRunsFetch(draft, env);
-    if (draft.openRun?.runId === action.runId) {
-      const openEff = Effect.send<BenchAction>({ tag: "openRun", runId: action.newRunId });
-      return refreshEff ? Effect.merge(refreshEff, openEff) : openEff;
-    }
-    return refreshEff;
+    // The new physical run changes the navigator's available evidence, but
+    // does not change the operator's current physical selection.
+    return refreshRunViews(draft, env);
   }
 
   if (action.tag === "advanceBaselineFailed") {
@@ -847,7 +852,7 @@ export function benchReducer(
       draft.openRun = null;
       draft.openGeneration += 1;
     }
-    return startRunsFetch(draft, env);
+    return refreshRunViews(draft, env);
   }
 
   if (action.tag === "deleteFailed") {

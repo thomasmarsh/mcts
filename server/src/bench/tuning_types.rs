@@ -2,6 +2,36 @@ use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Serialize)]
+pub(crate) struct TuningSessionList {
+    pub(crate) schema_version: u32,
+    pub(crate) sessions: Vec<TuningSessionListItem>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningSessionListItem {
+    pub(crate) session_id: String,
+    pub(crate) game: Option<String>,
+    pub(crate) label: Option<String>,
+    pub(crate) status: String,
+    pub(crate) target_trial_count: Option<i64>,
+    pub(crate) counts: TuningTrialCounts,
+    pub(crate) created_at: String,
+    pub(crate) last_activity_at: String,
+    pub(crate) attempts: Vec<TuningAttemptSummary>,
+    pub(crate) capabilities: TuningCapabilities,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningAttemptSummary {
+    pub(crate) attempt_id: String,
+    pub(crate) bench_run_id: Option<String>,
+    pub(crate) status: String,
+    pub(crate) started_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) failure: Option<String>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct TuningSessionSummary {
     pub(crate) session_id: String,
     pub(crate) status: String,

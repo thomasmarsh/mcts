@@ -19,7 +19,6 @@ import {
   TAIL_BACKOFF_START_MS,
   TAIL_MAX_FAILURES,
   emptyExperimentSpec,
-  type BenchAction,
   type BenchEnv,
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
@@ -82,6 +81,11 @@ const tunerTerminalDetail = makeDetail({
   exit_code: 0,
 });
 
+function loadingTuningSessions(state: ReturnType<typeof initialBenchState>): void {
+  state.tuningNavigation.list.status = "loading";
+  state.tuningNavigation.list.generation += 1;
+}
+
 describe("experiment grid expansion", () => {
   it("matches the deterministic 2-game by 2-budget by 3-variant acceptance shape", () => {
     const plan = expandExperimentSpec({
@@ -127,6 +131,8 @@ const mockEnv: BenchEnv = {
   advanceBaseline: () => Effect.none(),
   getBenchKinds: () => Effect.none(),
   getTunerKinds: () => Effect.none(),
+  listTuningSessions: () => Effect.none(),
+  getTuningSession: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
@@ -150,6 +156,7 @@ describe("benchReducer / runs", () => {
 
     ts.send({ tag: "runs", action: { tag: "request" } }, (s) => {
       s.runs.status = "pending";
+      loadingTuningSessions(s);
     });
     ts.receive(
       { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
@@ -174,6 +181,7 @@ describe("benchReducer / runs", () => {
     ts.send({ tag: "setRunFilters", status: "running", game: "druid" }, (s) => {
       s.runFilters = { status: "running", game: "druid" };
       s.runs.status = "pending";
+      loadingTuningSessions(s);
     });
     ts.receive(
       { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
@@ -361,6 +369,7 @@ describe("benchReducer / log tail", () => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -433,6 +442,7 @@ describe("benchReducer / log tail", () => {
         // Terminal winds the loop down, including the backoff counter.
         s.openRun!.tail.idleAttempts = 0;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -528,6 +538,7 @@ describe("benchReducer / log tail", () => {
         s.openRun!.tail.offset = 7;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -583,6 +594,7 @@ describe("benchReducer / log tail", () => {
         s.openRun!.trials = trialRows;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -676,6 +688,7 @@ describe("benchReducer / log tail", () => {
         s.openRun!.chainedTrials = expectedChainedTrials;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -687,7 +700,7 @@ describe("benchReducer / log tail", () => {
     );
   });
 
-  it("follows an automatically-created newest rung instead of freezing on its terminal parent", () => {
+  it("keeps a terminal parent open when its chain gains a newer rung", () => {
     const ts = createTestStore(benchReducer, mockEnv, initialBenchState());
     const chain: ChainRung[] = [
       {
@@ -737,22 +750,12 @@ describe("benchReducer / log tail", () => {
       (s) => {
         s.openRun!.detail = { ...tunerTerminalDetail, run_id: "root-1", status: "stopped" };
         s.openRun!.chain = chain;
+        s.openRun!.tail.active = false;
+        s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
-    ts.receive({ tag: "openRun", runId: "rung-2" }, (s) => {
-      s.openGeneration = 2;
-      s.openRun = {
-        runId: "rung-2",
-        detail: null,
-        tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
-        trials: [],
-        chain: [],
-        chainedTrials: [],
-        cells: [],
-        games: [],
-      };
-    });
-    ts.receive({ tag: "tailTick", generation: 2 });
+    expect(ts.getState().openRun?.runId).toBe("root-1");
   });
 
   it("also fetches (empty) trials for a non-tuner run, harmlessly", async () => {
@@ -790,6 +793,7 @@ describe("benchReducer / log tail", () => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -1012,6 +1016,7 @@ describe("benchReducer / launch", () => {
         // The completed launch refreshes the runs list in the same
         // reduction, so the new run appears without a manual reload.
         s.runs.status = "pending";
+        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -1037,6 +1042,7 @@ describe("benchReducer / stopRun", () => {
     ts.send({ tag: "stopRun", runId: summary.run_id });
     ts.receive({ tag: "stopFinished", runId: summary.run_id }, (s) => {
       s.runs.status = "pending";
+      loadingTuningSessions(s);
     });
     ts.receive(
       { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
@@ -1079,6 +1085,7 @@ describe("benchReducer / resumeRun", () => {
     expect(seen).toEqual(["tuner-run-1", 500, undefined]);
     ts.receive({ tag: "resumeFinished", runId: "tuner-run-1" }, (s) => {
       s.runs.status = "pending";
+      loadingTuningSessions(s);
     });
     ts.receive(
       { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
@@ -1105,42 +1112,27 @@ describe("benchReducer / resumeRun", () => {
 });
 
 describe("benchReducer / advanceBaseline", () => {
-  it("advanceBaselineFinished dispatches openRun for the new rung when the advanced run is still open", () => {
-    // Exercised via a direct reducer call rather than TestStore: the
-    // returned effect (Effect.merge of a runs-list refresh and the
-    // follow-up openRun) would, once fully driven through TestStore,
-    // cascade into that openRun's own tailTick -- exactly what
-    // reducer.ts's log-tail tests already cover on their own. What's
-    // actually novel here is narrower: does advanceBaselineFinished route
-    // to the *new* run_id, only when it's still the open one. Asserting
-    // that against the raw dispatched actions keeps the test scoped to it.
-    const draft = initialBenchState();
-    draft.openGeneration = 1;
-    draft.openRun = {
+  it("refreshes physical rows without changing the open run", () => {
+    const initial = initialBenchState();
+    initial.openGeneration = 1;
+    initial.openRun = {
       runId: "root-1",
       detail: null,
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
-        trials: [],
-        chain: [],
-        chainedTrials: [],
-        cells: [],
-        games: [],
-      };
-    // listRuns left at mockEnv's Effect.none() default -- the runs-list
-    // refresh half of the merge is irrelevant here (already covered below
-    // and by the resumeRun tests' identical shape) and Effect.none()
-    // resolves without ever dispatching, so it can't obscure the assertion
-    // on what openEff dispatches.
-    const effect = benchReducer(
-      draft,
-      { tag: "advanceBaselineFinished", runId: "root-1", newRunId: "tuner-run-2" },
-      mockEnv,
-    );
-    expect(draft.runs.status).toBe("pending"); // startRunsFetch's synchronous mutation
+      trials: [], chain: [], chainedTrials: [], cells: [], games: [],
+    };
+    const env: BenchEnv = { ...mockEnv, listRuns: () => Effect.send([]) };
+    const ts = createTestStore(benchReducer, env, initial);
 
-    const sent: BenchAction[] = [];
-    void effect?.execute((a) => sent.push(a));
-    expect(sent).toEqual([{ tag: "openRun", runId: "tuner-run-2" }]);
+    ts.send({ tag: "advanceBaselineFinished", runId: "root-1", newRunId: "tuner-run-2" }, (state) => {
+      state.runs.status = "pending";
+      loadingTuningSessions(state);
+    });
+    ts.receive(
+      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },
+      (state) => { state.runs.status = "done"; state.runs.result = []; },
+    );
+    expect(ts.getState().openRun?.runId).toBe("root-1");
   });
 
   it("does not follow the chain when a different run was opened before advanceBaseline resolved", async () => {
@@ -1157,6 +1149,7 @@ describe("benchReducer / advanceBaseline", () => {
     await ts.drain();
     ts.receive({ tag: "advanceBaselineFinished", runId: "root-1", newRunId: "tuner-run-2" }, (s) => {
       s.runs.status = "pending";
+      loadingTuningSessions(s);
     });
     ts.receive(
       { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },

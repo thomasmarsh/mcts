@@ -355,6 +355,112 @@
   font-size: 13px;
 }
 
+.tuning-session-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tuning-session-row-open {
+  background: rgba(91, 127, 214, 0.12);
+}
+
+.tuning-session-main,
+.tuning-session-select,
+.tuning-attempt-row {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tuning-session-main {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px 8px;
+  padding: 8px 14px;
+}
+
+.tuning-session-main:hover,
+.tuning-session-select:hover,
+.tuning-attempt-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tuning-session-label {
+  min-width: 0;
+  overflow: hidden;
+  color: #e8e8ec;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tuning-session-select {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+}
+
+.tuning-session-select:focus-visible,
+.tuning-session-disclosure:focus-visible,
+.tuning-attempt-row:focus-visible {
+  outline: 2px solid #8aaff0;
+  outline-offset: 1px;
+}
+
+.tuning-session-progress,
+.tuning-session-counts,
+.tuning-session-time,
+.tuning-attempt-meta {
+  color: #8a8b96;
+  font-size: 11px;
+}
+
+.tuning-session-counts {
+  grid-column: 2 / 4;
+}
+
+.tuning-session-time {
+  grid-column: 2 / 4;
+}
+
+.tuning-session-disclosure {
+  border: 0;
+  color: #b7b8c2;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tuning-attempt-list {
+  margin: 0;
+  padding: 0 0 6px 26px;
+  list-style: none;
+}
+
+.tuning-attempt-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 14px 5px 8px;
+  font-size: 11px;
+}
+
+.legacy-tuner-label {
+  color: #d6aa6f;
+  font-size: 11px;
+}
+
+.tuning-list-error {
+  padding: 7px 14px;
+  color: #e08a8a;
+  border-bottom: 1px solid rgba(224, 138, 138, 0.22);
+  background: rgba(224, 138, 138, 0.08);
+  font-size: 12px;
+}
+
 /* ── Status Badges ───────────────────────────────────────────────────── */
 
 .status-badge {
@@ -1671,6 +1777,175 @@ body.bench-active #analysis-panel {
 }
 
 /* ── tuner Run Detail ────────────────────────────────────────────────── */
+
+#tuning-session-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+  padding: 18px 22px 30px;
+  box-sizing: border-box;
+}
+
+.tuning-workbench-header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.tuning-workbench-header h3,
+.tuning-panel h4 {
+  margin: 0;
+}
+
+.tuning-summary-status,
+.tuning-summary-counts,
+.tuning-unavailable,
+.tuning-load-error,
+.tuning-replay-reason {
+  margin-top: 6px;
+  color: #9b9da8;
+  font-size: 12px;
+}
+
+.tuning-load-error,
+.tuning-unavailable {
+  color: #e08a8a;
+}
+
+.tuning-summary-progress {
+  min-width: 220px;
+  color: #c8c9d0;
+  font-size: 12px;
+}
+
+.tuning-summary-progress progress {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.tuning-workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1.1fr);
+  gap: 12px;
+  min-height: 360px;
+}
+
+.tuning-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tuning-tree,
+.tuning-tree ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tuning-tree ul {
+  margin-left: 16px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tuning-tree-node {
+  margin: 2px 0;
+}
+
+.tuning-node-controls {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.tuning-node-select,
+.tuning-node-toggle {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #cfd0d7;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tuning-node-select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.tuning-node-toggle {
+  width: 28px;
+}
+
+.tuning-node-select:hover,
+.tuning-node-toggle:hover,
+.tuning-node-select:focus-visible,
+.tuning-node-toggle:focus-visible {
+  border-color: rgba(91, 127, 214, 0.8);
+  outline: 2px solid transparent;
+  background: rgba(91, 127, 214, 0.1);
+}
+
+.tuning-tree-node[aria-selected="true"] > .tuning-node-controls .tuning-node-select {
+  color: #eef2ff;
+  background: rgba(91, 127, 214, 0.22);
+}
+
+.tuning-node-status {
+  margin-left: 6px;
+  color: #8a8b96;
+  font-size: 11px;
+}
+
+.tuning-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(100px, auto) minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+
+.tuning-evidence-grid dt {
+  color: #8a8b96;
+}
+
+.tuning-evidence-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tuning-json {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #111217;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.tuning-replay {
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 980px) {
+  .tuning-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tuning-workbench-header {
+    flex-direction: column;
+  }
+}
 
 #tuner-run-detail {
   padding: 10px 16px;

@@ -24,6 +24,7 @@ import { WinRateChart } from "./WinRateChart.js";
 import { CommitComparison } from "./CommitComparison.js";
 import { ProjectsApp } from "./ProjectsApp.js";
 import { ExperimentRunDetail } from "./ExperimentRunDetail.js";
+import { TuningSessionWorkbench } from "./tuning/TuningSessionWorkbench.js";
 import type { BenchSpectatorProps } from "./types.js";
 
 export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }> = (props) => {
@@ -41,6 +42,7 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
   const openRun = () => state().openRun;
   const showLaunchForm = () => state().showLaunchForm;
   const launchStatus = () => state().launch.status;
+  const selectedTuningSession = () => state().tuningNavigation.selection.sessionId;
 
   // When a launch completes successfully, open the new run and close the form.
   // Guarded against re-dispatch: once the launched run is already open (its
@@ -66,6 +68,7 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
   });
 
   function onNewRun(): void {
+    dispatch({ tag: "tuningNavigation", action: { tag: "clearSession" } });
     dispatch({ tag: "closeRun" });
     dispatch({ tag: "setShowLaunchForm", show: true });
   }
@@ -98,11 +101,20 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
             <RunList store={store} onNewRun={onNewRun} />
           </div>
           <div id="bench-main-pane">
-            <Show when={openRun() !== null}>
-              <Show when={openRun()?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
-            </Show>
-            <Show when={openRun() === null && showLaunchForm()}>
-              <LaunchForm store={store} />
+            <Show
+              when={selectedTuningSession() !== null}
+              fallback={
+                <>
+                  <Show when={openRun() !== null}>
+                    <Show when={openRun()?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
+                  </Show>
+                  <Show when={openRun() === null && showLaunchForm()}>
+                    <LaunchForm store={store} />
+                  </Show>
+                </>
+              }
+            >
+              <TuningSessionWorkbench store={store} Spectator={props.Spectator} />
             </Show>
           </div>
         </div>

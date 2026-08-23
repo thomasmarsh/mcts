@@ -1,5 +1,126 @@
 use super::support::*;
 use axum::http::StatusCode as HttpStatusCode;
+use std::sync::Arc;
+
+#[tokio::test]
+async fn tuning_sessions_list_projects_counts_attempts_capabilities_and_order() {
+    let app = seeded_app(|conn, dir| {
+        default_seed(conn, dir);
+        conn.execute(
+            "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES \
+             ('tuner-projected', 'tuner', 'nim', 'abc', false, 'test', '2026-01-01T00:00:00Z', 'running', '/tmp/projected.log'), \
+             ('tuner-legacy', 'tuner', 'nim', 'abc', false, 'test', '2026-01-01T00:00:00Z', 'completed', '/tmp/legacy.log')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, target_trial_count, created_at, last_sequence) VALUES \
+             ('session-a', 'idle', '{\"schema_version\":1}', NULL, '2026-01-02T00:00:00Z', 1), \
+             ('session-z', 'idle', '{\"schema_version\":1}', NULL, '2026-01-02T00:00:00Z', 1), \
+             ('session-main', 'active', '{\"schema_version\":1,\"semantic_inputs\":{\"game\":{\"kind\":\"nim\",\"label\":\"Nim tuning\"}}}', 8, '2026-01-01T00:00:00Z', 9)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at, ended_at, failure) VALUES \
+             ('attempt-old', 'session-main', NULL, 'stopped', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'stopped by user'), \
+             ('attempt-live', 'session-main', 'tuner-projected', 'running', '2026-01-03T00:00:00Z', NULL, NULL)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at) VALUES \
+             ('session-main', 'trial-queued', 'attempt-live', 0, 'queued', '{}', '2026-01-03T00:00:00Z'), \
+             ('session-main', 'trial-running', 'attempt-live', 1, 'running', '{}', '2026-01-03T00:00:00Z'), \
+             ('session-main', 'trial-complete', 'attempt-old', 2, 'complete', '{}', '2026-01-01T00:00:00Z'), \
+             ('session-main', 'trial-failed', 'attempt-old', 3, 'failed', '{}', '2026-01-01T00:00:00Z'), \
+             ('session-main', 'trial-pruned', 'attempt-old', 4, 'pruned', '{}', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO tuning_evaluation_pairs (session_id, pair_id, trial_id, attempt_id, pair_index, status, seed, round, opponent, pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, started_at) VALUES \
+             ('session-main', 'pair-1', 'trial-running', 'attempt-live', 0, 'running', 7, 1, '{\"anchor_id\":\"a\",\"config\":{},\"mu\":25.0,\"sigma\":1.0}', 'pool', 25.0, 1.0, '2026-01-03T00:01:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO tuning_games (session_id, pair_id, game_id, candidate_side, outcome, seed, round, trace_game_seq, plies, elapsed_ms, candidate_metrics, baseline_metrics, finished_at) VALUES \
+             ('session-main', 'pair-1', 'game-1', 'first', 'candidate_win', 7, 1, 11, 10, 20, '{\"iterations_total\":1,\"iterations_first_half\":1,\"move_time_ms\":1}', '{\"iterations_total\":1,\"iterations_first_half\":1,\"move_time_ms\":1}', '2026-01-03T00:02:00Z')",
+            [],
+        ).unwrap();
+    }).0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    let sessions = value["sessions"].as_array().unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|session| &session["session_id"])
+            .collect::<Vec<_>>(),
+        vec!["session-main", "session-z", "session-a"]
+    );
+    assert_eq!(sessions[0]["game"], "nim");
+    assert_eq!(sessions[0]["label"], "Nim tuning");
+    assert_eq!(
+        sessions[0]["counts"],
+        serde_json::json!({"total": 5, "queued": 1, "running": 1, "terminal": 3, "completed": 1, "failed": 1, "pruned": 1, "cancelled": 0})
+    );
+    assert_eq!(sessions[0]["attempts"][0]["attempt_id"], "attempt-old");
+    assert_eq!(
+        sessions[0]["attempts"][1]["bench_run_id"],
+        "tuner-projected"
+    );
+    assert_eq!(
+        sessions[0]["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|attempt| attempt["bench_run_id"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["tuner-projected"]
+    );
+    assert_eq!(sessions[0]["capabilities"]["has_pairs"], true);
+    assert_eq!(sessions[0]["capabilities"]["has_renderer_trace"], true);
+    assert_ne!(sessions[0]["last_activity_at"], sessions[0]["created_at"]);
+    assert!(sessions[1]["game"].is_null());
+}
+
+#[tokio::test]
+async fn tuning_sessions_list_rejects_a_malformed_manifest() {
+    let app = seeded_app(|conn, _| {
+        conn.execute(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('broken', 'idle', '{\"semantic_inputs\":{\"game\":\"nim\"}}', CURRENT_TIMESTAMP, 1)",
+            [],
+        ).unwrap();
+    }).0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions").await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&body)["code"], 400);
+}
+
+#[tokio::test]
+async fn tuning_sessions_list_returns_a_structured_storage_error() {
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| {
+            conn.execute(
+                "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{}', CURRENT_TIMESTAMP, 1)",
+                [],
+            ).unwrap();
+        },
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    );
+    state
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TABLE tuning_trials")
+        .unwrap();
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions").await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
+}
 
 #[tokio::test]
 async fn tuning_session_detail_projects_counts_attempts_and_capabilities() {

@@ -47,6 +47,130 @@ export interface BenchSpectatorProps {
   initialGameSeq?: number;
 }
 
+/** JSON carried by persisted tuning manifests and configuration snapshots.
+ * Keeping this boundary explicit prevents presentation code from treating
+ * lifecycle payloads as arbitrary records. */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+/** Exact status counts shared by tuning list and detail version-1 payloads. */
+export interface TuningTrialCounts {
+  total: number;
+  queued: number;
+  running: number;
+  terminal: number;
+  completed: number;
+  failed: number;
+  pruned: number;
+  cancelled: number;
+}
+
+export interface TuningCapabilities {
+  has_lifecycle: boolean;
+  has_pairs: boolean;
+  has_renderer_trace: boolean;
+  has_search_reports: boolean;
+}
+
+export interface TuningAttempt {
+  attempt_id: string;
+  bench_run_id: string | null;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  failure: string | null;
+}
+
+export interface TuningSessionSummary {
+  session_id: string;
+  status: string;
+  target_trial_count: number | null;
+  counts: TuningTrialCounts;
+}
+
+/** One logical-session navigator row from `GET /api/bench/tuner/sessions`. */
+export interface TuningSessionListItem extends TuningSessionSummary {
+  game: string | null;
+  label: string | null;
+  created_at: string;
+  last_activity_at: string;
+  attempts: TuningAttempt[];
+  capabilities: TuningCapabilities;
+}
+
+export interface TuningSessionsResponse {
+  schema_version: 1;
+  sessions: TuningSessionListItem[];
+}
+
+export interface TuningRating { mu: number; sigma: number }
+
+export interface TuningStrategyMetrics {
+  iterations_total: number;
+  iterations_first_half: number;
+  move_time_ms: number;
+}
+
+export interface TuningOpponent {
+  anchor_id: string;
+  config: JsonValue;
+  mu: number;
+  sigma: number;
+  label: string | null;
+  provenance: string | null;
+}
+
+export interface TuningGame {
+  game_id: string;
+  candidate_side: string;
+  outcome: string;
+  seed: number;
+  round: number;
+  trace_game_seq: number | null;
+  plies: number;
+  elapsed_ms: number;
+  candidate: TuningStrategyMetrics;
+  baseline: TuningStrategyMetrics;
+}
+
+export interface TuningPair {
+  pair_id: string;
+  pair_index: number;
+  status: string;
+  seed: number;
+  round: number;
+  opponent: TuningOpponent;
+  pool_snapshot_fingerprint: string;
+  rating_before: TuningRating;
+  rating_after: TuningRating | null;
+  score: number | null;
+  failure: string | null;
+  games: TuningGame[];
+}
+
+export interface TuningTrial {
+  trial_id: string;
+  trial_number: number;
+  attempt_id: string;
+  status: string;
+  config: JsonValue | null;
+  score: number | null;
+  mu: number | null;
+  sigma: number | null;
+  failure: string | null;
+  pairs: TuningPair[];
+}
+
+export interface TuningSessionDetail {
+  schema_version: 1;
+  summary: TuningSessionSummary;
+  attempts: TuningAttempt[];
+  trials: TuningTrial[];
+  manifest: JsonValue;
+  fingerprint: string | null;
+  capabilities: TuningCapabilities;
+  cursor: { session_sequence: number };
+}
+
 /** A run is finished once its status leaves "running". Its log file is
  * complete at that point — the run process writes it directly, so process
  * exit means fully flushed — which is what lets a log tail stop polling

@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::{
-    BenchError, BenchState, TuningAttemptView, TuningCapabilities, TuningCursorBoundary,
-    TuningGameView, TuningOpponentView, TuningPairView, TuningRatingView, TuningSessionDetail,
-    TuningSessionSummary, TuningStrategyMetricsView, TuningTrialCounts, TuningTrialView,
+    BenchError, BenchState, TuningAttemptSummary, TuningAttemptView, TuningCapabilities,
+    TuningCursorBoundary, TuningGameView, TuningOpponentView, TuningPairView, TuningRatingView,
+    TuningSessionDetail, TuningSessionList, TuningSessionListItem, TuningSessionSummary,
+    TuningStrategyMetricsView, TuningTrialCounts, TuningTrialView,
 };
 use axum::{
     extract::{Path as AxumPath, State as AxumState},
@@ -11,6 +12,14 @@ use axum::{
 };
 use duckdb::Connection;
 use mcts_bench::tuning_lifecycle::{OpponentSnapshot, StrategyMetrics};
+use serde::Deserialize;
+
+pub(crate) async fn get_tuning_sessions(
+    AxumState(state): AxumState<Arc<BenchState>>,
+) -> Result<Json<TuningSessionList>, BenchError> {
+    let db = state.db.lock().unwrap();
+    Ok(Json(load_tuning_session_list(&db)?))
+}
 
 pub(crate) async fn get_tuning_session(
     AxumState(state): AxumState<Arc<BenchState>>,
@@ -22,6 +31,237 @@ pub(crate) async fn get_tuning_session(
         message: format!("tuning session '{session_id}' not found"),
     })?;
     Ok(Json(detail))
+}
+
+fn load_tuning_session_list(db: &Connection) -> Result<TuningSessionList, BenchError> {
+    let sessions = load_tuning_session_list_rows(db)?;
+    let attempts = load_tuning_session_list_attempts(db)?;
+    assemble_tuning_session_list(sessions, attempts)
+}
+
+fn load_tuning_session_list_rows(
+    db: &Connection,
+) -> Result<Vec<TuningSessionListRow>, duckdb::Error> {
+    let mut query = db.prepare(
+        "WITH trial_counts AS ( \
+             SELECT session_id, COUNT(*) AS total, \
+                    SUM(status = 'queued') AS queued, SUM(status = 'running') AS running, \
+                    SUM(status IN ('complete', 'failed', 'pruned', 'cancelled')) AS terminal, \
+                    SUM(status = 'complete') AS completed, SUM(status = 'failed') AS failed, \
+                    SUM(status = 'pruned') AS pruned, SUM(status = 'cancelled') AS cancelled \
+             FROM tuning_trials GROUP BY session_id \
+         ), pair_capabilities AS ( \
+             SELECT pairs.session_id, COUNT(*) AS pair_count, COUNT(games.trace_game_seq) AS trace_count \
+             FROM tuning_evaluation_pairs pairs \
+             LEFT JOIN tuning_games games USING (session_id, pair_id) \
+             GROUP BY pairs.session_id \
+         ), activity AS ( \
+             SELECT session_id, created_at AS occurred_at FROM tuning_sessions \
+             UNION ALL SELECT session_id, started_at FROM tuning_attempts \
+             UNION ALL SELECT session_id, ended_at FROM tuning_attempts WHERE ended_at IS NOT NULL \
+             UNION ALL SELECT session_id, created_at FROM tuning_trials \
+             UNION ALL SELECT session_id, started_at FROM tuning_trials WHERE started_at IS NOT NULL \
+             UNION ALL SELECT session_id, ended_at FROM tuning_trials WHERE ended_at IS NOT NULL \
+             UNION ALL SELECT session_id, started_at FROM tuning_evaluation_pairs \
+             UNION ALL SELECT session_id, ended_at FROM tuning_evaluation_pairs WHERE ended_at IS NOT NULL \
+             UNION ALL SELECT session_id, finished_at FROM tuning_games \
+         ) \
+         SELECT sessions.session_id, sessions.status, sessions.target_trial_count, \
+                CAST(sessions.manifest AS TEXT), CAST(sessions.created_at AS TEXT), \
+                CAST(MAX(activity.occurred_at) AS TEXT), \
+                COALESCE(trial_counts.total, 0), COALESCE(trial_counts.queued, 0), \
+                COALESCE(trial_counts.running, 0), COALESCE(trial_counts.terminal, 0), \
+                COALESCE(trial_counts.completed, 0), COALESCE(trial_counts.failed, 0), \
+                COALESCE(trial_counts.pruned, 0), COALESCE(trial_counts.cancelled, 0), \
+                COALESCE(pair_capabilities.pair_count, 0), COALESCE(pair_capabilities.trace_count, 0) \
+         FROM tuning_sessions sessions \
+         LEFT JOIN trial_counts USING (session_id) \
+         LEFT JOIN pair_capabilities USING (session_id) \
+         JOIN activity USING (session_id) \
+         GROUP BY sessions.session_id, sessions.status, sessions.target_trial_count, sessions.manifest, \
+                  sessions.created_at, trial_counts.total, trial_counts.queued, trial_counts.running, \
+                  trial_counts.terminal, trial_counts.completed, trial_counts.failed, trial_counts.pruned, \
+                  trial_counts.cancelled, pair_capabilities.pair_count, pair_capabilities.trace_count \
+         ORDER BY MAX(activity.occurred_at) DESC, sessions.session_id DESC",
+    )?;
+    query
+        .query_map([], TuningSessionListRow::from_row)?
+        .collect()
+}
+
+fn load_tuning_session_list_attempts(
+    db: &Connection,
+) -> Result<Vec<TuningSessionAttemptRow>, duckdb::Error> {
+    let mut query = db.prepare(
+        "SELECT session_id, attempt_id, bench_run_id, status, CAST(started_at AS TEXT), \
+                CAST(ended_at AS TEXT), failure \
+         FROM tuning_attempts ORDER BY session_id, started_at ASC, attempt_id ASC",
+    )?;
+    query
+        .query_map([], TuningSessionAttemptRow::from_row)?
+        .collect()
+}
+
+fn assemble_tuning_session_list(
+    sessions: Vec<TuningSessionListRow>,
+    attempts: Vec<TuningSessionAttemptRow>,
+) -> Result<TuningSessionList, BenchError> {
+    let mut attempts_by_session = group_tuning_session_attempts(attempts);
+    let sessions = sessions
+        .into_iter()
+        .map(|row| {
+            let attempts = attempts_by_session
+                .remove(&row.session_id)
+                .unwrap_or_default();
+            assemble_tuning_session_list_item(row, attempts)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(TuningSessionList {
+        schema_version: 1,
+        sessions,
+    })
+}
+
+fn group_tuning_session_attempts(
+    rows: Vec<TuningSessionAttemptRow>,
+) -> HashMap<String, Vec<TuningAttemptSummary>> {
+    let mut grouped = HashMap::new();
+    for row in rows {
+        let session_id = row.session_id.clone();
+        grouped
+            .entry(session_id)
+            .or_insert_with(Vec::new)
+            .push(row.into_summary());
+    }
+    grouped
+}
+
+fn assemble_tuning_session_list_item(
+    row: TuningSessionListRow,
+    attempts: Vec<TuningAttemptSummary>,
+) -> Result<TuningSessionListItem, BenchError> {
+    let display = decode_manifest_display(&row.manifest)?;
+    Ok(TuningSessionListItem {
+        session_id: row.session_id.clone(),
+        game: display.game,
+        label: display.label,
+        status: row.status,
+        target_trial_count: row.target_trial_count,
+        counts: row.counts,
+        created_at: row.created_at,
+        last_activity_at: row.last_activity_at,
+        attempts,
+        capabilities: row.capabilities,
+    })
+}
+
+struct TuningSessionListRow {
+    session_id: String,
+    status: String,
+    target_trial_count: Option<i64>,
+    manifest: String,
+    created_at: String,
+    last_activity_at: String,
+    counts: TuningTrialCounts,
+    capabilities: TuningCapabilities,
+}
+
+impl TuningSessionListRow {
+    fn from_row(row: &duckdb::Row<'_>) -> Result<Self, duckdb::Error> {
+        Ok(Self {
+            session_id: row.get(0)?,
+            status: row.get(1)?,
+            target_trial_count: row.get(2)?,
+            manifest: row.get(3)?,
+            created_at: row.get(4)?,
+            last_activity_at: row.get(5)?,
+            counts: TuningTrialCounts {
+                total: row.get(6)?,
+                queued: row.get(7)?,
+                running: row.get(8)?,
+                terminal: row.get(9)?,
+                completed: row.get(10)?,
+                failed: row.get(11)?,
+                pruned: row.get(12)?,
+                cancelled: row.get(13)?,
+            },
+            capabilities: TuningCapabilities {
+                has_lifecycle: true,
+                has_pairs: row.get::<_, i64>(14)? > 0,
+                has_renderer_trace: row.get::<_, i64>(15)? > 0,
+                has_search_reports: false,
+            },
+        })
+    }
+}
+
+struct TuningSessionAttemptRow {
+    session_id: String,
+    attempt_id: String,
+    bench_run_id: Option<String>,
+    status: String,
+    started_at: String,
+    ended_at: Option<String>,
+    failure: Option<String>,
+}
+
+impl TuningSessionAttemptRow {
+    fn from_row(row: &duckdb::Row<'_>) -> Result<Self, duckdb::Error> {
+        Ok(Self {
+            session_id: row.get(0)?,
+            attempt_id: row.get(1)?,
+            bench_run_id: row.get(2)?,
+            status: row.get(3)?,
+            started_at: row.get(4)?,
+            ended_at: row.get(5)?,
+            failure: row.get(6)?,
+        })
+    }
+
+    fn into_summary(self) -> TuningAttemptSummary {
+        TuningAttemptSummary {
+            attempt_id: self.attempt_id,
+            bench_run_id: self.bench_run_id,
+            status: self.status,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+            failure: self.failure,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TuningManifestDisplayEnvelope {
+    #[serde(default)]
+    semantic_inputs: Option<TuningManifestSemanticInputs>,
+}
+
+#[derive(Deserialize)]
+struct TuningManifestSemanticInputs {
+    #[serde(default)]
+    game: Option<TuningManifestGame>,
+}
+
+#[derive(Deserialize)]
+struct TuningManifestGame {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+struct TuningManifestDisplay {
+    game: Option<String>,
+    label: Option<String>,
+}
+
+fn decode_manifest_display(manifest: &str) -> Result<TuningManifestDisplay, BenchError> {
+    let manifest: TuningManifestDisplayEnvelope = serde_json::from_str(manifest)?;
+    let game = manifest.semantic_inputs.and_then(|inputs| inputs.game);
+    Ok(TuningManifestDisplay {
+        game: game.as_ref().and_then(|value| value.kind.clone()),
+        label: game.and_then(|value| value.label),
+    })
 }
 
 struct TuningSessionRow {

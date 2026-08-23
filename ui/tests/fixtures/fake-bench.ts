@@ -311,6 +311,8 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       Effect.send({ run_id: "advanced-run-123", pid: 99997, log_path: "/tmp/advanced/log.jsonl" }),
     getBenchKinds: () => Effect.send(fakeKinds),
     getTunerKinds: () => Effect.send(fakeTunerKinds),
+    listTuningSessions: () => Effect.send({ schema_version: 1, sessions: [] }),
+    getTuningSession: () => Effect.none(),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),
     // A single-rung chain containing just the requested run -- the common
     // case (a plain tuner run, never baseline-advanced). Tests exercising

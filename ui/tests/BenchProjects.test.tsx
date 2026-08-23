@@ -20,7 +20,7 @@ const noOpEnv: BenchEnv = {
   listExperiments: () => Effect.none(), createExperiment: () => Effect.none(), getExperiment: () => Effect.none(), updateExperiment: () => Effect.none(), launchExperiment: () => Effect.none(),
   getRunCells: () => Effect.send([]), listRuns: () => Effect.none(), getRun: () => Effect.none(), getRunLog: () => Effect.none(), getRunStdout: () => Effect.none(), downloadFile: () => Effect.none(),
   getLeaderboard: () => Effect.none(), fetchCommitTrends: () => Effect.none(), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(), advanceBaseline: () => Effect.none(),
-  getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
+  getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
 };
 
 describe("persisted experiment components", () => {
@@ -201,7 +201,7 @@ describe("persisted experiment components", () => {
       getRunCells: () => Effect.send([cell]), listRuns: () => Effect.send([]), getRun: () => Effect.send({ ...detail, status: "completed" }),
       getRunLog: () => Effect.send({ lines: Array.from({ length: 502 }, (_, index) => `log-${index}`), next_offset: 14 }), getRunStdout: () => Effect.send(""), getLeaderboard: () => Effect.send([]),
       fetchCommitTrends: () => Effect.send({}), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(),
-      advanceBaseline: () => Effect.none(), getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(),
+      advanceBaseline: () => Effect.none(), getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(),
       getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([{ game_seq: 7, match_seq: 3, cell_id: cell.cell_id, seed: 101, metrics: { elapsed_ms: 22 }, ply_count: 9, started_at: project.created_at, ended_at: project.updated_at, strategy_a: "Variant", strategy_b: "Baseline", outcome: "win_a", winner: "Variant" }]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
     };
     const dispatched: BenchAction[] = [];
