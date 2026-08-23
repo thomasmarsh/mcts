@@ -164,6 +164,102 @@ pub(crate) struct TuningCursorBoundary {
     pub(crate) session_sequence: i64,
 }
 
+#[derive(Serialize)]
+pub(crate) struct TuningTrialPage {
+    pub(crate) schema_version: u32,
+    pub(crate) trials: Vec<TuningTrialSummaryView>,
+    pub(crate) total_count: i64,
+    pub(crate) limit: u16,
+    pub(crate) next_cursor: Option<String>,
+    pub(crate) cursor: TuningCursorBoundary,
+}
+
+/// A compact row deliberately omitting the candidate configuration and all
+/// child evidence. Those are loaded only from the one-trial endpoint.
+#[derive(Serialize)]
+pub(crate) struct TuningTrialSummaryView {
+    pub(crate) trial_id: String,
+    pub(crate) trial_number: i64,
+    pub(crate) attempt_id: String,
+    pub(crate) state: String,
+    pub(crate) reason: Option<mcts_bench::tuning_lifecycle::TrialReportReason>,
+    pub(crate) rating: Option<TuningRatingView>,
+    pub(crate) score: Option<f64>,
+    pub(crate) family: Option<String>,
+    pub(crate) config_summary: Option<String>,
+    pub(crate) bracket_id: Option<String>,
+    pub(crate) resource: Option<u64>,
+    pub(crate) pair_count: u64,
+    pub(crate) wins: u64,
+    pub(crate) losses: u64,
+    pub(crate) draws: u64,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) search_iterations_total: u64,
+    pub(crate) search_move_time_ms: u64,
+    pub(crate) has_detail: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialDetail {
+    pub(crate) schema_version: u32,
+    pub(crate) trial: TuningTrialDetailView,
+    pub(crate) cursor: TuningCursorBoundary,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialDetailView {
+    pub(crate) trial_id: String,
+    pub(crate) trial_number: i64,
+    pub(crate) attempt_id: String,
+    pub(crate) state: String,
+    pub(crate) config: Option<Value>,
+    pub(crate) score: Option<f64>,
+    pub(crate) rating: Option<TuningRatingView>,
+    pub(crate) reason: Option<mcts_bench::tuning_lifecycle::TrialReportReason>,
+    pub(crate) failure: Option<String>,
+    pub(crate) reports: Vec<TuningTrialReportView>,
+    pub(crate) pairs: Vec<TuningTrialDetailPairView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialDetailPairView {
+    pub(crate) pair_id: String,
+    pub(crate) pair_index: u32,
+    pub(crate) state: String,
+    pub(crate) seed: u64,
+    pub(crate) round: u32,
+    pub(crate) opponent: TuningOpponentView,
+    pub(crate) pool_snapshot_fingerprint: String,
+    pub(crate) pool_revision: Option<TuningPoolRevisionView>,
+    pub(crate) rating_before: TuningRatingView,
+    pub(crate) rating_after: Option<TuningRatingView>,
+    pub(crate) score: Option<f64>,
+    pub(crate) failure: Option<String>,
+    pub(crate) games: Vec<TuningTrialDetailGameView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialDetailGameView {
+    pub(crate) game_id: String,
+    pub(crate) candidate_side: String,
+    pub(crate) outcome: String,
+    pub(crate) seed: u64,
+    pub(crate) round: u32,
+    pub(crate) plies: u32,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) candidate: TuningStrategyMetricsView,
+    pub(crate) baseline: TuningStrategyMetricsView,
+    pub(crate) replay: Option<TuningReplayReference>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningReplayReference {
+    pub(crate) run_id: String,
+    pub(crate) game_seq: u64,
+    pub(crate) has_renderer_trace: bool,
+    pub(crate) has_search_reports: bool,
+}
+
 #[derive(Deserialize, Serialize)]
 pub(crate) struct TuningResourcePolicyView {
     pub(crate) min_pairs: u64,

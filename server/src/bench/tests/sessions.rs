@@ -486,3 +486,281 @@ async fn tuning_analysis_overview_caps_points_deterministically_without_losing_r
         .iter()
         .any(|point| point["outcome"] == "prune"));
 }
+
+#[tokio::test]
+async fn paged_trial_evidence_filters_sorts_and_binds_cursors() {
+    let app = seeded_app(seed_paged_trial_evidence).0;
+
+    let (status, body) =
+        http_get(app.clone(), "/api/bench/tuner/sessions/page/trials?limit=2").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let first = body_json(&body);
+    assert_eq!(first["schema_version"], 1);
+    assert_eq!(first["total_count"], 5);
+    assert_eq!(first["limit"], 2);
+    assert_eq!(first["cursor"]["session_sequence"], 42);
+    assert_eq!(trial_ids(&first), vec!["trial-e", "trial-d"]);
+    assert!(first["trials"][0].get("config").is_none());
+    assert!(first["trials"][0].get("reports").is_none());
+    assert!(first["trials"][0].get("pairs").is_none());
+    assert_eq!(first["trials"][0]["has_detail"], false);
+
+    let (status, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/sessions/page/trials?limit=200&sort=trial&direction=asc",
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let capped = body_json(&body);
+    assert_eq!(capped["limit"], 200);
+    assert_eq!(capped["trials"][0]["pair_count"], 2);
+    assert_eq!(capped["trials"][0]["wins"], 1);
+    assert_eq!(capped["trials"][0]["losses"], 1);
+    assert_eq!(capped["trials"][0]["draws"], 0);
+    assert_eq!(capped["trials"][0]["elapsed_ms"], 25);
+    assert_eq!(capped["trials"][0]["search_iterations_total"], 46);
+    assert_eq!(capped["trials"][0]["search_move_time_ms"], 30);
+
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (status, body) = http_get(
+        app.clone(),
+        &format!("/api/bench/tuner/sessions/page/trials?limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let second = body_json(&body);
+    assert_eq!(trial_ids(&second), vec!["trial-c", "trial-b"]);
+    let cursor = second["next_cursor"].as_str().unwrap();
+    let (status, body) = http_get(
+        app.clone(),
+        &format!("/api/bench/tuner/sessions/page/trials?limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(trial_ids(&body_json(&body)), vec!["trial-a"]);
+
+    let (status, body) = http_get(
+        app.clone(),
+        &format!("/api/bench/tuner/sessions/page/trials?state=complete&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&body)["code"], 400);
+
+    for (query, expected) in [
+        ("state=complete", vec!["trial-b", "trial-a"]),
+        ("bracket=alpha", vec!["trial-b", "trial-a"]),
+        ("bracket=unassigned", vec!["trial-e", "trial-c"]),
+        ("reason=max_pairs", vec!["trial-a"]),
+        ("family=ucb", vec!["trial-b", "trial-a"]),
+        ("q=UCB", vec!["trial-b", "trial-a"]),
+        ("q=trial-c", vec!["trial-c"]),
+    ] {
+        let (status, body) = http_get(
+            app.clone(),
+            &format!("/api/bench/tuner/sessions/page/trials?{query}"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK, "{query}");
+        assert_eq!(trial_ids(&body_json(&body)), expected, "{query}");
+    }
+
+    for sort in [
+        "trial", "state", "score", "mu", "sigma", "resource", "family",
+    ] {
+        for direction in ["asc", "desc"] {
+            let (status, body) = http_get(
+                app.clone(),
+                &format!("/api/bench/tuner/sessions/page/trials?sort={sort}&direction={direction}"),
+            )
+            .await;
+            assert_eq!(status, HttpStatusCode::OK, "{sort} {direction}");
+            assert_eq!(body_json(&body)["trials"].as_array().unwrap().len(), 5);
+        }
+    }
+    let (_, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/sessions/page/trials?sort=score&direction=asc",
+    )
+    .await;
+    assert_eq!(
+        trial_ids(&body_json(&body)),
+        vec!["trial-d", "trial-a", "trial-b", "trial-c", "trial-e"]
+    );
+    let (_, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/sessions/page/trials?sort=score&direction=desc",
+    )
+    .await;
+    assert_eq!(
+        trial_ids(&body_json(&body)),
+        vec!["trial-c", "trial-a", "trial-b", "trial-d", "trial-e"]
+    );
+
+    for invalid in [
+        "state=unknown",
+        "reason=unknown",
+        "sort=unknown",
+        "direction=sideways",
+        "limit=0",
+        "limit=201",
+        "cursor=not-a-cursor",
+    ] {
+        let (status, _) = http_get(
+            app.clone(),
+            &format!("/api/bench/tuner/sessions/page/trials?{invalid}"),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST, "{invalid}");
+    }
+}
+
+#[tokio::test]
+async fn trial_evidence_detail_uses_exact_snapshots_and_stays_session_scoped() {
+    let app = seeded_app(seed_paged_trial_evidence).0;
+    let (status, body) =
+        http_get(app.clone(), "/api/bench/tuner/sessions/page/trials/trial-a").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["cursor"]["session_sequence"], 42);
+    assert_eq!(
+        value["trial"]["config"],
+        serde_json::json!({"family":"ucb","c":1.2})
+    );
+    assert_eq!(value["trial"]["reason"], "max_pairs");
+    assert_eq!(
+        value["trial"]["reports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|report| report["completed_pairs"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![2, 4]
+    );
+    let pair = &value["trial"]["pairs"][0];
+    assert_eq!(
+        pair["opponent"]["config"],
+        serde_json::json!({"family":"opponent"})
+    );
+    assert_eq!(
+        pair["pool_revision"]["pool_snapshot_fingerprint"],
+        "pool-stored"
+    );
+    assert_eq!(
+        pair["pool_revision"]["anchors"][0]["config"],
+        serde_json::json!({"family":"revision"})
+    );
+    assert_eq!(
+        pair["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|game| game["candidate_side"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+    assert_eq!(pair["games"][0]["replay"]["run_id"], "page-run");
+    assert_eq!(pair["games"][0]["replay"]["has_renderer_trace"], true);
+    assert_eq!(pair["games"][0]["replay"]["has_search_reports"], true);
+    assert!(value["trial"]["pairs"][1]["pool_revision"].is_null());
+
+    let (status, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/sessions/other/trials/trial-b",
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::NOT_FOUND);
+    assert_eq!(body_json(&body)["code"], 404);
+    let (status, body) =
+        http_get(app.clone(), "/api/bench/tuner/sessions/page/trials/trial-e").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["trial"]["pairs"], serde_json::json!([]));
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/page").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["trials"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn trial_evidence_keeps_compact_legacy_rows_readable_and_rejects_bad_detail_config() {
+    let app = seeded_app(|conn, _| {
+        conn.execute_batch(
+            "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
+             VALUES ('bad-config', 'idle', '{}', CURRENT_TIMESTAMP, 1);
+             INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at)
+             VALUES ('bad-attempt', 'bad-config', 'completed', CURRENT_TIMESTAMP);
+             DROP TABLE tuning_trials;
+             CREATE TABLE tuning_trials (
+                 session_id TEXT, trial_id TEXT, attempt_id TEXT, trial_number BIGINT,
+                 status TEXT, config TEXT, created_at TIMESTAMP, started_at TIMESTAMP,
+                 ended_at TIMESTAMP, score DOUBLE, mu DOUBLE, sigma DOUBLE,
+                 stop_reason TEXT, failure TEXT
+             );
+             INSERT INTO tuning_trials VALUES
+             ('bad-config', 'bad-trial', 'bad-attempt', 1, 'complete', 'not-json',
+              CURRENT_TIMESTAMP, NULL, NULL, NULL, NULL, NULL, NULL, NULL);",
+        )
+        .unwrap();
+    })
+    .0;
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/bad-config/trials").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert_eq!(value["trials"][0]["family"], serde_json::Value::Null);
+    assert_eq!(value["trials"][0]["has_detail"], true);
+
+    let (status, body) =
+        http_get(app, "/api/bench/tuner/sessions/bad-config/trials/bad-trial").await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
+}
+
+fn trial_ids(value: &serde_json::Value) -> Vec<&str> {
+    value["trials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|trial| trial["trial_id"].as_str().unwrap())
+        .collect()
+}
+
+fn seed_paged_trial_evidence(conn: &duckdb::Connection, _dir: &std::path::Path) {
+    conn.execute_batch(
+        "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path)
+         VALUES ('page-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/page.log');
+         INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
+         VALUES ('page', 'idle', '{}', CURRENT_TIMESTAMP, 42),
+                ('other', 'idle', '{}', CURRENT_TIMESTAMP, 3);
+         INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at)
+         VALUES ('page-attempt', 'page', 'page-run', 'completed', CURRENT_TIMESTAMP),
+                ('other-attempt', 'other', NULL, 'completed', CURRENT_TIMESTAMP);
+         INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at, score, mu, sigma, stop_reason)
+         VALUES ('page', 'trial-a', 'page-attempt', 1, 'complete', '{\"family\":\"ucb\",\"c\":1.2}', CURRENT_TIMESTAMP, 10, 30, 2, 'max_pairs'),
+                ('page', 'trial-b', 'page-attempt', 2, 'complete', '{\"family\":\"ucb\",\"c\":0.7}', CURRENT_TIMESTAMP, 10, 30, 1, 'confidence'),
+                ('page', 'trial-c', 'page-attempt', 3, 'running', '{\"family\":\"rave\"}', CURRENT_TIMESTAMP, NULL, NULL, NULL, NULL),
+                ('page', 'trial-d', 'page-attempt', 4, 'failed', '{\"family\":\"random\"}', CURRENT_TIMESTAMP, 5, 20, 4, 'hyperband_prune'),
+                ('page', 'trial-e', 'page-attempt', 5, 'queued', NULL, CURRENT_TIMESTAMP, NULL, NULL, NULL, NULL),
+                ('other', 'trial-a', 'other-attempt', 1, 'complete', '{}', CURRENT_TIMESTAMP, NULL, NULL, NULL, NULL);
+         INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource)
+         VALUES ('page', 'trial-a', 1, 2, 'a-2', CURRENT_TIMESTAMP, 28, 3, 19, 1, 3, 'continue', 'below_min_pairs', false, 'alpha', 2),
+                ('page', 'trial-a', 1, 4, 'a-4', CURRENT_TIMESTAMP, 30, 2, 24, 1, 3, 'complete', 'max_pairs', false, 'alpha', 4),
+                ('page', 'trial-b', 2, 4, 'b-4', CURRENT_TIMESTAMP, 30, 1, 27, 1, 3, 'complete', 'confidence', false, 'alpha', 4),
+                ('page', 'trial-c', 3, 1, 'c-1', CURRENT_TIMESTAMP, 24, 3, 15, 1, 3, 'continue', 'below_min_pairs', false, NULL, NULL),
+                ('page', 'trial-d', 4, 2, 'd-2', CURRENT_TIMESTAMP, 20, 4, 8, 1, 3, 'prune', 'hyperband_prune', false, 'beta', 2);
+         INSERT INTO tuning_pool_revisions (session_id, pool_snapshot_fingerprint, display_ordinal, first_event_id, first_attempt_id, observed_at)
+         VALUES ('page', 'pool-stored', 1, 'pool-event', 'page-attempt', CURRENT_TIMESTAMP);
+         INSERT INTO tuning_pool_anchors (session_id, pool_snapshot_fingerprint, anchor_ordinal, anchor_id, config, mu, sigma, provenance, insertion_reason, source_trial_id)
+         VALUES ('page', 'pool-stored', 0, 'stored-anchor', '{\"family\":\"revision\"}', 25, 1, 'bootstrap_default', 'bootstrap', NULL);
+         INSERT INTO tuning_evaluation_pairs (session_id, pair_id, trial_id, attempt_id, pair_index, status, seed, round, opponent, pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, started_at)
+         VALUES ('page', 'pair-a', 'trial-a', 'page-attempt', 0, 'complete', 7, 1, '{\"anchor_id\":\"stored-anchor\",\"config\":{\"family\":\"opponent\"},\"mu\":25,\"sigma\":1}', 'pool-stored', 25, 1, CURRENT_TIMESTAMP),
+                ('page', 'pair-b', 'trial-a', 'page-attempt', 1, 'complete', 8, 1, '{\"anchor_id\":\"legacy-anchor\",\"config\":{\"family\":\"legacy\"},\"mu\":25,\"sigma\":1}', 'missing-pool', 25, 1, CURRENT_TIMESTAMP);
+         INSERT INTO tuning_games (session_id, pair_id, game_id, candidate_side, outcome, seed, round, trace_game_seq, plies, elapsed_ms, candidate_metrics, baseline_metrics, finished_at)
+         VALUES ('page', 'pair-a', 'game-first', 'first', 'candidate_win', 7, 1, 9, 11, 12, '{\"iterations_total\":10,\"iterations_first_half\":4,\"move_time_ms\":6}', '{\"iterations_total\":11,\"iterations_first_half\":5,\"move_time_ms\":7}', CURRENT_TIMESTAMP),
+                ('page', 'pair-a', 'game-second', 'second', 'baseline_win', 7, 1, NULL, 12, 13, '{\"iterations_total\":12,\"iterations_first_half\":5,\"move_time_ms\":8}', '{\"iterations_total\":13,\"iterations_first_half\":6,\"move_time_ms\":9}', CURRENT_TIMESTAMP);
+         INSERT INTO game_moves (run_id, game_seq, ply, ts, trace_schema_version, state, search_report)
+         VALUES ('page-run', 9, 0, CURRENT_TIMESTAMP, 1, '{}', '{\"status\":\"complete\"}');",
+    )
+    .unwrap();
+}

@@ -37,7 +37,10 @@ use super::{
     projects::*,
     runs::*,
     traces::*,
-    tuning::{get_tuning_analysis_overview, get_tuning_session, get_tuning_sessions},
+    tuning::{
+        get_tuning_analysis_overview, get_tuning_session, get_tuning_sessions,
+        get_tuning_trial_detail, get_tuning_trials,
+    },
     types::*,
 };
 // Router constructor
@@ -80,6 +83,14 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route(
             "/api/bench/tuner/sessions/{session_id}/analysis",
             get(get_tuning_analysis_overview),
+        )
+        .route(
+            "/api/bench/tuner/sessions/{session_id}/trials",
+            get(get_tuning_trials),
+        )
+        .route(
+            "/api/bench/tuner/sessions/{session_id}/trials/{trial_id}",
+            get(get_tuning_trial_detail),
         )
         .route(
             "/api/bench/projects",
