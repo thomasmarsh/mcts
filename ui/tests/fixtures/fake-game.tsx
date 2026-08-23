@@ -38,7 +38,7 @@ export function resetMountLog(): void {
 export const FakeRenderer: Component<GameRendererProps<number, string, FakeView>> = (props) => {
   onMount(() => mountLog.push("mount"));
   onCleanup(() => mountLog.push("cleanup"));
-  return <div data-testid="fake-board">state:{props.state}</div>;
+  return <div data-testid="fake-board">state:{JSON.stringify(props.state)}</div>;
 };
 
 export const fakeModule: GameKindModule<number, string, FakeView> = {

@@ -13,7 +13,7 @@ const counts = { total: 3, queued: 0, running: 0, terminal: 3, completed: 2, fai
 const session: TuningSessionListItem = {
   session_id: "session-a", game: "nim", label: "Observable tuning", status: "idle", target_trial_count: 3,
   counts, created_at: "2026-08-23T12:00:00Z", last_activity_at: "2026-08-23T12:12:00Z", attempts: [attemptA, attemptB],
-  capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: true },
+  capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: true, has_trial_reports: true },
 };
 const sessions: TuningSessionsResponse = { schema_version: 1, sessions: [session] };
 const run = (run_id: string): RunSummary => ({ run_id, kind: "tuner", game: "nim", project_id: null, experiment_id: null, label: null, git_sha: "abc", git_dirty: false, host: "test", pid: null, started_at: "2026-08-23T12:00:00Z", ended_at: "2026-08-23T12:10:00Z", status: "completed", match_count: 0, trial_count: 3 });

@@ -7,6 +7,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "@mcts/core": "workspace:*",
+    "@mcts/game": "workspace:*",
     "solid-js": "^1.9.0"
   }
 }

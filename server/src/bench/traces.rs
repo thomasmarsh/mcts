@@ -249,6 +249,7 @@ pub(crate) struct LiveMoveEvent {
     state: Value,
     mv: Option<Value>,
     player: Option<String>,
+    search: Option<SearchReport>,
 }
 
 /// `GET /api/bench/runs/{run_id}/live` (SSE)
@@ -313,12 +314,19 @@ pub(crate) async fn live_run_moves(
                 last_ply = -1;
             }
 
-            // (ply, ts, state, mv, player)
-            type GameMoveRow = (i64, String, String, Option<String>, Option<String>);
+            // (ply, ts, state, mv, player, search report)
+            type GameMoveRow = (
+                i64,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            );
             let new_rows: Vec<GameMoveRow> = {
                 let db = state.db.lock().unwrap();
                 let stmt = db.prepare(
-                    "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player \
+                    "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player, CAST(search_report AS TEXT) \
                      FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 AND ply > ?3 \
                      ORDER BY ply ASC",
                 );
@@ -332,6 +340,7 @@ pub(crate) async fn live_run_moves(
                                     row.get::<_, String>(2)?,
                                     row.get::<_, Option<String>>(3)?,
                                     row.get::<_, Option<String>>(4)?,
+                                    row.get::<_, Option<String>>(5)?,
                                 ))
                             });
                         match mapped {
@@ -343,7 +352,7 @@ pub(crate) async fn live_run_moves(
                 }
             };
 
-            for (ply, ts, state_str, mv_str, player) in new_rows {
+            for (ply, ts, state_str, mv_str, player, search_str) in new_rows {
                 last_ply = ply;
                 let payload = LiveMoveEvent {
                     game_seq,
@@ -352,6 +361,7 @@ pub(crate) async fn live_run_moves(
                     state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
                     mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
                     player,
+                    search: search_str.and_then(|value| serde_json::from_str(&value).ok()),
                 };
                 let Ok(event) = Event::default().json_data(&payload) else {
                     continue;

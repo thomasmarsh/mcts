@@ -69,6 +69,7 @@ export interface TuningCapabilities {
   has_pairs: boolean;
   has_renderer_trace: boolean;
   has_search_reports: boolean;
+  has_trial_reports: boolean;
 }
 
 export interface TuningAttempt {
@@ -325,6 +326,8 @@ export interface GameMove {
   state: unknown;
   mv: unknown | null;
   player: string | null;
+  /** Final search evidence retained for the move that reached this state. */
+  search?: import("@mcts/game").SearchReport<unknown> | null;
 }
 
 /** One SSE payload from a run's live trace stream. */

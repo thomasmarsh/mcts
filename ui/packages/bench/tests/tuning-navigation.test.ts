@@ -18,7 +18,7 @@ const sessions: TuningSessionsResponse = {
     counts: { total: 1, queued: 0, running: 0, terminal: 1, completed: 1, failed: 0, pruned: 0, cancelled: 0 },
     created_at: "2026-08-23 12:00:00", last_activity_at: "2026-08-23 12:01:00",
     attempts: [{ attempt_id: "attempt-1", bench_run_id: "run-1", status: "completed", started_at: "2026-08-23 12:00:00", ended_at: "2026-08-23 12:01:00", failure: null }],
-    capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false },
+    capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false, has_trial_reports: false },
   }],
 };
 
