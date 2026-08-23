@@ -1,24 +1,18 @@
 // types.ts — Wire types mirroring games/tak/src/main.rs's `WireState`/
-// `GameView`/`WireMove`. `main.rs` decodes the engine's packed `u64` cell
-// words and `Move`'s packed `u32` (see games/tak/src/lib.rs's file header for
-// that internal encoding) into these self-describing shapes at the adapter
-// boundary -- nothing on the TS side needs to know about that packing.
+// `GameView`. Board state is a TPS (Tak Positional System) string; moves
+// are PTN (Portable Tak Notation) strings. Both are standard formats
+// understood by the Tak ecosystem (PlayTak.com, ptn.ninja, etc.) -- nothing
+// on the TS side needs to know about the engine's internal packed
+// representation.
 
 export type Player = "White" | "Black";
 
-/** One board cell's stack, bottom-to-top; `null` = empty. Every piece below
- * the top is always flat (walls/capstones can never be covered), so only the
- * top piece needs a `topKind`. */
-export interface Stack {
-  colors: Player[];
-  top_kind: "Flat" | "Wall" | "Cap";
-}
-
-/** `cells[i]` is row-major (`i = row * size + col`), row 0 = south edge --
- * `size` itself isn't sent on the wire, so callers derive it from
- * `Math.sqrt(cells.length)` (see `boardSize` below). */
+/** Wire state: a TPS string for the board layout plus pre-computed metadata
+ * fields. The `tps` field is canonical; `stones`/`caps`/`turn`/`opening`
+ * are redundant convenience values the server pre-computes so the client
+ * doesn't need to derive them from the TPS. */
 export interface GameState {
-  cells: (Stack | null)[];
+  tps: string;
   stones: [number, number]; // [White, Black]
   caps: [number, number];
   turn: Player;
@@ -32,9 +26,8 @@ export interface GameView extends GameState {
   winner: Player | null;
 }
 
-export type Move =
-  | { tag: "Place"; square: number; kind: "Flat" | "Wall" | "Cap" }
-  | { tag: "Spread"; square: number; direction: "North" | "East" | "South" | "West"; drop_sizes: number[] };
+/** A move is a PTN string: `a1`, `Sa1`, `Ca1`, `a1>`, `3c3>12`, etc. */
+export type Move = string;
 
 export interface NewGameConfig {
   size: number;
@@ -48,9 +41,9 @@ export interface NewGameConfig {
 export const BOARD_SIZES: number[] = [3, 4, 5, 6];
 export const DEFAULT_SIZE = 5;
 
-/** Board width/height, derived from the actual cell count rather than
+/** Board width/height, derived from the TPS string's row count rather than
  * trusted from a request config -- correct regardless of whether the server
  * honored a requested size. */
-export function boardSize(state: GameState): number {
-  return Math.round(Math.sqrt(state.cells.length));
+export function boardSizeFromTps(tps: string): number {
+  return tps.split(" ")[0]!.split("/").length;
 }

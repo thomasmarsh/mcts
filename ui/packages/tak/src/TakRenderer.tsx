@@ -2,10 +2,9 @@
 // OrbitControls/animate loop/resize/raycasting) is ported directly from
 // `ui/packages/druid/src/DruidRenderer.tsx`; what's specific to Tak:
 //
-// - Pieces are built straight from `props.state.cells` on every render, no
-//   history replay needed -- unlike Druid's `Square` (top piece + height
-//   only), a Tak `Stack` already carries every piece in the cell (see
-//   types.ts), so there's nothing to reconstruct.
+// - Pieces are built from the TPS string in `props.state.tps` via
+//   `parseTps`, not from a custom JSON cell array -- TPS is the standard
+//   Tak board format shared by the ecosystem.
 // - Piece geometry, built once as shared geometries from the physical piece
 //   dimensions the user supplied: Black gets round "cane" stones with a flat
 //   chord cut, White gets trapezoid stones -- a shape-by-color distinction
@@ -24,14 +23,14 @@
 //   single source can have many legal (direction, take, drop-schedule)
 //   combinations that plain raycasting can't disambiguate.
 
-import { type Component, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { type Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { For, Show } from "solid-js";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { GameRendererProps } from "@mcts/game";
-import { coordFor, footprintFor, notation } from "./move-codec.js";
-import type { GameState, GameView, Move, Player, Stack } from "./types.js";
-import { boardSize } from "./types.js";
+import { coordFor, footprintFor, isFlatPlacement, isPlacement, parsePtn, type ParsedMove } from "./move-codec.js";
+import { parseTps, type ParsedStack } from "./tps-parser.js";
+import type { GameState, GameView, Move, Player } from "./types.js";
 import "./tak.css";
 
 // --- Piece dimensions, normalized to board-square-side = 1 (see plan/user-
@@ -182,7 +181,7 @@ const SHARED_GEOMETRIES: ReadonlySet<THREE.BufferGeometry> = new Set([
 /** Black gets the round cane shape, White the trapezoid (see the dimension
  * constants' comment above) -- capstones are the same domed shape for both,
  * since only flats/walls get the shape-by-color distinction. */
-function geometryFor(color: Player, topKind: Stack["top_kind"]): THREE.BufferGeometry {
+function geometryFor(color: Player, topKind: ParsedStack["topKind"]): THREE.BufferGeometry {
   if (topKind === "Cap") return CAP_GEO;
   const wall = color === "Black" ? CANE_WALL_GEO : TRAPEZOID_WALL_GEO;
   const flat = color === "Black" ? CANE_FLAT_GEO : TRAPEZOID_FLAT_GEO;
@@ -190,7 +189,7 @@ function geometryFor(color: Player, topKind: Stack["top_kind"]): THREE.BufferGeo
 }
 
 /** The rim-outline counterpart to `geometryFor`, for the same piece shape. */
-function edgesFor(color: Player, topKind: Stack["top_kind"]): THREE.BufferGeometry {
+function edgesFor(color: Player, topKind: ParsedStack["topKind"]): THREE.BufferGeometry {
   if (topKind === "Cap") return CAP_EDGES;
   const wall = color === "Black" ? CANE_WALL_EDGES : TRAPEZOID_WALL_EDGES;
   const flat = color === "Black" ? CANE_FLAT_EDGES : TRAPEZOID_FLAT_EDGES;
@@ -292,16 +291,16 @@ function makeLabelPlane(text: string): THREE.Mesh {
 // minimap glow). Tak roads can connect either edge pair for either player
 // (no fixed per-player axis, unlike Druid), so both axes are tried. ---
 
-function topOwner(cell: Stack | null): Player | null {
+function topOwner(cell: ParsedStack | null): Player | null {
   return cell ? (cell.colors[cell.colors.length - 1] ?? null) : null;
 }
-function isRoadCell(cell: Stack | null, player: Player): boolean {
-  return !!cell && cell.top_kind !== "Wall" && topOwner(cell) === player;
+function isRoadCell(cell: ParsedStack | null, player: Player): boolean {
+  return !!cell && cell.topKind !== "Wall" && topOwner(cell) === player;
 }
 
-function bfsPath(state: GameState, n: number, player: Player, starts: number[], goal: Set<number>): number[] | null {
+function bfsPath(cells: (ParsedStack | null)[], n: number, player: Player, starts: number[], goal: Set<number>): number[] | null {
   const prev = new Map<number, number>();
-  const queue = starts.filter((i) => isRoadCell(state.cells[i] ?? null, player));
+  const queue = starts.filter((i) => isRoadCell(cells[i] ?? null, player));
   queue.forEach((i) => prev.set(i, -1));
   let reached = -1;
   for (let head = 0; head < queue.length && reached < 0; head++) {
@@ -321,7 +320,7 @@ function bfsPath(state: GameState, n: number, player: Player, starts: number[], 
     for (const [nx, ny] of neighbors) {
       if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
       const ni = ny * n + nx;
-      if (!isRoadCell(state.cells[ni] ?? null, player) || prev.has(ni)) continue;
+      if (!isRoadCell(cells[ni] ?? null, player) || prev.has(ni)) continue;
       prev.set(ni, cur);
       queue.push(ni);
     }
@@ -336,8 +335,8 @@ function bfsPath(state: GameState, n: number, player: Player, starts: number[], 
  * this is real reimplemented road-connectivity logic (see the file header),
  * not just wiring, so it's worth testing directly against known board
  * layouts rather than only through a full component render. */
-export function findWinningRoad(state: GameState, winner: Player): number[] | null {
-  const n = boardSize(state);
+export function findWinningRoad(cells: (ParsedStack | null)[], size: number, winner: Player): number[] | null {
+  const n = size;
   const west: number[] = [],
     east = new Set<number>();
   const south: number[] = [],
@@ -350,7 +349,7 @@ export function findWinningRoad(state: GameState, winner: Player): number[] | nu
     south.push(col);
     north.add((n - 1) * n + col);
   }
-  return bfsPath(state, n, winner, west, east) ?? bfsPath(state, n, winner, south, north);
+  return bfsPath(cells, n, winner, west, east) ?? bfsPath(cells, n, winner, south, north);
 }
 
 // --- Component -----------------------------------------------------------
@@ -379,6 +378,9 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
   let animationHandle = 0;
   let builtSize: number | null = null;
 
+  // Parsed TPS: cached so every piece/highlight rebuild doesn't re-parse.
+  const parsed = createMemo(() => parseTps(props.state.tps));
+
   // Which stack (if any) the "Move stack" mode has selected as a spread
   // source. Component-local (not lifted to the store) -- purely a renderer
   // interaction detail, the same level as `hoveredMove`, but nothing outside
@@ -387,7 +389,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
   const [selectedSrc, setSelectedSrc] = createSignal<number | null>(null);
 
   function n(): number {
-    return boardSize(props.state);
+    return parsed().size;
   }
 
   function buildBoard(size: number): void {
@@ -441,7 +443,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     camera.lookAt(center);
   }
 
-  function addPiece(x: number, y: number, z: number, color: Player, kind: Stack["top_kind"]): void {
+  function addPiece(x: number, y: number, z: number, color: Player, kind: ParsedStack["topKind"]): void {
     const mesh = new THREE.Mesh(geometryFor(color, kind), pieceMaterial(color));
     mesh.position.set(x, y, z);
     piecesGroup.add(mesh);
@@ -455,7 +457,8 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
   function buildPieces(size: number): void {
     clearGroup(piecesGroup);
-    props.state.cells.forEach((stack, idx) => {
+    const cells = parsed().cells;
+    cells.forEach((stack, idx) => {
       if (!stack) return;
       const x = idx % size;
       const z = Math.floor(idx / size);
@@ -470,7 +473,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
         y += PIECE_THICKNESS + STACK_GAP;
       }
       const top = stack.colors[stack.colors.length - 1]!;
-      addPiece(x, y, z, top, stack.top_kind);
+      addPiece(x, y, z, top, stack.topKind);
     });
   }
 
@@ -508,7 +511,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
   }
 
   function stackTopY(idx: number): number {
-    const stack = props.state.cells[idx];
+    const stack = parsed().cells[idx];
     if (!stack) return 0;
     return (stack.colors.length - 1) * (PIECE_THICKNESS + STACK_GAP);
   }
@@ -531,16 +534,18 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     pickables = [];
     if (props.busy) return;
     const size = n();
-    const isSpreadMode = props.legalMoves.some((m) => m.tag === "Spread");
+    const legalMoves = props.legalMoves; // PTN strings
+    const isSpreadMode = legalMoves.some((m) => !isPlacement(m));
 
     if (!isSpreadMode) {
-      props.legalMoves.forEach((mv) => {
-        if (mv.tag !== "Place") return;
-        const x = mv.square % size;
-        const z = Math.floor(mv.square / size);
+      legalMoves.forEach((mv) => {
+        const pm = parsePtn(mv, size);
+        if (pm.tag !== "Place") return;
+        const x = pm.square % size;
+        const z = Math.floor(pm.square / size);
         const plane = highlightPlane(MOVE_HILITE, 0.55);
         plane.rotation.x = -Math.PI / 2;
-        plane.position.set(x, stackTopY(mv.square) + 0.03, z);
+        plane.position.set(x, stackTopY(pm.square) + 0.03, z);
         highlightGroup.add(plane);
         pickables.push({ mesh: plane, target: { kind: "move", move: mv } });
       });
@@ -549,7 +554,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
     const src = selectedSrc();
     if (src === null) {
-      const sources = new Set(props.legalMoves.filter((m): m is Move & { tag: "Spread" } => m.tag === "Spread").map((m) => m.square));
+      const sources = new Set(legalMoves.map((m) => parsePtn(m, size)).filter((pm): pm is ParsedMove & { tag: "Spread" } => pm.tag === "Spread").map((pm) => pm.square));
       sources.forEach((square) => {
         const x = square % size;
         const z = Math.floor(square / size);
@@ -562,19 +567,21 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
       return;
     }
 
-    const candidates = props.legalMoves.filter((m): m is Move & { tag: "Spread" } => m.tag === "Spread" && m.square === src);
+    const candidates = legalMoves
+      .map((m) => ({ ptn: m, parsed: parsePtn(m, size) }))
+      .filter((e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } => e.parsed.tag === "Spread" && e.parsed.square === src);
     // Which final-landing cells are unambiguous (exactly one candidate ends
     // there) -- those get a direct-fire pickable; the rest are visual only,
     // resolved through the candidate list panel instead.
     const finalCellCounts = new Map<number, number>();
-    candidates.forEach((mv) => {
+    candidates.forEach(({ parsed: mv }) => {
       const path = footprintFor(mv, size);
       const last = path[path.length - 1]!;
       finalCellCounts.set(last, (finalCellCounts.get(last) ?? 0) + 1);
     });
 
     const touched = new Set<number>();
-    candidates.forEach((mv) => footprintFor(mv, size).forEach((cell) => touched.add(cell)));
+    candidates.forEach(({ parsed: mv }) => footprintFor(mv, size).forEach((cell) => touched.add(cell)));
     touched.forEach((cell) => {
       const x = cell % size;
       const z = Math.floor(cell / size);
@@ -583,8 +590,8 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
       plane.position.set(x, stackTopY(cell) + 0.03, z);
       highlightGroup.add(plane);
       if (finalCellCounts.get(cell) === 1) {
-        const mv = candidates.find((c) => footprintFor(c, size).at(-1) === cell)!;
-        pickables.push({ mesh: plane, target: { kind: "move", move: mv } });
+        const entry = candidates.find(({ parsed: mv }) => footprintFor(mv, size).at(-1) === cell)!;
+        pickables.push({ mesh: plane, target: { kind: "move", move: entry.ptn } });
       }
     });
 
@@ -600,18 +607,20 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
   function buildGhost(move: Move | null): void {
     clearGroup(ghostGroup);
-    if (!move || props.busy || move.tag !== "Place") return;
+    if (!move || props.busy || !isFlatPlacement(move)) return;
     const size = n();
+    const pm = parsePtn(move, size);
+    if (pm.tag !== "Place") return;
     const color = props.state.turn;
     const mat = pieceMaterial(color);
     mat.transparent = true;
     mat.opacity = 0.5;
     mat.depthWrite = false;
-    const geo = geometryFor(color, move.kind === "Wall" ? "Wall" : move.kind === "Cap" ? "Cap" : "Flat");
-    const x = move.square % size;
-    const z = Math.floor(move.square / size);
+    const geo = geometryFor(color, pm.kind === "Wall" ? "Wall" : pm.kind === "Cap" ? "Cap" : "Flat");
+    const x = pm.square % size;
+    const z = Math.floor(pm.square / size);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x, stackTopY(move.square), z);
+    mesh.position.set(x, stackTopY(pm.square), z);
     ghostGroup.add(mesh);
   }
 
@@ -638,7 +647,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
       const intensity = maxShare > 0 ? entry.visitShare / maxShare : 0;
       const color = entry.isProven ? ANALYSIS_PROVEN_COLOR : ANALYSIS_HEAT_COLOR;
       const opacity = 0.12 + intensity * 0.55;
-      const path = footprintFor(entry.move, size);
+      const path = footprintFor(parsePtn(entry.move, size), size);
       const cellIdx = path[path.length - 1]!;
       const x = cellIdx % size;
       const z = Math.floor(cellIdx / size);
@@ -668,7 +677,7 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
   function rebuildWinnerGlow(): void {
     clearGroup(winnerGroup);
     if (!props.view.terminal || !props.view.winner) return;
-    const path = findWinningRoad(props.state, props.view.winner);
+    const path = findWinningRoad(parsed().cells, n(), props.view.winner);
     if (!path) return;
     const size = n();
     const glowColor = props.view.winner === "Black" ? WINNER_GLOW_BLACK : WINNER_GLOW_WHITE;
@@ -860,8 +869,11 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
   const candidates = () => {
     const src = selectedSrc();
-    if (src === null) return [];
-    return props.legalMoves.filter((m): m is Move & { tag: "Spread" } => m.tag === "Spread" && m.square === src);
+    if (src === null) return [] as { ptn: string; parsed: ParsedMove & { tag: "Spread" } }[];
+    const size = n();
+    return props.legalMoves
+      .map((m) => ({ ptn: m, parsed: parsePtn(m, size) }))
+      .filter((e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } => e.parsed.tag === "Spread" && e.parsed.square === src);
   };
 
   return (
@@ -871,15 +883,15 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
         <div class="tak-candidates">
           <div class="tak-candidates-title">Move from {coordFor(selectedSrc()!, n())}</div>
           <For each={candidates()}>
-            {(mv) => (
+            {({ ptn }) => (
               <button
                 class="tak-candidate"
                 onClick={() => {
                   setSelectedSrc(null);
-                  props.onMove(mv);
+                  props.onMove(ptn);
                 }}
               >
-                {notation(mv, n())}
+                {ptn}
               </button>
             )}
           </For>

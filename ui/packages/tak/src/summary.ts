@@ -1,12 +1,11 @@
-// summary.ts — Tak's `GameSummary`/`GameModeDef`s, mirroring
-// `ui/packages/druid/src/summary.ts`. Unlike Druid, `terminal`/`winner` are
-// already computed server-side (`games/tak/src/main.rs`'s `view()`, via the
-// engine's own `Tak::<5>::terminal_status`) -- no client-side road/flat-count
-// duplication needed here.
+// summary.ts — Tak's `GameSummary`/`GameModeDef`s. `terminal`/`winner` are
+// already computed server-side (`games/tak/src/main.rs`'s `view()`), and
+// moves are PTN strings -- no client-side parsing needed for the summary.
+// Mode filters use `move-codec.ts`'s quick classifiers (no full parse).
 
 import type { GameModeDef, GameSummary } from "@mcts/game";
-import { notation } from "./move-codec.js";
-import { boardSize, type GameState, type GameView, type Move, type Player } from "./types.js";
+import { isCapPlacement, isFlatPlacement, isWallPlacement, isPlacement } from "./move-codec.js";
+import type { GameState, GameView, Move, Player } from "./types.js";
 
 const WHITE_SWATCH = "#f2e9d8";
 const BLACK_SWATCH = "#3a3d46";
@@ -49,20 +48,24 @@ export function summarize(view: GameView): GameSummary {
   };
 }
 
-/** `before` (the state a move was applied *from*, mirroring `MoveStep`'s own
- * shape) supplies the board width `notation` needs to turn a square index
- * into a PTN coordinate. */
-export function formatMove(move: Move, before: GameState): string {
-  return notation(move, boardSize(before));
+/** Moves are PTN strings -- `formatMove` is the identity (the PTN string
+ * is already human-readable notation). If the PTN string includes
+ * informational marks (`*`, `'`, `!`, `?`), they're displayed as-is. */
+export function formatMove(move: Move, _before: GameState): string {
+  return move;
 }
 
 /** Mirrors Druid's `Sarsen`/`Lintel↔`/`Lintel↕` modes: one per placement
  * kind, plus a `Move stack` mode for spreads. `GameShell` filters
- * `legalMoves` through the active mode's `filter` before handing them to
- * `TakRenderer`. */
+ * `legalMoves` through the active mode's `filter`.
+ *
+ * Filters use quick string classifiers (`isFlatPlacement` etc.) rather
+ * than a full `parsePtn` on every legal move -- placement/spread
+ * disambiguation only needs to check the presence of a direction glyph
+ * and an optional `S`/`C` prefix. */
 export const modes: GameModeDef<Move>[] = [
-  { id: "flat", label: "Flat", hotkey: "1", filter: (m) => m.tag === "Place" && m.kind === "Flat" },
-  { id: "wall", label: "Wall", hotkey: "2", filter: (m) => m.tag === "Place" && m.kind === "Wall" },
-  { id: "cap", label: "Capstone", hotkey: "3", filter: (m) => m.tag === "Place" && m.kind === "Cap" },
-  { id: "move", label: "Move stack", hotkey: "4", filter: (m) => m.tag === "Spread" },
+  { id: "flat", label: "Flat", hotkey: "1", filter: isFlatPlacement },
+  { id: "wall", label: "Wall", hotkey: "2", filter: isWallPlacement },
+  { id: "cap", label: "Capstone", hotkey: "3", filter: isCapPlacement },
+  { id: "move", label: "Move stack", hotkey: "4", filter: (m) => !isPlacement(m) },
 ];

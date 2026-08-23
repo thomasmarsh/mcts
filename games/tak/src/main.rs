@@ -9,9 +9,7 @@ use game_host::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use game_tak::{
-    cell_color_at, cell_height, cell_kind, make_cell, Move, Player, State, Tak, CAP, FLAT, WALL,
-};
+use game_tak::{Move, Player, State, Tak};
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 
@@ -48,180 +46,26 @@ fn player_name(p: Player) -> &'static str {
         Player::Black => "Black",
     }
 }
-fn parse_player(name: &str) -> Result<Player, HostError> {
-    match name {
-        "White" => Ok(Player::White),
-        "Black" => Ok(Player::Black),
-        _ => Err(HostError::bad_request(format!("invalid player: {name}"))),
-    }
-}
 
-fn kind_name(k: u8) -> &'static str {
-    match k {
-        FLAT => "Flat",
-        WALL => "Wall",
-        CAP => "Cap",
-        _ => unreachable!("cell/move kind is always FLAT/WALL/CAP"),
-    }
-}
-fn kind_from_name(s: &str) -> Result<u8, HostError> {
-    match s {
-        "Flat" => Ok(FLAT),
-        "Wall" => Ok(WALL),
-        "Cap" => Ok(CAP),
-        _ => Err(HostError::bad_request(format!("invalid piece kind: {s}"))),
-    }
-}
-
-/// Mirrors `Move::dir()`'s 0..4 index (see `games/tak/src/lib.rs`'s file
-/// header: 0 = N, 1 = E, 2 = S, 3 = W).
-const DIR_NAMES: [&str; 4] = ["North", "East", "South", "West"];
-fn direction_name(dir_idx: usize) -> &'static str {
-    DIR_NAMES[dir_idx]
-}
-fn direction_index(name: &str) -> Result<usize, HostError> {
-    DIR_NAMES
-        .iter()
-        .position(|d| *d == name)
-        .ok_or_else(|| HostError::bad_request(format!("invalid direction: {name}")))
-}
-
-/// One board cell's stack, decoded from the engine's packed `u64` cell word
-/// (see `games/tak/src/lib.rs`'s file header for that internal encoding) into
-/// a shape a client can use directly. `colors` is bottom-to-top; `None` means
-/// an empty cell. Every piece below the top is always flat (walls/capstones
-/// can never be covered), so only the top needs a `kind`.
-#[derive(Serialize, Deserialize, Clone)]
-struct WireStack {
-    colors: Vec<String>, // "White" | "Black", bottom to top
-    top_kind: String,    // "Flat" | "Wall" | "Cap"
-}
-
-fn cell_to_wire(w: u64) -> Option<WireStack> {
-    if w == 0 {
-        return None;
-    }
-    let h = cell_height(w);
-    let colors = (0..h)
-        .map(|j| player_name(player_from_bit(cell_color_at(w, j))).to_string())
-        .collect();
-    Some(WireStack {
-        colors,
-        top_kind: kind_name(cell_kind(w)).to_string(),
-    })
-}
-
-fn wire_to_cell(stack: &Option<WireStack>) -> Result<u64, HostError> {
-    let Some(stack) = stack else {
-        return Ok(0);
-    };
-    let h = stack.colors.len() as u32;
-    if h == 0 || h > 61 {
-        return Err(HostError::bad_request("invalid stack height"));
-    }
-    let mut colors_bits = 0u64;
-    for (j, c) in stack.colors.iter().enumerate() {
-        colors_bits |= (parse_player(c)? as u64) << j;
-    }
-    let kind = kind_from_name(&stack.top_kind)?;
-    Ok(make_cell(colors_bits, h, kind))
-}
-
-fn player_from_bit(bit: u8) -> Player {
-    if bit == 0 {
-        Player::White
-    } else {
-        Player::Black
-    }
-}
-
-/// Wire shape for a `Move`, replacing the engine's packed `u32` (see
-/// `games/tak/src/lib.rs`'s `Move`, which derives `Serialize`/`Deserialize`
-/// with no attributes -- that's an internal MCTS-hot-path encoding, not a
-/// deliberate wire contract) with a self-describing tagged JSON shape a
-/// client can read/build without knowing the bit layout.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "tag")]
-enum WireMove {
-    Place {
-        square: usize,
-        kind: String, // "Flat" | "Wall" | "Cap"
-    },
-    Spread {
-        square: usize,
-        direction: String,    // "North" | "East" | "South" | "West"
-        drop_sizes: Vec<u32>, // per-square drop counts, in walk order; sums to the take count
-    },
-}
-
-fn move_to_wire(m: Move) -> WireMove {
-    if m.is_spread() {
-        WireMove::Spread {
-            square: m.square(),
-            direction: direction_name(m.dir()).to_string(),
-            drop_sizes: m.drop_sizes(),
-        }
-    } else {
-        WireMove::Place {
-            square: m.square(),
-            kind: kind_name(m.kind()).to_string(),
-        }
-    }
-}
-
-fn wire_to_move(w: WireMove) -> Result<Move, HostError> {
-    match w {
-        WireMove::Place { square, kind } => {
-            if square >= 64 {
-                return Err(HostError::bad_request("square out of range"));
-            }
-            Ok(Move::place(square, kind_from_name(&kind)?))
-        }
-        WireMove::Spread {
-            square,
-            direction,
-            drop_sizes,
-        } => {
-            if square >= 64 {
-                return Err(HostError::bad_request("square out of range"));
-            }
-            if drop_sizes.is_empty() {
-                return Err(HostError::bad_request("empty drop_sizes"));
-            }
-            let dir_idx = direction_index(&direction)?;
-            let mut mask = 0u32;
-            let mut dropped = 0u32;
-            for d in &drop_sizes {
-                if *d == 0 {
-                    return Err(HostError::bad_request("zero drop size"));
-                }
-                dropped += d;
-                if dropped == 0 || dropped > 8 {
-                    return Err(HostError::bad_request("take count out of range"));
-                }
-                mask |= 1 << (dropped - 1);
-            }
-            Ok(Move::spread(square, dir_idx, dropped, mask))
-        }
-    }
-}
-
-/// Serialisable snapshot of a Tak state.
+/// Wire state: a TPS (Tak Positional System) string for the board layout,
+/// plus pre-computed metadata fields a client would otherwise need to derive
+/// from the TPS (reserves, opening-phase flag). Moves are PTN (Portable Tak
+/// Notation) strings -- not a custom JSON shape -- throughout the protocol,
+/// so any PTN-speaking tool can consume this game's outputs directly.
 #[derive(Serialize, Deserialize)]
 struct WireState {
-    cells: Vec<Option<WireStack>>, // N*N elements, row-major, row 0 = south edge
+    tps: String,
     stones: [u8; 2],
     caps: [u8; 2],
     turn: String,
     opening: bool,
 }
 
-/// `GameView`'s wire shape: `WireState`'s fields plus the display-only
-/// `winner`/`terminal` a renderer needs but a round-tripped `GameState`
-/// doesn't (mirrors `games/druid/src/main.rs`'s `GameView`).
+/// `GameView` adds the display-only `terminal`/`winner` fields a renderer
+/// needs but a round-tripped `WireState` doesn't carry.
 #[derive(Serialize)]
 struct GameView {
-    cells: Vec<Option<WireStack>>,
+    tps: String,
     stones: [u8; 2],
     caps: [u8; 2],
     turn: String,
@@ -231,10 +75,8 @@ struct GameView {
 }
 
 fn state_to_value(s: &State<5>) -> Value {
-    let n = 5;
-    let cells: Vec<Option<WireStack>> = s.cells[..n * n].iter().map(|&w| cell_to_wire(w)).collect();
     serde_json::to_value(WireState {
-        cells,
+        tps: s.to_tps(),
         stones: s.stones,
         caps: s.caps,
         turn: player_name(s.turn).into(),
@@ -246,21 +88,21 @@ fn state_to_value(s: &State<5>) -> Value {
 fn value_to_state(v: &Value) -> Result<State<5>, HostError> {
     let w: WireState =
         serde_json::from_value(v.clone()).map_err(|e| HostError::bad_request(e.to_string()))?;
-    if w.cells.len() != 5 * 5 {
-        return Err(HostError::bad_request("wrong cell count for a 5x5 board"));
-    }
-    let mut s = State::<5> {
-        opening: w.opening,
-        turn: parse_player(&w.turn)?,
-        stones: w.stones,
-        caps: w.caps,
-        ..Default::default()
-    };
-    for (i, stack) in w.cells.iter().enumerate() {
-        s.set_cell(i, wire_to_cell(stack)?);
-    }
-    s.hash = s.recompute_hash();
-    Ok(s)
+    // TPS is the canonical record; the explicit fields are pre-computed
+    // convenience for the client and are not validated here (the server
+    // always produces consistent output).
+    State::<5>::from_tps(&w.tps).map_err(HostError::bad_request)
+}
+
+/// Convert a `Move` to its PTN string. The board width (5 for the current
+/// adapter) is needed to turn square indices into coordinates.
+fn move_to_ptn(m: Move) -> String {
+    Tak::<5>::notation(&State::<5>::default(), &m)
+}
+
+/// Parse a PTN move string into a `Move`.
+fn ptn_to_move(ptn: &str) -> Result<Move, HostError> {
+    Move::from_ptn(ptn, 5).map_err(HostError::bad_request)
 }
 
 struct TakAdapter;
@@ -289,29 +131,29 @@ impl GameAdapter for TakAdapter {
         }
         Ok(mv
             .into_iter()
-            .map(|m| serde_json::to_value(move_to_wire(m)).unwrap())
+            .map(|m| Value::String(move_to_ptn(m)))
             .collect())
     }
     fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let wire_move: WireMove = serde_json::from_value(mv.clone())
-            .map_err(|e| HostError::bad_request(e.to_string()))?;
-        let m = wire_to_move(wire_move)?;
+        let ptn = mv
+            .as_str()
+            .ok_or_else(|| HostError::bad_request("move must be a PTN string"))?;
+        let m = ptn_to_move(ptn)?;
         if Tak::<5>::is_terminal(&s) {
             return Err(HostError::bad_request("game is over"));
         }
         let mut legal = Vec::new();
         Tak::<5>::generate_actions(&s, &mut legal);
         if !legal.contains(&m) {
-            return Err(HostError::bad_request("illegal move"));
+            return Err(HostError::bad_request(format!("illegal move: {}", ptn)));
         }
         Ok(state_to_value(&Tak::<5>::apply(s, &m)))
     }
     fn view(&self, state: &Value) -> Result<Value, HostError> {
         let s = value_to_state(state)?;
-        let n = 5;
         Ok(serde_json::to_value(GameView {
-            cells: s.cells[..n * n].iter().map(|&w| cell_to_wire(w)).collect(),
+            tps: s.to_tps(),
             stones: s.stones,
             caps: s.caps,
             turn: player_name(s.turn).into(),
@@ -347,7 +189,7 @@ impl GameAdapter for TakAdapter {
         let action = ai.choose_action(&s);
         let next = Tak::<5>::apply(s, &action);
         Ok(AiMoveResult {
-            mv: serde_json::to_value(move_to_wire(action)).unwrap(),
+            mv: Value::String(move_to_ptn(action)),
             state: state_to_value(&next),
         })
     }
@@ -377,13 +219,13 @@ impl GameAdapter for TakAdapter {
         let suggested = report
             .principal_variation
             .first()
-            .map(|a| serde_json::to_value(move_to_wire(*a)).unwrap());
+            .map(|a| Value::String(move_to_ptn(*a)));
         Ok(Analysis {
             actions: report
                 .actions
                 .into_iter()
                 .map(|a| AnalysisAction {
-                    action: serde_json::to_value(move_to_wire(a.action)).unwrap(),
+                    action: Value::String(move_to_ptn(a.action)),
                     visits: a.visits,
                     mean_value: a.mean_value,
                     is_proven: a.is_proven,
@@ -392,7 +234,7 @@ impl GameAdapter for TakAdapter {
             principal_variation: report
                 .principal_variation
                 .into_iter()
-                .map(|a| serde_json::to_value(move_to_wire(a)).unwrap())
+                .map(|a| Value::String(move_to_ptn(a)))
                 .collect(),
             total_visits: report.total_visits,
             suggested_move: suggested,
@@ -420,10 +262,6 @@ impl GameAdapter for TakAdapter {
         trace_path: Option<std::path::PathBuf>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
-        // `use_transpositions: true` requires a real `Game::zobrist_hash`
-        // override -- Tak has one, so merging transposed nodes during the
-        // candidate's search is safe here (see `generic_tune_eval`'s doc
-        // comment).
         mcts_tune::generic_tune_eval::<Tak<5>>(
             presets(),
             "games/tak/presets.json",
@@ -450,6 +288,7 @@ fn main() {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use game_tak::{make_cell, CAP, FLAT, WALL};
 
     #[test]
     fn state_round_trips_through_wire_shape() {
@@ -460,48 +299,56 @@ mod tests {
     }
 
     #[test]
-    fn wire_state_decodes_stacks() {
+    fn state_round_trips_after_opening() {
         let mut s = State::<5>::default();
-        s.opening = false;
-        // A 3-high white-bottom / black-mid / white-top flat stack at square 6.
-        // `colors`' bit j is the piece at height j (LSB = bottom); 1 = Black.
-        s.set_cell(6, make_cell(0b010, 3, FLAT));
+        s = s.apply(&Move::place(0, FLAT)); // White places Black's flat at a1
+        s = s.apply(&Move::place(12, FLAT)); // Black places White's flat at c3
         let v = state_to_value(&s);
-        let cells = v["cells"].as_array().expect("cells array");
-        let stack = cells[6].as_object().expect("occupied cell is an object");
-        let colors: Vec<&str> = stack["colors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c.as_str().unwrap())
-            .collect();
-        assert_eq!(colors, vec!["White", "Black", "White"]);
-        assert_eq!(stack["top_kind"], "Flat");
-        assert!(cells[0].is_null());
+        let back = value_to_state(&v).expect("post-opening state round-trips");
+        assert_eq!(back, s);
     }
 
     #[test]
-    fn move_wire_round_trips() {
-        let place = Move::place(12, WALL);
-        let wire = move_to_wire(place);
-        let decoded = wire_to_move(wire).expect("place round-trips");
+    fn state_round_trips_with_stacks() {
+        let mut s = State::<5>::default();
+        s.opening = false;
+        // A 3-high stack at square 6: White bottom, Black mid, White top (flat).
+        s.set_cell(6, make_cell(0b010, 3, FLAT));
+        // A standing stone at square 0.
+        s.set_cell(0, make_cell(1, 1, WALL));
+        // A capstone at square 24.
+        s.set_cell(24, make_cell(0, 1, CAP));
+        // Decrement reserves to match: 2 White flats, 1 White cap, 1 Black flat,
+        // 1 Black wall on the board.
+        s.stones = [19, 19]; // 21 - 2 White flats, 21 - 2 Black pieces
+        s.caps = [0, 1]; // 1 - 1 White cap, 1 - 0 Black caps
+        s.hash = s.recompute_hash();
+        let v = state_to_value(&s);
+        let back = value_to_state(&v).expect("state with stacks round-trips");
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn move_ptn_round_trips() {
+        let place = Move::place(0, WALL);
+        let ptn = move_to_ptn(place);
+        assert_eq!(ptn, "Sa1");
+        let decoded = ptn_to_move(&ptn).expect("placement round-trips");
         assert_eq!(decoded, place);
 
-        let spread = Move::spread(0, 1, 3, 0b110); // take 3, drop (2, 1)
-        let wire = move_to_wire(spread);
-        match &wire {
-            WireMove::Spread {
-                square,
-                direction,
-                drop_sizes,
-            } => {
-                assert_eq!(*square, 0);
-                assert_eq!(direction, "East");
-                assert_eq!(drop_sizes, &vec![2, 1]);
-            }
-            _ => panic!("expected a Spread"),
-        }
-        let decoded = wire_to_move(wire).expect("spread round-trips");
+        let spread = Move::spread(12, 1, 3, 0b110); // take 3 from c3 east, drop (2, 1)
+        let ptn = move_to_ptn(spread);
+        assert_eq!(ptn, "3c3>21");
+        let decoded = ptn_to_move(&ptn).expect("spread round-trips");
+        assert_eq!(decoded, spread);
+    }
+
+    #[test]
+    fn move_ptn_single_spread() {
+        let spread = Move::spread(0, 1, 1, 0b1); // take 1 from a1 east
+        let ptn = move_to_ptn(spread);
+        assert_eq!(ptn, "a1>");
+        let decoded = ptn_to_move(&ptn).expect("single spread round-trips");
         assert_eq!(decoded, spread);
     }
 
@@ -509,15 +356,63 @@ mod tests {
     fn view_reports_terminal_and_winner() {
         let mut s = State::<5>::default();
         s.opening = false;
-        // White road along the top row (row 0 is the north edge internally
-        // since `idx = row * N + col`... just build a straightforward
-        // vertical white road down column 0.
+        // Vertical white road down column 0 (north-south road).
         for row in 0..5 {
             s.set_cell(row * 5, make_cell(0, 1, FLAT));
         }
+        s.stones[0] -= 5; // 5 White flats placed
+        s.hash = s.recompute_hash();
         let v = TakAdapter.view(&state_to_value(&s)).expect("view succeeds");
         assert_eq!(v["terminal"], true);
         assert_eq!(v["winner"], "White");
+    }
+
+    #[test]
+    fn legal_moves_are_ptn_strings() {
+        let s = State::<5>::default();
+        let v = state_to_value(&s);
+        let moves = TakAdapter.legal_moves(&v).expect("legal_moves succeeds");
+        assert!(!moves.is_empty());
+        // All moves are PTN strings (flat placements in the opening).
+        for mv in &moves {
+            let ptn = mv.as_str().expect("move is a string");
+            assert!(ptn.len() >= 2, "PTN move '{}' is too short", ptn);
+        }
+    }
+
+    #[test]
+    fn apply_accepts_ptn_string() {
+        let s = State::<5>::default();
+        let v = state_to_value(&s);
+        // Play the opening: White places opponent's flat at a1 (just "a1").
+        let next = TakAdapter
+            .apply(&v, &Value::String("a1".into()))
+            .expect("apply succeeds");
+        let back = value_to_state(&next).expect("result parses");
+        assert_eq!(back.turn, Player::Black);
+        assert!(back.opening);
+    }
+
+    #[test]
+    fn apply_rejects_non_ptn_move() {
+        let s = State::<5>::default();
+        let v = state_to_value(&s);
+        let err = TakAdapter
+            .apply(
+                &v,
+                &serde_json::json!({"tag": "Place", "square": 0, "kind": "Flat"}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn tps_in_wire_state_is_parseable() {
+        let s = State::<5>::default();
+        let v = state_to_value(&s);
+        let tps = v["tps"].as_str().expect("tps field is a string");
+        assert!(tps.starts_with("x5/"));
+        assert!(tps.ends_with(" 1 1"));
     }
 
     #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts (seconds for small games, tens of minutes for large boards like druid) -- mcts-tune's own crate has a fast per-family unit suite covering dispatch; this only additionally proves this game's own Game impl round-trips end to end. Run explicitly with `cargo test --bins -- --ignored`."]

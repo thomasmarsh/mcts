@@ -819,6 +819,367 @@ impl<const N: usize> Game for Tak<N> {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
+// TPS (Tak Positional System) serialization / parsing
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Serialise one cell word into its TPS piece list: digits `1`/`2`
+/// bottom-to-top, with an optional `S` or `C` suffix for the top piece's
+/// kind (flat stones have no suffix).
+fn cell_to_tps(w: u64) -> String {
+    let h = cell_height(w);
+    let mut s = String::with_capacity(h as usize + 1);
+    for j in 0..h {
+        s.push(if cell_color_at(w, j) == 0 { '1' } else { '2' });
+    }
+    match cell_kind(w) {
+        WALL => s.push('S'),
+        CAP => s.push('C'),
+        _ => {}
+    }
+    s
+}
+
+impl<const N: usize> State<N> {
+    /// Serialise the board to a TPS string. Rows are listed from top
+    /// (highest row number) to bottom `/`-separated; cells within a row are
+    /// `,`-separated, with empty cells condensed as `x` or `xN` runs.
+    pub fn to_tps(&self) -> String {
+        let mut rows: Vec<String> = Vec::with_capacity(N);
+        for row in (0..N).rev() {
+            let mut parts: Vec<String> = Vec::new();
+            let mut empty_run = 0u32;
+            for col in 0..N {
+                let w = self.cells[Self::idx(col as i32, row as i32)];
+                if w == 0 {
+                    empty_run += 1;
+                } else {
+                    if empty_run > 0 {
+                        parts.push(if empty_run == 1 {
+                            "x".into()
+                        } else {
+                            format!("x{}", empty_run)
+                        });
+                        empty_run = 0;
+                    }
+                    parts.push(cell_to_tps(w));
+                }
+            }
+            if empty_run > 0 {
+                parts.push(if empty_run == 1 {
+                    "x".into()
+                } else {
+                    format!("x{}", empty_run)
+                });
+            }
+            rows.push(parts.join(","));
+        }
+
+        let turn_num = self.turn as u8 + 1;
+        let (initial_stones, initial_caps) = piece_counts(N);
+        let total_initial = 2 * (initial_stones as u32 + initial_caps as u32);
+        let total_current = self.stones[0] as u32
+            + self.caps[0] as u32
+            + self.stones[1] as u32
+            + self.caps[1] as u32;
+        let plies = total_initial - total_current;
+        let move_counter = plies / 2 + 1;
+
+        format!("{} {} {}", rows.join("/"), turn_num, move_counter)
+    }
+
+    /// Parse a TPS string into a `State<N>`. The `opening` flag is derived
+    /// from the reserve counts and board state: the opening is active when
+    /// fewer than two plies have been played (each player places one
+    /// opponent's flat during the opening).
+    pub fn from_tps(tps: &str) -> Result<State<N>, String> {
+        // Split into board part, turn, and move counter.
+        let mut parts: Vec<&str> = tps.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "TPS must have 3 space-separated parts (board turn move-counter), got {}",
+                parts.len()
+            ));
+        }
+        let move_counter_str = parts.pop().unwrap();
+        let turn_str = parts.pop().unwrap();
+        let board_part = parts.pop().unwrap();
+
+        let turn: Player = match turn_str {
+            "1" => Player::White,
+            "2" => Player::Black,
+            _ => return Err(format!("invalid turn '{}': expected 1 or 2", turn_str)),
+        };
+
+        // Parse board rows (top row first = our highest row index).
+        let rows: Vec<&str> = board_part.split('/').collect();
+        if rows.len() != N {
+            return Err(format!(
+                "TPS has {} rows, expected {} for a {}x{} board",
+                rows.len(),
+                N,
+                N,
+                N
+            ));
+        }
+
+        let mut cells = [0u64; MAX_CELLS];
+        let mut pieces_on_board = [0u32; 2]; // [white, black] piece counts
+        for (tps_row_idx, row_str) in rows.iter().enumerate() {
+            let our_row = N - 1 - tps_row_idx; // TPS row 0 = top = our row N-1
+                                               // Split into cell descriptions (commas may be missing for an
+                                               // xN-only row like `x5` on an empty 5x5 — that row has one
+                                               // element, not N commas). Expand `x` / `xN` runs inline.
+            let mut col: usize = 0;
+            let cell_strs: Vec<&str> = row_str.split(',').collect();
+            for cell_str in cell_strs {
+                if cell_str.is_empty() {
+                    return Err("empty cell in TPS row".into());
+                }
+                if let Some(rest) = cell_str.strip_prefix('x') {
+                    let run: usize = if rest.is_empty() {
+                        1
+                    } else {
+                        rest.parse::<usize>()
+                            .map_err(|_| format!("invalid empty-run '{}'", cell_str))?
+                    };
+                    if run == 0 || col + run > N {
+                        return Err(format!("empty-run '{}' overflows row", cell_str));
+                    }
+                    col += run;
+                    continue;
+                }
+                if col >= N {
+                    return Err(format!("too many cells in TPS row '{}'", row_str));
+                }
+                // Parse a stack: digits 1/2 bottom-to-top, optional S/C.
+                let stack_str = cell_str;
+                let top_kind: u8 = if stack_str.ends_with('S') {
+                    WALL
+                } else if stack_str.ends_with('C') {
+                    CAP
+                } else {
+                    FLAT
+                };
+                let digits_end = stack_str.len() - if top_kind != FLAT { 1 } else { 0 };
+                let digits = &stack_str[..digits_end];
+                if digits.is_empty() || !digits.chars().all(|c| c == '1' || c == '2') {
+                    return Err(format!("invalid stack '{}'", stack_str));
+                }
+                let h = digits.len() as u32;
+                if h == 0 || h > 61 {
+                    return Err(format!("invalid stack height {} in '{}'", h, stack_str));
+                }
+                let mut colors: u64 = 0;
+                for (j, c) in digits.chars().enumerate() {
+                    let bit: u64 = if c == '1' { 0 } else { 1 };
+                    colors |= bit << j;
+                    pieces_on_board[bit as usize] += 1;
+                }
+                let idx = our_row * N + col;
+                cells[idx] = make_cell(colors, h, top_kind);
+                col += 1;
+            }
+            if col != N {
+                return Err(format!(
+                    "TPS row '{}' has {} columns, expected {}",
+                    row_str, col, N
+                ));
+            }
+        }
+
+        // Derive reserve counts from the piece counts on the board.
+        let (initial_stones, initial_caps) = piece_counts(N);
+        // Count how many capstone pieces are on the board per player.
+        let mut caps_on_board = [0u8; 2];
+        for &w in &cells[..N * N] {
+            if w != 0 && cell_kind(w) == CAP {
+                let owner = cell_top_color(w) as usize;
+                caps_on_board[owner] += 1;
+            }
+        }
+        // `pieces_on_board` counts every piece (stones + caps); the stone
+        // count is total minus caps.
+        let stones = [
+            (initial_stones - (pieces_on_board[0] - caps_on_board[0] as u32) as u8),
+            (initial_stones - (pieces_on_board[1] - caps_on_board[1] as u32) as u8),
+        ];
+        let caps = [
+            initial_caps - caps_on_board[0],
+            initial_caps - caps_on_board[1],
+        ];
+
+        // Validate that the reserve counts are internally consistent.
+        for p in 0..2 {
+            if stones[p] > initial_stones || caps[p] > initial_caps {
+                return Err(format!(
+                    "more {} pieces on board than the starting count for a {}x{} board",
+                    if p == 0 { "White" } else { "Black" },
+                    N,
+                    N
+                ));
+            }
+        }
+        let total_initial = 2 * (initial_stones as u32 + initial_caps as u32);
+        let total_current = stones[0] as u32 + caps[0] as u32 + stones[1] as u32 + caps[1] as u32;
+        let plies = total_initial - total_current;
+        let opening = plies < 2;
+
+        // Cross-check the move counter (non-fatal: only validate).
+        let expected_move = plies / 2 + 1;
+        if let Ok(mc) = move_counter_str.parse::<u32>() {
+            if mc != expected_move {
+                // Move counter mismatch: we trust the board state, not the counter.
+            }
+        }
+
+        let mut s = State {
+            cells,
+            hash: 0,
+            stones,
+            caps,
+            turn,
+            opening,
+        };
+        s.hash = s.recompute_hash();
+        Ok(s)
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// PTN (Portable Tak Notation) move parsing
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+impl Move {
+    /// Parse a PTN move string into a `Move`. `n` is the board width (same
+    /// as the carry limit). The format matches `Tak::notation`'s output:
+    ///
+    /// - Placements: `a1`, `Sa1` (wall), `Ca1` (capstone)
+    /// - Spreads:    `a1>`, `3c3>12` (take 3 from c3 east, drop 1 then 2)
+    ///
+    /// Direction glyphs: `+` north, `-` south, `>` east, `<` west.
+    pub fn from_ptn(ptn: &str, n: usize) -> Result<Move, String> {
+        let ptn = ptn.trim();
+        if ptn.is_empty() {
+            return Err("empty PTN string".into());
+        }
+        // Direction characters: placement has none, spread has exactly one.
+        let dir_pos = ptn.find(['+', '-', '<', '>']);
+        match dir_pos {
+            Some(dir_idx) => Self::parse_spread(ptn, dir_idx, n),
+            None => Self::parse_placement(ptn, n),
+        }
+    }
+
+    fn parse_placement(ptn: &str, n: usize) -> Result<Move, String> {
+        // Optional S/C prefix, then a coordinate like a1, c3, h6.
+        let (kind, coord) = if let Some(rest) = ptn.strip_prefix('S') {
+            (WALL, rest)
+        } else if let Some(rest) = ptn.strip_prefix('C') {
+            (CAP, rest)
+        } else if let Some(rest) = ptn.strip_prefix('F') {
+            (FLAT, rest)
+        } else {
+            (FLAT, ptn)
+        };
+        let square = parse_coord(coord, n)?;
+        Ok(Move::place(square, kind))
+    }
+
+    fn parse_spread(ptn: &str, dir_pos: usize, n: usize) -> Result<Move, String> {
+        let dir_char = ptn.as_bytes()[dir_pos];
+        let dir: usize = match dir_char {
+            b'+' => 0, // North
+            b'>' => 1, // East
+            b'-' => 2, // South
+            b'<' => 3, // West
+            _ => return Err(format!("invalid direction '{}'", dir_char as char)),
+        };
+
+        let before_dir = &ptn[..dir_pos];
+        let after_dir = &ptn[dir_pos + 1..];
+
+        // Before the direction: optional take count, then the coordinate.
+        // Find where the coordinate starts (first letter).
+        let coord_start = before_dir
+            .find(|c: char| c.is_ascii_lowercase())
+            .ok_or_else(|| format!("no coordinate in spread '{}'", ptn))?;
+        let take_str = &before_dir[..coord_start];
+        let coord_str = &before_dir[coord_start..];
+
+        let take: u32 = if take_str.is_empty() {
+            1
+        } else {
+            take_str
+                .parse::<u32>()
+                .map_err(|_| format!("invalid take count '{}'", take_str))?
+        };
+        if take == 0 || take as usize > n {
+            return Err(format!("take count {} out of range (1..={})", take, n));
+        }
+
+        let square = parse_coord(coord_str, n)?;
+
+        // After the direction: optional drop counts (only when take > 1).
+        let drops: Vec<u32> = if after_dir.is_empty() {
+            if take == 1 {
+                vec![1]
+            } else {
+                vec![take]
+            }
+        } else {
+            after_dir
+                .chars()
+                .map(|c| {
+                    c.to_digit(10)
+                        .ok_or_else(|| format!("invalid drop digit '{}'", c))
+                })
+                .collect::<Result<Vec<u32>, String>>()?
+        };
+
+        let sum: u32 = drops.iter().sum();
+        if sum != take {
+            return Err(format!(
+                "drop counts sum to {} but take count is {}",
+                sum, take
+            ));
+        }
+
+        // Encode the drop schedule into the mask.
+        let mut mask = 0u32;
+        let mut dropped = 0u32;
+        for d in &drops {
+            dropped += d;
+            mask |= 1 << (dropped - 1);
+        }
+
+        Ok(Move::spread(square, dir, take, mask))
+    }
+}
+
+/// Parse a PTN coordinate like `"a1"`, `"c3"`, `"h6"` into a row-major
+/// square index (`row * n + col`, row 0 = south edge).
+fn parse_coord(coord: &str, n: usize) -> Result<usize, String> {
+    if coord.len() < 2 {
+        return Err(format!("invalid coordinate '{}'", coord));
+    }
+    let col_char = coord.as_bytes()[0];
+    if !col_char.is_ascii_lowercase() {
+        return Err(format!("invalid file '{}'", col_char as char));
+    }
+    let col = (col_char - b'a') as usize;
+    let row: usize = coord[1..]
+        .parse::<usize>()
+        .map_err(|_| format!("invalid rank in '{}'", coord))?;
+    if row == 0 || row > n || col >= n {
+        return Err(format!(
+            "coordinate '{}' out of bounds for a {}x{} board",
+            coord, n, n
+        ));
+    }
+    Ok((row - 1) * n + col)
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
 // Display
 //////////////////////////////////////////////////////////////////////////////////////////////////
 

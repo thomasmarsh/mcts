@@ -7,50 +7,45 @@
 
 import { describe, it, expect } from "vitest";
 import { findWinningRoad } from "../src/TakRenderer.js";
-import type { GameState } from "../src/types.js";
+import type { ParsedStack } from "../src/tps-parser.js";
+import type { Player } from "../src/types.js";
 
-function emptyState(n: number): GameState {
-  return {
-    cells: Array.from({ length: n * n }, () => null),
-    stones: [21, 21],
-    caps: [1, 1],
-    turn: "White",
-    opening: false,
-  };
+function emptyCells(n: number): (ParsedStack | null)[] {
+  return Array.from({ length: n * n }, () => null);
 }
 
-function place(state: GameState, square: number, color: "White" | "Black", topKind: "Flat" | "Wall" | "Cap" = "Flat"): void {
-  state.cells[square] = { colors: [color], top_kind: topKind };
+function place(cells: (ParsedStack | null)[], square: number, color: Player, topKind: "Flat" | "Wall" | "Cap" = "Flat"): void {
+  cells[square] = { colors: [color], topKind };
 }
 
 describe("findWinningRoad", () => {
   it("finds a vertical (south-north) road down one column", () => {
-    const s = emptyState(5);
-    for (let row = 0; row < 5; row++) place(s, row * 5, "White");
-    const path = findWinningRoad(s, "White");
+    const cells = emptyCells(5);
+    for (let row = 0; row < 5; row++) place(cells, row * 5, "White");
+    const path = findWinningRoad(cells, 5, "White");
     expect(path).not.toBeNull();
     expect(path).toEqual([0, 5, 10, 15, 20]);
   });
 
   it("finds a horizontal (west-east) road along one row", () => {
-    const s = emptyState(5);
-    for (let col = 0; col < 5; col++) place(s, col, "Black");
-    const path = findWinningRoad(s, "Black");
+    const cells = emptyCells(5);
+    for (let col = 0; col < 5; col++) place(cells, col, "Black");
+    const path = findWinningRoad(cells, 5, "Black");
     expect(path).not.toBeNull();
     expect(path).toEqual([0, 1, 2, 3, 4]);
   });
 
   it("returns null when there's no connecting road", () => {
-    const s = emptyState(5);
-    place(s, 0, "White");
-    place(s, 24, "White");
-    expect(findWinningRoad(s, "White")).toBeNull();
+    const cells = emptyCells(5);
+    place(cells, 0, "White");
+    place(cells, 24, "White");
+    expect(findWinningRoad(cells, 5, "White")).toBeNull();
   });
 
   it("a wall on the path breaks the road (walls don't count)", () => {
-    const s = emptyState(5);
-    for (let row = 0; row < 5; row++) place(s, row * 5, "White");
-    s.cells[10] = { colors: ["White"], top_kind: "Wall" };
-    expect(findWinningRoad(s, "White")).toBeNull();
+    const cells = emptyCells(5);
+    for (let row = 0; row < 5; row++) place(cells, row * 5, "White");
+    cells[10] = { colors: ["White"], topKind: "Wall" };
+    expect(findWinningRoad(cells, 5, "White")).toBeNull();
   });
 });

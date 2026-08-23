@@ -6,7 +6,7 @@
 // TODO: once a future session generalizes `main.rs` to dispatch over N, this
 // picker becomes fully functional with no changes here; the rest of this
 // package already derives board size from the actual returned state
-// (`types.ts`'s `boardSize`), never from what was requested.
+// (`types.ts`'s `boardSizeFromTps`), never from what was requested.
 
 import type { Component } from "solid-js";
 import { For } from "solid-js";
