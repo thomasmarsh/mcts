@@ -117,6 +117,27 @@ fn search_report_and_legacy_analysis_agree_on_the_selected_action() {
 }
 
 #[test]
+fn one_iteration_mcts_search_selects_after_the_root_playout() {
+    let state = <Nim as Game>::S::default();
+    let mut search =
+        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(1));
+
+    let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
+        nim_action_value(&state, action)
+    });
+
+    let mut legal_actions = Vec::new();
+    Nim::generate_actions(&state, &mut legal_actions);
+    assert!(legal_actions.contains(&selected_action));
+    assert_eq!(report.status, game_host::SearchReportStatus::Available);
+    assert_eq!(report.completed_iterations, 1);
+    assert_eq!(
+        report.selected_action,
+        Some(nim_action_value(&state, &selected_action))
+    );
+}
+
+#[test]
 fn non_mcts_search_reports_explicit_unavailability() {
     let state = <Nim as Game>::S::default();
     let mut search = mcts::strategies::random::Random::<Nim>::new();

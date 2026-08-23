@@ -7,7 +7,7 @@ use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
 use crate::strategies::mcts::search::shared::{
-    add_path_virtual_loss, backprop_correction_step, backprop_step, last_tree_action,
+    add_path_virtual_loss, backprop_correction_step, backprop_step, expand, last_tree_action,
     proven_draw_child, proven_win_child, select_step, simulate_step,
 };
 use crate::strategies::mcts::search::SearchContext;
@@ -136,6 +136,21 @@ where
 
     #[inline]
     pub fn select_final_action(&mut self, state: &G::S) -> G::A {
+        // A budget can end immediately after a root playout, before the
+        // visit threshold permits normal selection to expand that root.  The
+        // final-action policy still needs its legal child list even though no
+        // child has search evidence yet.
+        if self.index.get(self.root_id).is_leaf() {
+            let _ = expand::<G>(
+                &self.index,
+                self.root_id,
+                state,
+                self.config.use_mcts_solver,
+                self.config.requirements().amaf,
+                self.config.uses_transpositions(),
+                self.config.prior.as_deref_mut(),
+            );
+        }
         let player = G::player_to_move(state).to_index();
         if let Some(idx) = proven_win_child::<G>(
             self.config.use_mcts_solver,
