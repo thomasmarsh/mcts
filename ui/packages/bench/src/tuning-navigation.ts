@@ -5,6 +5,8 @@ import type { BenchEnv } from "./reducer.js";
 import type { TuningAnalysisOverview, TuningSessionDetail, TuningSessionsResponse, TuningTrialDetail, TuningTrialPage, TuningTrialPageQuery } from "./types.js";
 
 export const TUNING_DETAIL_REFRESH_MS = 5_000;
+export const DEFAULT_TRIAL_PAGE_LIMIT = 50;
+export const MAX_TRIAL_PAGE_LIMIT = 200;
 
 export interface TuningLoadState<T> {
   status: "idle" | "loading" | "done" | "error";
@@ -35,9 +37,10 @@ export interface TuningNavigationState {
   overview: TuningLoadState<TuningAnalysisOverview> & { sessionId: string | null };
   trialPage: TuningTrialPageState;
   trialDetails: Record<string, TuningTrialDetailState>;
-  tab: "progress" | "game";
+  tab: "trials" | "game";
   filters: TuningTrialFilters;
   sort: TuningTrialSort;
+  trialPageLimit: number;
   selection: TuningSelection;
   expandedIds: string[];
   unavailable: string | null;
@@ -62,9 +65,10 @@ export type TuningNavigationAction =
   | { tag: "trialDetailFailed"; generation: number; sessionId: string; trialId: string; error: string }
   | { tag: "selectSession"; sessionId: string }
   | { tag: "clearSession" }
-  | { tag: "setAnalysisTab"; tab: "progress" | "game" }
+  | { tag: "setAnalysisTab"; tab: "trials" | "game" }
   | { tag: "setTrialFilters"; filters: Partial<TuningTrialFilters> }
   | { tag: "setTrialSort"; sort: TuningTrialSort }
+  | { tag: "setTrialPageLimit"; limit: number }
   | { tag: "nextTrialPage" }
   | { tag: "previousTrialPage" }
   | { tag: "selectAttempt"; attemptId: string }
@@ -82,7 +86,7 @@ export function initialTuningNavigationState(): TuningNavigationState {
   return {
     list: loadState<TuningSessionsResponse>(), detail: { ...loadState<TuningSessionDetail>(), sessionId: null },
     overview: { ...loadState<TuningAnalysisOverview>(), sessionId: null }, trialPage: pageState(), trialDetails: {},
-    tab: "game", filters: defaultFilters(), sort: { sort: "trial", direction: "desc" },
+    tab: "trials", filters: defaultFilters(), sort: { sort: "trial", direction: "desc" }, trialPageLimit: DEFAULT_TRIAL_PAGE_LIMIT,
     selection: { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null }, expandedIds: [], unavailable: null,
   };
 }
@@ -98,7 +102,7 @@ function sessionIsActive(state: TuningNavigationState, sessionId: string): boole
 }
 function pageQuery(state: TuningNavigationState): TuningTrialPageQuery {
   const { filters, sort, trialPage } = state;
-  return { ...filters, sort: sort.sort, direction: sort.direction, cursor: trialPage.cursor };
+  return { ...filters, sort: sort.sort, direction: sort.direction, limit: state.trialPageLimit, cursor: trialPage.cursor };
 }
 function clearDetail(state: TuningNavigationState): void {
   state.detail = { ...loadState<TuningSessionDetail>(), generation: state.detail.generation + 1, sessionId: null };
@@ -139,6 +143,7 @@ function requestTrialPage(state: TuningNavigationState, sessionId: string, env: 
 }
 function requestTrialDetail(state: TuningNavigationState, sessionId: string, trialId: string, env: BenchEnv): Effect<TuningNavigationAction> {
   const existing = state.trialDetails[trialId];
+  if (existing?.sessionId === sessionId && (existing.status === "loading" || (existing.status === "done" && existing.snapshot !== null))) return Effect.none();
   const generation = (existing?.generation ?? 0) + 1;
   const snapshot = existing?.sessionId === sessionId ? existing.snapshot : null;
   state.trialDetails[trialId] = { status: "loading", snapshot, error: null, generation, sessionId, trialId };
@@ -225,7 +230,7 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
     state.overview = { ...state.overview, status: "done", snapshot: action.overview, error: null };
     const advanced = priorCursor !== undefined && action.overview.cursor.session_sequence > priorCursor;
     return merge(
-      state.tab === "progress" && (state.trialPage.snapshot === null || advanced) ? requestTrialPage(state, action.sessionId, env) : null,
+      state.tab === "trials" && (state.trialPage.snapshot === null || advanced) ? requestTrialPage(state, action.sessionId, env) : null,
       advanced && state.selection.trialId ? requestTrialDetail(state, action.sessionId, state.selection.trialId, env) : null,
       overviewRefresh(state, action.sessionId),
     );
@@ -246,7 +251,7 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   }
   if (action.tag === "selectSession") {
     state.selection = selectionForSession(action.sessionId);
-    state.tab = sessionCanAnalyze(state, action.sessionId) ? "progress" : "game";
+    state.tab = sessionCanAnalyze(state, action.sessionId) ? "trials" : "game";
     state.unavailable = null; clearAnalysis(state);
     return merge(requestDetail(state, action.sessionId, env), requestOverview(state, action.sessionId, env));
   }
@@ -255,13 +260,14 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   }
   if (action.tag === "setAnalysisTab") {
     state.tab = action.tab;
-    return action.tab === "progress" && state.selection.sessionId && state.trialPage.snapshot === null ? requestTrialPage(state, state.selection.sessionId, env) : null;
+    return action.tab === "trials" && state.selection.sessionId && state.trialPage.snapshot === null ? requestTrialPage(state, state.selection.sessionId, env) : null;
   }
-  if (action.tag === "setTrialFilters" || action.tag === "setTrialSort") {
+  if (action.tag === "setTrialFilters" || action.tag === "setTrialSort" || action.tag === "setTrialPageLimit") {
     if (action.tag === "setTrialFilters") state.filters = { ...state.filters, ...action.filters };
-    else state.sort = action.sort;
+    else if (action.tag === "setTrialSort") state.sort = action.sort;
+    else state.trialPageLimit = Math.max(1, Math.min(MAX_TRIAL_PAGE_LIMIT, Math.floor(action.limit) || DEFAULT_TRIAL_PAGE_LIMIT));
     resetTrialPage(state);
-    return state.selection.sessionId && state.tab === "progress" ? requestTrialPage(state, state.selection.sessionId, env) : null;
+    return state.selection.sessionId && state.tab === "trials" ? requestTrialPage(state, state.selection.sessionId, env) : null;
   }
   if (action.tag === "nextTrialPage") {
     const next = state.trialPage.snapshot?.next_cursor;
@@ -275,7 +281,7 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
     return requestTrialPage(state, state.selection.sessionId, env);
   }
   if (action.tag === "selectAttempt") selectAttempt(state, action.attemptId);
-  if (action.tag === "selectTrial") { selectTrial(state, action.trialId); return state.selection.sessionId ? requestTrialDetail(state, state.selection.sessionId, action.trialId, env) : null; }
+  if (action.tag === "selectTrial") selectTrial(state, action.trialId);
   if (action.tag === "selectPair") selectPair(state, action.pairId);
   if (action.tag === "selectGame") selectGame(state, action.gameId);
   if (action.tag === "toggleExpanded") state.expandedIds = state.expandedIds.includes(action.id) ? state.expandedIds.filter((id) => id !== action.id) : [...state.expandedIds, action.id];

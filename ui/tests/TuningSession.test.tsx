@@ -57,6 +57,8 @@ describe("observable tuning session workbench", () => {
     expect(screen.queryByText("0 matches")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Observable tuning 3 \/ 3 terminal trials/ }));
     expect(await screen.findByText("queued 0 · running 0 · complete 2 · failed 1 · pruned 0 · cancelled 0")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Game evidence" }));
+    await screen.findByText("Attempts and evidence");
     fireEvent.click(screen.getByRole("button", { name: /Expand attempts/ }));
     expect(screen.getByRole("button", { name: /Attempt attempt-a/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Attempt attempt-b/ })).toBeInTheDocument();
@@ -89,6 +91,7 @@ describe("observable tuning session workbench", () => {
     const { store } = setup();
     render(() => <TuningSessionWorkbench store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: "session-a" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Game evidence" }));
     await screen.findByText("Attempts and evidence");
     for (const action of [{ tag: "selectAttempt", attemptId: "attempt-a" }, { tag: "selectTrial", trialId: "trial-a" }, { tag: "selectPair", pairId: "pair-two" }, { tag: "selectGame", gameId: "game-1" }] as const) store.dispatch({ tag: "tuningNavigation", action });
     expect(await screen.findByTestId("spectator")).toBeInTheDocument();
@@ -106,6 +109,7 @@ describe("observable tuning session workbench", () => {
     const Spectator = () => <div data-testid="spectator" />;
     render(() => <TuningSessionWorkbench store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: "session-a" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Game evidence" }));
     await screen.findByText("Attempts and evidence");
     for (const action of [{ tag: "selectTrial", trialId: "trial-a" }, { tag: "selectPair", pairId: "pair-two" }, { tag: "selectGame", gameId: "game-1" }] as const) store.dispatch({ tag: "tuningNavigation", action });
     expect(await screen.findByText("Replay unavailable: the attempt has no associated physical run.")).toBeInTheDocument();
@@ -119,6 +123,7 @@ describe("observable tuning session workbench", () => {
     const Spectator = (props: BenchSpectatorProps) => { onMount(() => { mounts += 1; }); return <div data-testid="spectator">{props.runId}:{props.initialGameSeq}</div>; };
     render(() => <TuningSessionWorkbench store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: "session-a" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Game evidence" }));
     await screen.findByText("Attempts and evidence");
     expect(screen.getByRole("heading", { name: "Resolved policy" })).toBeInTheDocument();
     expect(screen.getByText("2–6 (4–12 physical games)")).toBeInTheDocument();

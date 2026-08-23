@@ -48,15 +48,15 @@ const reducer = (state: TuningNavigationState, action: TuningNavigationAction, e
   tuningNavigationReducer(state, action, environment);
 
 describe("tuningNavigationReducer analysis state", () => {
-  it("defaults to a game tab, but capable sessions open Progress without changing evidence selection", () => {
+  it("defaults to the trials tab, and capable sessions open it without changing evidence selection", () => {
     expect(initialTuningNavigationState()).toMatchObject({
-      tab: "game", filters: { state: null, bracket: null, reason: null, family: null, q: null }, sort: { sort: "trial", direction: "desc" },
+      tab: "trials", filters: { state: null, bracket: null, reason: null, family: null, q: null }, sort: { sort: "trial", direction: "desc" }, trialPageLimit: 50,
     });
     const initial = initialTuningNavigationState();
     initial.list.snapshot = sessions;
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.tab = "progress"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
+      state.tab = "trials"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
       state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
       state.overview.status = "loading"; state.overview.sessionId = "session-1"; state.overview.generation = 2;
       state.trialPage.generation = 1;
@@ -66,28 +66,28 @@ describe("tuningNavigationReducer analysis state", () => {
   it("drops stale overview, page, and keyed-detail responses", () => {
     const initial = initialTuningNavigationState();
     initial.selection.sessionId = "session-1";
-    initial.tab = "progress";
+    initial.tab = "trials";
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.status = "loading"; s.overview.sessionId = "session-1"; s.overview.generation = 1; });
     ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.generation = 2; });
     ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(1) });
-    ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.status = "loading"; s.trialPage.sessionId = "session-1"; s.trialPage.generation = 1; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); });
+    ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.status = "loading"; s.trialPage.sessionId = "session-1"; s.trialPage.generation = 1; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: null }); });
     ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.generation = 2; });
     ts.send({ tag: "trialPageLoaded", sessionId: "session-1", generation: 1, queryKey: ts.getState().trialPage.queryKey!, page: page(1) });
-    ts.send({ tag: "selectTrial", trialId: "trial-1" }, (s) => { s.selection.trialId = "trial-1"; s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
-    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"]!.generation = 2; });
-    ts.send({ tag: "trialDetailLoaded", sessionId: "session-1", trialId: "trial-1", generation: 1, detail: detail() });
+    ts.send({ tag: "selectTrial", trialId: "trial-1" }, (s) => { s.selection.trialId = "trial-1"; });
+    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    ts.send({ tag: "trialDetailLoaded", sessionId: "session-1", trialId: "trial-1", generation: 0, detail: detail() });
   });
 
   it("invalidates page identity on rapid session, filter, and tab changes without changing selection", () => {
     const initial = initialTuningNavigationState();
     initial.selection = { sessionId: "session-1", attemptId: "a", trialId: "trial-1", pairId: null, gameId: null };
-    initial.tab = "progress";
+    initial.tab = "trials";
     initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: "old", generation: 4 };
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "setTrialFilters", filters: { state: "complete", q: "rave" } }, (s) => {
       s.filters.state = "complete"; s.filters.q = "rave"; s.trialPage = { ...initialTuningNavigationState().trialPage, generation: 5, sessionId: "session-1" };
-      s.trialPage.status = "loading"; s.trialPage.generation = 6; s.trialPage.queryKey = JSON.stringify({ state: "complete", bracket: null, reason: null, family: null, q: "rave", sort: "trial", direction: "desc", cursor: null });
+      s.trialPage.status = "loading"; s.trialPage.generation = 6; s.trialPage.queryKey = JSON.stringify({ state: "complete", bracket: null, reason: null, family: null, q: "rave", sort: "trial", direction: "desc", limit: 50, cursor: null });
     });
     ts.send({ tag: "setAnalysisTab", tab: "game" }, (s) => { s.tab = "game"; });
     expect(ts.getState().selection).toEqual({ sessionId: "session-1", attemptId: "a", trialId: "trial-1", pairId: null, gameId: null });
@@ -100,7 +100,7 @@ describe("tuningNavigationReducer analysis state", () => {
     ts.send({ tag: "selectSession", sessionId: "session-1" });
     ts.send({ tag: "selectSession", sessionId: "session-2" }, (s) => {
       s.selection = { sessionId: "session-2", attemptId: null, trialId: null, pairId: null, gameId: null };
-      s.tab = "progress"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
+      s.tab = "trials"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
       s.overview.sessionId = "session-2"; s.overview.generation = 4; s.trialPage.generation = 2;
     });
     ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 2, overview: overview(9) });
@@ -110,12 +110,12 @@ describe("tuningNavigationReducer analysis state", () => {
     let pages = 0;
     let details = 0;
     const initial = initialTuningNavigationState();
-    initial.tab = "progress"; initial.selection = { sessionId: "session-1", attemptId: null, trialId: "trial-1", pairId: null, gameId: null };
+    initial.tab = "trials"; initial.selection = { sessionId: "session-1", attemptId: null, trialId: "trial-1", pairId: null, gameId: null };
     initial.list.snapshot = sessions;
     initial.overview = { status: "loading", snapshot: overview(1), error: null, generation: 1, sessionId: "session-1" };
-    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }), generation: 1 };
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: null }), generation: 1 };
     const ts = createTestStore(reducer, env({ getTuningTrialPage: () => { pages += 1; return Effect.none(); }, getTuningTrialDetail: () => { details += 1; return Effect.none(); } }), initial);
-    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(2) }, (s) => { s.overview.status = "done"; s.overview.snapshot = overview(2); s.trialPage.status = "loading"; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(2) }, (s) => { s.overview.status = "done"; s.overview.snapshot = overview(2); s.trialPage.status = "loading"; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: null }); s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
     expect({ pages, details }).toEqual({ pages: 1, details: 1 });
     ts.advance(TUNING_DETAIL_REFRESH_MS);
     ts.receive({ tag: "overviewRefreshTick", sessionId: "session-1", generation: 1 }, (s) => { s.overview.status = "loading"; s.overview.generation = 2; });
@@ -125,7 +125,7 @@ describe("tuningNavigationReducer analysis state", () => {
     const initial = initialTuningNavigationState();
     initial.selection.sessionId = "session-1";
     initial.list.snapshot = { ...sessions, sessions: [{ ...sessions.sessions[0]!, status: "completed" }] };
-    initial.overview = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1" };
+    initial.tab = "game"; initial.overview = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1" };
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 1, overview: overview(1) }, (s) => { s.overview.status = "done"; s.overview.snapshot = overview(1); });
     expect(ts.scheduler.pendingCount).toBe(0);
@@ -135,27 +135,26 @@ describe("tuningNavigationReducer analysis state", () => {
     const initial = initialTuningNavigationState();
     initial.selection.sessionId = "session-1";
     initial.overview = { status: "done", snapshot: overview(1), error: null, generation: 0, sessionId: "session-1" };
-    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }) };
+    initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1), sessionId: "session-1", queryKey: JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: null }) };
     initial.trialDetails["trial-1"] = { status: "done", snapshot: detail(), error: null, generation: 0, sessionId: "session-1", trialId: "trial-1" };
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "overviewRequest", sessionId: "session-1" }, (s) => { s.overview.status = "loading"; s.overview.generation = 1; });
     ts.send({ tag: "overviewFailed", sessionId: "session-1", generation: 1, error: "offline" }, (s) => { s.overview.status = "error"; s.overview.error = "offline"; });
     ts.send({ tag: "trialPageRequest", sessionId: "session-1" }, (s) => { s.trialPage.status = "loading"; s.trialPage.generation = 1; });
     ts.send({ tag: "trialPageFailed", sessionId: "session-1", generation: 1, queryKey: sQuery(ts), error: "offline" }, (s) => { s.trialPage.status = "error"; s.trialPage.error = "offline"; });
-    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"]!.status = "loading"; s.trialDetails["trial-1"]!.generation = 1; });
-    ts.send({ tag: "trialDetailFailed", sessionId: "session-1", trialId: "trial-1", generation: 1, error: "offline" }, (s) => { s.trialDetails["trial-1"]!.status = "error"; s.trialDetails["trial-1"]!.error = "offline"; });
+    ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" });
   });
 
   it("keeps expansion and selection stable, pages forward and back, and reconciles missing child detail to its trial", () => {
     const initial = initialTuningNavigationState();
     initial.selection = { sessionId: "session-1", attemptId: "attempt-1", trialId: "trial-1", pairId: "pair-old", gameId: "game-old" };
-    initial.tab = "progress";
+    initial.tab = "trials";
     initial.trialPage = { ...initial.trialPage, status: "done", snapshot: page(1, "next"), sessionId: "session-1", queryKey: "old", generation: 1 };
     const seen: (string | null | undefined)[] = [];
     const ts = createTestStore(reducer, env({ getTuningTrialPage: (_id, query) => { seen.push(query?.cursor); return Effect.none(); } }), initial);
     ts.send({ tag: "toggleExpanded", id: "trial:trial-1" }, (s) => { s.expandedIds = ["trial:trial-1"]; });
-    ts.send({ tag: "nextTrialPage" }, (s) => { s.trialPage.previousCursors = [null]; s.trialPage.cursor = "next"; s.trialPage.status = "loading"; s.trialPage.snapshot = null; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: "next" }); });
-    ts.send({ tag: "previousTrialPage" }, (s) => { s.trialPage.previousCursors = []; s.trialPage.cursor = null; s.trialPage.status = "loading"; s.trialPage.generation = 3; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", cursor: null }); });
+    ts.send({ tag: "nextTrialPage" }, (s) => { s.trialPage.previousCursors = [null]; s.trialPage.cursor = "next"; s.trialPage.status = "loading"; s.trialPage.snapshot = null; s.trialPage.generation = 2; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: "next" }); });
+    ts.send({ tag: "previousTrialPage" }, (s) => { s.trialPage.previousCursors = []; s.trialPage.cursor = null; s.trialPage.status = "loading"; s.trialPage.generation = 3; s.trialPage.queryKey = JSON.stringify({ state: null, bracket: null, reason: null, family: null, q: null, sort: "trial", direction: "desc", limit: 50, cursor: null }); });
     expect(seen).toEqual(["next", null]);
     ts.send({ tag: "trialDetailRequest", sessionId: "session-1", trialId: "trial-1" }, (s) => { s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
     ts.send({ tag: "trialDetailLoaded", sessionId: "session-1", trialId: "trial-1", generation: 1, detail: detail() }, (s) => { s.trialDetails["trial-1"]!.status = "done"; s.trialDetails["trial-1"]!.snapshot = detail(); s.selection.pairId = null; s.selection.gameId = null; s.unavailable = "pair unavailable"; });

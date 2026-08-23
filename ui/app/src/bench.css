@@ -1833,6 +1833,164 @@ body.bench-active #analysis-panel {
   min-height: 360px;
 }
 
+.tuning-workbench-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.tuning-workbench-tabs button,
+.tuning-trial-controls select,
+.tuning-trial-controls input,
+.tuning-trials-table button,
+.tuning-copy-action button,
+.tuning-trial-pagination button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: #1c1d24;
+  color: #d8d9df;
+  padding: 5px 8px;
+}
+
+.tuning-workbench-tabs button[aria-selected="true"] {
+  background: rgba(91, 127, 214, 0.28);
+  border-color: #5b7fd6;
+}
+
+.tuning-trials {
+  min-width: 0;
+}
+
+.tuning-trials-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.tuning-trials-heading h4,
+.tuning-trials-heading p {
+  margin: 0;
+}
+
+.tuning-trials-heading p,
+.tuning-page-refresh,
+.tuning-empty,
+.tuning-copy-status,
+.tuning-not-recorded {
+  color: #9b9da8;
+  font-size: 12px;
+}
+
+.tuning-trial-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+}
+
+.tuning-trial-controls label {
+  display: grid;
+  gap: 3px;
+  color: #b8bac3;
+  font-size: 11px;
+}
+
+.tuning-trial-controls input,
+.tuning-trial-controls select {
+  min-width: 96px;
+  font-size: 12px;
+}
+
+.tuning-trials-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+}
+
+.tuning-trials-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.tuning-trials-table th,
+.tuning-trials-table td {
+  padding: 8px;
+  vertical-align: top;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.tuning-trials-table th {
+  color: #aeb0bc;
+  font-weight: 600;
+}
+
+.tuning-trials-table tr.tuning-trial-selected > td {
+  background: rgba(91, 127, 214, 0.13);
+}
+
+.tuning-trial-detail-row > td {
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tuning-trial-detail h5,
+.tuning-trial-pair h5 {
+  margin: 14px 0 6px;
+}
+
+.tuning-trial-reports ol,
+.tuning-pair-games {
+  margin: 8px 0;
+  padding-left: 22px;
+  color: #c8c9d0;
+  font-size: 12px;
+}
+
+.tuning-trial-pair {
+  margin-top: 12px;
+  padding-top: 1px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tuning-copy-action {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 7px;
+}
+
+.tuning-game-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tuning-game-links a {
+  color: #91adf7;
+}
+
+.tuning-trial-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 10px;
+  color: #aeb0bc;
+  font-size: 12px;
+}
+
+.tuning-trials button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .tuning-panel {
   min-width: 0;
   padding: 14px;
