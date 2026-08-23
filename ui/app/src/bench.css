@@ -1842,7 +1842,11 @@ body.bench-active #analysis-panel {
 .tuning-workbench-tabs button,
 .tuning-trial-controls select,
 .tuning-trial-controls input,
+.tuning-progress-controls select,
+.tuning-progress-controls input,
 .tuning-trials-table button,
+.tuning-progress-table-wrap button,
+.tuning-progress-legacy button,
 .tuning-copy-action button,
 .tuning-trial-pagination button {
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -1860,6 +1864,207 @@ body.bench-active #analysis-panel {
 .tuning-trials {
   min-width: 0;
 }
+
+.tuning-progress {
+  min-width: 0;
+}
+
+.tuning-progress-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 12px 0 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+}
+
+.tuning-progress-controls label {
+  display: grid;
+  gap: 3px;
+  color: #b8bac3;
+  font-size: 11px;
+}
+
+.tuning-progress-controls input,
+.tuning-progress-controls select {
+  min-width: 112px;
+  font-size: 12px;
+}
+
+.tuning-progress-disclosure,
+.tuning-progress-scale-label {
+  margin: 6px 0;
+  color: #9b9da8;
+  font-size: 12px;
+}
+
+.tuning-progress-scale-label {
+  color: #c5c7d0;
+}
+
+.tuning-progress-facets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.tuning-progress-facet {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tuning-progress-facet > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.tuning-progress-facet h5,
+.tuning-progress-facet header span {
+  margin: 0;
+}
+
+.tuning-progress-facet header span {
+  color: #9b9da8;
+  font-size: 11px;
+}
+
+.tuning-progress-plot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 7px;
+  overflow: visible;
+}
+
+.tuning-progress-axis {
+  stroke: rgba(255, 255, 255, 0.38);
+  stroke-width: 1;
+}
+
+.tuning-progress-rung {
+  stroke: rgba(201, 162, 39, 0.5);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.tuning-progress-x-label,
+.tuning-progress-y-label,
+.tuning-progress-axis-label {
+  fill: #aeb0bc;
+  font-size: 10px;
+}
+
+.tuning-progress-selected-path {
+  fill: none;
+  stroke: #91adf7;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tuning-progress-mark {
+  cursor: pointer;
+  fill: #6f9bf0;
+  stroke: #111217;
+  stroke-width: 1.5;
+}
+
+.tuning-progress-mark line {
+  stroke: #e58d8d;
+  stroke-width: 2.5;
+}
+
+.tuning-progress-mark:focus-visible {
+  outline: none;
+}
+
+.tuning-progress-mark:focus-visible > :not(title),
+.tuning-progress-mark:hover > :not(title) {
+  stroke: #eef2ff;
+  stroke-width: 2;
+}
+
+.tuning-progress-selected-mark > polygon,
+.tuning-progress-selected-mark > rect,
+.tuning-progress-selected-mark > circle:not(.tuning-progress-best-ring) {
+  fill: #d7e3ff;
+}
+
+.tuning-progress-best-ring {
+  fill: none;
+  stroke: #e0b35a;
+  stroke-width: 2;
+}
+
+.tuning-progress-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin: 4px 0 8px;
+  color: #aeb0bc;
+  font-size: 11px;
+}
+
+.tuning-progress-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tuning-progress-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  background: #6f9bf0;
+}
+
+.tuning-progress-legend .tuning-progress-complete { transform: rotate(45deg); }
+.tuning-progress-legend .tuning-progress-running { border-radius: 1px; }
+.tuning-progress-legend .tuning-progress-pruned { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid #6f9bf0; background: transparent; }
+.tuning-progress-legend .tuning-progress-queued { border: 1px solid #6f9bf0; border-radius: 50%; background: transparent; }
+.tuning-progress-legend .tuning-progress-failed { background: linear-gradient(45deg, transparent 42%, #e58d8d 43%, #e58d8d 57%, transparent 58%), linear-gradient(-45deg, transparent 42%, #e58d8d 43%, #e58d8d 57%, transparent 58%); }
+.tuning-progress-legend .tuning-progress-cancelled { width: 10px; height: 2px; background: #6f9bf0; }
+.tuning-progress-legend .tuning-progress-best { border: 2px solid #e0b35a; border-radius: 50%; background: transparent; }
+
+.tuning-progress-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 5px;
+}
+
+.tuning-progress-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.tuning-progress-table-wrap th,
+.tuning-progress-table-wrap td {
+  padding: 6px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.tuning-progress-table-wrap th { color: #aeb0bc; }
+.tuning-progress-selected-row > td { background: rgba(91, 127, 214, 0.13); }
+
+.tuning-progress-legacy {
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  color: #c8c9d0;
+  font-size: 13px;
+}
+
+.tuning-progress-legacy p { margin-top: 0; }
+.tuning-progress-legacy button + button { margin-left: 8px; }
 
 .tuning-trials-heading {
   display: flex;

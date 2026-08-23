@@ -82,7 +82,7 @@ export { formatRate, formatInterval, formatWld, formatProgress, formatObservedRe
 
 export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, ChainedTrial } from "./state.js";
 export { initialBenchState } from "./state.js";
-export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction } from "./tuning-navigation.js";
+export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction, TuningProgressMetric, TuningProgressScale } from "./tuning-navigation.js";
 export { initialTuningNavigationState, tuningNavigationReducer, TUNING_DETAIL_REFRESH_MS } from "./tuning-navigation.js";
 export {
   UNASSIGNED_BRACKET,

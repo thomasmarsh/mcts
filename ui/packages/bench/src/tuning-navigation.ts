@@ -24,6 +24,8 @@ export interface TuningTrialSort {
   sort: NonNullable<TuningTrialPageQuery["sort"]>;
   direction: NonNullable<TuningTrialPageQuery["direction"]>;
 }
+export type TuningProgressMetric = "score" | "mu" | "sigma";
+export type TuningProgressScale = "shared" | "local";
 export interface TuningTrialPageState extends TuningLoadState<TuningTrialPage> {
   sessionId: string | null; queryKey: string | null; cursor: string | null; previousCursors: (string | null)[];
 }
@@ -37,7 +39,9 @@ export interface TuningNavigationState {
   overview: TuningLoadState<TuningAnalysisOverview> & { sessionId: string | null };
   trialPage: TuningTrialPageState;
   trialDetails: Record<string, TuningTrialDetailState>;
-  tab: "trials" | "game";
+  tab: "progress" | "trials" | "game";
+  progressMetric: TuningProgressMetric;
+  progressScale: TuningProgressScale;
   filters: TuningTrialFilters;
   sort: TuningTrialSort;
   trialPageLimit: number;
@@ -65,7 +69,9 @@ export type TuningNavigationAction =
   | { tag: "trialDetailFailed"; generation: number; sessionId: string; trialId: string; error: string }
   | { tag: "selectSession"; sessionId: string }
   | { tag: "clearSession" }
-  | { tag: "setAnalysisTab"; tab: "trials" | "game" }
+  | { tag: "setAnalysisTab"; tab: "progress" | "trials" | "game" }
+  | { tag: "setProgressMetric"; metric: TuningProgressMetric }
+  | { tag: "setProgressScale"; scale: TuningProgressScale }
   | { tag: "setTrialFilters"; filters: Partial<TuningTrialFilters> }
   | { tag: "setTrialSort"; sort: TuningTrialSort }
   | { tag: "setTrialPageLimit"; limit: number }
@@ -86,7 +92,8 @@ export function initialTuningNavigationState(): TuningNavigationState {
   return {
     list: loadState<TuningSessionsResponse>(), detail: { ...loadState<TuningSessionDetail>(), sessionId: null },
     overview: { ...loadState<TuningAnalysisOverview>(), sessionId: null }, trialPage: pageState(), trialDetails: {},
-    tab: "trials", filters: defaultFilters(), sort: { sort: "trial", direction: "desc" }, trialPageLimit: DEFAULT_TRIAL_PAGE_LIMIT,
+    tab: "progress", progressMetric: "score", progressScale: "shared",
+    filters: defaultFilters(), sort: { sort: "trial", direction: "desc" }, trialPageLimit: DEFAULT_TRIAL_PAGE_LIMIT,
     selection: { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null }, expandedIds: [], unavailable: null,
   };
 }
@@ -251,7 +258,7 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   }
   if (action.tag === "selectSession") {
     state.selection = selectionForSession(action.sessionId);
-    state.tab = sessionCanAnalyze(state, action.sessionId) ? "trials" : "game";
+    state.tab = sessionCanAnalyze(state, action.sessionId) ? "progress" : "game";
     state.unavailable = null; clearAnalysis(state);
     return merge(requestDetail(state, action.sessionId, env), requestOverview(state, action.sessionId, env));
   }
@@ -262,6 +269,8 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
     state.tab = action.tab;
     return action.tab === "trials" && state.selection.sessionId && state.trialPage.snapshot === null ? requestTrialPage(state, state.selection.sessionId, env) : null;
   }
+  if (action.tag === "setProgressMetric") { state.progressMetric = action.metric; return null; }
+  if (action.tag === "setProgressScale") { state.progressScale = action.scale; return null; }
   if (action.tag === "setTrialFilters" || action.tag === "setTrialSort" || action.tag === "setTrialPageLimit") {
     if (action.tag === "setTrialFilters") state.filters = { ...state.filters, ...action.filters };
     else if (action.tag === "setTrialSort") state.sort = action.sort;

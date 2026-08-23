@@ -48,15 +48,15 @@ const reducer = (state: TuningNavigationState, action: TuningNavigationAction, e
   tuningNavigationReducer(state, action, environment);
 
 describe("tuningNavigationReducer analysis state", () => {
-  it("defaults to the trials tab, and capable sessions open it without changing evidence selection", () => {
+  it("defaults to Progress, and capable sessions open it without changing evidence selection", () => {
     expect(initialTuningNavigationState()).toMatchObject({
-      tab: "trials", filters: { state: null, bracket: null, reason: null, family: null, q: null }, sort: { sort: "trial", direction: "desc" }, trialPageLimit: 50,
+      tab: "progress", progressMetric: "score", progressScale: "shared", filters: { state: null, bracket: null, reason: null, family: null, q: null }, sort: { sort: "trial", direction: "desc" }, trialPageLimit: 50,
     });
     const initial = initialTuningNavigationState();
     initial.list.snapshot = sessions;
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
-      state.tab = "trials"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
+      state.tab = "progress"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
       state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
       state.overview.status = "loading"; state.overview.sessionId = "session-1"; state.overview.generation = 2;
       state.trialPage.generation = 1;
@@ -100,7 +100,7 @@ describe("tuningNavigationReducer analysis state", () => {
     ts.send({ tag: "selectSession", sessionId: "session-1" });
     ts.send({ tag: "selectSession", sessionId: "session-2" }, (s) => {
       s.selection = { sessionId: "session-2", attemptId: null, trialId: null, pairId: null, gameId: null };
-      s.tab = "trials"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
+      s.tab = "progress"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
       s.overview.sessionId = "session-2"; s.overview.generation = 4; s.trialPage.generation = 2;
     });
     ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 2, overview: overview(9) });

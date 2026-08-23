@@ -36,6 +36,7 @@ function setup(getPage: (query: TuningTrialPageQuery | undefined) => TuningTrial
   render(() => <TuningSessionWorkbench store={store} />);
   store.dispatch({ tag: "tuningNavigation", action: { tag: "listRequest" } });
   store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: session.session_id } });
+  store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "trials" } });
   return { queries, detailCalls };
 }
 
