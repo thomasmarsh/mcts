@@ -277,7 +277,7 @@ def test_disabled_pruning_reports_then_completes_and_only_completion_updates_poo
 def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config(min_pairs=2)
-    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 4, 2)])
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, "4", 2)])
     active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
@@ -312,11 +312,11 @@ def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path
     assert [report["completed_pairs"] for report in reports] == [1, 2]
     assert [report["reason"] for report in reports] == [
         "below_min_pairs",
-        "hyperband_pruned",
+        "hyperband_prune",
     ]
     assert adapter.observed == 1
     assert len(tells) == len(pruned) == 1
-    assert pruned[0]["bracket_id"] == 4
+    assert pruned[0]["bracket_id"] == "4"
     assert pruned[0]["rung_resource"] == 2
     assert not futures
     assert len(executor.calls) == 1
@@ -375,7 +375,10 @@ def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config()
     adapter = _ScriptedPruningAdapter(
-        [HyperbandDecision(False, False, 0, 1), HyperbandDecision(True, False, 0, 2)]
+        [
+            HyperbandDecision(False, False, "0", 1),
+            HyperbandDecision(True, False, "0", 2),
+        ]
     )
     active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
     executor, futures = _Executor(), {}
@@ -424,7 +427,7 @@ def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output
     terminals = [r for r in records if r["event_type"] == "trial_pruned"]
     assert [report["reason"] for report in reports] == [
         "hyperband_keep",
-        "hyperband_pruned",
+        "hyperband_prune",
     ]
     assert [report["completed_pairs"] for report in reports] == [1, 2]
     assert len(tells) == len(terminals) == 1
@@ -443,7 +446,7 @@ def test_completion_precedes_a_pending_prune(
 ):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config(sigma_stop=sigma_stop, max_pairs=max_pairs)
-    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 0, 1)])
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, "0", 1)])
     active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
@@ -486,7 +489,7 @@ def test_pruned_terminal_replenishes_the_sequential_scheduler(
 ):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config()
-    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, 0, 1)])
+    adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, "0", 1)])
     executor, futures, active = _Executor(), {}, {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)

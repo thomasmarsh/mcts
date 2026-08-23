@@ -95,6 +95,14 @@ def test_legacy_eta_sets_reduction_factor_but_conflicting_aliases_fail():
         ({"rating": {"sigma_stop": 0}}, "positive finite"),
         ({"sampler": {"kind": "random"}}, "must be 'tpe'"),
         ({"pruning": {"kind": "median"}}, "must be 'hyperband'"),
+        (
+            {"pruning": {"reduction_factor": 2.0}},
+            "must be an integer at least 2",
+        ),
+        (
+            {"pruning": {"reduction_factor": 1}},
+            "must be an integer at least 2",
+        ),
         ({"sampler": {"startup_trials": -1}}, "nonnegative integer"),
         (
             {"n_workers": 2, "pruning": {"enabled": True}},

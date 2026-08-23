@@ -56,7 +56,7 @@ def test_startup_policy_does_not_set_optuna_bootstrap_count():
 
 
 def test_bracket_identity_is_stable_for_a_fixed_study_name_and_trial_number():
-    def bracket_id() -> int:
+    def bracket_id() -> str:
         adapter = _adapter()
         study = _study(adapter, "fixed-study")
         hyperband_trial = adapter.create_trial(study)
@@ -110,7 +110,7 @@ def test_observation_delegates_keep_and_prune_results_without_telling():
     kept.trial.report(1.0, 1)
     keep_decision = adapter.observe_after_report(kept)
     assert not keep_decision.should_prune
-    assert keep_decision.bracket_id == 0
+    assert keep_decision.bracket_id == "0"
     assert keep_decision.rung_resource == 1
     assert study.trials[0].state is TrialState.RUNNING
     study.tell(kept.trial, 1.0)
@@ -120,6 +120,6 @@ def test_observation_delegates_keep_and_prune_results_without_telling():
     prune_decision = adapter.observe_after_report(pruned)
 
     assert prune_decision.should_prune
-    assert prune_decision.bracket_id == 0
+    assert prune_decision.bracket_id == "0"
     assert prune_decision.rung_resource == 1
     assert study.trials[1].state is TrialState.RUNNING

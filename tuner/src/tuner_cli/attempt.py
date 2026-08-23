@@ -319,7 +319,7 @@ def _hyperband_report_decision(observed: HyperbandDecision) -> TrialReportDecisi
         return TrialReportDecision("continue", "startup_exempt", True)
     return TrialReportDecision(
         "prune" if observed.should_prune else "continue",
-        "hyperband_pruned" if observed.should_prune else "hyperband_keep",
+        "hyperband_prune" if observed.should_prune else "hyperband_keep",
         False,
         observed.bracket_id,
         observed.rung_resource,

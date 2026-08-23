@@ -34,7 +34,7 @@ class HyperbandDecision:
 
     should_prune: bool
     pruning_exempt: bool
-    bracket_id: int | None
+    bracket_id: str | None
     rung_resource: int | None
 
 
@@ -76,7 +76,7 @@ class OptunaHyperbandAdapter:
 
         should_prune = trial.should_prune()
         frozen_trial = _frozen_trial(trial)
-        bracket_id = self._bracket_id(trial.study, frozen_trial)
+        bracket_id = str(self._bracket_id(trial.study, frozen_trial))
         completed_rungs = _completed_rungs(frozen_trial)
         rung_resource = None
         if len(completed_rungs) > hyperband_trial._observed_rungs:
@@ -90,9 +90,9 @@ class OptunaHyperbandAdapter:
             rung_resource=rung_resource,
         )
 
-    def bracket_id_for(self, study: optuna.Study, trial: optuna.Trial) -> int:
+    def bracket_id_for(self, study: optuna.Study, trial: optuna.Trial) -> str:
         """Return the pinned Optuna bracket identity after pruner initialization."""
-        return self._bracket_id(study, _frozen_trial(trial))
+        return str(self._bracket_id(study, _frozen_trial(trial)))
 
     def _bracket_id(self, study: optuna.Study, trial: optuna.trial.FrozenTrial) -> int:
         # Optuna 4.9 intentionally derives this from study_name and trial.number.

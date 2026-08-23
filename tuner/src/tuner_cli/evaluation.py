@@ -94,7 +94,7 @@ TrialReportReason = Literal[
     "max_pairs",
     "startup_exempt",
     "hyperband_keep",
-    "hyperband_pruned",
+    "hyperband_prune",
 ]
 
 
@@ -103,7 +103,7 @@ class TrialReportDecision:
     outcome: TrialReportOutcome
     reason: TrialReportReason
     pruning_exempt: bool = False
-    bracket_id: int | None = None
+    bracket_id: str | None = None
     rung_resource: int | None = None
 
 

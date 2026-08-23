@@ -48,7 +48,7 @@ class RatingPolicy:
 class PruningPolicy:
     enabled: bool = False
     kind: str = "hyperband"
-    reduction_factor: float = 3.0
+    reduction_factor: int = 3
     startup_terminal_trials: int = 100
 
 
@@ -283,7 +283,7 @@ class SearchConfig:
                 pruning=PruningPolicy(
                     enabled=pruning.get("enabled", False),
                     kind=pruning.get("kind", "hyperband"),
-                    reduction_factor=pruning.get("reduction_factor", 3.0),
+                    reduction_factor=pruning.get("reduction_factor", 3),
                     startup_terminal_trials=pruning.get("startup_terminal_trials", 100),
                 ),
                 sampler=SamplerPolicy(
@@ -339,8 +339,10 @@ class SearchConfig:
             raise ValueError("optimizer.pruning.enabled must be a boolean")
         if pruning.kind != "hyperband":
             raise ValueError("optimizer.pruning.kind must be 'hyperband'")
-        self._positive_finite(
-            pruning.reduction_factor, "optimizer.pruning.reduction_factor"
+        self._integer_at_least(
+            pruning.reduction_factor,
+            2,
+            "optimizer.pruning.reduction_factor",
         )
         self._nonnegative_int(
             pruning.startup_terminal_trials,
@@ -363,6 +365,11 @@ class SearchConfig:
     def _nonnegative_int(value: Any, name: str) -> None:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"{name} must be a nonnegative integer")
+
+    @staticmethod
+    def _integer_at_least(value: Any, minimum: int, name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{name} must be an integer at least {minimum}")
 
     @staticmethod
     def _positive_finite(value: Any, name: str) -> None:
