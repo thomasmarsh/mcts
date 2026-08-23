@@ -28,6 +28,27 @@ optimizer:
   # Random seed for reproducibility
   seed: 42
 
+  # Resource policy recorded for adaptive evaluation.
+  resource:
+    min_pairs: 5
+    max_pairs: 15
+
+  rating:
+    sigma_stop: 2.0
+    conservative_k: 3.0
+
+  # Pruning is configured and recorded, but disabled because this evaluator
+  # does not report resource usage to the study.
+  pruning:
+    enabled: false
+    kind: hyperband
+    reduction_factor: 3
+    startup_terminal_trials: 100
+
+  sampler:
+    kind: tpe
+    startup_trials: 10
+
 # ---------------------------------------------------------------------------
 # Target evaluation — the game binary's `tune eval` subcommand the tuner invokes
 # ---------------------------------------------------------------------------

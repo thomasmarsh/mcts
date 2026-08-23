@@ -36,6 +36,7 @@ def run_optimization(
     game_kind: str | None = None,
 ) -> tuple[optuna.Study, OpponentPool]:
     """Run unfinished study work while recording lifecycle evidence."""
+    cfg.validate()
     binary = cfg.resolve_binary()
     session = SessionId(session_id or run_id)
     attempt = AttemptId(attempt_id) if attempt_id is not None else make_attempt_id()
@@ -50,11 +51,15 @@ def run_optimization(
         cfg, game_kind, binary, resolved_sha, run_id, storage, output_dir
     )
     event_path = (
-        Path(lifecycle_path) if lifecycle_path is not None else output_dir / "lifecycle.jsonl"
+        Path(lifecycle_path)
+        if lifecycle_path is not None
+        else output_dir / "lifecycle.jsonl"
     )
 
     with LifecycleWriter(event_path, session, attempt) as lifecycle:
-        _emit_session_started(lifecycle, manifest, manifest_path, run_id, cfg.optimizer.n_trials)
+        _emit_session_started(
+            lifecycle, manifest, manifest_path, run_id, cfg.optimizer.n_trials
+        )
         _emit_attempt_started(lifecycle, run_id, storage, cfg.optimizer.n_trials)
         _run_attempt(
             cfg,
@@ -71,14 +76,20 @@ def run_optimization(
 
 def _resolve_search_space(cfg: SearchConfig, binary: Path) -> None:
     """Populate the configuration from the game binary's authoritative schema."""
-    parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(binary)
+    parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(
+        binary
+    )
     cfg.parameters = parameters
     cfg.conditions = conditions
 
 
 def _load_or_initialize_pool(cfg: SearchConfig, pool_path: Path) -> OpponentPool:
     """Load the persistent pool, adding configured anchors once before saving."""
-    pool = OpponentPool.load(pool_path) if pool_path.exists() else OpponentPool.bootstrap(cfg)
+    pool = (
+        OpponentPool.load(pool_path)
+        if pool_path.exists()
+        else OpponentPool.bootstrap(cfg)
+    )
     for anchor_id, config in cfg.target.baseline_configs.items():
         if not any(anchor.id == anchor_id for anchor in pool.anchors):
             pool.anchors.append(Anchor(anchor_id, dict(config), mu=25.0, sigma=0.5))
@@ -97,7 +108,10 @@ def _open_study(
         study_name=run_id,
         storage=storage,
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=cfg.optimizer.seed),
+        sampler=optuna.samplers.TPESampler(
+            seed=cfg.optimizer.seed,
+            n_startup_trials=cfg.optimizer.sampler.startup_trials,
+        ),
     )
     return study, storage
 
@@ -211,7 +225,9 @@ def _run_attempt(
             wait,
         )
 
-        lifecycle.emit("attempt_completed", {"target_trial_count": cfg.optimizer.n_trials})
+        lifecycle.emit(
+            "attempt_completed", {"target_trial_count": cfg.optimizer.n_trials}
+        )
     except KeyboardInterrupt:
         interrupted = True
         cancel_active_trials(futures, active, study, lifecycle)
@@ -220,7 +236,11 @@ def _run_attempt(
     except Exception as error:
         for active_trial in list(active.values()):
             terminalize_trial(
-                study, lifecycle, active_trial, "trial_failed", f"attempt failed: {error}"
+                study,
+                lifecycle,
+                active_trial,
+                "trial_failed",
+                f"attempt failed: {error}",
             )
         lifecycle.emit("attempt_failed", {"error": str(error)})
         raise

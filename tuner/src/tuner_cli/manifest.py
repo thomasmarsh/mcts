@@ -50,6 +50,7 @@ def build_session_manifest(
     Trial count and coordinator worker count are operational launch controls;
     they intentionally do not participate in the fingerprint.
     """
+    cfg.validate()
     semantic_inputs = session_semantic_inputs(
         cfg,
         game_kind=game_kind,
@@ -83,17 +84,19 @@ def session_semantic_inputs(
         "optimizer": {
             "direction": "maximize",
             "sampler": {
-                "kind": "TPESampler",
+                "kind": cfg.optimizer.sampler.kind,
                 "seed": cfg.optimizer.seed,
                 "deterministic": cfg.optimizer.deterministic,
-                "eta": cfg.optimizer.eta,
-                "termination_cost_threshold": cfg.optimizer.termination_cost_threshold,
+                "startup_trials": cfg.optimizer.sampler.startup_trials,
             },
+            "pruning": asdict(cfg.optimizer.pruning),
+            "resource": asdict(cfg.optimizer.resource),
         },
         "rating": {
             "model": "ThurstoneMostellerPart",
-            "score": "mu_minus_3_sigma",
-            "conservative_k": 3,
+            "score": "mu_minus_k_sigma",
+            "sigma_stop": cfg.optimizer.rating.sigma_stop,
+            "conservative_k": cfg.optimizer.rating.conservative_k,
         },
         "evaluator": {
             "rounds": cfg.target.rounds,
@@ -130,7 +133,9 @@ def _validate_existing_manifest(destination: Path, manifest: dict[str, Any]) -> 
     """Reject a requested manifest whose semantic fingerprint changed."""
     existing = json.loads(destination.read_text(encoding="utf-8"))
     if existing.get("fingerprint") != manifest.get("fingerprint"):
-        raise ValueError(f"session manifest at {destination} has a different fingerprint")
+        raise ValueError(
+            f"session manifest at {destination} has a different fingerprint"
+        )
 
 
 def _replace_manifest_atomically(destination: Path, contents: str) -> None:

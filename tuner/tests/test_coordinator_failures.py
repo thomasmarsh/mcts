@@ -8,6 +8,7 @@ from pathlib import Path
 import optuna
 
 from tuner_cli import attempt
+from tuner_cli import coordinator
 from tuner_cli.config import OptimizerConfig, SearchConfig, TargetConfig
 from tuner_cli.evaluation import (
     GameResult,
@@ -51,6 +52,31 @@ class _Executor:
         future = _Future()
         self.futures.append(future)
         return future
+
+
+def test_open_study_configures_tpe_startup_trials_without_a_pruner(
+    monkeypatch, tmp_path: Path
+):
+    sampler_kwargs: dict = {}
+    study_kwargs: dict = {}
+
+    def sampler(**kwargs):
+        sampler_kwargs.update(kwargs)
+        return "sampler"
+
+    def create_study(**kwargs):
+        study_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(coordinator.optuna.samplers, "TPESampler", sampler)
+    monkeypatch.setattr(coordinator.optuna, "create_study", create_study)
+    cfg = SearchConfig._from_dict({"optimizer": {"sampler": {"startup_trials": 17}}})
+
+    coordinator._open_study(tmp_path, "study", cfg)
+
+    assert sampler_kwargs == {"seed": 42, "n_startup_trials": 17}
+    assert study_kwargs["sampler"] == "sampler"
+    assert "pruner" not in study_kwargs
 
 
 def _active(study) -> attempt._ActiveTrial:

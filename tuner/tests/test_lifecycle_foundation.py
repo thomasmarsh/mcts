@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tuner_cli.config import SearchConfig
 
 from tuner_cli.lifecycle import (
     AttemptId,
@@ -12,10 +13,16 @@ from tuner_cli.lifecycle import (
     strict_json_dumps,
     trial_id_for,
 )
-from tuner_cli.manifest import manifest_fingerprint, write_manifest_atomic
+from tuner_cli.manifest import (
+    build_session_manifest,
+    manifest_fingerprint,
+    write_manifest_atomic,
+)
 
 
-def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(tmp_path: Path):
+def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(
+    tmp_path: Path,
+):
     assert json.loads(strict_json_dumps({"z": float("nan"), "a": float("inf")})) == {
         "a": "infinity",
         "z": "nan",
@@ -34,6 +41,32 @@ def test_fingerprint_is_deterministic_independent_of_mapping_order():
     assert manifest_fingerprint(left) == manifest_fingerprint(right)
 
 
+def test_manifest_records_resolved_policy_and_fingerprints_semantic_changes():
+    cfg = SearchConfig.defaults()
+    kwargs = {
+        "game_kind": "traffic-lights",
+        "binary": Path("/games/traffic-lights"),
+        "git_sha": "abc",
+        "study_name": "study",
+        "storage": "sqlite:///study.db",
+    }
+    first = build_session_manifest(cfg, **kwargs)
+
+    policy = first["semantic_inputs"]["optimizer"]
+    assert policy["resource"] == {"min_pairs": 5, "max_pairs": 15}
+    assert policy["sampler"]["kind"] == "tpe"
+    assert policy["sampler"]["startup_trials"] == 10
+    assert policy["pruning"]["enabled"] is False
+    assert first["semantic_inputs"]["rating"]["sigma_stop"] == 2.0
+    assert first["semantic_inputs"]["rating"]["conservative_k"] == 3.0
+
+    cfg.optimizer.n_trials = 2000
+    assert build_session_manifest(cfg, **kwargs)["fingerprint"] == first["fingerprint"]
+
+    cfg.optimizer.sampler.startup_trials = 11
+    assert build_session_manifest(cfg, **kwargs)["fingerprint"] != first["fingerprint"]
+
+
 def test_manifest_is_atomic_and_immutable(tmp_path: Path):
     path = tmp_path / "session-manifest.json"
     first = {"schema_version": 1, "fingerprint": "abc", "semantic_inputs": {"x": 1}}
@@ -46,11 +79,19 @@ def test_manifest_is_atomic_and_immutable(tmp_path: Path):
 
 def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
     path = tmp_path / "lifecycle.jsonl"
-    session, attempt, trial = SessionId("session-1"), AttemptId("attempt-1"), trial_id_for(SessionId("session-1"), 1)
+    session, attempt, trial = (
+        SessionId("session-1"),
+        AttemptId("attempt-1"),
+        trial_id_for(SessionId("session-1"), 1),
+    )
     with LifecycleWriter(path, session, attempt) as writer:
-        first = writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
+        first = writer.emit(
+            "session_started", {"manifest": {}, "manifest_fingerprint": "f"}
+        )
         writer.emit("attempt_started", {})
-        writer.emit("trial_created", {"trial_id": trial, "trial_number": 1, "config": {}})
+        writer.emit(
+            "trial_created", {"trial_id": trial, "trial_number": 1, "config": {}}
+        )
         writer.emit("trial_started", {"trial_id": trial, "trial_number": 1})
         terminal = writer.emit_trial_terminal("trial_failed", trial, {"error": "boom"})
     with LifecycleWriter(path, session, attempt) as reopened:
@@ -61,7 +102,9 @@ def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
             reopened.emit_trial_terminal("trial_completed", trial, {})
         next_record = reopened.emit("attempt_failed", {"error": "boom"})
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [record["session_sequence"] for record in records] == list(range(1, len(records) + 1))
+    assert [record["session_sequence"] for record in records] == list(
+        range(1, len(records) + 1)
+    )
     assert first["schema_version"] == 1
     assert next_record["session_sequence"] == len(records)
 

@@ -33,25 +33,41 @@ def json_dumps(value: Any) -> str:
 
 
 @dataclass
+class ResourcePolicy:
+    min_pairs: int = 5
+    max_pairs: int = 15
+
+
+@dataclass
+class RatingPolicy:
+    sigma_stop: float | None = 2.0
+    conservative_k: float = 3.0
+
+
+@dataclass
+class PruningPolicy:
+    enabled: bool = False
+    kind: str = "hyperband"
+    reduction_factor: float = 3.0
+    startup_terminal_trials: int = 100
+
+
+@dataclass
+class SamplerPolicy:
+    kind: str = "tpe"
+    startup_trials: int = 10
+
+
+@dataclass
 class OptimizerConfig:
     n_trials: int = 1000
     deterministic: bool = False
     n_workers: int | None = None  # None → cpu_count // 2
     seed: int = 42
-    # `Scenario(termination_cost_threshold=...)` -- ends `optimize()` early
-    # once a config's cost drops at/below this. Only safe to set below
-    # `math.inf` when the scenario has exactly one active instance: the tuner
-    # checks it via `RunHistory.average_cost(config, instance_seed_budget_
-    # keys=None)`, which averages over whatever instance-seed pairs have
-    # been recorded *so far* for that config, not necessarily every active
-    # instance -- with more than one instance, a config could trip this
-    # after being evaluated against only the easiest one.
-    # Hyperband reduction factor ($\eta$ — the elimination rate for Successive
-    # Halving / Hyperband multi-fidelity pruning). Higher values = more
-    # aggressive pruning (fewer trials survive each rung). 3 is the standard
-    # default from the Hyperband literature; 4 is more aggressive.
-    eta: float = 3.0
-    termination_cost_threshold: float = math.inf
+    resource: ResourcePolicy = field(default_factory=ResourcePolicy)
+    rating: RatingPolicy = field(default_factory=RatingPolicy)
+    pruning: PruningPolicy = field(default_factory=PruningPolicy)
+    sampler: SamplerPolicy = field(default_factory=SamplerPolicy)
 
 
 @dataclass
@@ -206,6 +222,25 @@ class SearchConfig:
     def _from_dict(cls, raw: dict) -> SearchConfig:
         opt = raw.get("optimizer", {})
         tgt = raw.get("target", {})
+        if not isinstance(opt, dict):
+            raise ValueError("optimizer must be a mapping")
+        if not isinstance(tgt, dict):
+            raise ValueError("target must be a mapping")
+
+        resource = cls._policy_mapping(opt, "resource", {"min_pairs", "max_pairs"})
+        rating = cls._policy_mapping(opt, "rating", {"sigma_stop", "conservative_k"})
+        pruning = cls._policy_mapping(
+            opt,
+            "pruning",
+            {"enabled", "kind", "reduction_factor", "startup_terminal_trials"},
+        )
+        sampler = cls._policy_mapping(opt, "sampler", {"kind", "startup_trials"})
+        if "eta" in opt:
+            if "reduction_factor" in pruning:
+                raise ValueError(
+                    "optimizer.eta conflicts with optimizer.pruning.reduction_factor"
+                )
+            pruning["reduction_factor"] = opt["eta"]
 
         params: list[ParamDef] = []
         for name, pd in raw.get("parameters", {}).items():
@@ -231,13 +266,30 @@ class SearchConfig:
                     vals = [vals]
                 conds.append(CondDef(parent=parent, values=vals, children=c["then"]))
 
-        return SearchConfig(
+        cfg = SearchConfig(
             optimizer=OptimizerConfig(
                 n_trials=opt.get("n_trials", 1000),
                 deterministic=opt.get("deterministic", False),
                 n_workers=opt.get("n_workers"),
                 seed=opt.get("seed", 42),
-                eta=opt.get("eta", 3.0),
+                resource=ResourcePolicy(
+                    min_pairs=resource.get("min_pairs", 5),
+                    max_pairs=resource.get("max_pairs", 15),
+                ),
+                rating=RatingPolicy(
+                    sigma_stop=rating.get("sigma_stop", 2.0),
+                    conservative_k=rating.get("conservative_k", 3.0),
+                ),
+                pruning=PruningPolicy(
+                    enabled=pruning.get("enabled", False),
+                    kind=pruning.get("kind", "hyperband"),
+                    reduction_factor=pruning.get("reduction_factor", 3.0),
+                    startup_terminal_trials=pruning.get("startup_terminal_trials", 100),
+                ),
+                sampler=SamplerPolicy(
+                    kind=sampler.get("kind", "tpe"),
+                    startup_trials=sampler.get("startup_trials", 10),
+                ),
             ),
             target=TargetConfig(
                 binary=Path(tgt.get("binary", "target/release/game-traffic-lights")),
@@ -250,6 +302,77 @@ class SearchConfig:
             parameters=params,
             conditions=conds,
         )
+        cfg.validate()
+        return cfg
+
+    @staticmethod
+    def _policy_mapping(parent: dict, name: str, allowed: set[str]) -> dict:
+        value = parent.get(name, {})
+        if not isinstance(value, dict):
+            raise ValueError(f"optimizer.{name} must be a mapping")
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError(
+                f"optimizer.{name} has unsupported keys: {', '.join(sorted(unknown))}"
+            )
+        return dict(value)
+
+    def validate(self) -> None:
+        """Reject invalid explicit policy values before a tuning run starts."""
+        opt = self.optimizer
+        resource = opt.resource
+        rating = opt.rating
+        pruning = opt.pruning
+        sampler = opt.sampler
+
+        self._positive_int(opt.n_trials, "optimizer.n_trials")
+        if opt.n_workers is not None:
+            self._positive_int(opt.n_workers, "optimizer.n_workers")
+        self._positive_int(resource.min_pairs, "optimizer.resource.min_pairs")
+        self._positive_int(resource.max_pairs, "optimizer.resource.max_pairs")
+        if resource.min_pairs > resource.max_pairs:
+            raise ValueError("optimizer.resource.min_pairs must not exceed max_pairs")
+        if rating.sigma_stop is not None:
+            self._positive_finite(rating.sigma_stop, "optimizer.rating.sigma_stop")
+        self._positive_finite(rating.conservative_k, "optimizer.rating.conservative_k")
+        if not isinstance(pruning.enabled, bool):
+            raise ValueError("optimizer.pruning.enabled must be a boolean")
+        if pruning.kind != "hyperband":
+            raise ValueError("optimizer.pruning.kind must be 'hyperband'")
+        self._positive_finite(
+            pruning.reduction_factor, "optimizer.pruning.reduction_factor"
+        )
+        self._nonnegative_int(
+            pruning.startup_terminal_trials,
+            "optimizer.pruning.startup_terminal_trials",
+        )
+        if sampler.kind != "tpe":
+            raise ValueError("optimizer.sampler.kind must be 'tpe'")
+        self._nonnegative_int(
+            sampler.startup_trials, "optimizer.sampler.startup_trials"
+        )
+        if pruning.enabled and opt.n_workers != 1:
+            raise ValueError("optimizer.pruning.enabled requires optimizer.n_workers=1")
+
+    @staticmethod
+    def _positive_int(value: Any, name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+
+    @staticmethod
+    def _nonnegative_int(value: Any, name: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+
+    @staticmethod
+    def _positive_finite(value: Any, name: str) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"{name} must be a positive finite number")
 
     def with_source(self, path: Path) -> SearchConfig:
         self._source = path

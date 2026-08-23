@@ -67,23 +67,49 @@ def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tuner", description="Optuna hyperparameter optimisation for MCTS.")
+    parser = argparse.ArgumentParser(
+        prog="tuner", description="Optuna hyperparameter optimisation for MCTS."
+    )
     parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--override", action="append", default=[], help="Override key=value")
-    parser.add_argument("--baseline-config", action="append", default=[], metavar="ID=JSON")
+    parser.add_argument(
+        "--override", action="append", default=[], help="Override key=value"
+    )
+    parser.add_argument(
+        "--baseline-config", action="append", default=[], metavar="ID=JSON"
+    )
     parser.add_argument("--game-config", type=str, default=None, metavar="JSON")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--git-sha", type=str, default=None)
-    parser.add_argument("--run-id", type=str, default=None,
-                        help="Persistent run id; reusing it resumes its Optuna study and opponent pool.")
-    parser.add_argument("--session-id", type=str, default=None,
-                        help="Logical tuning session id; defaults to --run-id.")
-    parser.add_argument("--attempt-id", type=str, default=None,
-                        help="Physical process attempt id; defaults to a fresh opaque id.")
-    parser.add_argument("--lifecycle-path", type=Path, default=None,
-                        help="Append-only lifecycle JSONL artifact path.")
-    parser.add_argument("--game-kind", type=str, default=None,
-                        help="Stable game kind recorded in the session manifest.")
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Persistent run id; reusing it resumes its Optuna study and opponent pool.",
+    )
+    parser.add_argument(
+        "--session-id",
+        type=str,
+        default=None,
+        help="Logical tuning session id; defaults to --run-id.",
+    )
+    parser.add_argument(
+        "--attempt-id",
+        type=str,
+        default=None,
+        help="Physical process attempt id; defaults to a fresh opaque id.",
+    )
+    parser.add_argument(
+        "--lifecycle-path",
+        type=Path,
+        default=None,
+        help="Append-only lifecycle JSONL artifact path.",
+    )
+    parser.add_argument(
+        "--game-kind",
+        type=str,
+        default=None,
+        help="Stable game kind recorded in the session manifest.",
+    )
     parser.add_argument("--trace-path", type=str, default=None, metavar="PATH")
     return parser
 
@@ -104,6 +130,7 @@ def _load_cli_config(args: argparse.Namespace) -> SearchConfig:
     cfg.target.baseline_configs.update(_parse_baseline_configs(args.baseline_config))
     if args.game_config:
         cfg.target.game_config = json.loads(args.game_config)
+    cfg.validate()
     return cfg
 
 
