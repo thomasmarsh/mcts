@@ -1,4 +1,18 @@
-use super::*;
+#![allow(unused_imports)]
+use super::support::*;
+use crate::bench::*;
+use axum::body::Body;
+use axum::http::Request;
+use axum::http::StatusCode as HttpStatusCode;
+use mcts_bench::experiment::ExperimentSpecV1;
+use mcts_bench::launch::LaunchedRun;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tower::ServiceExt;
+
 #[tokio::test]
 async fn projects_launch_commits_typed_start_before_launcher_and_observes_process() {
     let observed = Arc::new(Mutex::new(None::<(String, u64, i64, i64, i64)>));
@@ -194,3 +208,137 @@ fn test_process_group_signaller_targets_the_whole_group() {
 
 // -------------------------------------------------------------------
 // Error formatting
+
+#[tokio::test]
+async fn experiment_create_reports_injected_game_candidate_and_baseline_errors() {
+    let expected_fields = route_validation_fields();
+    let validator_fields = expected_fields.clone();
+    let app = seeded_app_with(
+        |conn, _| {
+            conn.execute(
+                "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        },
+        Arc::new(move |_| Err(validator_fields.clone())),
+        Arc::new(|_, _, _, _, _| -> std::io::Result<LaunchedRun> {
+            panic!("validation failure must prevent launching")
+        }),
+    )
+    .0;
+    let body = json!({
+        "name": "Route experiment",
+        "description": "",
+        "spec": route_test_spec(),
+    });
+    let (status, response) =
+        http_post_json(app.clone(), "/api/bench/projects/p-route/experiments", body).await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(&response),
+        json!({"error": "validation failed", "fields": expected_fields})
+    );
+    let (status, response) = http_get(app, "/api/bench/projects/p-route/experiments").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert!(body_json(&response).as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn experiment_update_reports_injected_errors_without_mutating_saved_spec() {
+    let original = route_test_spec();
+    let seeded_spec = original.clone();
+    let expected_fields = route_validation_fields();
+    let validator_fields = expected_fields.clone();
+    let app = seeded_app_with(
+        move |conn, _| {
+            conn.execute(
+                "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-route', 'p-route', 'Saved experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                duckdb::params![serde_json::to_string(&seeded_spec).unwrap()],
+            )
+            .unwrap();
+        },
+        Arc::new(move |_| Err(validator_fields.clone())),
+        Arc::new(|_, _, _, _, _| -> std::io::Result<LaunchedRun> {
+            panic!("validation failure must prevent launching")
+        }),
+    )
+    .0;
+    let body = json!({
+        "name": "Updated experiment",
+        "description": "updated",
+        "spec": route_test_spec(),
+    });
+    let (status, response) =
+        http_put_json(app.clone(), "/api/bench/experiments/e-route", body).await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(&response),
+        json!({"error": "validation failed", "fields": expected_fields})
+    );
+    let (status, response) = http_get(app, "/api/bench/experiments/e-route").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let saved = body_json(&response);
+    assert_eq!(saved["name"], "Saved experiment");
+    assert_eq!(saved["spec"], serde_json::to_value(original).unwrap());
+}
+
+#[tokio::test]
+async fn experiment_launch_validates_saved_snapshot_before_persisting_or_launching() {
+    let original = route_test_spec();
+    let seeded_spec = original.clone();
+    let expected_fields = route_validation_fields();
+    let validator_fields = expected_fields.clone();
+    let validated_specs = Arc::new(Mutex::new(Vec::<ExperimentSpecV1>::new()));
+    let captured_specs = validated_specs.clone();
+    let launcher_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let called = launcher_called.clone();
+    let app = seeded_app_with(
+        move |conn, _| {
+            conn.execute(
+                "INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-route', 'Route project', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-route', 'p-route', 'Saved experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                duckdb::params![serde_json::to_string(&seeded_spec).unwrap()],
+            )
+            .unwrap();
+        },
+        Arc::new(move |spec| {
+            captured_specs.lock().unwrap().push(spec.clone());
+            Err(validator_fields.clone())
+        }),
+        Arc::new(move |_, _, _, _, _| {
+            called.store(true, std::sync::atomic::Ordering::Relaxed);
+            panic!("validation failure must prevent launching")
+        }),
+    )
+    .0;
+    let (status, response) = http_post_json(
+        app.clone(),
+        "/api/bench/experiments/e-route/runs",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(&response),
+        json!({"error": "validation failed", "fields": expected_fields})
+    );
+    assert_eq!(validated_specs.lock().unwrap().as_slice(), &[original]);
+    assert!(!launcher_called.load(std::sync::atomic::Ordering::Relaxed));
+    let (status, response) = http_get(app, "/api/bench/runs?experiment_id=e-route").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert!(body_json(&response).as_array().unwrap().is_empty());
+}
+
+// -------------------------------------------------------------------
+// GET /api/bench/runs
+// -------------------------------------------------------------------
