@@ -13,7 +13,7 @@ const counts = { total: 3, queued: 0, running: 0, terminal: 3, completed: 2, fai
 const session: TuningSessionListItem = {
   session_id: "session-a", game: "nim", label: "Observable tuning", status: "idle", target_trial_count: 3,
   counts, created_at: "2026-08-23T12:00:00Z", last_activity_at: "2026-08-23T12:12:00Z", attempts: [attemptA, attemptB],
-  capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false },
+  capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: true },
 };
 const sessions: TuningSessionsResponse = { schema_version: 1, sessions: [session] };
 const run = (run_id: string): RunSummary => ({ run_id, kind: "tuner", game: "nim", project_id: null, experiment_id: null, label: null, git_sha: "abc", git_dirty: false, host: "test", pid: null, started_at: "2026-08-23T12:00:00Z", ended_at: "2026-08-23T12:10:00Z", status: "completed", match_count: 0, trial_count: 3 });
@@ -23,12 +23,17 @@ const game = (id: string, trace_game_seq: number | null, candidate_side: "first"
 const pair = (id: string, status: string, games: ReturnType<typeof game>[]) => ({ pair_id: id, pair_index: 0, status, seed: 7, round: 1, opponent: { anchor_id: "anchor", config: {}, mu: 25, sigma: 1, label: "Anchor", provenance: null }, pool_snapshot_fingerprint: "pool", rating_before: { mu: 24, sigma: 2 }, rating_after: status === "complete" ? { mu: 25, sigma: 1 } : null, score: status === "complete" ? 1 : null, failure: status === "failed" ? "interrupted" : null, games });
 function detail(extraPair = false): TuningSessionDetail {
   const trials = [
-    { trial_id: "trial-a", trial_number: 1, attempt_id: "attempt-a", status: "complete", config: { c: 1 }, score: 1, mu: 25, sigma: 1, failure: null, pairs: [pair("pair-two", "complete", [game("game-1", 41), game("game-2", 42, "second")]) ] },
-    { trial_id: "trial-b", trial_number: 2, attempt_id: "attempt-b", status: "failed", config: { c: 2 }, score: null, mu: null, sigma: null, failure: "worker stopped", pairs: [pair("pair-one", "failed", [game("game-3", null)])] },
-    { trial_id: "trial-c", trial_number: 3, attempt_id: "attempt-b", status: "failed", config: { c: 3 }, score: null, mu: null, sigma: null, failure: "cancelled", pairs: [pair("pair-zero", "failed", [])] },
+    { trial_id: "trial-a", trial_number: 1, attempt_id: "attempt-a", status: "complete", config: { c: 1 }, score: 1, mu: 25, sigma: 1, stop_reason: "max_pairs", failure: null, pairs: [pair("pair-two", "complete", [game("game-1", 41), game("game-2", 42, "second")]) ], reports: [
+      { completed_pairs: 2, rating: { mu: 24, sigma: 2 }, score: 18, score_formula_version: 1, conservative_k: 3, decision: { outcome: "continue", reason: "startup_exempt", pruning_exempt: true, bracket_id: null, rung_resource: null }, reported_at: "2026-08-23T12:02:00Z" },
+      { completed_pairs: 4, rating: { mu: 25, sigma: 1 }, score: 22, score_formula_version: 1, conservative_k: 3, decision: { outcome: "complete", reason: "max_pairs", pruning_exempt: false, bracket_id: "bracket-a", rung_resource: 4 }, reported_at: "2026-08-23T12:04:00Z" },
+    ] },
+    { trial_id: "trial-b", trial_number: 2, attempt_id: "attempt-b", status: "failed", config: { c: 2 }, score: null, mu: null, sigma: null, stop_reason: "hyperband_prune", failure: "worker stopped", pairs: [pair("pair-one", "failed", [game("game-3", null)])], reports: [
+      { completed_pairs: 2, rating: { mu: 24, sigma: 2 }, score: 18, score_formula_version: 1, conservative_k: 3, decision: { outcome: "prune", reason: "hyperband_prune", pruning_exempt: false, bracket_id: null, rung_resource: null }, reported_at: "2026-08-23T12:03:00Z" },
+    ] },
+    { trial_id: "trial-c", trial_number: 3, attempt_id: "attempt-b", status: "failed", config: { c: 3 }, score: null, mu: null, sigma: null, stop_reason: null, failure: "cancelled", pairs: [pair("pair-zero", "failed", [])], reports: [] },
   ];
   if (extraPair) trials[0] = { ...trials[0]!, pairs: [...trials[0]!.pairs, pair("pair-new", "failed", [])] };
-  return { schema_version: 1, summary: { session_id: "session-a", status: "idle", target_trial_count: 3, counts }, attempts: [attemptA, attemptB], trials, manifest: { game: "nim" }, fingerprint: "fp", capabilities: session.capabilities, cursor: { session_sequence: extraPair ? 2 : 1 } } as TuningSessionDetail;
+  return { schema_version: 1, policy: { resource: { min_pairs: 2, max_pairs: 6 }, rating: { model: "ThurstoneMostellerPart", score: "mu_minus_k_sigma", sigma_stop: 2, conservative_k: 3 }, sampler: { kind: "tpe", seed: 4, deterministic: true, startup_trials: 3 }, pruning: { enabled: true, kind: "hyperband", reduction_factor: 3, startup_terminal_trials: 5 } }, summary: { session_id: "session-a", status: "idle", target_trial_count: 3, counts }, attempts: [attemptA, attemptB], trials, manifest: { game: "nim" }, fingerprint: "fp", capabilities: session.capabilities, cursor: { session_sequence: extraPair ? 2 : 1 } } as TuningSessionDetail;
 }
 
 function setup(detailResponse: TuningSessionDetail | (() => TuningSessionDetail) = detail()): { store: Store<BenchState, BenchAction>; env: BenchEnv } {
@@ -115,6 +120,17 @@ describe("observable tuning session workbench", () => {
     render(() => <TuningSessionWorkbench store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: "session-a" } });
     await screen.findByText("Attempts and evidence");
+    expect(screen.getByRole("heading", { name: "Resolved policy" })).toBeInTheDocument();
+    expect(screen.getByText("2–6 (4–12 physical games)")).toBeInTheDocument();
+    expect(screen.getByText("ThurstoneMostellerPart")).toBeInTheDocument();
+    store.dispatch({ tag: "tuningNavigation", action: { tag: "selectTrial", trialId: "trial-a" } });
+    expect(await screen.findByText("After 2 completed pairs")).toBeInTheDocument();
+    expect(screen.getByText("startup_exempt")).toBeInTheDocument();
+    expect(screen.getAllByText("max_pairs")).toHaveLength(2);
+    expect(screen.getAllByText("unknown")).toHaveLength(2);
+    store.dispatch({ tag: "tuningNavigation", action: { tag: "selectTrial", trialId: "trial-b" } });
+    expect(await screen.findAllByText("hyperband_prune")).toHaveLength(2);
+    expect(screen.getByText("prune")).toBeInTheDocument();
     for (const action of [{ tag: "toggleExpanded", id: "attempt:attempt-a" }, { tag: "toggleExpanded", id: "trial:trial-a" }, { tag: "toggleExpanded", id: "pair:pair-two" }, { tag: "selectAttempt", attemptId: "attempt-a" }, { tag: "selectTrial", trialId: "trial-a" }, { tag: "selectPair", pairId: "pair-two" }] as const) store.dispatch({ tag: "tuningNavigation", action });
     const gameButton = await screen.findByRole("button", { name: /Game · candidate first/ });
     fireEvent.click(gameButton);

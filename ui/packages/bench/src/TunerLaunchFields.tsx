@@ -10,9 +10,9 @@
 //     conditions, the tuner's *default* eval rounds/trial) so the
 //     operator can see what a trial actually varies before committing a
 //     budget to it;
-//   - the actual editable fields: n_trials/n_workers/deterministic/seed,
-//     rounds/trial, eta (OpenSkill sensitivity), and the per-run compute
-//     budget (`optimizer.*`/`target.*` overrides). The parameter *values*
+//   - the actual editable fields: target trials, workers, resolved resource
+//     limits, sampler/pruning inputs, and the per-run compute budget
+//     (`optimizer.*`/`target.*` overrides). The parameter *values*
 //     themselves aren't editable here — `tuner`'s CLI `--override` only
 //     reaches dotted dataclass attributes, not the list-shaped
 //     `parameters:` search space, so there is nothing for a form field to
@@ -91,8 +91,6 @@ export const TunerLaunchFields: Component<{
   onDeterministicChange: (v: boolean) => void;
   seed: number;
   onSeedChange: (n: number) => void;
-  rounds: number;
-  onRoundsChange: (n: number) => void;
   /** Per-run MCTS iteration ceiling (`mcts_tune::SearchBudget::max_iterations`
    * on the Rust side) — how much compute *every* trial's candidate (and,
    * for a `baseline_config`-backed opponent, that opponent too) gets, not a
@@ -116,13 +114,22 @@ export const TunerLaunchFields: Component<{
   onGameConfigChange: (v: string) => void;
   /** Parse error for `gameConfig`, or `null` when it's valid JSON. */
   gameConfigError: string | null;
-  /** Eta parameter for the OpenSkill matchmaking model — controls how
-   * sensitive the candidate's rating is to each game outcome. Higher values
-   * mean a single game changes the rating less; lower values mean each
-   * game matters more. Forwarded as `--override optimizer.eta=...` at
-   * submit time. */
-  eta: number;
-  onEtaChange: (n: number) => void;
+  minPairs: number;
+  onMinPairsChange: (n: number) => void;
+  maxPairs: number;
+  onMaxPairsChange: (n: number) => void;
+  pruningEnabled: boolean;
+  onPruningEnabledChange: (v: boolean) => void;
+  reductionFactor: number;
+  onReductionFactorChange: (n: number) => void;
+  pruningStartupTerminalTrials: number;
+  onPruningStartupTerminalTrialsChange: (n: number) => void;
+  /** Empty means that the resolved rating policy does not stop on sigma. */
+  sigmaStop: string;
+  onSigmaStopChange: (v: string) => void;
+  tpeStartupTrials: number;
+  onTpeStartupTrialsChange: (n: number) => void;
+  validationError: string | null;
   disabled: boolean;
 }> = (props) => {
   const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
@@ -214,7 +221,7 @@ export const TunerLaunchFields: Component<{
         <Show when={props.game}>
           <div id="tuner-budget-fields">
             <label>
-              Trials
+              Target trials
               <input
                 type="number"
                 min={1}
@@ -247,33 +254,92 @@ export const TunerLaunchFields: Component<{
             </label>
 
             <label>
-              Rounds/trial
+              Minimum pairs
               <input
                 type="number"
                 min={1}
-                value={props.rounds}
-                onInput={(e) => props.onRoundsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                value={props.minPairs}
+                onInput={(e) => props.onMinPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                disabled={props.disabled}
+              />
+              <span class="tuner-field-hint">{props.minPairs * 2} physical games</span>
+            </label>
+
+            <label>
+              Maximum pairs
+              <input
+                type="number"
+                min={1}
+                value={props.maxPairs}
+                onInput={(e) => props.onMaxPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                disabled={props.disabled}
+              />
+              <span class="tuner-field-hint">{props.maxPairs * 2} physical games</span>
+            </label>
+
+            <label>
+              TPE startup trials
+              <input
+                type="number"
+                min={0}
+                value={props.tpeStartupTrials}
+                onInput={(e) => props.onTpeStartupTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
                 disabled={props.disabled}
               />
             </label>
 
             <label>
-              Eta (Hyperband reduction factor)
+              Sigma stop
               <input
                 type="number"
-                min={2}
-                step={0.5}
-                value={props.eta}
-                onInput={(e) => props.onEtaChange(parseFloat(e.currentTarget.value) || 3.0)}
+                min={0}
+                step="any"
+                placeholder="disabled"
+                value={props.sigmaStop}
+                onInput={(e) => props.onSigmaStopChange(e.currentTarget.value)}
                 disabled={props.disabled}
               />
-              <span class="tuner-field-hint">
-                Elimination rate for Successive Halving / Hyperband multi-fidelity
-                pruning. Higher = more aggressive (fewer trials survive each rung).
-                Standard value is 3; 4 is more aggressive. Not yet wired to an
-                Optuna pruner on the server side.
-              </span>
+              <span class="tuner-field-hint">Leave blank to use no uncertainty stop.</span>
             </label>
+
+            <label class="tuner-checkbox-field">
+              <input
+                type="checkbox"
+                checked={props.pruningEnabled}
+                onChange={(e) => props.onPruningEnabledChange(e.currentTarget.checked)}
+                disabled={props.disabled}
+              />
+              Enable Hyperband pruning
+            </label>
+
+            <Show when={props.pruningEnabled}>
+              <label>
+                Reduction factor
+                <input
+                  type="number"
+                  min={2}
+                  step="any"
+                  value={props.reductionFactor}
+                  onInput={(e) => props.onReductionFactorChange(parseFloat(e.currentTarget.value) || 2)}
+                  disabled={props.disabled}
+                />
+              </label>
+
+              <label>
+                Pruning startup terminal trials
+                <input
+                  type="number"
+                  min={0}
+                  value={props.pruningStartupTerminalTrials}
+                  onInput={(e) => props.onPruningStartupTerminalTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
+                  disabled={props.disabled}
+                />
+              </label>
+            </Show>
+
+            <Show when={props.validationError}>
+              {(error) => <div class="launch-error">{error()}</div>}
+            </Show>
 
             <label>
               Iteration budget

@@ -25,16 +25,18 @@ const sessions: TuningSessionsResponse = {
 function detail(status = "idle", includeGame = true): TuningSessionDetail {
   return {
     schema_version: 1,
+    policy: null,
     summary: { session_id: "session-1", status, target_trial_count: 2, counts: sessions.sessions[0]!.counts },
     attempts: sessions.sessions[0]!.attempts,
     trials: [{
-      trial_id: "trial-1", trial_number: 1, attempt_id: "attempt-1", status: "complete", config: { family: "ucb1" }, score: 1, mu: 2, sigma: 0.5, failure: null,
+      trial_id: "trial-1", trial_number: 1, attempt_id: "attempt-1", status: "complete", config: { family: "ucb1" }, score: 1, mu: 2, sigma: 0.5, stop_reason: null, failure: null,
       pairs: [{
         pair_id: "pair-1", pair_index: 0, status: "complete", seed: 7, round: 1,
         opponent: { anchor_id: "anchor-1", config: {}, mu: 1, sigma: 0.5, label: null, provenance: null },
         pool_snapshot_fingerprint: "pool", rating_before: { mu: 1, sigma: 1 }, rating_after: { mu: 2, sigma: 0.5 }, score: 1, failure: null,
         games: includeGame ? [{ game_id: "game-1", candidate_side: "first", outcome: "candidate_win", seed: 7, round: 1, trace_game_seq: 8, plies: 10, elapsed_ms: 2, candidate: { iterations_total: 3, iterations_first_half: 2, move_time_ms: 1 }, baseline: { iterations_total: 3, iterations_first_half: 2, move_time_ms: 1 } }] : [],
       }],
+      reports: [],
     }],
     manifest: {}, fingerprint: null,
     capabilities: sessions.sessions[0]!.capabilities,

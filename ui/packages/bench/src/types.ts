@@ -104,6 +104,62 @@ export interface TuningSessionsResponse {
 
 export interface TuningRating { mu: number; sigma: number }
 
+/** Resolved resources used to evaluate a trial. Pair counts are logical
+ * seat-swapped evaluations; each pair contains two physical games. */
+export interface TuningResourcePolicy {
+  min_pairs: number;
+  max_pairs: number;
+}
+
+/** The fixed scoring and uncertainty policy recorded with a session. */
+export interface TuningRatingPolicy {
+  model: string;
+  score: string;
+  sigma_stop: number | null;
+  conservative_k: number;
+}
+
+export interface TuningSamplerPolicy {
+  kind: string;
+  seed: number;
+  deterministic: boolean;
+  startup_trials: number;
+}
+
+export interface TuningPruningPolicy {
+  enabled: boolean;
+  kind: string;
+  reduction_factor: number;
+  startup_terminal_trials: number;
+}
+
+/** Policy resolved by the server from the persisted session manifest. */
+export interface TuningPolicy {
+  resource: TuningResourcePolicy;
+  rating: TuningRatingPolicy;
+  sampler: TuningSamplerPolicy;
+  pruning: TuningPruningPolicy;
+}
+
+export interface TuningReportDecision {
+  outcome: string;
+  reason: string;
+  pruning_exempt: boolean;
+  bracket_id: string | null;
+  rung_resource: number | null;
+}
+
+/** One ordered policy decision made after a trial's completed-pair count. */
+export interface TuningTrialReport {
+  completed_pairs: number;
+  rating: TuningRating;
+  score: number;
+  score_formula_version: number;
+  conservative_k: number;
+  decision: TuningReportDecision;
+  reported_at: string;
+}
+
 export interface TuningStrategyMetrics {
   iterations_total: number;
   iterations_first_half: number;
@@ -156,12 +212,16 @@ export interface TuningTrial {
   score: number | null;
   mu: number | null;
   sigma: number | null;
+  stop_reason: string | null;
   failure: string | null;
   pairs: TuningPair[];
+  reports: TuningTrialReport[];
 }
 
 export interface TuningSessionDetail {
   schema_version: 1;
+  /** Null for session manifests persisted before policy snapshots existed. */
+  policy: TuningPolicy | null;
   summary: TuningSessionSummary;
   attempts: TuningAttempt[];
   trials: TuningTrial[];

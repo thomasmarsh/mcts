@@ -1,4 +1,4 @@
-import { createMemo, Show, type Component } from "solid-js";
+import { createMemo, For, Show, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
 import type { BenchAction } from "../reducer.js";
@@ -8,6 +8,7 @@ import type {
   TuningAttempt,
   TuningGame,
   TuningPair,
+  TuningPolicy,
   TuningSessionDetail,
   TuningSessionListItem,
   TuningTrial,
@@ -40,7 +41,32 @@ const SessionEvidence: Component<{ detail: TuningSessionDetail }> = (props) => (
       <Field label="Manifest fingerprint" value={props.detail.fingerprint} />
       <Field label="Lifecycle sequence" value={props.detail.cursor.session_sequence} />
     </dl>
+    <ResolvedPolicy policy={props.detail.policy} />
   </>
+);
+
+const ResolvedPolicy: Component<{ policy: TuningPolicy | null }> = (props) => (
+  <section aria-label="Resolved policy">
+    <h4>Resolved policy</h4>
+    <Show when={props.policy} fallback={<div class="tuning-unavailable">Policy was not recorded for this legacy session.</div>}>
+      {(policy) => (
+        <dl class="tuning-evidence-grid">
+          <Field label="Resource pairs" value={`${policy().resource.min_pairs}–${policy().resource.max_pairs} (${policy().resource.min_pairs * 2}–${policy().resource.max_pairs * 2} physical games)`} />
+          <Field label="Rating model" value={policy().rating.model} />
+          <Field label="Score" value={policy().rating.score} />
+          <Field label="Sigma stop" value={policy().rating.sigma_stop === null ? "disabled" : policy().rating.sigma_stop} />
+          <Field label="Conservative k" value={policy().rating.conservative_k} />
+          <Field label="Sampler" value={policy().sampler.kind} />
+          <Field label="Sampler startup trials" value={policy().sampler.startup_trials} />
+          <Field label="Sampler seed" value={policy().sampler.seed} />
+          <Field label="Deterministic" value={policy().sampler.deterministic ? "yes" : "no"} />
+          <Field label="Pruning" value={policy().pruning.enabled ? policy().pruning.kind : "disabled"} />
+          <Field label="Reduction factor" value={policy().pruning.reduction_factor} />
+          <Field label="Pruning startup terminal trials" value={policy().pruning.startup_terminal_trials} />
+        </dl>
+      )}
+    </Show>
+  </section>
 );
 
 const AttemptEvidence: Component<{ attempt: TuningAttempt }> = (props) => (
@@ -65,11 +91,40 @@ const TrialEvidence: Component<{ trial: TuningTrial }> = (props) => (
       <Field label="Trial ID" value={props.trial.trial_id} />
       <Field label="Score" value={formatScore(props.trial.score)} />
       <Field label="Rating μ ± σ" value={formatRating(props.trial.mu, props.trial.sigma)} />
+      <Field label="Terminal stop reason" value={props.trial.stop_reason} />
       <Field label="Failure" value={props.trial.failure} />
     </dl>
+    <TrialReports trial={props.trial} />
     <h4>Candidate configuration</h4>
     <pre class="tuning-json">{jsonText(props.trial.config)}</pre>
   </>
+);
+
+const TrialReports: Component<{ trial: TuningTrial }> = (props) => (
+  <section aria-label="Trial policy reports">
+    <h4>Policy reports</h4>
+    <Show when={props.trial.reports.length > 0} fallback={<div class="tuning-unavailable">No policy reports were recorded.</div>}>
+      <For each={props.trial.reports}>
+        {(report) => (
+          <section class="tuning-report">
+            <h5>After {report.completed_pairs} completed pairs</h5>
+            <dl class="tuning-evidence-grid">
+              <Field label="Rating μ ± σ" value={formatRating(report.rating.mu, report.rating.sigma)} />
+              <Field label="Score" value={formatScore(report.score)} />
+              <Field label="Score formula version" value={report.score_formula_version} />
+              <Field label="Conservative k" value={report.conservative_k} />
+              <Field label="Decision" value={report.decision.outcome} />
+              <Field label="Decision reason" value={report.decision.reason} />
+              <Field label="Pruning exempt" value={report.decision.pruning_exempt ? "yes" : "no"} />
+              <Field label="Observed bracket" value={report.decision.bracket_id ?? "unknown"} />
+              <Field label="Observed rung" value={report.decision.rung_resource ?? "unknown"} />
+              <Field label="Reported" value={formatTimestamp(report.reported_at)} />
+            </dl>
+          </section>
+        )}
+      </For>
+    </Show>
+  </section>
 );
 
 const PairEvidence: Component<{ pair: TuningPair }> = (props) => (

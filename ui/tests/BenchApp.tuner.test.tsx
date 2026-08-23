@@ -60,20 +60,16 @@ describe("LaunchForm / tuner", () => {
     expect(screen.getByText(/schedule = threshold/)).toBeInTheDocument(); // a condition
 
     // Budget fields are present with their documented defaults.
-    expect(screen.getByLabelText("Trials")).toBeInTheDocument();
+    expect(screen.getByLabelText("Target trials")).toBeInTheDocument();
     expect(screen.getByLabelText("Seed")).toBeInTheDocument();
 
-    // Rounds/trial defaults from the tuner's own eval_rounds (20, per the
-    // traffic-lights fixture), not a hardcoded form default.
-    expect((screen.getByLabelText("Rounds/trial") as HTMLInputElement).value).toBe("20");
-
-    // Eta field is present with its default.
-    const etaField = screen.getByLabelText(/Eta.*/) as HTMLInputElement;
-    expect(etaField).toBeInTheDocument();
-    expect(etaField.value).toBe("3");
+    expect((screen.getByLabelText(/Minimum pairs/) as HTMLInputElement).value).toBe("2");
+    expect((screen.getByLabelText(/Maximum pairs/) as HTMLInputElement).value).toBe("6");
+    expect(screen.getByText("4 physical games")).toBeInTheDocument();
+    expect(screen.getByText("12 physical games")).toBeInTheDocument();
   });
 
-  it("omits target.rounds when unchanged, includes it when the field is edited", () => {
+  it("launches resolved policy inputs without legacy rounds or eta overrides", async () => {
     const seen: unknown[] = [];
     const { store, env } = createTestStore();
     render(() => <LaunchForm store={store} />);
@@ -85,26 +81,28 @@ describe("LaunchForm / tuner", () => {
     });
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
-    store.dispatch({ tag: "launch", action: { tag: "request", kind: "tuner", game: "traffic-lights", config: { overrides: [] } } });
-    // The reducer calls env.launchRun (which we spied on above) via the job effect.
-    // But the effect is async, so query the store's state instead.
-    expect((seen[0] as { overrides: string[] } | undefined)?.overrides).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    await vi.waitFor(() => expect((seen[0] as { overrides: string[] } | undefined)?.overrides).toBeDefined());
     const overrides = (seen[0] as { overrides: string[] }).overrides;
-    expect(overrides.some((o) => o.startsWith("target.rounds"))).toBe(false);
+    expect(overrides).toEqual(expect.arrayContaining(["optimizer.resource.min_pairs=2", "optimizer.resource.max_pairs=6"]));
+    expect(overrides.some((o) => o.startsWith("target.rounds") || o.startsWith("optimizer.eta"))).toBe(false);
   });
 
-  it("renders budget fields and eta with correct defaults", () => {
+  it("renders resolved policy launch fields", () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
     fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
 
     // Budget fields are present.
-    expect(screen.getByLabelText("Trials")).toBeInTheDocument();
+    expect(screen.getByLabelText("Target trials")).toBeInTheDocument();
     expect(screen.getByLabelText("Workers")).toBeInTheDocument();
     expect(screen.getByLabelText("Seed")).toBeInTheDocument();
-    expect(screen.getByLabelText("Rounds/trial")).toBeInTheDocument();
-    expect(screen.getByLabelText(/Eta.*/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Minimum pairs/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Maximum pairs/)).toBeInTheDocument();
+    expect(screen.getByLabelText("TPE startup trials")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Sigma stop/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Enable Hyperband pruning")).toBeInTheDocument();
     expect(screen.getByLabelText(/Iteration budget/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Time budget/)).toBeInTheDocument();
     expect(screen.getByLabelText(/Deterministic/)).toBeInTheDocument();
@@ -114,6 +112,8 @@ describe("LaunchForm / tuner", () => {
     expect(screen.queryByText(/Ladder/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Max rungs/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Saturation threshold/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Rounds\/trial/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Eta/)).not.toBeInTheDocument();
   });
 
   it("hides the Game config field for a game with an empty game_config", () => {

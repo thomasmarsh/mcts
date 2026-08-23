@@ -12,50 +12,10 @@ import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction, BenchState } from "./index.js";
 import { isEmptyGameConfig, TunerLaunchFields } from "./TunerLaunchFields.js";
+import { buildTunerOverrides, validateTunerLaunchPolicy } from "./tuner-launch-policy.js";
 
 const DEFAULT_TUNER_N_TRIALS = 100;
 const DEFAULT_TUNER_SEED = 42;
-const DEFAULT_TUNER_ETA = 3.0;
-
-function buildTunerOverrides(opts: {
-  nTrials: number;
-  nWorkers: string;
-  deterministic: boolean;
-  seed: number;
-  rounds: number;
-  defaultRounds: number | null;
-  /** Empty string means "unset" — see `TunerLaunchFields.tsx`'s
-   * `maxIterations` prop doc comment. */
-  maxIterations: string;
-  /** Empty string means "unset" — see `TunerLaunchFields.tsx`'s
-   * `maxTimeMs` prop doc comment. Mutually exclusive with `maxIterations`;
-   * the form itself keeps only one of the two fields enabled at a time, so
-   * both being non-empty here shouldn't happen, but this function doesn't
-   * re-validate that — the server-side `target.py` rejects it either way. */
-  maxTimeMs: string;
-  /** Eta parameter for the Optuna Hyperband reduction factor — controls
-   * how aggressively to prune unpromising trials. Forwarded as
-   * `--override optimizer.eta=...` */
-  eta: number;
-}): string[] {
-  const overrides = [
-    `optimizer.n_trials=${opts.nTrials}`,
-    `optimizer.deterministic=${opts.deterministic ? "True" : "False"}`,
-    `optimizer.seed=${opts.seed}`,
-    `optimizer.eta=${opts.eta}`,
-  ];
-  const workers = opts.nWorkers.trim();
-  if (workers !== "") overrides.push(`optimizer.n_workers=${workers}`);
-  if (opts.defaultRounds !== null && opts.rounds !== opts.defaultRounds) {
-    overrides.push(`target.rounds=${opts.rounds}`);
-  }
-  const maxIterations = opts.maxIterations.trim();
-  if (maxIterations !== "") overrides.push(`target.max_iterations=${maxIterations}`);
-  const maxTimeMs = opts.maxTimeMs.trim();
-  if (maxTimeMs !== "") overrides.push(`target.max_time_ms=${maxTimeMs}`);
-  return overrides;
-}
-
 export const LaunchForm: Component<{
   store: Store<BenchState, BenchAction>;
 }> = (props) => {
@@ -83,11 +43,16 @@ export const LaunchForm: Component<{
   const [tunerNWorkers, setTunerNWorkers] = createSignal("");
   const [tunerDeterministic, setTunerDeterministic] = createSignal(false);
   const [tunerSeed, setTunerSeed] = createSignal(DEFAULT_TUNER_SEED);
-  const [tunerRounds, setTunerRounds] = createSignal(1);
   const [tunerMaxIterations, setTunerMaxIterations] = createSignal("");
   const [tunerMaxTimeMs, setTunerMaxTimeMs] = createSignal("");
   const [tunerGameConfig, setTunerGameConfig] = createSignal("");
-  const [tunerEta, setTunerEta] = createSignal(DEFAULT_TUNER_ETA);
+  const [tunerMinPairs, setTunerMinPairs] = createSignal(2);
+  const [tunerMaxPairs, setTunerMaxPairs] = createSignal(6);
+  const [tunerPruningEnabled, setTunerPruningEnabled] = createSignal(false);
+  const [tunerReductionFactor, setTunerReductionFactor] = createSignal(3);
+  const [tunerPruningStartupTerminalTrials, setTunerPruningStartupTerminalTrials] = createSignal(5);
+  const [tunerSigmaStop, setTunerSigmaStop] = createSignal("");
+  const [tunerTpeStartupTrials, setTunerTpeStartupTrials] = createSignal(3);
 
   // Derived from kinds metadata.
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
@@ -113,7 +78,6 @@ export const LaunchForm: Component<{
       if (tunerGames().length > 0) {
         const first = tunerGames()[0]!;
         setSelectedGame(first.game);
-        setTunerRounds(first.tuner.eval_rounds);
         setTunerGameConfig(gameConfigTextFor(first.tuner));
       }
       return;
@@ -131,9 +95,7 @@ export const LaunchForm: Component<{
 
   function onTunerGameChange(game: string): void {
     setSelectedGame(game);
-    const tuner = tunerGames().find((g) => g.game === game)?.tuner;
-    if (tuner) setTunerRounds(tuner.eval_rounds);
-    setTunerGameConfig(gameConfigTextFor(tuner));
+    setTunerGameConfig(gameConfigTextFor(tunerGames().find((g) => g.game === game)?.tuner));
   }
 
   function toggleStrategy(id: string): void {
@@ -166,7 +128,7 @@ export const LaunchForm: Component<{
   function canLaunch(): boolean {
     if (busy() || selectedKind() === "" || selectedGame() === "") return false;
     if (isTuner()) {
-      return tunerNTrials() >= 1 && tunerGameConfigError() === null;
+      return tunerGameConfigError() === null && validateTunerLaunchPolicy(tunerLaunchPolicy()) === null;
     }
     return selectedStrategies().size >= 2 && rounds() >= 1;
   }
@@ -174,21 +136,10 @@ export const LaunchForm: Component<{
   function onSubmit(e: Event): void {
     e.preventDefault();
     if (!canLaunch()) return;
-    const tuner = currentTunerTuner();
     const config = isTuner()
       ? {
-          overrides: buildTunerOverrides({
-            nTrials: tunerNTrials(),
-            nWorkers: tunerNWorkers(),
-            deterministic: tunerDeterministic(),
-            seed: tunerSeed(),
-            rounds: tunerRounds(),
-            defaultRounds: tuner?.eval_rounds ?? null,
-            maxIterations: tunerMaxIterations(),
-            maxTimeMs: tunerMaxTimeMs(),
-            eta: tunerEta(),
-          }),
-          ...(tuner && !isEmptyGameConfig(tuner.game_config)
+          overrides: buildTunerOverrides(tunerLaunchPolicy()),
+          ...(currentTunerTuner() && !isEmptyGameConfig(currentTunerTuner()!.game_config)
             ? { game_config: JSON.parse(tunerGameConfig()) }
             : {}),
         }
@@ -205,6 +156,16 @@ export const LaunchForm: Component<{
         config,
       },
     });
+  }
+
+  function tunerLaunchPolicy() {
+    return {
+      nTrials: tunerNTrials(), nWorkers: tunerNWorkers(), deterministic: tunerDeterministic(), seed: tunerSeed(),
+      minPairs: tunerMinPairs(), maxPairs: tunerMaxPairs(), pruningEnabled: tunerPruningEnabled(),
+      reductionFactor: tunerReductionFactor(), pruningStartupTerminalTrials: tunerPruningStartupTerminalTrials(),
+      sigmaStop: tunerSigmaStop(), tpeStartupTrials: tunerTpeStartupTrials(),
+      maxIterations: tunerMaxIterations(), maxTimeMs: tunerMaxTimeMs(),
+    };
   }
 
   return (
@@ -310,8 +271,6 @@ export const LaunchForm: Component<{
             onDeterministicChange={setTunerDeterministic}
             seed={tunerSeed()}
             onSeedChange={setTunerSeed}
-            rounds={tunerRounds()}
-            onRoundsChange={setTunerRounds}
             maxIterations={tunerMaxIterations()}
             onMaxIterationsChange={setTunerMaxIterations}
             maxTimeMs={tunerMaxTimeMs()}
@@ -319,8 +278,21 @@ export const LaunchForm: Component<{
             gameConfig={tunerGameConfig()}
             onGameConfigChange={setTunerGameConfig}
             gameConfigError={tunerGameConfigError()}
-            eta={tunerEta()}
-            onEtaChange={setTunerEta}
+            minPairs={tunerMinPairs()}
+            onMinPairsChange={setTunerMinPairs}
+            maxPairs={tunerMaxPairs()}
+            onMaxPairsChange={setTunerMaxPairs}
+            pruningEnabled={tunerPruningEnabled()}
+            onPruningEnabledChange={setTunerPruningEnabled}
+            reductionFactor={tunerReductionFactor()}
+            onReductionFactorChange={setTunerReductionFactor}
+            pruningStartupTerminalTrials={tunerPruningStartupTerminalTrials()}
+            onPruningStartupTerminalTrialsChange={setTunerPruningStartupTerminalTrials}
+            sigmaStop={tunerSigmaStop()}
+            onSigmaStopChange={setTunerSigmaStop}
+            tpeStartupTrials={tunerTpeStartupTrials()}
+            onTpeStartupTrialsChange={setTunerTpeStartupTrials}
+            validationError={validateTunerLaunchPolicy(tunerLaunchPolicy())}
             disabled={busy()}
           />
         </Show>
