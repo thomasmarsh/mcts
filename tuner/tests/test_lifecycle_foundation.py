@@ -10,6 +10,7 @@ from tuner_cli.lifecycle import (
     AttemptId,
     LifecycleWriter,
     SessionId,
+    TrialId,
     strict_json_dumps,
     trial_id_for,
 )
@@ -33,6 +34,29 @@ def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(
             writer.emit("unknown", {})
     finally:
         writer.close()
+
+
+def test_writer_accepts_trial_reported_events(tmp_path: Path):
+    with LifecycleWriter(tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")) as writer:
+        record = writer.emit(
+            "trial_reported",
+            {
+                "trial_id": TrialId("trial-1"),
+                "trial_number": 0,
+                "completed_pairs": 1,
+                "mu": 25.0,
+                "sigma": 1.5,
+                "score": 20.5,
+                "score_formula_version": 1,
+                "conservative_k": 3.0,
+                "outcome": "continue",
+                "reason": "below_min_pairs",
+                "pruning_exempt": False,
+                "bracket_id": None,
+                "rung_resource": None,
+            },
+        )
+    assert record["event_type"] == "trial_reported"
 
 
 def test_fingerprint_is_deterministic_independent_of_mapping_order():

@@ -101,15 +101,105 @@ pub struct TrialStartedPayload {
     pub extra: serde_json::Map<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrialReportOutcome {
+    Continue,
+    Complete,
+    Prune,
+}
+
+impl TrialReportOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Complete => "complete",
+            Self::Prune => "prune",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrialReportReason {
+    BelowMinPairs,
+    PruningDisabled,
+    StartupExempt,
+    HyperbandKeep,
+    Confidence,
+    MaxPairs,
+    HyperbandPrune,
+}
+
+impl TrialReportReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BelowMinPairs => "below_min_pairs",
+            Self::PruningDisabled => "pruning_disabled",
+            Self::StartupExempt => "startup_exempt",
+            Self::HyperbandKeep => "hyperband_keep",
+            Self::Confidence => "confidence",
+            Self::MaxPairs => "max_pairs",
+            Self::HyperbandPrune => "hyperband_prune",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_valid_for(self, outcome: TrialReportOutcome) -> bool {
+        matches!(
+            (outcome, self),
+            (
+                TrialReportOutcome::Continue,
+                Self::BelowMinPairs
+                    | Self::PruningDisabled
+                    | Self::StartupExempt
+                    | Self::HyperbandKeep
+            ) | (
+                TrialReportOutcome::Complete,
+                Self::Confidence | Self::MaxPairs
+            ) | (TrialReportOutcome::Prune, Self::HyperbandPrune)
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TrialReportedPayload {
+    pub trial_id: TuningTrialId,
+    pub trial_number: i64,
+    pub completed_pairs: u64,
+    pub mu: f64,
+    pub sigma: f64,
+    pub score: f64,
+    pub score_formula_version: u32,
+    pub conservative_k: f64,
+    pub outcome: TrialReportOutcome,
+    pub reason: TrialReportReason,
+    pub pruning_exempt: bool,
+    pub bracket_id: Option<String>,
+    pub rung_resource: Option<u64>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TrialTerminalPayload {
     pub trial_id: TuningTrialId,
     pub trial_number: Option<i64>,
     pub config: Option<Value>,
     pub seed: Option<i64>,
+    pub completed_pairs: Option<u64>,
     pub mu: Option<f64>,
     pub sigma: Option<f64>,
     pub score: Option<f64>,
+    pub score_formula_version: Option<u32>,
+    pub conservative_k: Option<f64>,
+    pub pruning_exempt: Option<bool>,
+    pub bracket_id: Option<String>,
+    pub rung_resource: Option<u64>,
+    #[serde(alias = "reason")]
+    pub stop_reason: Option<TrialReportReason>,
     pub error: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -184,6 +274,7 @@ pub enum TuningPayload {
     AttemptStarted(AttemptStartedPayload),
     TrialCreated(TrialCreatedPayload),
     TrialStarted(TrialStartedPayload),
+    TrialReported(TrialReportedPayload),
     TrialCompleted(TrialTerminalPayload),
     TrialPruned(TrialTerminalPayload),
     TrialFailed(TrialTerminalPayload),
@@ -214,6 +305,7 @@ pub(super) fn parse_typed(
         TuningEventType::AttemptStarted => parse(value).map(TuningPayload::AttemptStarted),
         TuningEventType::TrialCreated => parse(value).map(TuningPayload::TrialCreated),
         TuningEventType::TrialStarted => parse(value).map(TuningPayload::TrialStarted),
+        TuningEventType::TrialReported => parse(value).map(TuningPayload::TrialReported),
         TuningEventType::TrialCompleted => parse(value).map(TuningPayload::TrialCompleted),
         TuningEventType::TrialPruned => parse(value).map(TuningPayload::TrialPruned),
         TuningEventType::TrialFailed => parse(value).map(TuningPayload::TrialFailed),

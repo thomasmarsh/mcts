@@ -122,6 +122,215 @@ fn pair_finished(sequence: u64) -> TuningLifecycleEvent {
     )
 }
 
+fn trial_report(
+    id: &str,
+    sequence: u64,
+    completed_pairs: u64,
+    outcome: &str,
+    reason: &str,
+) -> TuningLifecycleEvent {
+    event(
+        id,
+        sequence,
+        "trial_reported",
+        serde_json::json!({
+            "trial_id": "trial-1", "trial_number": 0, "completed_pairs": completed_pairs,
+            "mu": 25.0, "sigma": 1.5, "score": 20.5, "score_formula_version": 1,
+            "conservative_k": 3.0, "outcome": outcome, "reason": reason,
+            "pruning_exempt": false, "bracket_id": null, "rung_resource": null
+        }),
+    )
+}
+
+#[test]
+fn trial_reports_project_consecutive_resources_and_replay_idempotently() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    let first = trial_report("report-1", 5, 1, "continue", "below_min_pairs");
+    let second = trial_report("report-2", 6, 2, "continue", "pruning_disabled");
+    assert_eq!(apply(&conn, &first), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &second), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &first), ApplyDisposition::Replay);
+    assert_eq!(
+        apply(
+            &conn,
+            &trial_report("report-duplicate", 7, 2, "continue", "pruning_disabled")
+        ),
+        ApplyDisposition::Rejected
+    );
+    assert_eq!(
+        apply(
+            &conn,
+            &trial_report("report-skipped", 7, 4, "continue", "pruning_disabled")
+        ),
+        ApplyDisposition::Rejected
+    );
+    assert_eq!(
+        apply(
+            &conn,
+            &trial_report("report-decreasing", 7, 1, "continue", "pruning_disabled")
+        ),
+        ApplyDisposition::Rejected
+    );
+    let reports: Vec<(u64, String, String, bool, Option<String>, Option<u64>)> = conn
+        .prepare("SELECT completed_pairs, outcome, reason, pruning_exempt, bracket_id, rung_resource FROM tuning_trial_reports ORDER BY completed_pairs")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        reports,
+        vec![
+            (
+                1,
+                "continue".into(),
+                "below_min_pairs".into(),
+                false,
+                None,
+                None
+            ),
+            (
+                2,
+                "continue".into(),
+                "pruning_disabled".into(),
+                false,
+                None,
+                None
+            ),
+        ]
+    );
+}
+
+#[test]
+fn trial_reports_require_a_running_known_trial_and_valid_decisions() {
+    let queued = fixture();
+    for item in started_trial_events().into_iter().take(3) {
+        apply(&queued, &item);
+    }
+    assert_eq!(
+        apply(
+            &queued,
+            &trial_report("queued-report", 4, 1, "continue", "below_min_pairs")
+        ),
+        ApplyDisposition::Rejected
+    );
+
+    let conn = fixture();
+    for item in started_trial_events() {
+        apply(&conn, &item);
+    }
+    let unknown = event(
+        "unknown-report",
+        5,
+        "trial_reported",
+        serde_json::json!({
+            "trial_id": "missing", "trial_number": 0, "completed_pairs": 1,
+            "mu": 25.0, "sigma": 1.5, "score": 20.5, "score_formula_version": 1,
+            "conservative_k": 3.0, "outcome": "continue", "reason": "below_min_pairs",
+            "pruning_exempt": false, "bracket_id": null, "rung_resource": null
+        }),
+    );
+    assert_eq!(apply(&conn, &unknown), ApplyDisposition::Rejected);
+    for (id, mut report) in [
+        (
+            "bad-outcome",
+            trial_report("bad-outcome", 5, 1, "continue", "confidence"),
+        ),
+        (
+            "bad-formula",
+            trial_report("bad-formula", 5, 1, "continue", "below_min_pairs"),
+        ),
+        (
+            "bad-resource",
+            trial_report("bad-resource", 5, 0, "continue", "below_min_pairs"),
+        ),
+        (
+            "bad-number",
+            trial_report("bad-number", 5, 1, "continue", "below_min_pairs"),
+        ),
+    ] {
+        match id {
+            "bad-formula" => report.payload["score_formula_version"] = serde_json::json!(2),
+            "bad-number" => report.payload["trial_number"] = serde_json::json!(1),
+            _ => {}
+        }
+        assert_eq!(apply(&conn, &report), ApplyDisposition::Rejected, "{id}");
+    }
+    let terminal = event(
+        "complete",
+        5,
+        "trial_completed",
+        serde_json::json!({"trial_id": "trial-1", "reason": "confidence", "score": 20.5, "mu": 25.0, "sigma": 1.5}),
+    );
+    assert_eq!(apply(&conn, &terminal), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(
+            &conn,
+            &trial_report("post-terminal", 6, 1, "continue", "below_min_pairs")
+        ),
+        ApplyDisposition::Rejected
+    );
+}
+
+#[test]
+fn terminal_stop_evidence_projects_for_complete_and_pruned_trials() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        apply(&conn, &item);
+    }
+    let complete = event(
+        "complete",
+        5,
+        "trial_completed",
+        serde_json::json!({
+            "trial_id": "trial-1", "reason": "max_pairs", "score": 20.5, "mu": 25.0, "sigma": 1.5,
+            "completed_pairs": 15, "score_formula_version": 1, "conservative_k": 3.0,
+            "pruning_exempt": false, "bracket_id": null, "rung_resource": null
+        }),
+    );
+    assert_eq!(apply(&conn, &complete), ApplyDisposition::Applied);
+    let complete_projection: (String, Option<String>, f64) = conn
+        .query_row(
+            "SELECT status, stop_reason, score FROM tuning_trials WHERE trial_id = 'trial-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        complete_projection,
+        ("complete".into(), Some("max_pairs".into()), 20.5)
+    );
+
+    let pruned = fixture();
+    for item in started_trial_events() {
+        apply(&pruned, &item);
+    }
+    let prune = event(
+        "pruned",
+        5,
+        "trial_pruned",
+        serde_json::json!({
+            "trial_id": "trial-1", "stop_reason": "hyperband_prune", "score": 20.5, "mu": 25.0, "sigma": 1.5,
+            "bracket_id": "bracket-1", "rung_resource": 9
+        }),
+    );
+    assert_eq!(apply(&pruned, &prune), ApplyDisposition::Applied);
+    let pruned_projection: (String, Option<String>) = pruned
+        .query_row(
+            "SELECT status, stop_reason FROM tuning_trials WHERE trial_id = 'trial-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        pruned_projection,
+        ("pruned".into(), Some("hyperband_prune".into()))
+    );
+}
+
 #[test]
 fn pair_replay_projects_two_games_and_their_trace_references() {
     let conn = fixture();

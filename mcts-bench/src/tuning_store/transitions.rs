@@ -200,12 +200,78 @@ fn valid_trial_transition(
             Ok(status.is_none() && number_exists == 0)
         }
         TuningEventType::TrialStarted => Ok(status == Some("queued")),
-        event_type if event_type.is_trial_terminal() => Ok(matches!(
-            status,
-            Some("queued") | Some("running")
-        ) && !has_running_pairs(tx, event)?),
+        TuningEventType::TrialReported => validate_trial_report(tx, event, status),
+        event_type if event_type.is_trial_terminal() => Ok(terminal_stop_reason_is_valid(event)
+            && matches!(status, Some("queued") | Some("running"))
+            && !has_running_pairs(tx, event)?),
         _ => Ok(false),
     }
+}
+
+fn validate_trial_report(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    status: Option<&str>,
+) -> Result<bool, TuningStoreError> {
+    if status != Some("running") {
+        return Ok(false);
+    }
+    let TuningPayload::TrialReported(report) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    if report.trial_number != trial_number(tx, event, report.trial_id.as_str())?
+        || report.completed_pairs == 0
+        || report.score_formula_version != 1
+        || !report.mu.is_finite()
+        || !report.sigma.is_finite()
+        || !report.score.is_finite()
+        || !report.conservative_k.is_finite()
+        || !report.reason.is_valid_for(report.outcome)
+    {
+        return Ok(false);
+    }
+    let last_resource: Option<u64> = tx.query_row(
+        "SELECT MAX(completed_pairs) FROM tuning_trial_reports WHERE session_id = ?1 AND trial_id = ?2",
+        params![event.session_id.as_str(), report.trial_id.as_str()],
+        |row| row.get(0),
+    )?;
+    let expected_resource = last_resource.map_or(Some(1), |last| last.checked_add(1));
+    Ok(expected_resource == Some(report.completed_pairs))
+}
+
+fn trial_number(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+    trial_id: &str,
+) -> Result<i64, TuningStoreError> {
+    tx.query_row(
+        "SELECT trial_number FROM tuning_trials WHERE session_id = ?1 AND trial_id = ?2",
+        params![event.session_id.as_str(), trial_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn terminal_stop_reason_is_valid(event: &TuningLifecycleEvent) -> bool {
+    let terminal = match event.typed_payload().expect("validated payload") {
+        TuningPayload::TrialCompleted(value)
+        | TuningPayload::TrialPruned(value)
+        | TuningPayload::TrialFailed(value)
+        | TuningPayload::TrialCancelled(value) => value,
+        _ => unreachable!(),
+    };
+    let outcome = match event.event_type {
+        TuningEventType::TrialCompleted => {
+            Some(crate::tuning_lifecycle::TrialReportOutcome::Complete)
+        }
+        TuningEventType::TrialPruned => Some(crate::tuning_lifecycle::TrialReportOutcome::Prune),
+        TuningEventType::TrialFailed | TuningEventType::TrialCancelled => None,
+        _ => unreachable!(),
+    };
+    terminal
+        .stop_reason
+        .is_none_or(|reason| outcome.is_some_and(|outcome| reason.is_valid_for(outcome)))
 }
 
 fn has_running_pairs(

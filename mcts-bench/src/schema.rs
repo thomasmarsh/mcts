@@ -184,8 +184,29 @@ pub const CREATE_TABLES: &[&str] = &[
         score DOUBLE,
         mu DOUBLE,
         sigma DOUBLE,
+        stop_reason TEXT,
         failure TEXT,
         PRIMARY KEY (session_id, trial_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_trial_reports (
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        trial_id TEXT NOT NULL,
+        trial_number BIGINT NOT NULL,
+        completed_pairs UBIGINT NOT NULL,
+        event_id TEXT NOT NULL,
+        reported_at TIMESTAMP NOT NULL,
+        mu DOUBLE NOT NULL,
+        sigma DOUBLE NOT NULL,
+        score DOUBLE NOT NULL,
+        score_formula_version UINTEGER NOT NULL,
+        conservative_k DOUBLE NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('continue', 'complete', 'prune')),
+        reason TEXT NOT NULL CHECK (reason IN ('below_min_pairs', 'pruning_disabled', 'startup_exempt', 'hyperband_keep', 'confidence', 'max_pairs', 'hyperband_prune')),
+        pruning_exempt BOOLEAN NOT NULL,
+        bracket_id TEXT,
+        rung_resource UBIGINT,
+        PRIMARY KEY (session_id, trial_id, completed_pairs),
+        UNIQUE (event_id)
     )",
     "CREATE TABLE IF NOT EXISTS tuning_evaluation_pairs (
         session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
@@ -268,6 +289,7 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE runs ADD COLUMN attempt_exit_kind TEXT",
         "ALTER TABLE runs ADD COLUMN attempt_exit_code INTEGER",
         "ALTER TABLE runs ADD COLUMN attempt_version UINTEGER",
+        "ALTER TABLE tuning_trials ADD COLUMN stop_reason TEXT",
     ] {
         let _ = conn.execute_batch(ddl);
     }
@@ -330,6 +352,7 @@ mod tests {
             "tuning_sessions",
             "tuning_attempts",
             "tuning_trials",
+            "tuning_trial_reports",
             "tuning_lifecycle_events",
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
@@ -402,6 +425,36 @@ mod tests {
                 ("observed_at".into(), "NO".into()),
             ]
         );
+    }
+
+    #[test]
+    fn upgrades_existing_tuning_trials_with_stop_reason() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tuning_sessions (session_id TEXT PRIMARY KEY, status TEXT NOT NULL, manifest JSON NOT NULL, manifest_fingerprint TEXT, target_trial_count BIGINT, created_at TIMESTAMP NOT NULL, last_sequence BIGINT NOT NULL);
+             CREATE TABLE tuning_attempts (attempt_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, bench_run_id TEXT, status TEXT NOT NULL, started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP, failure TEXT);
+             CREATE TABLE tuning_trials (session_id TEXT NOT NULL, trial_id TEXT NOT NULL, attempt_id TEXT NOT NULL, trial_number BIGINT NOT NULL, status TEXT NOT NULL, config JSON, created_at TIMESTAMP NOT NULL, started_at TIMESTAMP, ended_at TIMESTAMP, score DOUBLE, mu DOUBLE, sigma DOUBLE, failure TEXT, PRIMARY KEY (session_id, trial_id));",
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+
+        let nullable: String = conn
+            .query_row(
+                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'tuning_trials' AND column_name = 'stop_reason'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nullable, "YES");
+        let reports: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'tuning_trial_reports'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reports, 1);
     }
 
     #[test]

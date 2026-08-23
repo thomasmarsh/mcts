@@ -8,8 +8,9 @@ use serde_json::Value;
 pub use payload::{
     AttemptStartedPayload, AttemptTerminalPayload, CandidateSide, GameFinishedPayload,
     OpponentSnapshot, PairFailedPayload, PairFinishedPayload, PairStartedPayload, Rating,
-    SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialStartedPayload,
-    TrialTerminalPayload, TuningGameOutcome, TuningPayload,
+    SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialReportOutcome,
+    TrialReportReason, TrialReportedPayload, TrialStartedPayload, TrialTerminalPayload,
+    TuningGameOutcome, TuningPayload,
 };
 
 pub const TUNING_LIFECYCLE_SCHEMA_VERSION: u32 = 1;
@@ -49,6 +50,7 @@ pub enum TuningEventType {
     AttemptStarted,
     TrialCreated,
     TrialStarted,
+    TrialReported,
     TrialCompleted,
     TrialPruned,
     TrialFailed,
@@ -69,6 +71,7 @@ impl TuningEventType {
             self,
             Self::TrialCreated
                 | Self::TrialStarted
+                | Self::TrialReported
                 | Self::TrialCompleted
                 | Self::TrialPruned
                 | Self::TrialFailed
@@ -107,6 +110,7 @@ impl TuningEventType {
             Self::AttemptStarted => "attempt_started",
             Self::TrialCreated => "trial_created",
             Self::TrialStarted => "trial_started",
+            Self::TrialReported => "trial_reported",
             Self::TrialCompleted => "trial_completed",
             Self::TrialPruned => "trial_pruned",
             Self::TrialFailed => "trial_failed",
@@ -192,6 +196,7 @@ impl TuningLifecycleEvent {
         Ok(match payload {
             TuningPayload::TrialCreated(value) => Some(value.trial_id),
             TuningPayload::TrialStarted(value) => Some(value.trial_id),
+            TuningPayload::TrialReported(value) => Some(value.trial_id),
             TuningPayload::TrialCompleted(value)
             | TuningPayload::TrialPruned(value)
             | TuningPayload::TrialFailed(value)

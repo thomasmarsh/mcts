@@ -17,6 +17,7 @@ pub(super) fn apply(
             mark_trial_started(tx, event)?;
             touch_session(tx, event)?;
         }
+        TuningEventType::TrialReported => project_trial_reported(tx, event)?,
         TuningEventType::PairStarted => project_pair_started(tx, event)?,
         TuningEventType::GameFinished => project_game_finished(tx, event)?,
         TuningEventType::PairFinished => project_pair_finished(tx, event)?,
@@ -26,6 +27,21 @@ pub(super) fn apply(
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn project_trial_reported(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::TrialReported(payload) = event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![event.session_id.as_str(), payload.trial_id.as_str(), payload.trial_number, payload.completed_pairs, event.event_id.as_str(), &event.timestamp, payload.mu, payload.sigma, payload.score, payload.score_formula_version, payload.conservative_k, payload.outcome.as_str(), payload.reason.as_str(), payload.pruning_exempt, payload.bracket_id, payload.rung_resource],
+    )?;
+    touch_session(tx, event)
 }
 
 fn project_pair_started(
@@ -159,8 +175,8 @@ fn project_trial_terminal(
         _ => unreachable!(),
     };
     tx.execute(
-        "UPDATE tuning_trials SET status = ?1, ended_at = ?2, score = ?3, mu = ?4, sigma = ?5, failure = ?6 WHERE session_id = ?7 AND trial_id = ?8",
-        params![status, &event.timestamp, terminal.score, terminal.mu, terminal.sigma, terminal.error, event.session_id.as_str(), terminal.trial_id.as_str()],
+        "UPDATE tuning_trials SET status = ?1, ended_at = ?2, score = ?3, mu = ?4, sigma = ?5, stop_reason = ?6, failure = ?7 WHERE session_id = ?8 AND trial_id = ?9",
+        params![status, &event.timestamp, terminal.score, terminal.mu, terminal.sigma, terminal.stop_reason.map(crate::tuning_lifecycle::TrialReportReason::as_str), terminal.error, event.session_id.as_str(), terminal.trial_id.as_str()],
     )?;
     touch_session(tx, event)
 }

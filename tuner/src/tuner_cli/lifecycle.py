@@ -25,6 +25,7 @@ EVENT_TYPES: Final = frozenset(
         "attempt_started",
         "trial_created",
         "trial_started",
+        "trial_reported",
         "pair_started",
         "game_finished",
         "pair_finished",
