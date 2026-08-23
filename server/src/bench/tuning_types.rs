@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Serialize)]
@@ -71,8 +71,30 @@ pub(crate) struct TuningTrialView {
     pub(crate) score: Option<f64>,
     pub(crate) mu: Option<f64>,
     pub(crate) sigma: Option<f64>,
+    pub(crate) stop_reason: Option<mcts_bench::tuning_lifecycle::TrialReportReason>,
     pub(crate) failure: Option<String>,
     pub(crate) pairs: Vec<TuningPairView>,
+    pub(crate) reports: Vec<TuningTrialReportView>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialReportView {
+    pub(crate) completed_pairs: u64,
+    pub(crate) rating: TuningRatingView,
+    pub(crate) score: f64,
+    pub(crate) score_formula_version: u32,
+    pub(crate) conservative_k: f64,
+    pub(crate) decision: TuningTrialReportDecisionView,
+    pub(crate) reported_at: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningTrialReportDecisionView {
+    pub(crate) outcome: mcts_bench::tuning_lifecycle::TrialReportOutcome,
+    pub(crate) reason: mcts_bench::tuning_lifecycle::TrialReportReason,
+    pub(crate) pruning_exempt: bool,
+    pub(crate) bracket_id: Option<String>,
+    pub(crate) rung_resource: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -141,12 +163,51 @@ pub(crate) struct TuningCursorBoundary {
     pub(crate) session_sequence: i64,
 }
 
+#[derive(Deserialize, Serialize)]
+pub(crate) struct TuningResourcePolicyView {
+    pub(crate) min_pairs: u64,
+    pub(crate) max_pairs: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct TuningRatingPolicyView {
+    pub(crate) model: String,
+    pub(crate) score: String,
+    pub(crate) sigma_stop: Option<f64>,
+    pub(crate) conservative_k: f64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningSamplerPolicyView {
+    pub(crate) kind: String,
+    pub(crate) seed: u64,
+    pub(crate) deterministic: bool,
+    pub(crate) startup_trials: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct TuningPruningPolicyView {
+    pub(crate) enabled: bool,
+    pub(crate) kind: String,
+    pub(crate) reduction_factor: f64,
+    pub(crate) startup_terminal_trials: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningPolicyView {
+    pub(crate) resource: TuningResourcePolicyView,
+    pub(crate) rating: TuningRatingPolicyView,
+    pub(crate) sampler: TuningSamplerPolicyView,
+    pub(crate) pruning: TuningPruningPolicyView,
+}
+
 #[derive(Serialize)]
 pub(crate) struct TuningSessionDetail {
     pub(crate) schema_version: u32,
     pub(crate) summary: TuningSessionSummary,
     pub(crate) attempts: Vec<TuningAttemptView>,
     pub(crate) trials: Vec<TuningTrialView>,
+    pub(crate) policy: Option<TuningPolicyView>,
     pub(crate) manifest: Value,
     pub(crate) fingerprint: Option<String>,
     pub(crate) capabilities: TuningCapabilities,

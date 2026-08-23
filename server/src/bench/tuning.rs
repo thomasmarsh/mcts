@@ -2,16 +2,20 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{
     BenchError, BenchState, TuningAttemptSummary, TuningAttemptView, TuningCapabilities,
-    TuningCursorBoundary, TuningGameView, TuningOpponentView, TuningPairView, TuningRatingView,
-    TuningSessionDetail, TuningSessionList, TuningSessionListItem, TuningSessionSummary,
-    TuningStrategyMetricsView, TuningTrialCounts, TuningTrialView,
+    TuningCursorBoundary, TuningGameView, TuningOpponentView, TuningPairView, TuningPolicyView,
+    TuningPruningPolicyView, TuningRatingPolicyView, TuningRatingView, TuningResourcePolicyView,
+    TuningSamplerPolicyView, TuningSessionDetail, TuningSessionList, TuningSessionListItem,
+    TuningSessionSummary, TuningStrategyMetricsView, TuningTrialCounts,
+    TuningTrialReportDecisionView, TuningTrialReportView, TuningTrialView,
 };
 use axum::{
     extract::{Path as AxumPath, State as AxumState},
     response::Json,
 };
 use duckdb::Connection;
-use mcts_bench::tuning_lifecycle::{OpponentSnapshot, StrategyMetrics};
+use mcts_bench::tuning_lifecycle::{
+    OpponentSnapshot, StrategyMetrics, TrialReportOutcome, TrialReportReason,
+};
 use serde::Deserialize;
 
 pub(crate) async fn get_tuning_sessions(
@@ -281,8 +285,11 @@ fn load_tuning_session_detail(
     };
     let counts = load_trial_counts(db, session_id)?;
     let attempts = load_attempts(db, session_id)?;
-    let trials = load_trials(db, session_id)?;
-    let capabilities = load_capabilities(db, session_id)?;
+    let reports = load_trial_reports(db, session_id)?;
+    let has_search_reports = !reports.is_empty();
+    let trials = load_trials(db, session_id, reports)?;
+    let mut capabilities = load_capabilities(db, session_id)?;
+    capabilities.has_search_reports = has_search_reports;
     let manifest = decode_manifest(&session.manifest)?;
 
     Ok(Some(assemble_session_detail(
@@ -293,7 +300,7 @@ fn load_tuning_session_detail(
         trials,
         manifest,
         capabilities,
-    )))
+    )?))
 }
 
 fn load_session(
@@ -360,8 +367,12 @@ fn load_attempts(
         .collect()
 }
 
-fn load_trials(db: &Connection, session_id: &str) -> Result<Vec<TuningTrialView>, duckdb::Error> {
-    let mut query = db.prepare("SELECT trial_id, trial_number, attempt_id, status, CAST(config AS TEXT), score, mu, sigma, failure FROM tuning_trials WHERE session_id = ?1 ORDER BY trial_number")?;
+fn load_trials(
+    db: &Connection,
+    session_id: &str,
+    mut reports_by_trial: HashMap<String, Vec<TuningTrialReportView>>,
+) -> Result<Vec<TuningTrialView>, duckdb::Error> {
+    let mut query = db.prepare("SELECT trial_id, trial_number, attempt_id, status, CAST(config AS TEXT), score, mu, sigma, stop_reason, failure FROM tuning_trials WHERE session_id = ?1 ORDER BY trial_number")?;
     let rows: Vec<TrialRow> = query
         .query_map(duckdb::params![&session_id], |row| {
             Ok(TrialRow {
@@ -373,12 +384,16 @@ fn load_trials(db: &Connection, session_id: &str) -> Result<Vec<TuningTrialView>
                 score: row.get(5)?,
                 mu: row.get(6)?,
                 sigma: row.get(7)?,
-                failure: row.get(8)?,
+                stop_reason: decode_optional_report_reason(row.get(8)?, 8)?,
+                failure: row.get(9)?,
             })
         })?
         .collect::<Result<_, _>>()?;
     rows.into_iter()
-        .map(|row| assemble_trial_view(db, session_id, row))
+        .map(|row| {
+            let reports = reports_by_trial.remove(&row.trial_id).unwrap_or_default();
+            assemble_trial_view(db, session_id, row, reports)
+        })
         .collect()
 }
 
@@ -391,6 +406,7 @@ struct TrialRow {
     score: Option<f64>,
     mu: Option<f64>,
     sigma: Option<f64>,
+    stop_reason: Option<TrialReportReason>,
     failure: Option<String>,
 }
 
@@ -398,6 +414,7 @@ fn assemble_trial_view(
     db: &Connection,
     session_id: &str,
     row: TrialRow,
+    reports: Vec<TuningTrialReportView>,
 ) -> Result<TuningTrialView, duckdb::Error> {
     Ok(TuningTrialView {
         trial_id: row.trial_id.clone(),
@@ -408,9 +425,57 @@ fn assemble_trial_view(
         score: row.score,
         mu: row.mu,
         sigma: row.sigma,
+        stop_reason: row.stop_reason,
         failure: row.failure,
         pairs: load_pairs_for_trial(db, session_id, &row.trial_id)?,
+        reports,
     })
+}
+
+fn load_trial_reports(
+    db: &Connection,
+    session_id: &str,
+) -> Result<HashMap<String, Vec<TuningTrialReportView>>, duckdb::Error> {
+    let mut query = db.prepare(
+        "SELECT trial_id, completed_pairs, CAST(reported_at AS TEXT), mu, sigma, score, \
+                score_formula_version, conservative_k, outcome, reason, pruning_exempt, \
+                bracket_id, rung_resource \
+         FROM tuning_trial_reports WHERE session_id = ?1 \
+         ORDER BY trial_number, completed_pairs, event_id",
+    )?;
+    let reports: Vec<(String, TuningTrialReportView)> = query
+        .query_map(duckdb::params![session_id], |row| {
+            let outcome: String = row.get(8)?;
+            let reason: String = row.get(9)?;
+            Ok((
+                row.get(0)?,
+                TuningTrialReportView {
+                    completed_pairs: row.get(1)?,
+                    reported_at: row.get(2)?,
+                    rating: rating_view(row.get(3)?, row.get(4)?),
+                    score: row.get(5)?,
+                    score_formula_version: row.get(6)?,
+                    conservative_k: row.get(7)?,
+                    decision: TuningTrialReportDecisionView {
+                        outcome: decode_report_enum(&outcome, 8)?,
+                        reason: decode_report_enum(&reason, 9)?,
+                        pruning_exempt: row.get(10)?,
+                        bracket_id: row.get(11)?,
+                        rung_resource: row.get(12)?,
+                    },
+                },
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    let mut reports_by_trial = HashMap::new();
+    for (trial_id, report) in reports {
+        reports_by_trial
+            .entry(trial_id)
+            .or_insert_with(Vec::new)
+            .push(report);
+    }
+    Ok(reports_by_trial)
 }
 
 fn load_pairs_for_trial(
@@ -533,6 +598,25 @@ fn decode_json<T: serde::de::DeserializeOwned>(
     })
 }
 
+fn decode_report_enum<T: serde::de::DeserializeOwned>(
+    value: &str,
+    column: usize,
+) -> Result<T, duckdb::Error> {
+    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|error| {
+        duckdb::Error::FromSqlConversionFailure(column, duckdb::types::Type::Text, Box::new(error))
+    })
+}
+
+fn decode_optional_report_reason(
+    value: Option<String>,
+    column: usize,
+) -> Result<Option<TrialReportReason>, duckdb::Error> {
+    value
+        .as_deref()
+        .map(|reason| decode_report_enum(reason, column))
+        .transpose()
+}
+
 fn opponent_view(value: OpponentSnapshot) -> TuningOpponentView {
     TuningOpponentView {
         anchor_id: value.anchor_id,
@@ -569,6 +653,58 @@ fn decode_manifest(manifest: &str) -> Result<serde_json::Value, BenchError> {
     Ok(serde_json::from_str(manifest)?)
 }
 
+#[derive(Deserialize)]
+struct TuningManifestPolicyEnvelope {
+    #[serde(default)]
+    semantic_inputs: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+struct TuningManifestPolicyInputs {
+    optimizer: TuningManifestOptimizerPolicy,
+    rating: TuningRatingPolicyView,
+}
+
+#[derive(Deserialize)]
+struct TuningManifestOptimizerPolicy {
+    resource: TuningResourcePolicyView,
+    sampler: TuningManifestSamplerPolicy,
+    pruning: TuningPruningPolicyView,
+}
+
+#[derive(Deserialize)]
+struct TuningManifestSamplerPolicy {
+    kind: String,
+    seed: u64,
+    deterministic: bool,
+    startup_trials: u64,
+}
+
+fn decode_manifest_policy(
+    manifest: &serde_json::Value,
+) -> Result<Option<TuningPolicyView>, BenchError> {
+    let envelope: TuningManifestPolicyEnvelope = serde_json::from_value(manifest.clone())?;
+    let Some(inputs) = envelope.semantic_inputs else {
+        return Ok(None);
+    };
+    if !inputs.contains_key("optimizer") && !inputs.contains_key("rating") {
+        return Ok(None);
+    }
+    let inputs: TuningManifestPolicyInputs =
+        serde_json::from_value(serde_json::Value::Object(inputs))?;
+    Ok(Some(TuningPolicyView {
+        resource: inputs.optimizer.resource,
+        rating: inputs.rating,
+        sampler: TuningSamplerPolicyView {
+            kind: inputs.optimizer.sampler.kind,
+            seed: inputs.optimizer.sampler.seed,
+            deterministic: inputs.optimizer.sampler.deterministic,
+            startup_trials: inputs.optimizer.sampler.startup_trials,
+        },
+        pruning: inputs.optimizer.pruning,
+    }))
+}
+
 fn assemble_session_detail(
     session_id: &str,
     session: TuningSessionRow,
@@ -577,8 +713,9 @@ fn assemble_session_detail(
     trials: Vec<TuningTrialView>,
     manifest: serde_json::Value,
     capabilities: TuningCapabilities,
-) -> TuningSessionDetail {
-    TuningSessionDetail {
+) -> Result<TuningSessionDetail, BenchError> {
+    let policy = decode_manifest_policy(&manifest)?;
+    Ok(TuningSessionDetail {
         schema_version: 1,
         summary: TuningSessionSummary {
             session_id: session_id.to_owned(),
@@ -588,11 +725,12 @@ fn assemble_session_detail(
         },
         attempts,
         trials,
+        policy,
         manifest,
         fingerprint: session.fingerprint,
         capabilities,
         cursor: TuningCursorBoundary {
             session_sequence: session.last_sequence,
         },
-    }
+    })
 }

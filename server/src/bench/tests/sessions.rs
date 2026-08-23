@@ -142,7 +142,85 @@ async fn tuning_session_detail_projects_counts_attempts_and_capabilities() {
     assert_eq!(value["fingerprint"], "fp");
     assert_eq!(value["capabilities"]["has_lifecycle"], true);
     assert_eq!(value["capabilities"]["has_pairs"], false);
+    assert_eq!(value["capabilities"]["has_search_reports"], false);
+    assert!(value["policy"].is_null());
+    assert_eq!(value["trials"][0]["stop_reason"], serde_json::Value::Null);
+    assert_eq!(value["trials"][0]["reports"], serde_json::json!([]));
     assert_eq!(value["cursor"]["session_sequence"], 7);
+}
+
+#[tokio::test]
+async fn tuning_session_detail_loads_all_reports_without_per_trial_queries() {
+    let app = seeded_app(|conn, _| {
+        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{\"schema_version\":1,\"semantic_inputs\":{\"game\":{\"kind\":\"nim\"},\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":6},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_terminal_trials\":5}},\"rating\":{\"model\":\"ThurstoneMostellerPart\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":2.0,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 4)", []).unwrap();
+        conn.execute("INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at) VALUES ('attempt-1', 'session-1', 'completed', '2026-01-01T00:00:00Z')", []).unwrap();
+        conn.execute("INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at, stop_reason) VALUES ('session-1', 'trial-1', 'attempt-1', 1, 'complete', '{}', '2026-01-01T00:00:00Z', 'max_pairs'), ('session-1', 'trial-2', 'attempt-1', 2, 'pruned', '{}', '2026-01-01T00:00:00Z', 'hyperband_prune')", []).unwrap();
+        conn.execute("INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource) VALUES ('session-1', 'trial-1', 1, 4, 'report-4', '2026-01-01T00:04:00Z', 26.0, 1.0, 23.0, 1, 3.0, 'complete', 'max_pairs', false, 'bracket-a', 4), ('session-1', 'trial-2', 2, 2, 'report-2', '2026-01-01T00:02:00Z', 24.0, 2.0, 18.0, 1, 3.0, 'prune', 'hyperband_prune', false, NULL, NULL), ('session-1', 'trial-1', 1, 2, 'report-1', '2026-01-01T00:02:00Z', 25.0, 2.0, 19.0, 1, 3.0, 'continue', 'startup_exempt', true, NULL, NULL)", []).unwrap();
+    }).0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/session-1").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert_eq!(
+        value["policy"],
+        serde_json::json!({
+            "resource": {"min_pairs": 2, "max_pairs": 6},
+            "rating": {"model": "ThurstoneMostellerPart", "score": "mu_minus_k_sigma", "sigma_stop": 2.0, "conservative_k": 3.0},
+            "sampler": {"kind": "tpe", "seed": 4, "deterministic": true, "startup_trials": 3},
+            "pruning": {"enabled": true, "kind": "hyperband", "reduction_factor": 3.0, "startup_terminal_trials": 5}
+        })
+    );
+    assert_eq!(
+        value["trials"],
+        serde_json::json!([
+            {
+                "trial_id": "trial-1", "trial_number": 1, "attempt_id": "attempt-1", "status": "complete", "config": {}, "score": null, "mu": null, "sigma": null, "stop_reason": "max_pairs", "failure": null, "pairs": [],
+                "reports": [
+                    {"completed_pairs": 2, "rating": {"mu": 25.0, "sigma": 2.0}, "score": 19.0, "score_formula_version": 1, "conservative_k": 3.0, "decision": {"outcome": "continue", "reason": "startup_exempt", "pruning_exempt": true, "bracket_id": null, "rung_resource": null}, "reported_at": "2026-01-01 00:02:00"},
+                    {"completed_pairs": 4, "rating": {"mu": 26.0, "sigma": 1.0}, "score": 23.0, "score_formula_version": 1, "conservative_k": 3.0, "decision": {"outcome": "complete", "reason": "max_pairs", "pruning_exempt": false, "bracket_id": "bracket-a", "rung_resource": 4}, "reported_at": "2026-01-01 00:04:00"}
+                ]
+            },
+            {
+                "trial_id": "trial-2", "trial_number": 2, "attempt_id": "attempt-1", "status": "pruned", "config": {}, "score": null, "mu": null, "sigma": null, "stop_reason": "hyperband_prune", "failure": null, "pairs": [],
+                "reports": [
+                    {"completed_pairs": 2, "rating": {"mu": 24.0, "sigma": 2.0}, "score": 18.0, "score_formula_version": 1, "conservative_k": 3.0, "decision": {"outcome": "prune", "reason": "hyperband_prune", "pruning_exempt": false, "bracket_id": null, "rung_resource": null}, "reported_at": "2026-01-01 00:02:00"}
+                ]
+            }
+        ])
+    );
+    assert_eq!(value["capabilities"]["has_search_reports"], true);
+}
+
+#[tokio::test]
+async fn tuning_session_detail_rejects_a_malformed_new_policy() {
+    let app = seeded_app(|conn, _| {
+        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{\"semantic_inputs\":{\"optimizer\":{}}}', CURRENT_TIMESTAMP, 1)", []).unwrap();
+    }).0;
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/session-1").await;
+    assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    assert_eq!(body_json(&body)["code"], 400);
+}
+
+#[tokio::test]
+async fn tuning_session_detail_returns_a_storage_error_when_reports_are_unavailable() {
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| {
+            conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{}', CURRENT_TIMESTAMP, 1)", []).unwrap();
+        },
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    );
+    state
+        .db
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TABLE tuning_trial_reports")
+        .unwrap();
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/session-1").await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
 }
 
 #[tokio::test]
