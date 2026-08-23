@@ -26,14 +26,14 @@
     {
         "id": "tuned",
         "label": "Tuned",
-        "description": "Deep MCTS-Solver — tuner tuned.",
+        "description": "Tuned with optuna.",
         "params": {
-            "c": 0.7002349961293,
-            "epsilon": 0.8166764873097,
-            "family": "ucb1_tuned_dm_mast",
+            "c": 2.889922832129161,
+            "epsilon": 0.5719669508725548,
+            "family": "ucb1_lgr2_mast",
             "final_action": "robust_child",
-            "mcgs": true,
-            "q_init": "Infinity"
+            "mcgs": false,
+            "q_init": "Draw"
         },
         "max_iterations": 10000,
         "use_transpositions": true
