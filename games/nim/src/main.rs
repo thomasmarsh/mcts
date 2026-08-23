@@ -2,10 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
-};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -146,11 +143,14 @@ impl GameAdapter for NimAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let action = ai.choose_action(&s);
+        let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+            serde_json::to_value(action).expect("Nim action always serializes")
+        });
         let next = Nim::apply(s, &action);
         Ok(AiMoveResult {
             mv: serde_json::to_value(&action).unwrap(),
             state: state_to_value(&next),
+            search: Some(search),
         })
     }
     fn analyze(
@@ -174,31 +174,17 @@ impl GameAdapter for NimAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-        let suggested = report
-            .principal_variation
-            .first()
-            .map(|a| serde_json::to_value(a).unwrap());
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: serde_json::to_value(&a.action).unwrap(),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| serde_json::to_value(a).unwrap())
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move: suggested,
-        })
+        let (selected_action, search) =
+            mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+                serde_json::to_value(action).expect("Nim action always serializes")
+            });
+        Ok(mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &s,
+            &selected_action,
+            search,
+            |action| serde_json::to_value(action).expect("Nim action always serializes"),
+        ))
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
@@ -250,6 +236,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcts_ai_move_emits_an_available_search_report() {
+        let adapter = NimAdapter;
+        let state = adapter.new_state(serde_json::json!({})).unwrap();
+        let result = adapter.ai_move(&state, "easy", None).unwrap();
+        let report = result
+            .search
+            .expect("current adapters always emit a report");
+        assert_eq!(report.status, game_host::SearchReportStatus::Available);
+        assert_eq!(report.selected_action, Some(result.mv));
+    }
 
     #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts (seconds for small games, tens of minutes for large boards like druid) -- mcts-tune's own crate has a fast per-family unit suite covering dispatch; this only additionally proves this game's own Game impl round-trips end to end. Run explicitly with `cargo test --bins -- --ignored`."]
     #[test]

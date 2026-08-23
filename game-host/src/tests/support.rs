@@ -76,6 +76,7 @@ impl GameAdapter for FakeAdapter {
             Ok(AiMoveResult {
                 mv: serde_json::json!(0),
                 state: next,
+                search: None,
             })
         } else {
             Err(HostError::not_found(format!("unknown preset: {preset}")))
@@ -103,6 +104,7 @@ impl GameAdapter for FakeAdapter {
             principal_variation: vec![mv],
             total_visits: 10,
             suggested_move: Some(serde_json::json!(0)),
+            search: None,
         })
     }
 }
@@ -321,6 +323,7 @@ fn test_ai_move() {
             assert_eq!(id, 16);
             assert_eq!(result.get("mv").and_then(|v| v.as_u64()), Some(0));
             assert!(result.get("state").is_some());
+            assert!(result.get("search").is_none());
         }
         _ => panic!("expected success response"),
     }
@@ -357,6 +360,7 @@ fn test_analyze() {
             let actions = result.get("actions").and_then(|a| a.as_array()).unwrap();
             assert_eq!(actions.len(), 1);
             assert_eq!(actions[0].get("visits").and_then(|v| v.as_u64()), Some(10));
+            assert!(result.get("search").is_none());
         }
         _ => panic!("expected success response"),
     }

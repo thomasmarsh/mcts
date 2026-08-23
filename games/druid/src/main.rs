@@ -16,10 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
-};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -311,7 +308,10 @@ impl GameAdapter for DruidAdapter {
         let mut ai_state = state.clone();
 
         loop {
-            let mv = ai.choose_action(&ai_state);
+            let (mv, search) =
+                mcts_tune::choose_action_with_report(&mut *ai, &ai_state, |action| {
+                    serde_json::to_value(action).expect("Druid action always serializes")
+                });
             ai_state = Druid::apply(ai_state, &mv);
             match mv {
                 Move::Piece(kind) => chosen_kind = Some(kind),
@@ -331,6 +331,7 @@ impl GameAdapter for DruidAdapter {
                     return Ok(AiMoveResult {
                         mv: serde_json::to_value(result).expect("PlacedPiece always serializes"),
                         state: state_to_value(&ai_state),
+                        search: Some(search),
                     });
                 }
             }
@@ -379,37 +380,24 @@ impl GameAdapter for DruidAdapter {
             },
         };
 
-        let _ = ai.choose_action(&state);
-        let report = ai.root_report(&state);
+        let (selected_action, search) =
+            mcts_tune::choose_action_with_report(&mut *ai, &state, |action| {
+                serde_json::to_value(action).expect("Druid action always serializes")
+            });
+
+        let analysis = mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &state,
+            &selected_action,
+            search,
+            |action| serde_json::to_value(action).expect("Druid action always serializes"),
+        );
 
         if custom_spec.is_none() && budget_ms.is_none() {
             self.cache.put(preset, hash, ai);
         }
 
-        let suggested_move = report
-            .principal_variation
-            .first()
-            .map(|a| serde_json::to_value(*a).expect("Move always serializes"));
-
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: serde_json::to_value(a.action).expect("Move always serializes"),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| serde_json::to_value(a).expect("Move always serializes"))
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move,
-        })
+        Ok(analysis)
     }
 
     fn tuner(&self) -> Option<TunerInfo> {

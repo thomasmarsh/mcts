@@ -10,6 +10,66 @@ use mcts::strategies::mcts::{
 use mcts::strategies::Search;
 use serde_json::{json, Value};
 
+fn nim_action_value(state: &<Nim as Game>::S, action: &<Nim as Game>::A) -> Value {
+    Value::String(Nim::notation(state, action))
+}
+
+#[test]
+fn search_report_and_legacy_analysis_agree_on_the_selected_action() {
+    let state = <Nim as Game>::S::default();
+    let mut search =
+        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(20));
+    let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
+        nim_action_value(&state, action)
+    });
+    let analysis = legacy_analysis_with_report(
+        &search,
+        &state,
+        &selected_action,
+        report.clone(),
+        |action| nim_action_value(&state, action),
+    );
+
+    assert_eq!(report.status, game_host::SearchReportStatus::Available);
+    assert_eq!(report.selected_action, analysis.suggested_move);
+    assert_eq!(
+        analysis.search.as_ref().unwrap().selected_action,
+        analysis.suggested_move
+    );
+    for action in &report.actions {
+        assert!(analysis.actions.iter().any(|legacy| {
+            legacy.action == action.action
+                && legacy.visits == action.visits
+                && legacy.mean_value == action.mean_value
+                && legacy.is_proven == action.is_proven
+        }));
+    }
+}
+
+#[test]
+fn non_mcts_search_reports_explicit_unavailability() {
+    let state = <Nim as Game>::S::default();
+    let mut search = mcts::strategies::random::Random::<Nim>::new();
+    let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
+        nim_action_value(&state, action)
+    });
+    let analysis =
+        legacy_analysis_with_report(&search, &state, &selected_action, report, |action| {
+            nim_action_value(&state, action)
+        });
+
+    let report = analysis.search.as_ref().unwrap();
+    assert_eq!(report.status, game_host::SearchReportStatus::Unavailable);
+    assert_eq!(
+        report.reason,
+        Some(game_host::SearchReportReason::StrategyUnsupported)
+    );
+    assert_eq!(
+        analysis.suggested_move,
+        Some(nim_action_value(&state, &selected_action))
+    );
+}
+
 #[test]
 fn test_cost_from_losses_hand_verified() {
     // 20 rounds -> 40 games; 15 losses -> cost 0.375.

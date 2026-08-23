@@ -2,10 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
-};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -186,11 +183,14 @@ impl GameAdapter for TakAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let action = ai.choose_action(&s);
+        let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+            Value::String(move_to_ptn(*action))
+        });
         let next = Tak::<5>::apply(s, &action);
         Ok(AiMoveResult {
             mv: Value::String(move_to_ptn(action)),
             state: state_to_value(&next),
+            search: Some(search),
         })
     }
     fn analyze(
@@ -214,31 +214,15 @@ impl GameAdapter for TakAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-        let suggested = report
-            .principal_variation
-            .first()
-            .map(|a| Value::String(move_to_ptn(*a)));
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: Value::String(move_to_ptn(a.action)),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| Value::String(move_to_ptn(a)))
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move: suggested,
-        })
+        let encode = |action: &_| Value::String(move_to_ptn(*action));
+        let (selected_action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, encode);
+        Ok(mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &s,
+            &selected_action,
+            search,
+            encode,
+        ))
     }
 
     fn tuner(&self) -> Option<TunerInfo> {

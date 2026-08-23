@@ -2,10 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
-};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -198,7 +195,12 @@ impl GameAdapter for BtAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let action = ai.choose_action(&s);
+        let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+            Value::Array(vec![
+                Value::from(action.0 as u64),
+                Value::from(action.1 as u64),
+            ])
+        });
         let next = Breakthrough::<8, 8>::apply(s, &action);
         Ok(AiMoveResult {
             mv: Value::Array(vec![
@@ -206,6 +208,7 @@ impl GameAdapter for BtAdapter {
                 Value::from(action.1 as u64),
             ]),
             state: state_to_value(&next),
+            search: Some(search),
         })
     }
 
@@ -230,34 +233,20 @@ impl GameAdapter for BtAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-        let suggested = report
-            .principal_variation
-            .first()
-            .map(|a| Value::Array(vec![Value::from(a.0 as u64), Value::from(a.1 as u64)]));
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: Value::Array(vec![
-                        Value::from(a.action.0 as u64),
-                        Value::from(a.action.1 as u64),
-                    ]),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| Value::Array(vec![Value::from(a.0 as u64), Value::from(a.1 as u64)]))
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move: suggested,
-        })
+        let encode = |action: &Move| {
+            Value::Array(vec![
+                Value::from(action.0 as u64),
+                Value::from(action.1 as u64),
+            ])
+        };
+        let (selected_action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, encode);
+        Ok(mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &s,
+            &selected_action,
+            search,
+            encode,
+        ))
     }
 
     fn tuner(&self) -> Option<TunerInfo> {

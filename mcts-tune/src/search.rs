@@ -1,9 +1,16 @@
 use std::str::FromStr;
 
-use game_host::HostError;
+use game_host::{
+    Analysis, AnalysisAction, HostError, SearchActionReport, SearchGraphMode, SearchReport,
+    SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
+};
 use mcts::game::Game;
 use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats};
-use mcts::strategies::Search;
+use mcts::strategies::{
+    Search, SearchGraphMode as EngineSearchGraphMode, SearchReport as EngineSearchReport,
+    SearchReportReason as EngineSearchReportReason, SearchReportStatus as EngineSearchReportStatus,
+    SearchTermination as EngineSearchTermination, SearchWarning as EngineSearchWarning,
+};
 use serde_json::Value;
 
 use crate::{
@@ -14,6 +21,163 @@ use crate::{
 pub(crate) const PLAYOUT_DEPTH: usize = 200;
 pub(crate) const MAX_ITER: usize = 10_000;
 pub(crate) const EXPAND_THRESHOLD: u32 = 1;
+
+/// Chooses an action and converts the evidence retained for that exact call
+/// into the canonical game-host wire format. The caller supplies the same
+/// move encoder it uses at its protocol boundary, keeping game-specific wire
+/// shapes (such as Tak PTN) out of the generic search layer.
+pub fn choose_action_with_report<G, F>(
+    search: &mut dyn Search<G = G>,
+    state: &G::S,
+    encode_action: F,
+) -> (G::A, SearchReport)
+where
+    G: Game,
+    F: Fn(&G::A) -> serde_json::Value,
+{
+    let selected_action = search.choose_action(state);
+    let report = wire_search_report(
+        search.search_report(state, &selected_action),
+        &encode_action,
+    );
+    (selected_action, report)
+}
+
+/// Projects the existing root summary into the legacy analysis fields while
+/// retaining the separately versioned final report. The selected action is
+/// authoritative: a principal variation may be absent or partial, but the
+/// move that was actually chosen is always known.
+pub fn legacy_analysis_with_report<G, F>(
+    search: &dyn Search<G = G>,
+    state: &G::S,
+    selected_action: &G::A,
+    report: SearchReport,
+    encode_action: F,
+) -> Analysis
+where
+    G: Game,
+    F: Fn(&G::A) -> serde_json::Value,
+{
+    let root = search.root_report(state);
+    let actions: Vec<AnalysisAction> = root
+        .actions
+        .into_iter()
+        .map(|action| AnalysisAction {
+            action: encode_action(&action.action),
+            visits: action.visits,
+            mean_value: action.mean_value,
+            is_proven: action.is_proven,
+        })
+        .collect();
+
+    if !matches!(report.status, SearchReportStatus::Unavailable) {
+        for retained in &report.actions {
+            assert!(
+                actions.iter().any(|legacy| {
+                    legacy.action == retained.action
+                        && legacy.visits == retained.visits
+                        && legacy.mean_value == retained.mean_value
+                        && legacy.is_proven == retained.is_proven
+                }),
+                "final report action must agree with legacy root summary"
+            );
+        }
+    }
+
+    Analysis {
+        actions,
+        principal_variation: root
+            .principal_variation
+            .iter()
+            .map(&encode_action)
+            .collect(),
+        total_visits: root.total_visits,
+        suggested_move: Some(encode_action(selected_action)),
+        search: Some(report),
+    }
+}
+
+fn wire_search_report<A>(
+    report: EngineSearchReport<A>,
+    encode_action: &impl Fn(&A) -> serde_json::Value,
+) -> SearchReport {
+    SearchReport {
+        schema_version: report.schema_version,
+        status: match report.status {
+            EngineSearchReportStatus::Available => SearchReportStatus::Available,
+            EngineSearchReportStatus::Partial => SearchReportStatus::Partial,
+            EngineSearchReportStatus::Unavailable => SearchReportStatus::Unavailable,
+        },
+        reason: report.reason.map(|reason| match reason {
+            EngineSearchReportReason::StrategyUnsupported => {
+                SearchReportReason::StrategyUnsupported
+            }
+            EngineSearchReportReason::SearchNotRun => SearchReportReason::SearchNotRun,
+            EngineSearchReportReason::RootParallelPvSingleTree => {
+                SearchReportReason::RootParallelPvSingleTree
+            }
+        }),
+        elapsed_seconds: report.elapsed_seconds,
+        iteration_limit: report.iteration_limit,
+        time_limit_seconds: report.time_limit_seconds,
+        completed_iterations: report.completed_iterations,
+        termination: report.termination.map(|termination| match termination {
+            EngineSearchTermination::Iterations => SearchTermination::Iterations,
+            EngineSearchTermination::Time => SearchTermination::Time,
+            EngineSearchTermination::Solved => SearchTermination::Solved,
+            EngineSearchTermination::Unknown => SearchTermination::Unknown,
+        }),
+        selected_action: report.selected_action.as_ref().map(encode_action),
+        actions: report
+            .actions
+            .into_iter()
+            .map(|action| SearchActionReport {
+                action: encode_action(&action.action),
+                visits: action.visits,
+                share: action.share,
+                mean_value: action.mean_value,
+                is_proven: action.is_proven,
+            })
+            .collect(),
+        principal_variation: report
+            .principal_variation
+            .iter()
+            .map(encode_action)
+            .collect(),
+        root_visits: report.root_visits,
+        tree_nodes: report.tree_nodes,
+        mean_depth: report.mean_depth,
+        max_depth: report.max_depth,
+        graph_mode: report.graph_mode.map(|mode| match mode {
+            EngineSearchGraphMode::Tree => SearchGraphMode::Tree,
+            EngineSearchGraphMode::Transpositions => SearchGraphMode::Transpositions,
+            EngineSearchGraphMode::DagEdges => SearchGraphMode::DagEdges,
+            EngineSearchGraphMode::DagNodes => SearchGraphMode::DagNodes,
+            EngineSearchGraphMode::DagBoth => SearchGraphMode::DagBoth,
+        }),
+        tt_reads: report.tt_reads,
+        tt_writes: report.tt_writes,
+        tt_hits: report.tt_hits,
+        tt_hit_ratio: report.tt_hit_ratio,
+        iterations_per_second: report.iterations_per_second,
+        warnings: report
+            .warnings
+            .into_iter()
+            .map(|warning| match warning {
+                EngineSearchWarning::ActionsTruncated => SearchWarning::ActionsTruncated,
+                EngineSearchWarning::PrincipalVariationTruncated => {
+                    SearchWarning::PrincipalVariationTruncated
+                }
+                EngineSearchWarning::StructuralDiagnosticsOmitted => {
+                    SearchWarning::StructuralDiagnosticsOmitted
+                }
+                EngineSearchWarning::RootParallelPvSingleTree => {
+                    SearchWarning::RootParallelPvSingleTree
+                }
+            })
+            .collect(),
+    }
+}
 
 /// Iteration cap for `meta_mcts`'s inner nested search -- see the comment at
 /// its `make_candidate` arm for why this can't just be `TreeSearch::default()`.

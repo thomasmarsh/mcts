@@ -8,10 +8,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
-    TunerInfo,
-};
+use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -191,12 +188,15 @@ impl GameAdapter for TttAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let action = ai.choose_action(&s);
+        let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+            Value::from(action.0 as u64)
+        });
         let next = TicTacToe::apply(s, &action);
 
         Ok(AiMoveResult {
             mv: Value::from(action.0 as u64),
             state: state_to_value(&next),
+            search: Some(search),
         })
     }
 
@@ -223,33 +223,17 @@ impl GameAdapter for TttAdapter {
             custom_spec.as_ref(),
             PRESET_SEED,
         )?;
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-
-        let suggested_move = report
-            .principal_variation
-            .first()
-            .map(|a| Value::from(a.0 as u64));
-
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: Value::from(a.action.0 as u64),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| Value::from(a.0 as u64))
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move,
-        })
+        let (selected_action, search) =
+            mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+                Value::from(action.0 as u64)
+            });
+        Ok(mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &s,
+            &selected_action,
+            search,
+            |action| Value::from(action.0 as u64),
+        ))
     }
 
     fn tuner(&self) -> Option<TunerInfo> {

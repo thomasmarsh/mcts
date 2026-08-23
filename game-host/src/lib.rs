@@ -19,7 +19,9 @@ pub use types::{
     derive_seed, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, BookInfo,
     CompareValidationField, ConfiguredCandidateSide, ConfiguredComparisonSummary,
     ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics, ErrorBody, Request,
-    Response, TunerCondition, TunerInfo, TunerParameter,
+    Response, SearchActionReport, SearchGraphMode, SearchReport, SearchReportReason,
+    SearchReportStatus, SearchTermination, SearchWarning, TunerCondition, TunerInfo,
+    TunerParameter,
 };
 
 #[cfg(test)]

@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use game_host::{
-    run_cli, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, BookInfo, GameAdapter,
-    HostError, TunerInfo,
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, BookInfo, GameAdapter, HostError, TunerInfo,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -329,11 +328,14 @@ impl GameAdapter for GonnectAdapter {
         }
         let size = s.black().rows();
         let mut ai = self.augmented_preset(size, preset, custom_spec.as_ref())?;
-        let action = ai.choose_action(&s);
+        let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+            serde_json::to_value(action).expect("Gonnect action always serializes")
+        });
         let next = Gonnect::apply(s, &action);
         Ok(AiMoveResult {
             mv: serde_json::to_value(action).unwrap(),
             state: state_to_value(&next),
+            search: Some(search),
         })
     }
     fn analyze(
@@ -354,31 +356,17 @@ impl GameAdapter for GonnectAdapter {
         }
         let size = s.black().rows();
         let mut ai = self.augmented_preset(size, preset, custom_spec.as_ref())?;
-        let _ = ai.choose_action(&s);
-        let report = ai.root_report(&s);
-        let suggested = report
-            .principal_variation
-            .first()
-            .map(|a| serde_json::to_value(a).unwrap());
-        Ok(Analysis {
-            actions: report
-                .actions
-                .into_iter()
-                .map(|a| AnalysisAction {
-                    action: serde_json::to_value(a.action).unwrap(),
-                    visits: a.visits,
-                    mean_value: a.mean_value,
-                    is_proven: a.is_proven,
-                })
-                .collect(),
-            principal_variation: report
-                .principal_variation
-                .into_iter()
-                .map(|a| serde_json::to_value(a).unwrap())
-                .collect(),
-            total_visits: report.total_visits,
-            suggested_move: suggested,
-        })
+        let (selected_action, search) =
+            mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
+                serde_json::to_value(action).expect("Gonnect action always serializes")
+            });
+        Ok(mcts_tune::legacy_analysis_with_report(
+            &*ai,
+            &s,
+            &selected_action,
+            search,
+            |action| serde_json::to_value(action).expect("Gonnect action always serializes"),
+        ))
     }
 
     fn tuner(&self) -> Option<TunerInfo> {

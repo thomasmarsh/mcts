@@ -44,6 +44,10 @@ pub struct AiPresetInfo {
 pub struct AiMoveResult {
     pub mv: Value,
     pub state: Value,
+    /// Final evidence from the action selection. `None` is reserved for
+    /// older producers that have not adopted the search-report contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchReport>,
 }
 
 /// One candidate root action returned from `analyze`.
@@ -62,6 +66,171 @@ pub struct Analysis {
     pub principal_variation: Vec<Value>,
     pub total_visits: u32,
     pub suggested_move: Option<Value>,
+    /// Final evidence from the action selection that produced this analysis.
+    /// `None` is reserved for older producers that have not adopted the
+    /// search-report contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchReport>,
+}
+
+/// Availability of the versioned final-search evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchReportStatus {
+    Available,
+    Partial,
+    Unavailable,
+}
+
+/// Why final-search evidence is unavailable or partial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchReportReason {
+    StrategyUnsupported,
+    SearchNotRun,
+    RootParallelPvSingleTree,
+}
+
+/// The condition that stopped the most recent search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTermination {
+    Iterations,
+    Time,
+    Solved,
+    Unknown,
+}
+
+/// The retained search structure represented by a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchGraphMode {
+    Tree,
+    Transpositions,
+    DagEdges,
+    DagNodes,
+    DagBoth,
+}
+
+/// Non-fatal qualification attached to a final report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchWarning {
+    ActionsTruncated,
+    PrincipalVariationTruncated,
+    StructuralDiagnosticsOmitted,
+    RootParallelPvSingleTree,
+}
+
+/// One root action's final-search evidence in the game's canonical JSON
+/// move format.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchActionReport {
+    pub action: Value,
+    pub visits: u32,
+    pub share: f64,
+    pub mean_value: f64,
+    pub is_proven: bool,
+}
+
+/// Version-1 final evidence from one strategy action selection.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchReport {
+    pub schema_version: u8,
+    pub status: SearchReportStatus,
+    pub reason: Option<SearchReportReason>,
+    pub elapsed_seconds: Option<f64>,
+    pub iteration_limit: Option<usize>,
+    pub time_limit_seconds: Option<f64>,
+    pub completed_iterations: usize,
+    pub termination: Option<SearchTermination>,
+    pub selected_action: Option<Value>,
+    pub actions: Vec<SearchActionReport>,
+    pub principal_variation: Vec<Value>,
+    pub root_visits: u32,
+    pub tree_nodes: usize,
+    pub mean_depth: Option<f64>,
+    pub max_depth: Option<usize>,
+    pub graph_mode: Option<SearchGraphMode>,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+    pub tt_hit_ratio: Option<f64>,
+    pub iterations_per_second: Option<f64>,
+    pub warnings: Vec<SearchWarning>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_report_json_is_stable() {
+        let report = SearchReport {
+            schema_version: 1,
+            status: SearchReportStatus::Partial,
+            reason: Some(SearchReportReason::RootParallelPvSingleTree),
+            elapsed_seconds: Some(0.25),
+            iteration_limit: Some(100),
+            time_limit_seconds: None,
+            completed_iterations: 80,
+            termination: Some(SearchTermination::Time),
+            selected_action: Some(serde_json::json!({"ptn": "a1"})),
+            actions: vec![SearchActionReport {
+                action: serde_json::json!({"ptn": "a1"}),
+                visits: 60,
+                share: 0.75,
+                mean_value: 0.5,
+                is_proven: false,
+            }],
+            principal_variation: vec![serde_json::json!({"ptn": "a1"})],
+            root_visits: 80,
+            tree_nodes: 91,
+            mean_depth: Some(4.0),
+            max_depth: Some(7),
+            graph_mode: Some(SearchGraphMode::DagBoth),
+            tt_reads: 10,
+            tt_writes: 8,
+            tt_hits: 3,
+            tt_hit_ratio: Some(0.3),
+            iterations_per_second: Some(320.0),
+            warnings: vec![SearchWarning::RootParallelPvSingleTree],
+        };
+
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({
+                "schema_version": 1,
+                "status": "partial",
+                "reason": "root_parallel_pv_single_tree",
+                "elapsed_seconds": 0.25,
+                "iteration_limit": 100,
+                "time_limit_seconds": null,
+                "completed_iterations": 80,
+                "termination": "time",
+                "selected_action": {"ptn": "a1"},
+                "actions": [{
+                    "action": {"ptn": "a1"},
+                    "visits": 60,
+                    "share": 0.75,
+                    "mean_value": 0.5,
+                    "is_proven": false
+                }],
+                "principal_variation": [{"ptn": "a1"}],
+                "root_visits": 80,
+                "tree_nodes": 91,
+                "mean_depth": 4.0,
+                "max_depth": 7,
+                "graph_mode": "dag_both",
+                "tt_reads": 10,
+                "tt_writes": 8,
+                "tt_hits": 3,
+                "tt_hit_ratio": 0.3,
+                "iterations_per_second": 320.0,
+                "warnings": ["root_parallel_pv_single_tree"]
+            })
+        );
+    }
 }
 
 /// Which side the candidate configuration played in one configured match.

@@ -30,7 +30,9 @@ pub mod trace;
 mod tuner_info;
 
 pub use evaluation::{generic_tune_eval, strategy_tune_eval, TuneEvalOutcome};
-pub use search::{build_search, SearchBudget};
+pub use search::{
+    build_search, choose_action_with_report, legacy_analysis_with_report, SearchBudget,
+};
 pub use tuner_info::{strategy_tuner_info, strategy_tuner_info_with_mcgs};
 
 pub(crate) use search::{resolve_graph_search, META_MCTS_INNER_ITERATIONS};

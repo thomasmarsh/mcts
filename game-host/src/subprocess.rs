@@ -473,6 +473,25 @@ mod tests {
         let result = adapter.ai_move(&state, "easy", None).unwrap();
         assert!(result.mv.as_u64().is_some_and(|i| i < 9));
         assert_eq!(result.state.get("turn").and_then(|t| t.as_str()), Some("O"));
+        assert_eq!(
+            result.search.as_ref().map(|report| report.status),
+            Some(crate::SearchReportStatus::Available)
+        );
+    }
+
+    #[test]
+    fn test_ai_move_preserves_partial_report() {
+        let adapter = SubprocessAdapter::new(test_host_binary());
+        let state = adapter.new_state(serde_json::json!({})).unwrap();
+        let result = adapter.ai_move(&state, "strong", None).unwrap();
+        let report = result
+            .search
+            .expect("partial report survives subprocess round-trip");
+        assert_eq!(report.status, crate::SearchReportStatus::Partial);
+        assert_eq!(
+            report.reason,
+            Some(crate::SearchReportReason::RootParallelPvSingleTree)
+        );
     }
 
     #[test]
@@ -490,6 +509,10 @@ mod tests {
         let analysis = adapter.analyze(&state, "easy", None, None).unwrap();
         assert_eq!(analysis.actions.len(), 9);
         assert!(analysis.suggested_move.is_some());
+        assert_eq!(
+            analysis.search.as_ref().map(|report| report.status),
+            Some(crate::SearchReportStatus::Unavailable)
+        );
     }
 
     #[test]

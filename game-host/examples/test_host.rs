@@ -6,11 +6,47 @@
 
 use game_host::{
     run_stdin_stdout, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, GameAdapter, HostError,
+    SearchReport, SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
     TunerInfo, TunerParameter,
 };
 use serde_json::Value;
 
 struct TestHost;
+
+fn search_report(status: SearchReportStatus) -> SearchReport {
+    let (reason, warnings) = match status {
+        SearchReportStatus::Available => (None, vec![]),
+        SearchReportStatus::Partial => (
+            Some(SearchReportReason::RootParallelPvSingleTree),
+            vec![SearchWarning::RootParallelPvSingleTree],
+        ),
+        SearchReportStatus::Unavailable => (Some(SearchReportReason::StrategyUnsupported), vec![]),
+    };
+    SearchReport {
+        schema_version: 1,
+        status,
+        reason,
+        elapsed_seconds: Some(0.01),
+        iteration_limit: Some(10),
+        time_limit_seconds: None,
+        completed_iterations: 10,
+        termination: Some(SearchTermination::Iterations),
+        selected_action: Some(serde_json::json!(0)),
+        actions: vec![],
+        principal_variation: vec![serde_json::json!(0)],
+        root_visits: 10,
+        tree_nodes: 11,
+        mean_depth: Some(2.0),
+        max_depth: Some(3),
+        graph_mode: None,
+        tt_reads: 0,
+        tt_writes: 0,
+        tt_hits: 0,
+        tt_hit_ratio: None,
+        iterations_per_second: Some(1000.0),
+        warnings,
+    }
+}
 
 impl GameAdapter for TestHost {
     fn kind(&self) -> &'static str {
@@ -112,15 +148,22 @@ impl GameAdapter for TestHost {
         if moves.is_empty() {
             return Err(HostError::bad_request("no legal moves"));
         }
-        let mv = match preset {
-            "easy" => moves[0].clone(),
-            "strong" => moves.last().unwrap().clone(),
+        let (mv, search) = match preset {
+            "easy" => (
+                moves[0].clone(),
+                search_report(SearchReportStatus::Available),
+            ),
+            "strong" => (
+                moves.last().unwrap().clone(),
+                search_report(SearchReportStatus::Partial),
+            ),
             other => return Err(HostError::not_found(format!("unknown preset: {other}"))),
         };
         let new_state = self.apply(state, &mv)?;
         Ok(AiMoveResult {
             mv,
             state: new_state,
+            search: Some(search),
         })
     }
 
@@ -157,6 +200,7 @@ impl GameAdapter for TestHost {
             actions,
             principal_variation: suggested.clone().into_iter().collect(),
             suggested_move: suggested,
+            search: Some(search_report(SearchReportStatus::Unavailable)),
         })
     }
 
