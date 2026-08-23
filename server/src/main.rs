@@ -18,7 +18,7 @@ const BUILD_INFO: mcts_bench::launch::BuildInfo<'static> = mcts_bench::launch::B
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mcts_bench::{ingest, schema};
 
@@ -27,7 +27,8 @@ use axum::{
     extract::Path,
     extract::State as AxumState,
     http::{HeaderValue, Method, StatusCode},
-    response::Json,
+    middleware::Next,
+    response::{Json, Response},
     routing::{get, post},
     Router,
 };
@@ -280,6 +281,22 @@ fn api_router(app_state: Arc<AppState>) -> Router {
         .with_state(app_state)
 }
 
+/// Log every HTTP request (method, path, status, duration) to stdout.
+async fn log_request(req: axum::http::Request<axum::body::Body>, next: Next) -> Response {
+    let start = Instant::now();
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+
+    let response = next.run(req).await;
+
+    let duration = start.elapsed();
+    let status = response.status().as_u16();
+
+    println!("  {:>6}  {}  {}  ({duration:?})", method, uri, status);
+
+    response
+}
+
 #[tokio::main]
 async fn main() {
     let app_state = Arc::new(AppState {
@@ -369,7 +386,8 @@ async fn main() {
 
     let app = api_router(app_state)
         .merge(bench::bench_router(bench_state))
-        .fallback_service(ServeDir::new(static_dir));
+        .fallback_service(ServeDir::new(static_dir))
+        .layer(axum::middleware::from_fn(log_request));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:7878")
         .await
