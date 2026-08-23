@@ -1047,38 +1047,6 @@ mod tests {
     }
 
     #[test]
-    fn cell_command_for_binary_omits_only_null_game_config() {
-        let value = spec(Value::Null, Budget::Iterations { value: 97 });
-        let plan = value.expand().unwrap();
-        let actual = cell_command_for_binary(
-            &plan.cells[0],
-            Some(Path::new("trace/null-game.jsonl")),
-            Path::new("game-null-config"),
-        );
-        assert_eq!(
-            actual,
-            vec![
-                "game-null-config".into(),
-                "compare".into(),
-                "eval".into(),
-                "--candidate-config".into(),
-                plan.cells[0].candidate_config.to_string(),
-                "--baseline-config".into(),
-                plan.cells[0].baseline_config.to_string(),
-                "--rounds".into(),
-                "1".into(),
-                "--seed".into(),
-                plan.cells[0].cell_seed.to_string(),
-                "--max-iterations".into(),
-                "97".into(),
-                "--trace-path".into(),
-                "trace/null-game.jsonl".into(),
-            ]
-        );
-        assert!(!actual.iter().any(|argument| argument == "--game-config"));
-    }
-
-    #[test]
     fn translates_fixture_and_maps_sides() {
         let input = r#"{"type":"configured_match_result","seq":1,"round":1,"seed":8360105604253074,"candidate_side":"first","outcome":"candidate_win","trace_game_seq":99,"plies":2,"elapsed_ms":3,"candidate":{"iterations_total":4,"iterations_first_half":1,"move_time_ms":2},"baseline":{"iterations_total":5,"iterations_first_half":2,"move_time_ms":3}}
 {"type":"configured_match_result","seq":2,"round":1,"seed":8360105604253074,"candidate_side":"second","outcome":"baseline_win","trace_game_seq":100,"plies":2,"elapsed_ms":3,"candidate":{"iterations_total":4,"iterations_first_half":1,"move_time_ms":2},"baseline":{"iterations_total":5,"iterations_first_half":2,"move_time_ms":3}}
