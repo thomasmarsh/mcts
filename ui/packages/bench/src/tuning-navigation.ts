@@ -39,7 +39,7 @@ export interface TuningNavigationState {
   overview: TuningLoadState<TuningAnalysisOverview> & { sessionId: string | null };
   trialPage: TuningTrialPageState;
   trialDetails: Record<string, TuningTrialDetailState>;
-  tab: "progress" | "trials" | "game";
+  tab: "progress" | "pruning" | "trials" | "game";
   progressMetric: TuningProgressMetric;
   progressScale: TuningProgressScale;
   filters: TuningTrialFilters;
@@ -69,7 +69,7 @@ export type TuningNavigationAction =
   | { tag: "trialDetailFailed"; generation: number; sessionId: string; trialId: string; error: string }
   | { tag: "selectSession"; sessionId: string }
   | { tag: "clearSession" }
-  | { tag: "setAnalysisTab"; tab: "progress" | "trials" | "game" }
+  | { tag: "setAnalysisTab"; tab: "progress" | "pruning" | "trials" | "game" }
   | { tag: "setProgressMetric"; metric: TuningProgressMetric }
   | { tag: "setProgressScale"; scale: TuningProgressScale }
   | { tag: "setTrialFilters"; filters: Partial<TuningTrialFilters> }

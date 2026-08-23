@@ -7,6 +7,7 @@ import { TuningEvidenceDetail } from "./TuningEvidenceDetail.js";
 import { TuningHierarchy } from "./TuningHierarchy.js";
 import { TuningTrialsView } from "./TuningTrialsView.js";
 import { TuningProgressView } from "./TuningProgressView.js";
+import { TuningPruningView } from "./TuningPruningView.js";
 import { sessionLabel } from "./tuning-view-model.js";
 
 export const TuningSessionWorkbench: Component<{
@@ -32,10 +33,11 @@ export const TuningSessionWorkbench: Component<{
       </header>
       <div class="tuning-workbench-tabs" role="tablist" aria-label="Tuning session views">
         <button role="tab" aria-selected={navigation().tab === "progress"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "progress" } })}>Progress</button>
+        <button role="tab" aria-selected={navigation().tab === "pruning"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "pruning" } })}>Pruning</button>
         <button role="tab" aria-selected={navigation().tab === "trials"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "trials" } })}>Trials</button>
         <button role="tab" aria-selected={navigation().tab === "game"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "game" } })}>Game evidence</button>
       </div>
-      <Show when={navigation().tab === "progress"} fallback={<Show when={navigation().tab === "trials"} fallback={<Show when={detail()} fallback={<div class="loading-bench">Loading tuning session…</div>}>{(value) => <div class="tuning-workbench-grid"><TuningHierarchy store={props.store} detail={value()} /><TuningEvidenceDetail store={props.store} detail={value()} session={session()} Spectator={props.Spectator} /></div>}</Show>}><TuningTrialsView store={props.store} /></Show>}>
+      <Show when={navigation().tab === "progress"} fallback={<Show when={navigation().tab === "pruning"} fallback={<Show when={navigation().tab === "trials"} fallback={<Show when={detail()} fallback={<div class="loading-bench">Loading tuning session…</div>}>{(value) => <div class="tuning-workbench-grid"><TuningHierarchy store={props.store} detail={value()} /><TuningEvidenceDetail store={props.store} detail={value()} session={session()} Spectator={props.Spectator} /></div>}</Show>}><TuningTrialsView store={props.store} /></Show>}><TuningPruningView store={props.store} /></Show>}>
         <TuningProgressView store={props.store} />
       </Show>
     </main>

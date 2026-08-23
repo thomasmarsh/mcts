@@ -68,6 +68,23 @@ export interface TrialTrajectory {
   reportCount: number;
 }
 
+export type PruningDecisionKey =
+  | "below_minimum"
+  | "startup_exempt"
+  | "pruning_disabled"
+  | "continued"
+  | "pruned"
+  | "confidence_completed"
+  | "max_completed";
+
+export interface PruningFunnelRow {
+  key: PruningDecisionKey;
+  label: string;
+  description: string;
+  reason: string;
+  reports: number;
+}
+
 export interface WldSummary {
   wins: number;
   losses: number;
@@ -221,6 +238,40 @@ export function reasonSymbol(reason: string | null): DecisionSymbol {
   return { key: reason, symbol: "•", label: reason };
 }
 
+/** Plain-language meanings for the typed, persisted lifecycle reasons. */
+export function decisionReasonDescription(reason: string): string {
+  const descriptions: Record<string, string> = {
+    below_min_pairs: "The report was recorded before the minimum pair count, so pruning did not apply.",
+    pruning_disabled: "Pruning was disabled for this report, so the candidate continued.",
+    startup_exempt: "The startup allowance exempted this candidate from pruning at this report.",
+    hyperband_keep: "The candidate survived the observed Hyperband rung and continued.",
+    confidence: "The candidate completed because the recorded confidence criterion was met.",
+    max_pairs: "The candidate completed after reaching the configured maximum pair count.",
+    hyperband_prune: "The candidate was pruned at the observed Hyperband rung.",
+  };
+  return descriptions[reason] ?? "The server recorded this decision reason without additional explanatory evidence.";
+}
+
+/**
+ * Disjoint report-decision buckets. They deliberately key off the stored
+ * reason rather than guessed thresholds, so their counts can be reconciled
+ * exactly with the full-population report total.
+ */
+export function pruningFunnelRows(overview: TuningAnalysisOverview): PruningFunnelRow[] {
+  const counts = new Map<string, number>();
+  for (const group of overview.decision_groups) counts.set(group.reason, (counts.get(group.reason) ?? 0) + group.reports);
+  const definitions: Array<Omit<PruningFunnelRow, "reports">> = [
+    { key: "below_minimum", label: "Below minimum", reason: "below_min_pairs", description: decisionReasonDescription("below_min_pairs") },
+    { key: "startup_exempt", label: "Startup exempt", reason: "startup_exempt", description: decisionReasonDescription("startup_exempt") },
+    { key: "pruning_disabled", label: "Pruning disabled", reason: "pruning_disabled", description: decisionReasonDescription("pruning_disabled") },
+    { key: "continued", label: "Continued", reason: "hyperband_keep", description: decisionReasonDescription("hyperband_keep") },
+    { key: "pruned", label: "Pruned", reason: "hyperband_prune", description: decisionReasonDescription("hyperband_prune") },
+    { key: "confidence_completed", label: "Confidence-completed", reason: "confidence", description: decisionReasonDescription("confidence") },
+    { key: "max_completed", label: "Max-completed", reason: "max_pairs", description: decisionReasonDescription("max_pairs") },
+  ];
+  return definitions.map((definition) => ({ ...definition, reports: counts.get(definition.reason) ?? 0 }));
+}
+
 /** Every server-provided decision group, including zero-count groups. */
 export function decisionGroupRows(overview: TuningAnalysisOverview): DecisionGroupRow[] {
   return overview.decision_groups
@@ -245,8 +296,13 @@ export function rungFunnelRows(overview: TuningAnalysisOverview, selectedBracket
  * each path ends at its final recorded report even while a session is live.
  */
 export function trialTrajectories(overview: TuningAnalysisOverview, selectedTrialId: string | null = null): TrialTrajectory[] {
+  return trialTrajectoriesFromRows(exactPlotRows(overview, selectedTrialId));
+}
+
+/** Groups already-selected exact rows without changing their source snapshot. */
+export function trialTrajectoriesFromRows(rows: readonly AnalysisPlotRow[]): TrialTrajectory[] {
   const grouped = new Map<string, AnalysisPlotRow[]>();
-  for (const row of exactPlotRows(overview, selectedTrialId)) {
+  for (const row of rows) {
     const rows = grouped.get(row.trial_id);
     if (rows) rows.push(row);
     else grouped.set(row.trial_id, [row]);

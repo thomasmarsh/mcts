@@ -8,6 +8,7 @@ import {
   highlightSelectedTrial,
   opponentDistances,
   poolRevisionCoverage,
+  pruningFunnelRows,
   reasonSymbol,
   resourceDomains,
   rungFunnelRows,
@@ -111,6 +112,31 @@ describe("tuning analysis models", () => {
       ["trial-3", 1, [true]],
       ["trial-tie", 1, [true]],
     ]);
+  });
+
+  it("keeps every typed pruning reason in one disjoint exact funnel", () => {
+    const allReasons = {
+      ...overview,
+      coverage: { ...overview.coverage, reports: 28 },
+      decision_groups: [
+        { outcome: "continue", reason: "below_min_pairs", pruning_exempt: false, reports: 1 },
+        { outcome: "continue", reason: "startup_exempt", pruning_exempt: true, reports: 2 },
+        { outcome: "continue", reason: "pruning_disabled", pruning_exempt: false, reports: 3 },
+        { outcome: "continue", reason: "hyperband_keep", pruning_exempt: false, reports: 4 },
+        { outcome: "prune", reason: "hyperband_prune", pruning_exempt: false, reports: 5 },
+        { outcome: "complete", reason: "confidence", pruning_exempt: false, reports: 6 },
+        { outcome: "complete", reason: "max_pairs", pruning_exempt: false, reports: 7 },
+      ],
+    };
+    const funnel = pruningFunnelRows(allReasons);
+    expect(funnel.map((row) => [row.key, row.reason, row.reports])).toEqual([
+      ["below_minimum", "below_min_pairs", 1], ["startup_exempt", "startup_exempt", 2],
+      ["pruning_disabled", "pruning_disabled", 3], ["continued", "hyperband_keep", 4],
+      ["pruned", "hyperband_prune", 5], ["confidence_completed", "confidence", 6],
+      ["max_completed", "max_pairs", 7],
+    ]);
+    expect(funnel.reduce((total, row) => total + row.reports, 0)).toBe(allReasons.coverage.reports);
+    expect(funnel.every((row) => row.description.endsWith("."))).toBe(true);
   });
 
   it("summarizes only returned W/L/D and compute rows while disclosing page coverage", () => {

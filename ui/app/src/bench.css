@@ -1869,6 +1869,117 @@ body.bench-active #analysis-panel {
   min-width: 0;
 }
 
+.tuning-pruning {
+  min-width: 0;
+}
+
+.tuning-pruning-cutoff {
+  margin: 10px 0;
+  color: #c5c7d0;
+  font-size: 12px;
+}
+
+.tuning-pruning-grid,
+.tuning-pruning-plots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.tuning-pruning-funnel,
+.tuning-pruning-rungs,
+.tuning-pruning-reasons,
+.tuning-pruning-trajectories,
+.tuning-pruning-trajectory {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tuning-pruning-funnel h5,
+.tuning-pruning-rungs h5,
+.tuning-pruning-reasons h5,
+.tuning-pruning-trajectories h5,
+.tuning-pruning-trajectory h5 {
+  margin: 0;
+}
+
+.tuning-pruning-funnel > p,
+.tuning-pruning-rungs > p,
+.tuning-pruning-trajectories > p {
+  color: #9b9da8;
+  font-size: 12px;
+}
+
+.tuning-pruning-segments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.tuning-pruning-segment,
+.tuning-pruning-table-wrap button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: #1c1d24;
+  color: #d8d9df;
+  padding: 6px 8px;
+}
+
+.tuning-pruning-segment {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+
+.tuning-pruning-segment span {
+  color: #91adf7;
+  font-variant-numeric: tabular-nums;
+}
+
+.tuning-pruning-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 5px;
+}
+
+.tuning-pruning-table-wrap table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.tuning-pruning-table-wrap th,
+.tuning-pruning-table-wrap td {
+  padding: 6px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.tuning-pruning-table-wrap th { color: #aeb0bc; }
+
+.tuning-pruning-reasons { margin: 12px 0; }
+.tuning-pruning-reasons dl { margin: 8px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; font-size: 12px; }
+.tuning-pruning-reasons dt { color: #c5c7d0; font-weight: 600; }
+.tuning-pruning-reasons dd { margin: 0; color: #9b9da8; }
+.tuning-pruning-trajectories { margin-top: 12px; }
+.tuning-pruning-trajectory { padding: 10px; }
+.tuning-pruning-plot { display: block; width: 100%; height: auto; margin-top: 6px; overflow: visible; }
+.tuning-pruning-rung { stroke: rgba(201, 162, 39, 0.62); stroke-width: 1; stroke-dasharray: 3 3; }
+.tuning-pruning-path { cursor: pointer; fill: none; stroke: rgba(145, 173, 247, 0.38); stroke-width: 1.5; }
+.tuning-pruning-path path { fill: none; }
+.tuning-pruning-path:focus-visible { outline: none; }
+.tuning-pruning-path:focus-visible path,
+.tuning-pruning-path:hover path { stroke: #d7e3ff; stroke-width: 2.5; }
+.tuning-pruning-selected-path path { stroke: #91adf7; stroke-width: 2.5; }
+.tuning-pruning-terminal { fill: #e0b35a; stroke: #111217; stroke-width: 1.5; }
+
 .tuning-progress-controls {
   display: flex;
   flex-wrap: wrap;
