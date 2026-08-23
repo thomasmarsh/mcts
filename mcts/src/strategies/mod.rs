@@ -5,6 +5,129 @@ pub mod negamax;
 pub mod random;
 
 use crate::game::Game;
+use serde::Serialize;
+
+/// Versioned final evidence from a strategy's most recent action choice.
+///
+/// This is deliberately engine-facing rather than a wire-format type: callers
+/// can serialize a game's action type however their own boundary requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchReportStatus {
+    Available,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchReportReason {
+    StrategyUnsupported,
+    SearchNotRun,
+    RootParallelPvSingleTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTermination {
+    Iterations,
+    Time,
+    Solved,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchGraphMode {
+    Tree,
+    Transpositions,
+    DagEdges,
+    DagNodes,
+    DagBoth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchWarning {
+    ActionsTruncated,
+    PrincipalVariationTruncated,
+    StructuralDiagnosticsOmitted,
+}
+
+/// One root action's final-search evidence. `share` is based on the visits
+/// across all explored actions, including rows omitted by the report cap.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchActionReport<A> {
+    pub action: A,
+    pub visits: u32,
+    pub share: f64,
+    /// Root mover-relative expected value in [-1, 1].
+    pub mean_value: f64,
+    pub is_proven: bool,
+}
+
+/// Schema version 1 of the final report for one `choose_action` call.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchReport<A> {
+    pub schema_version: u8,
+    pub status: SearchReportStatus,
+    pub reason: Option<SearchReportReason>,
+    pub elapsed_seconds: Option<f64>,
+    pub iteration_limit: Option<usize>,
+    pub time_limit_seconds: Option<f64>,
+    pub completed_iterations: usize,
+    pub termination: Option<SearchTermination>,
+    pub selected_action: Option<A>,
+    pub actions: Vec<SearchActionReport<A>>,
+    pub principal_variation: Vec<A>,
+    /// Visits held at the root after the search, which can include work
+    /// retained from earlier calls when tree reuse is enabled.
+    pub root_visits: u32,
+    /// Nodes retained after the search, rather than nodes newly allocated by
+    /// this particular call (so tree reuse remains observable).
+    pub tree_nodes: usize,
+    pub mean_depth: Option<f64>,
+    pub max_depth: Option<usize>,
+    pub graph_mode: Option<SearchGraphMode>,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+    pub tt_hit_ratio: Option<f64>,
+    pub iterations_per_second: Option<f64>,
+    pub warnings: Vec<SearchWarning>,
+}
+
+/// Kept as a descriptive alias for consumers that call this a final report.
+pub type FinalSearchReport<A> = SearchReport<A>;
+
+impl<A> SearchReport<A> {
+    pub fn unavailable(reason: SearchReportReason) -> Self {
+        Self {
+            schema_version: 1,
+            status: SearchReportStatus::Unavailable,
+            reason: Some(reason),
+            elapsed_seconds: None,
+            iteration_limit: None,
+            time_limit_seconds: None,
+            completed_iterations: 0,
+            termination: None,
+            selected_action: None,
+            actions: vec![],
+            principal_variation: vec![],
+            root_visits: 0,
+            tree_nodes: 0,
+            mean_depth: None,
+            max_depth: None,
+            graph_mode: None,
+            tt_reads: 0,
+            tt_writes: 0,
+            tt_hits: 0,
+            tt_hit_ratio: None,
+            iterations_per_second: None,
+            warnings: vec![],
+        }
+    }
+}
 
 /// One root action's statistics after a search has run, for reporting
 /// candidate moves (e.g. a UI's analysis panel) rather than just the single
@@ -59,6 +182,19 @@ pub trait Search: Sync + Send {
             principal_variation: vec![],
             total_visits: 0,
         }
+    }
+
+    /// Final evidence from the most recent `choose_action`. `state` and
+    /// `selected_action` are the pre-move state and action returned by that
+    /// call, respectively. Strategies without persistent search evidence
+    /// return an explicit unsupported report.
+    #[allow(unused_variables)]
+    fn search_report(
+        &self,
+        state: &<Self::G as Game>::S,
+        selected_action: &<Self::G as Game>::A,
+    ) -> SearchReport<<Self::G as Game>::A> {
+        SearchReport::unavailable(SearchReportReason::StrategyUnsupported)
     }
 
     fn estimated_depth(&self) -> usize {

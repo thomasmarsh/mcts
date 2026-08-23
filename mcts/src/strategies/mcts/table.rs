@@ -65,9 +65,9 @@ impl TranspositionTable {
     pub fn clear(&mut self) {
         self.table.get_mut().unwrap().clear();
         self.graph_table.get_mut().unwrap().clear();
-        self.reads = AtomicUsize::new(0);
-        self.writes = AtomicUsize::new(0);
-        self.hits = AtomicUsize::new(0);
+        // These counters are monotonic so a caller can take a reliable
+        // before/after snapshot even when a new search resets the table.
+        // They describe operations, not retained entries.
     }
 
     #[inline]

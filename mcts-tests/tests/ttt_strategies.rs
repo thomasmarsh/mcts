@@ -626,6 +626,12 @@ fn test_root_report_flags_the_proven_winning_move() {
     let chosen = ts.choose_action(&init_state);
     assert_eq!(chosen, Move(2), "should find the immediate winning move");
 
+    let final_report = ts.search_report(&init_state, &chosen);
+    assert_eq!(
+        final_report.termination,
+        Some(mcts::strategies::SearchTermination::Solved)
+    );
+
     let report = ts.root_report(&init_state);
     assert!(report.total_visits > 0);
     assert!(!report.actions.is_empty());
@@ -2545,4 +2551,177 @@ fn test_graph_reroot_across_self_play_keeps_ply_and_table_consistent() {
             }
         }
     }
+}
+
+#[test]
+fn test_final_search_report_tracks_only_the_latest_search() {
+    use game_ttt::*;
+    use mcts::strategies::{
+        SearchGraphMode, SearchReportReason, SearchReportStatus, SearchWarning,
+    };
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(24)
+            .seed(23)
+            .use_transpositions(true),
+    );
+    let mut legal = Vec::new();
+    G::generate_actions(&state, &mut legal);
+
+    let before = search.search_report(&state, &legal[0]);
+    assert_eq!(before.status, SearchReportStatus::Unavailable);
+    assert_eq!(before.reason, Some(SearchReportReason::SearchNotRun));
+
+    let selected = search.choose_action(&state);
+    let first = search.search_report(&state, &selected);
+    assert_eq!(first.schema_version, 1);
+    assert_eq!(first.status, SearchReportStatus::Available);
+    assert_eq!(
+        first.termination,
+        Some(mcts::strategies::SearchTermination::Iterations)
+    );
+    assert_eq!(first.iteration_limit, Some(24));
+    assert_eq!(first.completed_iterations, 24);
+    assert_eq!(first.root_visits, 24);
+    assert_eq!(first.selected_action, Some(selected.clone()));
+    assert_eq!(first.principal_variation.first(), Some(&selected));
+    assert_eq!(first.graph_mode, Some(SearchGraphMode::Transpositions));
+    assert!(first.tree_nodes > 1);
+    assert!(first.mean_depth.is_some());
+    assert!(first.max_depth.is_some());
+    assert!(first.tt_reads > 0);
+    assert!(first.tt_hit_ratio.is_some());
+    assert!(first
+        .warnings
+        .contains(&SearchWarning::StructuralDiagnosticsOmitted));
+    let shares: f64 = first.actions.iter().map(|action| action.share).sum();
+    assert!((shares - 1.0).abs() < 1e-12);
+    assert!(first.actions.iter().all(|action| {
+        action.share.is_finite()
+            && action.mean_value.is_finite()
+            && (-1.0..=1.0).contains(&action.mean_value)
+    }));
+
+    let selected_again = search.choose_action(&state);
+    let second = search.search_report(&state, &selected_again);
+    assert_eq!(second.completed_iterations, 24);
+    assert_eq!(
+        second.termination,
+        Some(mcts::strategies::SearchTermination::Iterations)
+    );
+    assert!(
+        second.tt_reads > 0,
+        "TT counters are a per-call delta after reset"
+    );
+}
+
+#[test]
+fn test_final_search_report_tree_mode_has_no_tt_reads() {
+    use game_ttt::*;
+    use mcts::strategies::SearchGraphMode;
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(mcts::SearchConfig::default().max_iterations(12).seed(5));
+    let selected = search.choose_action(&state);
+    let report = search.search_report(&state, &selected);
+    assert_eq!(report.graph_mode, Some(SearchGraphMode::Tree));
+    assert_eq!(report.tt_reads, 0);
+    assert_eq!(report.tt_hit_ratio, None);
+}
+
+#[test]
+fn test_final_search_report_marks_non_tree_strategies_unsupported() {
+    use game_ttt::*;
+    use mcts::strategies::random::Random;
+    use mcts::strategies::{SearchReportReason, SearchReportStatus};
+    type G = TicTacToe;
+
+    let state = HashedPosition::new();
+    let mut legal = Vec::new();
+    G::generate_actions(&state, &mut legal);
+    let search = Random::<G>::default();
+    let report = search.search_report(&state, &legal[0]);
+    assert_eq!(report.status, SearchReportStatus::Unavailable);
+    assert_eq!(report.reason, Some(SearchReportReason::StrategyUnsupported));
+}
+
+#[test]
+fn test_final_search_report_identifies_dag_stat_owners() {
+    use game_ttt::*;
+    use mcts::strategies::SearchGraphMode;
+    use mcts::{GraphSearch, GraphStats};
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    for (stats, expected) in [
+        (GraphStats::Edges, SearchGraphMode::DagEdges),
+        (GraphStats::Nodes, SearchGraphMode::DagNodes),
+        (GraphStats::Both, SearchGraphMode::DagBoth),
+    ] {
+        let mut search = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(16)
+                .expand_threshold(0)
+                .graph_search(GraphSearch::Dag(stats))
+                .seed(31),
+        );
+        let selected = search.choose_action(&state);
+        assert_eq!(
+            search.search_report(&state, &selected).graph_mode,
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn test_final_search_report_separates_reuse_from_recent_work() {
+    use game_ttt::*;
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(20)
+            .reuse_tree(true)
+            .seed(37),
+    );
+    let selected = search.choose_action(&state);
+    let first = search.search_report(&state, &selected);
+    let next_state = G::apply(state, &selected);
+    let next_selected = search.choose_action(&next_state);
+    let second = search.search_report(&next_state, &next_selected);
+    assert_eq!(second.completed_iterations, 20);
+    assert!(
+        second.tree_nodes >= first.tree_nodes,
+        "retained nodes are distinct from this call's reset work counters"
+    );
+}
+
+#[test]
+fn test_final_search_report_is_available_for_tree_parallel_search() {
+    let _guard = parallel_test_guard();
+    use game_ttt::*;
+    use mcts::strategies::SearchReportStatus;
+    type G = TicTacToe;
+    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+
+    let state = HashedPosition::new();
+    let mut search = TS::default().config(
+        mcts::SearchConfig::default()
+            .max_iterations(24)
+            .num_tree_threads(2)
+            .seed(29),
+    );
+    let selected = search.choose_action(&state);
+    let report = search.search_report(&state, &selected);
+    assert_eq!(report.status, SearchReportStatus::Available);
+    assert_eq!(report.completed_iterations, 24);
 }

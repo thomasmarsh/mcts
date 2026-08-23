@@ -9,12 +9,94 @@ use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::stack::NodeStack;
 use crate::strategies::mcts::table::TranspositionKey;
-use crate::strategies::ActionReport;
-use crate::strategies::RootReport;
-use crate::strategies::Search;
+use crate::strategies::{
+    ActionReport, RootReport, Search, SearchActionReport, SearchGraphMode, SearchReport,
+    SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
+};
 use crate::symmetry::incoming_sym;
 
 use std::sync::atomic::Ordering::Relaxed;
+
+const ACTION_REPORT_LIMIT: usize = 1_024;
+const PRINCIPAL_VARIATION_LIMIT: usize = 256;
+
+/// Classifies a loop's boundary without inspecting wall-clock time. Keeping
+/// this pure makes the precedence around a proof found on the final allowed
+/// iteration explicit and independently testable.
+pub(crate) fn classify_termination(
+    iteration_limit: Option<usize>,
+    completed_iterations: usize,
+    time_expired: bool,
+    solved: bool,
+) -> SearchTermination {
+    if solved {
+        SearchTermination::Solved
+    } else if time_expired {
+        SearchTermination::Time
+    } else if iteration_limit.is_some_and(|limit| completed_iterations >= limit) {
+        SearchTermination::Iterations
+    } else {
+        SearchTermination::Unknown
+    }
+}
+
+fn finite(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+impl<G, S> TreeSearch<G, S>
+where
+    G: Game,
+    S: crate::strategies::mcts::Strategy<G>,
+    crate::strategies::mcts::SearchConfig<G, S>: Sync + Send,
+    G::S: std::fmt::Display,
+{
+    fn begin_search_report(&mut self) -> super::SearchReportStart {
+        self.last_search_run = None;
+        super::SearchReportStart {
+            started_at: std::time::Instant::now(),
+            tt_reads: self.table.reads.load(Relaxed),
+            tt_writes: self.table.writes.load(Relaxed),
+            tt_hits: self.table.hits.load(Relaxed),
+        }
+    }
+
+    pub(crate) fn finish_search_report(
+        &mut self,
+        start: super::SearchReportStart,
+        time_expired: bool,
+        solved: bool,
+        partial_root_parallel: bool,
+    ) {
+        let elapsed_seconds = finite(start.started_at.elapsed().as_secs_f64());
+        let completed_iterations = self.stats.iter_count.load(Relaxed);
+        self.last_search_run = Some(super::SearchRun {
+            elapsed_seconds,
+            tt_reads: self
+                .table
+                .reads
+                .load(Relaxed)
+                .saturating_sub(start.tt_reads),
+            tt_writes: self
+                .table
+                .writes
+                .load(Relaxed)
+                .saturating_sub(start.tt_writes),
+            tt_hits: self.table.hits.load(Relaxed).saturating_sub(start.tt_hits),
+            termination: classify_termination(
+                (self.config.max_iterations != usize::MAX).then_some(self.config.max_iterations),
+                completed_iterations,
+                time_expired,
+                solved,
+            ),
+            partial_root_parallel,
+        });
+    }
+}
 
 impl<G, S> Search for TreeSearch<G, S>
 where
@@ -30,6 +112,7 @@ where
     }
 
     fn choose_action(&mut self, state: &G::S) -> G::A {
+        let report_start = self.begin_search_report();
         let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
         if explicit_dag {
             assert!(
@@ -47,10 +130,12 @@ where
         // parallelism whenever both are set > 1, silently dropping the
         // "trees" half of a requested hybrid split.
         if self.config.num_threads > 1 {
-            return self.choose_action_root_parallel(state);
+            let selected = self.choose_action_root_parallel(state);
+            self.finish_search_report(report_start, self.timer.done(), false, true);
+            return selected;
         }
         if self.config.num_tree_threads > 1 {
-            return self.choose_action_tree_parallel(state);
+            return self.choose_action_tree_parallel(state, report_start);
         }
 
         let hash = G::zobrist_hash(state);
@@ -113,8 +198,9 @@ where
             }
         }
 
-        self.compute_pv(state);
-        self.verbose_summary(state, 1);
+        let solved =
+            self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven;
+        let time_expired = self.timer.done();
 
         // NOTE: this can fail when root is a leaf. This happens if:
         //
@@ -122,7 +208,11 @@ where
         //
         // TODO: We might check for this and unconditionally expand root. I think
         // a lot of implementations fully expand root on the first iteration.
-        self.select_final_action(state)
+        let selected = self.select_final_action(state);
+        self.compute_pv(state, Some(&selected));
+        self.verbose_summary(state, 1);
+        self.finish_search_report(report_start, time_expired, solved, false);
+        selected
     }
 
     fn make_book_entry(
@@ -234,6 +324,142 @@ where
             } else {
                 self.root_stats.num_visits()
             },
+        }
+    }
+
+    fn search_report(&self, state: &G::S, selected_action: &G::A) -> SearchReport<G::A> {
+        let Some(run) = self.last_search_run else {
+            return SearchReport::unavailable(SearchReportReason::SearchNotRun);
+        };
+
+        let player = G::player_to_move(state).to_index();
+        let root = self.index.get(self.root_id);
+        let children = root.children();
+        let mut actions: Vec<_> = (0..children.len())
+            .filter(|&i| children.is_explored(i))
+            .map(|i| {
+                let child_id = children.node_id(i).unwrap();
+                let is_proven = self.index.get(child_id).proven() != Proven::Unproven;
+                let snap = if matches!(self.config.graph_stats(), Some(GraphStats::Nodes)) {
+                    self.index.get(child_id).stats.snapshot(player)
+                } else {
+                    children.snapshot(i, player)
+                };
+                (
+                    i,
+                    children.action(i).clone(),
+                    snap.num_visits,
+                    finite(snap.expected_score()),
+                    is_proven,
+                )
+            })
+            .collect();
+        let all_action_visits: u64 = actions
+            .iter()
+            .map(|(_, _, visits, _, _)| *visits as u64)
+            .sum();
+        let selected_row = actions
+            .iter()
+            .find(|(_, action, _, _, _)| action == selected_action)
+            .cloned();
+        actions.sort_by_key(|action| (std::cmp::Reverse(action.2), action.0));
+        let actions_truncated = actions.len() > ACTION_REPORT_LIMIT;
+        actions.truncate(ACTION_REPORT_LIMIT);
+        if actions_truncated
+            && !actions
+                .iter()
+                .any(|(_, action, _, _, _)| action == selected_action)
+        {
+            if let Some(selected) = selected_row {
+                let _ = actions.pop();
+                actions.push(selected);
+                // Restore root-order tie breaking after retaining a selected
+                // row that was outside the report cap.
+                actions.sort_by_key(|action| (std::cmp::Reverse(action.2), action.0));
+            }
+        }
+        let actions = actions
+            .into_iter()
+            .map(
+                |(_, action, visits, mean_value, is_proven)| SearchActionReport {
+                    action,
+                    visits,
+                    share: finite(if all_action_visits == 0 {
+                        0.0
+                    } else {
+                        visits as f64 / all_action_visits as f64
+                    }),
+                    mean_value: mean_value.clamp(-1.0, 1.0),
+                    is_proven,
+                },
+            )
+            .collect();
+
+        let pv_truncated = self.pv.len() > PRINCIPAL_VARIATION_LIMIT;
+        let mut principal_variation = self.pv.clone();
+        principal_variation.truncate(PRINCIPAL_VARIATION_LIMIT);
+        let completed_iterations = self.stats.iter_count.load(Relaxed);
+        let mean_depth = (completed_iterations > 0).then(|| {
+            finite(self.stats.accum_depth.load(Relaxed) as f64 / completed_iterations as f64)
+        });
+        let tt_hit_ratio =
+            (run.tt_reads > 0).then(|| finite(run.tt_hits as f64 / run.tt_reads as f64));
+        let iterations_per_second = (run.elapsed_seconds > 0.0)
+            .then(|| completed_iterations as f64 / run.elapsed_seconds)
+            .filter(|rate| rate.is_finite());
+        let graph_mode = match self.config.graph_search {
+            GraphSearch::Tree if self.config.use_transpositions => SearchGraphMode::Transpositions,
+            GraphSearch::Tree => SearchGraphMode::Tree,
+            GraphSearch::Dag(GraphStats::Edges) => SearchGraphMode::DagEdges,
+            GraphSearch::Dag(GraphStats::Nodes) => SearchGraphMode::DagNodes,
+            GraphSearch::Dag(GraphStats::Both) => SearchGraphMode::DagBoth,
+        };
+        let mut warnings = vec![SearchWarning::StructuralDiagnosticsOmitted];
+        if actions_truncated {
+            warnings.push(SearchWarning::ActionsTruncated);
+        }
+        if pv_truncated {
+            warnings.push(SearchWarning::PrincipalVariationTruncated);
+        }
+        SearchReport {
+            schema_version: 1,
+            status: if run.partial_root_parallel {
+                SearchReportStatus::Partial
+            } else {
+                SearchReportStatus::Available
+            },
+            reason: run
+                .partial_root_parallel
+                .then_some(SearchReportReason::RootParallelPvSingleTree),
+            elapsed_seconds: Some(run.elapsed_seconds),
+            iteration_limit: (self.config.max_iterations != usize::MAX)
+                .then_some(self.config.max_iterations),
+            time_limit_seconds: (self.config.max_time != std::time::Duration::default())
+                .then(|| finite(self.config.max_time.as_secs_f64())),
+            completed_iterations,
+            termination: Some(run.termination),
+            selected_action: Some(selected_action.clone()),
+            actions,
+            principal_variation,
+            root_visits: if self
+                .config
+                .graph_stats()
+                .is_some_and(GraphStats::uses_nodes)
+            {
+                self.index.get(self.root_id).stats.num_visits()
+            } else {
+                self.root_stats.num_visits()
+            },
+            tree_nodes: self.index.len(),
+            mean_depth,
+            max_depth: (completed_iterations > 0).then(|| self.stats.max_depth.load(Relaxed)),
+            graph_mode: Some(graph_mode),
+            tt_reads: run.tt_reads,
+            tt_writes: run.tt_writes,
+            tt_hits: run.tt_hits,
+            tt_hit_ratio,
+            iterations_per_second,
+            warnings,
         }
     }
 

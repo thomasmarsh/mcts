@@ -22,6 +22,25 @@ use super::simulate::Trial;
 use super::table::TranspositionTable;
 use crate::game::Game;
 use crate::timer;
+use std::time::Instant;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SearchReportStart {
+    pub started_at: Instant,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SearchRun {
+    pub elapsed_seconds: f64,
+    pub tt_reads: usize,
+    pub tt_writes: usize,
+    pub tt_hits: usize,
+    pub termination: crate::strategies::SearchTermination,
+    pub partial_root_parallel: bool,
+}
 
 #[derive(Clone)]
 pub struct TreeSearch<G, S>
@@ -54,6 +73,9 @@ where
 
     pub config: SearchConfig<G, S>,
     pub stats: TreeStats<G>,
+    /// Evidence for the last completed `choose_action`; absent until an
+    /// action has actually been selected.
+    pub(crate) last_search_run: Option<SearchRun>,
     /// The root->leaf descent path from the most recent `select`/`select_step`
     /// call, as `(Id, idx)` pairs -- `idx` is the slot in the *previous*
     /// entry's `ChildArray` that was actually selected to reach this entry
@@ -121,6 +143,7 @@ where
             config,
             timer: timer::Timer::new(),
             stats: Default::default(),
+            last_search_run: None,
         }
     }
 

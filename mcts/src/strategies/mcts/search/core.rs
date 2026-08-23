@@ -461,12 +461,13 @@ where
         self.index.clear();
         self.table.clear();
         self.stats.accum_depth.store(0, Relaxed);
+        self.stats.max_depth.store(0, Relaxed);
         self.stats.iter_count.store(0, Relaxed);
         self.root_stats = NodeStats::new(G::num_players(), self.config.requirements().amaf);
         self.new_root(player_idx, hash)
     }
 
-    pub(crate) fn compute_pv(&mut self, init_state: &G::S) {
+    pub(crate) fn compute_pv(&mut self, init_state: &G::S, selected_root_action: Option<&G::A>) {
         self.pv.clear();
         let mut node_id = self.root_id;
         let mut node = self.index.get(node_id);
@@ -498,15 +499,33 @@ where
                 incoming_sym,
             };
 
-            let best_idx =
-                match proven_win_child::<G>(self.config.use_mcts_solver, node, &self.index, player)
-                {
-                    Some(idx) => idx,
-                    None => self
-                        .config
-                        .final_action
-                        .best_child(&select_ctx, &mut self.config.rng),
-                };
+            let best_idx = if self.pv.is_empty() {
+                selected_root_action
+                    .and_then(|selected| {
+                        (0..node.children().len())
+                            .find(|&idx| node.children().action(idx) == selected)
+                    })
+                    .unwrap_or_else(|| {
+                        proven_win_child::<G>(
+                            self.config.use_mcts_solver,
+                            node,
+                            &self.index,
+                            player,
+                        )
+                        .unwrap_or_else(|| {
+                            self.config
+                                .final_action
+                                .best_child(&select_ctx, &mut self.config.rng)
+                        })
+                    })
+            } else {
+                proven_win_child::<G>(self.config.use_mcts_solver, node, &self.index, player)
+                    .unwrap_or_else(|| {
+                        self.config
+                            .final_action
+                            .best_child(&select_ctx, &mut self.config.rng)
+                    })
+            };
 
             let children = node.children();
             let Some(cached_child_id) = children.node_id(best_idx) else {

@@ -4,6 +4,30 @@
 // real game (Tic-Tac-Toe) live in `mcts-tests/tests/ttt_strategies.rs`.
 
 #[test]
+fn test_search_report_termination_boundary_classification() {
+    use crate::strategies::mcts::search::search_impl::classify_termination;
+    use crate::strategies::SearchTermination;
+
+    assert_eq!(
+        classify_termination(Some(10), 10, false, false),
+        SearchTermination::Iterations
+    );
+    assert_eq!(
+        classify_termination(None, 3, true, false),
+        SearchTermination::Time
+    );
+    assert_eq!(
+        classify_termination(Some(10), 10, true, true),
+        SearchTermination::Solved,
+        "a proof found on the final allowed iteration is solved evidence"
+    );
+    assert_eq!(
+        classify_termination(Some(10), 3, false, false),
+        SearchTermination::Unknown
+    );
+}
+
+#[test]
 fn test_child_array_child_index_matches_creation_order() {
     use crate::strategies::mcts::node::ChildArray;
     use crate::strategies::mcts::node::Node;

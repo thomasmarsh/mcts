@@ -181,6 +181,7 @@ where
         self.rebuild_reachable_graph(depth);
 
         self.stats.accum_depth.store(0, Relaxed);
+        self.stats.max_depth.store(0, Relaxed);
         self.stats.iter_count.store(0, Relaxed);
         Some(self.root_id)
     }

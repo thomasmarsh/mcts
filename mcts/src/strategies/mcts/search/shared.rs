@@ -90,6 +90,7 @@ pub struct TreeStats<G: Game> {
     pub player_replies: Vec<RwLock<ReplyTable<G::A>>>,
     pub player_replies2: Vec<RwLock<Reply2Table<G::A>>>,
     pub accum_depth: AtomicUsize,
+    pub max_depth: AtomicUsize,
     pub iter_count: AtomicUsize,
 }
 
@@ -111,6 +112,7 @@ impl<G: Game> Default for TreeStats<G> {
                 .map(|_| RwLock::new(FxHashMap::default()))
                 .collect(),
             accum_depth: AtomicUsize::new(0),
+            max_depth: AtomicUsize::new(0),
             iter_count: AtomicUsize::new(0),
         }
     }
@@ -142,6 +144,7 @@ impl<G: Game> Clone for TreeStats<G> {
                 .map(|m| RwLock::new(m.read().unwrap().clone()))
                 .collect(),
             accum_depth: AtomicUsize::new(self.accum_depth.load(Relaxed)),
+            max_depth: AtomicUsize::new(self.max_depth.load(Relaxed)),
             iter_count: AtomicUsize::new(self.iter_count.load(Relaxed)),
         }
     }
@@ -812,10 +815,9 @@ pub fn backprop_step<G: Game>(
     flags: BackpropFlags,
 ) {
     shared.global.iter_count.fetch_add(1, Relaxed);
-    shared
-        .global
-        .accum_depth
-        .fetch_add(trial.depth + stack.len() - 1, Relaxed);
+    let depth = trial.depth + stack.len() - 1;
+    shared.global.accum_depth.fetch_add(depth, Relaxed);
+    shared.global.max_depth.fetch_max(depth, Relaxed);
     let node_stack = NodeStack::new(stack.to_vec());
     backprop_strategy.update(
         &node_stack,
@@ -849,6 +851,16 @@ pub fn backprop_correction_step<G: Game>(
     utilities: &[f64],
 ) {
     shared.global.iter_count.fetch_add(1, Relaxed);
+    // A correction replaces the rollout with the descent that reached the
+    // inconsistent edge, so its depth still contributes to search depth.
+    shared
+        .global
+        .accum_depth
+        .fetch_add(stack.len().saturating_sub(1), Relaxed);
+    shared
+        .global
+        .max_depth
+        .fetch_max(stack.len().saturating_sub(1), Relaxed);
     let node_stack = NodeStack::<G::A>::new(stack.to_vec());
     for (parent_entry_opt, (node_id, node_idx)) in node_stack.reverse_pairs2() {
         if shared.index.get(*node_id).is_root() {

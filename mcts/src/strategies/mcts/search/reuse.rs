@@ -163,6 +163,7 @@ where
             self.index.get_mut(self.root_id).is_root = true;
         }
         self.stats.accum_depth.store(0, Relaxed);
+        self.stats.max_depth.store(0, Relaxed);
         self.stats.iter_count.store(0, Relaxed);
         Some(self.root_id)
     }

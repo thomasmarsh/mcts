@@ -115,7 +115,11 @@ where
         .unwrap()
     }
 
-    pub(crate) fn choose_action_tree_parallel(&mut self, state: &G::S) -> G::A {
+    pub(crate) fn choose_action_tree_parallel(
+        &mut self,
+        state: &G::S,
+        report_start: super::SearchReportStart,
+    ) -> G::A {
         let num_threads = self.config.num_tree_threads.max(1);
         debug_assert!(num_threads > 1);
         debug_assert_eq!(self.config.num_threads, 1);
@@ -252,8 +256,14 @@ where
             }
         });
 
-        self.compute_pv(state);
+        let solved =
+            self.config.use_mcts_solver && self.index.get(root_id).proven() != Proven::Unproven;
+        let time_expired = self.timer.done();
+
+        let selected = self.select_final_action(state);
+        self.compute_pv(state, Some(&selected));
         self.verbose_summary(state, num_threads);
-        self.select_final_action(state)
+        self.finish_search_report(report_start, time_expired, solved, false);
+        selected
     }
 }
