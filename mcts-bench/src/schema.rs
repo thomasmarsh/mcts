@@ -345,44 +345,85 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
     for ddl in CREATE_TABLES {
         conn.execute_batch(ddl)?;
     }
-    // ALTERs are intentionally idempotent and keep existing legacy rows
-    // untouched. CREATE TABLE above covers fresh databases.
-    for ddl in [
-        "ALTER TABLE runs ADD COLUMN project_id TEXT",
-        "ALTER TABLE runs ADD COLUMN experiment_id TEXT",
-        "ALTER TABLE runs ADD COLUMN experiment_spec JSON",
-        "ALTER TABLE runs ALTER COLUMN game DROP NOT NULL",
-        "ALTER TABLE match_results ADD COLUMN cell_id TEXT",
-        "ALTER TABLE match_results ADD COLUMN seed UBIGINT",
-        "ALTER TABLE match_results ADD COLUMN trace_game_seq UBIGINT",
-        "ALTER TABLE match_results ADD COLUMN metrics JSON",
-        "ALTER TABLE experiment_cells ADD COLUMN cell_seed UBIGINT",
-        "ALTER TABLE runs ADD COLUMN logical_run_id TEXT",
-        "ALTER TABLE runs ADD COLUMN parent_attempt_id TEXT",
-        "ALTER TABLE runs ADD COLUMN attempt_ordinal UINTEGER",
-        "ALTER TABLE runs ADD COLUMN attempt_phase TEXT",
-        "ALTER TABLE runs ADD COLUMN attempt_stop_reason TEXT",
-        "ALTER TABLE runs ADD COLUMN attempt_process_observed BOOLEAN",
-        "ALTER TABLE runs ADD COLUMN attempt_signal_observed BOOLEAN",
-        "ALTER TABLE runs ADD COLUMN attempt_exit_kind TEXT",
-        "ALTER TABLE runs ADD COLUMN attempt_exit_code INTEGER",
-        "ALTER TABLE runs ADD COLUMN attempt_version UINTEGER",
-        "ALTER TABLE tuning_trials ADD COLUMN stop_reason TEXT",
-        "ALTER TABLE tuning_sessions ADD COLUMN optimizer_id TEXT",
-        "ALTER TABLE tuning_sessions ADD COLUMN lifecycle_path TEXT",
-        "ALTER TABLE tuning_sessions ADD COLUMN control_version BIGINT NOT NULL DEFAULT 0",
-        "ALTER TABLE tuning_sessions ADD COLUMN control_signature TEXT",
-        "ALTER TABLE game_moves ADD COLUMN trace_schema_version UINTEGER",
-        "ALTER TABLE game_moves ADD COLUMN search_report JSON",
-        "ALTER TABLE game_moves ADD COLUMN search_status TEXT",
-        "ALTER TABLE game_moves ADD COLUMN search_completed_iterations UBIGINT",
-        "ALTER TABLE game_moves ADD COLUMN search_elapsed_ms DOUBLE",
-        "ALTER TABLE game_moves ADD COLUMN search_nodes UBIGINT",
-        "ALTER TABLE game_moves ADD COLUMN search_mean_depth DOUBLE",
-        "ALTER TABLE game_moves ADD COLUMN search_max_depth UBIGINT",
-        "ALTER TABLE game_moves ADD COLUMN search_tt_hit_ratio DOUBLE",
-    ] {
-        let _ = conn.execute_batch(ddl);
+    // Check each legacy column before altering its table. Ignoring duplicate
+    // `ALTER TABLE` failures left partially upgraded databases behind when a
+    // previous migration had added only an earlier column in this list.
+    ensure_columns(
+        conn,
+        "runs",
+        &[
+            ("project_id", "TEXT"),
+            ("experiment_id", "TEXT"),
+            ("experiment_spec", "JSON"),
+            ("logical_run_id", "TEXT"),
+            ("parent_attempt_id", "TEXT"),
+            ("attempt_ordinal", "UINTEGER"),
+            ("attempt_phase", "TEXT"),
+            ("attempt_stop_reason", "TEXT"),
+            ("attempt_process_observed", "BOOLEAN"),
+            ("attempt_signal_observed", "BOOLEAN"),
+            ("attempt_exit_kind", "TEXT"),
+            ("attempt_exit_code", "INTEGER"),
+            ("attempt_version", "UINTEGER"),
+        ],
+    )?;
+    ensure_columns(
+        conn,
+        "match_results",
+        &[
+            ("cell_id", "TEXT"),
+            ("seed", "UBIGINT"),
+            ("trace_game_seq", "UBIGINT"),
+            ("metrics", "JSON"),
+        ],
+    )?;
+    ensure_columns(conn, "experiment_cells", &[("cell_seed", "UBIGINT")])?;
+    ensure_columns(conn, "tuning_trials", &[("stop_reason", "TEXT")])?;
+    ensure_columns(
+        conn,
+        "tuning_sessions",
+        &[
+            ("optimizer_id", "TEXT"),
+            ("lifecycle_path", "TEXT"),
+            ("control_version", "BIGINT DEFAULT 0"),
+            ("control_signature", "TEXT"),
+        ],
+    )?;
+    ensure_columns(
+        conn,
+        "game_moves",
+        &[
+            ("trace_schema_version", "UINTEGER"),
+            ("search_report", "JSON"),
+            ("search_status", "TEXT"),
+            ("search_completed_iterations", "UBIGINT"),
+            ("search_elapsed_ms", "DOUBLE"),
+            ("search_nodes", "UBIGINT"),
+            ("search_mean_depth", "DOUBLE"),
+            ("search_max_depth", "UBIGINT"),
+            ("search_tt_hit_ratio", "DOUBLE"),
+        ],
+    )?;
+    let _ = conn.execute_batch("ALTER TABLE runs ALTER COLUMN game DROP NOT NULL");
+    Ok(())
+}
+
+fn ensure_columns(
+    conn: &duckdb::Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> duckdb::Result<()> {
+    for (column, definition) in columns {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = ?1 AND column_name = ?2)",
+            duckdb::params![table, column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
     }
     Ok(())
 }
@@ -547,10 +588,10 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_existing_tuning_trials_with_stop_reason() {
+    fn upgrades_partially_migrated_tuning_sessions_without_skipping_later_columns() {
         let conn = duckdb::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tuning_sessions (session_id TEXT PRIMARY KEY, status TEXT NOT NULL, manifest JSON NOT NULL, manifest_fingerprint TEXT, target_trial_count BIGINT, created_at TIMESTAMP NOT NULL, last_sequence BIGINT NOT NULL);
+            "CREATE TABLE tuning_sessions (session_id TEXT PRIMARY KEY, status TEXT NOT NULL, manifest JSON NOT NULL, manifest_fingerprint TEXT, target_trial_count BIGINT, created_at TIMESTAMP NOT NULL, last_sequence BIGINT NOT NULL, optimizer_id TEXT, lifecycle_path TEXT);
              CREATE TABLE tuning_attempts (attempt_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, bench_run_id TEXT, status TEXT NOT NULL, started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP, failure TEXT);
              CREATE TABLE tuning_trials (session_id TEXT NOT NULL, trial_id TEXT NOT NULL, attempt_id TEXT NOT NULL, trial_number BIGINT NOT NULL, status TEXT NOT NULL, config JSON, created_at TIMESTAMP NOT NULL, started_at TIMESTAMP, ended_at TIMESTAMP, score DOUBLE, mu DOUBLE, sigma DOUBLE, failure TEXT, PRIMARY KEY (session_id, trial_id));",
         )
@@ -566,6 +607,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(nullable, "YES");
+        let control_columns: Vec<(String, Option<String>)> = conn
+            .prepare(
+                "SELECT column_name, column_default FROM information_schema.columns WHERE table_name = 'tuning_sessions' AND column_name IN ('control_version', 'control_signature') ORDER BY column_name",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            control_columns,
+            vec![
+                ("control_signature".into(), None),
+                ("control_version".into(), Some("0".into())),
+            ]
+        );
         let reports: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'tuning_trial_reports'",

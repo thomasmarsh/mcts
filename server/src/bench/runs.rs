@@ -46,12 +46,20 @@ pub(crate) async fn list_runs(
                 CAST(r.started_at AS TEXT), \
                 CAST(r.ended_at AS TEXT), \
                 r.status, r.project_id, r.experiment_id, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
+                COALESCE( \
+                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
+                         THEN attempt.session_id END, \
+                    CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
+                         THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
+                ) \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
          LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
            ON r.run_id = t.run_id \
+         LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
+         LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
          WHERE 1=1",
     );
 
@@ -96,6 +104,7 @@ pub(crate) async fn list_runs(
                 status: row.get(10)?,
                 match_count: row.get(13)?,
                 trial_count: row.get(14)?,
+                tuning_session_id: row.get(15)?,
             })
         })?
         .filter_map(|r| r.ok())
@@ -127,8 +136,12 @@ pub(crate) async fn get_run(
                 r.status, r.log_path, r.exit_code, \
                 COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
                 CAST(i.config AS TEXT), i.cost, \
-                CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                     THEN attempt.session_id END \
+                COALESCE( \
+                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
+                         THEN attempt.session_id END, \
+                    CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
+                         THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
+                ) \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \

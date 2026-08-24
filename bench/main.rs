@@ -134,16 +134,17 @@ enum Command {
         #[arg(long)]
         label: Option<String>,
 
-        /// Pin the launched run's study name to this id (passed
-        /// through as `tuner --run-id`), so its output directory is
-        /// discoverable later for `--resume`.
+        /// Legacy study name forwarded to the tuner.
         #[arg(long = "run-id")]
         run_id: Option<String>,
 
-        /// Resume a prior run by its `--run-id` (passed through as
-        /// `tuner --resume`).
+        /// Stable optimizer identity for a logical tuning session.
         #[arg(long)]
-        resume: Option<String>,
+        optimizer_id: Option<String>,
+
+        /// Physical bench run identity for this attempt.
+        #[arg(long)]
+        bench_run_id: Option<String>,
 
         /// Optional path to append per-ply move-trace JSONL lines to
         /// (opened in append mode by each trial's game-binary subprocess,
@@ -224,7 +225,8 @@ fn main() {
             game,
             label,
             run_id,
-            resume,
+            optimizer_id,
+            bench_run_id,
             trace_path,
             session_id,
             attempt_id,
@@ -238,7 +240,8 @@ fn main() {
             &game,
             label.as_deref(),
             run_id.as_deref(),
-            resume.as_deref(),
+            optimizer_id.as_deref(),
+            bench_run_id.as_deref(),
             trace_path.as_deref(),
             session_id.as_deref(),
             attempt_id.as_deref(),
@@ -426,8 +429,9 @@ fn build_tuner_command(
     game_config: Option<&str>,
     game: &str,
     run_id: Option<&str>,
-    resume: Option<&str>,
     trace_path: Option<&str>,
+    optimizer_id: Option<&str>,
+    bench_run_id: Option<&str>,
     session_id: Option<&str>,
     attempt_id: Option<&str>,
     lifecycle_path: Option<&str>,
@@ -480,17 +484,20 @@ fn build_tuner_command(
         cmd.push(id.to_string());
     }
 
-    if let Some(id) = resume {
-        cmd.push("--resume".to_string());
-        cmd.push(id.to_string());
-    }
-
     if let Some(path) = trace_path {
         cmd.push("--trace-path".to_string());
         cmd.push(path.to_string());
     }
 
-    append_tuner_lifecycle_arguments(&mut cmd, game, session_id, attempt_id, lifecycle_path);
+    append_tuner_lifecycle_arguments(
+        &mut cmd,
+        game,
+        optimizer_id,
+        bench_run_id,
+        session_id,
+        attempt_id,
+        lifecycle_path,
+    );
 
     cmd
 }
@@ -498,10 +505,20 @@ fn build_tuner_command(
 fn append_tuner_lifecycle_arguments(
     cmd: &mut Vec<String>,
     game: &str,
+    optimizer_id: Option<&str>,
+    bench_run_id: Option<&str>,
     session_id: Option<&str>,
     attempt_id: Option<&str>,
     lifecycle_path: Option<&str>,
 ) {
+    if let Some(id) = optimizer_id {
+        cmd.push("--optimizer-id".to_string());
+        cmd.push(id.to_string());
+    }
+    if let Some(id) = bench_run_id {
+        cmd.push("--bench-run-id".to_string());
+        cmd.push(id.to_string());
+    }
     if let Some(id) = session_id {
         cmd.push("--session-id".to_string());
         cmd.push(id.to_string());
@@ -519,17 +536,22 @@ fn append_tuner_lifecycle_arguments(
 }
 
 struct BackgroundTunerLifecycleArguments {
+    optimizer_id: String,
+    bench_run_id: String,
     session_id: String,
     attempt_id: String,
     lifecycle_path: String,
 }
 
 fn derive_background_tuner_lifecycle_arguments(run_id: &str) -> BackgroundTunerLifecycleArguments {
+    let optimizer_id = format!("tuning-session-{run_id}");
     BackgroundTunerLifecycleArguments {
-        session_id: format!("tuning-session-{run_id}"),
+        optimizer_id: optimizer_id.clone(),
+        bench_run_id: run_id.to_string(),
+        session_id: optimizer_id.clone(),
         attempt_id: format!("tuning-attempt-{run_id}"),
-        lifecycle_path: std::path::Path::new(launch::BENCH_RUNS_DIR)
-            .join(run_id)
+        lifecycle_path: std::path::Path::new("optuna_output")
+            .join(optimizer_id)
             .join("lifecycle.jsonl")
             .to_string_lossy()
             .to_string(),
@@ -545,7 +567,8 @@ fn cmd_tuner(
     game: &str,
     label: Option<&str>,
     run_id: Option<&str>,
-    resume: Option<&str>,
+    optimizer_id: Option<&str>,
+    bench_run_id: Option<&str>,
     trace_path: Option<&str>,
     session_id: Option<&str>,
     attempt_id: Option<&str>,
@@ -556,9 +579,7 @@ fn cmd_tuner(
         // Pin the run_id up front (rather than letting `launch::launch`
         // generate one internally) so the same id both names the
         // bench-runs directory/registry entry *and* is baked into the
-        // child's own `--run-id` argv -- otherwise the two would disagree
-        // and a later `--resume <bench-run-id>` couldn't find the tuner
-        // output directory it actually needs.
+        // child's own `--run-id` argv.
         let run_id = run_id
             .map(str::to_string)
             .unwrap_or_else(|| launch::generate_run_id("tuner", game, BUILD_INFO));
@@ -570,8 +591,9 @@ fn cmd_tuner(
             game_config,
             game,
             Some(&run_id),
-            resume,
             trace_path,
+            optimizer_id.or(Some(&lifecycle.optimizer_id)),
+            bench_run_id.or(Some(&lifecycle.bench_run_id)),
             session_id.or(Some(&lifecycle.session_id)),
             attempt_id.or(Some(&lifecycle.attempt_id)),
             lifecycle_path.or(Some(&lifecycle.lifecycle_path)),
@@ -602,7 +624,7 @@ fn cmd_tuner(
     } else {
         // Run in the foreground — inherit stdout/stderr so the Python
         // JSONL stream goes directly to the terminal or whoever is
-        // piping stdout. Unlike the background branch, `run_id`/`resume`
+        // piping stdout. Unlike the background branch, supplied identities
         // are forwarded as given rather than auto-generated: this path has
         // no bench-runs registry entry of its own to keep in sync (a
         // caller that wraps this in its *own* launcher, e.g. the server,
@@ -615,8 +637,9 @@ fn cmd_tuner(
             game_config,
             game,
             run_id,
-            resume,
             trace_path,
+            optimizer_id,
+            bench_run_id,
             session_id,
             attempt_id,
             lifecycle_path,
@@ -700,6 +723,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -727,6 +751,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let game_idx = cmd
             .iter()
@@ -740,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tuner_command_forwards_run_id_and_resume() {
+    fn test_build_tuner_command_forwards_modern_attempt_identity() {
         let cmd = build_tuner_command(
             None,
             &[],
@@ -748,8 +773,9 @@ mod tests {
             None,
             "druid",
             Some("tuner-druid-run-1"),
-            Some("tuner-druid-run-0"),
             None,
+            Some("optimizer-druid"),
+            Some("physical-druid"),
             None,
             None,
             None,
@@ -760,15 +786,21 @@ mod tests {
             .expect("--run-id flag present");
         assert_eq!(cmd[run_id_idx + 1], "tuner-druid-run-1");
 
-        let resume_idx = cmd
+        let optimizer_idx = cmd
             .iter()
-            .position(|a| a == "--resume")
-            .expect("--resume flag present");
-        assert_eq!(cmd[resume_idx + 1], "tuner-druid-run-0");
+            .position(|a| a == "--optimizer-id")
+            .expect("--optimizer-id flag present");
+        assert_eq!(cmd[optimizer_idx + 1], "optimizer-druid");
+        let bench_run_idx = cmd
+            .iter()
+            .position(|a| a == "--bench-run-id")
+            .expect("--bench-run-id flag present");
+        assert_eq!(cmd[bench_run_idx + 1], "physical-druid");
+        assert!(!cmd.iter().any(|a| a == "--resume"));
     }
 
     #[test]
-    fn test_build_tuner_command_omits_run_id_and_resume_when_absent() {
+    fn test_build_tuner_command_omits_optional_identity_when_absent() {
         let cmd = build_tuner_command(
             None,
             &[],
@@ -781,9 +813,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
+        assert!(!cmd.iter().any(|a| a == "--optimizer-id"));
+        assert!(!cmd.iter().any(|a| a == "--bench-run-id"));
     }
 
     #[test]
@@ -795,6 +830,7 @@ mod tests {
             &baseline_configs,
             None,
             "nim",
+            None,
             None,
             None,
             None,
@@ -823,6 +859,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -845,6 +882,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
@@ -858,8 +896,9 @@ mod tests {
             None,
             "druid",
             None,
-            None,
             Some("bench-runs/tuner-druid-run-1/moves.jsonl"),
+            None,
+            None,
             None,
             None,
             None,
@@ -879,6 +918,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             None,

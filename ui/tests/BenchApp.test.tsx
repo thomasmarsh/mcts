@@ -21,7 +21,7 @@ import {
   RunDetailPanel,
 } from "@mcts/bench";
 import { createMockBenchEnv, FAKE_RUN_ID, FAKE_tuner_RUN_ID } from "./fixtures/fake-bench.js";
-import type { BenchEnv } from "@mcts/bench";
+import type { BenchEnv, RunSummary } from "@mcts/bench";
 
 /** Create a seeded test store with a mocked bench env. */
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
@@ -120,6 +120,33 @@ describe("RunList", () => {
     await vi.waitFor(() => {
       expect(screen.getByText("Run Detail")).toBeInTheDocument();
     });
+  });
+
+  it("keeps a starting modern tuner attempt available without calling it legacy", async () => {
+    const modernAttempt: RunSummary = {
+      run_id: "tuner-modern-attempt",
+      kind: "tuner",
+      game: "nim",
+      project_id: null,
+      experiment_id: null,
+      label: null,
+      git_sha: "abc1234",
+      git_dirty: false,
+      host: "testhost",
+      pid: 42,
+      started_at: "2026-01-01T00:00:00Z",
+      ended_at: null,
+      status: "running",
+      match_count: 0,
+      trial_count: 0,
+      tuning_session_id: "session-modern",
+    };
+    const { store } = createTestStore({ listRuns: () => Effect.send([modernAttempt]) });
+    render(() => <RunList store={store} />);
+
+    await vi.waitFor(() => expect(store.getState()().runs.status).toBe("done"));
+    expect(screen.getByText("Tuning attempt")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy tuner run")).not.toBeInTheDocument();
   });
 });
 

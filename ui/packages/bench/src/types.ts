@@ -511,6 +511,8 @@ export interface RunSummary {
   status: RunStatus;
   match_count: number;
   trial_count: number;
+  /** Modern logical session owning this physical tuner attempt, if any. */
+  tuning_session_id?: string | null;
 }
 
 /** `GET /api/bench/runs/{run_id}` response — `RunSummary` plus the fields

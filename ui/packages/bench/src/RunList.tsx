@@ -136,7 +136,8 @@ export const RunList: Component<{
               <RunRow
                 run={run}
                 isOpen={openRunId() === run.run_id}
-                legacyTuner={run.kind === "tuner"}
+                legacyTuner={run.kind === "tuner" && run.tuning_session_id == null}
+                modernTuner={run.kind === "tuner" && run.tuning_session_id != null}
                 onClick={() => dispatch({ tag: "openRun", runId: run.run_id })}
               />
             )}
@@ -152,6 +153,7 @@ const RunRow: Component<{
   run: RunSummary;
   isOpen: boolean;
   legacyTuner: boolean;
+  modernTuner: boolean;
   onClick: () => void;
 }> = (props) => {
   const started = createMemo(() => {
@@ -173,7 +175,10 @@ const RunRow: Component<{
         {statusLabel(props.run.status)}
       </span>
       <span class="run-row-game">{props.run.game}</span>
-      <Show when={props.legacyTuner} fallback={<span class="run-row-matches">{props.run.match_count} matches</span>}>
+      <Show
+        when={props.legacyTuner}
+        fallback={<Show when={props.modernTuner} fallback={<span class="run-row-matches">{props.run.match_count} matches</span>}><span class="modern-tuner-label">Tuning attempt</span></Show>}
+      >
         <span class="legacy-tuner-label">Legacy tuner run</span>
       </Show>
       <span class="run-row-time">{started()}</span>

@@ -125,6 +125,10 @@ pub struct RunSummary {
     pub status: String,
     pub match_count: i64,
     pub trial_count: i64,
+    /// Modern logical session that owns this physical tuner attempt.
+    /// Present as soon as a server-created tuner run has its pinned config,
+    /// before lifecycle ingestion projects the attempt row.
+    pub tuning_session_id: Option<String>,
 }
 
 #[derive(Serialize)]
