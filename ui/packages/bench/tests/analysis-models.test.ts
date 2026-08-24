@@ -32,6 +32,11 @@ const overview: TuningAnalysisOverview = {
     pairs: { total: 6, running: 1, complete: 4, failed: 1, unmatched_pool_revisions: 2 },
     points: { total: 8, returned: 5, sampled: true },
   },
+  control: {
+    version: 0,
+    continuation: { target_trial_count: 5, consumed_trial_count: 3, remaining_trial_count: 2, active_attempt_id: null, launch_reservation: null, stop_attempt_id: null, recovery_required: false },
+    allowed_commands: [],
+  },
   bracket_resources: [
     { bracket_id: "bracket-10", resource: 10, rung_resource: 10, reports: 2, trials: 2 },
     { bracket_id: "bracket-2", resource: 2, rung_resource: 2, reports: 1, trials: 1 },

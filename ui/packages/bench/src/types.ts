@@ -72,6 +72,64 @@ export interface TuningCapabilities {
   has_trial_reports: boolean;
 }
 
+/** Commands the server currently projects for a logical tuning session. */
+export type TuningSessionCommandKind = "stop" | "resume" | "add_budget";
+
+/** A server-authoritative permission and, when denied, its explanation. */
+export interface TuningAllowedCommand {
+  command: TuningSessionCommandKind;
+  allowed: boolean;
+  denial_reason: string | null;
+}
+
+/** Continuation state is a control-plane snapshot, separate from trial progress. */
+export interface TuningContinuation {
+  target_trial_count: number | null;
+  consumed_trial_count: number;
+  remaining_trial_count: number | null;
+  active_attempt_id: string | null;
+  launch_reservation: { attempt_id: string; physical_run_id: string } | null;
+  stop_attempt_id: string | null;
+  recovery_required: boolean;
+}
+
+export interface TuningSessionControl {
+  version: number;
+  continuation: TuningContinuation;
+  allowed_commands: TuningAllowedCommand[];
+}
+
+export interface TuningSessionCommandRequest {
+  command_id: string;
+  expected_version: number;
+}
+
+export interface TuningSessionBudgetRequest extends TuningSessionCommandRequest {
+  delta: number;
+  start: boolean;
+  n_workers?: number;
+}
+
+export interface TuningBudgetResult {
+  previous_target_trial_count: number;
+  delta: number;
+  target_trial_count: number;
+}
+
+/** The common version-1 response envelope returned by all session commands. */
+export interface TuningSessionCommandResponse {
+  schema_version: 1;
+  command_id: string;
+  replay: boolean;
+  status: string;
+  attempt_id: string | null;
+  bench_run_id: string | null;
+  signal: "sent" | "not_found" | null;
+  budget?: TuningBudgetResult;
+  launch_error?: string;
+  control: TuningSessionControl;
+}
+
 export interface TuningAttempt {
   attempt_id: string;
   bench_run_id: string | null;
@@ -96,6 +154,7 @@ export interface TuningSessionListItem extends TuningSessionSummary {
   last_activity_at: string;
   attempts: TuningAttempt[];
   capabilities: TuningCapabilities;
+  control: TuningSessionControl;
 }
 
 export interface TuningSessionsResponse {
@@ -229,6 +288,7 @@ export interface TuningSessionDetail {
   manifest: JsonValue;
   fingerprint: string | null;
   capabilities: TuningCapabilities;
+  control: TuningSessionControl;
   cursor: { session_sequence: number };
 }
 
@@ -321,6 +381,7 @@ export interface TuningAnalysisOverview {
   points: TuningAnalysisPoint[];
   best: { score: number; trial_ids: string[] } | null;
   pool_revisions: TuningPoolRevision[];
+  control: TuningSessionControl;
 }
 
 /** Server query keys for a compact trial page. `bracket: "unassigned"`

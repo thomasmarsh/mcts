@@ -11,6 +11,16 @@ import {
 import type { BenchEnv } from "../src/reducer.js";
 import type { TuningAnalysisOverview, TuningSessionsResponse, TuningTrialDetail, TuningTrialPage } from "../src/types.js";
 
+const control = {
+  version: 0,
+  continuation: { target_trial_count: 2, consumed_trial_count: 1, remaining_trial_count: 1, active_attempt_id: "attempt-1", launch_reservation: null, stop_attempt_id: null, recovery_required: false },
+  allowed_commands: [
+    { command: "stop" as const, allowed: true, denial_reason: null },
+    { command: "resume" as const, allowed: false, denial_reason: "active_attempt" },
+    { command: "add_budget" as const, allowed: true, denial_reason: null },
+  ],
+};
+
 const sessions: TuningSessionsResponse = {
   schema_version: 1,
   sessions: [{
@@ -18,13 +28,14 @@ const sessions: TuningSessionsResponse = {
     counts: { total: 1, queued: 0, running: 1, terminal: 0, completed: 0, failed: 0, pruned: 0, cancelled: 0 },
     created_at: "2026-08-23T12:00:00Z", last_activity_at: "2026-08-23T12:01:00Z", attempts: [],
     capabilities: { has_lifecycle: true, has_pairs: true, has_renderer_trace: true, has_search_reports: false, has_trial_reports: true },
+    control,
   }],
 };
 const overview = (sequence = 1): TuningAnalysisOverview => ({
   schema_version: 1, policy: null, objective: { metric: "score", direction: "maximize", complete_trials_only: true },
   cursor: { session_sequence: sequence },
   coverage: { trials: sessions.sessions[0]!.counts, reports: 0, pairs: { total: 0, running: 0, complete: 0, failed: 0, unmatched_pool_revisions: 0 }, points: { total: 0, returned: 0, sampled: false } },
-  bracket_resources: [], decision_groups: [], points: [], best: null, pool_revisions: [],
+  bracket_resources: [], decision_groups: [], points: [], best: null, pool_revisions: [], control,
 });
 const page = (cursor: number, next_cursor: string | null = null): TuningTrialPage => ({
   schema_version: 1, trials: [], total_count: 0, limit: 50, next_cursor, cursor: { session_sequence: cursor },

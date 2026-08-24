@@ -38,6 +38,9 @@ import type {
   TuningTrialDetail,
   TuningTrialPage,
   TuningTrialPageQuery,
+  TuningSessionCommandRequest,
+  TuningSessionBudgetRequest,
+  TuningSessionCommandResponse,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -81,6 +84,9 @@ export interface BenchApiClient {
   getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview>;
   getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Promise<TuningTrialPage>;
   getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail>;
+  stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse>;
+  resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse>;
+  addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Promise<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
@@ -122,9 +128,16 @@ async function errorMessage(r: Response): Promise<string> {
   return text || `API ${r.status}`;
 }
 
+class BenchApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "BenchApiError";
+  }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
-  if (!r.ok) throw new Error(await errorMessage(r));
+  if (!r.ok) throw new BenchApiError(await errorMessage(r), r.status);
   return r.json() as Promise<T>;
 }
 
@@ -134,13 +147,13 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
-  if (!r.ok) throw new Error(await errorMessage(r));
+  if (!r.ok) throw new BenchApiError(await errorMessage(r), r.status);
   return r.json() as Promise<T>;
 }
 
 async function deleteRequest(url: string): Promise<void> {
   const r = await fetch(url, { method: "DELETE" });
-  if (!r.ok) throw new Error(await errorMessage(r));
+  if (!r.ok) throw new BenchApiError(await errorMessage(r), r.status);
 }
 
 /** Build a `?k=v&...` suffix, skipping null/undefined values. */
@@ -245,6 +258,15 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail> {
       return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials/${encodeURIComponent(trialId)}`));
     },
+    async stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse> {
+      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/stop`), body);
+    },
+    async resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse> {
+      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/resume`), body);
+    },
+    async addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Promise<TuningSessionCommandResponse> {
+      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/budget`), body);
+    },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
     },
@@ -295,6 +317,9 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getTuningAnalysisOverview: (sessionId: string) => lift(() => api.getTuningAnalysisOverview(sessionId)),
     getTuningTrialPage: (sessionId: string, query?: TuningTrialPageQuery) => lift(() => api.getTuningTrialPage(sessionId, query)),
     getTuningTrialDetail: (sessionId: string, trialId: string) => lift(() => api.getTuningTrialDetail(sessionId, trialId)),
+    stopTuningSession: (sessionId: string, body: TuningSessionCommandRequest) => lift(() => api.stopTuningSession(sessionId, body)),
+    resumeTuningSession: (sessionId: string, body: TuningSessionCommandRequest) => lift(() => api.resumeTuningSession(sessionId, body)),
+    addTuningSessionBudget: (sessionId: string, body: TuningSessionBudgetRequest) => lift(() => api.addTuningSessionBudget(sessionId, body)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),

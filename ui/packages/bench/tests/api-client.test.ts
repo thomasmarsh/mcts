@@ -118,6 +118,20 @@ describe("createBenchApiClient", () => {
     calls.length = 0;
     await client.getTuningTrialDetail("session/a", "trial/b");
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/trials/trial%2Fb");
+
+    calls.length = 0;
+    await client.stopTuningSession("session/a", { command_id: "stop-1", expected_version: 2 });
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/stop");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ command_id: "stop-1", expected_version: 2 });
+
+    calls.length = 0;
+    await client.resumeTuningSession("session/a", { command_id: "resume-1", expected_version: 3 });
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/resume");
+
+    calls.length = 0;
+    await client.addTuningSessionBudget("session/a", { command_id: "budget-1", expected_version: 4, delta: 3, start: true, n_workers: 2 });
+    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/budget");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ command_id: "budget-1", expected_version: 4, delta: 3, start: true, n_workers: 2 });
   });
 
   it("getRunTrials passes an optional limit", async () => {

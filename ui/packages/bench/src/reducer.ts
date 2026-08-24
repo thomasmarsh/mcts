@@ -54,6 +54,9 @@ import {
   type TuningTrialDetail,
   type TuningTrialPage,
   type TuningTrialPageQuery,
+  type TuningSessionCommandRequest,
+  type TuningSessionBudgetRequest,
+  type TuningSessionCommandResponse,
 } from "./types.js";
 import { expandExperimentSpec } from "./experiment-grid.js";
 import { serializeExperimentRunCsv, serializeExperimentRunJson, sanitizeExportRunId } from "./experiment-export.js";
@@ -100,6 +103,9 @@ export interface BenchEnv {
   getTuningAnalysisOverview(sessionId: string): Effect<TuningAnalysisOverview>;
   getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Effect<TuningTrialPage>;
   getTuningTrialDetail(sessionId: string, trialId: string): Effect<TuningTrialDetail>;
+  stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Effect<TuningSessionCommandResponse>;
+  resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Effect<TuningSessionCommandResponse>;
+  addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Effect<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   /** Every rung of the ladder chain `runId` belongs to, oldest first. */

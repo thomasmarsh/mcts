@@ -2,7 +2,17 @@
 
 import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
-import type { TuningAnalysisOverview, TuningSessionDetail, TuningSessionsResponse, TuningTrialDetail, TuningTrialPage, TuningTrialPageQuery } from "./types.js";
+import type {
+  TuningAnalysisOverview,
+  TuningSessionCommandKind,
+  TuningSessionCommandResponse,
+  TuningSessionControl,
+  TuningSessionDetail,
+  TuningSessionsResponse,
+  TuningTrialDetail,
+  TuningTrialPage,
+  TuningTrialPageQuery,
+} from "./types.js";
 
 export const TUNING_DETAIL_REFRESH_MS = 5_000;
 export const DEFAULT_TRIAL_PAGE_LIMIT = 50;
@@ -32,6 +42,18 @@ export interface TuningTrialPageState extends TuningLoadState<TuningTrialPage> {
 export interface TuningTrialDetailState extends TuningLoadState<TuningTrialDetail> {
   sessionId: string; trialId: string;
 }
+export interface TuningSessionCommandState {
+  kind: TuningSessionCommandKind;
+  commandId: string;
+  expectedVersion: number;
+  delta?: number;
+  start?: boolean;
+  nWorkers?: number;
+  status: "pending" | "succeeded" | "failed";
+  error: string | null;
+  retriable: boolean;
+  response: TuningSessionCommandResponse | null;
+}
 export interface TuningNavigationState {
   list: TuningLoadState<TuningSessionsResponse>;
   /** Retained for the existing game-evidence workbench until it moves to the lazy analysis routes. */
@@ -51,6 +73,8 @@ export interface TuningNavigationState {
   selection: TuningSelection;
   expandedIds: string[];
   unavailable: string | null;
+  /** The last command for each session, retained so a transport retry replays its id. */
+  commands: Record<string, TuningSessionCommandState>;
 }
 
 export type TuningNavigationAction =
@@ -86,7 +110,12 @@ export type TuningNavigationAction =
   | { tag: "selectTrial"; trialId: string }
   | { tag: "selectPair"; pairId: string }
   | { tag: "selectGame"; gameId: string }
-  | { tag: "toggleExpanded"; id: string };
+  | { tag: "toggleExpanded"; id: string }
+  | { tag: "sessionCommandSubmit"; sessionId: string; kind: TuningSessionCommandKind; commandId: string; expectedVersion: number; delta?: number; start?: boolean; nWorkers?: number }
+  | { tag: "sessionCommandRetry"; sessionId: string }
+  | { tag: "sessionCommandSucceeded"; sessionId: string; commandId: string; response: TuningSessionCommandResponse }
+  | { tag: "sessionCommandFailed"; sessionId: string; commandId: string; error: string; retriable: boolean }
+  | { tag: "openCommandAttempt"; sessionId: string; attemptId: string };
 
 function loadState<T>(): TuningLoadState<T> { return { status: "idle", snapshot: null, error: null, generation: 0 }; }
 function defaultFilters(): TuningTrialFilters { return { state: null, bracket: null, reason: null, family: null, q: null }; }
@@ -100,7 +129,7 @@ export function initialTuningNavigationState(): TuningNavigationState {
     tab: "progress", progressMetric: "score", progressScale: "shared",
     filters: defaultFilters(), sort: { sort: "trial", direction: "desc" }, trialPageLimit: DEFAULT_TRIAL_PAGE_LIMIT,
     ladderRevision: null, ladderAnchorKey: null,
-    selection: { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null }, expandedIds: [], unavailable: null,
+    selection: { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null }, expandedIds: [], unavailable: null, commands: {},
   };
 }
 function selectionForSession(sessionId: string | null): TuningSelection {
@@ -222,7 +251,87 @@ function resetTrialPage(state: TuningNavigationState): void {
   state.trialPage = { ...pageState(), generation: state.trialPage.generation + 1, sessionId: state.selection.sessionId };
 }
 
+function commandEffect(command: TuningSessionCommandState, sessionId: string, env: BenchEnv): Effect<TuningNavigationAction> {
+  const body = { command_id: command.commandId, expected_version: command.expectedVersion };
+  const effect = command.kind === "stop"
+    ? env.stopTuningSession(sessionId, body)
+    : command.kind === "resume"
+      ? env.resumeTuningSession(sessionId, body)
+      : env.addTuningSessionBudget(sessionId, {
+        ...body,
+        delta: command.delta!,
+        start: command.start!,
+        n_workers: command.nWorkers,
+      });
+  return effect
+    .map((response): TuningNavigationAction => ({ tag: "sessionCommandSucceeded", sessionId, commandId: command.commandId, response }))
+    .catch((error): TuningNavigationAction => {
+      const status = typeof error === "object" && error !== null && typeof (error as { status?: unknown }).status === "number"
+        ? (error as { status: number }).status : null;
+      return { tag: "sessionCommandFailed", sessionId, commandId: command.commandId, error: String(error), retriable: status === null || status >= 500 };
+    });
+}
+
+function applyControl(state: TuningNavigationState, sessionId: string, control: TuningSessionControl): void {
+  const sessions = state.list.snapshot?.sessions;
+  const listed = sessions?.find((session) => session.session_id === sessionId);
+  if (listed) {
+    listed.control = control;
+    listed.target_trial_count = control.continuation.target_trial_count;
+  }
+  if (state.detail.sessionId === sessionId && state.detail.snapshot) {
+    state.detail.snapshot.control = control;
+    state.detail.snapshot.summary.target_trial_count = control.continuation.target_trial_count;
+  }
+  if (state.overview.sessionId === sessionId && state.overview.snapshot) state.overview.snapshot.control = control;
+}
+
+function refreshAfterCommand(state: TuningNavigationState, sessionId: string, env: BenchEnv): Effect<TuningNavigationAction> | null {
+  return merge(
+    requestList(state, env),
+    state.selection.sessionId === sessionId ? requestOverview(state, sessionId, env) : null,
+    state.selection.sessionId === sessionId && state.detail.sessionId === sessionId ? requestDetail(state, sessionId, env) : null,
+  );
+}
+
 export function tuningNavigationReducer(state: TuningNavigationState, action: TuningNavigationAction, env: BenchEnv): Effect<TuningNavigationAction> | null {
+  if (action.tag === "sessionCommandSubmit") {
+    if (state.commands[action.sessionId]?.status === "pending") return null;
+    if ((action.kind === "add_budget" && (!Number.isSafeInteger(action.delta) || action.delta! <= 0 || typeof action.start !== "boolean" || (!action.start && action.nWorkers !== undefined))) || !action.commandId) return null;
+    const command: TuningSessionCommandState = {
+      kind: action.kind, commandId: action.commandId, expectedVersion: action.expectedVersion,
+      delta: action.delta, start: action.start, nWorkers: action.nWorkers,
+      status: "pending", error: null, retriable: false, response: null,
+    };
+    state.commands[action.sessionId] = command;
+    return commandEffect(command, action.sessionId, env);
+  }
+  if (action.tag === "sessionCommandRetry") {
+    const command = state.commands[action.sessionId];
+    if (!command || command.status !== "failed" || !command.retriable) return null;
+    command.status = "pending"; command.error = null; command.retriable = false;
+    return commandEffect(command, action.sessionId, env);
+  }
+  if (action.tag === "sessionCommandSucceeded") {
+    const command = state.commands[action.sessionId];
+    if (!command || command.commandId !== action.commandId || command.status !== "pending") return null;
+    command.response = action.response;
+    command.status = action.response.launch_error ? "failed" : "succeeded";
+    command.error = action.response.launch_error ?? null;
+    command.retriable = false;
+    applyControl(state, action.sessionId, action.response.control);
+    return refreshAfterCommand(state, action.sessionId, env);
+  }
+  if (action.tag === "sessionCommandFailed") {
+    const command = state.commands[action.sessionId];
+    if (!command || command.commandId !== action.commandId || command.status !== "pending") return null;
+    command.status = "failed"; command.error = action.error; command.retriable = action.retriable;
+    return null;
+  }
+  if (action.tag === "openCommandAttempt") {
+    if (state.selection.sessionId === action.sessionId) selectAttempt(state, action.attemptId);
+    return null;
+  }
   if (action.tag === "listRequest") return requestList(state, env);
   if (action.tag === "listLoaded" || action.tag === "listFailed") {
     if (action.generation !== state.list.generation) return null;

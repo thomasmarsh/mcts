@@ -136,6 +136,9 @@ const mockEnv: BenchEnv = {
   getTuningAnalysisOverview: () => Effect.none(),
   getTuningTrialPage: () => Effect.none(),
   getTuningTrialDetail: () => Effect.none(),
+  stopTuningSession: () => Effect.none(),
+  resumeTuningSession: () => Effect.none(),
+  addTuningSessionBudget: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
