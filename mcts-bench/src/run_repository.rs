@@ -119,7 +119,61 @@ pub struct ExperimentCell {
     pub match_outcomes: Vec<Option<String>>,
 }
 
-/// Logical read operations over benchmark runs.
+#[derive(Debug, Default)]
+pub struct RunTrialsQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct RunTrial {
+    pub trial_id: i64,
+    pub ts: String,
+    pub config: Value,
+    pub seed: Option<i64>,
+    pub cost: Option<f64>,
+    pub extra: Option<Value>,
+}
+
+#[derive(Debug, Default)]
+pub struct RunGamesQuery {
+    pub limit: Option<i64>,
+    pub cell_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RunGame {
+    pub game_seq: i64,
+    pub match_seq: Option<i64>,
+    pub cell_id: Option<String>,
+    pub seed: Option<u64>,
+    pub metrics: Option<Value>,
+    pub ply_count: i64,
+    pub started_at: String,
+    pub ended_at: String,
+    pub strategy_a: Option<String>,
+    pub strategy_b: Option<String>,
+    pub outcome: Option<String>,
+    pub winner: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct RunGameMove {
+    pub game_seq: i64,
+    pub ply: i64,
+    pub ts: String,
+    pub state: Value,
+    pub mv: Option<Value>,
+    pub player: Option<String>,
+    pub search: Option<Value>,
+}
+
+#[derive(Debug)]
+pub struct RunDeletionInfo {
+    pub status: String,
+    pub tuning_session_id: Option<String>,
+}
+
+/// Logical storage operations over benchmark runs.
 ///
 /// All arguments and results are ordinary application data. Implementations
 /// may use DuckDB, a different durable store, or a test double.
@@ -135,4 +189,28 @@ pub trait RunRepository {
         &self,
         run_id: &str,
     ) -> Result<Vec<ExperimentCell>, RunRepositoryError>;
+    fn ensure_run_exists(&self, run_id: &str) -> Result<(), RunRepositoryError>;
+    fn load_trials(
+        &self,
+        run_id: &str,
+        query: &RunTrialsQuery,
+    ) -> Result<Vec<RunTrial>, RunRepositoryError>;
+    fn load_games(
+        &self,
+        run_id: &str,
+        query: &RunGamesQuery,
+    ) -> Result<Vec<RunGame>, RunRepositoryError>;
+    fn load_game_moves(
+        &self,
+        run_id: &str,
+        game_seq: i64,
+        after_ply: Option<i64>,
+    ) -> Result<Vec<RunGameMove>, RunRepositoryError>;
+    fn load_latest_game_seq(&self, run_id: &str) -> Result<Option<i64>, RunRepositoryError>;
+    fn load_deletion_info(&self, run_id: &str) -> Result<RunDeletionInfo, RunRepositoryError>;
+    fn delete_run_records(
+        &self,
+        run_id: &str,
+        ingest_log_paths: &[String],
+    ) -> Result<(), RunRepositoryError>;
 }

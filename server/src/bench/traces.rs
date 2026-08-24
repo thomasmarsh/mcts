@@ -27,58 +27,40 @@ use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::run_repository::{RunGamesQuery, RunRepository, RunTrialsQuery};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
 
+use super::runs::{run_repository_error, run_repository_error_for_run};
 use super::types::*;
 pub(crate) async fn get_run_trials(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<TrialsParams>,
 ) -> Result<Json<Vec<TrialRow>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    match db.query_row(
-        "SELECT run_id FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(_) => {}
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
-        }
-        Err(e) => return Err(BenchError::from(e)),
-    }
-
-    let mut sql = String::from(
-        "SELECT trial_id, CAST(ts AS TEXT), CAST(config AS TEXT), seed, cost, CAST(extra AS TEXT) \
-         FROM trials WHERE run_id = ?1 ORDER BY trial_id ASC",
-    );
-    if let Some(limit) = params.limit {
-        sql.push_str(&format!(" LIMIT {limit}"));
-    }
-
-    let mut stmt = db.prepare(&sql)?;
-    let rows: Vec<TrialRow> = stmt
-        .query_map(duckdb::params![&run_id], |row| {
-            let config_str: String = row.get(2)?;
-            let config: Value = serde_json::from_str(&config_str).unwrap_or(Value::Null);
-            let extra_str: Option<String> = row.get(5)?;
-            let extra = extra_str.and_then(|s| serde_json::from_str(&s).ok());
-            Ok(TrialRow {
-                trial_id: row.get(0)?,
-                ts: row.get(1)?,
-                config,
-                seed: row.get(3)?,
-                cost: row.get(4)?,
-                extra,
-            })
-        })?
-        .filter_map(|r| r.ok())
+    state
+        .run_repository
+        .ensure_run_exists(&run_id)
+        .map_err(|error| run_repository_error_for_run(error, &run_id))?;
+    let rows = state
+        .run_repository
+        .load_trials(
+            &run_id,
+            &RunTrialsQuery {
+                limit: params.limit,
+            },
+        )
+        .map_err(run_repository_error)?
+        .into_iter()
+        .map(|trial| TrialRow {
+            trial_id: trial.trial_id,
+            ts: trial.ts,
+            config: trial.config,
+            seed: trial.seed,
+            cost: trial.cost,
+            extra: trial.extra,
+        })
         .collect();
 
     Ok(Json(rows))
@@ -130,57 +112,35 @@ pub(crate) async fn get_run_games(
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<GamesParams>,
 ) -> Result<Json<Vec<GameSummary>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    match db.query_row(
-        "SELECT run_id FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(_) => {}
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
-        }
-        Err(e) => return Err(BenchError::from(e)),
-    }
-
-    let mut sql = String::from(
-        "SELECT g.game_seq, m.seq, m.cell_id, m.seed, CAST(m.metrics AS TEXT), COUNT(*), CAST(MIN(g.ts) AS TEXT), CAST(MAX(g.ts) AS TEXT), \
-                m.strategy_a, m.strategy_b, m.outcome, m.winner \
-         FROM game_moves g \
-         LEFT JOIN match_results m ON m.run_id = g.run_id AND (m.trace_game_seq = g.game_seq OR (m.trace_game_seq IS NULL AND m.seq = g.game_seq)) \
-         WHERE g.run_id = ?1 AND (?2 IS NULL OR m.cell_id = ?2) \
-         GROUP BY g.game_seq, m.seq, m.cell_id, m.seed, m.metrics, m.strategy_a, m.strategy_b, m.outcome, m.winner \
-         ORDER BY g.game_seq DESC",
-    );
-    if let Some(limit) = params.limit {
-        sql.push_str(&format!(" LIMIT {limit}"));
-    }
-
-    let mut stmt = db.prepare(&sql)?;
-    let rows: Vec<GameSummary> = stmt
-        .query_map(duckdb::params![&run_id, params.cell_id.as_deref()], |row| {
-            Ok(GameSummary {
-                game_seq: row.get(0)?,
-                match_seq: row.get(1)?,
-                cell_id: row.get(2)?,
-                seed: row.get(3)?,
-                metrics: row
-                    .get::<_, Option<String>>(4)?
-                    .and_then(|s| serde_json::from_str(&s).ok()),
-                ply_count: row.get(5)?,
-                started_at: row.get(6)?,
-                ended_at: row.get(7)?,
-                strategy_a: row.get(8)?,
-                strategy_b: row.get(9)?,
-                outcome: row.get(10)?,
-                winner: row.get(11)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
+    state
+        .run_repository
+        .ensure_run_exists(&run_id)
+        .map_err(|error| run_repository_error_for_run(error, &run_id))?;
+    let rows = state
+        .run_repository
+        .load_games(
+            &run_id,
+            &RunGamesQuery {
+                limit: params.limit,
+                cell_id: params.cell_id,
+            },
+        )
+        .map_err(run_repository_error)?
+        .into_iter()
+        .map(|game| GameSummary {
+            game_seq: game.game_seq,
+            match_seq: game.match_seq,
+            cell_id: game.cell_id,
+            seed: game.seed,
+            metrics: game.metrics,
+            ply_count: game.ply_count,
+            started_at: game.started_at,
+            ended_at: game.ended_at,
+            strategy_a: game.strategy_a,
+            strategy_b: game.strategy_b,
+            outcome: game.outcome,
+            winner: game.winner,
+        })
         .collect();
 
     Ok(Json(rows))
@@ -211,27 +171,21 @@ pub(crate) async fn get_run_game_moves(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath((run_id, game_seq)): AxumPath<(String, i64)>,
 ) -> Result<Json<Vec<MoveRow>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    let mut stmt = db.prepare(
-        "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player, CAST(search_report AS TEXT) \
-         FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 ORDER BY ply ASC",
-    )?;
-    let rows: Vec<MoveRow> = stmt
-        .query_map(duckdb::params![&run_id, game_seq], |row| {
-            let state_str: String = row.get(2)?;
-            let mv_str: Option<String> = row.get(3)?;
-            let search_str: Option<String> = row.get(5)?;
-            Ok(MoveRow {
-                ply: row.get(0)?,
-                ts: row.get(1)?,
-                state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
-                mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
-                player: row.get(4)?,
-                search: search_str.and_then(|value| serde_json::from_str(&value).ok()),
-            })
-        })?
-        .filter_map(|r| r.ok())
+    let rows = state
+        .run_repository
+        .load_game_moves(&run_id, game_seq, None)
+        .map_err(run_repository_error)?
+        .into_iter()
+        .map(|move_row| MoveRow {
+            ply: move_row.ply,
+            ts: move_row.ts,
+            state: move_row.state,
+            mv: move_row.mv,
+            player: move_row.player,
+            search: move_row
+                .search
+                .and_then(|value| serde_json::from_value(value).ok()),
+        })
         .collect();
 
     Ok(Json(rows))
@@ -266,23 +220,10 @@ pub(crate) async fn live_run_moves(
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<LiveGamesParams>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, BenchError> {
-    {
-        let db = state.db.lock().unwrap();
-        match db.query_row(
-            "SELECT run_id FROM runs WHERE run_id = ?1",
-            duckdb::params![&run_id],
-            |row| row.get::<_, String>(0),
-        ) {
-            Ok(_) => {}
-            Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(BenchError {
-                    status: StatusCode::NOT_FOUND,
-                    message: format!("run '{run_id}' not found"),
-                });
-            }
-            Err(e) => return Err(BenchError::from(e)),
-        }
-    }
+    state
+        .run_repository
+        .ensure_run_exists(&run_id)
+        .map_err(|error| run_repository_error_for_run(error, &run_id))?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     tokio::spawn(async move {
@@ -295,15 +236,10 @@ pub(crate) async fn live_run_moves(
             let game_seq = match params.game_seq {
                 Some(game_seq) => game_seq,
                 None => {
-                    let max_seq: Option<i64> = {
-                        let db = state.db.lock().unwrap();
-                        db.query_row(
-                            "SELECT MAX(game_seq) FROM game_moves WHERE run_id = ?1",
-                            duckdb::params![&run_id],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or(None)
-                    };
+                    let max_seq = state
+                        .run_repository
+                        .load_latest_game_seq(&run_id)
+                        .unwrap_or(None);
                     let Some(max_seq) = max_seq else { continue };
                     max_seq
                 }
@@ -314,54 +250,27 @@ pub(crate) async fn live_run_moves(
                 last_ply = -1;
             }
 
-            // (ply, ts, state, mv, player, search report)
-            type GameMoveRow = (
-                i64,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            );
-            let new_rows: Vec<GameMoveRow> = {
-                let db = state.db.lock().unwrap();
-                let stmt = db.prepare(
-                    "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player, CAST(search_report AS TEXT) \
-                     FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 AND ply > ?3 \
-                     ORDER BY ply ASC",
-                );
-                match stmt {
-                    Ok(mut stmt) => {
-                        let mapped =
-                            stmt.query_map(duckdb::params![&run_id, game_seq, last_ply], |row| {
-                                Ok((
-                                    row.get::<_, i64>(0)?,
-                                    row.get::<_, String>(1)?,
-                                    row.get::<_, String>(2)?,
-                                    row.get::<_, Option<String>>(3)?,
-                                    row.get::<_, Option<String>>(4)?,
-                                    row.get::<_, Option<String>>(5)?,
-                                ))
-                            });
-                        match mapped {
-                            Ok(iter) => iter.filter_map(Result::ok).collect(),
-                            Err(_) => continue,
-                        }
-                    }
+            let new_rows =
+                match state
+                    .run_repository
+                    .load_game_moves(&run_id, game_seq, Some(last_ply))
+                {
+                    Ok(rows) => rows,
                     Err(_) => continue,
-                }
-            };
+                };
 
-            for (ply, ts, state_str, mv_str, player, search_str) in new_rows {
-                last_ply = ply;
+            for move_row in new_rows {
+                last_ply = move_row.ply;
                 let payload = LiveMoveEvent {
-                    game_seq,
-                    ply,
-                    ts,
-                    state: serde_json::from_str(&state_str).unwrap_or(Value::Null),
-                    mv: mv_str.and_then(|s| serde_json::from_str(&s).ok()),
-                    player,
-                    search: search_str.and_then(|value| serde_json::from_str(&value).ok()),
+                    game_seq: move_row.game_seq,
+                    ply: move_row.ply,
+                    ts: move_row.ts,
+                    state: move_row.state,
+                    mv: move_row.mv,
+                    player: move_row.player,
+                    search: move_row
+                        .search
+                        .and_then(|value| serde_json::from_value(value).ok()),
                 };
                 let Ok(event) = Event::default().json_data(&payload) else {
                     continue;
@@ -390,30 +299,11 @@ pub(crate) async fn delete_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<StatusCode, BenchError> {
-    let (status, tuning_session_id): (String, Option<String>) = {
-        let db = state.db.lock().unwrap();
-        match db.query_row(
-            "SELECT run.status, \
-                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                         THEN attempt.session_id END \
-             FROM runs run \
-             LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = run.run_id \
-             LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
-             WHERE run.run_id = ?1",
-            duckdb::params![&run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ) {
-            Ok(s) => s,
-            Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(BenchError {
-                    status: StatusCode::NOT_FOUND,
-                    message: format!("run '{run_id}' not found"),
-                });
-            }
-            Err(e) => return Err(BenchError::from(e)),
-        }
-    };
-    if let Some(session_id) = tuning_session_id {
+    let deletion = state
+        .run_repository
+        .load_deletion_info(&run_id)
+        .map_err(|error| run_repository_error_for_run(error, &run_id))?;
+    if let Some(session_id) = deletion.tuning_session_id {
         return Err(BenchError {
             status: StatusCode::CONFLICT,
             message: format!(
@@ -421,7 +311,7 @@ pub(crate) async fn delete_run(
             ),
         });
     }
-    if status == "running" {
+    if deletion.status == "running" {
         return Err(BenchError {
             status: StatusCode::CONFLICT,
             message: format!("run '{run_id}' is still running -- stop it before deleting"),
@@ -429,56 +319,14 @@ pub(crate) async fn delete_run(
     }
 
     let run_dir = state.bench_runs_dir.join(&run_id);
-    {
-        let db = state.db.lock().unwrap();
-        db.execute(
-            "DELETE FROM game_moves WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM incumbents WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM trials WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM match_results WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM experiment_cells WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM _artifact_trace_cursor WHERE physical_run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM artifact_tasks WHERE physical_run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM artifact_descriptors WHERE physical_run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        db.execute(
-            "DELETE FROM artifact_roots WHERE physical_run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-        for file in ["log.jsonl", "moves.jsonl", "stdout.log"] {
-            let path = run_dir.join(file).to_string_lossy().to_string();
-            db.execute(
-                "DELETE FROM _ingest_cursor WHERE log_path = ?1",
-                duckdb::params![&path],
-            )?;
-        }
-        db.execute(
-            "DELETE FROM runs WHERE run_id = ?1",
-            duckdb::params![&run_id],
-        )?;
-    }
+    let ingest_log_paths = ["log.jsonl", "moves.jsonl", "stdout.log"]
+        .into_iter()
+        .map(|file| run_dir.join(file).to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    state
+        .run_repository
+        .delete_run_records(&run_id, &ingest_log_paths)
+        .map_err(run_repository_error)?;
 
     // Best-effort: reclaim the on-disk trace/log files too. A failure here
     // (e.g. already gone) doesn't roll back the DB deletion above -- the DB

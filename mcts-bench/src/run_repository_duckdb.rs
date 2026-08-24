@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use duckdb::{params, Connection};
 
 use crate::run_repository::{
-    ExperimentCell, LeaderboardQuery, LeaderboardRow, RunDetail, RunIncumbent, RunListQuery,
-    RunRepository, RunRepositoryError, RunSummary,
+    ExperimentCell, LeaderboardQuery, LeaderboardRow, RunDeletionInfo, RunDetail, RunGame,
+    RunGameMove, RunGamesQuery, RunIncumbent, RunListQuery, RunRepository, RunRepositoryError,
+    RunSummary, RunTrial, RunTrialsQuery,
 };
 
 /// A run repository backed by a DuckDB connection.
@@ -45,6 +46,51 @@ impl RunRepository for DuckDbRunRepository<'_> {
         run_id: &str,
     ) -> Result<Vec<ExperimentCell>, RunRepositoryError> {
         load_experiment_cells(self.connection, run_id)
+    }
+
+    fn ensure_run_exists(&self, run_id: &str) -> Result<(), RunRepositoryError> {
+        ensure_run_exists(self.connection, run_id)
+    }
+
+    fn load_trials(
+        &self,
+        run_id: &str,
+        query: &RunTrialsQuery,
+    ) -> Result<Vec<RunTrial>, RunRepositoryError> {
+        load_trials(self.connection, run_id, query)
+    }
+
+    fn load_games(
+        &self,
+        run_id: &str,
+        query: &RunGamesQuery,
+    ) -> Result<Vec<RunGame>, RunRepositoryError> {
+        load_games(self.connection, run_id, query)
+    }
+
+    fn load_game_moves(
+        &self,
+        run_id: &str,
+        game_seq: i64,
+        after_ply: Option<i64>,
+    ) -> Result<Vec<RunGameMove>, RunRepositoryError> {
+        load_game_moves(self.connection, run_id, game_seq, after_ply)
+    }
+
+    fn load_latest_game_seq(&self, run_id: &str) -> Result<Option<i64>, RunRepositoryError> {
+        load_latest_game_seq(self.connection, run_id)
+    }
+
+    fn load_deletion_info(&self, run_id: &str) -> Result<RunDeletionInfo, RunRepositoryError> {
+        load_deletion_info(self.connection, run_id)
+    }
+
+    fn delete_run_records(
+        &self,
+        run_id: &str,
+        ingest_log_paths: &[String],
+    ) -> Result<(), RunRepositoryError> {
+        delete_run_records(self.connection, run_id, ingest_log_paths)
     }
 }
 
@@ -93,6 +139,58 @@ impl RunRepository for SharedDuckDbRunRepository {
     ) -> Result<Vec<ExperimentCell>, RunRepositoryError> {
         let connection = self.lock()?;
         load_experiment_cells(&connection, run_id)
+    }
+
+    fn ensure_run_exists(&self, run_id: &str) -> Result<(), RunRepositoryError> {
+        let connection = self.lock()?;
+        ensure_run_exists(&connection, run_id)
+    }
+
+    fn load_trials(
+        &self,
+        run_id: &str,
+        query: &RunTrialsQuery,
+    ) -> Result<Vec<RunTrial>, RunRepositoryError> {
+        let connection = self.lock()?;
+        load_trials(&connection, run_id, query)
+    }
+
+    fn load_games(
+        &self,
+        run_id: &str,
+        query: &RunGamesQuery,
+    ) -> Result<Vec<RunGame>, RunRepositoryError> {
+        let connection = self.lock()?;
+        load_games(&connection, run_id, query)
+    }
+
+    fn load_game_moves(
+        &self,
+        run_id: &str,
+        game_seq: i64,
+        after_ply: Option<i64>,
+    ) -> Result<Vec<RunGameMove>, RunRepositoryError> {
+        let connection = self.lock()?;
+        load_game_moves(&connection, run_id, game_seq, after_ply)
+    }
+
+    fn load_latest_game_seq(&self, run_id: &str) -> Result<Option<i64>, RunRepositoryError> {
+        let connection = self.lock()?;
+        load_latest_game_seq(&connection, run_id)
+    }
+
+    fn load_deletion_info(&self, run_id: &str) -> Result<RunDeletionInfo, RunRepositoryError> {
+        let connection = self.lock()?;
+        load_deletion_info(&connection, run_id)
+    }
+
+    fn delete_run_records(
+        &self,
+        run_id: &str,
+        ingest_log_paths: &[String],
+    ) -> Result<(), RunRepositoryError> {
+        let connection = self.lock()?;
+        delete_run_records(&connection, run_id, ingest_log_paths)
     }
 }
 
@@ -399,6 +497,201 @@ fn load_experiment_cells(
         });
     }
     Ok(result)
+}
+
+fn ensure_run_exists(connection: &Connection, run_id: &str) -> Result<(), RunRepositoryError> {
+    connection
+        .query_row(
+            "SELECT 1 FROM runs WHERE run_id = ?1",
+            params![run_id],
+            |_| Ok(()),
+        )
+        .map_err(not_found_or_storage)
+}
+
+fn load_trials(
+    connection: &Connection,
+    run_id: &str,
+    query: &RunTrialsQuery,
+) -> Result<Vec<RunTrial>, RunRepositoryError> {
+    let mut sql = String::from(
+        "SELECT trial_id, CAST(ts AS TEXT), CAST(config AS TEXT), seed, cost, CAST(extra AS TEXT) \
+         FROM trials WHERE run_id = ?1 ORDER BY trial_id ASC",
+    );
+    if let Some(limit) = query.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+    let mut statement = connection.prepare(&sql).map_err(storage)?;
+    statement
+        .query_map(params![run_id], |row| {
+            let config: String = row.get(2)?;
+            let extra: Option<String> = row.get(5)?;
+            Ok(RunTrial {
+                trial_id: row.get(0)?,
+                ts: row.get(1)?,
+                config: json_value(config),
+                seed: row.get(3)?,
+                cost: row.get(4)?,
+                extra: json_column(extra),
+            })
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)
+}
+
+fn load_games(
+    connection: &Connection,
+    run_id: &str,
+    query: &RunGamesQuery,
+) -> Result<Vec<RunGame>, RunRepositoryError> {
+    let mut sql = String::from(
+        "SELECT g.game_seq, m.seq, m.cell_id, m.seed, CAST(m.metrics AS TEXT), COUNT(*), CAST(MIN(g.ts) AS TEXT), CAST(MAX(g.ts) AS TEXT), \
+                m.strategy_a, m.strategy_b, m.outcome, m.winner \
+         FROM game_moves g \
+         LEFT JOIN match_results m ON m.run_id = g.run_id AND (m.trace_game_seq = g.game_seq OR (m.trace_game_seq IS NULL AND m.seq = g.game_seq)) \
+         WHERE g.run_id = ?1 AND (?2 IS NULL OR m.cell_id = ?2) \
+         GROUP BY g.game_seq, m.seq, m.cell_id, m.seed, m.metrics, m.strategy_a, m.strategy_b, m.outcome, m.winner \
+         ORDER BY g.game_seq DESC",
+    );
+    if let Some(limit) = query.limit {
+        sql.push_str(&format!(" LIMIT {limit}"));
+    }
+    let mut statement = connection.prepare(&sql).map_err(storage)?;
+    statement
+        .query_map(params![run_id, query.cell_id.as_deref()], |row| {
+            Ok(RunGame {
+                game_seq: row.get(0)?,
+                match_seq: row.get(1)?,
+                cell_id: row.get(2)?,
+                seed: row.get(3)?,
+                metrics: json_column(row.get(4)?),
+                ply_count: row.get(5)?,
+                started_at: row.get(6)?,
+                ended_at: row.get(7)?,
+                strategy_a: row.get(8)?,
+                strategy_b: row.get(9)?,
+                outcome: row.get(10)?,
+                winner: row.get(11)?,
+            })
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)
+}
+
+fn load_game_moves(
+    connection: &Connection,
+    run_id: &str,
+    game_seq: i64,
+    after_ply: Option<i64>,
+) -> Result<Vec<RunGameMove>, RunRepositoryError> {
+    let after_ply = after_ply.unwrap_or(-1);
+    let mut statement = connection
+        .prepare(
+            "SELECT ply, CAST(ts AS TEXT), CAST(state AS TEXT), CAST(mv AS TEXT), player, CAST(search_report AS TEXT) \
+             FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 AND ply > ?3 ORDER BY ply ASC",
+        )
+        .map_err(storage)?;
+    statement
+        .query_map(params![run_id, game_seq, after_ply], |row| {
+            let state: String = row.get(2)?;
+            Ok(RunGameMove {
+                game_seq,
+                ply: row.get(0)?,
+                ts: row.get(1)?,
+                state: json_value(state),
+                mv: json_column(row.get(3)?),
+                player: row.get(4)?,
+                search: json_column(row.get(5)?),
+            })
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)
+}
+
+fn load_latest_game_seq(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Option<i64>, RunRepositoryError> {
+    connection
+        .query_row(
+            "SELECT MAX(game_seq) FROM game_moves WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(storage)
+}
+
+fn load_deletion_info(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<RunDeletionInfo, RunRepositoryError> {
+    connection
+        .query_row(
+            "SELECT run.status, \
+                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
+                         THEN attempt.session_id END \
+             FROM runs run \
+             LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = run.run_id \
+             LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
+             WHERE run.run_id = ?1",
+            params![run_id],
+            |row| {
+                Ok(RunDeletionInfo {
+                    status: row.get(0)?,
+                    tuning_session_id: row.get(1)?,
+                })
+            },
+        )
+        .map_err(not_found_or_storage)
+}
+
+fn delete_run_records(
+    connection: &Connection,
+    run_id: &str,
+    ingest_log_paths: &[String],
+) -> Result<(), RunRepositoryError> {
+    for table in [
+        "game_moves",
+        "incumbents",
+        "trials",
+        "match_results",
+        "experiment_cells",
+    ] {
+        connection
+            .execute(
+                &format!("DELETE FROM {table} WHERE run_id = ?1"),
+                params![run_id],
+            )
+            .map_err(storage)?;
+    }
+    for table in [
+        "_artifact_trace_cursor",
+        "artifact_tasks",
+        "artifact_descriptors",
+        "artifact_roots",
+    ] {
+        connection
+            .execute(
+                &format!("DELETE FROM {table} WHERE physical_run_id = ?1"),
+                params![run_id],
+            )
+            .map_err(storage)?;
+    }
+    for log_path in ingest_log_paths {
+        connection
+            .execute(
+                "DELETE FROM _ingest_cursor WHERE log_path = ?1",
+                params![log_path],
+            )
+            .map_err(storage)?;
+    }
+    connection
+        .execute("DELETE FROM runs WHERE run_id = ?1", params![run_id])
+        .map_err(storage)?;
+    Ok(())
 }
 
 fn json_column(value: Option<String>) -> Option<serde_json::Value> {

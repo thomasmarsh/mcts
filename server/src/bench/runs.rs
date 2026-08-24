@@ -147,7 +147,7 @@ fn load_run_log_path(repository: &dyn RunRepository, run_id: &str) -> Result<Str
         .map_err(|error| run_repository_error_for_run(error, run_id))
 }
 
-fn run_repository_error(error: RunRepositoryError) -> BenchError {
+pub(crate) fn run_repository_error(error: RunRepositoryError) -> BenchError {
     match error {
         RunRepositoryError::NotFound => BenchError {
             status: StatusCode::NOT_FOUND,
@@ -160,7 +160,7 @@ fn run_repository_error(error: RunRepositoryError) -> BenchError {
     }
 }
 
-fn run_repository_error_for_run(error: RunRepositoryError, run_id: &str) -> BenchError {
+pub(crate) fn run_repository_error_for_run(error: RunRepositoryError, run_id: &str) -> BenchError {
     match error {
         RunRepositoryError::NotFound => BenchError {
             status: StatusCode::NOT_FOUND,
@@ -360,6 +360,50 @@ mod run_repository_tests {
             &self,
             _: &str,
         ) -> Result<Vec<mcts_bench::run_repository::ExperimentCell>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn ensure_run_exists(&self, _: &str) -> Result<(), RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_trials(
+            &self,
+            _: &str,
+            _: &mcts_bench::run_repository::RunTrialsQuery,
+        ) -> Result<Vec<mcts_bench::run_repository::RunTrial>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_games(
+            &self,
+            _: &str,
+            _: &mcts_bench::run_repository::RunGamesQuery,
+        ) -> Result<Vec<mcts_bench::run_repository::RunGame>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_game_moves(
+            &self,
+            _: &str,
+            _: i64,
+            _: Option<i64>,
+        ) -> Result<Vec<mcts_bench::run_repository::RunGameMove>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_latest_game_seq(&self, _: &str) -> Result<Option<i64>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_deletion_info(
+            &self,
+            _: &str,
+        ) -> Result<mcts_bench::run_repository::RunDeletionInfo, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn delete_run_records(&self, _: &str, _: &[String]) -> Result<(), RunRepositoryError> {
             unreachable!()
         }
     }
