@@ -171,7 +171,31 @@ pub const CREATE_TABLES: &[&str] = &[
         created_at TIMESTAMP NOT NULL,
         last_sequence BIGINT NOT NULL,
         optimizer_id TEXT,
-        lifecycle_path TEXT
+        lifecycle_path TEXT,
+        control_version BIGINT NOT NULL DEFAULT 0,
+        control_signature TEXT
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_session_commands (
+        command_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        request JSON NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        outcome JSON NOT NULL,
+        recorded_at TIMESTAMP NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_launch_reservations (
+        session_id TEXT PRIMARY KEY REFERENCES tuning_sessions(session_id),
+        command_id TEXT NOT NULL UNIQUE,
+        attempt_id TEXT NOT NULL UNIQUE,
+        physical_run_id TEXT NOT NULL UNIQUE,
+        target_trial_count BIGINT NOT NULL,
+        reserved_at TIMESTAMP NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_stop_reservations (
+        session_id TEXT PRIMARY KEY REFERENCES tuning_sessions(session_id),
+        command_id TEXT NOT NULL UNIQUE,
+        attempt_id TEXT NOT NULL,
+        reserved_at TIMESTAMP NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS tuning_lifecycle_sources (
         source_path TEXT PRIMARY KEY,
@@ -346,6 +370,8 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE tuning_trials ADD COLUMN stop_reason TEXT",
         "ALTER TABLE tuning_sessions ADD COLUMN optimizer_id TEXT",
         "ALTER TABLE tuning_sessions ADD COLUMN lifecycle_path TEXT",
+        "ALTER TABLE tuning_sessions ADD COLUMN control_version BIGINT NOT NULL DEFAULT 0",
+        "ALTER TABLE tuning_sessions ADD COLUMN control_signature TEXT",
         "ALTER TABLE game_moves ADD COLUMN trace_schema_version UINTEGER",
         "ALTER TABLE game_moves ADD COLUMN search_report JSON",
         "ALTER TABLE game_moves ADD COLUMN search_status TEXT",
@@ -415,6 +441,9 @@ mod tests {
             "_ingest_cursor",
             "attempt_events",
             "tuning_sessions",
+            "tuning_session_commands",
+            "tuning_launch_reservations",
+            "tuning_stop_reservations",
             "tuning_attempts",
             "tuning_pool_revisions",
             "tuning_pool_anchors",

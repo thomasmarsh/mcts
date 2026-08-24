@@ -25,6 +25,8 @@ pub mod projects_attempt_duckdb;
 #[cfg(feature = "duckdb")]
 pub mod schema;
 #[cfg(feature = "duckdb")]
+pub mod tuning_command_store;
+#[cfg(feature = "duckdb")]
 pub mod tuning_store;
 
 #[cfg(all(test, feature = "duckdb"))]
