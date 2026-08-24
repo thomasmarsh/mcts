@@ -38,18 +38,33 @@ from tuner_cli.pool import Anchor, OpponentPool
 
 
 class _Future:
-    def __init__(self, error: Exception | None = None):
+    def __init__(
+        self,
+        error: Exception | None = None,
+        result: PairResult | None = None,
+        cancel_error: Exception | None = None,
+    ):
         self.error = error
+        self.value = result
+        self.cancel_error = cancel_error
+        self.cancel_calls = 0
+        self.result_calls = 0
 
     def cancelled(self):
         return False
 
     def result(self):
+        self.result_calls += 1
         if self.error:
             raise self.error
+        if self.value is not None:
+            return self.value
         raise AssertionError("result was not configured")
 
     def cancel(self):
+        self.cancel_calls += 1
+        if self.cancel_error:
+            raise self.cancel_error
         return True
 
 
@@ -57,12 +72,25 @@ class _Executor:
     def __init__(self):
         self.calls: list[tuple] = []
         self.futures: list[_Future] = []
+        self.shutdown_calls: list[tuple[bool, bool]] = []
+        self._processes: dict[int, _Process] = {}
 
     def submit(self, *args):
         self.calls.append(args)
         future = _Future()
         self.futures.append(future)
         return future
+
+    def shutdown(self, *, wait: bool, cancel_futures: bool):
+        self.shutdown_calls.append((wait, cancel_futures))
+
+
+class _Process:
+    def __init__(self):
+        self.terminated = 0
+
+    def terminate(self):
+        self.terminated += 1
 
 
 class _ScriptedPruningAdapter:
@@ -213,6 +241,159 @@ def _tell_calls(monkeypatch, study: optuna.Study) -> list[tuple[tuple, dict]]:
 
     monkeypatch.setattr(study, "tell", tell)
     return calls
+
+
+def _stopped_attempt(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    workers: int,
+    stop_before_scheduling: bool = False,
+    repeat_stop: bool = False,
+    completed_future: bool = False,
+    cancel_error: Exception | None = None,
+) -> tuple[optuna.Study, OpponentPool, _Executor, Path]:
+    study = optuna.create_study(direction="maximize")
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_trials=workers, n_workers=workers),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    executor = _Executor()
+    executor._processes = {index: _Process() for index in range(workers)}
+    stop_request = coordinator._StopRequest()
+    if stop_before_scheduling:
+        stop_request.request()
+
+    def stop_after_wait(futures, **_kwargs):
+        if completed_future:
+            for future in futures:
+                task = next(
+                    call[3] for call in executor.calls if future in executor.futures
+                )
+                future.value = _result(task)
+        stop_request.request()
+        if repeat_stop:
+            stop_request.request()
+        for future in futures:
+            future.cancel_error = cancel_error
+        return set(futures), set()
+
+    monkeypatch.setattr(coordinator, "preflight_check", lambda *_args: None)
+    monkeypatch.setattr(coordinator, "ProcessPoolExecutor", lambda **_kwargs: executor)
+    monkeypatch.setattr(coordinator, "wait", stop_after_wait)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        assert not coordinator._run_attempt(
+            cfg,
+            binary=Path("game-nim"),
+            pool=pool,
+            pool_path=tmp_path / "pool.json",
+            study=study,
+            lifecycle=writer,
+            resolved_sha="sha",
+            trace_path=None,
+            should_stop=stop_request.requested,
+        )
+    return study, pool, executor, event_path
+
+
+def test_stop_before_scheduling_emits_only_attempt_stop_and_releases_lock(
+    monkeypatch, tmp_path: Path
+):
+    study, _pool, executor, event_path = _stopped_attempt(
+        monkeypatch, tmp_path, workers=1, stop_before_scheduling=True
+    )
+
+    records = _event_records(event_path)
+    assert [record["event_type"] for record in records] == ["attempt_stopped"]
+    assert records[0]["payload"] == {"reason": "coordinator interrupted"}
+    assert not study.trials
+    assert not executor.calls
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("next")):
+        pass
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_signal_stop_cancels_each_active_pair_without_completion_side_effects(
+    monkeypatch, tmp_path: Path, workers: int
+):
+    study, pool, executor, event_path = _stopped_attempt(
+        monkeypatch, tmp_path, workers=workers
+    )
+
+    records = _event_records(event_path)
+    event_types = [record["event_type"] for record in records]
+    assert event_types == (
+        ["trial_created", "trial_started", "pair_started"] * workers
+        + ["pair_failed"] * workers
+        + ["trial_cancelled"] * workers
+        + ["attempt_stopped"]
+    )
+    assert event_types.count("pair_failed") == workers
+    assert event_types.count("trial_cancelled") == workers
+    assert not {"game_finished", "pair_finished", "trial_reported"} & set(event_types)
+    assert [trial.state for trial in study.trials] == [
+        optuna.trial.TrialState.FAIL
+    ] * workers
+    assert len(pool.anchors) == 1
+    assert all(future.result_calls == 0 for future in executor.futures)
+    assert all(process.terminated == 1 for process in executor._processes.values())
+    assert executor.shutdown_calls == [(False, True)]
+
+
+def test_stop_wins_a_completed_future_race_without_updating_its_rating(
+    monkeypatch, tmp_path: Path
+):
+    study, pool, executor, event_path = _stopped_attempt(
+        monkeypatch, tmp_path, workers=1, completed_future=True
+    )
+
+    records = _event_records(event_path)
+    assert [record["event_type"] for record in records][-3:] == [
+        "pair_failed",
+        "trial_cancelled",
+        "attempt_stopped",
+    ]
+    assert executor.futures[0].result_calls == 0
+    assert study.trials[0].state == optuna.trial.TrialState.FAIL
+    assert len(pool.anchors) == 1
+
+
+def test_repeated_signal_and_worker_cancellation_failure_still_stop_once(
+    monkeypatch, tmp_path: Path
+):
+    study, _pool, executor, event_path = _stopped_attempt(
+        monkeypatch,
+        tmp_path,
+        workers=1,
+        repeat_stop=True,
+        cancel_error=RuntimeError("worker already exited"),
+    )
+
+    event_types = [record["event_type"] for record in _event_records(event_path)]
+    assert event_types.count("pair_failed") == 1
+    assert event_types.count("trial_cancelled") == 1
+    assert event_types.count("attempt_stopped") == 1
+    assert executor.futures[0].cancel_calls == 1
+    assert study.trials[0].state == optuna.trial.TrialState.FAIL
+
+
+def test_sigint_and_sigterm_handlers_only_request_the_same_stop(monkeypatch):
+    handlers: dict[int, object] = {}
+
+    def install(signum, handler):
+        previous = handlers.get(signum, object())
+        handlers[signum] = handler
+        return previous
+
+    monkeypatch.setattr(coordinator.signal, "signal", install)
+    with coordinator._install_stop_handlers() as stop_request:
+        handlers[coordinator.signal.SIGINT](coordinator.signal.SIGINT, None)
+        handlers[coordinator.signal.SIGTERM](coordinator.signal.SIGTERM, None)
+        assert stop_request.requested()
 
 
 def test_pruning_uses_one_automatic_worker_and_snapshots_the_adapter_trial():
@@ -640,9 +821,10 @@ def test_coordinator_cancellation_fails_running_pair_before_trial(tmp_path: Path
     with LifecycleWriter(
         tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
     ) as writer:
-        attempt.cancel_active_trials(
-            {future: scheduled}, {active.trial_id: active}, study, writer
-        )
+        futures = {future: scheduled}
+        active_trials = {active.trial_id: active}
+        attempt.cancel_active_trials(futures, active_trials, study, writer)
+        attempt.cancel_active_trials(futures, active_trials, study, writer)
     records = [
         json.loads(line)
         for line in (tmp_path / "events.jsonl").read_text().splitlines()

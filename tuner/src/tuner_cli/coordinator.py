@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor, wait
 from pathlib import Path
-from typing import Any
+import signal
+from typing import Any, Callable, Iterator
 
 import optuna
 
 from .attempt import (
+    AttemptStopRequested,
     _ActiveTrial,
     cancel_active_trials,
     drain_scheduled_trials,
@@ -23,6 +26,34 @@ from .hyperband import OptunaHyperbandAdapter
 from .manifest import build_session_manifest, write_manifest_atomic
 from .pool import OpponentPool
 from .target import preflight_check
+
+
+class _StopRequest:
+    """A signal-safe stop flag observed by the coordinator at work boundaries."""
+
+    def __init__(self) -> None:
+        self._requested = False
+
+    def request(self, *_: object) -> None:
+        self._requested = True
+
+    def requested(self) -> bool:
+        return self._requested
+
+
+@contextmanager
+def _install_stop_handlers() -> Iterator[_StopRequest]:
+    """Install handlers that defer all cleanup and lifecycle I/O to the coordinator."""
+    stop_request = _StopRequest()
+    previous = {
+        signum: signal.signal(signum, stop_request.request)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield stop_request
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def run_optimization(
@@ -63,25 +94,27 @@ def run_optimization(
         else output_dir / "lifecycle.jsonl"
     )
 
-    with LifecycleWriter(event_path, session, attempt) as lifecycle:
-        _emit_session_started(
-            lifecycle, manifest, manifest_path, optimizer, cfg.optimizer.n_trials
-        )
-        _emit_attempt_started(
-            lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
-        )
-        _emit_pool_revised(lifecycle, pool)
-        _run_attempt(
-            cfg,
-            binary=binary,
-            pool=pool,
-            pool_path=pool_path,
-            study=study,
-            lifecycle=lifecycle,
-            resolved_sha=resolved_sha,
-            trace_path=trace_path,
-            pruning_adapter=pruning_adapter,
-        )
+    with _install_stop_handlers() as stop_request:
+        with LifecycleWriter(event_path, session, attempt) as lifecycle:
+            _emit_session_started(
+                lifecycle, manifest, manifest_path, optimizer, cfg.optimizer.n_trials
+            )
+            _emit_attempt_started(
+                lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
+            )
+            _emit_pool_revised(lifecycle, pool)
+            _run_attempt(
+                cfg,
+                binary=binary,
+                pool=pool,
+                pool_path=pool_path,
+                study=study,
+                lifecycle=lifecycle,
+                resolved_sha=resolved_sha,
+                trace_path=trace_path,
+                pruning_adapter=pruning_adapter,
+                should_stop=stop_request.requested,
+            )
     return study, pool
 
 
@@ -228,13 +261,16 @@ def _run_attempt(
     resolved_sha: str,
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
-) -> None:
+    should_stop: Callable[[], bool] | None = None,
+) -> bool:
     futures: dict[Any, _ActiveTrial] = {}
     active: dict[TrialId, _ActiveTrial] = {}
     executor: ProcessPoolExecutor | None = None
-    interrupted = False
+    stopped = False
     try:
+        _raise_if_stop_requested(should_stop)
         preflight_check(cfg, pool.closest(25.0).config, pool.closest(0.0).config)
+        _raise_if_stop_requested(should_stop)
         remaining = max(0, cfg.optimizer.n_trials - len(study.trials))
         workers = worker_count(cfg)
         executor = ProcessPoolExecutor(max_workers=workers)
@@ -251,7 +287,9 @@ def _run_attempt(
             lifecycle,
             trace_path,
             pruning_adapter,
+            should_stop,
         )
+        _raise_if_stop_requested(should_stop)
         drain_scheduled_trials(
             remaining,
             executor,
@@ -267,16 +305,21 @@ def _run_attempt(
             trace_path,
             wait,
             pruning_adapter,
+            should_stop,
         )
+
+        _raise_if_stop_requested(should_stop)
 
         lifecycle.emit(
             "attempt_completed", {"target_trial_count": cfg.optimizer.n_trials}
         )
-    except KeyboardInterrupt:
-        interrupted = True
+        return True
+    except (AttemptStopRequested, KeyboardInterrupt):
+        stopped = True
+        _terminate_workers(executor)
         cancel_active_trials(futures, active, study, lifecycle)
         lifecycle.emit("attempt_stopped", {"reason": "coordinator interrupted"})
-        raise
+        return False
     except Exception as error:
         for active_trial in list(active.values()):
             terminalize_trial(
@@ -290,4 +333,24 @@ def _run_attempt(
         raise
     finally:
         if executor is not None:
-            executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+            executor.shutdown(wait=not stopped, cancel_futures=stopped)
+
+
+def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise AttemptStopRequested
+
+
+def _terminate_workers(executor: ProcessPoolExecutor | None) -> None:
+    """Terminate running pool workers before their non-blocking shutdown."""
+    if executor is None:
+        return
+    processes = getattr(executor, "_processes", {})
+    for process in list(processes.values()):
+        try:
+            if hasattr(process, "kill"):
+                process.kill()
+            else:
+                process.terminate()
+        except (AttributeError, OSError):
+            continue

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from optuna.trial import TrialState
+
 from .config import SearchConfig
 from .coordinator import run_optimization
 
@@ -148,6 +150,9 @@ def _load_cli_config(args: argparse.Namespace) -> SearchConfig:
 
 def _print_run_summary(run_id: str, study, pool) -> None:
     """Print the established completion summary for interactive CLI users."""
+    if not study.get_trials(states=(TrialState.COMPLETE,)):
+        print("\nNo completed trials.")
+        return
     default = next(anchor for anchor in pool.anchors if anchor.id == "default")
     print(f"\n{'=' * 60}")
     print(f"Run id:       {run_id}")

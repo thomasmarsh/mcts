@@ -7,7 +7,7 @@ import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import optuna
 from optuna.trial import TrialState
@@ -33,6 +33,10 @@ from .pool import OpponentPool
 from .space_optuna import suggest_config
 
 logger = logging.getLogger("tuner_cli")
+
+
+class AttemptStopRequested(Exception):
+    """The coordinator received a request to stop its current attempt."""
 
 
 @dataclass
@@ -80,9 +84,12 @@ def schedule_initial_trials(
     lifecycle: LifecycleWriter,
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Fill the configured worker limit with first pairs from distinct trials."""
     for _ in range(min(workers, remaining)):
+        if _stop_requested(should_stop):
+            return
         schedule_trial(
             executor,
             futures,
@@ -94,6 +101,7 @@ def schedule_initial_trials(
             lifecycle,
             trace_path,
             pruning_adapter,
+            should_stop,
         )
 
 
@@ -108,13 +116,18 @@ def schedule_trial(
     lifecycle: LifecycleWriter,
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
-) -> None:
+    should_stop: Callable[[], bool] | None = None,
+) -> bool:
     """Ask Optuna for one trial, then submit only its first evaluation pair."""
+    if _stop_requested(should_stop):
+        return False
     active_trial = create_active_trial(
         study, cfg, lifecycle.session_id, pruning_adapter
     )
     active[active_trial.trial_id] = active_trial
     emit_trial_created_and_started(lifecycle, active_trial)
+    if _stop_requested(should_stop):
+        return False
     submit_next_pair(
         executor,
         futures,
@@ -127,6 +140,7 @@ def schedule_trial(
         trace_path,
         _terminalize_from_pair(lifecycle),
     )
+    return True
 
 
 def create_active_trial(
@@ -187,6 +201,7 @@ def drain_scheduled_trials(
     trace_path: str | None,
     wait_for_completion: Any,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Settle pair futures, continuing each live trial one pair at a time."""
     context = _AttemptContext(
@@ -201,19 +216,27 @@ def drain_scheduled_trials(
         pruning_adapter,
     )
     while futures:
+        _raise_if_stop_requested(should_stop)
         done, _ = wait_for_completion(futures, return_when=FIRST_COMPLETED)
+        _raise_if_stop_requested(should_stop)
         for future in done:
+            _raise_if_stop_requested(should_stop)
             scheduled = futures.pop(future)
             result = worker_result(
                 future, study, lifecycle, scheduled, _terminalize_from_pair(lifecycle)
             )
+            if _stop_requested(should_stop):
+                futures[future] = scheduled
+                raise AttemptStopRequested
             if result is None:
                 active.pop(scheduled.active_trial.trial_id, None)
             elif continue_trial(executor, futures, scheduled, result, context):
                 continue
             else:
                 active.pop(scheduled.active_trial.trial_id, None)
-            remaining = replenish_trial(remaining, executor, futures, active, context)
+            remaining = replenish_trial(
+                remaining, executor, futures, active, context, should_stop
+            )
 
 
 def _terminalize_from_pair(lifecycle: LifecycleWriter):
@@ -332,10 +355,11 @@ def replenish_trial(
     futures: dict[Any, ScheduledPair],
     active: dict[TrialId, _ActiveTrial],
     context: _AttemptContext,
+    should_stop: Callable[[], bool] | None = None,
 ) -> int:
     """Count one terminal trial and replace it if target work remains."""
     remaining -= 1
-    if remaining > 0:
+    if remaining > 0 and not _stop_requested(should_stop):
         schedule_trial(
             executor,
             futures,
@@ -347,6 +371,7 @@ def replenish_trial(
             context.lifecycle,
             context.trace_path,
             context.pruning_adapter,
+            should_stop,
         )
     return remaining
 
@@ -533,10 +558,25 @@ def cancel_active_trials(
     lifecycle: LifecycleWriter,
 ) -> None:
     """Cancel submitted workers and record coordinator interruption for each trial."""
-    for future, scheduled in futures.items():
-        future.cancel()
-        emit_pair_failed(lifecycle, scheduled.task, "coordinator interrupted")
+    for future, scheduled in list(futures.items()):
+        try:
+            future.cancel()
+        except Exception as error:
+            logger.warning("Could not cancel worker future: %s", error)
+        if not lifecycle.has_trial_terminal(scheduled.active_trial.trial_id):
+            emit_pair_failed(lifecycle, scheduled.task, "coordinator interrupted")
+    futures.clear()
     for active_trial in list(active.values()):
         terminalize_trial(
             study, lifecycle, active_trial, "trial_cancelled", "coordinator interrupted"
         )
+    active.clear()
+
+
+def _stop_requested(should_stop: Callable[[], bool] | None) -> bool:
+    return should_stop is not None and should_stop()
+
+
+def _raise_if_stop_requested(should_stop: Callable[[], bool] | None) -> None:
+    if _stop_requested(should_stop):
+        raise AttemptStopRequested
