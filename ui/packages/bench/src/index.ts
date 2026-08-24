@@ -18,7 +18,6 @@ export type {
   TunerGameInfo,
   TrialRow,
   IncumbentInfo,
-  ChainRung,
   GameTraceSummary,
   GameMove,
   LiveGameMove,
@@ -88,7 +87,7 @@ export { serializeExperimentRunJson, serializeExperimentRunCsv, sanitizeExportRu
 export type { ExperimentRunExportV1 } from "./experiment-export.js";
 export { formatRate, formatInterval, formatWld, formatProgress, formatObservedResult, formatLeaderboardResult, formatTime, statusLabel } from "./result-format.js";
 
-export type { BenchState, OpenRunState, LogTailState, CommitTrendsState, ChainedTrial } from "./state.js";
+export type { BenchState, OpenRunState, LogTailState, CommitTrendsState } from "./state.js";
 export { initialBenchState } from "./state.js";
 export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction, TuningProgressMetric, TuningProgressScale } from "./tuning-navigation.js";
 export { initialTuningNavigationState, tuningNavigationReducer, TUNING_DETAIL_REFRESH_MS } from "./tuning-navigation.js";

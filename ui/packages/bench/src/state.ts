@@ -10,7 +10,6 @@ import {
 import { initialTuningNavigationState, type TuningNavigationState } from "./tuning-navigation.js";
 import type {
   BenchKindInfo,
-  ChainRung,
   CommitTrendData,
   LeaderboardEntry,
   LeaderboardFilters,
@@ -26,16 +25,6 @@ import type {
   ExperimentSpecV1,
   GameTraceSummary,
 } from "./types.js";
-
-/** One trial, tagged with which rung of the open run's ladder chain it came
- * from (an index into `OpenRunState.chain`) -- what lets the run-detail
- * chart render every rung's trials as one continuous series with milestone
- * markers at each baseline cutover, instead of the currently open rung's
- * trials in isolation. */
-export interface ChainedTrial {
-  rungIndex: number;
-  trial: TrialRow;
-}
 
 /** Live tail of one open run's `log.jsonl`, fed by the reducer's
  * self-scheduling poll loop (see reducer.ts). */
@@ -66,21 +55,8 @@ export interface OpenRunState {
    * to wait on, and the status/match counts stay live for free. */
   detail: RunDetail | null;
   tail: LogTailState;
-  /** Trial rows for a `kind: "tuner"` run, refetched in full (the trials
-   * route has no incremental cursor, unlike the log) on every tail tick
-   * once `detail.kind` is known to be `"tuner"` — see reducer.ts. Empty for
-   * every other run kind. */
+  /** Recorded physical-run trials, kept with the run diagnostics. */
   trials: TrialRow[];
-  /** This run's ladder chain, oldest rung first — a one-element list
-   * containing just this run for a plain (non-laddered) run. Empty until
-   * the first tick resolves. */
-  chain: ChainRung[];
-  /** Every rung's trials concatenated in chain order, each tagged with its
-   * rung index — the data source for the chained cost chart. Refetched
-   * alongside `chain` on every tick, same "just refetch the whole thing"
-   * tradeoff `trials` already makes (see reducer.ts). Empty for a
-   * non-`"tuner"` run. */
-  chainedTrials: ChainedTrial[];
   cells: ExperimentCell[];
   games: GameTraceSummary[];
 }
@@ -131,11 +107,6 @@ export interface BenchState {
   launch: JobPollState<LaunchResponse>;
   /** Last failed stop attempt's message; cleared by the next `stopRun`. */
   stopError: string | null;
-  /** Last failed resume attempt's message; cleared by the next `resumeRun`. */
-  resumeError: string | null;
-  /** Last failed baseline-advance attempt's message; cleared by the next
-   * `advanceBaseline`. */
-  advanceBaselineError: string | null;
   /** Last failed run deletion's message; cleared by the next delete. */
   deleteError: string | null;
   /** True when the launch form should be shown in the main pane instead of the run detail panel. */
@@ -181,8 +152,6 @@ export function initialBenchState(): BenchState {
     commitTrends: { data: {}, shas: [], status: "idle", error: null },
     launch: initialJobPollState<LaunchResponse>(),
     stopError: null,
-    resumeError: null,
-    advanceBaselineError: null,
     deleteError: null,
     showLaunchForm: false,
     kinds: initialJobPollState<BenchKindInfo[]>(),

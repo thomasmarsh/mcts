@@ -638,44 +638,6 @@
   #spectator-games { flex: 0 0 120px; border-right: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
 }
 
-#resume-run-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  font-size: 12px;
-}
-
-#resume-run-row label {
-  color: #b0b1bc;
-}
-
-#resume-n-trials {
-  width: 90px;
-  background: #1c1d24;
-  color: #e8e8ec;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-#resume-run-btn {
-  background: #2e5f8a;
-  border: 1px solid #2e5f8a;
-  color: #d0e4f0;
-  border-radius: 6px;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-#resume-run-btn:hover {
-  background: #3a72a4;
-}
-
 /* ── Run Detail Meta ─────────────────────────────────────────────────── */
 
 #run-detail-meta {

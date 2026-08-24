@@ -148,6 +148,36 @@ async fn test_delete_run_409_while_running() {
 }
 
 #[tokio::test]
+async fn test_modern_tuning_attempt_links_to_its_session_and_cannot_be_deleted() {
+    let (app, _, _) = seeded_app_with_state(
+        |conn, _| {
+            conn.execute_batch(
+                "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, ended_at, status, log_path)
+                 VALUES ('session-attempt', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/session.log');
+                 INSERT INTO tuning_sessions (session_id, status, manifest, target_trial_count, created_at, last_sequence, optimizer_id, lifecycle_path)
+                 VALUES ('modern-session', 'idle', '{}', 4, CURRENT_TIMESTAMP, 1, 'optimizer', '/tmp/lifecycle.jsonl');
+                 INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at, ended_at)
+                 VALUES ('attempt-1', 'modern-session', 'session-attempt', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+            )
+            .unwrap();
+        },
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    );
+
+    let (status, body) = http_get(app.clone(), "/api/bench/runs/session-attempt").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["tuning_session_id"], "modern-session");
+
+    let (status, body) = http_delete(app, "/api/bench/runs/session-attempt").await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("future session Delete workflow"));
+}
+
+#[tokio::test]
 async fn test_delete_run_removes_all_rows_and_files() {
     let (app, tmp_dir, state) = seeded_app_with_state(
         game_moves_seed,

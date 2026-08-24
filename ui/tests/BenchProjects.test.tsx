@@ -19,8 +19,8 @@ const noOpEnv: BenchEnv = {
   listProjects: () => Effect.none(), createProject: () => Effect.none(), getProject: () => Effect.none(), updateProject: () => Effect.none(),
   listExperiments: () => Effect.none(), createExperiment: () => Effect.none(), getExperiment: () => Effect.none(), updateExperiment: () => Effect.none(), launchExperiment: () => Effect.none(),
   getRunCells: () => Effect.send([]), listRuns: () => Effect.none(), getRun: () => Effect.none(), getRunLog: () => Effect.none(), getRunStdout: () => Effect.none(), downloadFile: () => Effect.none(),
-  getLeaderboard: () => Effect.none(), fetchCommitTrends: () => Effect.none(), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(), advanceBaseline: () => Effect.none(),
-  getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
+  getLeaderboard: () => Effect.none(), fetchCommitTrends: () => Effect.none(), launchRun: () => Effect.none(), stopRun: () => Effect.none(),
+  getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(), getRunTrials: () => Effect.send([]), getRunGames: () => Effect.send([]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
 };
 
 describe("persisted experiment components", () => {
@@ -200,9 +200,9 @@ describe("persisted experiment components", () => {
       launchExperiment: () => Effect.send({ run_id: "run-1", pid: 1, log_path: "/tmp/log.jsonl" }),
       getRunCells: () => Effect.send([cell]), listRuns: () => Effect.send([]), getRun: () => Effect.send({ ...detail, status: "completed" }),
       getRunLog: () => Effect.send({ lines: Array.from({ length: 502 }, (_, index) => `log-${index}`), next_offset: 14 }), getRunStdout: () => Effect.send(""), getLeaderboard: () => Effect.send([]),
-      fetchCommitTrends: () => Effect.send({}), launchRun: () => Effect.none(), stopRun: () => Effect.none(), resumeRun: () => Effect.none(),
-      advanceBaseline: () => Effect.none(), getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(),
-      getRunTrials: () => Effect.send([]), getRunChain: () => Effect.send([]), getRunGames: () => Effect.send([{ game_seq: 7, match_seq: 3, cell_id: cell.cell_id, seed: 101, metrics: { elapsed_ms: 22 }, ply_count: 9, started_at: project.created_at, ended_at: project.updated_at, strategy_a: "Variant", strategy_b: "Baseline", outcome: "win_a", winner: "Variant" }]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
+      fetchCommitTrends: () => Effect.send({}), launchRun: () => Effect.none(), stopRun: () => Effect.none(),
+      getBenchKinds: () => Effect.none(), getTunerKinds: () => Effect.none(), listTuningSessions: () => Effect.none(), getTuningSession: () => Effect.none(),
+      getRunTrials: () => Effect.send([]), getRunGames: () => Effect.send([{ game_seq: 7, match_seq: 3, cell_id: cell.cell_id, seed: 101, metrics: { elapsed_ms: 22 }, ply_count: 9, started_at: project.created_at, ended_at: project.updated_at, strategy_a: "Variant", strategy_b: "Baseline", outcome: "win_a", winner: "Variant" }]), getRunGameMoves: () => Effect.none(), deleteRun: () => Effect.none(),
     };
     const dispatched: BenchAction[] = [];
     const store = createStore<BenchState, BenchAction, BenchEnv>(initialBenchState(), benchReducer, env, (action) => dispatched.push(action));
@@ -224,7 +224,7 @@ describe("persisted experiment components", () => {
     await vi.waitFor(() => expect(screen.getByRole("button", { name: /nim, 1 iterations, Variant/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /nim, 1 iterations, Variant/ }));
     const inspectorGeneration = store.state.openGeneration;
-    store.dispatch({ tag: "tailed", generation: inspectorGeneration, lines: Array.from({ length: 502 }, (_, index) => `log-${index}`), nextOffset: 14, detail: { ...detail, status: "completed" }, trials: [], chain: [], chainedTrials: [], cells: [cell] });
+    store.dispatch({ tag: "tailed", generation: inspectorGeneration, lines: Array.from({ length: 502 }, (_, index) => `log-${index}`), nextOffset: 14, detail: { ...detail, status: "completed" }, trials: [], cells: [cell] });
     await vi.waitFor(() => expect(store.state.openRun?.tail.lines).toHaveLength(1004));
     expect(screen.getByText("Candidate configuration")).toBeInTheDocument();
     expect(screen.getByText("cell-1")).toBeInTheDocument();
@@ -307,7 +307,7 @@ describe("persisted experiment components", () => {
     state.openGeneration = 4;
     state.selectedCellId = cells[0]!.cell_id;
     state.openRun = {
-      runId: detail.run_id, detail, trials: [], chain: [], chainedTrials: [], games: [{ game_seq: 1, match_seq: 1, cell_id: cells[0]!.cell_id, seed: 7, metrics: null, ply_count: 1, started_at: project.created_at, ended_at: project.created_at, strategy_a: "V1", strategy_b: "Base", outcome: "win_a", winner: "V1" }],
+      runId: detail.run_id, detail, trials: [], games: [{ game_seq: 1, match_seq: 1, cell_id: cells[0]!.cell_id, seed: 7, metrics: null, ply_count: 1, started_at: project.created_at, ended_at: project.created_at, strategy_a: "V1", strategy_b: "Base", outcome: "win_a", winner: "V1" }],
       cells: [...cells].reverse(),
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
     };
@@ -348,24 +348,24 @@ describe("persisted experiment components", () => {
     expect(screen.getByText("cell-000005")).toBeInTheDocument();
 
     const tailedCell = { ...cells[4]!, completed_games: 2, wins: 2, losses: 0, draws: 0, win_rate: 1, ci_lower: 0.3, ci_upper: 1 };
-    store.dispatch({ tag: "tailed", generation: 4, lines: ["new-tail"], nextOffset: 12, detail, trials: [], chain: [], chainedTrials: [], cells: cells.map((cell) => cell.cell_id === tailedCell.cell_id ? tailedCell : cell) });
+    store.dispatch({ tag: "tailed", generation: 4, lines: ["new-tail"], nextOffset: 12, detail, trials: [], cells: cells.map((cell) => cell.cell_id === tailedCell.cell_id ? tailedCell : cell) });
     await vi.waitFor(() => expect(screen.getByRole("button", { name: /game-a, 11 iterations, V2/ })).toHaveAccessibleName(expect.stringContaining("2/2 games")));
     expect(store.state.selectedCellId).toBe("cell-000005");
 
     store.dispatch({ tag: "openRun", runId: "new-run" });
-    store.dispatch({ tag: "tailed", generation: 4, lines: ["stale"], nextOffset: 9, detail, trials: [], chain: [], chainedTrials: [], cells });
+    store.dispatch({ tag: "tailed", generation: 4, lines: ["stale"], nextOffset: 9, detail, trials: [], cells });
     expect(store.state.openRun?.runId).toBe("new-run");
     expect(store.state.openRun?.detail).toBeNull();
 
     const stoppedDetail = { ...detail, status: "stopped" as const, ended_at: project.updated_at };
     store.dispatch({ tag: "openRun", runId: "grid-run" });
     const generation = store.state.openGeneration;
-    store.dispatch({ tag: "tailed", generation, lines: [], nextOffset: 0, detail: { ...stoppedDetail, run_id: "grid-run" }, trials: [], chain: [], chainedTrials: [], cells: cells.map((cell) => ({ ...cell, status: cell.status === "pending" || cell.status === "running" ? "cancelled" : cell.status, error: cell.status === "pending" || cell.status === "running" ? "run stopped" : cell.error })) });
+    store.dispatch({ tag: "tailed", generation, lines: [], nextOffset: 0, detail: { ...stoppedDetail, run_id: "grid-run" }, trials: [], cells: cells.map((cell) => ({ ...cell, status: cell.status === "pending" || cell.status === "running" ? "cancelled" : cell.status, error: cell.status === "pending" || cell.status === "running" ? "run stopped" : cell.error })) });
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument());
 
     store.dispatch({ tag: "openRun", runId: "grid-run" });
     const runningGeneration = store.state.openGeneration;
-    store.dispatch({ tag: "tailed", generation: runningGeneration, lines: [], nextOffset: 0, detail: { ...detail, status: "running" }, trials: [], chain: [], chainedTrials: [], cells });
+    store.dispatch({ tag: "tailed", generation: runningGeneration, lines: [], nextOffset: 0, detail: { ...detail, status: "running" }, trials: [], cells });
     await vi.waitFor(() => expect(store.state.openRun?.detail?.status).toBe("running"));
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(stopCalls).toEqual(["grid-run"]);
@@ -399,7 +399,7 @@ describe("persisted experiment components", () => {
     const getRunGames = vi.fn(() => Effect.send<GameTraceSummary[]>([]));
     const state = initialBenchState();
     state.openRun = {
-      runId: detail.run_id, detail, cells: [unexpected, valid], games: [], trials: [], chain: [], chainedTrials: [],
+      runId: detail.run_id, detail, cells: [unexpected, valid], games: [], trials: [],
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
     };
     const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, { ...noOpEnv, getRunGames });
@@ -453,7 +453,7 @@ describe("persisted experiment components", () => {
     const state = initialBenchState();
     state.selectedCellId = "cell-a";
     state.openRun = {
-      runId: detail.run_id, detail, cells, games: [], trials: [], chain: [], chainedTrials: [],
+      runId: detail.run_id, detail, cells, games: [], trials: [],
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
     };
     const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, { ...noOpEnv, downloadFile });
@@ -520,7 +520,7 @@ describe("persisted experiment components", () => {
     };
     const state = initialBenchState();
     state.openRun = {
-      runId: "run-a", detail: detail("run-a", "cell-a"), cells: [cell("cell-a")], games: [game(7, "cell-a")], trials: [], chain: [], chainedTrials: [],
+      runId: "run-a", detail: detail("run-a", "cell-a"), cells: [cell("cell-a")], games: [game(7, "cell-a")], trials: [],
       tail: { lines: [], offset: 0, active: false, error: null, idleAttempts: 0, failures: 0 },
     };
     const store = createStore<BenchState, BenchAction, BenchEnv>(state, benchReducer, noOpEnv);
@@ -533,7 +533,7 @@ describe("persisted experiment components", () => {
     store.dispatch({ tag: "openRun", runId: "run-b" });
     await vi.waitFor(() => expect(screen.queryByTestId("fake-replay")).not.toBeInTheDocument());
     const generation = store.state.openGeneration;
-    store.dispatch({ tag: "tailed", generation, lines: [], nextOffset: 0, detail: detail("run-b", "cell-b"), trials: [], chain: [], chainedTrials: [], cells: [cell("cell-b")], games: [game(8, "cell-b")] });
+    store.dispatch({ tag: "tailed", generation, lines: [], nextOffset: 0, detail: detail("run-b", "cell-b"), trials: [], cells: [cell("cell-b")], games: [game(8, "cell-b")] });
     await vi.waitFor(() => expect(screen.queryByTestId("fake-replay")).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /Replay game 8/ }));
     await vi.waitFor(() => expect(screen.getByTestId("fake-replay")).toHaveTextContent("run-b:cell-b:8"));

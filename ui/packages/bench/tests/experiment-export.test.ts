@@ -7,7 +7,7 @@ const detail: RunDetail = {
     version: 1, games: [{ game: "nim", game_config: { label: "a,b" } }], baseline: { id: "base", label: "Base", config: { quote: "yes" } },
     variants: [{ id: "v1", label: "Variant", config: { lines: "one\ntwo" } }], budgets: [{ kind: "iterations", value: 5 }], rounds_per_cell: 1, base_seed: 42, max_parallel_cells: 1,
   }, label: null, game: "nim", config: null, git_sha: "sha", git_dirty: true, host: "host", pid: null,
-  started_at: "2026-01-01T00:00:00Z", ended_at: null, status: "completed", log_path: "", exit_code: 0, match_count: 0, trial_count: 0, incumbent: null,
+  started_at: "2026-01-01T00:00:00Z", ended_at: null, status: "completed", log_path: "", exit_code: 0, match_count: 0, trial_count: 0, incumbent: null, tuning_session_id: null,
 };
 
 function cell(cellId: string): ExperimentCell {

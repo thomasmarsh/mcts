@@ -25,12 +25,11 @@ import {
   type JobPollEnv,
   type JobSubmitResult,
 } from "@mcts/core";
-import type { BenchState, ChainedTrial } from "./state.js";
+import type { BenchState } from "./state.js";
 import { tuningNavigationReducer, type TuningNavigationAction } from "./tuning-navigation.js";
 import {
   isTerminalStatus,
   type BenchKindInfo,
-  type ChainRung,
   type CommitTrendData,
   type LaunchResponse,
   type LeaderboardEntry,
@@ -88,13 +87,6 @@ export interface BenchEnv {
   fetchCommitTrends(game: string | null): Effect<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
-  /** Relaunch a finished/stopped tuner run with a bigger trial budget,
-   * seeded from its saved state. */
-  resumeRun(runId: string, nTrials: number, nWorkers?: number): Effect<LaunchResponse>;
-  /** Promote this run's current incumbent to a new baseline instance and
-   * relaunch as the next rung in its ladder chain. Stops the run first if
-   * it's still running. */
-  advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Effect<LaunchResponse>;
   getBenchKinds(): Effect<BenchKindInfo[]>;
   /** Per-game tuner metadata for every tuner-tunable game. */
   getTunerKinds(): Effect<TunerGameInfo[]>;
@@ -108,8 +100,6 @@ export interface BenchEnv {
   addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Effect<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
-  /** Every rung of the ladder chain `runId` belongs to, oldest first. */
-  getRunChain(runId: string): Effect<ChainRung[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
   getRunGameMoves(runId: string, gameSeq: number): Effect<GameMove[]>;
   deleteRun(runId: string): Effect<void>;
@@ -155,13 +145,8 @@ export type BenchAction =
       lines: string[];
       nextOffset: number;
       detail: RunDetail;
-      /** Every tick's trial rows (see `tailTick` below for why this isn't
-       * gated on run kind). Empty for every non-`"tuner"` run. */
+      /** Recorded physical-run trials, retained as diagnostics. */
       trials: TrialRow[];
-      /** This run's ladder chain and every rung's trials, concatenated in
-       * chain order — see `tailTick`. */
-      chain: ChainRung[];
-      chainedTrials: ChainedTrial[];
       cells?: ExperimentCell[];
       games?: GameTraceSummary[];
     }
@@ -177,12 +162,6 @@ export type BenchAction =
   | { tag: "stopRun"; runId: string }
   | { tag: "stopFinished"; runId: string }
   | { tag: "stopFailed"; runId: string; error: string }
-  | { tag: "resumeRun"; runId: string; nTrials: number; nWorkers?: number }
-  | { tag: "resumeFinished"; runId: string }
-  | { tag: "resumeFailed"; runId: string; error: string }
-  | { tag: "advanceBaseline"; runId: string; nTrials?: number; nWorkers?: number }
-  | { tag: "advanceBaselineFinished"; runId: string; newRunId: string }
-  | { tag: "advanceBaselineFailed"; runId: string; error: string }
   | { tag: "deleteRun"; runId: string }
   | { tag: "deleteFinished"; runId: string }
   | { tag: "deleteFailed"; runId: string; error: string }
@@ -607,8 +586,6 @@ export function benchReducer(
       detail: null,
       tail: { lines: [], offset: 0, active: true, error: null, idleAttempts: 0, failures: 0 },
       trials: [],
-      chain: [],
-      chainedTrials: [],
       cells: [],
       games: [],
     };
@@ -645,8 +622,6 @@ export function benchReducer(
         nextOffset: r.log.next_offset,
         detail: r.detail,
         trials: [],
-        chain: [],
-        chainedTrials: [],
         ...(r.cells.length > 0 ? { cells: r.cells } : {}),
         ...(r.games.length > 0 ? { games: r.games } : {}),
       }))
@@ -662,8 +637,6 @@ export function benchReducer(
     open.tail.failures = 0;
     open.detail = action.detail;
     open.trials = action.trials;
-    open.chain = action.chain;
-    open.chainedTrials = action.chainedTrials;
     open.cells = action.cells ?? open.cells;
     open.games = action.games ?? open.games;
     if (isTerminalStatus(action.detail.status)) {
@@ -787,46 +760,6 @@ export function benchReducer(
 
   if (action.tag === "stopFailed") {
     draft.stopError = action.error;
-    return null;
-  }
-
-  if (action.tag === "resumeRun") {
-    draft.resumeError = null;
-    const { runId, nTrials, nWorkers } = action;
-    return env
-      .resumeRun(runId, nTrials, nWorkers)
-      .map((): BenchAction => ({ tag: "resumeFinished", runId }))
-      .catch((e): BenchAction => ({ tag: "resumeFailed", runId, error: String(e) }));
-  }
-
-  if (action.tag === "resumeFinished") {
-    // The resumed run is a brand-new row (its own run_id) -- refresh the
-    // list so it shows up without a manual reload, same as a fresh launch.
-    return refreshRunViews(draft, env);
-  }
-
-  if (action.tag === "resumeFailed") {
-    draft.resumeError = action.error;
-    return null;
-  }
-
-  if (action.tag === "advanceBaseline") {
-    draft.advanceBaselineError = null;
-    const { runId, nTrials, nWorkers } = action;
-    return env
-      .advanceBaseline(runId, nTrials, nWorkers)
-      .map((r): BenchAction => ({ tag: "advanceBaselineFinished", runId, newRunId: r.run_id }))
-      .catch((e): BenchAction => ({ tag: "advanceBaselineFailed", runId, error: String(e) }));
-  }
-
-  if (action.tag === "advanceBaselineFinished") {
-    // The new physical run changes the navigator's available evidence, but
-    // does not change the operator's current physical selection.
-    return refreshRunViews(draft, env);
-  }
-
-  if (action.tag === "advanceBaselineFailed") {
-    draft.advanceBaselineError = action.error;
     return null;
   }
 

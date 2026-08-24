@@ -253,23 +253,6 @@ pub(super) fn multi_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) 
     ).unwrap();
 }
 
-pub(super) fn ladder_runs_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
-    conn.execute_batch(
-        "INSERT INTO runs
-         (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path)
-         VALUES
-         ('root-1', 'tuner', 'druid', '{\"ladder_root\":\"root-1\"}', 'abc', false, 'host', NULL,
-          '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z', 'stopped', '/tmp/root/log.jsonl'),
-         ('rung-2', 'tuner', 'druid', '{\"ladder_root\":\"root-1\",\"resumed_from\":\"root-1\"}', 'abc', false, 'host', 42,
-          '2026-01-01T00:10:01Z', NULL, 'running', '/tmp/rung2/log.jsonl');
-         INSERT INTO trials (run_id, trial_id, ts, config, cost) VALUES
-         ('root-1', 1, '2026-01-01T00:00:01Z', '{}', 0.1),
-         ('root-1', 2, '2026-01-01T00:00:02Z', '{}', 0.1),
-         ('rung-2', 3, '2026-01-01T00:10:02Z', '{}', 0.2);",
-    )
-    .unwrap();
-}
-
 /// Default seed plus a two-ply trace for `match_results.seq = 1` (game
 /// 1: "strong" beats "master") -- exercises the join between
 /// `game_moves` and `match_results` on `(run_id, seq == game_seq)`.

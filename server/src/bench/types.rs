@@ -104,13 +104,6 @@ pub struct LaunchBody {
     pub config: Option<Value>,
 }
 
-#[derive(Deserialize)]
-pub struct ResumeBody {
-    pub n_trials: i64,
-    #[serde(default)]
-    pub n_workers: Option<i64>,
-}
-
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -155,6 +148,9 @@ pub struct RunDetail {
     pub exit_code: Option<i64>,
     pub match_count: i64,
     pub trial_count: i64,
+    /// The modern logical tuning session that owns this physical attempt.
+    /// Absent for non-tuner runs and legacy tuner rows.
+    pub tuning_session_id: Option<String>,
     /// tuner's own current best config for this run (from its intensifier,
     /// not a naive `MIN(cost)` over `trials` -- see `LogRecord::Incumbent`'s
     /// doc comment for why that distinction matters once multiple baseline

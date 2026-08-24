@@ -382,19 +382,26 @@ pub(crate) async fn live_run_moves(
 /// `trials`, `match_results`, `runs`, in FK-safe child-before-parent order)
 /// plus its `_ingest_cursor` entries and its `bench-runs/<run_id>/`
 /// directory (`log.jsonl`/`moves.jsonl`/`stdout.log`). This is the only
-/// deletion path; there is no automatic retention/pruning of traces. Refuses a still-`running`
-/// run with 409 rather than deleting out from under a live process; stop it
-/// first.
+/// deletion path; there is no automatic retention/pruning of traces. A physical
+/// attempt attached to a modern tuning session is retained with its trace and
+/// search evidence; session deletion will own that lifecycle. Other running
+/// runs are refused with 409 rather than deleting out from a live process.
 pub(crate) async fn delete_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<StatusCode, BenchError> {
-    let status: String = {
+    let (status, tuning_session_id): (String, Option<String>) = {
         let db = state.db.lock().unwrap();
         match db.query_row(
-            "SELECT status FROM runs WHERE run_id = ?1",
+            "SELECT run.status, \
+                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
+                         THEN attempt.session_id END \
+             FROM runs run \
+             LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = run.run_id \
+             LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
+             WHERE run.run_id = ?1",
             duckdb::params![&run_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         ) {
             Ok(s) => s,
             Err(duckdb::Error::QueryReturnedNoRows) => {
@@ -406,6 +413,14 @@ pub(crate) async fn delete_run(
             Err(e) => return Err(BenchError::from(e)),
         }
     };
+    if let Some(session_id) = tuning_session_id {
+        return Err(BenchError {
+            status: StatusCode::CONFLICT,
+            message: format!(
+                "run '{run_id}' belongs to tuning session '{session_id}' and retains its trace evidence -- use the future session Delete workflow"
+            ),
+        });
+    }
     if status == "running" {
         return Err(BenchError {
             status: StatusCode::CONFLICT,

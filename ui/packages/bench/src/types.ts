@@ -536,6 +536,8 @@ export interface RunDetail {
   match_count: number;
   trial_count: number;
   incumbent: IncumbentInfo | null;
+  /** Modern logical session owning this physical tuner attempt. */
+  tuning_session_id?: string | null;
 }
 
 /** A tuner run's current incumbent (its own intensifier's tracked best
@@ -737,22 +739,4 @@ export interface TrialRow {
   seed: number | null;
   cost: number | null;
   extra: unknown | null;
-}
-
-/** One rung of a tuner ladder chain, as reported by `GET
- * /api/bench/runs/{run_id}/chain` -- oldest first. A run with no
- * `ladder_root` (a plain run, or a ladder run whose baseline was never
- * advanced) is a one-element chain containing just itself, so this always
- * has at least one entry for a run that exists. `incumbent` is the cost
- * this rung's baseline was promoted at (the *prior* rung's own incumbent)
- * -- `null` for the chain's root, which has no prior baseline advance
- * behind it. */
-export interface ChainRung {
-  run_id: string;
-  label: string | null;
-  status: RunStatus;
-  started_at: string;
-  ended_at: string | null;
-  trial_count: number;
-  incumbent: IncumbentInfo | null;
 }

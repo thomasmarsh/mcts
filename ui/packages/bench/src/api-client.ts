@@ -14,7 +14,6 @@ import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
 import type {
   BenchKindInfo,
-  ChainRung,
   CommitTrendData,
   LaunchResponse,
   LeaderboardEntry,
@@ -66,14 +65,6 @@ export interface BenchApiClient {
   fetchCommitTrends(game: string | null): Promise<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
-  /** Relaunch a finished/stopped tuner run with a bigger trial budget,
-   * seeded from its saved state (`POST /api/bench/runs/{run_id}/resume`). */
-  resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse>;
-  /** Promote this run's current incumbent to a new baseline instance and
-   * relaunch as the next rung in its ladder chain (`POST
-   * /api/bench/runs/{run_id}/advance-baseline`). Stops the run first if
-   * it's still running. `nTrials` defaults server-side when omitted. */
-  advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Promise<LaunchResponse>;
   getBenchKinds(): Promise<BenchKindInfo[]>;
   /** Per-game tuner metadata for every game that supports tuner tuning. */
   getTunerKinds(): Promise<TunerGameInfo[]>;
@@ -89,10 +80,6 @@ export interface BenchApiClient {
   addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Promise<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
-  /** Every rung of the ladder chain `runId` belongs to, oldest first (`GET
-   * /api/bench/runs/{run_id}/chain`) -- a one-element list containing just
-   * `runId` for a plain (non-laddered) run. */
-  getRunChain(runId: string): Promise<ChainRung[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
   getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]>;
   deleteRun(runId: string): Promise<void>;
@@ -225,18 +212,6 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async stopRun(runId: string): Promise<StopResponse> {
       return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/stop`));
     },
-    async resumeRun(runId: string, nTrials: number, nWorkers?: number): Promise<LaunchResponse> {
-      return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/resume`), {
-        n_trials: nTrials,
-        n_workers: nWorkers,
-      });
-    },
-    async advanceBaseline(runId: string, nTrials?: number, nWorkers?: number): Promise<LaunchResponse> {
-      return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/advance-baseline`), {
-        n_trials: nTrials,
-        n_workers: nWorkers,
-      });
-    },
     async getBenchKinds(): Promise<BenchKindInfo[]> {
       return fetchJson(url("/api/bench/kinds"));
     },
@@ -269,9 +244,6 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
-    },
-    async getRunChain(runId: string): Promise<ChainRung[]> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/chain`));
     },
     async getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit, cell_id: cellId })}`));
@@ -306,10 +278,6 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
     launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
-    resumeRun: (runId: string, nTrials: number, nWorkers?: number) =>
-      lift(() => api.resumeRun(runId, nTrials, nWorkers)),
-    advanceBaseline: (runId: string, nTrials?: number, nWorkers?: number) =>
-      lift(() => api.advanceBaseline(runId, nTrials, nWorkers)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
     getTunerKinds: () => lift(() => api.getTunerKinds()),
     listTuningSessions: () => lift(() => api.listTuningSessions()),
@@ -321,7 +289,6 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     resumeTuningSession: (sessionId: string, body: TuningSessionCommandRequest) => lift(() => api.resumeTuningSession(sessionId, body)),
     addTuningSessionBudget: (sessionId: string, body: TuningSessionBudgetRequest) => lift(() => api.addTuningSessionBudget(sessionId, body)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
-    getRunChain: (runId: string) => lift(() => api.getRunChain(runId)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),
     getRunGameMoves: (runId: string, gameSeq: number) => lift(() => api.getRunGameMoves(runId, gameSeq)),
     deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),

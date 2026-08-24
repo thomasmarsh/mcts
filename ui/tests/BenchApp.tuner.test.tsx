@@ -19,11 +19,16 @@ describe("tuner launch and physical-run diagnostics", () => {
     expect(screen.queryByText(/Max rungs/)).not.toBeInTheDocument();
   });
 
-  it("keeps a legacy physical tuner run diagnostic-only", async () => {
+  it("links a modern physical tuner run to its session without mutation controls", async () => {
     const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, createMockBenchEnv());
     render(() => <RunDetailPanel store={store} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     expect(await screen.findByText(/keeps its log and diagnostics here/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open tuning session" }));
+    expect(store.getState()().tuningNavigation.selection.sessionId).toBe("session-traffic-lights");
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
     expect(screen.getByText("Log Tail")).toBeInTheDocument();
     expect(screen.queryByText("Best score (mu − 3σ)")).not.toBeInTheDocument();
     expect(screen.queryByText("Copy as baseline config")).not.toBeInTheDocument();

@@ -41,24 +41,6 @@ async fn test_list_runs_returns_seeded_run() {
 }
 
 #[tokio::test]
-async fn test_list_runs_collapses_ladder_rungs_into_latest_logical_run() {
-    let app = seeded_app(ladder_runs_seed).0;
-    let (status, body) = http_get(app.clone(), "/api/bench/runs").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    let runs = body_json(&body).as_array().unwrap().clone();
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0]["run_id"], "rung-2");
-    assert_eq!(runs[0]["status"], "running");
-    assert_eq!(runs[0]["trial_count"], 3);
-    assert_eq!(runs[0]["started_at"], "2026-01-01 00:00:00");
-
-    let (_, body) = http_get(app.clone(), "/api/bench/runs?status=running").await;
-    assert_eq!(body_json(&body).as_array().unwrap().len(), 1);
-    let (_, body) = http_get(app, "/api/bench/runs?status=stopped").await;
-    assert!(body_json(&body).as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn test_list_runs_filter_by_status() {
     let app = seeded_app(|conn, dir| {
         default_seed(conn, dir);
@@ -304,96 +286,6 @@ async fn test_get_run_trials_respects_limit() {
 // -------------------------------------------------------------------
 // GET /api/bench/runs/{run_id}/games, .../games/{game_seq}/moves
 // -------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_get_run_chain_404_for_unknown_run() {
-    let app = seeded_app(|_, _| {}).0;
-    let (status, body) = http_get(app, "/api/bench/runs/nonexistent/chain").await;
-    assert_eq!(status, HttpStatusCode::NOT_FOUND);
-    assert_eq!(body_json(&body)["code"], 404);
-}
-
-fn insert_tuner_run(conn: &duckdb::Connection, run_id: &str, started_at: &str, config: &Value) {
-    conn.execute(
-        "INSERT INTO runs \
-         (run_id, kind, game, config, git_sha, git_dirty, host, pid, \
-          started_at, ended_at, status, log_path) \
-         VALUES (?1, 'tuner', 'nim', ?2, 'abc1234', false, 'testhost', NULL, \
-                 ?3, ?3, 'completed', '/tmp/nope/log.jsonl')",
-        duckdb::params![run_id, config.to_string(), started_at],
-    )
-    .unwrap();
-}
-
-#[tokio::test]
-async fn test_get_run_chain_single_rung_for_a_plain_run() {
-    let app = seeded_app(|conn, _dir| {
-        insert_tuner_run(
-            conn,
-            "root-1",
-            "2026-01-01T00:00:00Z",
-            &json!({"overrides": []}),
-        );
-    })
-    .0;
-
-    let (status, body) = http_get(app, "/api/bench/runs/root-1/chain").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    let rows = body_json(&body).as_array().unwrap().clone();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["run_id"], "root-1");
-}
-
-#[tokio::test]
-async fn test_get_run_chain_orders_every_rung_oldest_first() {
-    let app = seeded_app(|conn, _dir| {
-        insert_tuner_run(
-            conn,
-            "root-1",
-            "2026-01-01T00:00:00Z",
-            &json!({"ladder_root": "root-1"}),
-        );
-        insert_tuner_run(
-            conn,
-            "root-1-rung3",
-            "2026-01-03T00:00:00Z",
-            &json!({"ladder_root": "root-1", "resumed_from": "root-1-rung2"}),
-        );
-        insert_tuner_run(
-            conn,
-            "root-1-rung2",
-            "2026-01-02T00:00:00Z",
-            &json!({"ladder_root": "root-1", "resumed_from": "root-1"}),
-        );
-        // A run from a *different* chain (different ladder_root) must
-        // not leak into this chain's result.
-        insert_tuner_run(
-            conn,
-            "other-root",
-            "2026-01-02T12:00:00Z",
-            &json!({"ladder_root": "other-root"}),
-        );
-        conn.execute(
-            "INSERT INTO incumbents (run_id, ts, config, cost) \
-             VALUES ('root-1', '2026-01-01T00:30:00Z', '{\"family\": \"ucb1\"}', 0.02)",
-            duckdb::params![],
-        )
-        .unwrap();
-    })
-    .0;
-
-    // Query from the *middle* rung -- the chain must resolve via
-    // ladder_root regardless of which rung's run_id is asked for.
-    let (status, body) = http_get(app, "/api/bench/runs/root-1-rung2/chain").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    let rows = body_json(&body).as_array().unwrap().clone();
-    assert_eq!(rows.len(), 3, "expected 3 rungs, got {rows:?}");
-    assert_eq!(rows[0]["run_id"], "root-1");
-    assert_eq!(rows[0]["incumbent"]["cost"], 0.02);
-    assert_eq!(rows[1]["run_id"], "root-1-rung2");
-    assert_eq!(rows[1]["incumbent"], Value::Null);
-    assert_eq!(rows[2]["run_id"], "root-1-rung3");
-}
 
 // -------------------------------------------------------------------
 // GET /api/bench/leaderboard

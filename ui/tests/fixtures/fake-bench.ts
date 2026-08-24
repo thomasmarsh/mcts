@@ -6,7 +6,6 @@ import { Effect } from "@mcts/core";
 import type { BenchEnv } from "@mcts/bench";
 import type {
   BenchKindInfo,
-  ChainRung,
   RunDetail,
   RunLogResponse,
   RunSummary,
@@ -79,6 +78,7 @@ export const fakeRunDetail: RunDetail = {
   match_count: 10,
   trial_count: 0,
   incumbent: null,
+  tuning_session_id: null,
 };
 
 export const fakeRunningDetail: RunDetail = {
@@ -103,6 +103,7 @@ export const fakePhysicalTunerRun: RunDetail = {
   },
   trial_count: 3,
   incumbent: { config: { family: "rave", c: 0.7 }, cost: 0.2 },
+  tuning_session_id: "session-traffic-lights",
 };
 
 // Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `family` is a
@@ -305,10 +306,6 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       Effect.send({ run_id: "new-run-123", pid: 99999, log_path: "/tmp/new/log.jsonl" }),
     stopRun: (_runId: string): Effect<StopResponse> =>
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
-    resumeRun: (_runId: string, _nTrials: number, _nWorkers?: number): Effect<LaunchResponse> =>
-      Effect.send({ run_id: "resumed-run-123", pid: 99998, log_path: "/tmp/resumed/log.jsonl" }),
-    advanceBaseline: (_runId: string, _nTrials?: number, _nWorkers?: number): Effect<LaunchResponse> =>
-      Effect.send({ run_id: "advanced-run-123", pid: 99997, log_path: "/tmp/advanced/log.jsonl" }),
     getBenchKinds: () => Effect.send(fakeKinds),
     getTunerKinds: () => Effect.send(fakeTunerKinds),
     listTuningSessions: () => Effect.send({ schema_version: 1, sessions: [] }),
@@ -317,21 +314,6 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     getTuningTrialPage: () => Effect.none(),
     getTuningTrialDetail: () => Effect.none(),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),
-    // A single-rung chain containing just the requested run -- the common
-    // case (a plain tuner run, never baseline-advanced). Tests exercising
-    // an actual multi-rung chain override this directly.
-    getRunChain: (runId: string): Effect<ChainRung[]> =>
-      Effect.send([
-        {
-          run_id: runId,
-          label: null,
-          status: "completed",
-          started_at: "2026-03-01T00:00:00Z",
-          ended_at: "2026-03-01T01:00:00Z",
-          trial_count: fakeTrialRows.length,
-          incumbent: null,
-        },
-      ]),
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),
     getRunGameMoves: (): Effect<GameMove[]> => Effect.send(fakeGameMoves),
     deleteRun: (): Effect<void> => Effect.send(undefined),

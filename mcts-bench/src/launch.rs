@@ -138,10 +138,8 @@ pub fn launch_supervisor(
 /// Like [`launch`], but with a caller-supplied `run_id` instead of one
 /// generated internally.  Needed when the caller has to know the run_id
 /// *before* spawning -- e.g. tuner launches thread the run_id into the
-/// child's own argv (`tuner --run-id <id>`) so its `Scenario.name` (and
-/// therefore its on-disk output directory) is pinned to the same id the
-/// bench-runs registry/DB use, making a later `--resume <id>` able to find
-/// it without any extra bookkeeping.
+/// child's own argv so its session and attempt evidence stays pinned to the
+/// same identity as the bench-runs registry and database.
 pub fn launch_with_run_id(
     run_id: String,
     cmd: Vec<String>,

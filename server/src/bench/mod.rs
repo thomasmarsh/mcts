@@ -1,4 +1,4 @@
-//! HTTP routes for benchmark projects, runs, traces, and legacy ladder advancement.
+//! HTTP routes for benchmark projects, runs, traces, and tuning sessions.
 #![allow(unused_imports)]
 
 pub(crate) mod lifecycle;
@@ -6,7 +6,6 @@ mod process;
 pub(crate) mod supervisor_runtime;
 
 mod commands;
-mod ladder;
 mod projects;
 mod router;
 mod runs;
@@ -22,7 +21,6 @@ pub use types::{
 };
 
 pub(crate) use commands::*;
-pub(crate) use ladder::*;
 pub(crate) use projects::*;
 pub(crate) use runs::*;
 pub(crate) use traces::*;

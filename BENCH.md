@@ -69,14 +69,11 @@ The launch form produces a free-form JSON configuration stored on the `runs` row
 - ordered `overrides`, such as `optimizer.n_trials=100` and `target.baselines=['flat_mc']`;
 - optional `game_config`;
 - optional `baseline_configs`, keyed raw strategy configurations;
-- optional ladder metadata: `ladder.max_rungs`, `ladder.saturation_threshold`, `ladder_root`, and later `resumed_from`;
 - `baseline_settings`, which records the resolved baseline parameters for display and comparison.
 
-Overrides are deliberately ordered. Python parses them into a dictionary, so the final occurrence of a dotted key wins. Resume and ladder code may therefore append a replacement override without rewriting the original launch request.
+Overrides are deliberately ordered. Python parses them into a dictionary, so the final occurrence of a dotted key wins.
 
-The server generates the physical `run_id` before spawning. The same ID is passed to Python as `--run-id`, used as the tuner `Scenario.name`, stored in DuckDB, written to the registry, and used as the `bench-runs/<run_id>/` directory. This identity alignment is what makes later `--resume <run_id>` deterministic.
-
-For a new automatic ladder, the server injects `ladder_root = run_id` after the ID exists. Descendant rungs carry the same root and set `resumed_from` to their immediate parent.
+The server generates the physical `run_id` before spawning. The same ID is passed to Python, stored in DuckDB, written to the registry, and used as the `bench-runs/<run_id>/` directory. Modern continuation is owned by the logical tuning session and its command journal.
 
 ### 2. Process launch and lifecycle
 
@@ -182,23 +179,9 @@ Each child stores the promoted configuration in both `baseline_configs` for exec
 
 Manual “Use best as new baseline” uses the same stop, resume, and baseline-replacement semantics. It may create a ladder chain retroactively for a plain tuner run, but does not add automatic ladder policy unless the original run opted into it.
 
-## Physical rows and logical runs
+## Physical rows and logical sessions
 
-DuckDB retains one `runs` row per physical process because lifecycle, logs, PIDs, and output directories are physical. The API and UI must nevertheless present a ladder as one logical run.
-
-`GET /api/bench/runs` collapses rows sharing `ladder_root`:
-
-- the newest rung supplies the handle, status, PID, and current metadata;
-- trial and match counts are summed across rungs;
-- the root supplies the logical start time;
-- status filtering is applied after collapse, against the newest rung;
-- limits count logical runs, not physical rows.
-
-The returned `run_id` is the newest physical rung ID because detail, log, stop, trace, and resume endpoints operate on concrete resources. It is a current handle, not the logical identity. The durable logical identity is `ladder_root`.
-
-`GET /api/bench/runs/{run_id}/chain` accepts any rung and returns the entire chain oldest-first. Each `ChainRung` includes its own lifecycle and trial count plus the incumbent that was promoted to establish that rung's baseline.
-
-This separation should be preserved rather than overloading every endpoint with implicit chain behavior. Collection views are logical; resource endpoints remain physical; the chain endpoint bridges them explicitly.
+DuckDB retains one `runs` row per physical process because lifecycle, logs, PIDs, and output directories are physical. Modern tuner attempts link to their logical session through `tuning_attempts`; the session owns continuation and analysis, while physical detail retains logs, stderr, and traces.
 
 ## UI architecture
 

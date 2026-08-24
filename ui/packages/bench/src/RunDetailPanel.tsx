@@ -52,25 +52,18 @@ export const RunDetailPanel: Component<{
   const detail = createMemo(() => openRun()?.detail ?? null);
   const tail = createMemo(() => openRun()?.tail ?? null);
   const stopError = createMemo(() => state().stopError);
-  const resumeError = createMemo(() => state().resumeError);
   const deleteError = createMemo(() => state().deleteError);
   const [spectatorVisible, setSpectatorVisible] = createSignal(false);
   const [deleteArmed, setDeleteArmed] = createSignal(false);
 
   const isTuner = createMemo(() => detail()?.kind === "tuner");
+  const tuningSessionId = createMemo(() => detail()?.tuning_session_id ?? null);
+  const isModernTuningAttempt = createMemo(() => tuningSessionId() !== null);
   const runProgress = createMemo(() => progress(detail()));
   const progressPercent = createMemo(() => {
     const { completed, total } = runProgress();
     return total === null ? null : Math.min(100, Math.floor((completed / total) * 100));
   });
-  // A run can only be resumed once it's stopped producing new trials --
-  // resuming a still-running one would launch a second process racing the
-  // first over the same prior state.
-  const canResume = createMemo(() => isTuner() && detail() !== null && detail()!.status !== "running");
-  // A reasonable starting point for "how many more trials" -- the operator
-  // can always change it before clicking Resume.
-  const resumeDefaultTrials = createMemo(() => (detail()?.trial_count ?? 0) + 200);
-  const [resumeTrials, setResumeTrials] = createSignal<number | null>(null);
 
   // One-shot fetch for the raw stdout.log (stderr output).  Not part of
   // the reducer — this is a debug view fetched on demand.
@@ -124,7 +117,7 @@ export const RunDetailPanel: Component<{
         <div id="run-detail-header">
           <h3>Run Detail</h3>
           <div id="run-detail-actions">
-            <Show when={detail()?.status === "running"}>
+            <Show when={detail()?.status === "running" && !isModernTuningAttempt()}>
               <button
                 id="stop-run-btn"
                 onClick={() => dispatch({ tag: "stopRun", runId: openRun()!.runId })}
@@ -140,7 +133,7 @@ export const RunDetailPanel: Component<{
                 {spectatorVisible() ? "Hide games" : "Browse games"}
               </button>
             </Show>
-            <Show when={detail()?.status !== "running"}>
+            <Show when={detail()?.status !== "running" && !isModernTuningAttempt()}>
               <button
                 id="delete-run-btn"
                 onClick={() => {
@@ -159,34 +152,6 @@ export const RunDetailPanel: Component<{
         </Show>
         <Show when={deleteError()}>
           <div class="launch-error">{deleteError()}</div>
-        </Show>
-
-        <Show when={canResume()}>
-          <div id="resume-run-row">
-            <label for="resume-n-trials">Resume with n_trials</label>
-            <input
-              id="resume-n-trials"
-              type="number"
-              min="1"
-              value={resumeTrials() ?? resumeDefaultTrials()}
-              onInput={(e) => setResumeTrials(Number(e.currentTarget.value))}
-            />
-            <button
-              id="resume-run-btn"
-              onClick={() =>
-                dispatch({
-                  tag: "resumeRun",
-                  runId: openRun()!.runId,
-                  nTrials: resumeTrials() ?? resumeDefaultTrials(),
-                })
-              }
-            >
-              Resume
-            </button>
-          </div>
-          <Show when={resumeError()}>
-            <div class="launch-error">{resumeError()}</div>
-          </Show>
         </Show>
 
         <div id="run-detail-summary">
@@ -249,7 +214,12 @@ export const RunDetailPanel: Component<{
           </Show>
 
           <Show when={isTuner()}>
-            <p class="tuning-run-diagnostics">This physical run keeps its log and diagnostics here. Use its logical tuning session for analysis.</p>
+            <p class="tuning-run-diagnostics">
+              This physical run keeps its log and diagnostics here.
+              <Show when={tuningSessionId()} fallback={<> This legacy run has no logical session.</>}>
+                {(sessionId) => <> <button id="open-tuning-session-btn" type="button" onClick={() => dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: sessionId() } })}>Open tuning session</button> for continuation and analysis.</>}
+              </Show>
+            </p>
           </Show>
         </div>
 

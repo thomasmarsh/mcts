@@ -31,7 +31,7 @@ use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
 
-use super::{ladder::*, types::*};
+use super::types::*;
 pub(crate) async fn list_runs(
     AxumState(state): AxumState<Arc<BenchState>>,
     Query(params): Query<ListRunsParams>,
@@ -46,8 +46,7 @@ pub(crate) async fn list_runs(
                 CAST(r.started_at AS TEXT), \
                 CAST(r.ended_at AS TEXT), \
                 r.status, r.project_id, r.experiment_id, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                CAST(r.config AS TEXT) \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
@@ -79,66 +78,36 @@ pub(crate) async fn list_runs(
 
     let mut stmt = db.prepare(&sql)?;
 
-    let physical_runs: Vec<(RunSummary, Option<Value>)> = stmt
+    let mut runs: Vec<RunSummary> = stmt
         .query_map([], |row| {
-            let run_id: String = row.get(0)?;
-            let config = row
-                .get::<_, Option<String>>(15)?
-                .and_then(|text| serde_json::from_str(&text).ok());
-            Ok((
-                RunSummary {
-                    run_id,
-                    kind: row.get(1)?,
-                    game: row.get(2)?,
-                    project_id: row.get(11)?,
-                    experiment_id: row.get(12)?,
-                    label: row.get(3)?,
-                    git_sha: row.get(4)?,
-                    git_dirty: row.get(5)?,
-                    host: row.get(6)?,
-                    pid: row.get(7)?,
-                    started_at: row.get(8)?,
-                    ended_at: row.get(9)?,
-                    status: row.get(10)?,
-                    match_count: row.get(13)?,
-                    trial_count: row.get(14)?,
-                },
-                config,
-            ))
+            Ok(RunSummary {
+                run_id: row.get(0)?,
+                kind: row.get(1)?,
+                game: row.get(2)?,
+                project_id: row.get(11)?,
+                experiment_id: row.get(12)?,
+                label: row.get(3)?,
+                git_sha: row.get(4)?,
+                git_dirty: row.get(5)?,
+                host: row.get(6)?,
+                pid: row.get(7)?,
+                started_at: row.get(8)?,
+                ended_at: row.get(9)?,
+                status: row.get(10)?,
+                match_count: row.get(13)?,
+                trial_count: row.get(14)?,
+            })
         })?
         .filter_map(|r| r.ok())
         .collect();
-
-    // A ladder is one logical run even though each baseline change needs a
-    // fresh tuner process and therefore a fresh storage row. Rows arrive
-    // newest-first, so retain the newest rung's identity/status while
-    // accumulating work from all of its physical rungs.
-    let mut logical_runs: Vec<RunSummary> = Vec::new();
-    let mut logical_indexes: HashMap<String, usize> = HashMap::new();
-    for (run, config) in physical_runs {
-        let logical_id = config
-            .as_ref()
-            .and_then(|value| value.get("ladder_root"))
-            .and_then(Value::as_str)
-            .unwrap_or(&run.run_id)
-            .to_owned();
-        if let Some(index) = logical_indexes.get(&logical_id).copied() {
-            logical_runs[index].match_count += run.match_count;
-            logical_runs[index].trial_count += run.trial_count;
-            logical_runs[index].started_at = run.started_at;
-        } else {
-            logical_indexes.insert(logical_id, logical_runs.len());
-            logical_runs.push(run);
-        }
-    }
     if let Some(ref status) = params.status {
-        logical_runs.retain(|run| run.status == *status);
+        runs.retain(|run| run.status == *status);
     }
     if let Some(limit) = params.limit {
-        logical_runs.truncate(limit.max(0) as usize);
+        runs.truncate(limit.max(0) as usize);
     }
 
-    Ok(Json(logical_runs))
+    Ok(Json(runs))
 }
 
 /// `GET /api/bench/runs/{run_id}`
@@ -157,13 +126,17 @@ pub(crate) async fn get_run(
                 CAST(r.ended_at AS TEXT), \
                 r.status, r.log_path, r.exit_code, \
                 COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                CAST(i.config AS TEXT), i.cost \
+                CAST(i.config AS TEXT), i.cost, \
+                CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
+                     THEN attempt.session_id END \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
          LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
            ON r.run_id = t.run_id \
          LEFT JOIN incumbents i ON r.run_id = i.run_id \
+         LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
+         LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
          WHERE r.run_id = ?1",
         duckdb::params![&run_id],
         |row| {
@@ -201,6 +174,7 @@ pub(crate) async fn get_run(
                 match_count: row.get(17)?,
                 trial_count: row.get(18)?,
                 incumbent,
+                tuning_session_id: row.get(21)?,
             })
         },
     );
@@ -571,104 +545,4 @@ pub(crate) async fn get_run_cells(
         });
     }
     Ok(Json(result))
-}
-
-/// One live ply pushed down `GET /api/bench/runs/{run_id}/live`'s SSE
-/// stream. `game_seq` is included on every event (not just once) since the
-/// currently in-flight game can change mid-stream (one trial/match ends,
-/// the next one's moves start arriving) -- the client detects that by
-/// watching for a `game_seq` change, no separate "game boundary" event type
-/// needed.
-/// One rung of a tuner ladder chain, ordered within its baseline history.
-#[derive(Serialize)]
-pub(crate) struct ChainRung {
-    pub(crate) run_id: String,
-    pub(crate) label: Option<String>,
-    pub(crate) status: String,
-    pub(crate) started_at: String,
-    pub(crate) ended_at: Option<String>,
-    pub(crate) trial_count: i64,
-    pub(crate) incumbent: Option<IncumbentInfo>,
-}
-
-pub(crate) async fn get_run_chain(
-    AxumState(state): AxumState<Arc<BenchState>>,
-    AxumPath(run_id): AxumPath<String>,
-) -> Result<Json<Vec<ChainRung>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    let config_str: Option<String> = match db.query_row(
-        "SELECT CAST(config AS TEXT) FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| row.get(0),
-    ) {
-        Ok(c) => c,
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
-        }
-        Err(e) => return Err(BenchError::from(e)),
-    };
-    let config: Option<Value> = config_str.and_then(|s| serde_json::from_str(&s).ok());
-    let root = config
-        .as_ref()
-        .and_then(|c| c.get("ladder_root"))
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| run_id.clone());
-
-    let mut stmt = db.prepare(
-        "SELECT r.run_id, r.label, r.status, CAST(r.started_at AS TEXT), \
-                CAST(r.ended_at AS TEXT), COALESCE(t.trial_count, 0), \
-                CAST(r.config AS TEXT), CAST(i.config AS TEXT), i.cost \
-         FROM runs r \
-         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
-           ON r.run_id = t.run_id \
-         LEFT JOIN incumbents i ON r.run_id = i.run_id \
-         WHERE r.kind = 'tuner'",
-    )?;
-    let mut rungs: Vec<ChainRung> = stmt
-        .query_map([], |row| {
-            let run_config_str: Option<String> = row.get(6)?;
-            let run_config: Option<Value> =
-                run_config_str.and_then(|s| serde_json::from_str(&s).ok());
-            let incumbent_config_str: Option<String> = row.get(7)?;
-            let incumbent_cost: Option<f64> = row.get(8)?;
-            let incumbent =
-                incumbent_config_str
-                    .zip(incumbent_cost)
-                    .map(|(s, cost)| IncumbentInfo {
-                        config: serde_json::from_str(&s).unwrap_or(Value::Null),
-                        cost,
-                    });
-            Ok((
-                run_config,
-                ChainRung {
-                    run_id: row.get(0)?,
-                    label: row.get(1)?,
-                    status: row.get(2)?,
-                    started_at: row.get(3)?,
-                    ended_at: row.get(4)?,
-                    trial_count: row.get(5)?,
-                    incumbent,
-                },
-            ))
-        })?
-        .filter_map(|r| r.ok())
-        .filter(|(run_config, rung)| {
-            rung.run_id == root
-                || run_config
-                    .as_ref()
-                    .and_then(|c| c.get("ladder_root"))
-                    .and_then(|v| v.as_str())
-                    == Some(root.as_str())
-        })
-        .map(|(_, rung)| rung)
-        .collect();
-
-    rungs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
-
-    Ok(Json(rungs))
 }

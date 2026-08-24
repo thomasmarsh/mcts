@@ -32,7 +32,7 @@ use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
 
 use super::lifecycle;
-use super::{ladder::*, types::*};
+use super::types::*;
 pub(crate) async fn launch_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     Json(body): Json<LaunchBody>,
@@ -54,78 +54,11 @@ pub(crate) async fn launch_run(
     Ok(Json(resp))
 }
 
-/// `POST /api/bench/runs/{run_id}/resume` — `{n_trials, n_workers?}`
-///
-/// Relaunches a finished/stopped tuner run with a bigger trial budget. The
-/// new process keeps the original optimizer, study, pool, manifest, and
-/// lifecycle journal while receiving a new physical attempt identity.
-///
-/// The old run's stored `config` (its `--config` path and any `--override`
-/// list) is carried forward, with operational target/worker overrides
-/// replaced by their requested values.
-pub(crate) async fn resume_run(
-    AxumState(state): AxumState<Arc<BenchState>>,
-    AxumPath(run_id): AxumPath<String>,
-    Json(body): Json<ResumeBody>,
-) -> Result<Json<LaunchResponse>, BenchError> {
-    let (kind, game, config_str): (String, String, Option<String>) = {
-        let db = state.db.lock().unwrap();
-        match db.query_row(
-            "SELECT kind, game, CAST(config AS TEXT) FROM runs WHERE run_id = ?1",
-            duckdb::params![&run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ) {
-            Ok(row) => row,
-            Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(BenchError {
-                    status: StatusCode::NOT_FOUND,
-                    message: format!("run '{run_id}' not found"),
-                });
-            }
-            Err(e) => return Err(BenchError::from(e)),
-        }
-    };
-
-    if kind != "tuner" {
-        return Err(BenchError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!(
-                "run '{run_id}' is a '{kind}' run, not 'tuner' -- only tuner runs support resume"
-            ),
-        });
-    }
-
-    let old_config: Option<Value> = config_str.and_then(|s| serde_json::from_str(&s).ok());
-    let new_config = build_resume_config(&run_id, &old_config, body.n_trials, body.n_workers);
-    let label = format!("resume of {run_id}");
-    let resp = launch_and_record(
-        &state,
-        "tuner",
-        &game,
-        Some(new_config),
-        Some(&label),
-        Some(&run_id),
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-/// Shared by `launch_run` and `resume_run`: builds the command, pins a
+/// Builds the command, pins a
 /// fresh physical `run_id` (baked into a tuner launch's own explicit physical
 /// id arguments, not just outer bench-runs bookkeeping),
 /// spawns it, and inserts the `runs` row so it appears immediately in the
 /// runs list without waiting on the ingest loop.
-/// If `config.ladder` is present but `config.ladder_root` isn't, injects
-/// `ladder_root = run_id` -- this launch is the first rung of a new ladder.
-/// Every other config (no `ladder` key, or one that already carries
-/// `ladder_root` forward from a resume) passes through unchanged.
-///
-/// A ladder-enabled launch needs `ladder_root` set to its *own* run_id when
-/// it's the first rung -- the caller (an operator hitting `POST
-/// /api/bench/launch`) can't supply that itself, since the id doesn't exist
-/// until `launch::generate_run_id` runs. A resumed/widened rung already
-/// carries `ladder_root` forward via `build_resume_config`, so this only
-/// ever fires once per ladder, at its root.
 pub(crate) async fn launch_and_record(
     state: &Arc<BenchState>,
     kind: &str,
@@ -136,7 +69,7 @@ pub(crate) async fn launch_and_record(
 ) -> Result<LaunchResponse, BenchError> {
     let run_id = launch::generate_run_id(kind, game, crate::BUILD_INFO);
     let config = if kind == "tuner" {
-        prepare_tuner_config(record_floor_baseline_settings(config), &run_id)
+        prepare_tuner_config(config, &run_id)
     } else {
         config
     };
@@ -146,7 +79,6 @@ pub(crate) async fn launch_and_record(
     } else {
         None
     };
-    let config = inject_ladder_root_if_new_ladder(config, &run_id);
     let (cmd, config) = if kind == "tuner" {
         let attempt = TunerAttemptLaunch::from_config(game, config.clone(), &run_id);
         let built = build_tuner_attempt(&attempt)?;
@@ -751,48 +683,6 @@ pub(crate) fn project_legacy_stop(
     }
     tx.commit()?;
     Ok(ended_at)
-}
-
-/// Build the launch `config` JSON for a resumed tuner run: clones the old
-/// run's config *wholesale* and replaces only operational target/worker
-/// overrides plus `resumed_from` (this resume's source run id). Any other key the
-/// old config carried (`config`, `baseline_configs`, `ladder`,
-/// `ladder_root`, ...) survives untouched.
-///
-/// Cloning wholesale rather than reconstructing from just `overrides`/
-/// `config` (the only two keys `LaunchBody.config` needs for a plain
-/// resume) is what lets the automated ladder driver's own bookkeeping
-/// (`ladder`, `ladder_root`, `baseline_configs`) survive a resume --
-/// including a human clicking the existing UI Resume button on a ladder
-/// rung, not just the driver's own calls. `resumed_from` itself closes a
-/// separate, pre-existing gap: before this, nothing durable recorded which
-/// run a resumed run came from (only a human-readable `label = "resume of
-/// {run_id}"` string) -- the ladder driver needs to query this
-/// programmatically to tell whether a rung already has a child.
-pub(crate) fn build_resume_config(
-    old_run_id: &str,
-    old_config: &Option<Value>,
-    n_trials: i64,
-    n_workers: Option<i64>,
-) -> Value {
-    let mut new_config = match old_config.clone() {
-        Some(Value::Object(map)) => Value::Object(map),
-        _ => json!({}),
-    };
-
-    let mut overrides = new_config
-        .get("overrides")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    replace_override(&mut overrides, "optimizer.n_trials", n_trials.to_string());
-    if let Some(n_workers) = n_workers {
-        replace_override(&mut overrides, "optimizer.n_workers", n_workers.to_string());
-    }
-    new_config["overrides"] = Value::Array(overrides);
-    new_config["resumed_from"] = json!(old_run_id);
-
-    new_config
 }
 
 /// Build the command vector from the launch request's kind/game/config.

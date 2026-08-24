@@ -33,7 +33,6 @@ use mcts_bench::StrategyInfo;
 
 use super::{
     commands::*,
-    ladder::*,
     projects::*,
     runs::*,
     traces::*,
@@ -130,7 +129,6 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
         .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
         .route("/api/bench/runs/{run_id}/trials", get(get_run_trials))
-        .route("/api/bench/runs/{run_id}/chain", get(get_run_chain))
         .route("/api/bench/runs/{run_id}/cells", get(get_run_cells))
         .route("/api/bench/runs/{run_id}/games", get(get_run_games))
         .route(
@@ -142,14 +140,6 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
         .route("/api/bench/runs/{run_id}", delete(delete_run))
-        .route(
-            "/api/bench/runs/{run_id}/resume",
-            post(resume_run).layer(launch_timeout),
-        )
-        .route(
-            "/api/bench/runs/{run_id}/advance-baseline",
-            post(advance_baseline).layer(launch_timeout),
-        )
         .layer(cors)
         .with_state(state)
 }
