@@ -9,6 +9,7 @@ import signal
 from typing import Any, Callable, Iterator
 
 import optuna
+from optuna.trial import TrialState
 
 from .attempt import (
     AttemptStopRequested,
@@ -21,7 +22,15 @@ from .attempt import (
 )
 from .callback import _resolve_git_sha
 from .config import SearchConfig
-from .lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId, make_attempt_id
+from .lifecycle import (
+    AttemptId,
+    LifecycleWriter,
+    OrphanedAttempt,
+    SessionId,
+    TrialId,
+    make_attempt_id,
+    trial_id_for,
+)
 from .hyperband import OptunaHyperbandAdapter
 from .manifest import build_session_manifest, write_manifest_atomic
 from .pool import OpponentPool
@@ -102,6 +111,7 @@ def run_optimization(
             _emit_attempt_started(
                 lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
             )
+            _recover_orphaned_attempt(lifecycle, study)
             _emit_pool_revised(lifecycle, pool)
             _run_attempt(
                 cfg,
@@ -241,6 +251,58 @@ def _emit_attempt_started(
             "study_name": optimizer_id,
             "storage": storage,
             "target_trial_count": target_trial_count,
+        },
+    )
+
+
+def _recover_orphaned_attempt(lifecycle: LifecycleWriter, study: optuna.Study) -> None:
+    """Fail the one lock-free prior attempt before any new scheduling boundary."""
+    orphan = lifecycle.journal_snapshot.orphaned_attempt
+    if orphan is None:
+        return
+    trials = {trial.number: trial for trial in study.get_trials(deepcopy=False)}
+    recovery_trials: list[dict[str, object]] = []
+    for recovered in orphan.trials:
+        trial = trials.get(recovered.trial_number)
+        if trial is None:
+            raise ValueError(
+                f"recovery identity conflict: Optuna is missing trial {recovered.trial_number}"
+            )
+        if recovered.trial_id != trial_id_for(
+            lifecycle.session_id, recovered.trial_number
+        ):
+            raise ValueError(
+                "recovery identity conflict: trial id is not deterministic"
+            )
+        reason = "abrupt_attempt_recovery"
+        if trial.state == TrialState.RUNNING:
+            study.tell(recovered.trial_number, state=TrialState.FAIL)
+        else:
+            reason = "recovery_evidence_gap"
+        recovery_trials.append(
+            {
+                "trial_id": recovered.trial_id,
+                "trial_number": recovered.trial_number,
+                "reason": reason,
+            }
+        )
+    _emit_attempt_recovered(lifecycle, orphan, recovery_trials)
+
+
+def _emit_attempt_recovered(
+    lifecycle: LifecycleWriter,
+    orphan: OrphanedAttempt,
+    trials: list[dict[str, object]],
+) -> None:
+    """Record exact recovery scope after Optuna has consumed its running slots."""
+    lifecycle.emit(
+        "attempt_recovered",
+        {
+            "prior_attempt_id": orphan.attempt_id,
+            "prior_bench_run_id": orphan.bench_run_id,
+            "trials": trials,
+            "pair_ids": list(orphan.pair_ids),
+            "reason": "abrupt_attempt_recovery",
         },
     )
 

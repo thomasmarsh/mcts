@@ -964,3 +964,124 @@ fn real_tuner_artifact_projects_complete_pairs_and_trace_links() {
     assert_eq!(traces, games);
     assert_eq!(incomplete, 0);
 }
+
+fn attempt_recovered(sequence: u64, pair_ids: serde_json::Value) -> TuningLifecycleEvent {
+    let mut recovered = event(
+        "recovered",
+        sequence,
+        "attempt_recovered",
+        serde_json::json!({
+            "prior_attempt_id": "attempt-1",
+            "prior_bench_run_id": "run-1",
+            "trials": [{
+                "trial_id": "trial-1",
+                "trial_number": 0,
+                "reason": "abrupt_attempt_recovery",
+            }],
+            "pair_ids": pair_ids,
+            "reason": "abrupt_attempt_recovery",
+        }),
+    );
+    recovered.attempt_id = "attempt-2".to_owned().into();
+    recovered
+}
+
+fn current_attempt_started(sequence: u64) -> TuningLifecycleEvent {
+    let mut started = event(
+        "current",
+        sequence,
+        "attempt_started",
+        serde_json::json!({}),
+    );
+    started.attempt_id = "attempt-2".to_owned().into();
+    started
+}
+
+#[test]
+fn recovery_atomically_fails_only_the_orphaned_attempt_work_and_replays() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    assert_eq!(apply(&conn, &pair_started(5)), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(&conn, &current_attempt_started(6)),
+        ApplyDisposition::Applied
+    );
+    let recovered = attempt_recovered(7, serde_json::json!(["pair-1"]));
+    assert_eq!(apply(&conn, &recovered), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &recovered), ApplyDisposition::Replay);
+    let states: (String, String, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT (SELECT status FROM tuning_attempts WHERE attempt_id = 'attempt-1'), (SELECT status FROM tuning_attempts WHERE attempt_id = 'attempt-2'), (SELECT status FROM tuning_trials WHERE trial_id = 'trial-1'), (SELECT status FROM tuning_evaluation_pairs WHERE pair_id = 'pair-1'), (SELECT failure FROM tuning_trials WHERE trial_id = 'trial-1')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        states,
+        (
+            "failed".into(),
+            "running".into(),
+            "failed".into(),
+            "failed".into(),
+            Some("abrupt_attempt_recovery".into())
+        )
+    );
+    let score: Option<f64> = conn
+        .query_row(
+            "SELECT score FROM tuning_trials WHERE trial_id = 'trial-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(score, None);
+}
+
+#[test]
+fn recovery_rejects_wrong_pair_scope_without_partially_projecting() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    assert_eq!(apply(&conn, &pair_started(5)), ApplyDisposition::Applied);
+    assert_eq!(
+        apply(&conn, &current_attempt_started(6)),
+        ApplyDisposition::Applied
+    );
+    assert_eq!(
+        apply(&conn, &attempt_recovered(7, serde_json::json!([]))),
+        ApplyDisposition::Rejected
+    );
+    let states: (String, String) = conn
+        .query_row(
+            "SELECT (SELECT status FROM tuning_trials WHERE trial_id = 'trial-1'), (SELECT status FROM tuning_evaluation_pairs WHERE pair_id = 'pair-1')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(states, ("running".into(), "running".into()));
+}
+
+#[test]
+fn recovery_rejects_a_wrong_trial_number_without_changing_the_prior_attempt() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    assert_eq!(
+        apply(&conn, &current_attempt_started(5)),
+        ApplyDisposition::Applied
+    );
+    let mut recovered = attempt_recovered(6, serde_json::json!([]));
+    recovered.payload["trials"][0]["trial_number"] = serde_json::json!(99);
+    assert_eq!(apply(&conn, &recovered), ApplyDisposition::Rejected);
+    let states: (String, String) = conn
+        .query_row(
+            "SELECT (SELECT status FROM tuning_attempts WHERE attempt_id = 'attempt-1'), (SELECT status FROM tuning_trials WHERE trial_id = 'trial-1')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(states, ("running".into(), "running".into()));
+}

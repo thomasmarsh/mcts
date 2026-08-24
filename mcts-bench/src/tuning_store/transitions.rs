@@ -1,4 +1,5 @@
 use duckdb::{params, Transaction};
+use std::collections::HashSet;
 
 use crate::tuning_lifecycle::{
     PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, TuningEventType,
@@ -9,6 +10,7 @@ use super::TuningStoreError;
 
 struct AttemptState {
     session_id: String,
+    bench_run_id: Option<String>,
     status: String,
 }
 
@@ -57,6 +59,9 @@ pub(super) fn validate(
     };
     if let Some(reason) = validate_attempt(&attempt, event) {
         return Ok(Some(reason));
+    }
+    if event.event_type == TuningEventType::AttemptRecovered {
+        return validate_attempt_recovery(tx, event);
     }
     if event.event_type == TuningEventType::PoolRevised {
         return validate_pool_revision(tx, event);
@@ -218,12 +223,130 @@ fn load_attempt(
 ) -> Result<Option<AttemptState>, TuningStoreError> {
     Ok(tx
         .query_row(
-            "SELECT session_id, status FROM tuning_attempts WHERE attempt_id = ?1",
+            "SELECT session_id, bench_run_id, status FROM tuning_attempts WHERE attempt_id = ?1",
             params![event.attempt_id.as_str()],
             |row| {
                 Ok(AttemptState {
                     session_id: row.get(0)?,
-                    status: row.get(1)?,
+                    bench_run_id: row.get(1)?,
+                    status: row.get(2)?,
+                })
+            },
+        )
+        .ok())
+}
+
+fn validate_attempt_recovery(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<Option<String>, TuningStoreError> {
+    let TuningPayload::AttemptRecovered(payload) =
+        event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    if payload.prior_attempt_id.as_str() == event.attempt_id.as_str() {
+        return Ok(Some(
+            "recovery cannot name the current attempt as prior".into(),
+        ));
+    }
+    let Some(prior) = load_attempt_by_id(tx, payload.prior_attempt_id.as_str())? else {
+        return Ok(Some("recovery references an unknown prior attempt".into()));
+    };
+    if prior.session_id != event.session_id.as_str()
+        || prior.status != "running"
+        || prior.bench_run_id != payload.prior_bench_run_id
+    {
+        return Ok(Some(
+            "recovery prior attempt identity does not match".into(),
+        ));
+    }
+    let other_live: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_attempts WHERE session_id = ?1 AND status = 'running' AND attempt_id NOT IN (?2, ?3)",
+        params![event.session_id.as_str(), event.attempt_id.as_str(), payload.prior_attempt_id.as_str()],
+        |row| row.get(0),
+    )?;
+    if other_live != 0 {
+        return Ok(Some(
+            "recovery requires the current attempt to be the sole live writer".into(),
+        ));
+    }
+    let listed_trials: HashSet<_> = payload
+        .trials
+        .iter()
+        .map(|trial| (trial.trial_id.as_str(), trial.trial_number))
+        .collect();
+    if listed_trials.len() != payload.trials.len() {
+        return Ok(Some("recovery repeats a trial identity".into()));
+    }
+    let mut statement = tx.prepare(
+        "SELECT trial_id, trial_number FROM tuning_trials WHERE session_id = ?1 AND attempt_id = ?2 AND status IN ('queued', 'running')",
+    )?;
+    let expected_trials: HashSet<(String, i64)> = statement
+        .query_map(
+            params![event.session_id.as_str(), payload.prior_attempt_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect::<Result<_, _>>()?;
+    let listed_trials: HashSet<(String, i64)> = listed_trials
+        .into_iter()
+        .map(|(id, number)| (id.to_owned(), number))
+        .collect();
+    if listed_trials != expected_trials {
+        return Ok(Some(
+            "recovery trial identities or numbers do not match prior work".into(),
+        ));
+    }
+    let listed_pairs: HashSet<_> = payload.pair_ids.iter().map(|id| id.as_str()).collect();
+    if listed_pairs.len() != payload.pair_ids.len() {
+        return Ok(Some("recovery repeats a pair identity".into()));
+    }
+    let mut statement = tx.prepare(
+        "SELECT pair_id, trial_id FROM tuning_evaluation_pairs WHERE session_id = ?1 AND attempt_id = ?2 AND status = 'running'",
+    )?;
+    let expected_pairs: HashSet<(String, String)> = statement
+        .query_map(
+            params![event.session_id.as_str(), payload.prior_attempt_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect::<Result<_, _>>()?;
+    let actual_pairs: HashSet<(String, String)> = payload
+        .pair_ids
+        .iter()
+        .map(|pair_id| {
+            let trial_id = tx.query_row(
+                "SELECT trial_id FROM tuning_evaluation_pairs WHERE session_id = ?1 AND pair_id = ?2",
+                params![event.session_id.as_str(), pair_id.as_str()],
+                |row| row.get::<_, String>(0),
+            );
+            trial_id.map(|trial_id| (pair_id.as_str().to_owned(), trial_id))
+        })
+        .collect::<Result<_, _>>()?;
+    if actual_pairs != expected_pairs
+        || !actual_pairs
+            .iter()
+            .all(|(_, trial_id)| expected_trials.iter().any(|(id, _)| id == trial_id))
+    {
+        return Ok(Some(
+            "recovery pair identities do not match prior work".into(),
+        ));
+    }
+    Ok(None)
+}
+
+fn load_attempt_by_id(
+    tx: &Transaction<'_>,
+    attempt_id: &str,
+) -> Result<Option<AttemptState>, TuningStoreError> {
+    Ok(tx
+        .query_row(
+            "SELECT session_id, bench_run_id, status FROM tuning_attempts WHERE attempt_id = ?1",
+            params![attempt_id],
+            |row| {
+                Ok(AttemptState {
+                    session_id: row.get(0)?,
+                    bench_run_id: row.get(1)?,
+                    status: row.get(2)?,
                 })
             },
         )

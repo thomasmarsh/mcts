@@ -15,6 +15,7 @@ pub(super) fn apply(
         TuningEventType::AttemptStarted => {
             project_attempt_started(tx, event, fallback_bench_run_id)?
         }
+        TuningEventType::AttemptRecovered => project_attempt_recovered(tx, event)?,
         TuningEventType::PoolRevised => project_pool_revised(tx, event)?,
         TuningEventType::TrialCreated => project_trial_created(tx, event)?,
         TuningEventType::TrialStarted => {
@@ -181,6 +182,39 @@ fn project_attempt_started(
             params![target, event.session_id.as_str()],
         )?;
     }
+    touch_session(tx, event)
+}
+
+fn project_attempt_recovered(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::AttemptRecovered(payload) =
+        event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    for pair_id in &payload.pair_ids {
+        tx.execute(
+            "UPDATE tuning_evaluation_pairs SET status = 'failed', ended_at = ?1, failure = ?2 WHERE session_id = ?3 AND pair_id = ?4",
+            params![&event.timestamp, payload.reason.as_str(), event.session_id.as_str(), pair_id.as_str()],
+        )?;
+    }
+    for trial in &payload.trials {
+        tx.execute(
+            "UPDATE tuning_trials SET status = 'failed', ended_at = ?1, failure = ?2 WHERE session_id = ?3 AND trial_id = ?4",
+            params![&event.timestamp, trial.reason.as_str(), event.session_id.as_str(), trial.trial_id.as_str()],
+        )?;
+    }
+    finish_attempt(
+        tx,
+        &TuningLifecycleEvent {
+            attempt_id: payload.prior_attempt_id.clone(),
+            ..event.clone()
+        },
+        "failed",
+        Some(payload.reason.as_str().to_owned()),
+    )?;
     touch_session(tx, event)
 }
 

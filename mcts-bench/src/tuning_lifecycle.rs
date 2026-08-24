@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use payload::{
-    AttemptStartedPayload, AttemptTerminalPayload, CandidateSide, GameFinishedPayload,
-    OpponentSnapshot, PairFailedPayload, PairFinishedPayload, PairStartedPayload,
-    PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, PoolRevisedPayload,
-    Rating, SessionStartedPayload, StrategyMetrics, TrialCreatedPayload, TrialReportOutcome,
-    TrialReportReason, TrialReportedPayload, TrialStartedPayload, TrialTerminalPayload,
-    TuningGameOutcome, TuningPayload,
+    AttemptRecoveredPayload, AttemptStartedPayload, AttemptTerminalPayload, CandidateSide,
+    GameFinishedPayload, OpponentSnapshot, PairFailedPayload, PairFinishedPayload,
+    PairStartedPayload, PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot,
+    PoolRevisedPayload, Rating, RecoveredTrialPayload, RecoveryTrialReason, SessionStartedPayload,
+    StrategyMetrics, TrialCreatedPayload, TrialReportOutcome, TrialReportReason,
+    TrialReportedPayload, TrialStartedPayload, TrialTerminalPayload, TuningGameOutcome,
+    TuningPayload,
 };
 
 pub const TUNING_LIFECYCLE_SCHEMA_VERSION: u32 = 1;
@@ -49,6 +50,7 @@ opaque_id!(TuningGameId);
 pub enum TuningEventType {
     SessionStarted,
     AttemptStarted,
+    AttemptRecovered,
     PoolRevised,
     TrialCreated,
     TrialStarted,
@@ -110,6 +112,7 @@ impl TuningEventType {
         match self {
             Self::SessionStarted => "session_started",
             Self::AttemptStarted => "attempt_started",
+            Self::AttemptRecovered => "attempt_recovered",
             Self::PoolRevised => "pool_revised",
             Self::TrialCreated => "trial_created",
             Self::TrialStarted => "trial_started",

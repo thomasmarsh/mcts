@@ -1,7 +1,10 @@
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 
-use super::{EventValidationError, TuningEventType, TuningGameId, TuningPairId, TuningTrialId};
+use super::{
+    EventValidationError, TuningAttemptId, TuningEventType, TuningGameId, TuningPairId,
+    TuningTrialId,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -149,6 +152,41 @@ pub struct AttemptStartedPayload {
     pub study_name: Option<String>,
     pub storage: Option<String>,
     pub target_trial_count: Option<i64>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryTrialReason {
+    AbruptAttemptRecovery,
+    RecoveryEvidenceGap,
+}
+
+impl RecoveryTrialReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AbruptAttemptRecovery => "abrupt_attempt_recovery",
+            Self::RecoveryEvidenceGap => "recovery_evidence_gap",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RecoveredTrialPayload {
+    pub trial_id: TuningTrialId,
+    pub trial_number: i64,
+    pub reason: RecoveryTrialReason,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AttemptRecoveredPayload {
+    pub prior_attempt_id: TuningAttemptId,
+    pub prior_bench_run_id: Option<String>,
+    pub trials: Vec<RecoveredTrialPayload>,
+    pub pair_ids: Vec<TuningPairId>,
+    pub reason: RecoveryTrialReason,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -342,6 +380,7 @@ pub struct PairFailedPayload {
 pub enum TuningPayload {
     SessionStarted(SessionStartedPayload),
     AttemptStarted(AttemptStartedPayload),
+    AttemptRecovered(AttemptRecoveredPayload),
     PoolRevised(PoolRevisedPayload),
     TrialCreated(TrialCreatedPayload),
     TrialStarted(TrialStartedPayload),
@@ -374,6 +413,7 @@ pub(super) fn parse_typed(
     match event_type {
         TuningEventType::SessionStarted => parse(value).map(TuningPayload::SessionStarted),
         TuningEventType::AttemptStarted => parse(value).map(TuningPayload::AttemptStarted),
+        TuningEventType::AttemptRecovered => parse(value).map(TuningPayload::AttemptRecovered),
         TuningEventType::PoolRevised => parse(value).map(TuningPayload::PoolRevised),
         TuningEventType::TrialCreated => parse(value).map(TuningPayload::TrialCreated),
         TuningEventType::TrialStarted => parse(value).map(TuningPayload::TrialStarted),
