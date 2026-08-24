@@ -19,17 +19,20 @@ describe("tuner launch and physical-run diagnostics", () => {
     expect(screen.queryByText(/Max rungs/)).not.toBeInTheDocument();
   });
 
-  it("links a modern physical tuner run to its session without mutation controls", async () => {
+  it("keeps a modern physical tuner run compact and links it to its session", async () => {
     const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, createMockBenchEnv());
     render(() => <RunDetailPanel store={store} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
-    expect(await screen.findByText(/keeps its log and diagnostics here/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument();
+    expect(screen.getByText(/Continue and analyze this work/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open tuning session" }));
     expect(store.getState()().tuningNavigation.selection.sessionId).toBe("session-traffic-lights");
     expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
-    expect(screen.getByText("Log Tail")).toBeInTheDocument();
+    expect(screen.queryByText("Run Detail")).not.toBeInTheDocument();
+    expect(screen.queryByText("Log Tail")).not.toBeInTheDocument();
+    expect(screen.getByText("Attempt diagnostics")).toBeInTheDocument();
     expect(screen.queryByText("Best score (mu − 3σ)")).not.toBeInTheDocument();
     expect(screen.queryByText("Copy as baseline config")).not.toBeInTheDocument();
     expect(document.querySelector("#tuner-cost-chart")).toBeNull();

@@ -130,6 +130,11 @@ enum Command {
         #[arg(long)]
         game: String,
 
+        /// Game kind recorded by the tuning lifecycle. When omitted, uses
+        /// `--game`.
+        #[arg(long)]
+        game_kind: Option<String>,
+
         /// Optional human-readable label for the run.
         #[arg(long)]
         label: Option<String>,
@@ -223,6 +228,7 @@ fn main() {
             baseline_configs,
             game_config,
             game,
+            game_kind,
             label,
             run_id,
             optimizer_id,
@@ -238,6 +244,7 @@ fn main() {
             &baseline_configs,
             game_config.as_deref(),
             &game,
+            game_kind.as_deref(),
             label.as_deref(),
             run_id.as_deref(),
             optimizer_id.as_deref(),
@@ -428,6 +435,7 @@ fn build_tuner_command(
     baseline_configs: &[String],
     game_config: Option<&str>,
     game: &str,
+    game_kind: Option<&str>,
     run_id: Option<&str>,
     trace_path: Option<&str>,
     optimizer_id: Option<&str>,
@@ -492,6 +500,7 @@ fn build_tuner_command(
     append_tuner_lifecycle_arguments(
         &mut cmd,
         game,
+        game_kind,
         optimizer_id,
         bench_run_id,
         session_id,
@@ -502,9 +511,11 @@ fn build_tuner_command(
     cmd
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_tuner_lifecycle_arguments(
     cmd: &mut Vec<String>,
     game: &str,
+    game_kind: Option<&str>,
     optimizer_id: Option<&str>,
     bench_run_id: Option<&str>,
     session_id: Option<&str>,
@@ -532,7 +543,7 @@ fn append_tuner_lifecycle_arguments(
         cmd.push(path.to_string());
     }
     cmd.push("--game-kind".to_string());
-    cmd.push(game.to_string());
+    cmd.push(game_kind.unwrap_or(game).to_string());
 }
 
 struct BackgroundTunerLifecycleArguments {
@@ -565,6 +576,7 @@ fn cmd_tuner(
     baseline_configs: &[String],
     game_config: Option<&str>,
     game: &str,
+    game_kind: Option<&str>,
     label: Option<&str>,
     run_id: Option<&str>,
     optimizer_id: Option<&str>,
@@ -590,6 +602,7 @@ fn cmd_tuner(
             baseline_configs,
             game_config,
             game,
+            game_kind,
             Some(&run_id),
             trace_path,
             optimizer_id.or(Some(&lifecycle.optimizer_id)),
@@ -636,6 +649,7 @@ fn cmd_tuner(
             baseline_configs,
             game_config,
             game,
+            game_kind,
             run_id,
             trace_path,
             optimizer_id,
@@ -724,6 +738,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -752,6 +767,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let game_idx = cmd
             .iter()
@@ -772,6 +788,7 @@ mod tests {
             &[],
             None,
             "druid",
+            Some("druid"),
             Some("tuner-druid-run-1"),
             None,
             Some("optimizer-druid"),
@@ -796,6 +813,11 @@ mod tests {
             .position(|a| a == "--bench-run-id")
             .expect("--bench-run-id flag present");
         assert_eq!(cmd[bench_run_idx + 1], "physical-druid");
+        let game_kind_idx = cmd
+            .iter()
+            .position(|a| a == "--game-kind")
+            .expect("--game-kind flag present");
+        assert_eq!(cmd[game_kind_idx + 1], "druid");
         assert!(!cmd.iter().any(|a| a == "--resume"));
     }
 
@@ -807,6 +829,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             None,
@@ -837,6 +860,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -853,6 +877,7 @@ mod tests {
             &[],
             Some(r#"{"size":{"w":9,"h":9}}"#),
             "druid",
+            None,
             None,
             None,
             None,
@@ -883,6 +908,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
@@ -895,6 +921,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             Some("bench-runs/tuner-druid-run-1/moves.jsonl"),
             None,
@@ -918,6 +945,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             None,

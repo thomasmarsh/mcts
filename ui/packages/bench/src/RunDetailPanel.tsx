@@ -115,7 +115,7 @@ export const RunDetailPanel: Component<{
     <Show when={openRun()} fallback={null}>
       <div id="run-detail-panel">
         <div id="run-detail-header">
-          <h3>Run Detail</h3>
+          <h3>{isModernTuningAttempt() ? "Tuning attempt" : "Run Detail"}</h3>
           <div id="run-detail-actions">
             <Show when={detail()?.status === "running" && !isModernTuningAttempt()}>
               <button
@@ -128,7 +128,7 @@ export const RunDetailPanel: Component<{
             <button id="close-run-btn" onClick={() => dispatch({ tag: "closeRun" })}>
               Close
             </button>
-            <Show when={props.Spectator}>
+            <Show when={props.Spectator && !isModernTuningAttempt()}>
               <button id="watch-games-btn" onClick={() => setSpectatorVisible(!spectatorVisible())}>
                 {spectatorVisible() ? "Hide games" : "Browse games"}
               </button>
@@ -155,7 +155,7 @@ export const RunDetailPanel: Component<{
         </Show>
 
         <div id="run-detail-summary">
-          <Show when={detail()}>
+          <Show when={detail() && !isModernTuningAttempt()}>
             <div id="run-detail-meta">
               <div class="meta-row">
                 <span class="meta-label">Run ID</span>
@@ -213,21 +213,48 @@ export const RunDetailPanel: Component<{
             </div>
           </Show>
 
-          <Show when={isTuner()}>
+          <Show when={isTuner() && !isModernTuningAttempt()}>
             <p class="tuning-run-diagnostics">
               This physical run keeps its log and diagnostics here.
-              <Show when={tuningSessionId()} fallback={<> This legacy run has no logical session.</>}>
-                {(sessionId) => <> <button id="open-tuning-session-btn" type="button" onClick={() => dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: sessionId() } })}>Open tuning session</button> for continuation and analysis.</>}
-              </Show>
+              This legacy run has no logical session.
             </p>
+          </Show>
+          <Show when={isModernTuningAttempt() && detail()}>
+            <section class="tuning-attempt-summary" aria-label="Tuning attempt">
+              <div><strong>{detail()!.status}</strong> tuning attempt</div>
+              <p>Continue and analyze this work from its logical tuning session.</p>
+              <button id="open-tuning-session-btn" type="button" onClick={() => dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: tuningSessionId()! } })}>Open tuning session</button>
+              <details id="tuning-attempt-diagnostics">
+                <summary>Attempt diagnostics</summary>
+                <dl>
+                  <div><dt>Run ID</dt><dd><code>{detail()!.run_id}</code></dd></div>
+                  <Show when={detail()!.ended_at}><div><dt>Ended</dt><dd>{detail()!.ended_at}</dd></div></Show>
+                  <Show when={detail()!.exit_code !== null}><div><dt>Exit code</dt><dd>{detail()!.exit_code}</dd></div></Show>
+                </dl>
+                <button
+                  id="show-stdout-btn"
+                  onClick={fetchStdout}
+                  disabled={stdoutLoading()}
+                >
+                  {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh error output" : "Show error output"}
+                </button>
+                <Show when={stdoutVisible() && stdoutContent() !== null}>
+                  <pre id="stdout-content">{stdoutContent()}</pre>
+                </Show>
+                <Show when={stdoutError()}>
+                  <div class="log-error">Error output fetch failed: {stdoutError()}</div>
+                </Show>
+              </details>
+            </section>
           </Show>
         </div>
 
-        <Show when={spectatorVisible() && Spectator && detail()}>
+        <Show when={!isModernTuningAttempt() && spectatorVisible() && Spectator && detail()}>
           {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game ?? ""} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
         </Show>
 
-        <div id="log-panel">
+        <Show when={!isModernTuningAttempt()}>
+          <div id="log-panel">
             <div id="log-header">
               <span>Log Tail</span>
               <Show when={tail()}>
@@ -254,13 +281,15 @@ export const RunDetailPanel: Component<{
                 <div ref={logEndRef} />
               </Show>
             </div>
-        </div>
+          </div>
+        </Show>
 
         {/* Stdout button + content shown for every run kind — the raw
             stderr output (clap errors, panic traces) is the primary
             diagnostic for a crashed run, regardless of kind.
             TODO: rename the backend's file to avoid "stdout" for stderr output. */}
-        <div id="run-stdout-section">
+        <Show when={!isModernTuningAttempt()}>
+          <div id="run-stdout-section">
           <button
             id="show-stdout-btn"
             onClick={fetchStdout}
@@ -288,7 +317,8 @@ export const RunDetailPanel: Component<{
           <Show when={stdoutError()}>
             <div class="log-error">Stdout fetch error: {stdoutError()}</div>
           </Show>
-        </div>
+          </div>
+        </Show>
 
       </div>
     </Show>

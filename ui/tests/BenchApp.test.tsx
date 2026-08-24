@@ -190,7 +190,7 @@ describe("RunDetailPanel", () => {
     expect(screen.queryByText("Run Detail")).not.toBeInTheDocument();
   });
 
-  it("shows tuner progress and makes its text traces available", async () => {
+  it("keeps a modern tuner attempt focused on its logical session", async () => {
     const { store } = createTestStore();
     const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
       <div data-testid="spectator">{props.runId}:{props.kind}</div>
@@ -198,8 +198,10 @@ describe("RunDetailPanel", () => {
     render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    await vi.waitFor(() => expect(screen.getByText("3 / 50 (6%) complete")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("Browse games"));
-    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_tuner_RUN_ID}:tuner`);
+    await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument());
+    expect(screen.queryByText("3 / 50 (6%) complete")).not.toBeInTheDocument();
+    expect(screen.queryByText("Browse games")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open tuning session" }));
+    expect(store.getState()().tuningNavigation.selection.sessionId).toBe("session-traffic-lights");
   });
 });
