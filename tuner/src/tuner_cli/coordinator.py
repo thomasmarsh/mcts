@@ -32,7 +32,7 @@ from .lifecycle import (
     trial_id_for,
 )
 from .hyperband import OptunaHyperbandAdapter
-from .manifest import build_session_manifest, write_manifest_atomic
+from .manifest import SessionForkRequired, build_session_manifest, write_manifest_atomic
 from .pool import OpponentPool, recover_pool
 from .target import preflight_check
 
@@ -90,11 +90,17 @@ def run_optimization(
     output_dir.mkdir(parents=True, exist_ok=True)
     _resolve_search_space(cfg, binary)
     pruning_adapter = _pruning_adapter(cfg)
-    study, storage = _open_study(output_dir, optimizer, cfg, pruning_adapter)
     resolved_sha = git_sha or _resolve_git_sha()
     manifest, manifest_path = _write_session_manifest(
-        cfg, game_kind, binary, resolved_sha, optimizer, storage, output_dir
+        cfg,
+        game_kind,
+        binary,
+        resolved_sha,
+        optimizer,
+        _study_storage(output_dir),
+        output_dir,
     )
+    study, storage = _open_study(output_dir, optimizer, cfg, pruning_adapter)
     event_path = (
         Path(lifecycle_path)
         if lifecycle_path is not None
@@ -149,7 +155,7 @@ def _open_study(
 ) -> tuple[optuna.Study, str]:
     """Open the run-compatible persistent Optuna study."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    storage = f"sqlite:///{(output_dir / 'study.db').resolve()}"
+    storage = _study_storage(output_dir)
     if pruning_adapter is None:
         pruning_adapter = _pruning_adapter(cfg)
     kwargs: dict[str, Any] = {}
@@ -167,6 +173,11 @@ def _open_study(
         **kwargs,
     )
     return study, storage
+
+
+def _study_storage(output_dir: Path) -> str:
+    """Return the stable storage address before opening or mutating a study."""
+    return f"sqlite:///{(output_dir / 'study.db').resolve()}"
 
 
 def _pruning_adapter(cfg: SearchConfig) -> OptunaHyperbandAdapter | None:
@@ -209,7 +220,9 @@ def _emit_session_started(
     """Record a session start when this lifecycle artifact has none yet."""
     if lifecycle.has_session_started:
         if lifecycle.manifest_fingerprint != manifest["fingerprint"]:
-            raise ValueError("lifecycle journal manifest fingerprint does not match")
+            raise SessionForkRequired(
+                "fork required: lifecycle journal manifest fingerprint does not match"
+            )
         return
     lifecycle.emit(
         "session_started",

@@ -16,6 +16,10 @@ from .lifecycle import LIFECYCLE_SCHEMA_VERSION, strict_json_dumps
 MANIFEST_SCHEMA_VERSION: Final = 1
 
 
+class SessionForkRequired(ValueError):
+    """The requested launch changes immutable session semantics."""
+
+
 def canonical_json(value: Any) -> str:
     """Serialize semantic data deterministically for fingerprinting."""
     return strict_json_dumps(value, sort_keys=True)
@@ -133,8 +137,8 @@ def _validate_existing_manifest(destination: Path, manifest: dict[str, Any]) -> 
     """Reject a requested manifest whose semantic fingerprint changed."""
     existing = json.loads(destination.read_text(encoding="utf-8"))
     if existing.get("fingerprint") != manifest.get("fingerprint"):
-        raise ValueError(
-            f"session manifest at {destination} has a different fingerprint"
+        raise SessionForkRequired(
+            f"fork required: session manifest at {destination} has a different fingerprint"
         )
 
 

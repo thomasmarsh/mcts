@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from tuner_cli.config import SearchConfig
+import tuner_cli.coordinator as coordinator
 
 from tuner_cli.lifecycle import (
     AttemptId,
@@ -19,6 +20,7 @@ from tuner_cli.lifecycle import (
 from tuner_cli.pool import Anchor, OpponentPool
 from tuner_cli.attempt import save_inserted_pool_anchor
 from tuner_cli.manifest import (
+    SessionForkRequired,
     build_session_manifest,
     manifest_fingerprint,
     write_manifest_atomic,
@@ -179,8 +181,27 @@ def test_manifest_is_atomic_and_immutable(tmp_path: Path):
     write_manifest_atomic(path, first)
     assert json.loads(path.read_text()) == first
     write_manifest_atomic(path, first)
-    with pytest.raises(ValueError, match="different fingerprint"):
+    with pytest.raises(SessionForkRequired, match="fork required"):
         write_manifest_atomic(path, {**first, "fingerprint": "changed"})
+
+
+def test_manifest_conflict_stops_before_opening_or_recovering_a_study(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = SearchConfig.defaults()
+    monkeypatch.setattr(coordinator, "_resolve_search_space", lambda *_: None)
+    monkeypatch.setattr(
+        coordinator,
+        "_write_session_manifest",
+        lambda *_: (_ for _ in ()).throw(SessionForkRequired("fork required")),
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_open_study",
+        lambda *_: pytest.fail("manifest conflict opened the study"),
+    )
+    with pytest.raises(SessionForkRequired, match="fork required"):
+        coordinator.run_optimization(cfg, optimizer_id="session-conflict")
 
 
 def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
@@ -232,7 +253,7 @@ def test_attempt_writers_share_one_journal_and_preserve_a_partial_tail(tmp_path:
     with LifecycleWriter(path, session, AttemptId("attempt-2")) as second:
         assert second.has_session_started
         second.emit("attempt_started", {"optimizer_id": "optimizer-1"})
-        with pytest.raises(ValueError, match="manifest fingerprint"):
+        with pytest.raises(SessionForkRequired, match="fork required"):
             _emit_session_started(
                 second,
                 {"fingerprint": "manifest-2"},

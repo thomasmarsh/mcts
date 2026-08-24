@@ -56,18 +56,13 @@ pub(crate) async fn launch_run(
 
 /// `POST /api/bench/runs/{run_id}/resume` — `{n_trials, n_workers?}`
 ///
-/// Relaunches a finished/stopped tuner run with a bigger trial budget,
-/// picking up where it left off rather than starting over: the new process
-/// is launched with `--resume <old run_id>` (see `tuner_cli/resume.py`),
-/// which seeds its runhistory from the old run's saved state before
-/// optimizing, so already-evaluated configs aren't re-evaluated. This is
-/// also the only way to change worker count "mid-run" -- tuner has no live
-/// API for either, only stop-and-relaunch.
+/// Relaunches a finished/stopped tuner run with a bigger trial budget. The
+/// new process keeps the original optimizer, study, pool, manifest, and
+/// lifecycle journal while receiving a new physical attempt identity.
 ///
 /// The old run's stored `config` (its `--config` path and any `--override`
-/// list) is carried forward, with `optimizer.n_trials`/`optimizer.n_workers`
-/// overrides appended (and so taking precedence -- the Python side's
-/// `_apply_overrides` keeps the last value for a repeated key).
+/// list) is carried forward, with operational target/worker overrides
+/// replaced by their requested values.
 pub(crate) async fn resume_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
@@ -116,9 +111,8 @@ pub(crate) async fn resume_run(
 }
 
 /// Shared by `launch_run` and `resume_run`: builds the command, pins a
-/// fresh `run_id` (baked into a tuner launch's own `--run-id`/`--resume`
-/// argv, not just the outer bench-runs bookkeeping -- see
-/// `launch::launch_with_run_id`'s doc comment for why they must match),
+/// fresh physical `run_id` (baked into a tuner launch's own explicit physical
+/// id arguments, not just outer bench-runs bookkeeping),
 /// spawns it, and inserts the `runs` row so it appears immediately in the
 /// runs list without waiting on the ingest loop.
 /// If `config.ladder` is present but `config.ladder_root` isn't, injects
@@ -152,17 +146,14 @@ pub(crate) async fn launch_and_record(
     } else {
         None
     };
-    let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
-
-    // Resume provenance remains launch metadata. The tuner receives its
-    // stable optimizer id from the persisted launch configuration instead.
-    if kind == "tuner" {
-        if let Some(resume_id) = resume_from {
-            cmd.push("--resume".into());
-            cmd.push(resume_id.to_owned());
-        }
-    }
+    let (cmd, config) = if kind == "tuner" {
+        let attempt = TunerAttemptLaunch::from_config(game, config.clone(), &run_id);
+        let built = build_tuner_attempt(&attempt)?;
+        (built.command, built.config)
+    } else {
+        (build_command(kind, game, &config, &run_id)?, config)
+    };
 
     // Preserve the existing launch ordering: the process is spawned before
     // the immediate bookkeeping insert. Parent identity was already
@@ -252,8 +243,8 @@ pub(crate) async fn launch_and_record(
                 .map_err(identity_bench_error)?;
         }
         if kind == "tuner" {
-            let source_path =
-                canonical_tuner_lifecycle_path(tuner_optimizer_id(config.as_ref(), &run_id));
+            let optimizer_id = tuner_optimizer_id(config.as_ref(), &run_id);
+            let source_path = tuner_lifecycle_path_from_config(config.as_ref(), &optimizer_id);
             mcts_bench::tuning_store::register_lifecycle_source(
                 &transaction,
                 &source_path,
@@ -334,6 +325,207 @@ pub(crate) async fn launch_and_record(
     })
 }
 
+/// Launch a continuation after the command store has reserved its stable
+/// attempt and physical-run ids. This is deliberately not an HTTP handler:
+/// command routes own idempotency and decide whether a stored replay should
+/// call it at all.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn launch_reserved_tuner_attempt(
+    state: &Arc<BenchState>,
+    command_id: &str,
+    launch: TunerAttemptLaunch,
+    label: Option<&str>,
+) -> Result<LaunchResponse, BenchError> {
+    verify_tuner_launch_reservation(state, command_id, &launch)?;
+    if let Some(previous) = recorded_tuner_launch(state, &launch.physical_run_id)? {
+        record_tuner_launch_outcome(
+            state,
+            &launch.session_id,
+            command_id,
+            mcts_bench::tuning_command_store::LaunchOutcome::Spawned,
+        )?;
+        return Ok(previous);
+    }
+
+    let parent_identity = {
+        let db = state.db.lock().unwrap();
+        let parent_run_id: String = db
+            .query_row(
+                "SELECT bench_run_id FROM tuning_attempts \
+                 WHERE session_id = ?1 AND bench_run_id IS NOT NULL \
+                 ORDER BY started_at DESC, attempt_id DESC LIMIT 1",
+                duckdb::params![&launch.session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| BenchError {
+                status: StatusCode::CONFLICT,
+                message: format!(
+                    "session '{}' has no physical attempt available for continuation: {error}",
+                    launch.session_id
+                ),
+            })?;
+        identity::prepare_continuation(&db, &parent_run_id).map_err(identity_bench_error)?
+    };
+    let built = build_tuner_attempt(&launch)?;
+    let launched = match (state.run_launcher)(
+        launch.physical_run_id.clone(),
+        built.command,
+        "tuner".into(),
+        launch.game.clone(),
+        label.map(str::to_owned),
+    ) {
+        Ok(launched) => launched,
+        Err(error) => {
+            record_tuner_launch_outcome(
+                state,
+                &launch.session_id,
+                command_id,
+                mcts_bench::tuning_command_store::LaunchOutcome::SpawnFailed,
+            )?;
+            return Err(BenchError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to launch tuner attempt: {error}"),
+            });
+        }
+    };
+    persist_tuner_attempt_run(
+        state,
+        &launch,
+        &built.config,
+        &parent_identity,
+        label,
+        &launched,
+    )?;
+    record_tuner_launch_outcome(
+        state,
+        &launch.session_id,
+        command_id,
+        mcts_bench::tuning_command_store::LaunchOutcome::Spawned,
+    )?;
+    Ok(LaunchResponse {
+        run_id: launched.run_id,
+        pid: launched.pid,
+        log_path: launched.log_path.to_string_lossy().into_owned(),
+        launch_error: None,
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn verify_tuner_launch_reservation(
+    state: &Arc<BenchState>,
+    command_id: &str,
+    launch: &TunerAttemptLaunch,
+) -> Result<(), BenchError> {
+    let db = state.db.lock().unwrap();
+    let reserved: Option<(String, String, i64)> = db
+        .query_row(
+            "SELECT attempt_id, physical_run_id, target_trial_count \
+             FROM tuning_launch_reservations WHERE session_id = ?1 AND command_id = ?2",
+            duckdb::params![&launch.session_id, command_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    let expected_target = i64::try_from(launch.target_trial_count).map_err(|_| BenchError {
+        status: StatusCode::BAD_REQUEST,
+        message: "tuner target trial count exceeds DuckDB range".into(),
+    })?;
+    if reserved
+        != Some((
+            launch.attempt_id.clone(),
+            launch.physical_run_id.clone(),
+            expected_target,
+        ))
+    {
+        return Err(BenchError {
+            status: StatusCode::CONFLICT,
+            message: format!(
+                "command '{command_id}' does not hold the requested tuner launch reservation"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn recorded_tuner_launch(
+    state: &Arc<BenchState>,
+    physical_run_id: &str,
+) -> Result<Option<LaunchResponse>, BenchError> {
+    let db = state.db.lock().unwrap();
+    match db.query_row(
+        "SELECT pid, log_path FROM runs WHERE run_id = ?1 AND kind = 'tuner'",
+        duckdb::params![physical_run_id],
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?)),
+    ) {
+        Ok((pid, log_path)) => Ok(Some(LaunchResponse {
+            run_id: physical_run_id.into(),
+            pid: pid.unwrap_or_default() as u32,
+            log_path,
+            launch_error: None,
+        })),
+        Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn persist_tuner_attempt_run(
+    state: &Arc<BenchState>,
+    launch: &TunerAttemptLaunch,
+    config: &Option<Value>,
+    parent: &identity::ParentIdentity,
+    label: Option<&str>,
+    launched: &LaunchedRun,
+) -> Result<(), BenchError> {
+    let started_at = iso_timestamp_now();
+    let config = serde_json::to_string(config)?;
+    let log_path = launched.log_path.to_string_lossy().into_owned();
+    let mut db = state.db.lock().unwrap();
+    let transaction = db.transaction()?;
+    transaction.execute(
+        "INSERT INTO runs \
+         (run_id, kind, game, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) \
+         VALUES (?1, 'tuner', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10)",
+        duckdb::params![
+            &launch.physical_run_id,
+            &launch.game,
+            label,
+            config,
+            crate::BUILD_INFO.git_sha,
+            crate::BUILD_INFO.git_dirty,
+            hostname(),
+            launched.pid as i64,
+            &started_at,
+            &log_path,
+        ],
+    )?;
+    identity::create_child_identity(&transaction, &launch.physical_run_id, parent)
+        .map_err(identity_bench_error)?;
+    mcts_bench::tuning_store::register_lifecycle_source(
+        &transaction,
+        &launch.lifecycle_path,
+        &launch.physical_run_id,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn record_tuner_launch_outcome(
+    state: &Arc<BenchState>,
+    session_id: &str,
+    command_id: &str,
+    outcome: mcts_bench::tuning_command_store::LaunchOutcome,
+) -> Result<(), BenchError> {
+    let db = state.db.lock().unwrap();
+    mcts_bench::tuning_command_store::record_launch_outcome(&db, session_id, command_id, outcome)
+        .map(|_| ())
+        .map_err(|error| BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to record tuner launch outcome: {error}"),
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Automated ladder driver
 // ---------------------------------------------------------------------------
@@ -374,6 +566,171 @@ pub(crate) async fn stop_run(
 // Command construction
 // ---------------------------------------------------------------------------
 
+const DEFAULT_TUNER_TARGET_TRIAL_COUNT: u64 = 1_000;
+
+/// Everything that identifies one physical process while preserving the
+/// artifacts owned by its logical tuning session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TunerAttemptLaunch {
+    pub(crate) game: String,
+    pub(crate) config: Option<Value>,
+    pub(crate) session_id: String,
+    pub(crate) optimizer_id: String,
+    pub(crate) lifecycle_path: String,
+    pub(crate) attempt_id: String,
+    pub(crate) physical_run_id: String,
+    pub(crate) target_trial_count: u64,
+    pub(crate) workers: Option<u64>,
+}
+
+pub(crate) struct BuiltTunerAttempt {
+    pub(crate) command: Vec<String>,
+    pub(crate) config: Option<Value>,
+}
+
+impl TunerAttemptLaunch {
+    fn from_config(game: &str, config: Option<Value>, physical_run_id: &str) -> Self {
+        let optimizer_id = tuner_optimizer_id(config.as_ref(), physical_run_id);
+        let session_id = tuner_session_id(config.as_ref(), &optimizer_id);
+        let lifecycle_path = tuner_lifecycle_path_from_config(config.as_ref(), &optimizer_id);
+        let target_trial_count = tuner_target_trial_count(config.as_ref());
+        Self {
+            game: game.to_owned(),
+            config,
+            session_id,
+            optimizer_id,
+            lifecycle_path,
+            attempt_id: format!("tuning-attempt-{physical_run_id}"),
+            physical_run_id: physical_run_id.to_owned(),
+            target_trial_count,
+            workers: None,
+        }
+    }
+}
+
+/// Build a tuner argv from stable session artifacts and one physical attempt.
+///
+/// The Python tuner remains the authority for resolving semantic configuration
+/// and verifying its manifest. Rust only replaces operational controls that a
+/// reserved command has already decided: an absolute target and optional
+/// worker count.
+pub(crate) fn build_tuner_attempt(
+    launch: &TunerAttemptLaunch,
+) -> Result<BuiltTunerAttempt, BenchError> {
+    if launch.game.is_empty()
+        || launch.session_id.is_empty()
+        || launch.optimizer_id.is_empty()
+        || launch.lifecycle_path.is_empty()
+        || launch.attempt_id.is_empty()
+        || launch.physical_run_id.is_empty()
+        || launch.target_trial_count == 0
+    {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: "tuner attempt launch requires non-empty ids and a positive target".into(),
+        });
+    }
+
+    let config = tuner_operational_config(
+        launch.config.clone(),
+        launch.target_trial_count,
+        launch.workers,
+    );
+    let mut command = vec![
+        find_bench_binary().to_string_lossy().into_owned(),
+        "tuner".into(),
+        "--game".into(),
+        launch.game.clone(),
+    ];
+    append_tuner_config_arguments(&mut command, &config);
+    command.push("--trace-path".into());
+    command.push(
+        Path::new(launch::BENCH_RUNS_DIR)
+            .join(&launch.physical_run_id)
+            .join("moves.jsonl")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    command.extend([
+        "--optimizer-id".into(),
+        launch.optimizer_id.clone(),
+        "--bench-run-id".into(),
+        launch.physical_run_id.clone(),
+        "--session-id".into(),
+        launch.session_id.clone(),
+        "--attempt-id".into(),
+        launch.attempt_id.clone(),
+        "--lifecycle-path".into(),
+        launch.lifecycle_path.clone(),
+        "--game-kind".into(),
+        launch.game.clone(),
+    ]);
+    Ok(BuiltTunerAttempt { command, config })
+}
+
+fn tuner_operational_config(
+    config: Option<Value>,
+    target_trial_count: u64,
+    workers: Option<u64>,
+) -> Option<Value> {
+    let mut config = match config {
+        Some(Value::Object(values)) => Value::Object(values),
+        _ => json!({}),
+    };
+    let mut overrides = config
+        .get("overrides")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    replace_override(
+        &mut overrides,
+        "optimizer.n_trials",
+        target_trial_count.to_string(),
+    );
+    if let Some(workers) = workers {
+        replace_override(&mut overrides, "optimizer.n_workers", workers.to_string());
+    }
+    config["overrides"] = Value::Array(overrides);
+    Some(config)
+}
+
+fn replace_override(overrides: &mut Vec<Value>, key: &str, value: String) {
+    let replacement = Value::String(format!("{key}={value}"));
+    let mut found = false;
+    overrides.retain_mut(|override_value| {
+        let is_target = override_value
+            .as_str()
+            .and_then(|raw| raw.split_once('='))
+            .is_some_and(|(existing, _)| existing == key);
+        if !is_target {
+            return true;
+        }
+        if found {
+            return false;
+        }
+        *override_value = replacement.clone();
+        found = true;
+        true
+    });
+    if !found {
+        overrides.push(replacement);
+    }
+}
+
+fn tuner_target_trial_count(config: Option<&Value>) -> u64 {
+    config
+        .and_then(|value| value.get("overrides"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|override_value| override_value.split_once('='))
+        .filter(|(key, _)| *key == "optimizer.n_trials")
+        .filter_map(|(_, value)| value.parse::<u64>().ok())
+        .rfind(|value| *value > 0)
+        .unwrap_or(DEFAULT_TUNER_TARGET_TRIAL_COUNT)
+}
+
 pub(crate) fn project_legacy_stop(
     state: &Arc<BenchState>,
     run_id: &str,
@@ -397,10 +754,8 @@ pub(crate) fn project_legacy_stop(
 }
 
 /// Build the launch `config` JSON for a resumed tuner run: clones the old
-/// run's config *wholesale* and patches only `overrides` (old entries plus
-/// `optimizer.n_trials`/`optimizer.n_workers`, appended so they win -- the
-/// Python side's `_apply_overrides` keeps the last value for a repeated
-/// key) and `resumed_from` (this resume's source run id). Any other key the
+/// run's config *wholesale* and replaces only operational target/worker
+/// overrides plus `resumed_from` (this resume's source run id). Any other key the
 /// old config carried (`config`, `baseline_configs`, `ladder`,
 /// `ladder_root`, ...) survives untouched.
 ///
@@ -425,16 +780,16 @@ pub(crate) fn build_resume_config(
         _ => json!({}),
     };
 
-    let mut overrides: Vec<Value> = new_config
+    let mut overrides = new_config
         .get("overrides")
-        .and_then(|v| v.as_array())
+        .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    overrides.push(json!(format!("optimizer.n_trials={n_trials}")));
+    replace_override(&mut overrides, "optimizer.n_trials", n_trials.to_string());
     if let Some(n_workers) = n_workers {
-        overrides.push(json!(format!("optimizer.n_workers={n_workers}")));
+        replace_override(&mut overrides, "optimizer.n_workers", n_workers.to_string());
     }
-    new_config["overrides"] = json!(overrides);
+    new_config["overrides"] = Value::Array(overrides);
     new_config["resumed_from"] = json!(old_run_id);
 
     new_config
@@ -459,76 +814,12 @@ pub(crate) fn build_command(
     let bench_binary = find_bench_binary();
 
     match kind {
-        "tuner" => {
-            let mut cmd = vec![
-                bench_binary.to_string_lossy().to_string(),
-                "tuner".into(),
-                "--game".into(),
-                game.to_owned(),
-            ];
-
-            if let Some(ref config) = config {
-                if let Some(config_path) = config.get("config").and_then(|v| v.as_str()) {
-                    cmd.push("--config".into());
-                    cmd.push(config_path.to_owned());
-                }
-
-                if let Some(overrides) = config.get("overrides").and_then(|v| v.as_array()) {
-                    for o in overrides {
-                        if let Some(ov) = o.as_str() {
-                            cmd.push("--override".into());
-                            cmd.push(ov.to_owned());
-                        }
-                    }
-                }
-
-                // Extra baseline instances backed by a raw discovered
-                // config rather than a named preset -- how the automated
-                // ladder widens a rung's opponent set. `id` (the object
-                // key) becomes the `Scenario` instance id; its value is
-                // passed through verbatim as the `<json>`
-                // half of `--baseline-config <id>=<json>`.
-                if let Some(baseline_configs) =
-                    config.get("baseline_configs").and_then(|v| v.as_object())
-                {
-                    for (id, raw_config) in baseline_configs {
-                        cmd.push("--baseline-config".into());
-                        cmd.push(format!("{id}={raw_config}"));
-                    }
-                }
-
-                // Game-setup config (e.g. Druid's board size) pinning every
-                // trial in this run to a non-default `GameAdapter::
-                // default_config()` -- see `game_host::GameAdapter::
-                // tune_eval`'s `game_config` parameter. Absent or explicit
-                // `null` both mean "use the game's own default", so only a
-                // real object is forwarded.
-                if let Some(game_config) = config.get("game_config") {
-                    if !game_config.is_null() {
-                        cmd.push("--game-config".into());
-                        cmd.push(game_config.to_string());
-                    }
-                }
-            }
-
-            // Move-trace lines go to a dedicated `moves.jsonl` in the run's
-            // own directory, same as round_robin below -- see
-            // `LogRecord::Move`'s doc comment for why a full move trace is
-            // kept out of the main log. Each trial's game-binary subprocess
-            // opens this path in append mode, so every trial in the run
-            // accumulates into the same file.
-            cmd.push("--trace-path".into());
-            cmd.push(
-                std::path::Path::new(launch::BENCH_RUNS_DIR)
-                    .join(run_id)
-                    .join("moves.jsonl")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-            append_tuner_lifecycle_arguments(&mut cmd, config, run_id);
-
-            Ok(cmd)
-        }
+        "tuner" => Ok(build_tuner_attempt(&TunerAttemptLaunch::from_config(
+            game,
+            config.clone(),
+            run_id,
+        ))?
+        .command),
         "round_robin" => {
             let mut cmd = vec![
                 bench_binary.to_string_lossy().to_string(),
@@ -609,6 +900,17 @@ fn prepare_tuner_config(config: Option<Value>, run_id: &str) -> Option<Value> {
     if config.get("optimizer_id").and_then(Value::as_str).is_none() {
         config["optimizer_id"] = Value::String(format!("tuning-session-{run_id}"));
     }
+    let optimizer_id = tuner_optimizer_id(Some(&config), run_id);
+    if config.get("session_id").and_then(Value::as_str).is_none() {
+        config["session_id"] = Value::String(optimizer_id.clone());
+    }
+    if config
+        .get("lifecycle_path")
+        .and_then(Value::as_str)
+        .is_none()
+    {
+        config["lifecycle_path"] = Value::String(canonical_tuner_lifecycle_path(optimizer_id));
+    }
     Some(config)
 }
 
@@ -620,13 +922,21 @@ fn tuner_optimizer_id(config: Option<&Value>, run_id: &str) -> String {
         .unwrap_or_else(|| format!("tuning-session-{run_id}"))
 }
 
+fn tuner_session_id(config: Option<&Value>, optimizer_id: &str) -> String {
+    config
+        .and_then(|value| value.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| optimizer_id.to_owned())
+}
+
 fn tuner_lifecycle_path(optimizer_id: String) -> PathBuf {
     Path::new("optuna_output")
         .join(optimizer_id)
         .join("lifecycle.jsonl")
 }
 
-fn canonical_tuner_lifecycle_path(optimizer_id: String) -> String {
+pub(crate) fn canonical_tuner_lifecycle_path(optimizer_id: String) -> String {
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(tuner_lifecycle_path(optimizer_id))
@@ -634,22 +944,45 @@ fn canonical_tuner_lifecycle_path(optimizer_id: String) -> String {
         .into_owned()
 }
 
-fn append_tuner_lifecycle_arguments(cmd: &mut Vec<String>, config: &Option<Value>, run_id: &str) {
-    let optimizer_id = tuner_optimizer_id(config.as_ref(), run_id);
-    cmd.push("--optimizer-id".into());
-    cmd.push(optimizer_id.clone());
-    cmd.push("--bench-run-id".into());
-    cmd.push(run_id.to_owned());
-    cmd.push("--session-id".into());
-    cmd.push(optimizer_id);
-    cmd.push("--attempt-id".into());
-    cmd.push(format!("tuning-attempt-{run_id}"));
-    cmd.push("--lifecycle-path".into());
-    cmd.push(
-        tuner_lifecycle_path(tuner_optimizer_id(config.as_ref(), run_id))
-            .to_string_lossy()
-            .into_owned(),
-    );
+fn tuner_lifecycle_path_from_config(config: Option<&Value>, optimizer_id: &str) -> String {
+    config
+        .and_then(|value| value.get("lifecycle_path"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(path)
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from(canonical_tuner_lifecycle_path(optimizer_id.into())))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn append_tuner_config_arguments(cmd: &mut Vec<String>, config: &Option<Value>) {
+    let Some(config) = config else {
+        return;
+    };
+    if let Some(config_path) = config.get("config").and_then(Value::as_str) {
+        cmd.extend(["--config".into(), config_path.to_owned()]);
+    }
+    if let Some(overrides) = config.get("overrides").and_then(Value::as_array) {
+        for override_value in overrides.iter().filter_map(Value::as_str) {
+            cmd.extend(["--override".into(), override_value.to_owned()]);
+        }
+    }
+    if let Some(baseline_configs) = config.get("baseline_configs").and_then(Value::as_object) {
+        for (id, raw_config) in baseline_configs {
+            cmd.extend(["--baseline-config".into(), format!("{id}={raw_config}")]);
+        }
+    }
+    if let Some(game_config) = config.get("game_config").filter(|value| !value.is_null()) {
+        cmd.extend(["--game-config".into(), game_config.to_string()]);
+    }
 }
 
 /// Find the `bench` binary, preferring a sibling of the current executable

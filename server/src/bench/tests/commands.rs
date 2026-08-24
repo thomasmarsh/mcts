@@ -51,7 +51,9 @@ fn test_build_command_tuner_includes_config_and_overrides() {
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
+            &canonical_tuner_lifecycle_path("tuning-session-test-run".into()),
+            "--game-kind",
+            "traffic-lights",
         ]
     );
 }
@@ -65,6 +67,8 @@ fn test_build_command_tuner_with_no_config_is_just_game() {
             "tuner",
             "--game",
             "druid",
+            "--override",
+            "optimizer.n_trials=1000",
             "--trace-path",
             "bench-runs/test-run/moves.jsonl",
             "--optimizer-id",
@@ -76,7 +80,9 @@ fn test_build_command_tuner_with_no_config_is_just_game() {
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
+            &canonical_tuner_lifecycle_path("tuning-session-test-run".into()),
+            "--game-kind",
+            "druid",
         ]
     );
 }
@@ -169,9 +175,269 @@ fn test_build_command_tuner_includes_baseline_configs() {
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
+            &canonical_tuner_lifecycle_path("tuning-session-test-run".into()),
+            "--game-kind",
+            "nim",
         ]
     );
+}
+
+#[test]
+fn test_tuner_attempt_builder_keeps_session_artifacts_stable_across_three_physical_runs() {
+    let journal = canonical_tuner_lifecycle_path("optimizer-session-a".into());
+    let config = Some(json!({
+        "config": "tuner/config/default.yaml",
+        "overrides": [
+            "target.rounds=30",
+            "optimizer.n_trials=3",
+            "optimizer.n_trials=4",
+            "optimizer.n_workers=2"
+        ],
+    }));
+    let attempts = [
+        ("attempt-1", "physical-1", 10, None),
+        ("attempt-2", "physical-2", 25, Some(4)),
+        ("attempt-3", "physical-3", 25, None),
+    ];
+
+    for (attempt_id, physical_run_id, target, workers) in attempts {
+        let built = build_tuner_attempt(&TunerAttemptLaunch {
+            game: "druid".into(),
+            config: config.clone(),
+            session_id: "session-a".into(),
+            optimizer_id: "optimizer-session-a".into(),
+            lifecycle_path: journal.clone(),
+            attempt_id: attempt_id.into(),
+            physical_run_id: physical_run_id.into(),
+            target_trial_count: target,
+            workers,
+        })
+        .unwrap();
+        let command = built.command;
+        assert!(!command.iter().any(|argument| argument == "--resume"));
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--trace-path")
+                .unwrap()
+                + 1],
+            format!("bench-runs/{physical_run_id}/moves.jsonl")
+        );
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--optimizer-id")
+                .unwrap()
+                + 1],
+            "optimizer-session-a"
+        );
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--session-id")
+                .unwrap()
+                + 1],
+            "session-a"
+        );
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--attempt-id")
+                .unwrap()
+                + 1],
+            attempt_id
+        );
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--bench-run-id")
+                .unwrap()
+                + 1],
+            physical_run_id
+        );
+        assert_eq!(
+            command[command
+                .iter()
+                .position(|argument| argument == "--lifecycle-path")
+                .unwrap()
+                + 1],
+            journal
+        );
+        let overrides: Vec<&str> = command
+            .windows(2)
+            .filter(|arguments| arguments[0] == "--override")
+            .map(|arguments| arguments[1].as_str())
+            .collect();
+        assert_eq!(
+            overrides
+                .iter()
+                .filter(|value| value.starts_with("optimizer.n_trials="))
+                .count(),
+            1
+        );
+        assert!(overrides.contains(&format!("optimizer.n_trials={target}").as_str()));
+        match workers {
+            Some(workers) => {
+                assert!(overrides.contains(&format!("optimizer.n_workers={workers}").as_str()))
+            }
+            None => assert!(overrides.contains(&"optimizer.n_workers=2")),
+        }
+    }
+}
+
+#[test]
+fn test_reserved_tuner_launch_records_once_and_reuses_the_physical_identity() {
+    let launches = Arc::new(Mutex::new(0));
+    let observed = launches.clone();
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| {
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('physical-parent', 'tuner', 'druid', '{}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/parent.log')",
+                [],
+            )
+            .unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            mcts_bench::identity::create_root_identity(
+                &tx,
+                "physical-parent",
+                "tuner",
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            conn.execute(
+                "INSERT INTO tuning_sessions (session_id, status, manifest, target_trial_count, created_at, last_sequence, optimizer_id, lifecycle_path) VALUES ('session-a', 'idle', '{}', 3, CURRENT_TIMESTAMP, 1, 'optimizer-a', '/tmp/session-a.jsonl')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at, ended_at) VALUES ('attempt-parent', 'session-a', 'physical-parent', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tuning_launch_reservations (session_id, command_id, attempt_id, physical_run_id, target_trial_count, reserved_at) VALUES ('session-a', 'resume-a', 'attempt-next', 'physical-next', 8, CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+        },
+        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(move |run_id, _command, _kind, _game, _label| {
+            *observed.lock().unwrap() += 1;
+            Ok(LaunchedRun {
+                log_path: PathBuf::from(format!("bench-runs/{run_id}/log.jsonl")),
+                log_dir: PathBuf::from(format!("bench-runs/{run_id}")),
+                run_id,
+                pid: 321,
+            })
+        }),
+    );
+    drop(app);
+    let launch = TunerAttemptLaunch {
+        game: "druid".into(),
+        config: Some(json!({"overrides": ["optimizer.n_trials=3"]})),
+        session_id: "session-a".into(),
+        optimizer_id: "optimizer-a".into(),
+        lifecycle_path: "/tmp/session-a.jsonl".into(),
+        attempt_id: "attempt-next".into(),
+        physical_run_id: "physical-next".into(),
+        target_trial_count: 8,
+        workers: Some(4),
+    };
+
+    let first = launch_reserved_tuner_attempt(&state, "resume-a", launch.clone(), None).unwrap();
+    let replay = launch_reserved_tuner_attempt(&state, "resume-a", launch, None).unwrap();
+    assert_eq!(first.run_id, "physical-next");
+    assert_eq!(replay.run_id, "physical-next");
+    assert_eq!(*launches.lock().unwrap(), 1);
+    let identity: (String, String, u64) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT logical_run_id, parent_attempt_id, attempt_ordinal FROM runs WHERE run_id = 'physical-next'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        identity,
+        ("physical-parent".into(), "physical-parent".into(), 2)
+    );
+}
+
+#[test]
+fn test_reserved_tuner_spawn_failure_releases_its_reservation() {
+    let (_, _, state) = seeded_app_with_state(
+        |conn, _| {
+            conn.execute(
+                "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, ended_at, status, log_path) VALUES ('failure-parent', 'tuner', 'druid', '{}', 'sha', false, 'host', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed', '/tmp/parent.log')",
+                [],
+            )
+            .unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            mcts_bench::identity::create_root_identity(
+                &tx,
+                "failure-parent",
+                "tuner",
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            conn.execute(
+                "INSERT INTO tuning_sessions (session_id, status, manifest, target_trial_count, created_at, last_sequence, optimizer_id, lifecycle_path) VALUES ('session-failure', 'idle', '{}', 3, CURRENT_TIMESTAMP, 1, 'optimizer-failure', '/tmp/session-failure.jsonl')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at, ended_at) VALUES ('attempt-parent-failure', 'session-failure', 'failure-parent', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tuning_launch_reservations (session_id, command_id, attempt_id, physical_run_id, target_trial_count, reserved_at) VALUES ('session-failure', 'resume-failure', 'attempt-failure', 'physical-failure', 8, CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+        },
+        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(|_, _, _, _, _| Err(std::io::Error::other("injected spawn failure"))),
+    );
+    let error = match launch_reserved_tuner_attempt(
+        &state,
+        "resume-failure",
+        TunerAttemptLaunch {
+            game: "druid".into(),
+            config: None,
+            session_id: "session-failure".into(),
+            optimizer_id: "optimizer-failure".into(),
+            lifecycle_path: "/tmp/session-failure.jsonl".into(),
+            attempt_id: "attempt-failure".into(),
+            physical_run_id: "physical-failure".into(),
+            target_trial_count: 8,
+            workers: None,
+        },
+        None,
+    ) {
+        Ok(_) => panic!("injected launcher unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("injected spawn failure"));
+    let remaining: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM tuning_launch_reservations WHERE session_id = 'session-failure'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[test]
@@ -536,7 +802,12 @@ async fn test_resume_and_manual_promotion_link_children_to_parent_identity() {
         json!({"n_trials": 500}),
     )
     .await;
-    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(
+        status,
+        HttpStatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     let resume_child = body_json(&body)["run_id"].as_str().unwrap().to_owned();
     let (logical, parent, ordinal): (String, String, u64) = state
         .db
@@ -559,7 +830,12 @@ async fn test_resume_and_manual_promotion_link_children_to_parent_identity() {
         json!({}),
     )
     .await;
-    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(
+        status,
+        HttpStatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     let promotion_child = body_json(&body)["run_id"].as_str().unwrap().to_owned();
     let linkage: (String, String, u64) = state
         .db
@@ -640,7 +916,7 @@ fn test_build_resume_config_appends_n_workers_when_given() {
 fn test_build_resume_config_carries_forward_old_config_and_overrides() {
     let old = Some(json!({
         "config": "tuner/config/default.yaml",
-        "overrides": ["target.rounds=30"],
+        "overrides": ["target.rounds=30", "optimizer.n_trials=100", "optimizer.n_trials=200"],
     }));
     let config = build_resume_config("old-run-1", &old, 500, None);
     assert_eq!(config["config"], json!("tuner/config/default.yaml"));
