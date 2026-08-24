@@ -12,6 +12,7 @@ pub mod supervised_launch;
 pub mod supervisor;
 pub mod tournament;
 pub mod tuning_analysis_repository;
+pub mod tuning_command_repository;
 pub mod tuning_lifecycle;
 
 #[cfg(feature = "duckdb")]
@@ -33,6 +34,8 @@ pub mod run_repository_duckdb;
 pub mod schema;
 #[cfg(feature = "duckdb")]
 pub mod tuning_analysis_repository_duckdb;
+#[cfg(feature = "duckdb")]
+pub mod tuning_command_repository_duckdb;
 #[cfg(feature = "duckdb")]
 pub mod tuning_command_store;
 #[cfg(feature = "duckdb")]

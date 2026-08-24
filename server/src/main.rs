@@ -345,7 +345,10 @@ async fn main() {
             mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(bench_db.clone()),
         ),
         tuning_analysis_repository: Arc::new(
-            mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(bench_db),
+            mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(bench_db.clone()),
+        ),
+        tuning_command_repository: Arc::new(
+            mcts_bench::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(bench_db),
         ),
         bench_runs_dir,
         experiment_validator: Arc::new(bench::validate_experiment_spec),

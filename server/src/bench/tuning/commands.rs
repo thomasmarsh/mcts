@@ -5,6 +5,9 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
+use mcts_bench::tuning_command_repository::{
+    TuningCommandReplayState, TuningCommandRepository, TuningCommandRepositoryError,
+};
 
 use super::super::{
     BenchError, BenchState, TunerAttemptLaunch, TuningBudgetResult, TuningSessionBudgetBody,
@@ -123,8 +126,8 @@ pub(crate) async fn resume_tuning_session(
     } else {
         None
     };
-    if !matches!(replay_state, Some(ResumeReplayState::Launched)) {
-        if matches!(replay_state, Some(ResumeReplayState::Failed)) {
+    if !matches!(replay_state, Some(TuningCommandReplayState::Launched)) {
+        if matches!(replay_state, Some(TuningCommandReplayState::Failed)) {
             return Err(BenchError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: format!(
@@ -232,7 +235,7 @@ pub(crate) async fn add_tuning_session_budget(
     } else {
         None
     };
-    if matches!(replay_state, Some(ResumeReplayState::Failed)) {
+    if matches!(replay_state, Some(TuningCommandReplayState::Failed)) {
         let control = {
             let db = state.db.lock().unwrap();
             session_control(&db, &session_id)?
@@ -255,7 +258,7 @@ pub(crate) async fn add_tuning_session_budget(
             }),
         ));
     }
-    if !matches!(replay_state, Some(ResumeReplayState::Launched)) {
+    if !matches!(replay_state, Some(TuningCommandReplayState::Launched)) {
         if let Err(error) = super::super::launch_reserved_tuner_attempt(
             &state,
             &decision.command_id,
@@ -352,45 +355,21 @@ fn budget_result(
     })
 }
 
-enum ResumeReplayState {
-    Launched,
-    Reserved,
-    Failed,
-}
-
 fn resume_replay_state(
     state: &Arc<BenchState>,
     session_id: &str,
     command_id: &str,
     launch: &TunerAttemptLaunch,
-) -> Result<ResumeReplayState, BenchError> {
-    let db = state.db.lock().unwrap();
-    let run_exists: bool = db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM runs WHERE run_id = ?1)",
-        duckdb::params![&launch.physical_run_id],
-        |row| row.get(0),
-    )?;
-    if run_exists {
-        return Ok(ResumeReplayState::Launched);
-    }
-    let reservation_exists: bool = db.query_row(
-        "SELECT EXISTS (
-             SELECT 1 FROM tuning_launch_reservations
-             WHERE session_id = ?1 AND command_id = ?2 AND attempt_id = ?3 AND physical_run_id = ?4
-         )",
-        duckdb::params![
+) -> Result<TuningCommandReplayState, BenchError> {
+    state
+        .tuning_command_repository
+        .replay_state(
             session_id,
             command_id,
             &launch.attempt_id,
-            &launch.physical_run_id
-        ],
-        |row| row.get(0),
-    )?;
-    Ok(if reservation_exists {
-        ResumeReplayState::Reserved
-    } else {
-        ResumeReplayState::Failed
-    })
+            &launch.physical_run_id,
+        )
+        .map_err(tuning_command_repository_error)
 }
 
 fn validate_command_id(command_id: &str) -> Result<(), BenchError> {
@@ -417,18 +396,15 @@ fn command_request(
     n_workers: Option<u64>,
 ) -> Result<mcts_bench::tuning_command_store::CommandRequest, BenchError> {
     let existing = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT session_id, CAST(request AS TEXT) FROM tuning_session_commands WHERE command_id = ?1",
-            duckdb::params![&body.command_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()
+        state
+            .tuning_command_repository
+            .load_command(&body.command_id)
+            .map_err(tuning_command_repository_error)?
     };
-    if let Some((stored_session, request)) = existing {
+    if let Some(existing) = existing {
         let request: mcts_bench::tuning_command_store::CommandRequest =
-            serde_json::from_str(&request)?;
-        if stored_session == session_id
+            serde_json::from_str(&existing.request_json)?;
+        if existing.session_id == session_id
             && request.expected_version == body.expected_version
             && request.command == command
             && request.n_workers == n_workers
@@ -452,26 +428,23 @@ fn continuation_launch(
     command_id: &str,
     n_workers: Option<u64>,
 ) -> Result<TunerAttemptLaunch, BenchError> {
-    let db = state.db.lock().unwrap();
-    let (game, config, optimizer_id, lifecycle_path): (String, Option<String>, String, String) = db
-        .query_row(
-            "SELECT run.game, CAST(run.config AS TEXT), session.optimizer_id, session.lifecycle_path \
-             FROM tuning_sessions session \
-             JOIN tuning_attempts attempt ON attempt.session_id = session.session_id \
-             JOIN runs run ON run.run_id = attempt.bench_run_id \
-             WHERE session.session_id = ?1 AND session.optimizer_id IS NOT NULL \
-               AND session.lifecycle_path IS NOT NULL \
-             ORDER BY attempt.started_at DESC, attempt.attempt_id DESC LIMIT 1",
-            duckdb::params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
+    let metadata = state
+        .tuning_command_repository
+        .load_continuation_metadata(session_id)
         .map_err(|_| BenchError {
             status: StatusCode::CONFLICT,
             message: format!(
                 "tuning session '{session_id}' lacks the physical run metadata required for continuation"
             ),
+        })?
+        .ok_or_else(|| BenchError {
+            status: StatusCode::CONFLICT,
+            message: format!(
+                "tuning session '{session_id}' lacks the physical run metadata required for continuation"
+            ),
         })?;
-    let config = config
+    let config = metadata
+        .config_json
         .map(|config| serde_json::from_str(&config))
         .transpose()
         .map_err(|_| BenchError {
@@ -482,14 +455,14 @@ fn continuation_launch(
         })?;
     let physical_run_id = format!(
         "{}-{command_id}",
-        mcts_bench::launch::generate_run_id("tuner", &game, crate::BUILD_INFO)
+        mcts_bench::launch::generate_run_id("tuner", &metadata.game, crate::BUILD_INFO)
     );
     Ok(TunerAttemptLaunch {
-        game,
+        game: metadata.game,
         config,
         session_id: session_id.into(),
-        optimizer_id,
-        lifecycle_path,
+        optimizer_id: metadata.optimizer_id,
+        lifecycle_path: metadata.lifecycle_path,
         attempt_id: format!("tuning-attempt-{physical_run_id}"),
         artifact_root: super::super::tuner_artifact_root(&state.bench_runs_dir, &physical_run_id),
         physical_run_id,
@@ -503,17 +476,16 @@ fn tuning_attempt_pid(
     session_id: &str,
     attempt_id: &str,
 ) -> Result<Option<i64>, BenchError> {
-    let db = state.db.lock().unwrap();
-    match db.query_row(
-        "SELECT run.pid FROM tuning_attempts attempt \
-         LEFT JOIN runs run ON run.run_id = attempt.bench_run_id \
-         WHERE attempt.session_id = ?1 AND attempt.attempt_id = ?2",
-        duckdb::params![session_id, attempt_id],
-        |row| row.get(0),
-    ) {
-        Ok(pid) => Ok(pid),
-        Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error.into()),
+    state
+        .tuning_command_repository
+        .load_attempt_pid(session_id, attempt_id)
+        .map_err(tuning_command_repository_error)
+}
+
+fn tuning_command_repository_error(error: TuningCommandRepositoryError) -> BenchError {
+    BenchError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("tuning command storage error: {error}"),
     }
 }
 
