@@ -132,6 +132,54 @@ pub struct PoolRevisedPayload {
     pub extra: serde_json::Map<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolDecisionAction {
+    Inserted,
+    Rejected,
+}
+
+impl PoolDecisionAction {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inserted => "inserted",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolDecisionReason {
+    Champion,
+    SkillBand,
+    Covered,
+}
+
+impl PoolDecisionReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Champion => "champion",
+            Self::SkillBand => "skill_band",
+            Self::Covered => "covered",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PoolAnchorDecidedPayload {
+    pub trial_id: TuningTrialId,
+    pub before_pool_snapshot_fingerprint: String,
+    pub action: PoolDecisionAction,
+    pub reason: PoolDecisionReason,
+    pub anchor: Option<PoolAnchorSnapshot>,
+    pub after_pool_snapshot_fingerprint: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionStartedPayload {
     pub manifest: Value,
@@ -382,6 +430,7 @@ pub enum TuningPayload {
     AttemptStarted(AttemptStartedPayload),
     AttemptRecovered(AttemptRecoveredPayload),
     PoolRevised(PoolRevisedPayload),
+    PoolAnchorDecided(PoolAnchorDecidedPayload),
     TrialCreated(TrialCreatedPayload),
     TrialStarted(TrialStartedPayload),
     TrialReported(TrialReportedPayload),
@@ -415,6 +464,7 @@ pub(super) fn parse_typed(
         TuningEventType::AttemptStarted => parse(value).map(TuningPayload::AttemptStarted),
         TuningEventType::AttemptRecovered => parse(value).map(TuningPayload::AttemptRecovered),
         TuningEventType::PoolRevised => parse(value).map(TuningPayload::PoolRevised),
+        TuningEventType::PoolAnchorDecided => parse(value).map(TuningPayload::PoolAnchorDecided),
         TuningEventType::TrialCreated => parse(value).map(TuningPayload::TrialCreated),
         TuningEventType::TrialStarted => parse(value).map(TuningPayload::TrialStarted),
         TuningEventType::TrialReported => parse(value).map(TuningPayload::TrialReported),

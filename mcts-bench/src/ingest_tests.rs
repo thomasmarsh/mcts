@@ -1450,7 +1450,14 @@ fn ingest_projects_available_partial_and_unavailable_search_reports() {
     ]);
 
     ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
-    let rows: Vec<(i64, Option<String>, Option<u64>, Option<f64>, Option<String>)> = fixture.db
+    type SearchReportRow = (
+        i64,
+        Option<String>,
+        Option<u64>,
+        Option<f64>,
+        Option<String>,
+    );
+    let rows: Vec<SearchReportRow> = fixture.db
         .prepare("SELECT ply, search_status, search_completed_iterations, search_elapsed_ms, CAST(search_report AS TEXT) FROM game_moves ORDER BY ply")
         .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
         .unwrap().collect::<Result<_, _>>().unwrap();

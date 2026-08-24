@@ -33,7 +33,7 @@ from .lifecycle import (
 )
 from .hyperband import OptunaHyperbandAdapter
 from .manifest import build_session_manifest, write_manifest_atomic
-from .pool import OpponentPool
+from .pool import OpponentPool, recover_pool
 from .target import preflight_check
 
 
@@ -89,8 +89,6 @@ def run_optimization(
     output_dir = Path("optuna_output") / optimizer
     output_dir.mkdir(parents=True, exist_ok=True)
     _resolve_search_space(cfg, binary)
-    pool_path = output_dir / "pool.json"
-    pool = _load_or_initialize_pool(cfg, pool_path)
     pruning_adapter = _pruning_adapter(cfg)
     study, storage = _open_study(output_dir, optimizer, cfg, pruning_adapter)
     resolved_sha = git_sha or _resolve_git_sha()
@@ -102,6 +100,8 @@ def run_optimization(
         if lifecycle_path is not None
         else output_dir / "lifecycle.jsonl"
     )
+    pool_path = output_dir / "pool.json"
+    pool: OpponentPool
 
     with _install_stop_handlers() as stop_request:
         with LifecycleWriter(event_path, session, attempt) as lifecycle:
@@ -112,6 +112,9 @@ def run_optimization(
                 lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
             )
             _recover_orphaned_attempt(lifecycle, study)
+            pool = recover_pool(
+                cfg, pool_path, manifest["fingerprint"], lifecycle, study
+            )
             _emit_pool_revised(lifecycle, pool)
             _run_attempt(
                 cfg,
@@ -121,6 +124,7 @@ def run_optimization(
                 study=study,
                 lifecycle=lifecycle,
                 resolved_sha=resolved_sha,
+                manifest_fingerprint=manifest["fingerprint"],
                 trace_path=trace_path,
                 pruning_adapter=pruning_adapter,
                 should_stop=stop_request.requested,
@@ -135,20 +139,6 @@ def _resolve_search_space(cfg: SearchConfig, binary: Path) -> None:
     )
     cfg.parameters = parameters
     cfg.conditions = conditions
-
-
-def _load_or_initialize_pool(cfg: SearchConfig, pool_path: Path) -> OpponentPool:
-    """Load the persistent pool, adding configured anchors once before saving."""
-    pool = (
-        OpponentPool.load(pool_path)
-        if pool_path.exists()
-        else OpponentPool.bootstrap(cfg)
-    )
-    for anchor_id, config in cfg.target.baseline_configs.items():
-        if not any(anchor.id == anchor_id for anchor in pool.anchors):
-            pool.add_configured_anchor(anchor_id, config)
-    pool.save(pool_path)
-    return pool
 
 
 def _open_study(
@@ -321,6 +311,7 @@ def _run_attempt(
     study: optuna.Study,
     lifecycle: LifecycleWriter,
     resolved_sha: str,
+    manifest_fingerprint: str = "legacy",
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
@@ -368,6 +359,7 @@ def _run_attempt(
             wait,
             pruning_adapter,
             should_stop,
+            manifest_fingerprint,
         )
 
         _raise_if_stop_requested(should_stop)

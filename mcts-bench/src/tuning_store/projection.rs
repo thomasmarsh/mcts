@@ -17,6 +17,7 @@ pub(super) fn apply(
         }
         TuningEventType::AttemptRecovered => project_attempt_recovered(tx, event)?,
         TuningEventType::PoolRevised => project_pool_revised(tx, event)?,
+        TuningEventType::PoolAnchorDecided => project_pool_anchor_decided(tx, event)?,
         TuningEventType::TrialCreated => project_trial_created(tx, event)?,
         TuningEventType::TrialStarted => {
             mark_trial_started(tx, event)?;
@@ -32,6 +33,22 @@ pub(super) fn apply(
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn project_pool_anchor_decided(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<(), TuningStoreError> {
+    let TuningPayload::PoolAnchorDecided(payload) =
+        event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    tx.execute(
+        "INSERT INTO tuning_pool_decisions (session_id, trial_id, event_id, before_pool_snapshot_fingerprint, action, reason, anchor, after_pool_snapshot_fingerprint, decided_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![event.session_id.as_str(), payload.trial_id.as_str(), event.event_id.as_str(), payload.before_pool_snapshot_fingerprint, payload.action.as_str(), payload.reason.as_str(), payload.anchor.as_ref().map(serde_json::to_string).transpose()?, payload.after_pool_snapshot_fingerprint, &event.timestamp],
+    )?;
+    touch_session(tx, event)
 }
 
 fn project_pool_revised(

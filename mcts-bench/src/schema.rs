@@ -228,6 +228,20 @@ pub const CREATE_TABLES: &[&str] = &[
         failure TEXT,
         PRIMARY KEY (session_id, trial_id)
     )",
+    "CREATE TABLE IF NOT EXISTS tuning_pool_decisions (
+        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
+        trial_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        before_pool_snapshot_fingerprint TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('inserted', 'rejected')),
+        reason TEXT NOT NULL CHECK (reason IN ('champion', 'skill_band', 'covered')),
+        anchor JSON,
+        after_pool_snapshot_fingerprint TEXT NOT NULL,
+        decided_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (session_id, trial_id),
+        UNIQUE (event_id),
+        FOREIGN KEY (session_id, trial_id) REFERENCES tuning_trials(session_id, trial_id)
+    )",
     "CREATE TABLE IF NOT EXISTS tuning_trial_reports (
         session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
         trial_id TEXT NOT NULL,

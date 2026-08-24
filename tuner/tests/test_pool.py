@@ -5,7 +5,8 @@ from __future__ import annotations
 import yaml
 
 from tuner_cli.config import SearchConfig
-from tuner_cli.pool import Anchor, OpponentPool
+from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId, trial_id_for
+from tuner_cli.pool import Anchor, OpponentPool, load_checkpoint, recover_pool
 
 _SPACE_YAML = """
 parameters:
@@ -58,7 +59,9 @@ def test_configured_anchor_has_distinct_provenance():
 
 
 def test_closest_picks_nearest_anchor_by_mu():
-    pool = OpponentPool.bootstrap(_cfg())  # anchors at mu=25.0 ("default"), mu=0.0 ("random")
+    pool = OpponentPool.bootstrap(
+        _cfg()
+    )  # anchors at mu=25.0 ("default"), mu=0.0 ("random")
 
     assert pool.closest(24.0).id == "default"
     assert pool.closest(1.0).id == "random"
@@ -74,7 +77,10 @@ def test_maybe_insert_new_champion():
 
     assert inserted is not None
     assert inserted.mu == 30.0
-    assert (inserted.insertion_reason, inserted.source_trial_id) == ("champion", "trial-3")
+    assert (inserted.insertion_reason, inserted.source_trial_id) == (
+        "champion",
+        "trial-3",
+    )
     assert len(pool.anchors) == 3
 
 
@@ -146,3 +152,97 @@ def test_loads_legacy_four_field_anchor_as_unknown(tmp_path):
         "legacy_unknown",
         None,
     )
+
+
+def test_recovery_records_one_missing_decision_then_becomes_a_no_op(tmp_path):
+    cfg = _cfg()
+    session = SessionId("pool-recovery")
+    trial_id = trial_id_for(session, 0)
+    journal = tmp_path / "lifecycle.jsonl"
+    pool_path = tmp_path / "pool.json"
+
+    with LifecycleWriter(journal, session, AttemptId("prior")) as writer:
+        writer.emit(
+            "session_started", {"manifest": {}, "manifest_fingerprint": "manifest"}
+        )
+        writer.emit("attempt_started", {})
+        writer.emit(
+            "trial_created",
+            {"trial_id": trial_id, "trial_number": 0, "config": {"family": "ucb1_pn"}},
+        )
+        writer.emit("trial_started", {"trial_id": trial_id, "trial_number": 0})
+        writer.emit_trial_terminal(
+            "trial_completed",
+            trial_id,
+            {
+                "trial_number": 0,
+                "config": {"family": "ucb1_pn"},
+                "mu": 30.0,
+                "sigma": 2.0,
+            },
+        )
+
+    study = type("Study", (), {"trials": [object()]})()
+    with LifecycleWriter(journal, session, AttemptId("recovery")) as writer:
+        writer.emit("attempt_started", {})
+        pool = recover_pool(cfg, pool_path, "manifest", writer, study)
+        assert [anchor.id for anchor in pool.anchors][-1] == "trial-2"
+        writer.emit("attempt_completed", {})
+
+    with LifecycleWriter(journal, session, AttemptId("again")) as writer:
+        writer.emit("attempt_started", {})
+        recovered = recover_pool(cfg, pool_path, "manifest", writer, study)
+        assert recovered == pool
+
+    records = [yaml.safe_load(line) for line in journal.read_text().splitlines()]
+    assert [record["event_type"] for record in records].count(
+        "pool_anchor_decided"
+    ) == 1
+    loaded, decision, legacy = load_checkpoint(pool_path, "manifest")
+    assert loaded == pool
+    assert decision is not None and decision.action == "inserted"
+    assert not legacy
+
+
+def test_recovery_applies_a_logged_decision_without_a_checkpoint(tmp_path):
+    cfg = _cfg()
+    session = SessionId("decision-before-save")
+    trial_id = trial_id_for(session, 0)
+    journal = tmp_path / "lifecycle.jsonl"
+    pool_path = tmp_path / "pool.json"
+    decision = OpponentPool.bootstrap(cfg).decide_insertion(
+        {"family": "ucb1_pn"}, 30.0, 2.0, trial_id
+    )
+
+    with LifecycleWriter(journal, session, AttemptId("prior")) as writer:
+        writer.emit(
+            "session_started", {"manifest": {}, "manifest_fingerprint": "manifest"}
+        )
+        writer.emit("attempt_started", {})
+        writer.emit(
+            "trial_created",
+            {"trial_id": trial_id, "trial_number": 0, "config": {"family": "ucb1_pn"}},
+        )
+        writer.emit("trial_started", {"trial_id": trial_id, "trial_number": 0})
+        writer.emit_trial_terminal(
+            "trial_completed",
+            trial_id,
+            {
+                "trial_number": 0,
+                "config": {"family": "ucb1_pn"},
+                "mu": 30.0,
+                "sigma": 2.0,
+            },
+        )
+        writer.emit("pool_anchor_decided", decision.payload())
+        writer.emit("attempt_completed", {})
+
+    study = type("Study", (), {"trials": [object()]})()
+    with LifecycleWriter(journal, session, AttemptId("recovery")) as writer:
+        writer.emit("attempt_started", {})
+        pool = recover_pool(cfg, pool_path, "manifest", writer, study)
+
+    assert pool.anchors[-1].source_trial_id == trial_id
+    _, saved, legacy = load_checkpoint(pool_path, "manifest")
+    assert saved == decision
+    assert not legacy

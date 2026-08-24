@@ -60,6 +60,7 @@ class _AttemptContext:
     resolved_sha: str
     trace_path: str | None
     pruning_adapter: OptunaHyperbandAdapter | None = None
+    manifest_fingerprint: str = "legacy"
 
 
 def worker_count(cfg: SearchConfig) -> int:
@@ -202,6 +203,7 @@ def drain_scheduled_trials(
     wait_for_completion: Any,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
+    manifest_fingerprint: str = "legacy",
 ) -> None:
     """Settle pair futures, continuing each live trial one pair at a time."""
     context = _AttemptContext(
@@ -214,6 +216,7 @@ def drain_scheduled_trials(
         resolved_sha,
         trace_path,
         pruning_adapter,
+        manifest_fingerprint,
     )
     while futures:
         _raise_if_stop_requested(should_stop)
@@ -271,6 +274,7 @@ def continue_trial(
             context.resolved_sha,
             score,
             decision.reason,
+            context.manifest_fingerprint,
         )
         return False
     if decision.outcome == "prune":
@@ -385,6 +389,7 @@ def complete_trial(
     resolved_sha: str,
     score: float,
     stop_reason: str,
+    manifest_fingerprint: str = "legacy",
 ) -> None:
     """Preserve the successful Optuna, lifecycle, legacy, pool, incumbent order."""
     if lifecycle.has_trial_terminal(active_trial.trial_id):
@@ -403,7 +408,13 @@ def complete_trial(
     )
     emit_legacy_trial(active_trial, rating.mu, rating.sigma, games, resolved_sha)
     save_inserted_pool_anchor(
-        pool, pool_path, lifecycle, active_trial, rating.mu, rating.sigma
+        pool,
+        pool_path,
+        lifecycle,
+        active_trial,
+        rating.mu,
+        rating.sigma,
+        manifest_fingerprint,
     )
     emit_legacy_incumbent(study, active_trial, rating.mu, rating.sigma)
 
@@ -509,15 +520,20 @@ def save_inserted_pool_anchor(
     active_trial: _ActiveTrial,
     mu: float,
     sigma: float,
+    manifest_fingerprint: str = "legacy",
 ) -> None:
-    """Persist the pool only when this completed trial adds an anchor."""
-    if (
-        pool.maybe_insert(active_trial.config, mu, sigma, active_trial.trial_id)
-        is not None
-    ):
-        pool.save(pool_path)
-        if lifecycle.has_session_started:
-            lifecycle.emit("pool_revised", pool.revision_payload())
+    """Log every terminal candidate before atomically checkpointing its result."""
+    decision = pool.decide_insertion(
+        active_trial.config, mu, sigma, active_trial.trial_id
+    )
+    lifecycle.emit("pool_anchor_decided", decision.payload())
+    pool.apply_decision(decision)
+    pool.save(pool_path, manifest_fingerprint, decision)
+    if decision.action == "inserted" and lifecycle.has_session_started:
+        lifecycle.emit("pool_revised", pool.revision_payload())
+
+
+save_pool_decision = save_inserted_pool_anchor
 
 
 def terminalize_trial(

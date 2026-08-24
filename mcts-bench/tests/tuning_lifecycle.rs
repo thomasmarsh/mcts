@@ -488,6 +488,73 @@ fn terminal_stop_evidence_projects_for_complete_and_pruned_trials() {
 }
 
 #[test]
+fn pool_decisions_are_typed_unique_and_require_completed_trials() {
+    let conn = fixture();
+    for item in started_trial_events() {
+        assert_eq!(apply(&conn, &item), ApplyDisposition::Applied);
+    }
+    assert_eq!(
+        apply(
+            &conn,
+            &event(
+                "complete-for-pool",
+                5,
+                "trial_completed",
+                serde_json::json!({"trial_id": "trial-1", "reason": "confidence", "score": 20.5, "mu": 25.0, "sigma": 1.5}),
+            ),
+        ),
+        ApplyDisposition::Applied
+    );
+    let decision = event(
+        "pool-decision",
+        6,
+        "pool_anchor_decided",
+        serde_json::json!({
+            "trial_id": "trial-1",
+            "before_pool_snapshot_fingerprint": "before",
+            "action": "inserted",
+            "reason": "champion",
+            "anchor": {
+                "anchor_id": "trial-2", "config": {"family": "ucb"}, "mu": 30.0, "sigma": 2.0,
+                "provenance": "trial", "insertion_reason": "champion", "source_trial_id": "trial-1"
+            },
+            "after_pool_snapshot_fingerprint": "after"
+        }),
+    );
+    assert_eq!(apply(&conn, &decision), ApplyDisposition::Applied);
+    assert_eq!(apply(&conn, &decision), ApplyDisposition::Replay);
+    let row: (String, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT action, reason, after_pool_snapshot_fingerprint, CAST(anchor AS TEXT) FROM tuning_pool_decisions WHERE trial_id = 'trial-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(row.0, "inserted");
+    assert_eq!(row.1, "champion");
+    assert_eq!(row.2, "after");
+    assert!(row.3.unwrap().contains("trial-2"));
+
+    let duplicate = event(
+        "pool-decision-duplicate",
+        7,
+        "pool_anchor_decided",
+        serde_json::json!({
+            "trial_id": "trial-1", "before_pool_snapshot_fingerprint": "after",
+            "action": "rejected", "reason": "covered", "anchor": null,
+            "after_pool_snapshot_fingerprint": "after"
+        }),
+    );
+    assert_eq!(apply(&conn, &duplicate), ApplyDisposition::Rejected);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM tuning_pool_decisions", [], |row| row
+            .get(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn pair_replay_projects_two_games_and_their_trace_references() {
     let conn = fixture();
     for item in started_trial_events() {

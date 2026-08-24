@@ -312,8 +312,8 @@ def test_stop_before_scheduling_emits_only_attempt_stop_and_releases_lock(
     assert records[0]["payload"] == {"reason": "coordinator interrupted"}
     assert not study.trials
     assert not executor.calls
-    with LifecycleWriter(event_path, SessionId("session"), AttemptId("next")):
-        pass
+    with pytest.raises(ValueError, match="precedes attempt_started"):
+        LifecycleWriter(event_path, SessionId("session"), AttemptId("next"))
 
 
 @pytest.mark.parametrize("workers", [1, 2])
@@ -657,9 +657,10 @@ def test_completion_precedes_a_pending_prune(
     assert reports[0]["reason"] == expected_reason
     assert adapter.observed == 0
     assert len(tells) == 1
-    assert [r["event_type"] for r in records][-2:] == [
+    assert [r["event_type"] for r in records][-3:] == [
         "trial_reported",
         "trial_completed",
+        "pool_anchor_decided",
     ]
     assert not futures
     assert not executor.calls
@@ -988,11 +989,15 @@ def test_complete_pairs_report_consecutive_resources_before_max_terminal(
     ]
     assert all(report["score_formula_version"] == 1 for report in reports)
     assert all(report["conservative_k"] == 2.5 for report in reports)
-    assert records[-2]["event_type"] == "trial_reported"
-    assert records[-1]["event_type"] == "trial_completed"
-    assert records[-1]["payload"]["reason"] == "max_pairs"
+    assert [record["event_type"] for record in records[-3:]] == [
+        "trial_reported",
+        "trial_completed",
+        "pool_anchor_decided",
+    ]
+    assert records[-2]["payload"]["reason"] == "max_pairs"
+    assert records[-1]["payload"]["reason"] == "champion"
     assert {
-        key: records[-1]["payload"][key]
+        key: records[-2]["payload"][key]
         for key in (
             "completed_pairs",
             "score_formula_version",
@@ -1058,12 +1063,13 @@ def test_confidence_completion_reports_before_its_terminal_evidence(tmp_path: Pa
         json.loads(line)
         for line in (tmp_path / "events.jsonl").read_text().splitlines()
     ]
-    assert [record["event_type"] for record in records[-2:]] == [
+    assert [record["event_type"] for record in records[-3:]] == [
         "trial_reported",
         "trial_completed",
+        "pool_anchor_decided",
     ]
     assert records[-2]["payload"]["reason"] == "confidence"
-    assert records[-1]["payload"]["reason"] == "confidence"
+    assert records[-1]["payload"]["reason"] == "champion"
 
 
 def test_two_active_trials_complete_once_each_with_one_pair_resource(tmp_path: Path):

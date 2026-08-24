@@ -8,11 +8,11 @@ use serde_json::Value;
 pub use payload::{
     AttemptRecoveredPayload, AttemptStartedPayload, AttemptTerminalPayload, CandidateSide,
     GameFinishedPayload, OpponentSnapshot, PairFailedPayload, PairFinishedPayload,
-    PairStartedPayload, PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot,
-    PoolRevisedPayload, Rating, RecoveredTrialPayload, RecoveryTrialReason, SessionStartedPayload,
-    StrategyMetrics, TrialCreatedPayload, TrialReportOutcome, TrialReportReason,
-    TrialReportedPayload, TrialStartedPayload, TrialTerminalPayload, TuningGameOutcome,
-    TuningPayload,
+    PairStartedPayload, PoolAnchorDecidedPayload, PoolAnchorInsertionReason, PoolAnchorProvenance,
+    PoolAnchorSnapshot, PoolDecisionAction, PoolDecisionReason, PoolRevisedPayload, Rating,
+    RecoveredTrialPayload, RecoveryTrialReason, SessionStartedPayload, StrategyMetrics,
+    TrialCreatedPayload, TrialReportOutcome, TrialReportReason, TrialReportedPayload,
+    TrialStartedPayload, TrialTerminalPayload, TuningGameOutcome, TuningPayload,
 };
 
 pub const TUNING_LIFECYCLE_SCHEMA_VERSION: u32 = 1;
@@ -52,6 +52,7 @@ pub enum TuningEventType {
     AttemptStarted,
     AttemptRecovered,
     PoolRevised,
+    PoolAnchorDecided,
     TrialCreated,
     TrialStarted,
     TrialReported,
@@ -114,6 +115,7 @@ impl TuningEventType {
             Self::AttemptStarted => "attempt_started",
             Self::AttemptRecovered => "attempt_recovered",
             Self::PoolRevised => "pool_revised",
+            Self::PoolAnchorDecided => "pool_anchor_decided",
             Self::TrialCreated => "trial_created",
             Self::TrialStarted => "trial_started",
             Self::TrialReported => "trial_reported",
@@ -211,6 +213,7 @@ impl TuningLifecycleEvent {
             TuningPayload::GameFinished(value) => Some(value.trial_id),
             TuningPayload::PairFinished(value) => Some(value.trial_id),
             TuningPayload::PairFailed(value) => Some(value.trial_id),
+            TuningPayload::PoolAnchorDecided(value) => Some(value.trial_id),
             _ => None,
         })
     }

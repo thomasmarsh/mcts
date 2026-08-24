@@ -2,8 +2,8 @@ use duckdb::{params, Transaction};
 use std::collections::HashSet;
 
 use crate::tuning_lifecycle::{
-    PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, TuningEventType,
-    TuningLifecycleEvent, TuningPayload,
+    PoolAnchorInsertionReason, PoolAnchorProvenance, PoolAnchorSnapshot, PoolDecisionAction,
+    PoolDecisionReason, TuningEventType, TuningLifecycleEvent, TuningPayload,
 };
 
 use super::TuningStoreError;
@@ -66,11 +66,100 @@ pub(super) fn validate(
     if event.event_type == TuningEventType::PoolRevised {
         return validate_pool_revision(tx, event);
     }
+    if event.event_type == TuningEventType::PoolAnchorDecided {
+        return validate_pool_anchor_decided(tx, event);
+    }
     if event.event_type.is_pair() {
         return validate_pair(tx, event);
     }
     if event.event_type.is_trial() {
         return validate_trial(tx, event);
+    }
+    Ok(None)
+}
+
+fn validate_pool_anchor_decided(
+    tx: &Transaction<'_>,
+    event: &TuningLifecycleEvent,
+) -> Result<Option<String>, TuningStoreError> {
+    let TuningPayload::PoolAnchorDecided(payload) =
+        event.typed_payload().expect("validated payload")
+    else {
+        unreachable!()
+    };
+    if payload.before_pool_snapshot_fingerprint.is_empty()
+        || payload.after_pool_snapshot_fingerprint.is_empty()
+    {
+        return Ok(Some("pool decision is missing a fingerprint".into()));
+    }
+    let source: Option<String> = tx
+        .query_row(
+            "SELECT status FROM tuning_trials WHERE session_id = ?1 AND trial_id = ?2",
+            params![event.session_id.as_str(), payload.trial_id.as_str()],
+            |row| row.get(0),
+        )
+        .ok();
+    if source.as_deref() != Some("complete") {
+        return Ok(Some(
+            "pool decision requires a completed source trial".into(),
+        ));
+    }
+    let duplicate: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM tuning_pool_decisions WHERE session_id = ?1 AND trial_id = ?2",
+        params![event.session_id.as_str(), payload.trial_id.as_str()],
+        |row| row.get(0),
+    )?;
+    if duplicate != 0 {
+        return Ok(Some("completed trial already has a pool decision".into()));
+    }
+    let terminal_sequence: Option<i64> = tx.query_row(
+        "SELECT session_sequence FROM tuning_lifecycle_events WHERE session_id = ?1 AND event_type = 'trial_completed' AND json_extract_string(payload, '$.trial_id') = ?2 AND accepted = true",
+        params![event.session_id.as_str(), payload.trial_id.as_str()],
+        |row| row.get(0),
+    ).ok();
+    if terminal_sequence.is_none_or(|sequence| sequence >= event.session_sequence as i64) {
+        return Ok(Some("pool decision must follow its completed trial".into()));
+    }
+    let next_undecided: Option<String> = tx
+        .query_row(
+            "SELECT json_extract_string(event.payload, '$.trial_id') FROM tuning_lifecycle_events event WHERE event.session_id = ?1 AND event.event_type = 'trial_completed' AND event.accepted = true AND NOT EXISTS (SELECT 1 FROM tuning_pool_decisions decision WHERE decision.session_id = event.session_id AND decision.trial_id = json_extract_string(event.payload, '$.trial_id')) ORDER BY event.session_sequence LIMIT 1",
+            params![event.session_id.as_str()],
+            |row| row.get(0),
+        )
+        .ok();
+    if next_undecided.as_deref() != Some(payload.trial_id.as_str()) {
+        return Ok(Some(
+            "pool decisions must follow completed-trial order".into(),
+        ));
+    }
+    match (payload.action, payload.reason, &payload.anchor) {
+        (PoolDecisionAction::Rejected, PoolDecisionReason::Covered, None)
+            if payload.before_pool_snapshot_fingerprint
+                == payload.after_pool_snapshot_fingerprint => {}
+        (
+            PoolDecisionAction::Inserted,
+            PoolDecisionReason::Champion | PoolDecisionReason::SkillBand,
+            Some(anchor),
+        ) if payload.before_pool_snapshot_fingerprint
+            != payload.after_pool_snapshot_fingerprint
+            && anchors_are_valid(std::slice::from_ref(anchor))
+            && anchor.provenance == PoolAnchorProvenance::Trial
+            && anchor.source_trial_id.as_deref() == Some(payload.trial_id.as_str())
+            && matches!(
+                (payload.reason, anchor.insertion_reason),
+                (
+                    PoolDecisionReason::Champion,
+                    PoolAnchorInsertionReason::Champion
+                ) | (
+                    PoolDecisionReason::SkillBand,
+                    PoolAnchorInsertionReason::SkillBand
+                )
+            ) => {}
+        _ => {
+            return Ok(Some(
+                "pool decision action, reason, or anchor is invalid".into(),
+            ))
+        }
     }
     Ok(None)
 }

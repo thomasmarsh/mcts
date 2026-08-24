@@ -28,6 +28,7 @@ EVENT_TYPES: Final = frozenset(
         "attempt_started",
         "attempt_recovered",
         "pool_revised",
+        "pool_anchor_decided",
         "trial_created",
         "trial_started",
         "trial_reported",
