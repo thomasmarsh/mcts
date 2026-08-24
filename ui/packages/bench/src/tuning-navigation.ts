@@ -39,12 +39,15 @@ export interface TuningNavigationState {
   overview: TuningLoadState<TuningAnalysisOverview> & { sessionId: string | null };
   trialPage: TuningTrialPageState;
   trialDetails: Record<string, TuningTrialDetailState>;
-  tab: "progress" | "pruning" | "trials" | "game";
+  tab: "progress" | "pruning" | "ladder" | "trials" | "game";
   progressMetric: TuningProgressMetric;
   progressScale: TuningProgressScale;
   filters: TuningTrialFilters;
   sort: TuningTrialSort;
   trialPageLimit: number;
+  /** Immutable-pool selectors are user-owned and never follow refreshes. */
+  ladderRevision: number | null;
+  ladderAnchorKey: string | null;
   selection: TuningSelection;
   expandedIds: string[];
   unavailable: string | null;
@@ -69,12 +72,14 @@ export type TuningNavigationAction =
   | { tag: "trialDetailFailed"; generation: number; sessionId: string; trialId: string; error: string }
   | { tag: "selectSession"; sessionId: string }
   | { tag: "clearSession" }
-  | { tag: "setAnalysisTab"; tab: "progress" | "pruning" | "trials" | "game" }
+  | { tag: "setAnalysisTab"; tab: "progress" | "pruning" | "ladder" | "trials" | "game" }
   | { tag: "setProgressMetric"; metric: TuningProgressMetric }
   | { tag: "setProgressScale"; scale: TuningProgressScale }
   | { tag: "setTrialFilters"; filters: Partial<TuningTrialFilters> }
   | { tag: "setTrialSort"; sort: TuningTrialSort }
   | { tag: "setTrialPageLimit"; limit: number }
+  | { tag: "setLadderRevision"; revision: number | null }
+  | { tag: "selectLadderAnchor"; anchorKey: string | null }
   | { tag: "nextTrialPage" }
   | { tag: "previousTrialPage" }
   | { tag: "selectAttempt"; attemptId: string }
@@ -94,6 +99,7 @@ export function initialTuningNavigationState(): TuningNavigationState {
     overview: { ...loadState<TuningAnalysisOverview>(), sessionId: null }, trialPage: pageState(), trialDetails: {},
     tab: "progress", progressMetric: "score", progressScale: "shared",
     filters: defaultFilters(), sort: { sort: "trial", direction: "desc" }, trialPageLimit: DEFAULT_TRIAL_PAGE_LIMIT,
+    ladderRevision: null, ladderAnchorKey: null,
     selection: { sessionId: null, attemptId: null, trialId: null, pairId: null, gameId: null }, expandedIds: [], unavailable: null,
   };
 }
@@ -259,18 +265,23 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   if (action.tag === "selectSession") {
     state.selection = selectionForSession(action.sessionId);
     state.tab = sessionCanAnalyze(state, action.sessionId) ? "progress" : "game";
+    state.ladderRevision = null; state.ladderAnchorKey = null;
     state.unavailable = null; clearAnalysis(state);
     return merge(requestDetail(state, action.sessionId, env), requestOverview(state, action.sessionId, env));
   }
   if (action.tag === "clearSession") {
-    state.selection = selectionForSession(null); clearDetail(state); clearAnalysis(state); state.unavailable = null; return null;
+    state.selection = selectionForSession(null); state.ladderRevision = null; state.ladderAnchorKey = null; clearDetail(state); clearAnalysis(state); state.unavailable = null; return null;
   }
   if (action.tag === "setAnalysisTab") {
     state.tab = action.tab;
-    return action.tab === "trials" && state.selection.sessionId && state.trialPage.snapshot === null ? requestTrialPage(state, state.selection.sessionId, env) : null;
+    if (action.tab === "trials" && state.selection.sessionId && state.trialPage.snapshot === null) return requestTrialPage(state, state.selection.sessionId, env);
+    if (action.tab === "ladder" && state.selection.sessionId && state.selection.trialId) return requestTrialDetail(state, state.selection.sessionId, state.selection.trialId, env);
+    return null;
   }
   if (action.tag === "setProgressMetric") { state.progressMetric = action.metric; return null; }
   if (action.tag === "setProgressScale") { state.progressScale = action.scale; return null; }
+  if (action.tag === "setLadderRevision") { state.ladderRevision = action.revision; return null; }
+  if (action.tag === "selectLadderAnchor") { state.ladderAnchorKey = action.anchorKey; return null; }
   if (action.tag === "setTrialFilters" || action.tag === "setTrialSort" || action.tag === "setTrialPageLimit") {
     if (action.tag === "setTrialFilters") state.filters = { ...state.filters, ...action.filters };
     else if (action.tag === "setTrialSort") state.sort = action.sort;
@@ -290,7 +301,10 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
     return requestTrialPage(state, state.selection.sessionId, env);
   }
   if (action.tag === "selectAttempt") selectAttempt(state, action.attemptId);
-  if (action.tag === "selectTrial") selectTrial(state, action.trialId);
+  if (action.tag === "selectTrial") {
+    selectTrial(state, action.trialId);
+    return state.tab === "ladder" && state.selection.sessionId ? requestTrialDetail(state, state.selection.sessionId, action.trialId, env) : null;
+  }
   if (action.tag === "selectPair") selectPair(state, action.pairId);
   if (action.tag === "selectGame") selectGame(state, action.gameId);
   if (action.tag === "toggleExpanded") state.expandedIds = state.expandedIds.includes(action.id) ? state.expandedIds.filter((id) => id !== action.id) : [...state.expandedIds, action.id];

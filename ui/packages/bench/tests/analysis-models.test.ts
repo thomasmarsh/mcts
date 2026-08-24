@@ -6,7 +6,10 @@ import {
   decisionGroupRows,
   exactPlotRows,
   highlightSelectedTrial,
+  ladderAnchorRows,
+  ladderMuDomain,
   opponentDistances,
+  candidateRatingTrajectory,
   poolRevisionCoverage,
   pruningFunnelRows,
   reasonSymbol,
@@ -164,5 +167,35 @@ describe("tuning analysis models", () => {
       pairId: "pair-2", pairIndex: 2, opponentId: "anchor", candidateMu: 20, opponentMu: 17,
       deltaMu: 3, absoluteMuDistance: 3, candidateSigma: 3, opponentSigma: 1, deltaSigma: 2,
     }]);
+  });
+
+  it("keeps immutable anchor snapshots distinct while deriving intervals and selected-trial ratings", () => {
+    const historical = {
+      ...overview,
+      pool_revisions: [
+        { pool_snapshot_fingerprint: "rev-3", display_ordinal: 3, observed_at: "", pair_count: 2, anchors: [
+          { anchor_ordinal: 2, anchor_id: "anchor-a", config: { family: "rave" }, rating: { mu: 25, sigma: 1 }, provenance: "candidate", insertion_reason: "promotion", source_trial_id: "trial-2" },
+          { anchor_ordinal: 1, anchor_id: "anchor-b", config: { family: "ucb" }, rating: { mu: 16, sigma: 3 }, provenance: "baseline", insertion_reason: "seed", source_trial_id: null },
+        ] },
+        { pool_snapshot_fingerprint: "rev-1", display_ordinal: 1, observed_at: "", pair_count: 1, anchors: [
+          { anchor_ordinal: 1, anchor_id: "anchor-a", config: { family: "rave" }, rating: { mu: 20, sigma: 2 }, provenance: "candidate", insertion_reason: "promotion", source_trial_id: "trial-1" },
+        ] },
+      ],
+    };
+    const anchors = ladderAnchorRows(historical, null, "rev-3:anchor-a");
+    expect(anchors.map((row) => [row.key, row.lower, row.upper, row.historyOrdinals, row.selected])).toEqual([
+      ["rev-1:anchor-a", 16, 24, [1, 3], false],
+      ["rev-3:anchor-b", 10, 22, [3], false],
+      ["rev-3:anchor-a", 23, 27, [1, 3], true],
+    ]);
+    expect(ladderAnchorRows(historical, 3).map((row) => row.anchorId)).toEqual(["anchor-b", "anchor-a"]);
+    const candidate = candidateRatingTrajectory({ reports: [
+      { completed_pairs: 4, rating: { mu: 24, sigma: 1 }, score: 21, score_formula_version: 1, conservative_k: 3, decision: { outcome: "complete", reason: "max_pairs", pruning_exempt: false, bracket_id: null, rung_resource: null }, reported_at: "" },
+      { completed_pairs: 2, rating: { mu: 18, sigma: 2 }, score: 12, score_formula_version: 1, conservative_k: 3, decision: { outcome: "continue", reason: "hyperband_keep", pruning_exempt: false, bracket_id: null, rung_resource: null }, reported_at: "" },
+    ] });
+    expect(candidate.map((point) => point.resource)).toEqual([2, 4]);
+    expect(ladderMuDomain(anchors, candidate)).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
+    expect(ladderMuDomain(anchors, candidate)[0]).toBeLessThanOrEqual(10);
+    expect(ladderMuDomain(anchors, candidate)[1]).toBeGreaterThanOrEqual(27);
   });
 });

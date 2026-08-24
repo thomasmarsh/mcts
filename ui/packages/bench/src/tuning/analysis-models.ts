@@ -134,8 +134,41 @@ export interface OpponentDistance {
   deltaSigma: number;
 }
 
+export interface LadderAnchorRow {
+  key: string;
+  revisionOrdinal: number;
+  revisionFingerprint: string;
+  revisionObservedAt: string;
+  anchorOrdinal: number;
+  anchorId: string;
+  config: TuningPoolRevision["anchors"][number]["config"];
+  mu: number;
+  sigma: number;
+  lower: number;
+  upper: number;
+  provenance: string;
+  insertionReason: string;
+  sourceTrialId: string | null;
+  family: string | null;
+  historyOrdinals: number[];
+  selected: boolean;
+}
+
+export interface CandidateRatingPoint {
+  resource: number;
+  mu: number;
+  sigma: number;
+  score: number;
+}
+
 function compareText(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function configFamily(config: unknown): string | null {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return null;
+  const family = (config as Record<string, unknown>).family;
+  return typeof family === "string" && family.length > 0 ? family : null;
 }
 
 function bracketKey(bracketId: string | null): string {
@@ -380,6 +413,68 @@ export function poolRevisionCoverage(overview: TuningAnalysisOverview): PoolRevi
     anchorCount: rows.reduce((total, row) => total + row.anchorCount, 0),
     unmatchedPoolRevisions: overview.coverage.pairs.unmatched_pool_revisions,
   };
+}
+
+/** Immutable anchor snapshots for one revision or every stored revision. */
+export function ladderAnchorRows(
+  overview: TuningAnalysisOverview,
+  revisionOrdinal: number | null = null,
+  selectedAnchorKey: string | null = null,
+): LadderAnchorRow[] {
+  const revisions = poolRevisionCoverage(overview).revisions;
+  const history = new Map<string, number[]>();
+  for (const revision of revisions) {
+    for (const anchor of revision.anchors) {
+      const ordinals = history.get(anchor.anchor_id) ?? [];
+      ordinals.push(revision.display_ordinal);
+      history.set(anchor.anchor_id, ordinals);
+    }
+  }
+  return revisions
+    .filter((revision) => revisionOrdinal === null || revision.display_ordinal === revisionOrdinal)
+    .flatMap((revision) => revision.anchors.map((anchor) => ({
+      key: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}`,
+      revisionOrdinal: revision.display_ordinal,
+      revisionFingerprint: revision.pool_snapshot_fingerprint,
+      revisionObservedAt: revision.observed_at,
+      anchorOrdinal: anchor.anchor_ordinal,
+      anchorId: anchor.anchor_id,
+      config: anchor.config,
+      mu: anchor.rating.mu,
+      sigma: anchor.rating.sigma,
+      lower: anchor.rating.mu - 2 * anchor.rating.sigma,
+      upper: anchor.rating.mu + 2 * anchor.rating.sigma,
+      provenance: anchor.provenance,
+      insertionReason: anchor.insertion_reason,
+      sourceTrialId: anchor.source_trial_id,
+      family: configFamily(anchor.config),
+      historyOrdinals: history.get(anchor.anchor_id) ?? [],
+      selected: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}` === selectedAnchorKey,
+    })))
+    .sort((a, b) => a.revisionOrdinal - b.revisionOrdinal || a.anchorOrdinal - b.anchorOrdinal || compareText(a.anchorId, b.anchorId));
+}
+
+/** Recorded rating reports for a selected trial; no terminal value is fabricated. */
+export function candidateRatingTrajectory(trial: Pick<TuningTrialDetailView, "reports"> | null): CandidateRatingPoint[] {
+  if (trial === null) return [];
+  return [...trial.reports]
+    .sort((a, b) => a.completed_pairs - b.completed_pairs)
+    .map((report) => ({ resource: report.completed_pairs, mu: report.rating.mu, sigma: report.rating.sigma, score: report.score }));
+}
+
+/** A stable μ domain that contains every displayed immutable interval and candidate report. */
+export function ladderMuDomain(anchors: readonly LadderAnchorRow[], candidate: readonly CandidateRatingPoint[] = [], opponents: readonly OpponentDistance[] = []): [number, number] {
+  const values = [
+    ...anchors.flatMap((anchor) => [anchor.lower, anchor.upper]),
+    ...candidate.flatMap((point) => [point.mu - 2 * point.sigma, point.mu + 2 * point.sigma]),
+    ...opponents.flatMap((opponent) => [opponent.candidateMu, opponent.opponentMu]),
+  ].filter(Number.isFinite);
+  if (values.length === 0) return [0, 1];
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  if (low === high) return [low - 1, high + 1];
+  const padding = (high - low) * 0.06;
+  return [low - padding, high + padding];
 }
 
 /** Distance is the recorded candidate rating before the pair versus that pair's recorded opponent. */

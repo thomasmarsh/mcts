@@ -93,6 +93,18 @@ describe("tuningNavigationReducer analysis state", () => {
     expect(ts.getState().selection).toEqual({ sessionId: "session-1", attemptId: "a", trialId: "trial-1", pairId: null, gameId: null });
   });
 
+  it("keeps ladder revision and immutable anchor selection user-owned while lazily loading its selected trial", () => {
+    let details = 0;
+    const initial = initialTuningNavigationState();
+    initial.selection = { sessionId: "session-1", attemptId: null, trialId: "trial-1", pairId: null, gameId: null };
+    const ts = createTestStore(reducer, env({ getTuningTrialDetail: () => { details += 1; return Effect.none(); } }), initial);
+    ts.send({ tag: "setAnalysisTab", tab: "ladder" }, (s) => { s.tab = "ladder"; s.trialDetails["trial-1"] = { status: "loading", snapshot: null, error: null, generation: 1, sessionId: "session-1", trialId: "trial-1" }; });
+    ts.send({ tag: "setLadderRevision", revision: 3 }, (s) => { s.ladderRevision = 3; });
+    ts.send({ tag: "selectLadderAnchor", anchorKey: "pool-3:anchor-a" }, (s) => { s.ladderAnchorKey = "pool-3:anchor-a"; });
+    expect(details).toBe(1);
+    expect(ts.getState()).toMatchObject({ tab: "ladder", ladderRevision: 3, ladderAnchorKey: "pool-3:anchor-a", selection: { trialId: "trial-1" } });
+  });
+
   it("invalidates in-flight analysis when a newer session wins a rapid switch", () => {
     const initial = initialTuningNavigationState();
     initial.list.snapshot = { ...sessions, sessions: [...sessions.sessions, { ...sessions.sessions[0]!, session_id: "session-2" }] };

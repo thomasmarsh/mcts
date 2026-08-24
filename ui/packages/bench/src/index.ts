@@ -100,6 +100,9 @@ export {
   trialTrajectoriesFromRows,
   trialPageSummary,
   poolRevisionCoverage,
+  ladderAnchorRows,
+  candidateRatingTrajectory,
+  ladderMuDomain,
   opponentDistances,
   highlightSelectedTrial,
 } from "./tuning/analysis-models.js";
@@ -119,6 +122,8 @@ export type {
   TrialSummaryRow,
   TrialPageSummary,
   PoolRevisionCoverage,
+  LadderAnchorRow,
+  CandidateRatingPoint,
   OpponentDistance,
 } from "./tuning/analysis-models.js";
 export {

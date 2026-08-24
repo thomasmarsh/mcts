@@ -1,12 +1,13 @@
-import { For, Show, createMemo, createSignal, type Component } from "solid-js";
+import { For, Show, createMemo, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import type { BenchAction } from "../reducer.js";
 import type { BenchState } from "../state.js";
 import type { TuningNavigationAction } from "../tuning-navigation.js";
 import type { TuningTrialDetail, TuningTrialDetailGame, TuningTrialDetailPair, TuningTrialDetailView, TuningTrialPageQuery, TuningTrialSummary } from "../types.js";
 import { opponentDistances, trialPageSummary } from "./analysis-models.js";
-import { buildPresetSpec, candidatePresetSource, copyPreset, opponentPresetSource, type PresetBuildResult, type PresetCopyState } from "./preset-copy.js";
+import { buildPresetSpec, candidatePresetSource, opponentPresetSource } from "./preset-copy.js";
 import { formatRating, formatScore, jsonText } from "./tuning-view-model.js";
+import { PresetCopyAction } from "./PresetCopyAction.js";
 
 const PAGE_SIZES = [50, 100, 200] as const;
 
@@ -22,24 +23,6 @@ function detailState(state: string): string {
   return state.replaceAll("_", " ");
 }
 
-const CopyPreset: Component<{ label: string; build: PresetBuildResult }> = (props) => {
-  const [status, setStatus] = createSignal<PresetCopyState | null>(null);
-  const unavailable = () => !props.build.enabled;
-  const announcement = () => status()?.announcement ?? (props.build.enabled ? "" : props.build.reason.message);
-  async function copy(): Promise<void> {
-    if (!props.build.enabled || !navigator.clipboard) return;
-    setStatus(await copyPreset(props.build, navigator.clipboard));
-  }
-  return (
-    <span class="tuning-copy-action">
-      <button type="button" disabled={unavailable()} title={unavailable() ? announcement() : `Copy ${props.label} as a preset`} onClick={() => void copy()}>
-        {unavailable() ? `${props.label} unavailable` : `Copy ${props.label}`}
-      </button>
-      <Show when={announcement()}><span class="tuning-copy-status" role="status">{announcement()}</span></Show>
-    </span>
-  );
-};
-
 const CandidateConfig: Component<{ trial: TuningTrialDetailView }> = (props) => {
   const build = createMemo(() => buildPresetSpec(candidatePresetSource(props.trial)));
   return (
@@ -48,7 +31,7 @@ const CandidateConfig: Component<{ trial: TuningTrialDetailView }> = (props) => 
       <Show when={props.trial.config !== null} fallback={<p class="tuning-not-recorded">Not recorded — this legacy trial did not record a candidate configuration.</p>}>
         <pre class="tuning-json">{jsonText(props.trial.config)}</pre>
       </Show>
-      <CopyPreset label="candidate preset" build={build()} />
+      <PresetCopyAction label="candidate preset" build={build()} />
     </section>
   );
 };
@@ -104,7 +87,7 @@ const PairDetail: Component<{ pair: TuningTrialDetailPair; candidate: TuningTria
         <dt>Pair score</dt><dd>{formatScore(props.pair.score)}</dd>
       </dl>
       <pre class="tuning-json">{jsonText(anchor().config)}</pre>
-      <CopyPreset label="opponent preset" build={copyBuild()} />
+      <PresetCopyAction label="opponent preset" build={copyBuild()} />
       <ul class="tuning-pair-games" aria-label={`Games for pair ${props.pair.pair_index + 1}`}>
         <For each={props.pair.games}>{(game, index) => <li>
           Game {index() + 1}: candidate {game.candidate_side}, {game.outcome}, seed {game.seed}, {game.plies} plies, {game.elapsed_ms} ms. <ReplayLinks game={game} />
