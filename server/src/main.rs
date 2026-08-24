@@ -335,7 +335,10 @@ async fn main() {
         Arc::new(bench::lifecycle::SystemClock),
     ));
     let bench_state = Arc::new(bench::BenchState {
-        db: bench_db,
+        db: bench_db.clone(),
+        run_repository: Arc::new(
+            mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(bench_db),
+        ),
         bench_runs_dir,
         experiment_validator: Arc::new(bench::validate_experiment_spec),
         run_launcher: Arc::new(|run_id, command, kind, game, label| {

@@ -27,6 +27,7 @@ use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::run_repository::{RunRepository, RunRepositoryError};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
@@ -212,22 +213,7 @@ pub(crate) async fn get_run_stdout(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<String, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    let log_path: String = match db.query_row(
-        "SELECT log_path FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| row.get(0),
-    ) {
-        Ok(p) => p,
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
-        }
-        Err(e) => return Err(BenchError::from(e)),
-    };
+    let log_path = load_run_log_path(state.run_repository.as_ref(), &run_id)?;
 
     // stdout.log is a sibling of log.jsonl.
     let log_path_obj = Path::new(&log_path);
@@ -241,6 +227,64 @@ pub(crate) async fn get_run_stdout(
     }
 
     Ok(std::fs::read_to_string(&stdout_path)?)
+}
+
+fn load_run_log_path(repository: &dyn RunRepository, run_id: &str) -> Result<String, BenchError> {
+    repository
+        .load_log_path(run_id)
+        .map_err(|error| match error {
+            RunRepositoryError::NotFound => BenchError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("run '{run_id}' not found"),
+            },
+            RunRepositoryError::Storage(message) => BenchError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("run storage error: {message}"),
+            },
+        })
+}
+
+#[cfg(test)]
+mod run_repository_tests {
+    use super::*;
+
+    struct FakeRunRepository {
+        result: Result<String, RunRepositoryError>,
+    }
+
+    impl RunRepository for FakeRunRepository {
+        fn load_log_path(&self, _: &str) -> Result<String, RunRepositoryError> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn log_path_lookup_uses_logical_not_found_error() {
+        let error = load_run_log_path(
+            &FakeRunRepository {
+                result: Err(RunRepositoryError::NotFound),
+            },
+            "missing",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::NOT_FOUND);
+        assert_eq!(error.message, "run 'missing' not found");
+    }
+
+    #[test]
+    fn log_path_lookup_uses_logical_storage_error() {
+        let error = load_run_log_path(
+            &FakeRunRepository {
+                result: Err(RunRepositoryError::Storage("unavailable".into())),
+            },
+            "known",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.message, "run storage error: unavailable");
+    }
 }
 
 /// `GET /api/bench/runs/{run_id}/log?since=<offset>`

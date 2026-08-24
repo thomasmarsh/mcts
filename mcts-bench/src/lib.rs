@@ -22,6 +22,9 @@ pub mod ingest;
 pub mod projects_attempt;
 #[cfg(feature = "duckdb")]
 pub mod projects_attempt_duckdb;
+pub mod run_repository;
+#[cfg(feature = "duckdb")]
+pub mod run_repository_duckdb;
 #[cfg(feature = "duckdb")]
 pub mod schema;
 #[cfg(feature = "duckdb")]
