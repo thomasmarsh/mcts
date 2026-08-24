@@ -1513,3 +1513,230 @@ fn malformed_search_report_does_not_advance_the_move_cursor() {
     assert_eq!(cursor, None);
     assert_eq!(fixture.count("game_moves"), 0);
 }
+
+fn artifact_task_id(number: u64) -> String {
+    format!("task-{number:032x}")
+}
+
+fn artifact_descriptor(run_id: &str, task_id: &str, sequence: u64) -> serde_json::Value {
+    serde_json::json!({
+        "artifact_layout_schema_version": 1, "attempt_id": format!("attempt-{run_id}"),
+        "bench_run_id": run_id, "binary": {}, "candidate_config": {}, "created_at": "2026-01-01T00:00:00Z",
+        "game": {}, "game_ids": {}, "manifest_fingerprint": "manifest", "opponent": {}, "optimizer_id": "optimizer",
+        "pair_id": "pair", "pair_index": 0, "pool_snapshot": [], "pool_snapshot_fingerprint": "pool",
+        "rating_before": {}, "schema_version": 1, "search_budget": {}, "seed": 1, "session_id": "session",
+        "task_directory": format!("tasks/{task_id}"), "task_id": task_id, "task_sequence": sequence,
+        "trace_game_sequences": {}, "trial_id": "trial"
+    })
+}
+
+fn artifact_fixture(run_id: &str) -> (TestFixture, std::path::PathBuf) {
+    let fixture = TestFixture::new(&[]);
+    let run_dir = fixture.bench_runs.join(run_id);
+    fs::create_dir_all(&run_dir).unwrap();
+    let log_path = run_dir.join("log.jsonl");
+    fs::write(&log_path, "").unwrap();
+    fixture.db.execute(
+        "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
+         VALUES (?1, 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', ?2)",
+        duckdb::params![run_id, log_path.to_string_lossy().to_string()],
+    ).unwrap();
+    let root = run_dir.join("tuning-artifacts");
+    fs::create_dir_all(root.join("descriptors")).unwrap();
+    fs::write(root.join("attempt.json"), serde_json::to_vec(&serde_json::json!({
+        "artifact_layout_schema_version": 1, "attempt_id": format!("attempt-{run_id}"), "bench_run_id": run_id,
+        "created_at": "2026-01-01T00:00:00Z", "manifest_fingerprint": "manifest", "optimizer_id": "optimizer",
+        "schema_version": 1, "session_id": "session"
+    })).unwrap()).unwrap();
+    (fixture, root)
+}
+
+fn write_artifact_completion(
+    task_root: &std::path::Path,
+    task_id: &str,
+    attempt_id: &str,
+    descriptor: &[u8],
+    outcome: &str,
+) {
+    let terminal_name = if outcome == "completed" {
+        "result.json"
+    } else {
+        "failure.json"
+    };
+    fs::write(task_root.join(terminal_name), b"{}\n").unwrap();
+    fs::write(task_root.join("stdout.log"), b"out\n").unwrap();
+    fs::write(task_root.join("stderr.log"), b"err\n").unwrap();
+    let member = |name: &str| {
+        let bytes = fs::read(task_root.join(name)).unwrap();
+        serde_json::json!({"filename": name, "digest": super::artifacts::digest(&bytes), "byte_length": bytes.len()})
+    };
+    let trace = member("trace.jsonl");
+    let complete = serde_json::json!({
+        "attempt_id": attempt_id, "descriptor_digest": super::artifacts::digest(descriptor), "outcome": outcome,
+        "schema_version": 1, "stderr": member("stderr.log"), "stdout": member("stdout.log"), "task_id": task_id,
+        "terminal": member(terminal_name), "trace": trace
+    });
+    fs::write(
+        task_root.join("complete.json"),
+        serde_json::to_vec(&complete).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn partitioned_artifacts_tail_complete_lines_and_terminalize_once() {
+    let (fixture, root) = artifact_fixture("artifact-run");
+    let task_id = artifact_task_id(1);
+    let descriptor_path = root
+        .join("descriptors")
+        .join(format!("{:019}-{task_id}.json", 1));
+    let descriptor = serde_json::to_vec(&artifact_descriptor("artifact-run", &task_id, 1)).unwrap();
+    fs::write(&descriptor_path, &descriptor).unwrap();
+    let task_root = root.join("tasks").join(&task_id);
+    fs::create_dir_all(&task_root).unwrap();
+    let first = LogRecord::Move {
+        trace_schema_version: None,
+        game_seq: 1,
+        ply: 0,
+        state: serde_json::json!({"n": 0}),
+        mv: None,
+        player: None,
+        search: None,
+    }
+    .to_json_line();
+    let second = LogRecord::Move {
+        trace_schema_version: Some(1),
+        game_seq: 1,
+        ply: 1,
+        state: serde_json::json!({"n": 1}),
+        mv: Some(serde_json::json!(1)),
+        player: Some("a".into()),
+        search: Some(report(
+            "partial",
+            serde_json::json!("root_parallel_pv_single_tree"),
+        )),
+    }
+    .to_json_line();
+    fs::write(
+        task_root.join("trace.jsonl"),
+        format!("{first}\n{}", &second[..second.len() - 1]),
+    )
+    .unwrap();
+
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(fixture.count("artifact_tasks"), 1);
+    assert_eq!(fixture.count("game_moves"), 1);
+    let first_cursor: i64 = fixture
+        .db
+        .query_row(
+            "SELECT byte_offset FROM _artifact_trace_cursor",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(first_cursor as usize, first.len() + 1);
+
+    use std::io::Write;
+    let mut trace = fs::OpenOptions::new()
+        .append(true)
+        .open(task_root.join("trace.jsonl"))
+        .unwrap();
+    write!(trace, "{}\n", &second[second.len() - 1..]).unwrap();
+    write_artifact_completion(
+        &task_root,
+        &task_id,
+        "attempt-artifact-run",
+        &descriptor,
+        "completed",
+    );
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(fixture.count("game_moves"), 2);
+    assert_eq!(
+        fixture.query_string("SELECT search_status FROM game_moves WHERE ply = 1"),
+        "partial"
+    );
+    assert_eq!(
+        fixture.query_string("SELECT status FROM artifact_tasks"),
+        "completed"
+    );
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(
+        fixture.count("game_moves"),
+        2,
+        "completed artifacts are immutable and are not re-polled"
+    );
+
+    let rebuilt = duckdb::Connection::open_in_memory().unwrap();
+    ensure_schema(&rebuilt).unwrap();
+    rebuilt
+        .execute(
+            "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
+             VALUES ('artifact-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', ?1)",
+            duckdb::params![fixture.bench_runs.join("artifact-run/log.jsonl").to_string_lossy().to_string()],
+        )
+        .unwrap();
+    ingest_once(&rebuilt, &fixture.bench_runs).unwrap();
+    assert_eq!(
+        rebuilt
+            .query_row("SELECT COUNT(*) FROM game_moves", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2,
+        "a clean registry rebuild produces the same complete trace projection"
+    );
+    assert_eq!(
+        rebuilt
+            .query_row(
+                "SELECT search_status FROM game_moves WHERE run_id = 'artifact-run' AND ply = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "partial"
+    );
+}
+
+#[test]
+fn partitioned_artifact_discovery_is_bounded_and_restarts_at_its_watermark() {
+    let (fixture, root) = artifact_fixture("watermark-run");
+    for sequence in 1..=257_u64 {
+        let task_id = artifact_task_id(sequence);
+        let name = format!("{sequence:019}-{task_id}.json");
+        fs::write(
+            root.join("descriptors").join(name),
+            serde_json::to_vec(&artifact_descriptor("watermark-run", &task_id, sequence)).unwrap(),
+        )
+        .unwrap();
+    }
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(fixture.count("artifact_descriptors"), 256);
+    assert_eq!(
+        fixture.query_string("SELECT descriptor_watermark FROM artifact_roots"),
+        format!("{:019}-{}.json", 256, artifact_task_id(256))
+    );
+    ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
+    assert_eq!(fixture.count("artifact_descriptors"), 257);
+}
+
+#[test]
+fn partitioned_artifact_conflicts_are_recorded_without_partial_completion() {
+    let (fixture, root) = artifact_fixture("conflict-run");
+    let task_id = artifact_task_id(2);
+    let descriptor = serde_json::to_vec(&artifact_descriptor("conflict-run", &task_id, 1)).unwrap();
+    fs::write(
+        root.join("descriptors")
+            .join(format!("{:019}-{task_id}.json", 1)),
+        &descriptor,
+    )
+    .unwrap();
+    let task_root = root.join("tasks").join(&task_id);
+    fs::create_dir_all(&task_root).unwrap();
+    fs::write(task_root.join("trace.jsonl"), "").unwrap();
+    write_artifact_completion(&task_root, &task_id, "wrong-attempt", &descriptor, "failed");
+    assert!(ingest_once(&fixture.db, &fixture.bench_runs).is_err());
+    assert_eq!(
+        fixture.query_string("SELECT status FROM artifact_tasks"),
+        "integrity_failure"
+    );
+    assert_eq!(fixture.count("game_moves"), 0);
+}

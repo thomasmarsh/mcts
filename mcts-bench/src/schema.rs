@@ -136,6 +136,51 @@ pub const CREATE_TABLES: &[&str] = &[
         byte_offset BIGINT NOT NULL DEFAULT 0,
         updated_at  TIMESTAMP NOT NULL
     )",
+    "CREATE TABLE IF NOT EXISTS artifact_roots (
+        physical_run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+        artifact_root TEXT NOT NULL UNIQUE,
+        attempt_id TEXT,
+        attempt_digest TEXT,
+        descriptor_watermark TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        integrity_error TEXT,
+        updated_at TIMESTAMP NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS artifact_descriptors (
+        physical_run_id TEXT NOT NULL REFERENCES runs(run_id),
+        descriptor_filename TEXT NOT NULL,
+        descriptor_path TEXT NOT NULL,
+        task_id TEXT,
+        task_sequence BIGINT,
+        descriptor_digest TEXT,
+        task_root TEXT,
+        status TEXT NOT NULL,
+        integrity_error TEXT,
+        PRIMARY KEY (physical_run_id, descriptor_filename)
+    )",
+    "CREATE TABLE IF NOT EXISTS artifact_tasks (
+        physical_run_id TEXT NOT NULL REFERENCES runs(run_id),
+        task_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        task_sequence BIGINT NOT NULL,
+        descriptor_path TEXT NOT NULL,
+        task_root TEXT NOT NULL,
+        trace_path TEXT NOT NULL,
+        descriptor_digest TEXT NOT NULL,
+        completion_digest TEXT,
+        status TEXT NOT NULL,
+        integrity_error TEXT,
+        completed_at TIMESTAMP,
+        PRIMARY KEY (physical_run_id, task_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS _artifact_trace_cursor (
+        physical_run_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        trace_path TEXT NOT NULL,
+        byte_offset BIGINT NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (physical_run_id, task_id)
+    )",
     "CREATE TABLE IF NOT EXISTS attempt_events (
         attempt_id TEXT NOT NULL REFERENCES runs(run_id),
         attempt_version UINTEGER NOT NULL,
@@ -480,6 +525,10 @@ mod tests {
             "incumbents",
             "game_moves",
             "_ingest_cursor",
+            "artifact_roots",
+            "artifact_descriptors",
+            "artifact_tasks",
+            "_artifact_trace_cursor",
             "attempt_events",
             "tuning_sessions",
             "tuning_session_commands",

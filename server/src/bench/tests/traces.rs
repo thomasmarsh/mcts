@@ -193,6 +193,16 @@ async fn test_delete_run_removes_all_rows_and_files() {
             duckdb::params![DEFAULT_RUN_ID],
         )
         .unwrap();
+    state.db.lock().unwrap().execute_batch(&format!(
+        "INSERT INTO artifact_roots (physical_run_id, artifact_root, descriptor_watermark, updated_at) \
+         VALUES ('{DEFAULT_RUN_ID}', '/tmp/artifact-root', '', CURRENT_TIMESTAMP); \
+         INSERT INTO artifact_descriptors (physical_run_id, descriptor_filename, descriptor_path, status) \
+         VALUES ('{DEFAULT_RUN_ID}', '0000000000000000001-task-00000000000000000000000000000001.json', '/tmp/descriptor', 'registered'); \
+         INSERT INTO artifact_tasks (physical_run_id, task_id, attempt_id, task_sequence, descriptor_path, task_root, trace_path, descriptor_digest, status) \
+         VALUES ('{DEFAULT_RUN_ID}', 'task-00000000000000000000000000000001', 'attempt', 1, '/tmp/descriptor', '/tmp/task', '/tmp/task/trace.jsonl', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'incomplete'); \
+         INSERT INTO _artifact_trace_cursor (physical_run_id, task_id, trace_path, byte_offset, updated_at) \
+         VALUES ('{DEFAULT_RUN_ID}', 'task-00000000000000000000000000000001', '/tmp/task/trace.jsonl', 0, CURRENT_TIMESTAMP);"
+    )).unwrap();
     let run_dir = tmp_dir.join("bench-runs").join(DEFAULT_RUN_ID);
     std::fs::create_dir_all(&run_dir).unwrap();
     std::fs::write(run_dir.join("log.jsonl"), "{}\n").unwrap();
@@ -226,6 +236,22 @@ async fn test_delete_run_removes_all_rows_and_files() {
         )
         .unwrap();
     assert_eq!(report_rows, 0);
+    for table in [
+        "artifact_roots",
+        "artifact_descriptors",
+        "artifact_tasks",
+        "_artifact_trace_cursor",
+    ] {
+        let rows: i64 = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "{table} rows should be removed with their run");
+    }
 }
 
 // -------------------------------------------------------------------

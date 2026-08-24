@@ -95,158 +95,208 @@ fn process_one_log_file(
             Err(_) => continue,
         };
 
-        match record {
-            LogRecord::MatchResult {
-                seq,
-                strategy_a,
-                strategy_b,
-                outcome,
-                winner,
-                extra,
-                cell_id,
-                seed,
-                trace_game_seq,
-                metrics,
-            } => {
-                let ts = iso_timestamp();
-                let extra_json = extra
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                conn.execute(
-                    "INSERT INTO match_results \
+        apply_record(conn, run_id, record)?;
+    }
+
+    set_cursor(conn, &cursor_key, file_len)?;
+
+    Ok(())
+}
+
+/// Consume only newline-terminated task trace records. A game child can be
+/// observed while it is writing, so EOF is not evidence of a complete record.
+pub(super) fn process_complete_trace_file(
+    conn: &Connection,
+    run_id: &str,
+    log_path: &Path,
+    mut offset: u64,
+) -> Result<u64, IngestError> {
+    if !log_path.exists() {
+        return Ok(offset);
+    }
+    let mut file = fs::File::open(log_path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        let count = reader.read_until(b'\n', &mut bytes)?;
+        if count == 0 || bytes.last() != Some(&b'\n') {
+            break;
+        }
+        bytes.pop();
+        let record =
+            serde_json::from_slice(&bytes).map_err(|error| IngestError::ArtifactIntegrity {
+                run_id: run_id.to_owned(),
+                artifact: log_path.to_string_lossy().into_owned(),
+                message: format!("trace record is not valid JSON: {error}"),
+            })?;
+        if !matches!(&record, LogRecord::Move { .. }) {
+            return Err(IngestError::ArtifactIntegrity {
+                run_id: run_id.to_owned(),
+                artifact: log_path.to_string_lossy().into_owned(),
+                message: "task trace contains a non-move record".into(),
+            });
+        }
+        apply_record(conn, run_id, record)?;
+        offset += count as u64;
+    }
+    Ok(offset)
+}
+
+fn apply_record(conn: &Connection, run_id: &str, record: LogRecord) -> Result<(), IngestError> {
+    match record {
+        LogRecord::MatchResult {
+            seq,
+            strategy_a,
+            strategy_b,
+            outcome,
+            winner,
+            extra,
+            cell_id,
+            seed,
+            trace_game_seq,
+            metrics,
+        } => {
+            let ts = iso_timestamp();
+            let extra_json = extra
+                .as_ref()
+                .map(|v| serde_json::to_string(v).expect("Value -> String"));
+            conn.execute(
+                "INSERT INTO match_results \
                          (run_id, seq, ts, strategy_a, strategy_b, \
                           outcome, winner, extra, cell_id, seed, trace_game_seq, metrics) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
                          ON CONFLICT (run_id, seq) DO NOTHING",
-                    params![
-                        run_id,
-                        seq as i64,
-                        ts,
-                        strategy_a,
-                        strategy_b,
-                        outcome,
-                        winner,
-                        extra_json,
-                        cell_id,
-                        seed,
-                        trace_game_seq,
-                        metrics
-                            .as_ref()
-                            .map(|v| serde_json::to_string(v).expect("Value -> String")),
-                    ],
-                )?;
-                if let Some(ref cell_id) = cell_id {
-                    conn.execute(
+                params![
+                    run_id,
+                    seq as i64,
+                    ts,
+                    strategy_a,
+                    strategy_b,
+                    outcome,
+                    winner,
+                    extra_json,
+                    cell_id,
+                    seed,
+                    trace_game_seq,
+                    metrics
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).expect("Value -> String")),
+                ],
+            )?;
+            if let Some(ref cell_id) = cell_id {
+                conn.execute(
                         "UPDATE experiment_cells SET completed_games = (SELECT COUNT(*) FROM match_results WHERE run_id = ?1 AND cell_id = ?2) WHERE run_id = ?1 AND cell_id = ?2",
                         params![run_id, cell_id],
                     )?;
-                }
             }
-            LogRecord::CellStarted { cell_id } => {
-                let belongs: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM experiment_cells WHERE run_id = ?1 AND cell_id = ?2",
-                    params![run_id, cell_id],
-                    |row| row.get(0),
-                )?;
-                if belongs == 0 {
-                    return Err(IngestError::OrphanCell {
-                        run_id: run_id.to_owned(),
-                        cell_id,
-                    });
-                }
-                conn.execute(
+        }
+        LogRecord::CellStarted { cell_id } => {
+            let belongs: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM experiment_cells WHERE run_id = ?1 AND cell_id = ?2",
+                params![run_id, cell_id],
+                |row| row.get(0),
+            )?;
+            if belongs == 0 {
+                return Err(IngestError::OrphanCell {
+                    run_id: run_id.to_owned(),
+                    cell_id,
+                });
+            }
+            conn.execute(
                     "UPDATE experiment_cells SET status = 'running', started_at = COALESCE(started_at, ?1) WHERE run_id = ?2 AND cell_id = ?3 AND status = 'pending'",
                     params![iso_timestamp(), run_id, cell_id],
                 )?;
-            }
-            LogRecord::CellFinished {
-                cell_id,
-                completed_games,
-            } => {
-                ensure_cell_belongs(conn, run_id, &cell_id)?;
-                conn.execute(
+        }
+        LogRecord::CellFinished {
+            cell_id,
+            completed_games,
+        } => {
+            ensure_cell_belongs(conn, run_id, &cell_id)?;
+            conn.execute(
                     "UPDATE experiment_cells SET status = 'completed', completed_games = ?1, ended_at = ?2 WHERE run_id = ?3 AND cell_id = ?4 AND status IN ('pending', 'running')",
                     params![completed_games, iso_timestamp(), run_id, cell_id],
                 )?;
-            }
-            LogRecord::CellFailed {
-                cell_id,
-                completed_games,
-                error,
-            } => {
-                ensure_cell_belongs(conn, run_id, &cell_id)?;
-                conn.execute(
+        }
+        LogRecord::CellFailed {
+            cell_id,
+            completed_games,
+            error,
+        } => {
+            ensure_cell_belongs(conn, run_id, &cell_id)?;
+            conn.execute(
                     "UPDATE experiment_cells SET status = 'failed', completed_games = ?1, error = ?2, ended_at = ?3 WHERE run_id = ?4 AND cell_id = ?5 AND status IN ('pending', 'running')",
                     params![completed_games, error, iso_timestamp(), run_id, cell_id],
                 )?;
-                conn.execute(
+            conn.execute(
                     "UPDATE runs SET status = 'completed_with_errors', ended_at = ?1 WHERE kind = 'experiment' AND run_id = ?2 AND status = 'completed'",
                     params![iso_timestamp(), run_id],
                 )?;
-            }
-            LogRecord::Trial {
-                trial_id,
-                config,
-                seed,
-                cost,
-                extra,
-            } => {
-                let ts = iso_timestamp();
-                let config_json = serde_json::to_string(&config).expect("Value -> String");
-                let extra_json = extra
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                conn.execute(
-                    "INSERT INTO trials \
+        }
+        LogRecord::Trial {
+            trial_id,
+            config,
+            seed,
+            cost,
+            extra,
+        } => {
+            let ts = iso_timestamp();
+            let config_json = serde_json::to_string(&config).expect("Value -> String");
+            let extra_json = extra
+                .as_ref()
+                .map(|v| serde_json::to_string(v).expect("Value -> String"));
+            conn.execute(
+                "INSERT INTO trials \
                          (run_id, trial_id, ts, config, seed, cost, extra) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
                          ON CONFLICT (run_id, trial_id) DO NOTHING",
-                    params![
-                        run_id,
-                        trial_id as i64,
-                        ts,
-                        config_json,
-                        seed.map(|s| s as i64),
-                        cost,
-                        extra_json,
-                    ],
-                )?;
-            }
-            LogRecord::Incumbent {
-                config,
-                cost,
-                extra,
-            } => {
-                let ts = iso_timestamp();
-                let config_json = serde_json::to_string(&config).expect("Value -> String");
-                let extra_json = extra
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                conn.execute(
-                    "INSERT INTO incumbents (run_id, ts, config, cost, extra) \
+                params![
+                    run_id,
+                    trial_id as i64,
+                    ts,
+                    config_json,
+                    seed.map(|s| s as i64),
+                    cost,
+                    extra_json,
+                ],
+            )?;
+        }
+        LogRecord::Incumbent {
+            config,
+            cost,
+            extra,
+        } => {
+            let ts = iso_timestamp();
+            let config_json = serde_json::to_string(&config).expect("Value -> String");
+            let extra_json = extra
+                .as_ref()
+                .map(|v| serde_json::to_string(v).expect("Value -> String"));
+            conn.execute(
+                "INSERT INTO incumbents (run_id, ts, config, cost, extra) \
                          VALUES (?1, ?2, ?3, ?4, ?5) \
                          ON CONFLICT (run_id) DO UPDATE SET \
                              ts = excluded.ts, config = excluded.config, \
                              cost = excluded.cost, extra = excluded.extra",
-                    params![run_id, ts, config_json, cost, extra_json],
-                )?;
-            }
-            LogRecord::Move {
-                trace_schema_version,
-                game_seq,
-                ply,
-                state,
-                mv,
-                player,
-                search,
-            } => {
-                let search = project_search_report(trace_schema_version, search.as_ref())?;
-                let ts = iso_timestamp();
-                let state_json = serde_json::to_string(&state).expect("Value -> String");
-                let mv_json = mv
-                    .as_ref()
-                    .map(|v| serde_json::to_string(v).expect("Value -> String"));
-                conn.execute(
+                params![run_id, ts, config_json, cost, extra_json],
+            )?;
+        }
+        LogRecord::Move {
+            trace_schema_version,
+            game_seq,
+            ply,
+            state,
+            mv,
+            player,
+            search,
+        } => {
+            let search = project_search_report(trace_schema_version, search.as_ref())?;
+            let ts = iso_timestamp();
+            let state_json = serde_json::to_string(&state).expect("Value -> String");
+            let mv_json = mv
+                .as_ref()
+                .map(|v| serde_json::to_string(v).expect("Value -> String"));
+            conn.execute(
                     "INSERT INTO game_moves \
                          (run_id, game_seq, ply, ts, trace_schema_version, state, mv, player, \
                           search_report, search_status, search_completed_iterations, search_elapsed_ms, \
@@ -272,13 +322,9 @@ fn process_one_log_file(
                         search.as_ref().and_then(|value| value.tt_hit_ratio),
                     ],
                 )?;
-            }
-            LogRecord::Heartbeat { .. } => {}
         }
+        LogRecord::Heartbeat { .. } => {}
     }
-
-    set_cursor(conn, &cursor_key, file_len)?;
-
     Ok(())
 }
 

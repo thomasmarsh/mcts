@@ -451,6 +451,22 @@ pub(crate) async fn delete_run(
             "DELETE FROM experiment_cells WHERE run_id = ?1",
             duckdb::params![&run_id],
         )?;
+        db.execute(
+            "DELETE FROM _artifact_trace_cursor WHERE physical_run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM artifact_tasks WHERE physical_run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM artifact_descriptors WHERE physical_run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
+        db.execute(
+            "DELETE FROM artifact_roots WHERE physical_run_id = ?1",
+            duckdb::params![&run_id],
+        )?;
         for file in ["log.jsonl", "moves.jsonl", "stdout.log"] {
             let path = run_dir.join(file).to_string_lossy().to_string();
             db.execute(

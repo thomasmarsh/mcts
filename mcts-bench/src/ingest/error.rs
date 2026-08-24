@@ -5,9 +5,19 @@ pub enum IngestError {
     DuckDb(duckdb::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
-    InvalidMoveReport { message: String },
-    OrphanCell { run_id: String, cell_id: String },
+    InvalidMoveReport {
+        message: String,
+    },
+    OrphanCell {
+        run_id: String,
+        cell_id: String,
+    },
     Attempt(projects_attempt::ProjectsError),
+    ArtifactIntegrity {
+        run_id: String,
+        artifact: String,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for IngestError {
@@ -23,6 +33,14 @@ impl std::fmt::Display for IngestError {
                 write!(f, "cell '{cell_id}' does not belong to run '{run_id}'")
             }
             IngestError::Attempt(error) => write!(f, "typed attempt ingest error: {error}"),
+            IngestError::ArtifactIntegrity {
+                run_id,
+                artifact,
+                message,
+            } => write!(
+                f,
+                "artifact integrity failure for run '{run_id}' at '{artifact}': {message}"
+            ),
         }
     }
 }

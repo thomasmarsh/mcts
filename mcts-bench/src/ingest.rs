@@ -3,6 +3,7 @@
 //! Only the `server` process should call this module because DuckDB permits a
 //! single writer.
 
+mod artifacts;
 mod cursor;
 mod error;
 mod liveness;
@@ -26,6 +27,7 @@ use registry::process as process_registry;
 pub fn ingest_once(conn: &Connection, bench_runs_dir: &Path) -> Result<(), IngestError> {
     registry::process(conn, &bench_runs_dir.join("registry.log"))?;
     tuning_lifecycle::process(conn)?;
+    artifacts::process(conn)?;
     let observation_error = projects::observe(conn).err();
     logs::process_runs(conn)?;
     liveness::reconcile(conn)?;
