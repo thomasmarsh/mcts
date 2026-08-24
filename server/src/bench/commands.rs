@@ -29,6 +29,7 @@ use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
 use mcts_bench::run_command_repository::{RecordRunLaunch, TunerLaunchReservation};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
+use mcts_bench::tuning_command_repository::{TuningCommandRepository, TuningLaunchOutcome};
 use mcts_bench::StrategyInfo;
 
 use super::lifecycle;
@@ -242,7 +243,7 @@ pub(crate) fn launch_reserved_tuner_attempt(
             state,
             &launch.session_id,
             command_id,
-            mcts_bench::tuning_command_store::LaunchOutcome::Spawned,
+            TuningLaunchOutcome::Spawned,
         )?;
         return Ok(LaunchResponse {
             run_id: previous.run_id,
@@ -270,7 +271,7 @@ pub(crate) fn launch_reserved_tuner_attempt(
                 state,
                 &launch.session_id,
                 command_id,
-                mcts_bench::tuning_command_store::LaunchOutcome::SpawnFailed,
+                TuningLaunchOutcome::SpawnFailed,
             )?;
             return Err(BenchError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -301,7 +302,7 @@ pub(crate) fn launch_reserved_tuner_attempt(
         state,
         &launch.session_id,
         command_id,
-        mcts_bench::tuning_command_store::LaunchOutcome::Spawned,
+        TuningLaunchOutcome::Spawned,
     )?;
     Ok(LaunchResponse {
         run_id: launched.run_id,
@@ -316,10 +317,11 @@ fn record_tuner_launch_outcome(
     state: &Arc<BenchState>,
     session_id: &str,
     command_id: &str,
-    outcome: mcts_bench::tuning_command_store::LaunchOutcome,
+    outcome: TuningLaunchOutcome,
 ) -> Result<(), BenchError> {
-    let db = state.db.lock().unwrap();
-    mcts_bench::tuning_command_store::record_launch_outcome(&db, session_id, command_id, outcome)
+    state
+        .tuning_command_repository
+        .record_launch_outcome(session_id, command_id, outcome)
         .map(|_| ())
         .map_err(|error| BenchError {
             status: StatusCode::INTERNAL_SERVER_ERROR,

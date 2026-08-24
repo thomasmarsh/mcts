@@ -7,7 +7,9 @@ use axum::{
 };
 use mcts_bench::tuning_command_repository::{
     TuningCommandReplayState, TuningCommandRepository, TuningCommandRepositoryError,
+    TuningCommandRequest, TuningLaunchReservation, TuningSessionCommand,
 };
+use mcts_bench::tuning_session_repository::TuningSessionRepository;
 
 use super::super::{
     BenchError, BenchState, TunerAttemptLaunch, TuningBudgetResult, TuningSessionBudgetBody,
@@ -24,15 +26,14 @@ pub(crate) async fn stop_tuning_session(
         &state,
         &session_id,
         &body,
-        mcts_bench::tuning_command_store::SessionCommand::Stop,
+        TuningSessionCommand::Stop,
         None,
         None,
     )?;
-    let decision = {
-        let db = state.db.lock().unwrap();
-        mcts_bench::tuning_command_store::apply_command(&db, &session_id, &request)
-            .map_err(command_bench_error)?
-    };
+    let decision = state
+        .tuning_command_repository
+        .apply_command(&session_id, &request)
+        .map_err(command_bench_error)?;
     let attempt_id = decision.control.stop_attempt_id.clone();
     let signal = if decision.replay {
         None
@@ -91,8 +92,8 @@ pub(crate) async fn resume_tuning_session(
         &state,
         &session_id,
         &body,
-        mcts_bench::tuning_command_store::SessionCommand::Resume,
-        Some(mcts_bench::tuning_command_store::LaunchReservation {
+        TuningSessionCommand::Resume,
+        Some(TuningLaunchReservation {
             attempt_id: launch.attempt_id.clone(),
             physical_run_id: launch.physical_run_id.clone(),
         }),
@@ -104,11 +105,10 @@ pub(crate) async fn resume_tuning_session(
             .physical_run_id
             .clone_from(&reservation.physical_run_id);
     }
-    let decision = {
-        let db = state.db.lock().unwrap();
-        mcts_bench::tuning_command_store::apply_command(&db, &session_id, &request)
-            .map_err(command_bench_error)?
-    };
+    let decision = state
+        .tuning_command_repository
+        .apply_command(&session_id, &request)
+        .map_err(command_bench_error)?;
     launch.target_trial_count = decision
         .control
         .target_trial_count
@@ -180,16 +180,14 @@ pub(crate) async fn add_tuning_session_budget(
             command_id: body.command_id.clone(),
             expected_version: body.expected_version,
         },
-        mcts_bench::tuning_command_store::SessionCommand::AddBudget {
+        TuningSessionCommand::AddBudget {
             delta: body.delta,
             start: body.start,
         },
-        launch.as_ref().map(
-            |launch| mcts_bench::tuning_command_store::LaunchReservation {
-                attempt_id: launch.attempt_id.clone(),
-                physical_run_id: launch.physical_run_id.clone(),
-            },
-        ),
+        launch.as_ref().map(|launch| TuningLaunchReservation {
+            attempt_id: launch.attempt_id.clone(),
+            physical_run_id: launch.physical_run_id.clone(),
+        }),
         body.n_workers,
     )?;
     if let (Some(launch), Some(reservation)) = (&mut launch, &request.launch) {
@@ -198,11 +196,10 @@ pub(crate) async fn add_tuning_session_budget(
             .physical_run_id
             .clone_from(&reservation.physical_run_id);
     }
-    let decision = {
-        let db = state.db.lock().unwrap();
-        mcts_bench::tuning_command_store::apply_command(&db, &session_id, &request)
-            .map_err(command_bench_error)?
-    };
+    let decision = state
+        .tuning_command_repository
+        .apply_command(&session_id, &request)
+        .map_err(command_bench_error)?;
     let budget = budget_result(&decision, body.delta)?;
 
     if !body.start {
@@ -236,10 +233,7 @@ pub(crate) async fn add_tuning_session_budget(
         None
     };
     if matches!(replay_state, Some(TuningCommandReplayState::Failed)) {
-        let control = {
-            let db = state.db.lock().unwrap();
-            session_control(&db, &session_id)?
-        };
+        let control = session_control(&state, &session_id)?;
         return Ok((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(TuningSessionCommandResponse {
@@ -265,10 +259,7 @@ pub(crate) async fn add_tuning_session_budget(
             launch.clone(),
             Some(&format!("budget extension of {session_id}")),
         ) {
-            let control = {
-                let db = state.db.lock().unwrap();
-                session_control(&db, &session_id)?
-            };
+            let control = session_control(&state, &session_id)?;
             return Ok((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(TuningSessionCommandResponse {
@@ -331,7 +322,7 @@ fn validate_budget_body(body: &TuningSessionBudgetBody) -> Result<(), BenchError
 }
 
 fn budget_result(
-    decision: &mcts_bench::tuning_command_store::CommandDecision,
+    decision: &mcts_bench::tuning_command_repository::TuningCommandDecision,
     delta: u64,
 ) -> Result<TuningBudgetResult, BenchError> {
     let target_trial_count = decision
@@ -391,10 +382,10 @@ fn command_request(
     state: &Arc<BenchState>,
     session_id: &str,
     body: &TuningSessionCommandBody,
-    command: mcts_bench::tuning_command_store::SessionCommand,
-    launch: Option<mcts_bench::tuning_command_store::LaunchReservation>,
+    command: TuningSessionCommand,
+    launch: Option<TuningLaunchReservation>,
     n_workers: Option<u64>,
-) -> Result<mcts_bench::tuning_command_store::CommandRequest, BenchError> {
+) -> Result<TuningCommandRequest, BenchError> {
     let existing = {
         state
             .tuning_command_repository
@@ -402,8 +393,7 @@ fn command_request(
             .map_err(tuning_command_repository_error)?
     };
     if let Some(existing) = existing {
-        let request: mcts_bench::tuning_command_store::CommandRequest =
-            serde_json::from_str(&existing.request_json)?;
+        let request: TuningCommandRequest = serde_json::from_str(&existing.request_json)?;
         if existing.session_id == session_id
             && request.expected_version == body.expected_version
             && request.command == command
@@ -412,7 +402,7 @@ fn command_request(
             return Ok(request);
         }
     }
-    Ok(mcts_bench::tuning_command_store::CommandRequest {
+    Ok(TuningCommandRequest {
         command_id: body.command_id.clone(),
         expected_version: body.expected_version,
         command,
@@ -489,23 +479,20 @@ fn tuning_command_repository_error(error: TuningCommandRepositoryError) -> Bench
     }
 }
 
-fn command_bench_error(error: mcts_bench::tuning_command_store::CommandStoreError) -> BenchError {
-    use mcts_bench::tuning_command_store::CommandStoreError;
+fn command_bench_error(error: TuningCommandRepositoryError) -> BenchError {
     let status = match &error {
-        CommandStoreError::SessionNotFound(_) => StatusCode::NOT_FOUND,
-        CommandStoreError::DuckDb(_) | CommandStoreError::Serialization(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-        CommandStoreError::CommandIdReuseMismatch { .. }
-        | CommandStoreError::ExpectedVersionConflict { .. }
-        | CommandStoreError::ActiveAttempt { .. }
-        | CommandStoreError::LaunchReserved { .. }
-        | CommandStoreError::InvalidDeltaStart { .. }
-        | CommandStoreError::ExhaustedResume { .. }
-        | CommandStoreError::NoncontinuableLegacy { .. }
-        | CommandStoreError::CommandDenied { .. }
-        | CommandStoreError::TargetOverflow { .. }
-        | CommandStoreError::MissingReservation { .. } => StatusCode::CONFLICT,
+        TuningCommandRepositoryError::NotFound(_) => StatusCode::NOT_FOUND,
+        TuningCommandRepositoryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        TuningCommandRepositoryError::CommandIdReuseMismatch { .. }
+        | TuningCommandRepositoryError::ExpectedVersionConflict { .. }
+        | TuningCommandRepositoryError::ActiveAttempt { .. }
+        | TuningCommandRepositoryError::LaunchReserved { .. }
+        | TuningCommandRepositoryError::InvalidDeltaStart { .. }
+        | TuningCommandRepositoryError::ExhaustedResume { .. }
+        | TuningCommandRepositoryError::NoncontinuableLegacy { .. }
+        | TuningCommandRepositoryError::CommandDenied { .. }
+        | TuningCommandRepositoryError::TargetOverflow { .. }
+        | TuningCommandRepositoryError::MissingReservation { .. } => StatusCode::CONFLICT,
     };
     BenchError {
         status,
@@ -514,10 +501,19 @@ fn command_bench_error(error: mcts_bench::tuning_command_store::CommandStoreErro
 }
 
 pub(super) fn session_control(
-    db: &duckdb::Connection,
+    state: &Arc<BenchState>,
     session_id: &str,
 ) -> Result<TuningSessionControl, BenchError> {
-    mcts_bench::tuning_command_store::reconcile(db, session_id)
+    state
+        .tuning_session_repository
+        .load_session_control(session_id)
+        .map_err(|error| BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("tuning session storage error: {error}"),
+        })?
         .map(TuningSessionControl::from)
-        .map_err(command_bench_error)
+        .ok_or_else(|| BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("tuning session '{session_id}' was not found"),
+        })
 }
