@@ -29,6 +29,9 @@ pub mod project_repository_duckdb;
 pub mod projects_attempt;
 #[cfg(feature = "duckdb")]
 pub mod projects_attempt_duckdb;
+pub mod run_command_repository;
+#[cfg(feature = "duckdb")]
+pub mod run_command_repository_duckdb;
 pub mod run_repository;
 #[cfg(feature = "duckdb")]
 pub mod run_repository_duckdb;

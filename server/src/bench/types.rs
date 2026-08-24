@@ -28,6 +28,7 @@ use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::project_repository::ProjectRepository;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::run_command_repository::RunCommandRepository;
 use mcts_bench::run_repository::RunRepository;
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
@@ -50,6 +51,7 @@ pub struct BenchState {
     pub db: Arc<Mutex<duckdb::Connection>>,
     pub project_repository: Arc<dyn ProjectRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
+    pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
     pub tuning_analysis_repository: Arc<dyn TuningAnalysisRepository + Send + Sync>,
     pub tuning_command_repository: Arc<dyn TuningCommandRepository + Send + Sync>,
     pub tuning_session_repository: Arc<dyn TuningSessionRepository + Send + Sync>,
@@ -401,6 +403,23 @@ pub(crate) fn identity_bench_error(error: identity::IdentityError) -> BenchError
         identity::IdentityError::Contradiction(_) => StatusCode::CONFLICT,
         identity::IdentityError::InvalidLinkage(_) => StatusCode::BAD_REQUEST,
         identity::IdentityError::DuckDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    BenchError {
+        status,
+        message: error.to_string(),
+    }
+}
+
+pub(crate) fn run_command_bench_error(
+    error: mcts_bench::run_command_repository::RunCommandRepositoryError,
+) -> BenchError {
+    use mcts_bench::run_command_repository::RunCommandRepositoryError;
+    let status = match error {
+        RunCommandRepositoryError::NotFound => StatusCode::NOT_FOUND,
+        RunCommandRepositoryError::ContradictoryIdentity | RunCommandRepositoryError::Conflict => {
+            StatusCode::CONFLICT
+        }
+        RunCommandRepositoryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     BenchError {
         status,

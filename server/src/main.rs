@@ -344,6 +344,9 @@ async fn main() {
         run_repository: Arc::new(
             mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(bench_db.clone()),
         ),
+        run_command_repository: Arc::new(
+            mcts_bench::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(bench_db.clone()),
+        ),
         tuning_analysis_repository: Arc::new(
             mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(bench_db.clone()),
         ),

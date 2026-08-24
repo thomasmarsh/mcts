@@ -145,6 +145,9 @@ pub(super) fn seeded_app_with_state_and_signaller(
         run_repository: Arc::new(
             mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(db.clone()),
         ),
+        run_command_repository: Arc::new(
+            mcts_bench::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(db.clone()),
+        ),
         tuning_analysis_repository: Arc::new(
             mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(db.clone()),
         ),

@@ -27,6 +27,7 @@ use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::run_command_repository::RecordRunLaunch;
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
@@ -74,8 +75,12 @@ pub(crate) async fn launch_and_record(
         config
     };
     let parent_identity = if let Some(parent_id) = resume_from {
-        let db = state.db.lock().unwrap();
-        Some(identity::prepare_continuation(&db, parent_id).map_err(identity_bench_error)?)
+        Some(
+            state
+                .run_command_repository
+                .prepare_continuation(parent_id)
+                .map_err(run_command_bench_error)?,
+        )
     } else {
         None
     };
@@ -122,85 +127,38 @@ pub(crate) async fn launch_and_record(
         .as_ref()
         .map(|c| serde_json::to_string(c).unwrap_or_default());
 
-    // Insert the run and its identity in one transaction. If the registry
-    // ingestion loop won the race, the identity helper adopts only its
-    // provisional self-root for a server continuation; a server-recorded
-    // child identity is never overwritten by replay.
-    {
-        let mut db = state.db.lock().unwrap();
-        let transaction = db.transaction()?;
-        let launched_log_path = log_path.to_string_lossy().to_string();
-        let inserted = transaction.execute(
-            "INSERT INTO runs \
-             (run_id, kind, game, label, config, git_sha, git_dirty, \
-              host, pid, started_at, status, log_path) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'running', ?11) \
-             ON CONFLICT (run_id) DO NOTHING",
-            duckdb::params![
-                &run_id,
-                kind,
-                game,
-                label,
-                config_str,
-                crate::BUILD_INFO.git_sha,
-                crate::BUILD_INFO.git_dirty,
-                hostname(),
-                pid as i64,
-                &started_at,
-                &launched_log_path,
-            ],
-        )?;
-        if inserted == 0 {
-            let existing: (String, String, Option<i64>, String) = transaction.query_row(
-                "SELECT kind, game, pid, log_path FROM runs WHERE run_id = ?1",
-                duckdb::params![&run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
-            if existing
-                != (
-                    kind.to_owned(),
-                    game.to_owned(),
-                    Some(pid as i64),
-                    launched_log_path,
-                )
-            {
-                return Err(BenchError {
-                    status: StatusCode::CONFLICT,
-                    message: format!(
-                        "run id '{run_id}' is already assigned to a different process"
-                    ),
-                });
-            }
-        }
-        if let Some(parent) = &parent_identity {
-            identity::create_child_identity(&transaction, &run_id, parent)
-                .map_err(identity_bench_error)?;
-        } else {
-            identity::create_root_identity(&transaction, &run_id, kind, None, None, &started_at)
-                .map_err(identity_bench_error)?;
-        }
-        if kind == "tuner" {
-            let optimizer_id = tuner_optimizer_id(config.as_ref(), &run_id);
-            let source_path = tuner_lifecycle_path_from_config(config.as_ref(), &optimizer_id);
-            mcts_bench::tuning_store::register_lifecycle_source(
-                &transaction,
-                &source_path,
-                &run_id,
-            )?;
-        }
-        transaction.commit()?;
-    }
+    let launched_log_path = log_path.to_string_lossy().into_owned();
+    let tuner_lifecycle_source = (kind == "tuner").then(|| {
+        let optimizer_id = tuner_optimizer_id(config.as_ref(), &run_id);
+        tuner_lifecycle_path_from_config(config.as_ref(), &optimizer_id)
+    });
+    state
+        .run_command_repository
+        .record_launch(RecordRunLaunch {
+            run_id: run_id.clone(),
+            kind: kind.to_owned(),
+            game: game.to_owned(),
+            label: label.map(str::to_owned),
+            config_json: config_str,
+            git_sha: crate::BUILD_INFO.git_sha.into(),
+            git_dirty: crate::BUILD_INFO.git_dirty,
+            host: hostname(),
+            pid: pid as i64,
+            started_at: started_at.clone(),
+            log_path: launched_log_path,
+            continuation_parent: parent_identity,
+            tuner_lifecycle_source,
+        })
+        .map_err(run_command_bench_error)?;
 
     // Store config in the runs table so it survives server restarts.
     // (Separate UPDATE for the rare case the row was created by the
     // ingest loop between the INSERT above and here.)
     if let Some(ref config) = config {
-        let db = state.db.lock().unwrap();
         let config_str = serde_json::to_string(config)?;
-        let _ = db.execute(
-            "UPDATE runs SET config = ?1 WHERE run_id = ?2 AND config IS NULL",
-            duckdb::params![config_str, &run_id],
-        );
+        let _ = state
+            .run_command_repository
+            .backfill_config(&run_id, &config_str);
     }
 
     // Post-spawn check: give the child 500ms to start and possibly fail
@@ -215,14 +173,7 @@ pub(crate) async fn launch_and_record(
 
         // Mark the run as crashed in the database.
         let now = iso_timestamp_now();
-        {
-            let db = state.db.lock().unwrap();
-            let _ = db.execute(
-                "UPDATE runs SET ended_at = ?1, status = 'crashed' \
-                 WHERE run_id = ?2 AND status = 'running'",
-                duckdb::params![&now, &run_id],
-            );
-        }
+        let _ = state.run_command_repository.mark_crashed(&run_id, &now);
 
         // Append a stop event to the registry log so the ingest loop
         // sees it on its next pass (even though we already updated the
