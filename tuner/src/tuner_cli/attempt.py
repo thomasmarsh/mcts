@@ -268,7 +268,7 @@ def continue_trial(
 ) -> bool:
     """Finish a valid pair and report whether its trial received another pair."""
     active_trial = scheduled.active_trial
-    finish_pair(context.lifecycle, active_trial, result)
+    finish_pair(context.lifecycle, active_trial, result, scheduled.descriptor)
     score, decision = report_trial(
         context.lifecycle, active_trial, context.pruning_adapter
     )
@@ -590,7 +590,12 @@ def cancel_active_trials(
         except Exception as error:
             logger.warning("Could not cancel worker future: %s", error)
         if not lifecycle.has_trial_terminal(scheduled.active_trial.trial_id):
-            emit_pair_failed(lifecycle, scheduled.task, "coordinator interrupted")
+            emit_pair_failed(
+                lifecycle,
+                scheduled.task,
+                "coordinator interrupted",
+                scheduled.descriptor,
+            )
     futures.clear()
     for active_trial in list(active.values()):
         terminalize_trial(

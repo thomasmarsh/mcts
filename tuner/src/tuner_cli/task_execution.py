@@ -17,7 +17,16 @@ from .artifact_layout import (
     parse_descriptor_filename,
 )
 from .config import json_dumps
-from .evaluation import OpponentSnapshot, PairTask, Rating, game_id_for
+from .evaluation import (
+    GameResult,
+    OpponentSnapshot,
+    PairResult,
+    PairTask,
+    Rating,
+    StrategyMetrics,
+    configured_game_seed,
+    game_id_for,
+)
 from .lifecycle import AttemptId, SessionId, TrialId
 from .target import parse_pair_output
 from .task_artifacts import (
@@ -25,6 +34,7 @@ from .task_artifacts import (
     Heartbeat,
     TaskCompletion,
     canonical_json_bytes,
+    read_completion,
     sha256_digest,
     write_completion,
     write_heartbeat,
@@ -39,6 +49,10 @@ _TRIAL_TIMEOUT_S: Final = 600
 
 class TaskDescriptorError(ValueError):
     """A descriptor is not a committed, executable task description."""
+
+
+class TaskResultError(ValueError):
+    """A committed task bundle cannot be consumed as its scheduled result."""
 
 
 @dataclass(frozen=True)
@@ -158,6 +172,225 @@ def execute_task_bundle(
         "completed",
         completion_digest,
     )
+
+
+def read_task_bundle(
+    descriptor_path: str | Path,
+    descriptor_digest: str,
+    reference: Any,
+    scheduled_task: PairTask,
+) -> PairResult:
+    """Validate one completed bundle and reconstruct its scheduled pair result.
+
+    The descriptor is reloaded here instead of trusting the worker's small
+    reference.  That binds the terminal files to the coordinator's session,
+    trial, pair, and immutable task identity before any rating state changes.
+    """
+    execution = _load_execution(descriptor_path, descriptor_digest)
+    _validate_scheduled_task(execution, scheduled_task)
+    _validate_reference(reference, execution)
+    completion = read_completion(
+        execution.task_directory, execution.identity, execution.descriptor_digest
+    )
+    complete_contents = (execution.task_directory / "complete.json").read_bytes()
+    if sha256_digest(complete_contents) != reference.completion_digest:
+        raise TaskResultError("completion digest does not match worker reference")
+    if completion.outcome != reference.outcome:
+        raise TaskResultError("completion outcome does not match worker reference")
+    terminal_contents = (
+        execution.task_directory / completion.terminal.filename
+    ).read_bytes()
+    if completion.outcome == "failed":
+        raise TaskResultError(
+            f"committed task failed: {_failure_message(terminal_contents, execution)}"
+        )
+    return PairResult(execution.task, _decode_result(terminal_contents, execution))
+
+
+def _validate_scheduled_task(execution: _Execution, scheduled_task: PairTask) -> None:
+    actual = execution.task
+    if (
+        actual.session_id,
+        actual.trial_id,
+        actual.pair_id,
+        actual.pair_index,
+        actual.seed,
+        actual.candidate_config,
+        actual.opponent,
+        actual.pool_snapshot_fingerprint,
+        actual.rating_before,
+    ) != (
+        scheduled_task.session_id,
+        scheduled_task.trial_id,
+        scheduled_task.pair_id,
+        scheduled_task.pair_index,
+        scheduled_task.seed,
+        scheduled_task.candidate_config,
+        scheduled_task.opponent,
+        scheduled_task.pool_snapshot_fingerprint,
+        scheduled_task.rating_before,
+    ):
+        raise TaskResultError("descriptor does not match the scheduled pair")
+
+
+def _validate_reference(reference: Any, execution: _Execution) -> None:
+    if not isinstance(reference, TaskArtifactReference):
+        raise TaskResultError("worker did not return a task artifact reference")
+    if (
+        reference.task_id,
+        reference.attempt_id,
+        reference.descriptor_digest,
+    ) != (
+        execution.identity.task_id,
+        execution.identity.attempt_id,
+        execution.descriptor_digest,
+    ):
+        raise TaskResultError(
+            "worker reference identity or descriptor digest mismatches"
+        )
+    if reference.outcome not in ("completed", "failed"):
+        raise TaskResultError("worker reference has an invalid outcome")
+    if len(reference.completion_digest) != 64 or any(
+        char not in "0123456789abcdef" for char in reference.completion_digest
+    ):
+        raise TaskResultError("worker reference has an invalid completion digest")
+
+
+def _failure_message(contents: bytes, execution: _Execution) -> str:
+    try:
+        payload = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TaskResultError("failure artifact is not UTF-8 JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {
+        "attempt_id",
+        "descriptor_digest",
+        "kind",
+        "message",
+        "schema_version",
+        "task_id",
+    }:
+        raise TaskResultError("failure artifact has an invalid schema")
+    if not isinstance(payload["kind"], str) or not isinstance(payload["message"], str):
+        raise TaskResultError("failure artifact has invalid values")
+    if (
+        payload["schema_version"],
+        payload["task_id"],
+        payload["attempt_id"],
+        payload["descriptor_digest"],
+    ) != (
+        TASK_FAILURE_SCHEMA_VERSION,
+        execution.identity.task_id,
+        execution.identity.attempt_id,
+        execution.descriptor_digest,
+    ):
+        raise TaskResultError(
+            "failure artifact identity or descriptor digest mismatches"
+        )
+    return f"{payload['kind']}: {payload['message']}"
+
+
+def _decode_result(
+    contents: bytes, execution: _Execution
+) -> tuple[GameResult, GameResult]:
+    try:
+        payload = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TaskResultError("result artifact is not UTF-8 JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {
+        "attempt_id",
+        "descriptor_digest",
+        "games",
+        "pair_id",
+        "schema_version",
+        "task_id",
+    }:
+        raise TaskResultError("result artifact has an invalid schema")
+    if payload["schema_version"] != TASK_RESULT_SCHEMA_VERSION:
+        raise TaskResultError("result artifact has an unsupported schema version")
+    if (
+        payload["task_id"],
+        payload["attempt_id"],
+        payload["descriptor_digest"],
+        payload["pair_id"],
+    ) != (
+        execution.identity.task_id,
+        execution.identity.attempt_id,
+        execution.descriptor_digest,
+        execution.identity.pair_id,
+    ):
+        raise TaskResultError(
+            "result artifact identity or descriptor digest mismatches"
+        )
+    if not isinstance(payload["games"], list) or len(payload["games"]) != 2:
+        raise TaskResultError("result artifact must contain exactly two games")
+    return (
+        _decode_result_game(payload["games"][0], execution.task, "first"),
+        _decode_result_game(payload["games"][1], execution.task, "second"),
+    )
+
+
+def _decode_result_game(value: Any, task: PairTask, side: str) -> GameResult:
+    required = {
+        "baseline",
+        "candidate",
+        "candidate_side",
+        "elapsed_ms",
+        "game_id",
+        "outcome",
+        "plies",
+        "round",
+        "seed",
+        "trace_game_seq",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise TaskResultError("result game has an invalid schema")
+    expected_trace = task.trace_game_sequence_start
+    if expected_trace is None:
+        raise TaskResultError("descriptor task lacks its trace game sequence")
+    if side == "second":
+        expected_trace += 1
+    if (
+        value["game_id"] != game_id_for(task.pair_id, side)
+        or value["candidate_side"] != side
+        or value["seed"] != configured_game_seed(task.seed)
+        or value["round"] != 1
+        or value["trace_game_seq"] != expected_trace
+        or value["outcome"] not in ("candidate_win", "baseline_win", "draw")
+    ):
+        raise TaskResultError("result game does not match its scheduled identity")
+    return GameResult(
+        value["game_id"],
+        value["candidate_side"],
+        value["outcome"],
+        value["seed"],
+        value["round"],
+        value["trace_game_seq"],
+        _result_integer(value, "plies"),
+        _result_integer(value, "elapsed_ms"),
+        _decode_result_metrics(value["candidate"]),
+        _decode_result_metrics(value["baseline"]),
+    )
+
+
+def _decode_result_metrics(value: Any) -> StrategyMetrics:
+    if not isinstance(value, dict) or set(value) != {
+        "iterations_first_half",
+        "iterations_total",
+        "move_time_ms",
+    }:
+        raise TaskResultError("result metrics have an invalid schema")
+    return StrategyMetrics(
+        _result_integer(value, "iterations_total"),
+        _result_integer(value, "iterations_first_half"),
+        _result_integer(value, "move_time_ms"),
+    )
+
+
+def _result_integer(value: dict[str, Any], field: str) -> int:
+    result = value.get(field)
+    if not isinstance(result, int) or isinstance(result, bool) or result < 0:
+        raise TaskResultError(f"result {field} must be a non-negative integer")
+    return result
 
 
 def _load_execution(descriptor_path: str | Path, descriptor_digest: str) -> _Execution:

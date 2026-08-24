@@ -21,6 +21,7 @@ from .evaluation import (
 from .lifecycle import LifecycleWriter
 from .pool import OpponentPool
 from .task_artifacts import DescriptorCommit, TaskDescriptorAllocator
+from .task_execution import execute_task_bundle, read_task_bundle
 from .target import evaluate_pair
 
 
@@ -30,6 +31,8 @@ class ScheduledPair:
 
     active_trial: Any
     task: PairTask
+    descriptor: DescriptorCommit | None = None
+    descriptor_path: Path | None = None
 
 
 def make_next_pair_task(
@@ -71,6 +74,7 @@ def submit_next_pair(
     """Commit pair evidence, then emit its start event and submit one worker."""
     task = make_next_pair_task(active_trial, pool, lifecycle, trace_path)
     descriptor: DescriptorCommit | None = None
+    descriptor_path: Path | None = None
     if task_descriptors is not None:
         try:
             descriptor = task_descriptors.commit_task(
@@ -81,19 +85,32 @@ def submit_next_pair(
                     OpponentSnapshot.from_anchor(anchor) for anchor in pool.anchors
                 ],
             )
+            descriptor_path = task_descriptors.layout.descriptor(descriptor.identity)
         except Exception as error:
             message = f"task descriptor commit failed: {error}"
             terminalize_trial(study, active_trial, "trial_failed", message)
             raise
     lifecycle.emit("pair_started", pair_started_payload(task, descriptor))
     try:
-        future = executor.submit(evaluate_pair, cfg, binary, task)
+        if descriptor is None:
+            future = executor.submit(evaluate_pair, cfg, binary, task)
+        else:
+            future = executor.submit(
+                execute_task_bundle,
+                descriptor_path,
+                descriptor.digest,
+            )
     except Exception as error:
         message = f"worker submission failed: {error}"
-        emit_pair_failed(lifecycle, task, message)
+        emit_pair_failed(lifecycle, task, message, descriptor)
         terminalize_trial(study, active_trial, "trial_failed", message)
         raise
-    futures[future] = ScheduledPair(active_trial, task)
+    futures[future] = ScheduledPair(
+        active_trial,
+        task,
+        descriptor,
+        descriptor_path,
+    )
 
 
 def pair_started_payload(
@@ -139,7 +156,17 @@ def worker_result(
             "worker future was cancelled",
         )
     try:
-        return future.result()
+        result = future.result()
+        if scheduled.descriptor is None:
+            return result
+        if scheduled.descriptor_path is None:
+            raise RuntimeError("scheduled artifact task is missing its descriptor path")
+        return read_task_bundle(
+            scheduled.descriptor_path,
+            scheduled.descriptor.digest,
+            result,
+            scheduled.task,
+        )
     except CancelledError:
         return failed_pair(
             study,
@@ -169,61 +196,82 @@ def failed_pair(
     error: str,
 ) -> None:
     """Emit pair failure before terminalizing its containing trial."""
-    emit_pair_failed(lifecycle, scheduled.task, error)
+    emit_pair_failed(lifecycle, scheduled.task, error, scheduled.descriptor)
     terminalize_trial(study, scheduled.active_trial, event_type, error)
     return None
 
 
 def finish_pair(
-    lifecycle: LifecycleWriter, active_trial: Any, result: PairResult
+    lifecycle: LifecycleWriter,
+    active_trial: Any,
+    result: PairResult,
+    descriptor: DescriptorCommit | None = None,
 ) -> None:
     """Emit physical games, update rating in their order, then finish the pair."""
     if len(result.games) != 2:
         raise ValueError("an evaluation pair must contain exactly two games")
     for game in result.games:
-        lifecycle.emit("game_finished", game_finished_payload(result.task, game))
+        lifecycle.emit(
+            "game_finished", game_finished_payload(result.task, game, descriptor)
+        )
     rating_after = active_trial.evaluation.apply_pair(result)
     lifecycle.emit(
         "pair_finished",
-        {
-            "trial_id": result.task.trial_id,
-            "pair_id": result.task.pair_id,
-            "pair_index": result.task.pair_index,
-            "rating_before": rating_payload(result.task.rating_before),
-            "rating_after": rating_payload(rating_after),
-            "score": active_trial.evaluation.score(),
-        },
+        _with_task_reference(
+            {
+                "trial_id": result.task.trial_id,
+                "pair_id": result.task.pair_id,
+                "pair_index": result.task.pair_index,
+                "rating_before": rating_payload(result.task.rating_before),
+                "rating_after": rating_payload(rating_after),
+                "score": active_trial.evaluation.score(),
+            },
+            descriptor,
+        ),
     )
 
 
-def game_finished_payload(task: PairTask, game: Any) -> dict:
+def game_finished_payload(
+    task: PairTask, game: Any, descriptor: DescriptorCommit | None = None
+) -> dict:
     """Build one typed physical-game payload without emitting it."""
-    return {
-        "trial_id": task.trial_id,
-        "pair_id": task.pair_id,
-        "game_id": game.game_id,
-        "candidate_side": game.candidate_side,
-        "outcome": game.outcome,
-        "seed": game.seed,
-        "round": game.round,
-        "trace_game_seq": game.trace_game_seq,
-        "plies": game.plies,
-        "elapsed_ms": game.elapsed_ms,
-        "candidate": metrics_payload(game.candidate),
-        "baseline": metrics_payload(game.baseline),
-    }
-
-
-def emit_pair_failed(lifecycle: LifecycleWriter, task: PairTask, error: str) -> None:
-    """Record a pair terminal failure before its containing trial terminalizes."""
-    lifecycle.emit(
-        "pair_failed",
+    return _with_task_reference(
         {
             "trial_id": task.trial_id,
             "pair_id": task.pair_id,
-            "pair_index": task.pair_index,
-            "error": error,
+            "game_id": game.game_id,
+            "candidate_side": game.candidate_side,
+            "outcome": game.outcome,
+            "seed": game.seed,
+            "round": game.round,
+            "trace_game_seq": game.trace_game_seq,
+            "plies": game.plies,
+            "elapsed_ms": game.elapsed_ms,
+            "candidate": metrics_payload(game.candidate),
+            "baseline": metrics_payload(game.baseline),
         },
+        descriptor,
+    )
+
+
+def emit_pair_failed(
+    lifecycle: LifecycleWriter,
+    task: PairTask,
+    error: str,
+    descriptor: DescriptorCommit | None = None,
+) -> None:
+    """Record a pair terminal failure before its containing trial terminalizes."""
+    lifecycle.emit(
+        "pair_failed",
+        _with_task_reference(
+            {
+                "trial_id": task.trial_id,
+                "pair_id": task.pair_id,
+                "pair_index": task.pair_index,
+                "error": error,
+            },
+            descriptor,
+        ),
     )
 
 
@@ -246,3 +294,14 @@ def metrics_payload(metrics: Any) -> dict:
         "iterations_first_half": metrics.iterations_first_half,
         "move_time_ms": metrics.move_time_ms,
     }
+
+
+def _with_task_reference(payload: dict, descriptor: DescriptorCommit | None) -> dict:
+    if descriptor is not None:
+        payload.update(
+            {
+                "task_id": descriptor.identity.task_id,
+                "descriptor_digest": descriptor.digest,
+            }
+        )
+    return payload

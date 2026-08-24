@@ -41,6 +41,7 @@ from tuner_cli.task_artifacts import (
     TaskDescriptorAllocator,
     sha256_digest,
 )
+from tuner_cli.task_execution import TaskArtifactReference, TaskResultError
 
 
 class _Future:
@@ -49,15 +50,17 @@ class _Future:
         error: Exception | None = None,
         result: PairResult | None = None,
         cancel_error: Exception | None = None,
+        cancelled: bool = False,
     ):
         self.error = error
         self.value = result
         self.cancel_error = cancel_error
         self.cancel_calls = 0
         self.result_calls = 0
+        self._cancelled = cancelled
 
     def cancelled(self):
-        return False
+        return self._cancelled
 
     def result(self):
         self.result_calls += 1
@@ -824,8 +827,10 @@ def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: P
         )
 
     assert order == ["descriptor", "event", "submit"]
-    task = executor.calls[0][3]
-    descriptor_path = next((descriptors.layout.root / "descriptors").glob("*.json"))
+    assert executor.calls[0][0] is pair_orchestration.execute_task_bundle
+    descriptor_path = executor.calls[0][1]
+    assert executor.calls[0][2]
+    task = next(iter(futures.values())).task
     descriptor_bytes = descriptor_path.read_bytes()
     descriptor = json.loads(descriptor_bytes)
     records = _event_records(event_path)
@@ -1140,6 +1145,133 @@ def test_worker_failure_emits_pair_failure_before_trial_terminal(tmp_path: Path)
         "trial_failed",
     ]
     assert all(record["event_type"] != "trial_reported" for record in records)
+
+
+def _artifact_scheduled(
+    tmp_path: Path, active: attempt._ActiveTrial
+) -> tuple[ScheduledPair, TaskDescriptorAllocator]:
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "physical-attempt",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    task = _task(active)
+    descriptor = descriptors.commit_task(
+        task, cfg=cfg, binary=Path("/resolved/game-nim"), pool_snapshot=[]
+    )
+    return (
+        ScheduledPair(
+            active,
+            task,
+            descriptor,
+            descriptors.layout.descriptor(descriptor.identity),
+        ),
+        descriptors,
+    )
+
+
+def test_artifact_result_is_read_once_before_lifecycle_and_rating_updates(
+    monkeypatch, tmp_path: Path
+):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    scheduled, _descriptors = _artifact_scheduled(tmp_path, active)
+    reference = TaskArtifactReference(
+        scheduled.descriptor.identity.task_id,
+        "attempt",
+        scheduled.descriptor.digest,
+        "completed",
+        "a" * 64,
+    )
+    reads: list[tuple] = []
+
+    def read(*args):
+        reads.append(args)
+        return _result(scheduled.task)
+
+    monkeypatch.setattr(pair_orchestration, "read_task_bundle", read)
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        result = attempt.worker_result(
+            _Future(result=reference),
+            study,
+            writer,
+            scheduled,
+            attempt._terminalize_from_pair(writer),
+        )
+        assert result == _result(scheduled.task)
+        attempt.finish_pair(writer, active, result, scheduled.descriptor)
+
+    assert reads == [
+        (
+            scheduled.descriptor_path,
+            scheduled.descriptor.digest,
+            reference,
+            scheduled.task,
+        )
+    ]
+    records = _event_records(event_path)
+    for record in records:
+        assert record["payload"]["task_id"] == scheduled.descriptor.identity.task_id
+        assert record["payload"]["descriptor_digest"] == scheduled.descriptor.digest
+
+
+@pytest.mark.parametrize(
+    ("future", "reader_error", "event_type"),
+    [
+        (
+            _Future(result=object()),
+            TaskResultError("missing completion marker"),
+            "trial_failed",
+        ),
+        (
+            _Future(result=object()),
+            TaskResultError("committed task failed"),
+            "trial_failed",
+        ),
+        (_Future(cancelled=True), None, "trial_cancelled"),
+    ],
+)
+def test_artifact_failure_paths_never_apply_a_partial_pair(
+    monkeypatch, tmp_path: Path, future, reader_error, event_type
+):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    scheduled, _descriptors = _artifact_scheduled(tmp_path, active)
+    if reader_error is not None:
+        monkeypatch.setattr(
+            pair_orchestration,
+            "read_task_bundle",
+            lambda *_args: (_ for _ in ()).throw(reader_error),
+        )
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        assert (
+            attempt.worker_result(
+                future,
+                study,
+                writer,
+                scheduled,
+                attempt._terminalize_from_pair(writer),
+            )
+            is None
+        )
+
+    records = _event_records(event_path)
+    assert [record["event_type"] for record in records] == ["pair_failed", event_type]
+    assert records[0]["payload"]["task_id"] == scheduled.descriptor.identity.task_id
+    assert records[0]["payload"]["descriptor_digest"] == scheduled.descriptor.digest
+    assert active.evaluation.completed_pairs == 0
 
 
 def test_coordinator_cancellation_fails_running_pair_before_trial(tmp_path: Path):

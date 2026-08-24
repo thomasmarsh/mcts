@@ -22,7 +22,13 @@ from tuner_cli.task_artifacts import (
     TaskDescriptorAllocator,
     read_completion,
 )
-from tuner_cli.task_execution import TaskDescriptorError, execute_task_bundle
+from tuner_cli.task_execution import (
+    TaskArtifactReference,
+    TaskDescriptorError,
+    TaskResultError,
+    execute_task_bundle,
+    read_task_bundle,
+)
 
 
 def _task() -> PairTask:
@@ -179,6 +185,59 @@ def test_success_bundle_has_raw_logs_trace_sequences_heartbeats_and_terminal_mar
     assert read_completion(task, commit.identity, commit.digest).outcome == "completed"
 
 
+def test_reader_reconstructs_only_the_committed_scheduled_pair(tmp_path: Path):
+    _allocator, commit, path = _descriptor(tmp_path)
+    reference = execute_task_bundle(
+        path, commit.digest, popen=_popen(_Process(_output()), [])
+    )
+
+    result = read_task_bundle(path, commit.digest, reference, _task())
+
+    assert result.task.session_id == "session-a"
+    assert result.task.trial_id == "trial-a"
+    assert result.task.pair_id == "pair-a"
+    assert [game.candidate_side for game in result.games] == ["first", "second"]
+    assert [game.trace_game_seq for game in result.games] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        TaskArtifactReference(
+            "task-" + "0" * 32, "attempt-a", "0" * 64, "completed", "0" * 64
+        ),
+        TaskArtifactReference(
+            "task-" + "0" * 32, "attempt-a", "0" * 64, "failed", "0" * 64
+        ),
+    ],
+)
+def test_reader_rejects_a_worker_reference_with_wrong_identity_or_digest(
+    tmp_path: Path, reference: TaskArtifactReference
+):
+    _allocator, commit, path = _descriptor(tmp_path)
+    execute_task_bundle(path, commit.digest, popen=_popen(_Process(_output()), []))
+
+    with pytest.raises(TaskResultError, match="identity or descriptor digest"):
+        read_task_bundle(path, commit.digest, reference, _task())
+
+
+def test_reader_rejects_a_reference_for_the_wrong_completion_marker(tmp_path: Path):
+    _allocator, commit, path = _descriptor(tmp_path)
+    reference = execute_task_bundle(
+        path, commit.digest, popen=_popen(_Process(_output()), [])
+    )
+    wrong_marker = TaskArtifactReference(
+        reference.task_id,
+        reference.attempt_id,
+        reference.descriptor_digest,
+        reference.outcome,
+        "0" * 64,
+    )
+
+    with pytest.raises(TaskResultError, match="completion digest"):
+        read_task_bundle(path, commit.digest, wrong_marker, _task())
+
+
 @pytest.mark.parametrize(
     ("process", "expected_kind"),
     [
@@ -200,6 +259,8 @@ def test_normal_failures_preserve_logs_trace_and_commit_typed_failure(
     assert (task / "trace.jsonl").exists()
     assert json.loads((task / "failure.json").read_text())["kind"] == expected_kind
     assert read_completion(task, commit.identity, commit.digest).outcome == "failed"
+    with pytest.raises(TaskResultError, match="committed task failed"):
+        read_task_bundle(path, commit.digest, reference, _task())
 
 
 def test_timeout_bundle_kills_process_and_keeps_partial_logs(tmp_path: Path):
