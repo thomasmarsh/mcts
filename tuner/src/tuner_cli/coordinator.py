@@ -34,6 +34,7 @@ from .lifecycle import (
 from .hyperband import OptunaHyperbandAdapter
 from .manifest import SessionForkRequired, build_session_manifest, write_manifest_atomic
 from .pool import OpponentPool, recover_pool
+from .task_artifacts import TaskDescriptorAllocator
 from .target import preflight_check
 
 
@@ -77,6 +78,7 @@ def run_optimization(
     attempt_id: str | None = None,
     lifecycle_path: str | Path | None = None,
     game_kind: str | None = None,
+    physical_attempt_root: str | Path | None = None,
 ) -> tuple[optuna.Study, OpponentPool]:
     """Run unfinished study work while recording lifecycle evidence."""
     cfg.validate()
@@ -114,6 +116,18 @@ def run_optimization(
             _emit_session_started(
                 lifecycle, manifest, manifest_path, optimizer, cfg.optimizer.n_trials
             )
+            task_descriptors = (
+                TaskDescriptorAllocator.start(
+                    physical_attempt_root,
+                    session_id=session,
+                    optimizer_id=optimizer,
+                    attempt_id=attempt,
+                    bench_run_id=bench_run_id,
+                    manifest_fingerprint=manifest["fingerprint"],
+                )
+                if physical_attempt_root is not None
+                else None
+            )
             _emit_attempt_started(
                 lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
             )
@@ -134,6 +148,7 @@ def run_optimization(
                 trace_path=trace_path,
                 pruning_adapter=pruning_adapter,
                 should_stop=stop_request.requested,
+                task_descriptors=task_descriptors,
             )
     return study, pool
 
@@ -328,6 +343,7 @@ def _run_attempt(
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
+    task_descriptors: TaskDescriptorAllocator | None = None,
 ) -> bool:
     futures: dict[Any, _ActiveTrial] = {}
     active: dict[TrialId, _ActiveTrial] = {}
@@ -354,6 +370,7 @@ def _run_attempt(
             trace_path,
             pruning_adapter,
             should_stop,
+            task_descriptors,
         )
         _raise_if_stop_requested(should_stop)
         drain_scheduled_trials(
@@ -373,6 +390,7 @@ def _run_attempt(
             pruning_adapter,
             should_stop,
             manifest_fingerprint,
+            task_descriptors,
         )
 
         _raise_if_stop_requested(should_stop)

@@ -20,6 +20,7 @@ from .evaluation import (
 )
 from .lifecycle import LifecycleWriter
 from .pool import OpponentPool
+from .task_artifacts import DescriptorCommit, TaskDescriptorAllocator
 from .target import evaluate_pair
 
 
@@ -65,10 +66,26 @@ def submit_next_pair(
     lifecycle: LifecycleWriter,
     trace_path: str | None,
     terminalize_trial: Callable[[optuna.Study, Any, str, str], None],
+    task_descriptors: TaskDescriptorAllocator | None = None,
 ) -> None:
-    """Emit pair-start evidence and submit exactly one pair future."""
+    """Commit pair evidence, then emit its start event and submit one worker."""
     task = make_next_pair_task(active_trial, pool, lifecycle, trace_path)
-    lifecycle.emit("pair_started", pair_started_payload(task))
+    descriptor: DescriptorCommit | None = None
+    if task_descriptors is not None:
+        try:
+            descriptor = task_descriptors.commit_task(
+                task,
+                cfg=cfg,
+                binary=binary,
+                pool_snapshot=[
+                    OpponentSnapshot.from_anchor(anchor) for anchor in pool.anchors
+                ],
+            )
+        except Exception as error:
+            message = f"task descriptor commit failed: {error}"
+            terminalize_trial(study, active_trial, "trial_failed", message)
+            raise
+    lifecycle.emit("pair_started", pair_started_payload(task, descriptor))
     try:
         future = executor.submit(evaluate_pair, cfg, binary, task)
     except Exception as error:
@@ -79,9 +96,11 @@ def submit_next_pair(
     futures[future] = ScheduledPair(active_trial, task)
 
 
-def pair_started_payload(task: PairTask) -> dict:
+def pair_started_payload(
+    task: PairTask, descriptor: DescriptorCommit | None = None
+) -> dict:
     """Build the stable pair-start payload without emitting it."""
-    return {
+    payload = {
         "trial_id": task.trial_id,
         "pair_id": task.pair_id,
         "pair_index": task.pair_index,
@@ -91,6 +110,15 @@ def pair_started_payload(task: PairTask) -> dict:
         "pool_snapshot_fingerprint": task.pool_snapshot_fingerprint,
         "rating_before": rating_payload(task.rating_before),
     }
+    if descriptor is not None:
+        payload.update(
+            {
+                "descriptor_digest": descriptor.digest,
+                "task_id": descriptor.identity.task_id,
+                "task_sequence": descriptor.identity.task_sequence,
+            }
+        )
+    return payload
 
 
 def worker_result(

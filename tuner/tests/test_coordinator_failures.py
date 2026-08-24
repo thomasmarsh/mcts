@@ -33,8 +33,14 @@ from tuner_cli.evaluation import (
 from tuner_cli.hyperband import HyperbandDecision
 from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId
 from tuner_cli import pair_orchestration
+from tuner_cli.artifact_layout import TASK_SEQUENCE_MAX
 from tuner_cli.pair_orchestration import ScheduledPair
 from tuner_cli.pool import Anchor, OpponentPool
+from tuner_cli.task_artifacts import (
+    ArtifactIntegrityError,
+    TaskDescriptorAllocator,
+    sha256_digest,
+)
 
 
 class _Future:
@@ -753,6 +759,328 @@ def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Pat
     assert records[-1]["event_type"] == "pair_started"
     assert records[-1]["payload"]["seed"] == configured_game_seed(task.seed)
     assert records[-1]["payload"]["round"] == 1
+
+
+def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    executor, futures = _Executor(), {}
+    physical_root = tmp_path / "physical-attempt"
+    descriptors = TaskDescriptorAllocator.start(
+        physical_root,
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id="bench-run",
+        manifest_fingerprint="manifest",
+    )
+    order: list[str] = []
+    original_commit = descriptors.commit_task
+
+    def commit_task(*args, **kwargs):
+        committed = original_commit(*args, **kwargs)
+        order.append("descriptor")
+        return committed
+
+    descriptors.commit_task = commit_task  # type: ignore[method-assign]
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        original_emit = writer.emit
+
+        def emit(event_type, payload):
+            if event_type == "pair_started":
+                assert list((descriptors.layout.root / "descriptors").glob("*.json"))
+                order.append("event")
+            return original_emit(event_type, payload)
+
+        writer.emit = emit  # type: ignore[method-assign]
+
+        class OrderingExecutor(_Executor):
+            def submit(self, *args):
+                records = _event_records(event_path)
+                assert records[-1]["event_type"] == "pair_started"
+                order.append("submit")
+                return super().submit(*args)
+
+        executor = OrderingExecutor()
+        attempt.submit_next_pair(
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("/resolved/game-nim"),
+            pool,
+            study,
+            writer,
+            "legacy-trace.jsonl",
+            attempt._terminalize_from_pair(writer),
+            descriptors,
+        )
+
+    assert order == ["descriptor", "event", "submit"]
+    task = executor.calls[0][3]
+    descriptor_path = next((descriptors.layout.root / "descriptors").glob("*.json"))
+    descriptor_bytes = descriptor_path.read_bytes()
+    descriptor = json.loads(descriptor_bytes)
+    records = _event_records(event_path)
+    pair_started = records[-1]["payload"]
+
+    assert sha256_digest(descriptor_bytes) == pair_started["descriptor_digest"]
+    assert descriptor["task_id"] == pair_started["task_id"]
+    assert descriptor["task_sequence"] == pair_started["task_sequence"] == 1
+    assert descriptor["session_id"] == "session"
+    assert descriptor["optimizer_id"] == "optimizer"
+    assert descriptor["attempt_id"] == "attempt"
+    assert descriptor["bench_run_id"] == "bench-run"
+    assert descriptor["trial_id"] == task.trial_id
+    assert descriptor["pair_id"] == task.pair_id
+    assert descriptor["candidate_config"] == {"family": "rave"}
+    assert descriptor["opponent"] == {
+        "anchor_id": "random",
+        "config": {"family": "random"},
+        "mu": 0.0,
+        "sigma": 0.5,
+    }
+    assert descriptor["pool_snapshot"] == [descriptor["opponent"]]
+    assert descriptor["rating_before"] == {
+        "mu": task.rating_before.mu,
+        "sigma": task.rating_before.sigma,
+    }
+    assert descriptor["binary"] == {"path": "/resolved/game-nim"}
+    assert descriptor["game_ids"] == {
+        "candidate_first": game_id_for(task.pair_id, "first"),
+        "candidate_second": game_id_for(task.pair_id, "second"),
+    }
+    assert descriptor["task_directory"] == f"tasks/{descriptor['task_id']}"
+    assert descriptor["trace_game_sequences"] == {
+        "candidate_first": 1,
+        "candidate_second": 2,
+    }
+    assert str(descriptors.layout.root) not in descriptor_path.read_text()
+    assert "legacy-trace.jsonl" not in descriptor_path.read_text()
+
+    attempt_descriptor = json.loads(descriptors.layout.attempt.read_text())
+    assert attempt_descriptor["attempt_id"] == "attempt"
+    assert attempt_descriptor["manifest_fingerprint"] == "manifest"
+
+
+def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    executor, futures = _Executor(), {}
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "physical-attempt",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.submit_next_pair(
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("/resolved/game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+            attempt._terminalize_from_pair(writer),
+            descriptors,
+        )
+        active.config["family"] = "changed"
+        pool.anchors[0].config["family"] = "changed"
+        active.evaluation.completed_pairs = 1
+        attempt.submit_next_pair(
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("/resolved/game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+            attempt._terminalize_from_pair(writer),
+            descriptors,
+        )
+
+    files = sorted((descriptors.layout.root / "descriptors").glob("*.json"))
+    payloads = [json.loads(path.read_text()) for path in files]
+    assert [payload["task_sequence"] for payload in payloads] == [1, 2]
+    assert len({payload["task_id"] for payload in payloads}) == 2
+    assert [payload["pair_index"] for payload in payloads] == [0, 1]
+    assert payloads[0]["candidate_config"] == {"family": "rave"}
+    assert payloads[0]["pool_snapshot"][0]["config"] == {"family": "random"}
+    assert payloads[1]["trace_game_sequences"] == {
+        "candidate_first": 3,
+        "candidate_second": 4,
+    }
+
+
+def test_descriptor_commit_failure_prevents_worker_submission(
+    tmp_path: Path, monkeypatch
+):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    executor, futures = _Executor(), {}
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "physical-attempt",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    monkeypatch.setattr(
+        descriptors,
+        "commit_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("full disk")),
+    )
+    event_path = tmp_path / "events.jsonl"
+    with LifecycleWriter(
+        event_path, SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        with pytest.raises(OSError, match="full disk"):
+            attempt.submit_next_pair(
+                executor,
+                futures,
+                active,
+                cfg,
+                Path("/resolved/game-nim"),
+                pool,
+                study,
+                writer,
+                None,
+                attempt._terminalize_from_pair(writer),
+                descriptors,
+            )
+
+    assert not executor.calls
+    assert not futures
+    assert study.trials[0].state == optuna.trial.TrialState.FAIL
+    assert [record["event_type"] for record in _event_records(event_path)] == [
+        "trial_failed"
+    ]
+
+
+def test_exhausted_descriptor_sequence_prevents_worker_submission(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    active = _active(study)
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
+    )
+    executor, futures = _Executor(), {}
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "physical-attempt",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    descriptors._next_task_sequence = TASK_SEQUENCE_MAX + 1
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        with pytest.raises(ValueError, match="task_sequence"):
+            attempt.submit_next_pair(
+                executor,
+                futures,
+                active,
+                cfg,
+                Path("/resolved/game-nim"),
+                pool,
+                study,
+                writer,
+                None,
+                attempt._terminalize_from_pair(writer),
+                descriptors,
+            )
+
+    assert not executor.calls
+    assert study.trials[0].state == optuna.trial.TrialState.FAIL
+
+
+def test_stop_before_scheduling_does_not_allocate_a_descriptor(tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(n_workers=1),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+    executor, futures, active = _Executor(), {}, {}
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "physical-attempt",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.schedule_initial_trials(
+            1,
+            1,
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("/resolved/game-nim"),
+            pool,
+            study,
+            writer,
+            None,
+            should_stop=lambda: True,
+            task_descriptors=descriptors,
+        )
+
+    assert not executor.calls
+    assert not futures
+    assert not active
+    assert not (descriptors.layout.root / "descriptors").exists()
+
+
+def test_attempt_root_cannot_be_reused_by_a_new_physical_attempt(tmp_path: Path):
+    root = tmp_path / "physical-attempt"
+    TaskDescriptorAllocator.start(
+        root,
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt-one",
+        bench_run_id=None,
+        manifest_fingerprint="manifest",
+    )
+    with pytest.raises(ArtifactIntegrityError):
+        TaskDescriptorAllocator.start(
+            root,
+            session_id="session",
+            optimizer_id="optimizer",
+            attempt_id="attempt-two",
+            bench_run_id=None,
+            manifest_fingerprint="manifest",
+        )
 
 
 def test_initial_scheduling_keeps_multiple_trials_active_with_one_pair_each(

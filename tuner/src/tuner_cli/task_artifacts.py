@@ -7,7 +7,9 @@ the worker heartbeat, and a completion record is the sole terminal marker.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -16,10 +18,19 @@ import stat
 import tempfile
 from typing import Any, Final, Literal
 
-from .artifact_layout import TaskIdentity, validate_task_id
+from .artifact_layout import (
+    ARTIFACT_LAYOUT_SCHEMA_VERSION,
+    ArtifactLayout,
+    TaskIdentity,
+    game_sequences_for,
+    validate_task_id,
+)
+from .evaluation import game_id_for
 from .lifecycle import strict_json_dumps
 
 TASK_COMPLETION_SCHEMA_VERSION: Final = 1
+ATTEMPT_DESCRIPTOR_SCHEMA_VERSION: Final = 1
+TASK_DESCRIPTOR_SCHEMA_VERSION: Final = 1
 _DIGEST_LENGTH: Final = 64
 
 TaskOutcome = Literal["completed", "failed"]
@@ -27,6 +38,154 @@ TaskOutcome = Literal["completed", "failed"]
 
 class ArtifactIntegrityError(ValueError):
     """An artifact exists but does not satisfy its immutable contract."""
+
+
+@dataclass(frozen=True)
+class DescriptorCommit:
+    """The identity and immutable digest published before worker submission."""
+
+    identity: TaskIdentity
+    digest: str
+
+
+@dataclass
+class TaskDescriptorAllocator:
+    """Coordinator-owned attempt evidence and task identity allocation."""
+
+    layout: ArtifactLayout
+    session_id: str
+    optimizer_id: str
+    attempt_id: str
+    bench_run_id: str | None
+    manifest_fingerprint: str
+    _next_task_sequence: int = 1
+
+    @classmethod
+    def start(
+        cls,
+        physical_attempt_root: str | Path,
+        *,
+        session_id: str,
+        optimizer_id: str,
+        attempt_id: str,
+        bench_run_id: str | None,
+        manifest_fingerprint: str,
+    ) -> TaskDescriptorAllocator:
+        """Publish one immutable attempt record before any task can be allocated."""
+        allocator = cls(
+            ArtifactLayout.for_attempt_root(physical_attempt_root),
+            session_id,
+            optimizer_id,
+            attempt_id,
+            bench_run_id,
+            manifest_fingerprint,
+        )
+        write_immutable_json(allocator.layout.attempt, allocator.attempt_payload())
+        return allocator
+
+    def attempt_payload(self) -> dict[str, Any]:
+        """Build the immutable physical-attempt record without a task root path."""
+        return {
+            "artifact_layout_schema_version": ARTIFACT_LAYOUT_SCHEMA_VERSION,
+            "attempt_id": self.attempt_id,
+            "bench_run_id": self.bench_run_id,
+            "created_at": _created_at(),
+            "manifest_fingerprint": self.manifest_fingerprint,
+            "optimizer_id": self.optimizer_id,
+            "schema_version": ATTEMPT_DESCRIPTOR_SCHEMA_VERSION,
+            "session_id": self.session_id,
+        }
+
+    def commit_task(
+        self,
+        task: Any,
+        *,
+        cfg: Any,
+        binary: Path,
+        pool_snapshot: list[Any],
+    ) -> DescriptorCommit:
+        """Allocate and publish one complete task descriptor exactly once."""
+        identity = TaskIdentity.for_pair(
+            self.attempt_id, self._next_task_sequence, task.pair_id
+        )
+        payload = self.task_payload(identity, task, cfg, binary, pool_snapshot)
+        digest = write_immutable_json(self.layout.descriptor(identity), payload)
+        self._next_task_sequence += 1
+        return DescriptorCommit(identity, digest)
+
+    def task_payload(
+        self,
+        identity: TaskIdentity,
+        task: Any,
+        cfg: Any,
+        binary: Path,
+        pool_snapshot: list[Any],
+    ) -> dict[str, Any]:
+        """Freeze all causal submission inputs in a relocatable descriptor."""
+        sequences = game_sequences_for(identity.task_sequence)
+        task_directory = f"tasks/{identity.task_id}"
+        if cfg.target.max_time_ms is not None:
+            search_budget: dict[str, int | str] = {
+                "kind": "max_time_ms",
+                "max_time_ms": cfg.target.max_time_ms,
+            }
+        else:
+            search_budget = {
+                "kind": "max_iterations",
+                "max_iterations": cfg.target.max_iterations or 10_000,
+            }
+        return {
+            "artifact_layout_schema_version": ARTIFACT_LAYOUT_SCHEMA_VERSION,
+            "attempt_id": self.attempt_id,
+            "bench_run_id": self.bench_run_id,
+            "binary": {"path": str(binary.resolve())},
+            "candidate_config": deepcopy(task.candidate_config),
+            "created_at": _created_at(),
+            "game": {
+                "game_config": deepcopy(cfg.target.game_config),
+                "rounds": 1,
+            },
+            "game_ids": {
+                "candidate_first": game_id_for(task.pair_id, "first"),
+                "candidate_second": game_id_for(task.pair_id, "second"),
+            },
+            "manifest_fingerprint": self.manifest_fingerprint,
+            "opponent": _opponent_payload(task.opponent),
+            "optimizer_id": self.optimizer_id,
+            "pair_id": task.pair_id,
+            "pair_index": task.pair_index,
+            "pool_snapshot": [_opponent_payload(anchor) for anchor in pool_snapshot],
+            "pool_snapshot_fingerprint": task.pool_snapshot_fingerprint,
+            "rating_before": {
+                "mu": task.rating_before.mu,
+                "sigma": task.rating_before.sigma,
+            },
+            "schema_version": TASK_DESCRIPTOR_SCHEMA_VERSION,
+            "search_budget": search_budget,
+            "seed": task.seed,
+            "session_id": self.session_id,
+            "task_directory": task_directory,
+            "task_id": identity.task_id,
+            "task_sequence": identity.task_sequence,
+            "trace_game_sequences": {
+                "candidate_first": sequences.candidate_first,
+                "candidate_second": sequences.candidate_second,
+            },
+            "trial_id": task.trial_id,
+        }
+
+
+def _created_at() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _opponent_payload(opponent: Any) -> dict[str, Any]:
+    return {
+        "anchor_id": opponent.anchor_id,
+        "config": deepcopy(opponent.config),
+        "mu": opponent.mu,
+        "sigma": opponent.sigma,
+    }
 
 
 def canonical_json_bytes(value: Any) -> bytes:

@@ -31,6 +31,7 @@ from .pair_orchestration import (
 )
 from .pool import OpponentPool
 from .space_optuna import suggest_config
+from .task_artifacts import TaskDescriptorAllocator
 
 logger = logging.getLogger("tuner_cli")
 
@@ -61,6 +62,7 @@ class _AttemptContext:
     trace_path: str | None
     pruning_adapter: OptunaHyperbandAdapter | None = None
     manifest_fingerprint: str = "legacy"
+    task_descriptors: TaskDescriptorAllocator | None = None
 
 
 def worker_count(cfg: SearchConfig) -> int:
@@ -86,6 +88,7 @@ def schedule_initial_trials(
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
+    task_descriptors: TaskDescriptorAllocator | None = None,
 ) -> None:
     """Fill the configured worker limit with first pairs from distinct trials."""
     for _ in range(min(workers, remaining)):
@@ -103,6 +106,7 @@ def schedule_initial_trials(
             trace_path,
             pruning_adapter,
             should_stop,
+            task_descriptors,
         )
 
 
@@ -118,6 +122,7 @@ def schedule_trial(
     trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
+    task_descriptors: TaskDescriptorAllocator | None = None,
 ) -> bool:
     """Ask Optuna for one trial, then submit only its first evaluation pair."""
     if _stop_requested(should_stop):
@@ -140,6 +145,7 @@ def schedule_trial(
         lifecycle,
         trace_path,
         _terminalize_from_pair(lifecycle),
+        task_descriptors,
     )
     return True
 
@@ -204,6 +210,7 @@ def drain_scheduled_trials(
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     manifest_fingerprint: str = "legacy",
+    task_descriptors: TaskDescriptorAllocator | None = None,
 ) -> None:
     """Settle pair futures, continuing each live trial one pair at a time."""
     context = _AttemptContext(
@@ -217,6 +224,7 @@ def drain_scheduled_trials(
         trace_path,
         pruning_adapter,
         manifest_fingerprint,
+        task_descriptors,
     )
     while futures:
         _raise_if_stop_requested(should_stop)
@@ -291,6 +299,7 @@ def continue_trial(
         context.lifecycle,
         context.trace_path,
         _terminalize_from_pair(context.lifecycle),
+        context.task_descriptors,
     )
     return True
 
@@ -376,6 +385,7 @@ def replenish_trial(
             context.trace_path,
             context.pruning_adapter,
             should_stop,
+            context.task_descriptors,
         )
     return remaining
 
