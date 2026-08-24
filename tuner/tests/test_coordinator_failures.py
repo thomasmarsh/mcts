@@ -108,9 +108,9 @@ class _ScriptedPruningAdapter:
         self.created = 0
         self.observed = 0
 
-    def create_trial(self, study):
+    def create_trial(self, study, pruning_exempt=False):
         self.created += 1
-        return SimpleNamespace(trial=study.ask())
+        return SimpleNamespace(trial=study.ask(), pruning_exempt=pruning_exempt)
 
     def observe_after_report(self, _trial):
         self.observed += 1
@@ -227,7 +227,14 @@ def _context(
         manifest_fingerprint="manifest",
     )
     return attempt._AttemptContext(
-        cfg, Path("game-nim"), pool, pool_path, study, writer, "sha", task_descriptors=descriptors
+        cfg,
+        Path("game-nim"),
+        pool,
+        pool_path,
+        study,
+        writer,
+        "sha",
+        task_descriptors=descriptors,
     )
 
 
@@ -430,14 +437,17 @@ def test_sigint_and_sigterm_handlers_only_request_the_same_stop(monkeypatch):
         assert stop_request.requested()
 
 
-def test_pruning_uses_one_automatic_worker_and_snapshots_the_adapter_trial():
+def test_pruning_uses_automatic_evaluation_slots_and_snapshots_the_adapter_trial(
+    monkeypatch,
+):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config()
     adapter = _ScriptedPruningAdapter([])
+    monkeypatch.setattr(attempt.os, "cpu_count", lambda: 10)
 
     active = attempt.create_active_trial(study, cfg, SessionId("session"), adapter)
 
-    assert attempt.worker_count(cfg) == 1
+    assert attempt.worker_count(cfg) == 5
     assert adapter.created == 1
     assert active.hyperband_trial is not None
 
@@ -781,8 +791,11 @@ def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Pat
             attempt._terminalize_from_pair(writer),
             TaskDescriptorAllocator.start(
                 tmp_path / "bench-runs" / "submission" / "tuning-artifacts",
-                session_id="session", optimizer_id="optimizer", attempt_id="attempt",
-                bench_run_id="submission", manifest_fingerprint="manifest",
+                session_id="session",
+                optimizer_id="optimizer",
+                attempt_id="attempt",
+                bench_run_id="submission",
+                manifest_fingerprint="manifest",
             ),
         )
     assert len(futures) == 1
@@ -1142,13 +1155,163 @@ def test_initial_scheduling_keeps_multiple_trials_active_with_one_pair_each(
             writer,
             task_descriptors=TaskDescriptorAllocator.start(
                 tmp_path / "bench-runs" / "initial" / "tuning-artifacts",
-                session_id="session", optimizer_id="optimizer", attempt_id="attempt",
-                bench_run_id="initial", manifest_fingerprint="manifest",
+                session_id="session",
+                optimizer_id="optimizer",
+                attempt_id="attempt",
+                bench_run_id="initial",
+                manifest_fingerprint="manifest",
             ),
         )
     assert len(active) == len(futures) == len(executor.calls) == 2
-    assert all(call[0] is pair_orchestration.execute_task_bundle for call in executor.calls)
+    assert all(
+        call[0] is pair_orchestration.execute_task_bundle for call in executor.calls
+    )
     assert {call[1].parent.name for call in executor.calls} == {"descriptors"}
+
+
+def test_parallel_pruning_allocates_distinct_startup_trials_and_task_artifacts(
+    tmp_path: Path,
+):
+    study = optuna.create_study(direction="maximize")
+    executor, futures, active = _Executor(), {}, {}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(
+            n_trials=3,
+            n_workers=3,
+            pruning=PruningPolicy(enabled=True, startup_trials=2),
+        ),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+    adapter = _ScriptedPruningAdapter([])
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "bench-runs" / "parallel" / "tuning-artifacts",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id="parallel",
+        manifest_fingerprint="manifest",
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        remaining = attempt.schedule_initial_trials(
+            3,
+            3,
+            executor,
+            futures,
+            active,
+            cfg,
+            Path("game-nim"),
+            pool,
+            study,
+            writer,
+            adapter,
+            task_descriptors=descriptors,
+            startup_allocator=attempt.StartupTrialAllocator.restore(study, 2),
+        )
+
+    assert remaining == 0
+    assert len(active) == len(futures) == len(executor.calls) == 3
+    assert [trial.hyperband_trial.pruning_exempt for trial in active.values()] == [
+        True,
+        True,
+        False,
+    ]
+    assert [trial.user_attrs["pruning_startup_exempt"] for trial in study.trials] == [
+        True,
+        True,
+        False,
+    ]
+    scheduled = list(futures.values())
+    assert [item.descriptor.identity.task_sequence for item in scheduled] == [1, 2, 3]
+    assert len({item.descriptor.identity.task_id for item in scheduled}) == 3
+    assert len({item.descriptor_path for item in scheduled}) == 3
+    created = [
+        record["payload"]
+        for record in _event_records(tmp_path / "events.jsonl")
+        if record["event_type"] == "trial_created"
+    ]
+    assert [record["pruning_exempt"] for record in created] == [True, True, False]
+
+
+def test_startup_allocator_restores_persisted_flags_before_new_trial():
+    study = optuna.create_study(direction="maximize")
+    first = study.ask()
+    first.set_user_attr("pruning_startup_exempt", True)
+    cfg = _pruning_config()
+    adapter = _ScriptedPruningAdapter([])
+
+    active = attempt.create_active_trial(
+        study,
+        cfg,
+        SessionId("session"),
+        adapter,
+        attempt.StartupTrialAllocator.restore(study, 1),
+    )
+
+    assert not active.hyperband_trial.pruning_exempt
+    assert study.trials[1].user_attrs["pruning_startup_exempt"] is False
+
+
+def test_ready_batch_reports_in_descriptor_sequence_order(monkeypatch, tmp_path: Path):
+    study = optuna.create_study(direction="maximize")
+    cfg = SearchConfig(
+        optimizer=OptimizerConfig(
+            resource=ResourcePolicy(min_pairs=1, max_pairs=1),
+            rating=RatingPolicy(sigma_stop=None),
+        ),
+        target=TargetConfig(binary=Path("game-nim")),
+    )
+    first, second = _active(study), _active(study)
+    first.evaluation = TrialEvaluationState(
+        cfg.optimizer.resource, cfg.optimizer.rating
+    )
+    second.evaluation = TrialEvaluationState(
+        cfg.optimizer.resource, cfg.optimizer.rating
+    )
+    first_descriptor = SimpleNamespace(
+        identity=SimpleNamespace(task_id="task-1", task_sequence=1), digest="one"
+    )
+    second_descriptor = SimpleNamespace(
+        identity=SimpleNamespace(task_id="task-2", task_sequence=2), digest="two"
+    )
+    first_future, second_future = _Future(), _Future()
+    futures = {
+        second_future: ScheduledPair(second, _task(second), second_descriptor),
+        first_future: ScheduledPair(first, _task(first), first_descriptor),
+    }
+    active = {first.trial_id: first, second.trial_id: second}
+    pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
+    monkeypatch.setattr(
+        attempt,
+        "worker_result",
+        lambda _future, _study, _writer, scheduled, _terminal: _result(scheduled.task),
+    )
+    with LifecycleWriter(
+        tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
+    ) as writer:
+        attempt.drain_scheduled_trials(
+            0,
+            _Executor(),
+            futures,
+            active,
+            cfg,
+            Path("game-nim"),
+            pool,
+            tmp_path / "pool.json",
+            study,
+            writer,
+            "sha",
+            lambda current, **_kwargs: (set(current), set()),
+        )
+
+    finished = [
+        record["payload"]["task_id"]
+        for record in _event_records(tmp_path / "events.jsonl")
+        if record["event_type"] == "pair_finished"
+    ]
+    assert finished == ["task-1", "task-2"]
 
 
 def test_worker_failure_emits_pair_failure_before_trial_terminal(tmp_path: Path):

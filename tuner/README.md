@@ -60,7 +60,7 @@ uv run --project tuner/ tuner \
 |---|---|---|---|
 | `optimizer.n_trials` | int | 1000 | Number of configurations to evaluate |
 | `optimizer.deterministic` | bool | false | Use one seed per trial (vs. multiple) |
-| `optimizer.n_workers` | int | cpu//2 | Parallel workers |
+| `optimizer.n_workers` | int | cpu//2 | Concurrent evaluation-pair slots (not MCTS threads) |
 | `optimizer.seed` | int | 42 | Random seed |
 | `target.binary` | str | `target/release/game-traffic-lights` | Path to the game binary (relative to CWD) |
 | `target.rounds` | int | 20 | Self-play rounds per trial, passed as `tune eval --rounds` |

@@ -50,7 +50,7 @@ export const LaunchForm: Component<{
   const [tunerMaxPairs, setTunerMaxPairs] = createSignal(6);
   const [tunerPruningEnabled, setTunerPruningEnabled] = createSignal(false);
   const [tunerReductionFactor, setTunerReductionFactor] = createSignal(3);
-  const [tunerPruningStartupTerminalTrials, setTunerPruningStartupTerminalTrials] = createSignal(5);
+  const [tunerPruningStartupTrials, setTunerPruningStartupTrials] = createSignal(5);
   const [tunerSigmaStop, setTunerSigmaStop] = createSignal("");
   const [tunerTpeStartupTrials, setTunerTpeStartupTrials] = createSignal(3);
 
@@ -162,7 +162,7 @@ export const LaunchForm: Component<{
     return {
       nTrials: tunerNTrials(), nWorkers: tunerNWorkers(), deterministic: tunerDeterministic(), seed: tunerSeed(),
       minPairs: tunerMinPairs(), maxPairs: tunerMaxPairs(), pruningEnabled: tunerPruningEnabled(),
-      reductionFactor: tunerReductionFactor(), pruningStartupTerminalTrials: tunerPruningStartupTerminalTrials(),
+      reductionFactor: tunerReductionFactor(), pruningStartupTrials: tunerPruningStartupTrials(),
       sigmaStop: tunerSigmaStop(), tpeStartupTrials: tunerTpeStartupTrials(),
       maxIterations: tunerMaxIterations(), maxTimeMs: tunerMaxTimeMs(),
     };
@@ -286,8 +286,8 @@ export const LaunchForm: Component<{
             onPruningEnabledChange={setTunerPruningEnabled}
             reductionFactor={tunerReductionFactor()}
             onReductionFactorChange={setTunerReductionFactor}
-            pruningStartupTerminalTrials={tunerPruningStartupTerminalTrials()}
-            onPruningStartupTerminalTrialsChange={setTunerPruningStartupTerminalTrials}
+            pruningStartupTrials={tunerPruningStartupTrials()}
+            onPruningStartupTrialsChange={setTunerPruningStartupTrials}
             sigmaStop={tunerSigmaStop()}
             onSigmaStopChange={setTunerSigmaStop}
             tpeStartupTrials={tunerTpeStartupTrials()}

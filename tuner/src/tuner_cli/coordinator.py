@@ -14,6 +14,7 @@ from optuna.trial import TrialState
 from .attempt import (
     AttemptStopRequested,
     _ActiveTrial,
+    StartupTrialAllocator,
     cancel_active_trials,
     drain_scheduled_trials,
     schedule_initial_trials,
@@ -208,7 +209,7 @@ def _study_storage(output_dir: Path) -> str:
 
 
 def _pruning_adapter(cfg: SearchConfig) -> OptunaHyperbandAdapter | None:
-    """Construct the one sequential-pruning boundary when configured."""
+    """Construct the coordinator-owned Hyperband boundary when configured."""
     if not cfg.optimizer.pruning.enabled:
         return None
     return OptunaHyperbandAdapter(cfg.optimizer.resource, cfg.optimizer.pruning)
@@ -366,8 +367,13 @@ def _run_attempt(
         _raise_if_stop_requested(should_stop)
         remaining = max(0, cfg.optimizer.n_trials - len(study.trials))
         workers = worker_count(cfg)
+        startup_allocator = (
+            StartupTrialAllocator.restore(study, cfg.optimizer.pruning.startup_trials)
+            if pruning_adapter is not None
+            else None
+        )
         executor = ProcessPoolExecutor(max_workers=workers)
-        schedule_initial_trials(
+        remaining = schedule_initial_trials(
             remaining,
             workers,
             executor,
@@ -381,6 +387,7 @@ def _run_attempt(
             pruning_adapter,
             should_stop,
             task_descriptors,
+            startup_allocator,
         )
         _raise_if_stop_requested(should_stop)
         drain_scheduled_trials(
@@ -400,6 +407,7 @@ def _run_attempt(
             should_stop,
             manifest_fingerprint,
             task_descriptors,
+            startup_allocator,
         )
 
         _raise_if_stop_requested(should_stop)

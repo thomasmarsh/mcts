@@ -22,7 +22,8 @@ optimizer:
   # Whether the target function is deterministic (one seed) or noisy (multiple)
   deterministic: false
 
-  # Number of parallel workers. Use null to default to cpu_count // 2.
+  # Concurrent evaluation-pair slots. Use null to default to cpu_count // 2;
+  # this is separate from the MCTS threads used within each search.
   n_workers: null
 
   # Random seed for reproducibility
@@ -37,13 +38,12 @@ optimizer:
     sigma_stop: 2.0
     conservative_k: 3.0
 
-  # Pruning is configured and recorded, but disabled because this evaluator
-  # does not report resource usage to the study.
+  # Hyperband observes completed evaluation pairs in the coordinator.
   pruning:
     enabled: false
     kind: hyperband
     reduction_factor: 3
-    startup_terminal_trials: 100
+    startup_trials: 100
 
   sampler:
     kind: tpe

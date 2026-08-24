@@ -7,7 +7,7 @@ export interface TunerLaunchPolicyInput {
   maxPairs: number;
   pruningEnabled: boolean;
   reductionFactor: number;
-  pruningStartupTerminalTrials: number;
+  pruningStartupTrials: number;
   sigmaStop: string;
   tpeStartupTrials: number;
   maxIterations: string;
@@ -19,8 +19,9 @@ export function validateTunerLaunchPolicy(input: TunerLaunchPolicyInput): string
   if (input.minPairs < 1 || input.minPairs > input.maxPairs) {
     return "Minimum pairs must be at least 1 and no greater than maximum pairs.";
   }
-  if (input.pruningEnabled && input.nWorkers.trim() !== "1") {
-    return "Pruning requires exactly one worker.";
+  const workers = input.nWorkers.trim();
+  if (workers !== "" && (!/^\d+$/.test(workers) || Number(workers) < 1)) {
+    return "Workers are concurrent evaluation slots and must be a positive whole number.";
   }
   return null;
 }
@@ -40,7 +41,7 @@ export function buildTunerOverrides(input: TunerLaunchPolicyInput): string[] {
   if (workers !== "") overrides.push(`optimizer.n_workers=${workers}`);
   if (input.pruningEnabled) {
     overrides.push(`optimizer.pruning.reduction_factor=${input.reductionFactor}`);
-    overrides.push(`optimizer.pruning.startup_terminal_trials=${input.pruningStartupTerminalTrials}`);
+    overrides.push(`optimizer.pruning.startup_trials=${input.pruningStartupTrials}`);
   }
   const sigmaStop = input.sigmaStop.trim();
   if (sigmaStop !== "") overrides.push(`rating.sigma_stop=${sigmaStop}`);

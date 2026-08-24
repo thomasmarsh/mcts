@@ -49,7 +49,7 @@ class PruningPolicy:
     enabled: bool = False
     kind: str = "hyperband"
     reduction_factor: int = 3
-    startup_terminal_trials: int = 100
+    startup_trials: int = 100
 
 
 @dataclass
@@ -232,7 +232,7 @@ class SearchConfig:
         pruning = cls._policy_mapping(
             opt,
             "pruning",
-            {"enabled", "kind", "reduction_factor", "startup_terminal_trials"},
+            {"enabled", "kind", "reduction_factor", "startup_trials"},
         )
         sampler = cls._policy_mapping(opt, "sampler", {"kind", "startup_trials"})
         if "eta" in opt:
@@ -284,7 +284,7 @@ class SearchConfig:
                     enabled=pruning.get("enabled", False),
                     kind=pruning.get("kind", "hyperband"),
                     reduction_factor=pruning.get("reduction_factor", 3),
-                    startup_terminal_trials=pruning.get("startup_terminal_trials", 100),
+                    startup_trials=pruning.get("startup_trials", 100),
                 ),
                 sampler=SamplerPolicy(
                     kind=sampler.get("kind", "tpe"),
@@ -345,16 +345,14 @@ class SearchConfig:
             "optimizer.pruning.reduction_factor",
         )
         self._nonnegative_int(
-            pruning.startup_terminal_trials,
-            "optimizer.pruning.startup_terminal_trials",
+            pruning.startup_trials,
+            "optimizer.pruning.startup_trials",
         )
         if sampler.kind != "tpe":
             raise ValueError("optimizer.sampler.kind must be 'tpe'")
         self._nonnegative_int(
             sampler.startup_trials, "optimizer.sampler.startup_trials"
         )
-        if pruning.enabled and opt.n_workers is not None and opt.n_workers != 1:
-            raise ValueError("optimizer.pruning.enabled requires optimizer.n_workers=1")
 
     @staticmethod
     def _positive_int(value: Any, name: str) -> None:

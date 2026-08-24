@@ -4,25 +4,26 @@ from __future__ import annotations
 
 import optuna
 from optuna.trial import TrialState
-
 from tuner_cli import hyperband
 from tuner_cli.config import PruningPolicy, ResourcePolicy
 from tuner_cli.hyperband import OptunaHyperbandAdapter
 
 
 def _adapter(
-    *, min_pairs: int = 1, max_pairs: int = 3, startup_terminal_trials: int = 0
+    *, min_pairs: int = 1, max_pairs: int = 3, startup_trials: int = 0
 ) -> OptunaHyperbandAdapter:
     return OptunaHyperbandAdapter(
         ResourcePolicy(min_pairs=min_pairs, max_pairs=max_pairs),
         PruningPolicy(
             reduction_factor=3,
-            startup_terminal_trials=startup_terminal_trials,
+            startup_trials=startup_trials,
         ),
     )
 
 
-def _study(adapter: OptunaHyperbandAdapter, name: str = "hyperband-test") -> optuna.Study:
+def _study(
+    adapter: OptunaHyperbandAdapter, name: str = "hyperband-test"
+) -> optuna.Study:
     return optuna.create_study(
         direction="maximize", study_name=name, pruner=adapter.pruner
     )
@@ -37,7 +38,7 @@ def test_constructor_passes_explicit_resources_without_bootstrap_count(monkeypat
 
     monkeypatch.setattr(hyperband.optuna.pruners, "HyperbandPruner", hyperband_pruner)
 
-    _adapter(min_pairs=2, max_pairs=7, startup_terminal_trials=11)
+    _adapter(min_pairs=2, max_pairs=7, startup_trials=11)
 
     assert arguments == {
         "min_resource": 2,
@@ -47,7 +48,7 @@ def test_constructor_passes_explicit_resources_without_bootstrap_count(monkeypat
 
 
 def test_startup_policy_does_not_set_optuna_bootstrap_count():
-    adapter = _adapter(min_pairs=2, max_pairs=7, startup_terminal_trials=11)
+    adapter = _adapter(min_pairs=2, max_pairs=7, startup_trials=11)
 
     assert adapter.pruner._min_resource == 2
     assert adapter.pruner._max_resource == 7
@@ -62,7 +63,9 @@ def test_bracket_identity_is_stable_for_a_fixed_study_name_and_trial_number():
         hyperband_trial = adapter.create_trial(study)
         hyperband_trial.trial.report(1.0, 1)
         decision = adapter.observe_after_report(hyperband_trial)
-        assert decision.bracket_id == adapter.bracket_id_for(study, hyperband_trial.trial)
+        assert decision.bracket_id == adapter.bracket_id_for(
+            study, hyperband_trial.trial
+        )
         return decision.bracket_id
 
     assert bracket_id() == bracket_id()
@@ -83,23 +86,13 @@ def test_minimum_resource_only_observes_a_rung_when_reached():
     assert at_minimum.rung_resource == 2
 
 
-def test_startup_exemption_snapshots_only_committed_terminal_trials():
-    adapter = _adapter(startup_terminal_trials=3)
+def test_startup_exemption_is_the_coordinator_provided_immutable_value():
+    adapter = _adapter(startup_trials=3)
     study = _study(adapter)
 
-    first = adapter.create_trial(study)
+    first = adapter.create_trial(study, True)
     assert first.pruning_exempt
-    second = adapter.create_trial(study)
-    assert second.pruning_exempt
-    study.tell(first.trial, 1.0, state=TrialState.COMPLETE)
-
-    study.tell(second.trial, state=TrialState.PRUNED)
-
-    third = adapter.create_trial(study)
-    assert third.pruning_exempt
-    study.tell(third.trial, state=TrialState.FAIL)
-
-    assert not adapter.create_trial(study).pruning_exempt
+    assert not adapter.create_trial(study, False).pruning_exempt
 
 
 def test_observation_delegates_keep_and_prune_results_without_telling():

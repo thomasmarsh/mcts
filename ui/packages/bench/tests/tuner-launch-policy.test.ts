@@ -10,7 +10,7 @@ const input = (overrides: Partial<TunerLaunchPolicyInput> = {}): TunerLaunchPoli
   maxPairs: 6,
   pruningEnabled: false,
   reductionFactor: 3,
-  pruningStartupTerminalTrials: 5,
+  pruningStartupTrials: 5,
   sigmaStop: "",
   tpeStartupTrials: 3,
   maxIterations: "",
@@ -33,17 +33,22 @@ describe("tuner launch policy", () => {
     ]);
   });
 
-  it("requires one worker and includes pruning controls when enabled", () => {
-    expect(validateTunerLaunchPolicy(input({ pruningEnabled: true }))).toBe("Pruning requires exactly one worker.");
-    const value = input({ pruningEnabled: true, nWorkers: "1", sigmaStop: "2" });
+  it("allows parallel pair slots and includes pruning controls when enabled", () => {
+    const value = input({ pruningEnabled: true, nWorkers: "3", sigmaStop: "2" });
     expect(validateTunerLaunchPolicy(value)).toBeNull();
     expect(buildTunerOverrides(value)).toEqual(expect.arrayContaining([
-      "optimizer.n_workers=1",
+      "optimizer.n_workers=3",
       "optimizer.pruning.enabled=True",
       "optimizer.pruning.reduction_factor=3",
-      "optimizer.pruning.startup_terminal_trials=5",
+      "optimizer.pruning.startup_trials=5",
       "rating.sigma_stop=2",
     ]));
+  });
+
+  it("rejects an invalid explicit evaluation-slot count", () => {
+    expect(validateTunerLaunchPolicy(input({ nWorkers: "1.5" }))).toBe(
+      "Workers are concurrent evaluation slots and must be a positive whole number.",
+    );
   });
 
   it("rejects inverted pair bounds", () => {

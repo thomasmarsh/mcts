@@ -10,12 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import optuna
-from optuna.trial import TrialState
-
 from .config import PruningPolicy, ResourcePolicy
 
 
-_TERMINAL_STATES = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)
 _COMPLETED_RUNG_PREFIX = "completed_rung_"
 
 
@@ -44,24 +41,24 @@ class OptunaHyperbandAdapter:
     def __init__(self, resource: ResourcePolicy, pruning: PruningPolicy) -> None:
         self._min_resource = _integer_resource(resource.min_pairs, "min_pairs")
         self._max_resource = _integer_resource(resource.max_pairs, "max_pairs")
-        self._startup_terminal_trials = pruning.startup_terminal_trials
         self.pruner = optuna.pruners.HyperbandPruner(
             min_resource=self._min_resource,
             max_resource=self._max_resource,
             reduction_factor=pruning.reduction_factor,
         )
 
-    def create_trial(self, study: optuna.Study) -> HyperbandTrial:
-        """Ask for a trial after atomically snapshotting committed startup evidence."""
-        terminal_count = len(
-            study.get_trials(deepcopy=False, states=_TERMINAL_STATES)
-        )
+    def create_trial(
+        self, study: optuna.Study, pruning_exempt: bool = False
+    ) -> HyperbandTrial:
+        """Ask for a trial with coordinator-assigned immutable eligibility."""
         return HyperbandTrial(
             trial=study.ask(),
-            pruning_exempt=terminal_count < self._startup_terminal_trials,
+            pruning_exempt=pruning_exempt,
         )
 
-    def observe_after_report(self, hyperband_trial: HyperbandTrial) -> HyperbandDecision:
+    def observe_after_report(
+        self, hyperband_trial: HyperbandTrial
+    ) -> HyperbandDecision:
         """Return Optuna's decision after the caller has reported one pair.
 
         A startup-exempt trial is deliberately not passed to the pruner, so it

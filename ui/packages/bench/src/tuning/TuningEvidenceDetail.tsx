@@ -62,7 +62,7 @@ const ResolvedPolicy: Component<{ policy: TuningPolicy | null }> = (props) => (
           <Field label="Deterministic" value={policy().sampler.deterministic ? "yes" : "no"} />
           <Field label="Pruning" value={policy().pruning.enabled ? policy().pruning.kind : "disabled"} />
           <Field label="Reduction factor" value={policy().pruning.reduction_factor} />
-          <Field label="Pruning startup terminal trials" value={policy().pruning.startup_terminal_trials} />
+          <Field label="Pruning startup trials" value={policy().pruning.startup_trials} />
         </dl>
       )}
     </Show>

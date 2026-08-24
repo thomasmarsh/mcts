@@ -122,8 +122,8 @@ export const TunerLaunchFields: Component<{
   onPruningEnabledChange: (v: boolean) => void;
   reductionFactor: number;
   onReductionFactorChange: (n: number) => void;
-  pruningStartupTerminalTrials: number;
-  onPruningStartupTerminalTrialsChange: (n: number) => void;
+  pruningStartupTrials: number;
+  onPruningStartupTrialsChange: (n: number) => void;
   /** Empty means that the resolved rating policy does not stop on sigma. */
   sigmaStop: string;
   onSigmaStopChange: (v: string) => void;
@@ -232,7 +232,7 @@ export const TunerLaunchFields: Component<{
             </label>
 
             <label>
-              Workers
+              Evaluation slots
               <input
                 type="number"
                 min={1}
@@ -241,6 +241,7 @@ export const TunerLaunchFields: Component<{
                 onInput={(e) => props.onNWorkersChange(e.currentTarget.value)}
                 disabled={props.disabled}
               />
+              <span class="tuner-field-hint">Concurrent pair evaluations, not MCTS search threads.</span>
             </label>
 
             <label>
@@ -326,12 +327,12 @@ export const TunerLaunchFields: Component<{
               </label>
 
               <label>
-                Pruning startup terminal trials
+                Pruning startup trials
                 <input
                   type="number"
                   min={0}
-                  value={props.pruningStartupTerminalTrials}
-                  onInput={(e) => props.onPruningStartupTerminalTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
+                  value={props.pruningStartupTrials}
+                  onInput={(e) => props.onPruningStartupTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
                   disabled={props.disabled}
                 />
               </label>

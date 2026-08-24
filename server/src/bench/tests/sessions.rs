@@ -476,7 +476,6 @@ async fn tuning_session_budget_validates_workers_and_releases_failed_starts_for_
         serde_json::json!({"command_id":"too-many", "expected_version":0, "delta":1_000_001, "start":false}),
         serde_json::json!({"command_id":"workers-idle", "expected_version":0, "delta":1, "start":false, "n_workers":1}),
         serde_json::json!({"command_id":"workers-range", "expected_version":0, "delta":1, "start":true, "n_workers":1025}),
-        serde_json::json!({"command_id":"pruning-workers", "expected_version":0, "delta":1, "start":true, "n_workers":2}),
     ] {
         let (status, _) = http_post_json(
             app.clone(),
@@ -487,7 +486,7 @@ async fn tuning_session_budget_validates_workers_and_releases_failed_starts_for_
         assert_eq!(status, HttpStatusCode::BAD_REQUEST);
     }
 
-    let failure = serde_json::json!({"command_id":"failed-start", "expected_version":0, "delta":3, "start":true, "n_workers":1});
+    let failure = serde_json::json!({"command_id":"failed-start", "expected_version":0, "delta":3, "start":true, "n_workers":2});
     let (status, body) = http_post_json(
         app.clone(),
         "/api/bench/tuner/sessions/control/budget",
@@ -732,7 +731,7 @@ async fn tuning_session_detail_projects_counts_attempts_and_capabilities() {
 #[tokio::test]
 async fn tuning_session_detail_loads_all_reports_without_per_trial_queries() {
     let app = seeded_app(|conn, _| {
-        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{\"schema_version\":1,\"semantic_inputs\":{\"game\":{\"kind\":\"nim\"},\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":6},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_terminal_trials\":5}},\"rating\":{\"model\":\"ThurstoneMostellerPart\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":2.0,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 4)", []).unwrap();
+        conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{\"schema_version\":2,\"semantic_inputs\":{\"game\":{\"kind\":\"nim\"},\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":6},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_trials\":5}},\"rating\":{\"model\":\"ThurstoneMostellerPart\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":2.0,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 4)", []).unwrap();
         conn.execute("INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at) VALUES ('attempt-1', 'session-1', 'completed', '2026-01-01T00:00:00Z')", []).unwrap();
         conn.execute("INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at, stop_reason) VALUES ('session-1', 'trial-1', 'attempt-1', 1, 'complete', '{}', '2026-01-01T00:00:00Z', 'max_pairs'), ('session-1', 'trial-2', 'attempt-1', 2, 'pruned', '{}', '2026-01-01T00:00:00Z', 'hyperband_prune')", []).unwrap();
         conn.execute("INSERT INTO tuning_trial_reports (session_id, trial_id, trial_number, completed_pairs, event_id, reported_at, mu, sigma, score, score_formula_version, conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource) VALUES ('session-1', 'trial-1', 1, 4, 'report-4', '2026-01-01T00:04:00Z', 26.0, 1.0, 23.0, 1, 3.0, 'complete', 'max_pairs', false, 'bracket-a', 4), ('session-1', 'trial-2', 2, 2, 'report-2', '2026-01-01T00:02:00Z', 24.0, 2.0, 18.0, 1, 3.0, 'prune', 'hyperband_prune', false, NULL, NULL), ('session-1', 'trial-1', 1, 2, 'report-1', '2026-01-01T00:02:00Z', 25.0, 2.0, 19.0, 1, 3.0, 'continue', 'startup_exempt', true, NULL, NULL)", []).unwrap();
@@ -747,7 +746,7 @@ async fn tuning_session_detail_loads_all_reports_without_per_trial_queries() {
             "resource": {"min_pairs": 2, "max_pairs": 6},
             "rating": {"model": "ThurstoneMostellerPart", "score": "mu_minus_k_sigma", "sigma_stop": 2.0, "conservative_k": 3.0},
             "sampler": {"kind": "tpe", "seed": 4, "deterministic": true, "startup_trials": 3},
-            "pruning": {"enabled": true, "kind": "hyperband", "reduction_factor": 3.0, "startup_terminal_trials": 5}
+            "pruning": {"enabled": true, "kind": "hyperband", "reduction_factor": 3.0, "startup_trials": 5}
         })
     );
     assert_eq!(
@@ -875,7 +874,7 @@ async fn tuning_analysis_overview_keeps_full_coverage_and_compact_evidence() {
     let app = seeded_app(|conn, _| {
         conn.execute_batch(
             "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
-             VALUES ('analysis', 'idle', '{\"semantic_inputs\":{\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":8},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_terminal_trials\":5}},\"rating\":{\"model\":\"tm\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":null,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 17);
+             VALUES ('analysis', 'idle', '{\"semantic_inputs\":{\"optimizer\":{\"resource\":{\"min_pairs\":2,\"max_pairs\":8},\"sampler\":{\"kind\":\"tpe\",\"seed\":4,\"deterministic\":true,\"startup_trials\":3},\"pruning\":{\"enabled\":true,\"kind\":\"hyperband\",\"reduction_factor\":3.0,\"startup_trials\":5}},\"rating\":{\"model\":\"tm\",\"score\":\"mu_minus_k_sigma\",\"sigma_stop\":null,\"conservative_k\":3.0}}}', '2026-01-01T00:00:00Z', 17);
              INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at)
              VALUES ('attempt', 'analysis', 'completed', '2026-01-01T00:00:00Z');
              INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at, score)

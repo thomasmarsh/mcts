@@ -204,7 +204,7 @@ pub(crate) async fn add_tuning_session_budget(
     Json(body): Json<TuningSessionBudgetBody>,
 ) -> Result<(StatusCode, Json<TuningSessionCommandResponse>), BenchError> {
     validate_command_id(&body.command_id)?;
-    validate_budget_body(&state, &session_id, &body)?;
+    validate_budget_body(&body)?;
 
     let mut launch = body
         .start
@@ -342,11 +342,7 @@ pub(crate) async fn add_tuning_session_budget(
 
 const MAX_BUDGET_DELTA: u64 = 1_000_000;
 
-fn validate_budget_body(
-    state: &Arc<BenchState>,
-    session_id: &str,
-    body: &TuningSessionBudgetBody,
-) -> Result<(), BenchError> {
+fn validate_budget_body(body: &TuningSessionBudgetBody) -> Result<(), BenchError> {
     if !(1..=MAX_BUDGET_DELTA).contains(&body.delta) {
         return Err(BenchError {
             status: StatusCode::BAD_REQUEST,
@@ -366,30 +362,6 @@ fn validate_budget_body(
         return Err(BenchError {
             status: StatusCode::BAD_REQUEST,
             message: "n_workers must be between 1 and 1024".into(),
-        });
-    }
-    let manifest: Option<String> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT CAST(manifest AS TEXT) FROM tuning_sessions WHERE session_id = ?1",
-            duckdb::params![session_id],
-            |row| row.get(0),
-        )
-        .ok()
-    };
-    let pruning_enabled = manifest
-        .as_deref()
-        .and_then(|manifest| serde_json::from_str::<serde_json::Value>(manifest).ok())
-        .and_then(|manifest| {
-            manifest
-                .pointer("/semantic_inputs/optimizer/pruning/enabled")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false);
-    if pruning_enabled && workers != 1 {
-        return Err(BenchError {
-            status: StatusCode::BAD_REQUEST,
-            message: "pruning-enabled tuning sessions require n_workers to be 1".into(),
         });
     }
     Ok(())

@@ -190,7 +190,7 @@ export interface TuningPruningPolicy {
   enabled: boolean;
   kind: string;
   reduction_factor: number;
-  startup_terminal_trials: number;
+  startup_trials: number;
 }
 
 /** Policy resolved by the server from the persisted session manifest. */

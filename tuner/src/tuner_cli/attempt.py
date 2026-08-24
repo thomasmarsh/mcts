@@ -50,6 +50,42 @@ class _ActiveTrial:
     hyperband_trial: HyperbandTrial | None = None
 
 
+_STARTUP_EXEMPT_ATTR = "pruning_startup_exempt"
+
+
+@dataclass
+class StartupTrialAllocator:
+    """Assign durable Hyperband exemptions in coordinator creation order."""
+
+    startup_trials: int
+    next_ordinal: int
+
+    @classmethod
+    def restore(cls, study: optuna.Study, startup_trials: int) -> StartupTrialAllocator:
+        """Validate durable decisions before allocating the next trial on resume."""
+        trials = sorted(
+            study.get_trials(deepcopy=False), key=lambda trial: trial.number
+        )
+        for ordinal, trial in enumerate(trials):
+            pruning_exempt = trial.user_attrs.get(_STARTUP_EXEMPT_ATTR)
+            if not isinstance(pruning_exempt, bool):
+                raise ValueError(
+                    f"Optuna trial {trial.number} is missing its startup exemption"
+                )
+            if pruning_exempt != (ordinal < startup_trials):
+                raise ValueError(
+                    f"Optuna trial {trial.number} has an invalid startup exemption"
+                )
+        return cls(startup_trials, len(trials))
+
+    def allocate(self, trial: optuna.Trial) -> bool:
+        """Persist the next immutable decision before lifecycle evidence is emitted."""
+        pruning_exempt = self.next_ordinal < self.startup_trials
+        trial.set_user_attr(_STARTUP_EXEMPT_ATTR, pruning_exempt)
+        self.next_ordinal += 1
+        return pruning_exempt
+
+
 @dataclass(frozen=True)
 class _AttemptContext:
     cfg: SearchConfig
@@ -61,14 +97,13 @@ class _AttemptContext:
     resolved_sha: str
     reserved: object | None = None
     pruning_adapter: OptunaHyperbandAdapter | None = None
+    startup_allocator: StartupTrialAllocator | None = None
     manifest_fingerprint: str = "legacy"
     task_descriptors: TaskDescriptorAllocator | None = None
 
 
 def worker_count(cfg: SearchConfig) -> int:
-    """Resolve the existing worker default without changing parallelism policy."""
-    if cfg.optimizer.pruning.enabled:
-        return 1
+    """Resolve the configured number of concurrent pair-evaluation slots."""
     if cfg.optimizer.n_workers is not None:
         return cfg.optimizer.n_workers
     return max(1, (os.cpu_count() or 2) // 2)
@@ -88,12 +123,14 @@ def schedule_initial_trials(
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     task_descriptors: TaskDescriptorAllocator | None = None,
-) -> None:
+    startup_allocator: StartupTrialAllocator | None = None,
+) -> int:
     """Fill the configured worker limit with first pairs from distinct trials."""
+    scheduled = 0
     for _ in range(min(workers, remaining)):
         if _stop_requested(should_stop):
-            return
-        schedule_trial(
+            break
+        if not schedule_trial(
             executor,
             futures,
             active,
@@ -105,7 +142,11 @@ def schedule_initial_trials(
             pruning_adapter,
             should_stop,
             task_descriptors,
-        )
+            startup_allocator,
+        ):
+            break
+        scheduled += 1
+    return remaining - scheduled
 
 
 def schedule_trial(
@@ -120,12 +161,13 @@ def schedule_trial(
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     task_descriptors: TaskDescriptorAllocator | None = None,
+    startup_allocator: StartupTrialAllocator | None = None,
 ) -> bool:
     """Ask Optuna for one trial, then submit only its first evaluation pair."""
     if _stop_requested(should_stop):
         return False
     active_trial = create_active_trial(
-        study, cfg, lifecycle.session_id, pruning_adapter
+        study, cfg, lifecycle.session_id, pruning_adapter, startup_allocator
     )
     active[active_trial.trial_id] = active_trial
     emit_trial_created_and_started(lifecycle, active_trial)
@@ -151,12 +193,28 @@ def create_active_trial(
     cfg: SearchConfig,
     session_id: SessionId,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
+    startup_allocator: StartupTrialAllocator | None = None,
 ) -> _ActiveTrial:
     """Ask Optuna for one trial and attach its stable lifecycle identity."""
+    pruning_exempt = (
+        startup_allocator.next_ordinal < startup_allocator.startup_trials
+        if startup_allocator is not None
+        else False
+    )
     hyperband_trial = (
-        pruning_adapter.create_trial(study) if pruning_adapter is not None else None
+        pruning_adapter.create_trial(study, pruning_exempt)
+        if pruning_adapter is not None
+        else None
     )
     trial = hyperband_trial.trial if hyperband_trial is not None else study.ask()
+    if startup_allocator is not None:
+        assigned_exemption = startup_allocator.allocate(trial)
+        if hyperband_trial is None:
+            raise RuntimeError("a startup allocator requires Hyperband pruning")
+        if assigned_exemption != pruning_exempt:
+            raise RuntimeError(
+                "startup exemption allocation changed during trial creation"
+            )
     config = suggest_config(trial, cfg)
     trial.set_user_attr("config", config)
     seed = cfg.optimizer.seed + trial.number
@@ -181,6 +239,11 @@ def emit_trial_created_and_started(
             "trial_number": active_trial.trial.number,
             "config": active_trial.config,
             "seed": active_trial.seed,
+            "pruning_exempt": (
+                active_trial.hyperband_trial.pruning_exempt
+                if active_trial.hyperband_trial is not None
+                else False
+            ),
         },
     )
     lifecycle.emit(
@@ -206,6 +269,7 @@ def drain_scheduled_trials(
     should_stop: Callable[[], bool] | None = None,
     manifest_fingerprint: str = "legacy",
     task_descriptors: TaskDescriptorAllocator | None = None,
+    startup_allocator: StartupTrialAllocator | None = None,
 ) -> None:
     """Settle pair futures, continuing each live trial one pair at a time."""
     context = _AttemptContext(
@@ -218,6 +282,7 @@ def drain_scheduled_trials(
         resolved_sha,
         None,
         pruning_adapter,
+        startup_allocator,
         manifest_fingerprint,
         task_descriptors,
     )
@@ -225,7 +290,7 @@ def drain_scheduled_trials(
         _raise_if_stop_requested(should_stop)
         done, _ = wait_for_completion(futures, return_when=FIRST_COMPLETED)
         _raise_if_stop_requested(should_stop)
-        for future in done:
+        for future in sorted(done, key=lambda item: _task_sequence(futures[item])):
             _raise_if_stop_requested(should_stop)
             scheduled = futures.pop(future)
             result = worker_result(
@@ -364,8 +429,7 @@ def replenish_trial(
     context: _AttemptContext,
     should_stop: Callable[[], bool] | None = None,
 ) -> int:
-    """Count one terminal trial and replace it if target work remains."""
-    remaining -= 1
+    """Replace one terminal trial only while uncreated target work remains."""
     if remaining > 0 and not _stop_requested(should_stop):
         schedule_trial(
             executor,
@@ -379,8 +443,17 @@ def replenish_trial(
             context.pruning_adapter,
             should_stop,
             context.task_descriptors,
+            context.startup_allocator,
         )
+        return remaining - 1
     return remaining
+
+
+def _task_sequence(scheduled: ScheduledPair) -> int:
+    """Order ready completions by the immutable descriptor sequence."""
+    if scheduled.descriptor is not None:
+        return scheduled.descriptor.identity.task_sequence
+    return scheduled.task.pair_index
 
 
 def complete_trial(

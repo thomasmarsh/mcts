@@ -374,7 +374,7 @@ pub(crate) struct TuningPruningPolicyView {
     pub(crate) enabled: bool,
     pub(crate) kind: String,
     pub(crate) reduction_factor: f64,
-    pub(crate) startup_terminal_trials: u64,
+    pub(crate) startup_trials: u64,
 }
 
 #[derive(Serialize)]

@@ -11,7 +11,7 @@ const point = (trial_id: string, trial_number: number, trial_status: string, res
 });
 const overview: TuningAnalysisOverview = {
   schema_version: 1,
-  policy: { resource: { min_pairs: 2, max_pairs: 8 }, rating: { model: "tm", score: "mu_minus_k_sigma", sigma_stop: null, conservative_k: 3 }, sampler: { kind: "tpe", seed: 4, deterministic: true, startup_trials: 2 }, pruning: { enabled: true, kind: "hyperband", reduction_factor: 3, startup_terminal_trials: 2 } },
+  policy: { resource: { min_pairs: 2, max_pairs: 8 }, rating: { model: "tm", score: "mu_minus_k_sigma", sigma_stop: null, conservative_k: 3 }, sampler: { kind: "tpe", seed: 4, deterministic: true, startup_trials: 2 }, pruning: { enabled: true, kind: "hyperband", reduction_factor: 3, startup_trials: 2 } },
   objective: { metric: "score", direction: "maximize", complete_trials_only: true },
   cursor: { session_sequence: 3 },
   coverage: { trials: counts, reports: 14, pairs: { total: 20, running: 2, complete: 16, failed: 2, unmatched_pool_revisions: 0 }, points: { total: 14, returned: 4, sampled: true } },

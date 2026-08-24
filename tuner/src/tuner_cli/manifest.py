@@ -14,7 +14,7 @@ from .artifact_layout import ARTIFACT_LAYOUT_SCHEMA_VERSION
 from .config import SearchConfig
 from .lifecycle import LIFECYCLE_SCHEMA_VERSION, strict_json_dumps
 
-MANIFEST_SCHEMA_VERSION: Final = 1
+MANIFEST_SCHEMA_VERSION: Final = 2
 
 
 class SessionForkRequired(ValueError):

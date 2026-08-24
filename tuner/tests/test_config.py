@@ -50,7 +50,7 @@ def test_nested_policy_yaml_and_cli_overrides_resolve_to_typed_values():
             "optimizer": {
                 "resource": {"min_pairs": 7, "max_pairs": 19},
                 "rating": {"sigma_stop": None, "conservative_k": 2.5},
-                "pruning": {"startup_terminal_trials": 12},
+                "pruning": {"startup_trials": 12},
                 "sampler": {"startup_trials": 8},
             }
         }
@@ -69,7 +69,7 @@ def test_nested_policy_yaml_and_cli_overrides_resolve_to_typed_values():
     assert cfg.optimizer.resource.max_pairs == 21
     assert cfg.optimizer.rating.sigma_stop is None
     assert cfg.optimizer.rating.conservative_k == 2.5
-    assert cfg.optimizer.pruning.startup_terminal_trials == 12
+    assert cfg.optimizer.pruning.startup_trials == 12
     assert cfg.optimizer.sampler.startup_trials == 11
 
 
@@ -104,10 +104,6 @@ def test_legacy_eta_sets_reduction_factor_but_conflicting_aliases_fail():
             "must be an integer at least 2",
         ),
         ({"sampler": {"startup_trials": -1}}, "nonnegative integer"),
-        (
-            {"n_workers": 2, "pruning": {"enabled": True}},
-            "requires optimizer.n_workers=1",
-        ),
         ({"resource": {"minimum_pairs": 5}}, "unsupported keys"),
     ],
 )
@@ -116,7 +112,13 @@ def test_invalid_policy_values_are_rejected(optimizer, message):
         SearchConfig._from_dict({"optimizer": optimizer})
 
 
-def test_pruning_resolves_automatic_workers_sequentially():
+def test_pruning_accepts_parallel_and_automatic_evaluation_slots():
     cfg = SearchConfig._from_dict({"optimizer": {"pruning": {"enabled": True}}})
 
     assert cfg.optimizer.n_workers is None
+    assert (
+        SearchConfig._from_dict(
+            {"optimizer": {"n_workers": 2, "pruning": {"enabled": True}}}
+        ).optimizer.n_workers
+        == 2
+    )
