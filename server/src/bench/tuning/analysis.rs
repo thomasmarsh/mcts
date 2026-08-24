@@ -309,8 +309,8 @@ fn pool_anchor(anchor: &TuningAnalysisPoolAnchor) -> TuningPoolAnchorView {
         anchor_id: anchor.anchor_id.clone(),
         config: anchor.config.clone(),
         rating: rating_view(anchor.mu, anchor.sigma),
-        provenance: anchor.provenance.clone(),
-        insertion_reason: anchor.insertion_reason.clone(),
+        provenance: anchor.provenance,
+        insertion_reason: anchor.insertion_reason,
         source_trial_id: anchor.source_trial_id.clone(),
     }
 }

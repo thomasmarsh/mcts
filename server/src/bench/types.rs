@@ -33,6 +33,7 @@ use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::tuning_analysis_repository::TuningAnalysisRepository;
 use mcts_bench::tuning_command_repository::TuningCommandRepository;
+use mcts_bench::tuning_trial_repository::TuningTrialRepository;
 use mcts_bench::StrategyInfo;
 
 use super::lifecycle;
@@ -50,6 +51,7 @@ pub struct BenchState {
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub tuning_analysis_repository: Arc<dyn TuningAnalysisRepository + Send + Sync>,
     pub tuning_command_repository: Arc<dyn TuningCommandRepository + Send + Sync>,
+    pub tuning_trial_repository: Arc<dyn TuningTrialRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
     pub experiment_validator: ExperimentValidator,
     pub run_launcher: RunLauncher,

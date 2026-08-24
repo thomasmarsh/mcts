@@ -5,9 +5,13 @@ use axum::{
     response::Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use duckdb::Connection;
 use mcts_bench::tuning_analysis_repository::TuningAnalysisPoolRevision;
 use mcts_bench::tuning_lifecycle::{OpponentSnapshot, TrialReportReason};
+use mcts_bench::tuning_trial_repository::{
+    TuningTrialDetailData, TuningTrialGameRow, TuningTrialPageData,
+    TuningTrialPageRow as RepositoryTrialPageRow, TuningTrialPairRow, TuningTrialReportRow,
+    TuningTrialRepository, TuningTrialRepositoryError,
+};
 use serde::{Deserialize, Serialize};
 
 use super::super::{
@@ -18,7 +22,7 @@ use super::super::{
 use super::analysis::{pool_revision, tuning_analysis_repository_error};
 use super::sessions::{
     decode_json, decode_optional_report_reason, decode_report_enum, decode_trial_config,
-    load_session, metrics_view, opponent_view, rating_view, PairRow,
+    metrics_view, opponent_view, rating_view,
 };
 
 const DEFAULT_TRIAL_PAGE_LIMIT: u16 = 50;
@@ -30,8 +34,7 @@ pub(crate) async fn get_tuning_trials(
     Query(params): Query<TuningTrialPageParams>,
 ) -> Result<Json<TuningTrialPage>, BenchError> {
     let query = TrialPageQuery::parse(params)?;
-    let db = state.db.lock().unwrap();
-    let page = load_tuning_trial_page(&db, &session_id, query)?;
+    let page = load_tuning_trial_page(state.tuning_trial_repository.as_ref(), &session_id, query)?;
     Ok(Json(page))
 }
 
@@ -43,12 +46,16 @@ pub(crate) async fn get_tuning_trial_detail(
         .tuning_analysis_repository
         .load_trial_pool_revisions(&session_id, &trial_id)
         .map_err(tuning_analysis_repository_error)?;
-    let db = state.db.lock().unwrap();
-    let detail = load_tuning_trial_detail(&db, &session_id, &trial_id, &pool_revisions)?
-        .ok_or_else(|| BenchError {
-            status: axum::http::StatusCode::NOT_FOUND,
-            message: format!("tuning trial '{trial_id}' not found in session '{session_id}'"),
-        })?;
+    let detail = load_tuning_trial_detail(
+        state.tuning_trial_repository.as_ref(),
+        &session_id,
+        &trial_id,
+        &pool_revisions,
+    )?
+    .ok_or_else(|| BenchError {
+        status: axum::http::StatusCode::NOT_FOUND,
+        message: format!("tuning trial '{trial_id}' not found in session '{session_id}'"),
+    })?;
     Ok(Json(detail))
 }
 
@@ -269,17 +276,26 @@ fn encode_trial_cursor(query: &TrialPageQuery, after_trial_id: String) -> String
 }
 
 fn load_tuning_trial_page(
-    db: &Connection,
+    repository: &dyn TuningTrialRepository,
     session_id: &str,
     query: TrialPageQuery,
 ) -> Result<TuningTrialPage, BenchError> {
-    let Some(session) = load_session(db, session_id)? else {
+    let Some(TuningTrialPageData {
+        session_sequence,
+        trials,
+    }) = repository
+        .load_trial_page(session_id)
+        .map_err(tuning_trial_repository_error)?
+    else {
         return Err(BenchError {
             status: axum::http::StatusCode::NOT_FOUND,
             message: format!("tuning session '{session_id}' not found"),
         });
     };
-    let mut rows = load_trial_page_rows(db, session_id)?;
+    let mut rows = trials
+        .into_iter()
+        .map(TrialPageRow::from_repository)
+        .collect::<Result<Vec<_>, _>>()?;
     rows.retain(|row| trial_matches_query(row, &query));
     rows.sort_by(|left, right| compare_trial_page_rows(left, right, &query));
     let total_count = rows.len() as i64;
@@ -308,9 +324,7 @@ fn load_tuning_trial_page(
         total_count,
         limit: query.limit,
         next_cursor,
-        cursor: TuningCursorBoundary {
-            session_sequence: session.last_sequence,
-        },
+        cursor: TuningCursorBoundary { session_sequence },
     })
 }
 
@@ -337,6 +351,30 @@ struct TrialPageRow {
 }
 
 impl TrialPageRow {
+    fn from_repository(row: RepositoryTrialPageRow) -> Result<Self, duckdb::Error> {
+        Ok(Self {
+            trial_id: row.trial_id,
+            trial_number: row.trial_number,
+            attempt_id: row.attempt_id,
+            state: row.state,
+            config: row.config,
+            score: row.score,
+            mu: row.mu,
+            sigma: row.sigma,
+            stop_reason: decode_optional_report_reason(row.stop_reason, 8)?,
+            last_reason: decode_optional_report_reason(row.last_reason, 9)?,
+            bracket_id: row.bracket_id,
+            resource: row.resource,
+            pair_count: row.pair_count,
+            wins: row.wins,
+            losses: row.losses,
+            draws: row.draws,
+            elapsed_ms: row.elapsed_ms,
+            search_iterations_total: row.search_iterations_total,
+            search_move_time_ms: row.search_move_time_ms,
+        })
+    }
+
     fn reason(&self) -> Option<TrialReportReason> {
         self.stop_reason.or(self.last_reason)
     }
@@ -390,78 +428,6 @@ impl TrialPageRow {
             has_detail: self.config.is_some() || self.last_reason.is_some() || self.pair_count > 0,
         }
     }
-}
-
-fn load_trial_page_rows(
-    db: &Connection,
-    session_id: &str,
-) -> Result<Vec<TrialPageRow>, duckdb::Error> {
-    let mut query = db.prepare(
-        "WITH ranked_reports AS ( \
-             SELECT session_id, trial_id, completed_pairs, mu, sigma, score, reason, bracket_id, event_id, \
-                    ROW_NUMBER() OVER (PARTITION BY session_id, trial_id ORDER BY completed_pairs DESC, event_id DESC) AS rank \
-             FROM tuning_trial_reports \
-         ), last_reports AS ( \
-             SELECT session_id, trial_id, completed_pairs, mu, sigma, score, reason, bracket_id \
-             FROM ranked_reports WHERE rank = 1 \
-         ), game_stats AS ( \
-             SELECT pairs.session_id, pairs.trial_id, COUNT(DISTINCT pairs.pair_id) AS pair_count, \
-                    COALESCE(SUM(CASE WHEN games.outcome = 'candidate_win' THEN 1 ELSE 0 END), 0) AS wins, \
-                    COALESCE(SUM(CASE WHEN games.outcome = 'baseline_win' THEN 1 ELSE 0 END), 0) AS losses, \
-                    COALESCE(SUM(CASE WHEN games.outcome = 'draw' THEN 1 ELSE 0 END), 0) AS draws, \
-                    COALESCE(SUM(games.elapsed_ms), 0) AS elapsed_ms, \
-                    COALESCE(SUM( \
-                        COALESCE(TRY_CAST(json_extract_string(games.candidate_metrics, '$.iterations_total') AS UBIGINT), 0) + \
-                        COALESCE(TRY_CAST(json_extract_string(games.baseline_metrics, '$.iterations_total') AS UBIGINT), 0) \
-                    ), 0) AS search_iterations_total, \
-                    COALESCE(SUM( \
-                        COALESCE(TRY_CAST(json_extract_string(games.candidate_metrics, '$.move_time_ms') AS UBIGINT), 0) + \
-                        COALESCE(TRY_CAST(json_extract_string(games.baseline_metrics, '$.move_time_ms') AS UBIGINT), 0) \
-                    ), 0) AS search_move_time_ms \
-             FROM tuning_evaluation_pairs pairs \
-             LEFT JOIN tuning_games games USING (session_id, pair_id) \
-             WHERE pairs.session_id = ?1 \
-             GROUP BY pairs.session_id, pairs.trial_id \
-         ) \
-         SELECT trials.trial_id, trials.trial_number, trials.attempt_id, trials.status, \
-                CAST(trials.config AS TEXT), COALESCE(trials.score, reports.score), \
-                COALESCE(trials.mu, reports.mu), COALESCE(trials.sigma, reports.sigma), trials.stop_reason, \
-                reports.reason, reports.bracket_id, reports.completed_pairs, \
-                COALESCE(stats.pair_count, 0), COALESCE(stats.wins, 0), COALESCE(stats.losses, 0), \
-                COALESCE(stats.draws, 0), COALESCE(stats.elapsed_ms, 0), \
-                COALESCE(stats.search_iterations_total, 0), COALESCE(stats.search_move_time_ms, 0) \
-         FROM tuning_trials trials \
-         LEFT JOIN last_reports reports USING (session_id, trial_id) \
-         LEFT JOIN game_stats stats USING (session_id, trial_id) \
-         WHERE trials.session_id = ?1",
-    )?;
-    query
-        .query_map(duckdb::params![session_id], |row| {
-            let stop_reason: Option<String> = row.get(8)?;
-            let last_reason: Option<String> = row.get(9)?;
-            Ok(TrialPageRow {
-                trial_id: row.get(0)?,
-                trial_number: row.get(1)?,
-                attempt_id: row.get(2)?,
-                state: row.get(3)?,
-                config: row.get(4)?,
-                score: row.get(5)?,
-                mu: row.get(6)?,
-                sigma: row.get(7)?,
-                stop_reason: decode_optional_report_reason(stop_reason, 8)?,
-                last_reason: decode_optional_report_reason(last_reason, 9)?,
-                bracket_id: row.get(10)?,
-                resource: row.get(11)?,
-                pair_count: row.get(12)?,
-                wins: row.get(13)?,
-                losses: row.get(14)?,
-                draws: row.get(15)?,
-                elapsed_ms: row.get(16)?,
-                search_iterations_total: row.get(17)?,
-                search_move_time_ms: row.get(18)?,
-            })
-        })?
-        .collect()
 }
 
 fn trial_matches_query(row: &TrialPageRow, query: &TrialPageQuery) -> bool {
@@ -555,180 +521,89 @@ fn compare_optional_f64(left: Option<f64>, right: Option<f64>) -> std::cmp::Orde
 }
 
 fn load_tuning_trial_detail(
-    db: &Connection,
+    repository: &dyn TuningTrialRepository,
     session_id: &str,
     trial_id: &str,
     pool_revisions: &[TuningAnalysisPoolRevision],
 ) -> Result<Option<TuningTrialDetail>, BenchError> {
-    let Some(session) = load_session(db, session_id)? else {
+    let Some(data) = repository
+        .load_trial_detail(session_id, trial_id)
+        .map_err(tuning_trial_repository_error)?
+    else {
         return Ok(None);
     };
-    let Some(row) = load_trial_detail_row(db, session_id, trial_id)? else {
-        return Ok(None);
-    };
-    let reports = load_trial_reports_for_trial(db, session_id, trial_id)?;
-    let reason = row
-        .stop_reason
+    let reports = data
+        .reports
+        .into_iter()
+        .map(report_view)
+        .collect::<Result<Vec<_>, _>>()?;
+    let reason = decode_optional_report_reason(data.trial.stop_reason, 8)?
         .or_else(|| reports.last().map(|report| report.decision.reason));
-    let pairs = load_trial_detail_pairs(db, session_id, trial_id, pool_revisions)?;
+    let pairs = data
+        .pairs
+        .into_iter()
+        .map(|pair| pair_view(pair, pool_revisions))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(TuningTrialDetail {
         schema_version: 1,
         trial: TuningTrialDetailView {
-            trial_id: row.trial_id,
-            trial_number: row.trial_number,
-            attempt_id: row.attempt_id,
-            state: row.state,
-            config: decode_trial_config(row.config)?,
-            score: row.score,
-            rating: row
+            trial_id: data.trial.trial_id,
+            trial_number: data.trial.trial_number,
+            attempt_id: data.trial.attempt_id,
+            state: data.trial.state,
+            config: decode_trial_config(data.trial.config)?,
+            score: data.trial.score,
+            rating: data
+                .trial
                 .mu
-                .zip(row.sigma)
+                .zip(data.trial.sigma)
                 .map(|(mu, sigma)| rating_view(mu, sigma)),
             reason,
-            failure: row.failure,
+            failure: data.trial.failure,
             reports,
             pairs,
         },
         cursor: TuningCursorBoundary {
-            session_sequence: session.last_sequence,
+            session_sequence: data.session_sequence,
         },
     }))
 }
 
-struct TrialDetailRow {
-    trial_id: String,
-    trial_number: i64,
-    attempt_id: String,
-    state: String,
-    config: Option<String>,
-    score: Option<f64>,
-    mu: Option<f64>,
-    sigma: Option<f64>,
-    stop_reason: Option<TrialReportReason>,
-    failure: Option<String>,
-}
-
-fn load_trial_detail_row(
-    db: &Connection,
-    session_id: &str,
-    trial_id: &str,
-) -> Result<Option<TrialDetailRow>, duckdb::Error> {
-    match db.query_row(
-        "SELECT trial_id, trial_number, attempt_id, status, CAST(config AS TEXT), score, mu, sigma, stop_reason, failure \
-         FROM tuning_trials WHERE session_id = ?1 AND trial_id = ?2",
-        duckdb::params![session_id, trial_id],
-        |row| {
-            let stop_reason: Option<String> = row.get(8)?;
-            Ok(TrialDetailRow {
-                trial_id: row.get(0)?,
-                trial_number: row.get(1)?,
-                attempt_id: row.get(2)?,
-                state: row.get(3)?,
-                config: row.get(4)?,
-                score: row.get(5)?,
-                mu: row.get(6)?,
-                sigma: row.get(7)?,
-                stop_reason: decode_optional_report_reason(stop_reason, 8)?,
-                failure: row.get(9)?,
-            })
+fn report_view(row: TuningTrialReportRow) -> Result<TuningTrialReportView, duckdb::Error> {
+    Ok(TuningTrialReportView {
+        completed_pairs: row.completed_pairs,
+        reported_at: row.reported_at,
+        rating: rating_view(row.mu, row.sigma),
+        score: row.score,
+        score_formula_version: row.score_formula_version,
+        conservative_k: row.conservative_k,
+        decision: TuningTrialReportDecisionView {
+            outcome: decode_report_enum(&row.outcome, 7)?,
+            reason: decode_report_enum(&row.reason, 8)?,
+            pruning_exempt: row.pruning_exempt,
+            bracket_id: row.bracket_id,
+            rung_resource: row.rung_resource,
         },
-    ) {
-        Ok(row) => Ok(Some(row)),
-        Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error),
-    }
+    })
 }
 
-fn load_trial_reports_for_trial(
-    db: &Connection,
-    session_id: &str,
-    trial_id: &str,
-) -> Result<Vec<TuningTrialReportView>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT completed_pairs, CAST(reported_at AS TEXT), mu, sigma, score, score_formula_version, \
-                conservative_k, outcome, reason, pruning_exempt, bracket_id, rung_resource \
-         FROM tuning_trial_reports WHERE session_id = ?1 AND trial_id = ?2 \
-         ORDER BY completed_pairs ASC, event_id ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id, trial_id], |row| {
-            let outcome: String = row.get(7)?;
-            let reason: String = row.get(8)?;
-            Ok(TuningTrialReportView {
-                completed_pairs: row.get(0)?,
-                reported_at: row.get(1)?,
-                rating: rating_view(row.get(2)?, row.get(3)?),
-                score: row.get(4)?,
-                score_formula_version: row.get(5)?,
-                conservative_k: row.get(6)?,
-                decision: TuningTrialReportDecisionView {
-                    outcome: decode_report_enum(&outcome, 7)?,
-                    reason: decode_report_enum(&reason, 8)?,
-                    pruning_exempt: row.get(9)?,
-                    bracket_id: row.get(10)?,
-                    rung_resource: row.get(11)?,
-                },
-            })
-        })?
-        .collect()
-}
-
-fn load_trial_detail_pairs(
-    db: &Connection,
-    session_id: &str,
-    trial_id: &str,
-    pool_revisions: &[TuningAnalysisPoolRevision],
-) -> Result<Vec<TuningTrialDetailPairView>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT pair_id, pair_index, status, seed, round, CAST(opponent AS TEXT), \
-                pool_snapshot_fingerprint, rating_before_mu, rating_before_sigma, rating_after_mu, \
-                rating_after_sigma, score, failure, attempt_id \
-         FROM tuning_evaluation_pairs WHERE session_id = ?1 AND trial_id = ?2 \
-         ORDER BY pair_index ASC, pair_id ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id, trial_id], |row| {
-            let pair = PairRow {
-                pair_id: row.get(0)?,
-                pair_index: row.get(1)?,
-                status: row.get(2)?,
-                seed: row.get(3)?,
-                round: row.get(4)?,
-                opponent: row.get(5)?,
-                pool_snapshot_fingerprint: row.get(6)?,
-                rating_before_mu: row.get(7)?,
-                rating_before_sigma: row.get(8)?,
-                rating_after_mu: row.get(9)?,
-                rating_after_sigma: row.get(10)?,
-                score: row.get(11)?,
-                failure: row.get(12)?,
-            };
-            let attempt_id: String = row.get(13)?;
-            assemble_trial_detail_pair(db, session_id, pair, &attempt_id, pool_revisions)
-        })?
-        .collect()
-}
-
-fn assemble_trial_detail_pair(
-    db: &Connection,
-    session_id: &str,
-    row: PairRow,
-    attempt_id: &str,
+fn pair_view(
+    row: TuningTrialPairRow,
     pool_revisions: &[TuningAnalysisPoolRevision],
 ) -> Result<TuningTrialDetailPairView, duckdb::Error> {
     let opponent = decode_json::<OpponentSnapshot>(&row.opponent, 5)?;
     Ok(TuningTrialDetailPairView {
-        pair_id: row.pair_id.clone(),
+        pair_id: row.pair_id,
         pair_index: row.pair_index,
         state: row.status,
         seed: row.seed,
         round: row.round,
         opponent: opponent_view(opponent),
-        pool_snapshot_fingerprint: row.pool_snapshot_fingerprint.clone(),
         pool_revision: load_pool_revision_for_detail(
             pool_revisions,
             &row.pool_snapshot_fingerprint,
         ),
+        pool_snapshot_fingerprint: row.pool_snapshot_fingerprint,
         rating_before: rating_view(row.rating_before_mu, row.rating_before_sigma),
         rating_after: row
             .rating_after_mu
@@ -736,7 +611,11 @@ fn assemble_trial_detail_pair(
             .map(|(mu, sigma)| rating_view(mu, sigma)),
         score: row.score,
         failure: row.failure,
-        games: load_trial_detail_games(db, session_id, &row.pair_id, attempt_id)?,
+        games: row
+            .games
+            .into_iter()
+            .map(game_view)
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -750,52 +629,33 @@ fn load_pool_revision_for_detail(
         .map(pool_revision)
 }
 
-fn load_trial_detail_games(
-    db: &Connection,
-    session_id: &str,
-    pair_id: &str,
-    attempt_id: &str,
-) -> Result<Vec<TuningTrialDetailGameView>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT games.game_id, games.candidate_side, games.outcome, games.seed, games.round, \
-                games.trace_game_seq, games.plies, games.elapsed_ms, CAST(games.candidate_metrics AS TEXT), \
-                CAST(games.baseline_metrics AS TEXT), attempts.bench_run_id, \
-                EXISTS(SELECT 1 FROM game_moves moves WHERE moves.run_id = attempts.bench_run_id \
-                       AND moves.game_seq = games.trace_game_seq AND moves.trace_schema_version = 1), \
-                EXISTS(SELECT 1 FROM game_moves moves WHERE moves.run_id = attempts.bench_run_id \
-                       AND moves.game_seq = games.trace_game_seq AND moves.search_report IS NOT NULL) \
-         FROM tuning_games games \
-         JOIN tuning_attempts attempts ON attempts.attempt_id = ?3 \
-         WHERE games.session_id = ?1 AND games.pair_id = ?2 \
-         ORDER BY games.candidate_side ASC, games.game_id ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id, pair_id, attempt_id], |row| {
-            let candidate: String = row.get(8)?;
-            let baseline: String = row.get(9)?;
-            let trace_game_seq: Option<u64> = row.get(5)?;
-            let run_id: Option<String> = row.get(10)?;
-            let replay =
-                run_id
-                    .zip(trace_game_seq)
-                    .map(|(run_id, game_seq)| TuningReplayReference {
-                        run_id,
-                        game_seq,
-                        has_renderer_trace: row.get(11).unwrap_or(false),
-                        has_search_reports: row.get(12).unwrap_or(false),
-                    });
-            Ok(TuningTrialDetailGameView {
-                game_id: row.get(0)?,
-                candidate_side: row.get(1)?,
-                outcome: row.get(2)?,
-                seed: row.get(3)?,
-                round: row.get(4)?,
-                plies: row.get(6)?,
-                elapsed_ms: row.get(7)?,
-                candidate: metrics_view(decode_json(&candidate, 8)?),
-                baseline: metrics_view(decode_json(&baseline, 9)?),
-                replay,
-            })
-        })?
-        .collect()
+fn game_view(row: TuningTrialGameRow) -> Result<TuningTrialDetailGameView, duckdb::Error> {
+    let replay = row
+        .run_id
+        .zip(row.trace_game_seq)
+        .map(|(run_id, game_seq)| TuningReplayReference {
+            run_id,
+            game_seq,
+            has_renderer_trace: row.has_renderer_trace,
+            has_search_reports: row.has_search_reports,
+        });
+    Ok(TuningTrialDetailGameView {
+        game_id: row.game_id,
+        candidate_side: row.candidate_side,
+        outcome: row.outcome,
+        seed: row.seed,
+        round: row.round,
+        plies: row.plies,
+        elapsed_ms: row.elapsed_ms,
+        candidate: metrics_view(decode_json(&row.candidate_metrics, 8)?),
+        baseline: metrics_view(decode_json(&row.baseline_metrics, 9)?),
+        replay,
+    })
+}
+
+fn tuning_trial_repository_error(error: TuningTrialRepositoryError) -> BenchError {
+    BenchError {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("tuning trial storage error: {error}"),
+    }
 }

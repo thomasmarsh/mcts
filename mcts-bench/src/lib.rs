@@ -14,6 +14,7 @@ pub mod tournament;
 pub mod tuning_analysis_repository;
 pub mod tuning_command_repository;
 pub mod tuning_lifecycle;
+pub mod tuning_trial_repository;
 
 #[cfg(feature = "duckdb")]
 pub mod attempt_store;
@@ -40,6 +41,8 @@ pub mod tuning_command_repository_duckdb;
 pub mod tuning_command_store;
 #[cfg(feature = "duckdb")]
 pub mod tuning_store;
+#[cfg(feature = "duckdb")]
+pub mod tuning_trial_repository_duckdb;
 
 #[cfg(all(test, feature = "duckdb"))]
 mod projects_attempt_duckdb_tests;

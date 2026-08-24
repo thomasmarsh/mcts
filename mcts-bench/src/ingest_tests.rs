@@ -1641,7 +1641,7 @@ fn partitioned_artifacts_tail_complete_lines_and_terminalize_once() {
         .append(true)
         .open(task_root.join("trace.jsonl"))
         .unwrap();
-    write!(trace, "{}\n", &second[second.len() - 1..]).unwrap();
+    writeln!(trace, "{}", &second[second.len() - 1..]).unwrap();
     write_artifact_completion(
         &task_root,
         &task_id,
