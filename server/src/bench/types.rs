@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -26,7 +28,7 @@ use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::project_repository::ProjectRepository;
-use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
+use mcts_bench::projects_attempt::{CellRequest, ProjectsError, ProjectsRepository, StartRequest};
 use mcts_bench::run_command_repository::RunCommandRepository;
 use mcts_bench::run_repository::RunRepository;
 use mcts_bench::supervised_launch::LaunchDescriptor;
@@ -43,12 +45,12 @@ use super::process;
 // Shared state
 // ---------------------------------------------------------------------------
 
-/// State shared by all bench routes.  The DuckDB connection is
-/// `Mutex`-guarded because `duckdb::Connection` is `Send` but not `Sync`;
-/// the ingest loop and API routes all share the same in-process connection.
+/// State shared by all bench routes.
 pub struct BenchState {
-    pub db: Arc<Mutex<duckdb::Connection>>,
+    #[cfg(test)]
+    pub(crate) db: TestDatabase,
     pub project_repository: Arc<dyn ProjectRepository + Send + Sync>,
+    pub projects_repository: Arc<dyn ProjectsRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
     pub tuning_analysis_repository: Arc<dyn TuningAnalysisRepository + Send + Sync>,
@@ -60,6 +62,24 @@ pub struct BenchState {
     pub run_launcher: RunLauncher,
     pub process_group_signaller: ProcessGroupSignaller,
     pub runtime: Arc<lifecycle::BenchRuntime>,
+}
+
+#[cfg(test)]
+pub(crate) struct TestDatabase(Option<Arc<Mutex<duckdb::Connection>>>);
+
+#[cfg(test)]
+impl TestDatabase {
+    pub(crate) fn shared(connection: Arc<Mutex<duckdb::Connection>>) -> Self {
+        Self(Some(connection))
+    }
+
+    pub(crate) fn unavailable() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, duckdb::Connection>, ()> {
+        self.0.as_ref().ok_or(())?.lock().map_err(|_| ())
+    }
 }
 
 pub type ExperimentValidator = Arc<
@@ -363,15 +383,6 @@ impl IntoResponse for BenchError {
     }
 }
 
-impl From<duckdb::Error> for BenchError {
-    fn from(e: duckdb::Error) -> Self {
-        BenchError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("database error: {e}"),
-        }
-    }
-}
-
 impl From<ProjectsError> for BenchError {
     fn from(error: ProjectsError) -> Self {
         attempt_bench_error(error)
@@ -433,12 +444,6 @@ pub(crate) enum ExperimentRouteError {
 impl From<BenchError> for ExperimentRouteError {
     fn from(error: BenchError) -> Self {
         Self::Bench(error)
-    }
-}
-
-impl From<duckdb::Error> for ExperimentRouteError {
-    fn from(error: duckdb::Error) -> Self {
-        Self::Bench(error.into())
     }
 }
 

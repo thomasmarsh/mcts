@@ -148,12 +148,17 @@ pub(super) async fn stop_run_impl(
     clock: &dyn Clock,
 ) -> Result<StopOutcome, BenchError> {
     let target = state
-        .db
+        .projects_repository
         .load_stop_target(run_id)
         .map_err(super::attempt_bench_error)?;
     if target.typed {
-        return stop_projects(state.db.as_ref(), state.as_ref(), run_id, clock)
-            .map_err(|error| stop_error(run_id, error));
+        return stop_projects(
+            state.projects_repository.as_ref(),
+            state.as_ref(),
+            run_id,
+            clock,
+        )
+        .map_err(|error| stop_error(run_id, error));
     }
     if target.status != "running" {
         return Ok(StopOutcome {

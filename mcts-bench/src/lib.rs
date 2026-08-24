@@ -20,6 +20,8 @@ pub mod tuning_trial_repository;
 #[cfg(feature = "duckdb")]
 pub mod attempt_store;
 #[cfg(feature = "duckdb")]
+pub mod duckdb_composition;
+#[cfg(feature = "duckdb")]
 pub mod identity;
 #[cfg(feature = "duckdb")]
 pub mod ingest;

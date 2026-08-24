@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mcts_bench::{ingest, schema};
+use mcts_bench::duckdb_composition::BenchAdapters;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -325,40 +325,26 @@ async fn main() {
     // harness communicate via JSONL files and the registry log instead.
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
-    let bench_conn = schema::open(&bench_db_path).expect("failed to open benchmark database");
-    let bench_db = Arc::new(std::sync::Mutex::new(bench_conn));
+    let bench_adapters =
+        BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
     let bench_runtime = Arc::new(bench::lifecycle::BenchRuntime::new(
-        bench_db.clone(),
+        bench_adapters.projects_repository.clone(),
         Arc::new(bench::supervisor_runtime::SupervisorRuntime::new(
             std::path::Path::new(mcts_bench::launch::BENCH_RUNS_DIR).join("registry.log"),
         )),
         Arc::new(bench::lifecycle::SystemClock),
     ));
     let bench_state = Arc::new(bench::BenchState {
-        db: bench_db.clone(),
-        project_repository: Arc::new(
-            mcts_bench::project_repository_duckdb::SharedDuckDbProjectRepository::new(
-                bench_db.clone(),
-            ),
-        ),
-        run_repository: Arc::new(
-            mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(bench_db.clone()),
-        ),
-        run_command_repository: Arc::new(
-            mcts_bench::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(bench_db.clone()),
-        ),
-        tuning_analysis_repository: Arc::new(
-            mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(bench_db.clone()),
-        ),
-        tuning_command_repository: Arc::new(
-            mcts_bench::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(bench_db.clone()),
-        ),
-        tuning_session_repository: Arc::new(
-            mcts_bench::tuning_session_repository_duckdb::SharedDuckDbTuningSessionRepository::new(bench_db.clone()),
-        ),
-        tuning_trial_repository: Arc::new(
-            mcts_bench::tuning_trial_repository_duckdb::SharedDuckDbTuningTrialRepository::new(bench_db.clone()),
-        ),
+        #[cfg(test)]
+        db: bench::TestDatabase::unavailable(),
+        project_repository: bench_adapters.project_repository,
+        projects_repository: bench_adapters.projects_repository,
+        run_repository: bench_adapters.run_repository,
+        run_command_repository: bench_adapters.run_command_repository,
+        tuning_analysis_repository: bench_adapters.tuning_analysis_repository,
+        tuning_command_repository: bench_adapters.tuning_command_repository,
+        tuning_session_repository: bench_adapters.tuning_session_repository,
+        tuning_trial_repository: bench_adapters.tuning_trial_repository,
         bench_runs_dir,
         experiment_validator: Arc::new(bench::validate_experiment_spec),
         run_launcher: Arc::new(|run_id, command, kind, game, label| {
@@ -381,7 +367,7 @@ async fn main() {
     // via the API have their match results and terminal status appear
     // within one polling cycle of the child process exiting.
     {
-        let ingest_state = bench_state.clone();
+        let ingest = bench_adapters.ingest.clone();
         let bench_runs = bench_state.bench_runs_dir.clone();
         tokio::spawn(async move {
             // Wait a few seconds before the first poll so short-lived
@@ -392,10 +378,8 @@ async fn main() {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                if let Ok(db) = ingest_state.db.lock() {
-                    if let Err(e) = ingest::ingest_once(&db, &bench_runs) {
-                        eprintln!("bench ingest error: {e}");
-                    }
+                if let Err(e) = ingest.ingest_once(&bench_runs) {
+                    eprintln!("bench ingest error: {e}");
                 }
             }
         });

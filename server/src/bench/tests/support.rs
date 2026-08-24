@@ -67,6 +67,51 @@ pub(super) fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (R
     )
 }
 
+#[test]
+fn adapter_fixture_ingests_and_reads_a_registry_run() {
+    use mcts_bench::duckdb_composition::{BenchAdapters, BenchIngest};
+    use mcts_bench::run_repository::{RunListQuery, RunRepository};
+
+    let directory = std::env::temp_dir().join(format!(
+        "mcts_bench_adapter_fixture_{}_{}",
+        std::process::id(),
+        FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let connection = duckdb::Connection::open_in_memory().unwrap();
+    ensure_schema(&connection).unwrap();
+    let adapters = BenchAdapters::from_initialized_connection(connection).unwrap();
+    let event = RegistryEvent::Start {
+        run_id: "adapter-round-trip".into(),
+        kind: "round_robin".into(),
+        game: "druid".into(),
+        pid: 999_999_999,
+        cmd: vec!["bench".into()],
+        log_path: directory.join("run.log").display().to_string(),
+        git_sha: "test".into(),
+        git_dirty: false,
+        started_at: "2026-01-01T00:00:00Z".into(),
+    };
+    std::fs::write(
+        directory.join("registry.log"),
+        format!("{}\n", event.to_json_line()),
+    )
+    .unwrap();
+
+    adapters.ingest.ingest_once(&directory).unwrap();
+    let runs = adapters
+        .run_repository
+        .list_runs(&RunListQuery::default())
+        .unwrap();
+    assert_eq!(
+        runs.iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        ["adapter-round-trip"]
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 pub(super) fn seeded_app_with(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
     experiment_validator: ExperimentValidator,
@@ -132,34 +177,26 @@ pub(super) fn seeded_app_with_state_and_signaller(
             }
         }
     });
+    let adapters =
+        mcts_bench::duckdb_composition::BenchAdapters::from_initialized_shared_connection(
+            db.clone(),
+        )
+        .unwrap();
     let runtime = Arc::new(lifecycle::BenchRuntime::new(
-        db.clone(),
+        adapters.projects_repository.clone(),
         supervisor,
         Arc::new(lifecycle::SystemClock),
     ));
     let state = Arc::new(BenchState {
-        db: db.clone(),
-        project_repository: Arc::new(
-            mcts_bench::project_repository_duckdb::SharedDuckDbProjectRepository::new(db.clone()),
-        ),
-        run_repository: Arc::new(
-            mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(db.clone()),
-        ),
-        run_command_repository: Arc::new(
-            mcts_bench::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(db.clone()),
-        ),
-        tuning_analysis_repository: Arc::new(
-            mcts_bench::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(db.clone()),
-        ),
-        tuning_command_repository: Arc::new(
-            mcts_bench::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(db.clone()),
-        ),
-        tuning_session_repository: Arc::new(
-            mcts_bench::tuning_session_repository_duckdb::SharedDuckDbTuningSessionRepository::new(db.clone()),
-        ),
-        tuning_trial_repository: Arc::new(
-            mcts_bench::tuning_trial_repository_duckdb::SharedDuckDbTuningTrialRepository::new(db.clone()),
-        ),
+        db: TestDatabase::shared(db.clone()),
+        project_repository: adapters.project_repository,
+        projects_repository: adapters.projects_repository,
+        run_repository: adapters.run_repository,
+        run_command_repository: adapters.run_command_repository,
+        tuning_analysis_repository: adapters.tuning_analysis_repository,
+        tuning_command_repository: adapters.tuning_command_repository,
+        tuning_session_repository: adapters.tuning_session_repository,
+        tuning_trial_repository: adapters.tuning_trial_repository,
         bench_runs_dir,
         experiment_validator,
         run_launcher,
