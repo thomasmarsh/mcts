@@ -26,6 +26,7 @@ use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
+use mcts_bench::project_repository::ProjectRepository;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
 use mcts_bench::run_repository::RunRepository;
 use mcts_bench::supervised_launch::LaunchDescriptor;
@@ -43,6 +44,7 @@ use super::process;
 /// the ingest loop and API routes all share the same in-process connection.
 pub struct BenchState {
     pub db: Arc<Mutex<duckdb::Connection>>,
+    pub project_repository: Arc<dyn ProjectRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
     pub experiment_validator: ExperimentValidator,

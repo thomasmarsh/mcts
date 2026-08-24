@@ -26,6 +26,10 @@ use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
+use mcts_bench::project_repository::{
+    CreateExperiment, CreateProject, Experiment, Project, ProjectRepositoryError, UpdateExperiment,
+    UpdateProject,
+};
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
@@ -138,27 +142,126 @@ pub fn validate_experiment_spec(
     }
 }
 
-pub(crate) fn project_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<ProjectResponse> {
-    Ok(ProjectResponse {
-        project_id: row.get(0)?,
-        name: row.get(1)?,
-        description: row.get(2)?,
-        archived: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
-    })
+fn project_response(project: Project) -> ProjectResponse {
+    ProjectResponse {
+        project_id: project.project_id,
+        name: project.name,
+        description: project.description,
+        archived: project.archived,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    }
+}
+
+fn experiment_response(experiment: Experiment) -> ExperimentResponse {
+    let spec: Value = serde_json::from_str(&experiment.spec_json).unwrap_or(Value::Null);
+    ExperimentResponse {
+        experiment_id: experiment.experiment_id,
+        project_id: experiment.project_id,
+        name: experiment.name,
+        description: experiment.description,
+        spec: serde_json::from_value(spec).unwrap_or_else(|_| empty_experiment_spec()),
+        created_at: experiment.created_at,
+        updated_at: experiment.updated_at,
+    }
+}
+
+fn empty_experiment_spec() -> ExperimentSpecV1 {
+    ExperimentSpecV1 {
+        version: 1,
+        games: vec![],
+        baseline: mcts_bench::experiment::NamedStrategyConfig {
+            id: String::new(),
+            label: String::new(),
+            config: Value::Null,
+        },
+        variants: vec![],
+        budgets: vec![],
+        rounds_per_cell: 0,
+        base_seed: 0,
+        max_parallel_cells: 0,
+    }
+}
+
+fn project_bench_error(error: ProjectRepositoryError) -> BenchError {
+    match error {
+        ProjectRepositoryError::NotFound => BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: "project not found".into(),
+        },
+        ProjectRepositoryError::Conflict => BenchError {
+            status: StatusCode::CONFLICT,
+            message: "project already exists".into(),
+        },
+        ProjectRepositoryError::Storage(message) => BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("project storage error: {message}"),
+        },
+    }
+}
+
+fn experiment_bench_error(error: ProjectRepositoryError) -> BenchError {
+    match error {
+        ProjectRepositoryError::NotFound => BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: "experiment not found".into(),
+        },
+        ProjectRepositoryError::Conflict => BenchError {
+            status: StatusCode::CONFLICT,
+            message: "experiment already exists".into(),
+        },
+        ProjectRepositoryError::Storage(message) => BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("project storage error: {message}"),
+        },
+    }
+}
+
+fn project_validation_error(error: ProjectRepositoryError, id_field: &str) -> ValidationError {
+    let field = match error {
+        ProjectRepositoryError::NotFound => Some((id_field, "not found")),
+        ProjectRepositoryError::Conflict => Some(("name", "duplicate active project name")),
+        ProjectRepositoryError::Storage(_) => None,
+    };
+    ValidationError {
+        fields: field
+            .into_iter()
+            .map(|(path, message)| mcts_bench::experiment::ValidationField {
+                path: path.into(),
+                message: message.into(),
+            })
+            .collect(),
+    }
+}
+
+fn experiment_validation_error(error: ProjectRepositoryError, id_field: &str) -> ValidationError {
+    let field = match error {
+        ProjectRepositoryError::NotFound => Some((id_field, "not found")),
+        ProjectRepositoryError::Conflict => Some(("name", "duplicate experiment name")),
+        ProjectRepositoryError::Storage(_) => None,
+    };
+    ValidationError {
+        fields: field
+            .into_iter()
+            .map(|(path, message)| mcts_bench::experiment::ValidationField {
+                path: path.into(),
+                message: message.into(),
+            })
+            .collect(),
+    }
 }
 
 pub(crate) async fn list_projects(
     AxumState(state): AxumState<Arc<BenchState>>,
 ) -> Result<Json<Vec<ProjectResponse>>, BenchError> {
-    let db = state.db.lock().unwrap();
-    let mut stmt = db.prepare("SELECT project_id, name, description, archived, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) FROM projects WHERE archived = false ORDER BY name")?;
-    let rows = stmt
-        .query_map([], project_from_row)?
-        .filter_map(Result::ok)
+    let projects = state
+        .project_repository
+        .list_active_projects()
+        .map_err(project_bench_error)?
+        .into_iter()
+        .map(project_response)
         .collect();
-    Ok(Json(rows))
+    Ok(Json(projects))
 }
 
 pub(crate) async fn create_project(
@@ -168,46 +271,28 @@ pub(crate) async fn create_project(
     validate_name("name", &body.name)?;
     let now = iso_timestamp_now();
     let id = generated_id("project");
-    let db = state.db.lock().unwrap();
-    let exists: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM projects WHERE name = ?1 AND archived = false",
-            duckdb::params![body.name.trim()],
-            |row| row.get(0),
-        )
-        .map_err(|_| ValidationError { fields: vec![] })?;
-    if exists > 0 {
-        return Err(ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "name".into(),
-                message: "duplicate active project name".into(),
-            }],
-        });
-    }
-    db.execute("INSERT INTO projects (project_id, name, description, archived, created_at, updated_at) VALUES (?1, ?2, ?3, false, ?4, ?4)", duckdb::params![id, body.name.trim(), body.description, now]).map_err(|_| ValidationError { fields: vec![] })?;
-    Ok((
-        StatusCode::CREATED,
-        Json(ProjectResponse {
+    let project = state
+        .project_repository
+        .create_project(CreateProject {
             project_id: id,
             name: body.name.trim().into(),
             description: body.description,
-            archived: false,
-            created_at: now.clone(),
-            updated_at: now,
-        }),
-    ))
+            created_at: now,
+        })
+        .map_err(|error| project_validation_error(error, "project_id"))?;
+    Ok((StatusCode::CREATED, Json(project_response(project))))
 }
 
 pub(crate) async fn get_project(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(project_id): AxumPath<String>,
 ) -> Result<Json<ProjectResponse>, BenchError> {
-    let db = state.db.lock().unwrap();
-    match db.query_row("SELECT project_id, name, description, archived, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) FROM projects WHERE project_id = ?1", duckdb::params![project_id], project_from_row) {
-        Ok(project) => Ok(Json(project)),
-        Err(duckdb::Error::QueryReturnedNoRows) => Err(BenchError { status: StatusCode::NOT_FOUND, message: "project not found".into() }),
-        Err(error) => Err(error.into()),
-    }
+    state
+        .project_repository
+        .load_project(&project_id)
+        .map(project_response)
+        .map(Json)
+        .map_err(project_bench_error)
 }
 
 pub(crate) async fn update_project(
@@ -218,97 +303,31 @@ pub(crate) async fn update_project(
     if let Some(ref name) = body.name {
         validate_name("name", name)?;
     }
-    let db = state.db.lock().unwrap();
-    let current: (String, String, bool) = db
-        .query_row(
-            "SELECT name, description, archived FROM projects WHERE project_id = ?1",
-            duckdb::params![project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|_| ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "project_id".into(),
-                message: "not found".into(),
-            }],
-        })?;
-    let name = body.name.unwrap_or(current.0);
-    let description = body.description.unwrap_or(current.1);
-    let archived = body.archived.unwrap_or(current.2);
-    let duplicate: i64 = db.query_row("SELECT COUNT(*) FROM projects WHERE project_id <> ?1 AND name = ?2 AND archived = false", duckdb::params![project_id, name.trim()], |row| row.get(0)).map_err(|_| ValidationError { fields: vec![] })?;
-    if duplicate > 0 && !archived {
-        return Err(ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "name".into(),
-                message: "duplicate active project name".into(),
-            }],
-        });
-    }
-    let now = iso_timestamp_now();
-    db.execute("UPDATE projects SET name = ?1, description = ?2, archived = ?3, updated_at = ?4 WHERE project_id = ?5", duckdb::params![name.trim(), description, archived, now, project_id]).map_err(|_| ValidationError { fields: vec![] })?;
-    Ok(Json(ProjectResponse {
-        project_id: project_id.clone(),
-        name: name.trim().into(),
-        description,
-        archived,
-        created_at: db
-            .query_row(
-                "SELECT CAST(created_at AS TEXT) FROM projects WHERE project_id = ?1",
-                duckdb::params![&project_id],
-                |row| row.get(0),
-            )
-            .unwrap_or_default(),
-        updated_at: now,
-    }))
-}
-
-pub(crate) fn experiment_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<ExperimentResponse> {
-    let spec: Value = serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or(Value::Null);
-    Ok(ExperimentResponse {
-        experiment_id: row.get(0)?,
-        project_id: row.get(1)?,
-        name: row.get(2)?,
-        description: row.get(3)?,
-        spec: serde_json::from_value(spec).unwrap_or_else(|_| ExperimentSpecV1 {
-            version: 1,
-            games: vec![],
-            baseline: mcts_bench::experiment::NamedStrategyConfig {
-                id: String::new(),
-                label: String::new(),
-                config: Value::Null,
-            },
-            variants: vec![],
-            budgets: vec![],
-            rounds_per_cell: 0,
-            base_seed: 0,
-            max_parallel_cells: 0,
-        }),
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-    })
+    let project = state
+        .project_repository
+        .update_project(UpdateProject {
+            project_id,
+            name: body.name.map(|name| name.trim().into()),
+            description: body.description,
+            archived: body.archived,
+            updated_at: iso_timestamp_now(),
+        })
+        .map_err(|error| project_validation_error(error, "project_id"))?;
+    Ok(Json(project_response(project)))
 }
 
 pub(crate) async fn list_experiments(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(project_id): AxumPath<String>,
 ) -> Result<Json<Vec<ExperimentResponse>>, BenchError> {
-    let db = state.db.lock().unwrap();
-    let parent: i64 = db.query_row(
-        "SELECT COUNT(*) FROM projects WHERE project_id = ?1",
-        duckdb::params![project_id],
-        |row| row.get(0),
-    )?;
-    if parent == 0 {
-        return Err(BenchError {
-            status: StatusCode::NOT_FOUND,
-            message: "project not found".into(),
-        });
-    }
-    let mut stmt = db.prepare("SELECT experiment_id, project_id, name, description, CAST(spec AS TEXT), CAST(created_at AS TEXT), CAST(updated_at AS TEXT) FROM experiments WHERE project_id = ?1 ORDER BY name")?;
-    Ok(Json(
-        stmt.query_map(duckdb::params![project_id], experiment_from_row)?
-            .filter_map(Result::ok)
-            .collect(),
-    ))
+    let experiments = state
+        .project_repository
+        .list_experiments(&project_id)
+        .map_err(project_bench_error)?
+        .into_iter()
+        .map(experiment_response)
+        .collect();
+    Ok(Json(experiments))
 }
 
 pub(crate) async fn create_experiment(
@@ -318,61 +337,32 @@ pub(crate) async fn create_experiment(
 ) -> Result<(StatusCode, Json<ExperimentResponse>), ValidationError> {
     validate_name("name", &body.name)?;
     (state.experiment_validator)(&body.spec).map_err(|fields| ValidationError { fields })?;
-    let db = state.db.lock().unwrap();
-    let parent: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM projects WHERE project_id = ?1",
-            duckdb::params![project_id],
-            |row| row.get(0),
-        )
-        .map_err(|_| ValidationError { fields: vec![] })?;
-    if parent == 0 {
-        return Err(ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "project_id".into(),
-                message: "not found".into(),
-            }],
-        });
-    }
-    let duplicate: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM experiments WHERE project_id = ?1 AND name = ?2",
-            duckdb::params![project_id, body.name.trim()],
-            |row| row.get(0),
-        )
-        .map_err(|_| ValidationError { fields: vec![] })?;
-    if duplicate > 0 {
-        return Err(ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "name".into(),
-                message: "duplicate experiment name".into(),
-            }],
-        });
-    }
     let id = generated_id("experiment");
     let now = iso_timestamp_now();
-    let spec_json = serde_json::to_string(&body.spec).unwrap();
-    db.execute("INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)", duckdb::params![id, project_id, body.name.trim(), body.description, spec_json]).map_err(|_| ValidationError { fields: vec![] })?;
-    Ok((
-        StatusCode::CREATED,
-        Json(ExperimentResponse {
+    let experiment = state
+        .project_repository
+        .create_experiment(CreateExperiment {
             experiment_id: id,
             project_id,
             name: body.name.trim().into(),
             description: body.description,
-            spec: body.spec,
-            created_at: now.clone(),
-            updated_at: now,
-        }),
-    ))
+            spec_json: serde_json::to_string(&body.spec).unwrap(),
+            created_at: now,
+        })
+        .map_err(|error| experiment_validation_error(error, "project_id"))?;
+    Ok((StatusCode::CREATED, Json(experiment_response(experiment))))
 }
 
 pub(crate) async fn get_experiment(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(experiment_id): AxumPath<String>,
 ) -> Result<Json<ExperimentResponse>, BenchError> {
-    let db = state.db.lock().unwrap();
-    match db.query_row("SELECT experiment_id, project_id, name, description, CAST(spec AS TEXT), CAST(created_at AS TEXT), CAST(updated_at AS TEXT) FROM experiments WHERE experiment_id = ?1", duckdb::params![experiment_id], experiment_from_row) { Ok(value) => Ok(Json(value)), Err(duckdb::Error::QueryReturnedNoRows) => Err(BenchError { status: StatusCode::NOT_FOUND, message: "experiment not found".into() }), Err(error) => Err(error.into()) }
+    state
+        .project_repository
+        .load_experiment(&experiment_id)
+        .map(experiment_response)
+        .map(Json)
+        .map_err(experiment_bench_error)
 }
 
 pub(crate) async fn update_experiment(
@@ -382,46 +372,17 @@ pub(crate) async fn update_experiment(
 ) -> Result<Json<ExperimentResponse>, ValidationError> {
     validate_name("name", &body.name)?;
     (state.experiment_validator)(&body.spec).map_err(|fields| ValidationError { fields })?;
-    let db = state.db.lock().unwrap();
-    let project_id: String = db
-        .query_row(
-            "SELECT project_id FROM experiments WHERE experiment_id = ?1",
-            duckdb::params![experiment_id],
-            |row| row.get(0),
-        )
-        .map_err(|_| ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "experiment_id".into(),
-                message: "not found".into(),
-            }],
-        })?;
-    let duplicate: i64 = db.query_row("SELECT COUNT(*) FROM experiments WHERE project_id = ?1 AND experiment_id <> ?2 AND name = ?3", duckdb::params![project_id, experiment_id, body.name.trim()], |row| row.get(0)).map_err(|_| ValidationError { fields: vec![] })?;
-    if duplicate > 0 {
-        return Err(ValidationError {
-            fields: vec![mcts_bench::experiment::ValidationField {
-                path: "name".into(),
-                message: "duplicate experiment name".into(),
-            }],
-        });
-    }
-    let now = iso_timestamp_now();
-    let spec_json = serde_json::to_string(&body.spec).unwrap();
-    db.execute("UPDATE experiments SET name = ?1, description = ?2, spec = ?3, updated_at = ?4 WHERE experiment_id = ?5", duckdb::params![body.name.trim(), body.description, spec_json, now, experiment_id]).map_err(|_| ValidationError { fields: vec![] })?;
-    Ok(Json(ExperimentResponse {
-        experiment_id: experiment_id.clone(),
-        project_id,
-        name: body.name.trim().into(),
-        description: body.description,
-        spec: body.spec,
-        created_at: db
-            .query_row(
-                "SELECT CAST(created_at AS TEXT) FROM experiments WHERE experiment_id = ?1",
-                duckdb::params![&experiment_id],
-                |row| row.get(0),
-            )
-            .unwrap_or_default(),
-        updated_at: now,
-    }))
+    let experiment = state
+        .project_repository
+        .update_experiment(UpdateExperiment {
+            experiment_id,
+            name: body.name.trim().into(),
+            description: body.description,
+            spec_json: serde_json::to_string(&body.spec).unwrap(),
+            updated_at: iso_timestamp_now(),
+        })
+        .map_err(|error| experiment_validation_error(error, "experiment_id"))?;
+    Ok(Json(experiment_response(experiment)))
 }
 
 pub(crate) async fn launch_experiment(
@@ -429,37 +390,18 @@ pub(crate) async fn launch_experiment(
     AxumPath(experiment_id): AxumPath<String>,
     Json(_body): Json<Value>,
 ) -> Result<Json<LaunchResponse>, ExperimentRouteError> {
-    let (project_id, name, spec): (String, String, ExperimentSpecV1) = {
-        let db = state.db.lock().unwrap();
-        let row = db.query_row(
-            "SELECT project_id, name, CAST(spec AS TEXT) FROM experiments WHERE experiment_id = ?1",
-            duckdb::params![&experiment_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        );
-        let (project_id, name, spec_json) = match row {
-            Ok(value) => value,
-            Err(duckdb::Error::QueryReturnedNoRows) => {
-                return Err(ExperimentRouteError::Bench(BenchError {
-                    status: StatusCode::NOT_FOUND,
-                    message: "experiment not found".into(),
-                }))
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let spec = serde_json::from_str(&spec_json).map_err(|error| {
-            ExperimentRouteError::Bench(BenchError {
-                status: StatusCode::BAD_REQUEST,
-                message: format!("invalid saved experiment spec: {error}"),
-            })
-        })?;
-        (project_id, name, spec)
-    };
+    let experiment = state
+        .project_repository
+        .load_experiment(&experiment_id)
+        .map_err(|error| ExperimentRouteError::Bench(experiment_bench_error(error)))?;
+    let spec = serde_json::from_str(&experiment.spec_json).map_err(|error| {
+        ExperimentRouteError::Bench(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("invalid saved experiment spec: {error}"),
+        })
+    })?;
+    let project_id = experiment.project_id;
+    let name = experiment.name;
     (state.experiment_validator)(&spec)
         .map_err(|fields| ExperimentRouteError::Validation(ValidationError { fields }))?;
     let plan = spec.expand().map_err(|error| {

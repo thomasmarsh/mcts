@@ -139,6 +139,9 @@ pub(super) fn seeded_app_with_state_and_signaller(
     ));
     let state = Arc::new(BenchState {
         db: db.clone(),
+        project_repository: Arc::new(
+            mcts_bench::project_repository_duckdb::SharedDuckDbProjectRepository::new(db.clone()),
+        ),
         run_repository: Arc::new(
             mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(db),
         ),

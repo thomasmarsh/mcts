@@ -19,6 +19,9 @@ pub mod attempt_store;
 pub mod identity;
 #[cfg(feature = "duckdb")]
 pub mod ingest;
+pub mod project_repository;
+#[cfg(feature = "duckdb")]
+pub mod project_repository_duckdb;
 pub mod projects_attempt;
 #[cfg(feature = "duckdb")]
 pub mod projects_attempt_duckdb;

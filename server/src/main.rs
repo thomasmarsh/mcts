@@ -336,6 +336,11 @@ async fn main() {
     ));
     let bench_state = Arc::new(bench::BenchState {
         db: bench_db.clone(),
+        project_repository: Arc::new(
+            mcts_bench::project_repository_duckdb::SharedDuckDbProjectRepository::new(
+                bench_db.clone(),
+            ),
+        ),
         run_repository: Arc::new(
             mcts_bench::run_repository_duckdb::SharedDuckDbRunRepository::new(bench_db),
         ),
