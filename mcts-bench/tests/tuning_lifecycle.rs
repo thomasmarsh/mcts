@@ -23,7 +23,7 @@ fn apply(conn: &Connection, event: &TuningLifecycleEvent) -> ApplyDisposition {
     let result = apply_event(
         &tx,
         event,
-        "run-1",
+        Some("run-1"),
         "lifecycle.jsonl",
         event.session_sequence,
     )
@@ -818,6 +818,123 @@ fn lifecycle_artifact_reaches_persistence_without_consuming_a_partial_record() {
 }
 
 #[test]
+fn modern_attempts_use_explicit_runs_and_legacy_events_fall_back_to_the_source() {
+    let conn = fixture();
+    conn.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('explicit-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/explicit.log'), ('legacy-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/legacy.log')", []).unwrap();
+    let started = event(
+        "e1",
+        1,
+        "session_started",
+        serde_json::json!({
+            "manifest": {}, "manifest_fingerprint": "f",
+            "optimizer_id": "optimizer-1", "lifecycle_path": "/persist/lifecycle.jsonl"
+        }),
+    );
+    assert_eq!(apply(&conn, &started), ApplyDisposition::Applied);
+    let mut explicit = event(
+        "e2",
+        2,
+        "attempt_started",
+        serde_json::json!({"optimizer_id": "optimizer-1", "bench_run_id": "explicit-run"}),
+    );
+    explicit.attempt_id = "attempt-explicit".to_owned().into();
+    assert_eq!(apply(&conn, &explicit), ApplyDisposition::Applied);
+    let mut legacy = event("e3", 3, "attempt_started", serde_json::json!({}));
+    legacy.attempt_id = "attempt-legacy".to_owned().into();
+    let tx = conn.unchecked_transaction().unwrap();
+    assert_eq!(
+        apply_event(
+            &tx,
+            &legacy,
+            Some("legacy-run"),
+            "/persist/lifecycle.jsonl",
+            2
+        )
+        .unwrap(),
+        ApplyDisposition::Applied
+    );
+    tx.commit().unwrap();
+
+    let attempts: Vec<(String, Option<String>)> = conn
+        .prepare("SELECT attempt_id, bench_run_id FROM tuning_attempts ORDER BY attempt_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        attempts,
+        vec![
+            ("attempt-explicit".into(), Some("explicit-run".into())),
+            ("attempt-legacy".into(), Some("legacy-run".into())),
+        ]
+    );
+    let session: (Option<String>, Option<String>) = conn.query_row(
+        "SELECT optimizer_id, lifecycle_path FROM tuning_sessions WHERE session_id = 'session-1'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(
+        session,
+        (Some("optimizer-1".into()), Some("lifecycle.jsonl".into()))
+    );
+}
+
+#[test]
+fn registered_source_has_one_cursor_and_survives_its_first_run_directory() {
+    use std::io::Write;
+
+    let root = std::env::temp_dir().join(format!(
+        "mcts_tuning_registered_source_{}",
+        std::process::id()
+    ));
+    let source = root.join("optimizer").join("lifecycle.jsonl");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let mut file = std::fs::File::create(&source).unwrap();
+    writeln!(file, "{}", serde_json::to_string(&event("e1", 1, "session_started", serde_json::json!({"manifest": {}, "manifest_fingerprint": "f", "optimizer_id": "optimizer-1"}))).unwrap()).unwrap();
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_schema(&conn).unwrap();
+    let source_path = source
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    conn.execute(
+        "INSERT INTO tuning_lifecycle_sources (source_path, bench_run_id) VALUES (?1, 'gone-run')",
+        duckdb::params![&source_path],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('gone-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', '/tmp/gone.log')",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM runs WHERE run_id = 'gone-run'", [])
+        .unwrap();
+    std::fs::remove_dir_all(root.join("optimizer")).unwrap();
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let mut recreated = std::fs::File::create(&source).unwrap();
+    writeln!(recreated, "{}", serde_json::to_string(&event("e1", 1, "session_started", serde_json::json!({"manifest": {}, "manifest_fingerprint": "f", "optimizer_id": "optimizer-1"}))).unwrap()).unwrap();
+    ingest_once(&conn, &root).unwrap();
+    ingest_once(&conn, &root).unwrap();
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT COUNT(*) FROM _ingest_cursor WHERE log_path = ?1",
+            duckdb::params![&source_path],
+            |row| row.get(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM tuning_sessions", [], |row| row.get(0))
+            .unwrap(),
+        1
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 #[ignore = "requires MCTS_TUNING_LIFECYCLE_PATH from the real tuner e2e"]
 fn real_tuner_artifact_projects_complete_pairs_and_trace_links() {
     let path = std::env::var("MCTS_TUNING_LIFECYCLE_PATH")
@@ -827,7 +944,7 @@ fn real_tuner_artifact_projects_complete_pairs_and_trace_links() {
     for (offset, line) in source.lines().enumerate() {
         let item: TuningLifecycleEvent = serde_json::from_str(line).unwrap();
         let tx = conn.unchecked_transaction().unwrap();
-        let disposition = apply_event(&tx, &item, "run-1", &path, offset as u64).unwrap();
+        let disposition = apply_event(&tx, &item, Some("run-1"), &path, offset as u64).unwrap();
         assert_eq!(disposition, ApplyDisposition::Applied);
         tx.commit().unwrap();
     }

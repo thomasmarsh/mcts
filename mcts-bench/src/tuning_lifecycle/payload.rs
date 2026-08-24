@@ -133,6 +133,8 @@ pub struct PoolRevisedPayload {
 pub struct SessionStartedPayload {
     pub manifest: Value,
     pub manifest_fingerprint: String,
+    pub optimizer_id: Option<String>,
+    pub lifecycle_path: Option<String>,
     pub target_trial_count: Option<i64>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
@@ -140,6 +142,9 @@ pub struct SessionStartedPayload {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AttemptStartedPayload {
+    pub optimizer_id: Option<String>,
+    pub bench_run_id: Option<String>,
+    /// Legacy physical benchmark identity emitted before `bench_run_id`.
     pub run_id: Option<String>,
     pub study_name: Option<String>,
     pub storage: Option<String>,

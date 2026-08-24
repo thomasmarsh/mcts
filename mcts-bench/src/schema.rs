@@ -169,7 +169,13 @@ pub const CREATE_TABLES: &[&str] = &[
         manifest_fingerprint TEXT,
         target_trial_count BIGINT,
         created_at TIMESTAMP NOT NULL,
-        last_sequence BIGINT NOT NULL
+        last_sequence BIGINT NOT NULL,
+        optimizer_id TEXT,
+        lifecycle_path TEXT
+    )",
+    "CREATE TABLE IF NOT EXISTS tuning_lifecycle_sources (
+        source_path TEXT PRIMARY KEY,
+        bench_run_id TEXT
     )",
     "CREATE TABLE IF NOT EXISTS tuning_attempts (
         attempt_id TEXT PRIMARY KEY,
@@ -324,6 +330,8 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         "ALTER TABLE runs ADD COLUMN attempt_exit_code INTEGER",
         "ALTER TABLE runs ADD COLUMN attempt_version UINTEGER",
         "ALTER TABLE tuning_trials ADD COLUMN stop_reason TEXT",
+        "ALTER TABLE tuning_sessions ADD COLUMN optimizer_id TEXT",
+        "ALTER TABLE tuning_sessions ADD COLUMN lifecycle_path TEXT",
         "ALTER TABLE game_moves ADD COLUMN trace_schema_version UINTEGER",
         "ALTER TABLE game_moves ADD COLUMN search_report JSON",
         "ALTER TABLE game_moves ADD COLUMN search_status TEXT",

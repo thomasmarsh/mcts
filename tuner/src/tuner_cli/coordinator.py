@@ -28,7 +28,9 @@ from .target import preflight_check
 def run_optimization(
     cfg: SearchConfig,
     *,
-    run_id: str,
+    run_id: str | None = None,
+    optimizer_id: str | None = None,
+    bench_run_id: str | None = None,
     git_sha: str | None = None,
     trace_path: str | None = None,
     session_id: str | None = None,
@@ -39,18 +41,21 @@ def run_optimization(
     """Run unfinished study work while recording lifecycle evidence."""
     cfg.validate()
     binary = cfg.resolve_binary()
-    session = SessionId(session_id or run_id)
+    optimizer = optimizer_id or run_id
+    if optimizer is None:
+        raise ValueError("optimizer_id or legacy run_id is required")
+    session = SessionId(session_id or optimizer)
     attempt = AttemptId(attempt_id) if attempt_id is not None else make_attempt_id()
-    output_dir = Path("optuna_output") / run_id
+    output_dir = Path("optuna_output") / optimizer
     output_dir.mkdir(parents=True, exist_ok=True)
     _resolve_search_space(cfg, binary)
     pool_path = output_dir / "pool.json"
     pool = _load_or_initialize_pool(cfg, pool_path)
     pruning_adapter = _pruning_adapter(cfg)
-    study, storage = _open_study(output_dir, run_id, cfg, pruning_adapter)
+    study, storage = _open_study(output_dir, optimizer, cfg, pruning_adapter)
     resolved_sha = git_sha or _resolve_git_sha()
     manifest, manifest_path = _write_session_manifest(
-        cfg, game_kind, binary, resolved_sha, run_id, storage, output_dir
+        cfg, game_kind, binary, resolved_sha, optimizer, storage, output_dir
     )
     event_path = (
         Path(lifecycle_path)
@@ -60,9 +65,11 @@ def run_optimization(
 
     with LifecycleWriter(event_path, session, attempt) as lifecycle:
         _emit_session_started(
-            lifecycle, manifest, manifest_path, run_id, cfg.optimizer.n_trials
+            lifecycle, manifest, manifest_path, optimizer, cfg.optimizer.n_trials
         )
-        _emit_attempt_started(lifecycle, run_id, storage, cfg.optimizer.n_trials)
+        _emit_attempt_started(
+            lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
+        )
         _emit_pool_revised(lifecycle, pool)
         _run_attempt(
             cfg,
@@ -163,11 +170,13 @@ def _emit_session_started(
     lifecycle: LifecycleWriter,
     manifest: dict[str, Any],
     manifest_path: Path,
-    run_id: str,
+    optimizer_id: str,
     target_trial_count: int,
 ) -> None:
     """Record a session start when this lifecycle artifact has none yet."""
     if lifecycle.has_session_started:
+        if lifecycle.manifest_fingerprint != manifest["fingerprint"]:
+            raise ValueError("lifecycle journal manifest fingerprint does not match")
         return
     lifecycle.emit(
         "session_started",
@@ -175,21 +184,28 @@ def _emit_session_started(
             "manifest": manifest,
             "manifest_fingerprint": manifest["fingerprint"],
             "manifest_path": str(manifest_path),
-            "study_name": run_id,
+            "lifecycle_path": str(lifecycle.path),
+            "optimizer_id": optimizer_id,
+            "study_name": optimizer_id,
             "target_trial_count": target_trial_count,
         },
     )
 
 
 def _emit_attempt_started(
-    lifecycle: LifecycleWriter, run_id: str, storage: str, target_trial_count: int
+    lifecycle: LifecycleWriter,
+    optimizer_id: str,
+    bench_run_id: str | None,
+    storage: str,
+    target_trial_count: int,
 ) -> None:
     """Record the physical attempt's existing study and target."""
     lifecycle.emit(
         "attempt_started",
         {
-            "run_id": run_id,
-            "study_name": run_id,
+            "optimizer_id": optimizer_id,
+            "bench_run_id": bench_run_id,
+            "study_name": optimizer_id,
             "storage": storage,
             "target_trial_count": target_trial_count,
         },

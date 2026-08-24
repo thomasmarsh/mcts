@@ -7,11 +7,14 @@ use super::TuningStoreError;
 pub(super) fn apply(
     tx: &Transaction<'_>,
     event: &TuningLifecycleEvent,
-    bench_run_id: &str,
+    fallback_bench_run_id: Option<&str>,
+    source_path: &str,
 ) -> Result<(), TuningStoreError> {
     match event.event_type {
-        TuningEventType::SessionStarted => project_session_started(tx, event)?,
-        TuningEventType::AttemptStarted => project_attempt_started(tx, event, bench_run_id)?,
+        TuningEventType::SessionStarted => project_session_started(tx, event, source_path)?,
+        TuningEventType::AttemptStarted => {
+            project_attempt_started(tx, event, fallback_bench_run_id)?
+        }
         TuningEventType::PoolRevised => project_pool_revised(tx, event)?,
         TuningEventType::TrialCreated => project_trial_created(tx, event)?,
         TuningEventType::TrialStarted => {
@@ -141,14 +144,15 @@ fn project_pair_failed(
 fn project_session_started(
     tx: &Transaction<'_>,
     event: &TuningLifecycleEvent,
+    source_path: &str,
 ) -> Result<(), TuningStoreError> {
     let TuningPayload::SessionStarted(payload) = event.typed_payload().expect("validated payload")
     else {
         unreachable!()
     };
     tx.execute(
-        "INSERT INTO tuning_sessions (session_id, status, manifest, manifest_fingerprint, target_trial_count, created_at, last_sequence) VALUES (?1, 'active', ?2, ?3, ?4, ?5, ?6)",
-        params![event.session_id.as_str(), serde_json::to_string(&payload.manifest)?, payload.manifest_fingerprint, payload.target_trial_count, &event.timestamp, event.session_sequence as i64],
+        "INSERT INTO tuning_sessions (session_id, status, manifest, manifest_fingerprint, target_trial_count, created_at, last_sequence, optimizer_id, lifecycle_path) VALUES (?1, 'active', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![event.session_id.as_str(), serde_json::to_string(&payload.manifest)?, payload.manifest_fingerprint, payload.target_trial_count, &event.timestamp, event.session_sequence as i64, payload.optimizer_id, source_path],
     )?;
     Ok(())
 }
@@ -156,12 +160,17 @@ fn project_session_started(
 fn project_attempt_started(
     tx: &Transaction<'_>,
     event: &TuningLifecycleEvent,
-    bench_run_id: &str,
+    fallback_bench_run_id: Option<&str>,
 ) -> Result<(), TuningStoreError> {
     let TuningPayload::AttemptStarted(payload) = event.typed_payload().expect("validated payload")
     else {
         unreachable!()
     };
+    let bench_run_id = payload
+        .bench_run_id
+        .as_deref()
+        .or(payload.run_id.as_deref())
+        .or(fallback_bench_run_id);
     tx.execute(
         "INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at) VALUES (?1, ?2, ?3, 'running', ?4)",
         params![event.attempt_id.as_str(), event.session_id.as_str(), bench_run_id, &event.timestamp],

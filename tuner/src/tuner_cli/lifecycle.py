@@ -6,6 +6,7 @@ import json
 import hashlib
 import math
 import os
+import fcntl
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, NewType, Sequence
@@ -115,13 +116,30 @@ class LifecycleWriter:
     """
 
     def __init__(self, path: str | Path, session_id: SessionId, attempt_id: AttemptId) -> None:
-        self.path = Path(path)
+        self.path = Path(path).resolve()
+        self.lock_path = self.path.with_name(f"{self.path.name}.lock")
         self.session_id = session_id
         self.attempt_id = attempt_id
-        self._sequence, self._session_started, self._terminal_trials = self._existing_state()
-        needs_separator = self._needs_record_separator()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self.path.open("a", encoding="utf-8")
+        self._lock = self.lock_path.open("a", encoding="utf-8")
+        try:
+            fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self._lock.close()
+            raise RuntimeError(f"lifecycle journal is already locked: {self.path}") from None
+        try:
+            (
+                self._sequence,
+                self._session_started,
+                self._manifest_fingerprint,
+                self._terminal_trials,
+            ) = self._existing_state()
+            needs_separator = self._needs_record_separator()
+            self._file = self.path.open("a", encoding="utf-8")
+        except BaseException:
+            fcntl.flock(self._lock.fileno(), fcntl.LOCK_UN)
+            self._lock.close()
+            raise
         if needs_separator:
             self._file.write("\n")
             self._file.flush()
@@ -131,12 +149,18 @@ class LifecycleWriter:
     def has_session_started(self) -> bool:
         return self._session_started
 
-    def _existing_state(self) -> tuple[int, bool, set[TrialId]]:
+    @property
+    def manifest_fingerprint(self) -> str | None:
+        """Return the immutable manifest fingerprint from the session start."""
+        return self._manifest_fingerprint
+
+    def _existing_state(self) -> tuple[int, bool, str | None, set[TrialId]]:
         if not self.path.exists():
-            return 0, False, set()
+            return 0, False, None, set()
 
         sequence = 0
         session_started = False
+        manifest_fingerprint: str | None = None
         terminal_trials: set[TrialId] = set()
         with self.path.open(encoding="utf-8") as source:
             for line in source:
@@ -145,15 +169,22 @@ class LifecycleWriter:
                 except json.JSONDecodeError:
                     continue
                 if record.get("session_id") != self.session_id:
-                    continue
+                    raise ValueError(
+                        f"lifecycle journal at {self.path} belongs to a different session"
+                    )
                 sequence = max(sequence, int(record.get("session_sequence", 0)))
-                session_started = session_started or record.get("event_type") == "session_started"
                 payload = record.get("payload")
+                if record.get("event_type") == "session_started":
+                    fingerprint = payload.get("manifest_fingerprint") if isinstance(payload, dict) else None
+                    if session_started:
+                        raise ValueError("lifecycle journal contains multiple session_started events")
+                    session_started = True
+                    manifest_fingerprint = fingerprint if isinstance(fingerprint, str) else None
                 if record.get("event_type") in TRIAL_TERMINAL_EVENTS and isinstance(payload, dict):
                     trial_id = payload.get("trial_id")
                     if isinstance(trial_id, str):
                         terminal_trials.add(TrialId(trial_id))
-        return sequence, session_started, terminal_trials
+        return sequence, session_started, manifest_fingerprint, terminal_trials
 
     def _needs_record_separator(self) -> bool:
         if not self.path.exists() or self.path.stat().st_size == 0:
@@ -164,12 +195,16 @@ class LifecycleWriter:
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Write and flush one versioned lifecycle event."""
+        if event_type == "session_started" and self._session_started:
+            raise ValueError("session_started may occur only once")
         if event_type == "pool_revised" and not self._session_started:
             raise ValueError("pool_revised requires session_started")
         record = self._build_record(event_type, payload)
         self._append_record(record)
         if event_type == "session_started":
             self._session_started = True
+            fingerprint = payload.get("manifest_fingerprint")
+            self._manifest_fingerprint = fingerprint if isinstance(fingerprint, str) else None
         return record
 
     def _build_record(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -211,6 +246,8 @@ class LifecycleWriter:
 
     def close(self) -> None:
         self._file.close()
+        fcntl.flock(self._lock.fileno(), fcntl.LOCK_UN)
+        self._lock.close()
 
     def __enter__(self) -> LifecycleWriter:
         return self

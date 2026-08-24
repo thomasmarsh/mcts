@@ -42,12 +42,16 @@ fn test_build_command_tuner_includes_config_and_overrides() {
             "optimizer.n_workers=2",
             "--trace-path",
             "bench-runs/test-run/moves.jsonl",
+            "--optimizer-id",
+            "tuning-session-test-run",
+            "--bench-run-id",
+            "test-run",
             "--session-id",
             "tuning-session-test-run",
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "bench-runs/test-run/lifecycle.jsonl",
+            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
         ]
     );
 }
@@ -63,12 +67,16 @@ fn test_build_command_tuner_with_no_config_is_just_game() {
             "druid",
             "--trace-path",
             "bench-runs/test-run/moves.jsonl",
+            "--optimizer-id",
+            "tuning-session-test-run",
+            "--bench-run-id",
+            "test-run",
             "--session-id",
             "tuning-session-test-run",
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "bench-runs/test-run/lifecycle.jsonl",
+            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
         ]
     );
 }
@@ -152,12 +160,16 @@ fn test_build_command_tuner_includes_baseline_configs() {
             r#"ladder1={"c":1.5,"family":"ucb1"}"#,
             "--trace-path",
             "bench-runs/test-run/moves.jsonl",
+            "--optimizer-id",
+            "tuning-session-test-run",
+            "--bench-run-id",
+            "test-run",
             "--session-id",
             "tuning-session-test-run",
             "--attempt-id",
             "tuning-attempt-test-run",
             "--lifecycle-path",
-            "bench-runs/test-run/lifecycle.jsonl",
+            "optuna_output/tuning-session-test-run/lifecycle.jsonl",
         ]
     );
 }
@@ -476,6 +488,21 @@ async fn test_fresh_round_robin_and_tuner_launches_create_identity_roots() {
             )
             .unwrap();
         assert_eq!(identity, (run_id.clone(), None, 1, run_id));
+        if kind == "tuner" {
+            let source: (String, String) = state
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT source_path, bench_run_id FROM tuning_lifecycle_sources WHERE bench_run_id = ?1",
+                    duckdb::params![body_json(&body)["run_id"].as_str().unwrap()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(source.1, body_json(&body)["run_id"].as_str().unwrap());
+            assert!(source.0.contains("/optuna_output/tuning-session-"));
+            assert!(source.0.ends_with("/lifecycle.jsonl"));
+        }
     }
 }
 

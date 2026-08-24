@@ -142,7 +142,7 @@ pub(crate) async fn launch_and_record(
 ) -> Result<LaunchResponse, BenchError> {
     let run_id = launch::generate_run_id(kind, game, crate::BUILD_INFO);
     let config = if kind == "tuner" {
-        record_floor_baseline_settings(config)
+        prepare_tuner_config(record_floor_baseline_settings(config), &run_id)
     } else {
         config
     };
@@ -155,12 +155,9 @@ pub(crate) async fn launch_and_record(
     let mut cmd = build_command(kind, game, &config, &run_id)?;
     let config = inject_ladder_root_if_new_ladder(config, &run_id);
 
-    // `--run-id`/`--resume` are tuner-specific flags (see `tuner_cli`'s
-    // `--run-id`/`--resume`); other kinds (round_robin) have no concept of
-    // a resumable optimizer run to pin.
+    // Resume provenance remains launch metadata. The tuner receives its
+    // stable optimizer id from the persisted launch configuration instead.
     if kind == "tuner" {
-        cmd.push("--run-id".into());
-        cmd.push(run_id.clone());
         if let Some(resume_id) = resume_from {
             cmd.push("--resume".into());
             cmd.push(resume_id.to_owned());
@@ -253,6 +250,15 @@ pub(crate) async fn launch_and_record(
         } else {
             identity::create_root_identity(&transaction, &run_id, kind, None, None, &started_at)
                 .map_err(identity_bench_error)?;
+        }
+        if kind == "tuner" {
+            let source_path =
+                canonical_tuner_lifecycle_path(tuner_optimizer_id(config.as_ref(), &run_id));
+            mcts_bench::tuning_store::register_lifecycle_source(
+                &transaction,
+                &source_path,
+                &run_id,
+            )?;
         }
         transaction.commit()?;
     }
@@ -519,7 +525,7 @@ pub(crate) fn build_command(
                     .to_string_lossy()
                     .to_string(),
             );
-            append_tuner_lifecycle_arguments(&mut cmd, run_id);
+            append_tuner_lifecycle_arguments(&mut cmd, config, run_id);
 
             Ok(cmd)
         }
@@ -595,18 +601,54 @@ pub(crate) fn build_experiment_command(
     ])
 }
 
-fn append_tuner_lifecycle_arguments(cmd: &mut Vec<String>, run_id: &str) {
+fn prepare_tuner_config(config: Option<Value>, run_id: &str) -> Option<Value> {
+    let mut config = match config {
+        Some(Value::Object(values)) => Value::Object(values),
+        _ => json!({}),
+    };
+    if config.get("optimizer_id").and_then(Value::as_str).is_none() {
+        config["optimizer_id"] = Value::String(format!("tuning-session-{run_id}"));
+    }
+    Some(config)
+}
+
+fn tuner_optimizer_id(config: Option<&Value>, run_id: &str) -> String {
+    config
+        .and_then(|value| value.get("optimizer_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("tuning-session-{run_id}"))
+}
+
+fn tuner_lifecycle_path(optimizer_id: String) -> PathBuf {
+    Path::new("optuna_output")
+        .join(optimizer_id)
+        .join("lifecycle.jsonl")
+}
+
+fn canonical_tuner_lifecycle_path(optimizer_id: String) -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(tuner_lifecycle_path(optimizer_id))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn append_tuner_lifecycle_arguments(cmd: &mut Vec<String>, config: &Option<Value>, run_id: &str) {
+    let optimizer_id = tuner_optimizer_id(config.as_ref(), run_id);
+    cmd.push("--optimizer-id".into());
+    cmd.push(optimizer_id.clone());
+    cmd.push("--bench-run-id".into());
+    cmd.push(run_id.to_owned());
     cmd.push("--session-id".into());
-    cmd.push(format!("tuning-session-{run_id}"));
+    cmd.push(optimizer_id);
     cmd.push("--attempt-id".into());
     cmd.push(format!("tuning-attempt-{run_id}"));
     cmd.push("--lifecycle-path".into());
     cmd.push(
-        std::path::Path::new(launch::BENCH_RUNS_DIR)
-            .join(run_id)
-            .join("lifecycle.jsonl")
+        tuner_lifecycle_path(tuner_optimizer_id(config.as_ref(), run_id))
             .to_string_lossy()
-            .to_string(),
+            .into_owned(),
     );
 }
 

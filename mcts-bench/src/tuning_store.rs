@@ -51,7 +51,7 @@ enum RawEventDisposition {
 pub fn apply_event(
     tx: &Transaction<'_>,
     event: &TuningLifecycleEvent,
-    bench_run_id: &str,
+    fallback_bench_run_id: Option<&str>,
     source_path: &str,
     source_offset: u64,
 ) -> Result<ApplyDisposition, TuningStoreError> {
@@ -65,9 +65,23 @@ pub fn apply_event(
         return Ok(ApplyDisposition::Rejected);
     }
 
-    projection::apply(tx, event, bench_run_id)?;
+    projection::apply(tx, event, fallback_bench_run_id, source_path)?;
     mark_accepted(tx, event)?;
     Ok(ApplyDisposition::Applied)
+}
+
+/// Persist one canonical lifecycle source before an ingester can observe it.
+pub fn register_lifecycle_source(
+    tx: &Transaction<'_>,
+    source_path: &str,
+    bench_run_id: &str,
+) -> Result<(), duckdb::Error> {
+    tx.execute(
+        "INSERT INTO tuning_lifecycle_sources (source_path, bench_run_id) VALUES (?1, ?2) \
+         ON CONFLICT (source_path) DO NOTHING",
+        params![source_path, bench_run_id],
+    )?;
+    Ok(())
 }
 
 fn store_raw_event(

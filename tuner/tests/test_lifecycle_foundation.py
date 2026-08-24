@@ -22,6 +22,7 @@ from tuner_cli.manifest import (
     manifest_fingerprint,
     write_manifest_atomic,
 )
+from tuner_cli.coordinator import _emit_session_started
 
 
 def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(
@@ -204,6 +205,43 @@ def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
     )
     assert first["schema_version"] == 1
     assert next_record["session_sequence"] == len(records)
+
+
+def test_attempt_writers_share_one_journal_and_preserve_a_partial_tail(tmp_path: Path):
+    path = tmp_path / "lifecycle.jsonl"
+    session = SessionId("session-1")
+    manifest = {"fingerprint": "manifest-1"}
+    manifest_path = tmp_path / "session-manifest.json"
+    manifest_path.write_text("{}")
+    with LifecycleWriter(path, session, AttemptId("attempt-1")) as first:
+        _emit_session_started(first, manifest, manifest_path, "optimizer-1", 1)
+        first.emit("attempt_started", {"optimizer_id": "optimizer-1"})
+        with pytest.raises(RuntimeError, match="already locked"):
+            LifecycleWriter(path, session, AttemptId("attempt-2"))
+
+    with path.open("ab") as artifact:
+        artifact.write(b'{"partial":')
+    with LifecycleWriter(path, session, AttemptId("attempt-2")) as second:
+        assert second.has_session_started
+        second.emit("attempt_started", {"optimizer_id": "optimizer-1"})
+        with pytest.raises(ValueError, match="manifest fingerprint"):
+            _emit_session_started(
+                second,
+                {"fingerprint": "manifest-2"},
+                manifest_path,
+                "optimizer-1",
+                1,
+            )
+
+    lines = path.read_text().splitlines()
+    records = [json.loads(line) for line in lines if line != '{"partial":']
+    assert [record["event_type"] for record in records] == [
+        "session_started",
+        "attempt_started",
+        "attempt_started",
+    ]
+    assert [record["attempt_id"] for record in records[1:]] == ["attempt-1", "attempt-2"]
+    assert [record["session_sequence"] for record in records] == [1, 2, 3]
 
 
 def test_trial_ids_are_typed_and_stable():

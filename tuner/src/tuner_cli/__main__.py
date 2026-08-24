@@ -84,7 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-id",
         type=str,
         default=None,
-        help="Persistent run id; reusing it resumes its Optuna study and opponent pool.",
+        help="Deprecated alias for --optimizer-id.",
+    )
+    parser.add_argument(
+        "--optimizer-id",
+        type=str,
+        default=None,
+        help="Persistent optimizer id; reusing it resumes its study and opponent pool.",
+    )
+    parser.add_argument(
+        "--bench-run-id",
+        type=str,
+        default=None,
+        help="Physical benchmark run id used to join this attempt's traces.",
     )
     parser.add_argument(
         "--session-id",
@@ -150,10 +162,11 @@ def main() -> None:
     args = build_parser().parse_args()
     _configure_logging(args.verbose)
     cfg = _load_cli_config(args)
-    run_id = args.run_id or f"run-{uuid4().hex[:12]}"
+    optimizer_id = args.optimizer_id or args.run_id or f"run-{uuid4().hex[:12]}"
     study, pool = run_optimization(
         cfg,
-        run_id=run_id,
+        optimizer_id=optimizer_id,
+        bench_run_id=args.bench_run_id,
         git_sha=args.git_sha,
         trace_path=args.trace_path,
         session_id=args.session_id,
@@ -161,7 +174,7 @@ def main() -> None:
         lifecycle_path=args.lifecycle_path,
         game_kind=args.game_kind,
     )
-    _print_run_summary(run_id, study, pool)
+    _print_run_summary(optimizer_id, study, pool)
 
 
 if __name__ == "__main__":
