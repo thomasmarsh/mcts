@@ -422,7 +422,7 @@ async fn tuning_sessions_list_returns_a_structured_storage_error() {
         .db
         .lock()
         .unwrap()
-        .execute_batch("DROP TABLE tuning_trials")
+        .execute_batch("DROP TABLE tuning_pool_decisions; DROP TABLE tuning_trials")
         .unwrap();
 
     let (status, body) = http_get(app, "/api/bench/tuner/sessions").await;
@@ -996,6 +996,7 @@ async fn trial_evidence_keeps_compact_legacy_rows_readable_and_rejects_bad_detai
              VALUES ('bad-config', 'idle', '{}', CURRENT_TIMESTAMP, 1);
              INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at)
              VALUES ('bad-attempt', 'bad-config', 'completed', CURRENT_TIMESTAMP);
+             DROP TABLE tuning_pool_decisions;
              DROP TABLE tuning_trials;
              CREATE TABLE tuning_trials (
                  session_id TEXT, trial_id TEXT, attempt_id TEXT, trial_number BIGINT,
