@@ -151,6 +151,9 @@ pub(super) fn seeded_app_with_state_and_signaller(
         tuning_command_repository: Arc::new(
             mcts_bench::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(db.clone()),
         ),
+        tuning_session_repository: Arc::new(
+            mcts_bench::tuning_session_repository_duckdb::SharedDuckDbTuningSessionRepository::new(db.clone()),
+        ),
         tuning_trial_repository: Arc::new(
             mcts_bench::tuning_trial_repository_duckdb::SharedDuckDbTuningTrialRepository::new(db.clone()),
         ),

@@ -350,6 +350,9 @@ async fn main() {
         tuning_command_repository: Arc::new(
             mcts_bench::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(bench_db.clone()),
         ),
+        tuning_session_repository: Arc::new(
+            mcts_bench::tuning_session_repository_duckdb::SharedDuckDbTuningSessionRepository::new(bench_db.clone()),
+        ),
         tuning_trial_repository: Arc::new(
             mcts_bench::tuning_trial_repository_duckdb::SharedDuckDbTuningTrialRepository::new(bench_db.clone()),
         ),
