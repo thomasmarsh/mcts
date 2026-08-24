@@ -5,12 +5,16 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuningSessionRepositoryError {
     Storage(String),
+    InvalidData(String),
 }
 
 impl std::fmt::Display for TuningSessionRepositoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Storage(message) => write!(f, "tuning session storage failure: {message}"),
+            Self::InvalidData(message) => {
+                write!(f, "invalid persisted tuning session data: {message}")
+            }
         }
     }
 }
@@ -36,6 +40,7 @@ pub struct TuningSessionListRow {
     pub renderer_trace_count: i64,
     pub search_report_count: i64,
     pub trial_report_count: i64,
+    pub control: crate::tuning_command_store::SessionControl,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +76,7 @@ pub struct TuningSessionDetailData {
     pub pairs: Vec<TuningSessionPairRow>,
     pub games: Vec<TuningSessionGameRow>,
     pub capabilities: TuningSessionCapabilities,
+    pub control: crate::tuning_command_store::SessionControl,
 }
 
 #[derive(Debug, Clone)]
@@ -163,4 +169,9 @@ pub trait TuningSessionRepository {
         &self,
         session_id: &str,
     ) -> Result<Option<TuningSessionDetailData>, TuningSessionRepositoryError>;
+
+    fn load_session_control(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::tuning_command_store::SessionControl>, TuningSessionRepositoryError>;
 }

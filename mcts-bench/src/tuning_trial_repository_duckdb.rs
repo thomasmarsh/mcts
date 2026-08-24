@@ -37,10 +37,12 @@ impl TuningTrialRepository for SharedDuckDbTuningTrialRepository {
         let Some(session_sequence) = load_session_sequence(&connection, session_id)? else {
             return Ok(None);
         };
-        Ok(Some(TuningTrialPageData {
+        let data = TuningTrialPageData {
             session_sequence,
             trials: load_trial_page_rows(&connection, session_id)?,
-        }))
+        };
+        validate_page_data(&data)?;
+        Ok(Some(data))
     }
 
     fn load_trial_detail(
@@ -55,12 +57,14 @@ impl TuningTrialRepository for SharedDuckDbTuningTrialRepository {
         let Some(trial) = load_trial_detail_row(&connection, session_id, trial_id)? else {
             return Ok(None);
         };
-        Ok(Some(TuningTrialDetailData {
+        let data = TuningTrialDetailData {
             session_sequence,
             reports: load_trial_reports(&connection, session_id, trial_id)?,
             pairs: load_trial_pairs(&connection, session_id, trial_id)?,
             trial,
-        }))
+        };
+        validate_detail_data(&data)?;
+        Ok(Some(data))
     }
 }
 
@@ -297,4 +301,77 @@ fn load_trial_games(
 
 fn storage(error: duckdb::Error) -> TuningTrialRepositoryError {
     TuningTrialRepositoryError::Storage(error.to_string())
+}
+
+fn invalid_data(error: impl std::fmt::Display) -> TuningTrialRepositoryError {
+    TuningTrialRepositoryError::InvalidData(error.to_string())
+}
+
+fn validate_reason(value: &str) -> Result<(), TuningTrialRepositoryError> {
+    serde_json::from_value::<crate::tuning_lifecycle::TrialReportReason>(serde_json::Value::String(
+        value.into(),
+    ))
+    .map(|_| ())
+    .map_err(invalid_data)
+}
+
+fn validate_outcome(value: &str) -> Result<(), TuningTrialRepositoryError> {
+    serde_json::from_value::<crate::tuning_lifecycle::TrialReportOutcome>(
+        serde_json::Value::String(value.into()),
+    )
+    .map(|_| ())
+    .map_err(invalid_data)
+}
+
+fn validate_config(config: Option<&str>) -> Result<(), TuningTrialRepositoryError> {
+    config
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map(|_| ())
+        .map_err(invalid_data)
+}
+
+fn validate_page_data(data: &TuningTrialPageData) -> Result<(), TuningTrialRepositoryError> {
+    for trial in &data.trials {
+        validate_config(trial.config.as_deref())?;
+        trial
+            .stop_reason
+            .as_deref()
+            .map(validate_reason)
+            .transpose()?;
+        trial
+            .last_reason
+            .as_deref()
+            .map(validate_reason)
+            .transpose()?;
+    }
+    Ok(())
+}
+
+fn validate_detail_data(data: &TuningTrialDetailData) -> Result<(), TuningTrialRepositoryError> {
+    validate_config(data.trial.config.as_deref())?;
+    data.trial
+        .stop_reason
+        .as_deref()
+        .map(validate_reason)
+        .transpose()?;
+    for report in &data.reports {
+        validate_outcome(&report.outcome)?;
+        validate_reason(&report.reason)?;
+    }
+    for pair in &data.pairs {
+        serde_json::from_str::<crate::tuning_lifecycle::OpponentSnapshot>(&pair.opponent)
+            .map_err(invalid_data)?;
+        for game in &pair.games {
+            serde_json::from_str::<crate::tuning_lifecycle::StrategyMetrics>(
+                &game.candidate_metrics,
+            )
+            .map_err(invalid_data)?;
+            serde_json::from_str::<crate::tuning_lifecycle::StrategyMetrics>(
+                &game.baseline_metrics,
+            )
+            .map_err(invalid_data)?;
+        }
+    }
+    Ok(())
 }

@@ -18,11 +18,10 @@ use super::super::{
     BenchError, BenchState, TuningAttemptSummary, TuningAttemptView, TuningCapabilities,
     TuningCursorBoundary, TuningGameView, TuningOpponentView, TuningPairView, TuningPolicyView,
     TuningPruningPolicyView, TuningRatingPolicyView, TuningRatingView, TuningResourcePolicyView,
-    TuningSamplerPolicyView, TuningSessionControl, TuningSessionDetail, TuningSessionList,
-    TuningSessionListItem, TuningSessionSummary, TuningStrategyMetricsView, TuningTrialCounts,
+    TuningSamplerPolicyView, TuningSessionDetail, TuningSessionList, TuningSessionListItem,
+    TuningSessionSummary, TuningStrategyMetricsView, TuningTrialCounts,
     TuningTrialReportDecisionView, TuningTrialReportView, TuningTrialView,
 };
-use super::commands::session_control;
 
 pub(crate) async fn get_tuning_sessions(
     AxumState(state): AxumState<Arc<BenchState>>,
@@ -31,23 +30,18 @@ pub(crate) async fn get_tuning_sessions(
         .tuning_session_repository
         .load_session_list()
         .map_err(tuning_session_repository_error)?;
-    let db = state.db.lock().unwrap();
-    Ok(Json(load_tuning_session_list(data, &db)?))
+    Ok(Json(assemble_tuning_session_list(data)?))
 }
 
 pub(crate) async fn get_tuning_session(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<Json<TuningSessionDetail>, BenchError> {
-    let control = {
-        let db = state.db.lock().unwrap();
-        session_control(&db, &session_id)?
-    };
     let detail = state
         .tuning_session_repository
         .load_session_detail(&session_id)
         .map_err(tuning_session_repository_error)?
-        .map(|data| assemble_session_detail(data, control))
+        .map(assemble_session_detail)
         .transpose()?
         .ok_or_else(|| BenchError {
             status: StatusCode::NOT_FOUND,
@@ -56,31 +50,15 @@ pub(crate) async fn get_tuning_session(
     Ok(Json(detail))
 }
 
-fn tuning_session_repository_error(error: TuningSessionRepositoryError) -> BenchError {
+pub(super) fn tuning_session_repository_error(error: TuningSessionRepositoryError) -> BenchError {
     BenchError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("tuning session storage error: {error}"),
     }
 }
 
-fn load_tuning_session_list(
-    data: TuningSessionListData,
-    db: &duckdb::Connection,
-) -> Result<TuningSessionList, BenchError> {
-    let controls = data
-        .sessions
-        .iter()
-        .map(|session| {
-            session_control(db, &session.session_id)
-                .map(|control| (session.session_id.clone(), control))
-        })
-        .collect::<Result<HashMap<_, _>, _>>()?;
-    assemble_tuning_session_list(data, controls)
-}
-
 fn assemble_tuning_session_list(
     data: TuningSessionListData,
-    mut controls: HashMap<String, TuningSessionControl>,
 ) -> Result<TuningSessionList, BenchError> {
     let mut attempts_by_session = HashMap::<String, Vec<TuningAttemptSummary>>::new();
     for attempt in data.attempts {
@@ -100,13 +78,6 @@ fn assemble_tuning_session_list(
         .sessions
         .into_iter()
         .map(|row| {
-            let control = controls.remove(&row.session_id).ok_or_else(|| BenchError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!(
-                    "missing control projection for tuning session '{}'",
-                    row.session_id
-                ),
-            })?;
             let display = decode_manifest_display(&row.manifest)?;
             let capabilities = capabilities_from_list(&row);
             Ok(TuningSessionListItem {
@@ -122,7 +93,7 @@ fn assemble_tuning_session_list(
                     .remove(&row.session_id)
                     .unwrap_or_default(),
                 capabilities,
-                control,
+                control: row.control.into(),
             })
         })
         .collect::<Result<_, BenchError>>()?;
@@ -188,7 +159,6 @@ fn decode_manifest_display(manifest: &str) -> Result<TuningManifestDisplay, Benc
 
 fn assemble_session_detail(
     data: TuningSessionDetailData,
-    control: TuningSessionControl,
 ) -> Result<TuningSessionDetail, BenchError> {
     let manifest = decode_manifest(&data.session.manifest)?;
     let mut reports_by_trial = HashMap::<String, Vec<TuningTrialReportView>>::new();
@@ -243,7 +213,7 @@ fn assemble_session_detail(
         manifest,
         fingerprint: data.session.fingerprint,
         capabilities: capabilities(data.capabilities),
-        control,
+        control: data.control.into(),
         cursor: TuningCursorBoundary {
             session_sequence: data.session.last_sequence,
         },
@@ -341,19 +311,17 @@ fn capabilities(row: RepositoryCapabilities) -> TuningCapabilities {
 
 pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
     json: &str,
-    column: usize,
-) -> Result<T, duckdb::Error> {
-    serde_json::from_str(json).map_err(|error| {
-        duckdb::Error::FromSqlConversionFailure(column, duckdb::types::Type::Text, Box::new(error))
-    })
+    _column: usize,
+) -> Result<T, BenchError> {
+    Ok(serde_json::from_str(json)?)
 }
 pub(super) fn decode_report_enum<T: serde::de::DeserializeOwned>(
     value: &str,
-    column: usize,
-) -> Result<T, duckdb::Error> {
-    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|error| {
-        duckdb::Error::FromSqlConversionFailure(column, duckdb::types::Type::Text, Box::new(error))
-    })
+    _column: usize,
+) -> Result<T, BenchError> {
+    Ok(serde_json::from_value(serde_json::Value::String(
+        value.to_owned(),
+    ))?)
 }
 pub(super) fn opponent_view(value: OpponentSnapshot) -> TuningOpponentView {
     TuningOpponentView {
@@ -377,19 +345,14 @@ pub(super) fn metrics_view(value: StrategyMetrics) -> TuningStrategyMetricsView 
 }
 pub(super) fn decode_trial_config(
     config: Option<String>,
-) -> Result<Option<serde_json::Value>, duckdb::Error> {
-    config
-        .map(|json| serde_json::from_str(&json))
-        .transpose()
-        .map_err(|error| {
-            duckdb::Error::FromSqlConversionFailure(4, duckdb::types::Type::Text, Box::new(error))
-        })
+) -> Result<Option<serde_json::Value>, BenchError> {
+    Ok(config.map(|json| serde_json::from_str(&json)).transpose()?)
 }
 
 pub(super) fn decode_optional_report_reason(
     value: Option<String>,
     column: usize,
-) -> Result<Option<mcts_bench::tuning_lifecycle::TrialReportReason>, duckdb::Error> {
+) -> Result<Option<mcts_bench::tuning_lifecycle::TrialReportReason>, BenchError> {
     value
         .as_deref()
         .map(|reason| decode_report_enum(reason, column))

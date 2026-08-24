@@ -5,12 +5,16 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuningTrialRepositoryError {
     Storage(String),
+    InvalidData(String),
 }
 
 impl std::fmt::Display for TuningTrialRepositoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Storage(message) => write!(f, "tuning trial storage failure: {message}"),
+            Self::InvalidData(message) => {
+                write!(f, "invalid persisted tuning trial data: {message}")
+            }
         }
     }
 }

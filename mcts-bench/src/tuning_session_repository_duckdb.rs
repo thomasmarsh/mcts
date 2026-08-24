@@ -27,10 +27,18 @@ impl SharedDuckDbTuningSessionRepository {
 impl TuningSessionRepository for SharedDuckDbTuningSessionRepository {
     fn load_session_list(&self) -> Result<TuningSessionListData, TuningSessionRepositoryError> {
         let connection = self.lock()?;
-        Ok(TuningSessionListData {
-            sessions: load_session_list_rows(&connection)?,
+        let mut sessions = load_session_list_rows(&connection)?;
+        for session in &mut sessions {
+            session.control =
+                crate::tuning_command_store::reconcile(&connection, &session.session_id)
+                    .map_err(|error| TuningSessionRepositoryError::Storage(error.to_string()))?;
+        }
+        let data = TuningSessionListData {
+            sessions,
             attempts: load_session_list_attempts(&connection)?,
-        })
+        };
+        validate_list_data(&data)?;
+        Ok(data)
     }
 
     fn load_session_detail(
@@ -41,7 +49,7 @@ impl TuningSessionRepository for SharedDuckDbTuningSessionRepository {
         let Some(session) = load_session(&connection, session_id)? else {
             return Ok(None);
         };
-        Ok(Some(TuningSessionDetailData {
+        let data = TuningSessionDetailData {
             trial_counts: load_trial_counts(&connection, session_id)?,
             attempts: load_attempts(&connection, session_id)?,
             trials: load_trials(&connection, session_id)?,
@@ -49,8 +57,26 @@ impl TuningSessionRepository for SharedDuckDbTuningSessionRepository {
             pairs: load_pairs(&connection, session_id)?,
             games: load_games(&connection, session_id)?,
             capabilities: load_capabilities(&connection, session_id)?,
+            control: crate::tuning_command_store::reconcile(&connection, session_id)
+                .map_err(|error| TuningSessionRepositoryError::Storage(error.to_string()))?,
             session,
-        }))
+        };
+        validate_detail_data(&data)?;
+        Ok(Some(data))
+    }
+
+    fn load_session_control(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::tuning_command_store::SessionControl>, TuningSessionRepositoryError>
+    {
+        let connection = self.lock()?;
+        if load_session(&connection, session_id)?.is_none() {
+            return Ok(None);
+        }
+        crate::tuning_command_store::reconcile(&connection, session_id)
+            .map(Some)
+            .map_err(|error| TuningSessionRepositoryError::Storage(error.to_string()))
     }
 }
 
@@ -134,6 +160,16 @@ fn load_session_list_rows(
                 renderer_trace_count: row.get(15)?,
                 search_report_count: row.get(16)?,
                 trial_report_count: row.get(17)?,
+                control: crate::tuning_command_store::SessionControl {
+                    control_version: 0,
+                    target_trial_count: None,
+                    consumed_trial_count: 0,
+                    active_attempt_id: None,
+                    launch_reservation: None,
+                    stop_attempt_id: None,
+                    recovery_required: false,
+                    allowed_commands: Vec::new(),
+                },
             })
         })
         .map_err(storage)?
@@ -323,4 +359,65 @@ fn load_capabilities(
 
 fn storage(error: duckdb::Error) -> TuningSessionRepositoryError {
     TuningSessionRepositoryError::Storage(error.to_string())
+}
+
+fn invalid_data(error: impl std::fmt::Display) -> TuningSessionRepositoryError {
+    TuningSessionRepositoryError::InvalidData(error.to_string())
+}
+
+fn validate_list_data(data: &TuningSessionListData) -> Result<(), TuningSessionRepositoryError> {
+    for session in &data.sessions {
+        serde_json::from_str::<serde_json::Value>(&session.manifest).map_err(invalid_data)?;
+    }
+    Ok(())
+}
+
+fn validate_detail_data(
+    data: &TuningSessionDetailData,
+) -> Result<(), TuningSessionRepositoryError> {
+    serde_json::from_str::<serde_json::Value>(&data.session.manifest).map_err(invalid_data)?;
+    for trial in &data.trials {
+        trial
+            .config
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(invalid_data)?;
+        trial
+            .stop_reason
+            .as_deref()
+            .map(validate_reason)
+            .transpose()?;
+    }
+    for report in &data.reports {
+        validate_outcome(&report.outcome)?;
+        validate_reason(&report.reason)?;
+    }
+    for pair in &data.pairs {
+        serde_json::from_str::<crate::tuning_lifecycle::OpponentSnapshot>(&pair.opponent)
+            .map_err(invalid_data)?;
+    }
+    for game in &data.games {
+        serde_json::from_str::<crate::tuning_lifecycle::StrategyMetrics>(&game.candidate_metrics)
+            .map_err(invalid_data)?;
+        serde_json::from_str::<crate::tuning_lifecycle::StrategyMetrics>(&game.baseline_metrics)
+            .map_err(invalid_data)?;
+    }
+    Ok(())
+}
+
+fn validate_outcome(value: &str) -> Result<(), TuningSessionRepositoryError> {
+    serde_json::from_value::<crate::tuning_lifecycle::TrialReportOutcome>(
+        serde_json::Value::String(value.into()),
+    )
+    .map(|_| ())
+    .map_err(invalid_data)
+}
+
+fn validate_reason(value: &str) -> Result<(), TuningSessionRepositoryError> {
+    serde_json::from_value::<crate::tuning_lifecycle::TrialReportReason>(serde_json::Value::String(
+        value.into(),
+    ))
+    .map(|_| ())
+    .map_err(invalid_data)
 }

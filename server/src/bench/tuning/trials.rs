@@ -351,7 +351,7 @@ struct TrialPageRow {
 }
 
 impl TrialPageRow {
-    fn from_repository(row: RepositoryTrialPageRow) -> Result<Self, duckdb::Error> {
+    fn from_repository(row: RepositoryTrialPageRow) -> Result<Self, BenchError> {
         Ok(Self {
             trial_id: row.trial_id,
             trial_number: row.trial_number,
@@ -569,7 +569,7 @@ fn load_tuning_trial_detail(
     }))
 }
 
-fn report_view(row: TuningTrialReportRow) -> Result<TuningTrialReportView, duckdb::Error> {
+fn report_view(row: TuningTrialReportRow) -> Result<TuningTrialReportView, BenchError> {
     Ok(TuningTrialReportView {
         completed_pairs: row.completed_pairs,
         reported_at: row.reported_at,
@@ -590,7 +590,7 @@ fn report_view(row: TuningTrialReportRow) -> Result<TuningTrialReportView, duckd
 fn pair_view(
     row: TuningTrialPairRow,
     pool_revisions: &[TuningAnalysisPoolRevision],
-) -> Result<TuningTrialDetailPairView, duckdb::Error> {
+) -> Result<TuningTrialDetailPairView, BenchError> {
     let opponent = decode_json::<OpponentSnapshot>(&row.opponent, 5)?;
     Ok(TuningTrialDetailPairView {
         pair_id: row.pair_id,
@@ -629,7 +629,7 @@ fn load_pool_revision_for_detail(
         .map(pool_revision)
 }
 
-fn game_view(row: TuningTrialGameRow) -> Result<TuningTrialDetailGameView, duckdb::Error> {
+fn game_view(row: TuningTrialGameRow) -> Result<TuningTrialDetailGameView, BenchError> {
     let replay = row
         .run_id
         .zip(row.trace_game_seq)

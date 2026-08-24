@@ -54,6 +54,8 @@ fn load_analysis(
     let Some(session) = load_session(connection, session_id)? else {
         return Ok(None);
     };
+    serde_json::from_str::<serde_json::Value>(&session.manifest)
+        .map_err(|error| TuningAnalysisRepositoryError::InvalidData(error.to_string()))?;
     Ok(Some(TuningAnalysisData {
         session,
         trial_counts: load_trial_counts(connection, session_id)?,
@@ -389,8 +391,9 @@ fn load_pool_anchors(
             Ok(TuningAnalysisPoolAnchor {
                 anchor_ordinal,
                 anchor_id,
-                config: serde_json::from_str(&config)
-                    .map_err(|error| TuningAnalysisRepositoryError::Storage(error.to_string()))?,
+                config: serde_json::from_str(&config).map_err(|error| {
+                    TuningAnalysisRepositoryError::InvalidData(error.to_string())
+                })?,
                 mu,
                 sigma,
                 provenance: decode_enum(&provenance)?,
@@ -405,7 +408,7 @@ fn decode_enum<T: serde::de::DeserializeOwned>(
     value: &str,
 ) -> Result<T, TuningAnalysisRepositoryError> {
     serde_json::from_value(serde_json::Value::String(value.into()))
-        .map_err(|error| TuningAnalysisRepositoryError::Storage(error.to_string()))
+        .map_err(|error| TuningAnalysisRepositoryError::InvalidData(error.to_string()))
 }
 
 fn storage(error: duckdb::Error) -> TuningAnalysisRepositoryError {

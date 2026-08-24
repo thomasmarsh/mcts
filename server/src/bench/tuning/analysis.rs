@@ -17,9 +17,8 @@ use super::super::{
     BenchError, BenchState, TuningAnalysisBest, TuningAnalysisCoverage, TuningAnalysisObjective,
     TuningAnalysisOverview, TuningAnalysisPairCoverage, TuningAnalysisPoint,
     TuningAnalysisPointCoverage, TuningBracketResourceAggregate, TuningCursorBoundary,
-    TuningDecisionAggregate, TuningPoolAnchorView, TuningPoolRevisionView, TuningSessionControl,
+    TuningDecisionAggregate, TuningPoolAnchorView, TuningPoolRevisionView,
 };
-use super::commands::session_control;
 use super::sessions::{decode_manifest, decode_manifest_policy, rating_view};
 
 const ANALYSIS_POINT_LIMIT: usize = 2_000;
@@ -28,16 +27,17 @@ pub(crate) async fn get_tuning_analysis_overview(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<Json<TuningAnalysisOverview>, BenchError> {
-    let control = {
-        let db = state.db.lock().unwrap();
-        session_control(&db, &session_id)?
-    };
+    let control = state
+        .tuning_session_repository
+        .load_session_control(&session_id)
+        .map_err(super::sessions::tuning_session_repository_error)?;
     let analysis = state
         .tuning_analysis_repository
         .load_analysis(&session_id)
         .map_err(tuning_analysis_repository_error)?;
     let overview = analysis
-        .map(|analysis| load_tuning_analysis_overview(analysis, control))
+        .zip(control)
+        .map(|(analysis, control)| load_tuning_analysis_overview(analysis, control.into()))
         .transpose()?
         .ok_or_else(|| BenchError {
             status: axum::http::StatusCode::NOT_FOUND,
@@ -48,7 +48,7 @@ pub(crate) async fn get_tuning_analysis_overview(
 
 fn load_tuning_analysis_overview(
     analysis: TuningAnalysisData,
-    control: TuningSessionControl,
+    control: super::super::TuningSessionControl,
 ) -> Result<TuningAnalysisOverview, BenchError> {
     let manifest = decode_manifest(&analysis.session.manifest)?;
     let reports = analysis

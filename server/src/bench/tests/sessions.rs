@@ -1259,7 +1259,7 @@ async fn trial_evidence_detail_uses_exact_snapshots_and_stays_session_scoped() {
 }
 
 #[tokio::test]
-async fn trial_evidence_keeps_compact_legacy_rows_readable_and_rejects_bad_detail_config() {
+async fn trial_evidence_rejects_malformed_persisted_config() {
     let app = seeded_app(|conn, _| {
         conn.execute_batch(
             "INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence)
@@ -1283,10 +1283,8 @@ async fn trial_evidence_keeps_compact_legacy_rows_readable_and_rejects_bad_detai
     .0;
 
     let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/bad-config/trials").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    let value = body_json(&body);
-    assert_eq!(value["trials"][0]["family"], serde_json::Value::Null);
-    assert_eq!(value["trials"][0]["has_detail"], true);
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
 
     let (status, body) =
         http_get(app, "/api/bench/tuner/sessions/bad-config/trials/bad-trial").await;
