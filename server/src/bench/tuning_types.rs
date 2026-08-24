@@ -1,6 +1,72 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Deserialize)]
+pub(crate) struct TuningSessionCommandBody {
+    pub(crate) command_id: String,
+    pub(crate) expected_version: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningSessionCommandResponse {
+    pub(crate) schema_version: u32,
+    pub(crate) command_id: String,
+    pub(crate) replay: bool,
+    pub(crate) status: &'static str,
+    pub(crate) attempt_id: Option<String>,
+    pub(crate) bench_run_id: Option<String>,
+    pub(crate) signal: Option<TuningStopSignal>,
+    pub(crate) control: TuningSessionControl,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TuningStopSignal {
+    Sent,
+    NotFound,
+}
+
+/// Stable control information is deliberately separate from lifecycle
+/// progress: ordinary reports do not invalidate an operator command form.
+#[derive(Serialize)]
+pub(crate) struct TuningSessionControl {
+    pub(crate) version: u64,
+    pub(crate) continuation: TuningContinuation,
+    pub(crate) allowed_commands: Vec<mcts_bench::tuning_command_store::AllowedCommand>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningContinuation {
+    pub(crate) target_trial_count: Option<u64>,
+    pub(crate) consumed_trial_count: u64,
+    pub(crate) remaining_trial_count: Option<u64>,
+    pub(crate) active_attempt_id: Option<String>,
+    pub(crate) launch_reservation: Option<mcts_bench::tuning_command_store::LaunchReservation>,
+    pub(crate) stop_attempt_id: Option<String>,
+    pub(crate) recovery_required: bool,
+}
+
+impl From<mcts_bench::tuning_command_store::SessionControl> for TuningSessionControl {
+    fn from(control: mcts_bench::tuning_command_store::SessionControl) -> Self {
+        let remaining_trial_count = control
+            .target_trial_count
+            .map(|target| target.saturating_sub(control.consumed_trial_count));
+        Self {
+            version: control.control_version,
+            continuation: TuningContinuation {
+                target_trial_count: control.target_trial_count,
+                consumed_trial_count: control.consumed_trial_count,
+                remaining_trial_count,
+                active_attempt_id: control.active_attempt_id,
+                launch_reservation: control.launch_reservation,
+                stop_attempt_id: control.stop_attempt_id,
+                recovery_required: control.recovery_required,
+            },
+            allowed_commands: control.allowed_commands,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct TuningSessionList {
     pub(crate) schema_version: u32,
@@ -19,6 +85,7 @@ pub(crate) struct TuningSessionListItem {
     pub(crate) last_activity_at: String,
     pub(crate) attempts: Vec<TuningAttemptSummary>,
     pub(crate) capabilities: TuningCapabilities,
+    pub(crate) control: TuningSessionControl,
 }
 
 #[derive(Serialize)]
@@ -308,6 +375,7 @@ pub(crate) struct TuningSessionDetail {
     pub(crate) manifest: Value,
     pub(crate) fingerprint: Option<String>,
     pub(crate) capabilities: TuningCapabilities,
+    pub(crate) control: TuningSessionControl,
     pub(crate) cursor: TuningCursorBoundary,
 }
 
@@ -325,6 +393,7 @@ pub(crate) struct TuningAnalysisOverview {
     pub(crate) points: Vec<TuningAnalysisPoint>,
     pub(crate) best: Option<TuningAnalysisBest>,
     pub(crate) pool_revisions: Vec<TuningPoolRevisionView>,
+    pub(crate) control: TuningSessionControl,
 }
 
 #[derive(Serialize)]

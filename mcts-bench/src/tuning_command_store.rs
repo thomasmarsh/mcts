@@ -370,17 +370,13 @@ fn decide(
             if !has_valid_launch(request) {
                 return reject(StoredError::InvalidDeltaStart { control });
             }
-            if control.recovery_required {
-                return reject(StoredError::CommandDenied {
-                    reason: DenialReason::RecoveryRequired,
-                    control,
-                });
-            }
             if let Some(attempt_id) = &control.active_attempt_id {
-                return reject(StoredError::ActiveAttempt {
-                    attempt_id: attempt_id.clone(),
-                    control,
-                });
+                if !control.recovery_required {
+                    return reject(StoredError::ActiveAttempt {
+                        attempt_id: attempt_id.clone(),
+                        control,
+                    });
+                }
             }
             if let Some(reservation) = &control.launch_reservation {
                 return reject(StoredError::LaunchReserved {
@@ -412,17 +408,13 @@ fn decide(
                 return reject(StoredError::InvalidDeltaStart { control });
             }
             if *start {
-                if control.recovery_required {
-                    return reject(StoredError::CommandDenied {
-                        reason: DenialReason::RecoveryRequired,
-                        control,
-                    });
-                }
                 if let Some(attempt_id) = &control.active_attempt_id {
-                    return reject(StoredError::ActiveAttempt {
-                        attempt_id: attempt_id.clone(),
-                        control,
-                    });
+                    if !control.recovery_required {
+                        return reject(StoredError::ActiveAttempt {
+                            attempt_id: attempt_id.clone(),
+                            control,
+                        });
+                    }
                 }
                 if let Some(reservation) = &control.launch_reservation {
                     return reject(StoredError::LaunchReserved {
@@ -713,9 +705,7 @@ fn load_snapshot(tx: &Transaction<'_>, session_id: &str) -> Result<Snapshot, Com
 
 fn control_from_snapshot(snapshot: &Snapshot) -> Result<SessionControl, CommandStoreError> {
     let recovery_required = snapshot.physical_dead_lifecycle_active;
-    let continuation_denial = if recovery_required {
-        Some(DenialReason::RecoveryRequired)
-    } else if snapshot.active_attempt_id.is_some() {
+    let continuation_denial = if snapshot.active_attempt_id.is_some() && !recovery_required {
         Some(DenialReason::ActiveAttempt)
     } else if snapshot.launch_reservation.is_some() {
         Some(DenialReason::LaunchReserved)
@@ -975,11 +965,21 @@ mod tests {
         .unwrap();
         let recovery = reconcile(&conn, "s").unwrap();
         assert!(recovery.recovery_required);
-        denied(
-            &recovery,
-            CommandKind::Resume,
-            DenialReason::RecoveryRequired,
-        );
+        assert!(recovery
+            .allowed_commands
+            .iter()
+            .any(|command| command.command == CommandKind::Resume && command.allowed));
+        let resumed = apply_command(
+            &conn,
+            "s",
+            &request(
+                "recovery-resume",
+                recovery.control_version,
+                SessionCommand::Resume,
+            ),
+        )
+        .unwrap();
+        assert!(resumed.control.launch_reservation.is_some());
     }
 
     #[test]

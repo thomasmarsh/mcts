@@ -2,6 +2,303 @@ use super::support::*;
 use axum::http::StatusCode as HttpStatusCode;
 use std::sync::Arc;
 
+fn control_session_seed(conn: &duckdb::Connection, status: &str, attempt_status: &str) {
+    conn.execute_batch(&format!(
+        "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, pid, started_at, status, log_path)
+         VALUES ('physical-parent', 'tuner', 'nim', '{{\"config\":\"tuner/config/default.yaml\"}}', 'sha', false, 'host', 4242, CURRENT_TIMESTAMP, '{status}', '/tmp/parent.log');
+         INSERT INTO tuning_sessions (session_id, status, manifest, target_trial_count, created_at, last_sequence, optimizer_id, lifecycle_path)
+         VALUES ('control', 'idle', '{{}}', 4, CURRENT_TIMESTAMP, 1, 'optimizer-control', '/tmp/control.jsonl');
+         INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at)
+         VALUES ('attempt-parent', 'control', 'physical-parent', '{attempt_status}', CURRENT_TIMESTAMP);"
+    ))
+    .unwrap();
+}
+
+#[tokio::test]
+async fn tuning_session_stop_is_pending_until_lifecycle_and_replays_without_a_second_signal() {
+    let signals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let signals_for_app = signals.clone();
+    let (app, _, state) = seeded_app_with_state_and_signaller(
+        |conn, _| control_session_seed(conn, "running", "running"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+        Arc::new(move |_| {
+            signals_for_app.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"))
+        }),
+    );
+    let request = serde_json::json!({"command_id":"stop-one", "expected_version":0});
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/stop",
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::ACCEPTED);
+    let value = body_json(&body);
+    assert_eq!(value["status"], "stopping");
+    assert_eq!(value["attempt_id"], "attempt-parent");
+    assert_eq!(value["signal"], "not_found");
+    assert_eq!(
+        value["control"]["continuation"]["stop_attempt_id"],
+        "attempt-parent"
+    );
+    assert_eq!(signals.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let active: String = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM tuning_attempts WHERE attempt_id = 'attempt-parent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active, "running");
+
+    let (status, body) =
+        http_post_json(app, "/api/bench/tuner/sessions/control/stop", request).await;
+    assert_eq!(status, HttpStatusCode::ACCEPTED);
+    assert_eq!(body_json(&body)["replay"], true);
+    assert!(body_json(&body)["signal"].is_null());
+    assert_eq!(signals.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn tuning_session_stop_surfaces_signal_failures_after_recording_the_stop_intent() {
+    let (app, _, state) = seeded_app_with_state_and_signaller(
+        |conn, _| control_session_seed(conn, "running", "running"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+        Arc::new(|_| Err(std::io::Error::other("permission denied"))),
+    );
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/stop",
+        serde_json::json!({"command_id":"stop-error", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["code"], 500);
+    let reservation_count: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM tuning_stop_reservations WHERE session_id = 'control'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reservation_count, 1);
+}
+
+#[tokio::test]
+async fn tuning_session_stop_reports_a_sent_signal() {
+    let app = seeded_app_with_state_and_signaller(
+        |conn, _| control_session_seed(conn, "running", "running"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+        Arc::new(|_| Ok(())),
+    )
+    .0;
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/stop",
+        serde_json::json!({"command_id":"stop-sent", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::ACCEPTED);
+    assert_eq!(body_json(&body)["signal"], "sent");
+}
+
+#[tokio::test]
+async fn tuning_session_resume_reserves_one_physical_attempt_and_replays_it() {
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| control_session_seed(conn, "completed", "completed"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    );
+    let request = serde_json::json!({"command_id":"resume-one", "expected_version":0});
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    let value = body_json(&body);
+    assert_eq!(value["status"], "resuming");
+    let attempt_id = value["attempt_id"].as_str().unwrap().to_owned();
+    let run_id = value["bench_run_id"].as_str().unwrap().to_owned();
+    assert!(attempt_id.contains(&run_id));
+    assert_eq!(value["control"]["continuation"]["target_trial_count"], 4);
+    assert_eq!(value["control"]["version"], 1);
+    assert_eq!(
+        value["control"]["continuation"]["launch_reservation"]["attempt_id"],
+        attempt_id
+    );
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"resume-two", "expected_version":1}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("reserved"));
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"resume-one", "expected_version":1}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("reused"));
+
+    let (status, body) =
+        http_post_json(app, "/api/bench/tuner/sessions/control/resume", request).await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    let replay = body_json(&body);
+    assert_eq!(replay["replay"], true);
+    assert_eq!(replay["attempt_id"], attempt_id);
+    assert_eq!(replay["bench_run_id"], run_id);
+    let launches: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM runs WHERE run_id <> 'physical-parent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(launches, 1);
+}
+
+#[tokio::test]
+async fn tuning_session_resume_allows_a_conclusively_dead_recovery_attempt() {
+    let app = seeded_app_with(
+        |conn, _| control_session_seed(conn, "crashed", "running"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        injected_general_launcher(),
+    )
+    .0;
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/control").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(
+        body_json(&body)["control"]["continuation"]["recovery_required"],
+        true
+    );
+    assert!(body_json(&body)["control"]["allowed_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["command"] == "resume" && command["allowed"] == true));
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"recover-one", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    assert_eq!(body_json(&body)["status"], "resuming");
+}
+
+#[tokio::test]
+async fn tuning_session_resume_releases_a_failed_spawn_reservation() {
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| control_session_seed(conn, "completed", "completed"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(|_, _, _, _, _| Err(std::io::Error::other("injected spawn failure"))),
+    );
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"resume-failure", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("failed to launch tuner attempt"));
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"resume-failure", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("recorded launch"));
+    let (reservations, version): (i64, i64) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM tuning_launch_reservations WHERE session_id = 'control'), control_version
+             FROM tuning_sessions WHERE session_id = 'control'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(reservations, 0);
+    assert_eq!(version, 2);
+}
+
+#[tokio::test]
+async fn tuning_session_control_rejects_stale_and_exhausted_resume_commands() {
+    let app = seeded_app(|conn, _| {
+        control_session_seed(conn, "completed", "completed");
+        conn.execute(
+            "UPDATE tuning_sessions SET target_trial_count = 1 WHERE session_id = 'control'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, config, created_at)
+             VALUES ('control', 'spent', 'attempt-parent', 1, 'complete', '{}', CURRENT_TIMESTAMP)",
+            [],
+        )
+        .unwrap();
+    })
+    .0;
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"exhausted", "expected_version":0}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("exhausted"));
+
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/stop",
+        serde_json::json!({"command_id":"stale", "expected_version":99}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("version"));
+}
+
 #[tokio::test]
 async fn tuning_sessions_list_projects_counts_attempts_capabilities_and_order() {
     let app = seeded_app(|conn, dir| {
@@ -82,6 +379,15 @@ async fn tuning_sessions_list_projects_counts_attempts_capabilities_and_order() 
     assert_eq!(sessions[0]["capabilities"]["has_renderer_trace"], false);
     assert_eq!(sessions[0]["capabilities"]["has_search_reports"], false);
     assert_eq!(sessions[0]["capabilities"]["has_trial_reports"], false);
+    assert!(sessions[0]["control"]["allowed_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["command"] == "stop" && command["allowed"] == true));
+    assert_eq!(
+        sessions[1]["control"]["allowed_commands"][1]["denial_reason"],
+        "noncontinuable_legacy"
+    );
     assert_ne!(sessions[0]["last_activity_at"], sessions[0]["created_at"]);
     assert!(sessions[1]["game"].is_null());
 }
