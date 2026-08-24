@@ -23,7 +23,6 @@ use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
 use mcts_bench::experiment::ExperimentSpecV1;
-use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::project_repository::ProjectRepository;
@@ -394,19 +393,6 @@ impl From<serde_json::Error> for BenchError {
             status: StatusCode::BAD_REQUEST,
             message: format!("JSON error: {e}"),
         }
-    }
-}
-
-pub(crate) fn identity_bench_error(error: identity::IdentityError) -> BenchError {
-    let status = match &error {
-        identity::IdentityError::MissingRun(_) => StatusCode::NOT_FOUND,
-        identity::IdentityError::Contradiction(_) => StatusCode::CONFLICT,
-        identity::IdentityError::InvalidLinkage(_) => StatusCode::BAD_REQUEST,
-        identity::IdentityError::DuckDb(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    BenchError {
-        status,
-        message: error.to_string(),
     }
 }
 

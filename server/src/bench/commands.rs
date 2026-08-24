@@ -23,11 +23,10 @@ use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
 use mcts_bench::experiment::ExperimentSpecV1;
-use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
-use mcts_bench::run_command_repository::RecordRunLaunch;
+use mcts_bench::run_command_repository::{RecordRunLaunch, TunerLaunchReservation};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
@@ -224,36 +223,39 @@ pub(crate) fn launch_reserved_tuner_attempt(
     launch: TunerAttemptLaunch,
     label: Option<&str>,
 ) -> Result<LaunchResponse, BenchError> {
-    verify_tuner_launch_reservation(state, command_id, &launch)?;
-    if let Some(previous) = recorded_tuner_launch(state, &launch.physical_run_id)? {
+    state
+        .run_command_repository
+        .verify_tuner_launch_reservation(&TunerLaunchReservation {
+            session_id: launch.session_id.clone(),
+            command_id: command_id.into(),
+            attempt_id: launch.attempt_id.clone(),
+            physical_run_id: launch.physical_run_id.clone(),
+            target_trial_count: launch.target_trial_count,
+        })
+        .map_err(run_command_bench_error)?;
+    if let Some(previous) = state
+        .run_command_repository
+        .recorded_tuner_launch(&launch.physical_run_id)
+        .map_err(run_command_bench_error)?
+    {
         record_tuner_launch_outcome(
             state,
             &launch.session_id,
             command_id,
             mcts_bench::tuning_command_store::LaunchOutcome::Spawned,
         )?;
-        return Ok(previous);
+        return Ok(LaunchResponse {
+            run_id: previous.run_id,
+            pid: previous.pid,
+            log_path: previous.log_path,
+            launch_error: None,
+        });
     }
 
-    let parent_identity = {
-        let db = state.db.lock().unwrap();
-        let parent_run_id: String = db
-            .query_row(
-                "SELECT bench_run_id FROM tuning_attempts \
-                 WHERE session_id = ?1 AND bench_run_id IS NOT NULL \
-                 ORDER BY started_at DESC, attempt_id DESC LIMIT 1",
-                duckdb::params![&launch.session_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| BenchError {
-                status: StatusCode::CONFLICT,
-                message: format!(
-                    "session '{}' has no physical attempt available for continuation: {error}",
-                    launch.session_id
-                ),
-            })?;
-        identity::prepare_continuation(&db, &parent_run_id).map_err(identity_bench_error)?
-    };
+    let parent_identity = state
+        .run_command_repository
+        .prepare_latest_tuner_continuation(&launch.session_id)
+        .map_err(run_command_bench_error)?;
     let built = build_tuner_attempt(&launch)?;
     let launched = match (state.run_launcher)(
         launch.physical_run_id.clone(),
@@ -276,14 +278,25 @@ pub(crate) fn launch_reserved_tuner_attempt(
             });
         }
     };
-    persist_tuner_attempt_run(
-        state,
-        &launch,
-        &built.config,
-        &parent_identity,
-        label,
-        &launched,
-    )?;
+    let started_at = iso_timestamp_now();
+    state
+        .run_command_repository
+        .record_tuner_attempt_launch(RecordRunLaunch {
+            run_id: launch.physical_run_id.clone(),
+            kind: "tuner".into(),
+            game: launch.game.clone(),
+            label: label.map(str::to_owned),
+            config_json: Some(serde_json::to_string(&built.config)?),
+            git_sha: crate::BUILD_INFO.git_sha.into(),
+            git_dirty: crate::BUILD_INFO.git_dirty,
+            host: hostname(),
+            pid: i64::from(launched.pid),
+            started_at,
+            log_path: launched.log_path.to_string_lossy().into_owned(),
+            continuation_parent: Some(parent_identity),
+            tuner_lifecycle_source: Some(launch.lifecycle_path.clone()),
+        })
+        .map_err(run_command_bench_error)?;
     record_tuner_launch_outcome(
         state,
         &launch.session_id,
@@ -296,106 +309,6 @@ pub(crate) fn launch_reserved_tuner_attempt(
         log_path: launched.log_path.to_string_lossy().into_owned(),
         launch_error: None,
     })
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn verify_tuner_launch_reservation(
-    state: &Arc<BenchState>,
-    command_id: &str,
-    launch: &TunerAttemptLaunch,
-) -> Result<(), BenchError> {
-    let db = state.db.lock().unwrap();
-    let reserved: Option<(String, String, i64)> = db
-        .query_row(
-            "SELECT attempt_id, physical_run_id, target_trial_count \
-             FROM tuning_launch_reservations WHERE session_id = ?1 AND command_id = ?2",
-            duckdb::params![&launch.session_id, command_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .ok();
-    let expected_target = i64::try_from(launch.target_trial_count).map_err(|_| BenchError {
-        status: StatusCode::BAD_REQUEST,
-        message: "tuner target trial count exceeds DuckDB range".into(),
-    })?;
-    if reserved
-        != Some((
-            launch.attempt_id.clone(),
-            launch.physical_run_id.clone(),
-            expected_target,
-        ))
-    {
-        return Err(BenchError {
-            status: StatusCode::CONFLICT,
-            message: format!(
-                "command '{command_id}' does not hold the requested tuner launch reservation"
-            ),
-        });
-    }
-    Ok(())
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn recorded_tuner_launch(
-    state: &Arc<BenchState>,
-    physical_run_id: &str,
-) -> Result<Option<LaunchResponse>, BenchError> {
-    let db = state.db.lock().unwrap();
-    match db.query_row(
-        "SELECT pid, log_path FROM runs WHERE run_id = ?1 AND kind = 'tuner'",
-        duckdb::params![physical_run_id],
-        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?)),
-    ) {
-        Ok((pid, log_path)) => Ok(Some(LaunchResponse {
-            run_id: physical_run_id.into(),
-            pid: pid.unwrap_or_default() as u32,
-            log_path,
-            launch_error: None,
-        })),
-        Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn persist_tuner_attempt_run(
-    state: &Arc<BenchState>,
-    launch: &TunerAttemptLaunch,
-    config: &Option<Value>,
-    parent: &identity::ParentIdentity,
-    label: Option<&str>,
-    launched: &LaunchedRun,
-) -> Result<(), BenchError> {
-    let started_at = iso_timestamp_now();
-    let config = serde_json::to_string(config)?;
-    let log_path = launched.log_path.to_string_lossy().into_owned();
-    let mut db = state.db.lock().unwrap();
-    let transaction = db.transaction()?;
-    transaction.execute(
-        "INSERT INTO runs \
-         (run_id, kind, game, label, config, git_sha, git_dirty, host, pid, started_at, status, log_path) \
-         VALUES (?1, 'tuner', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10)",
-        duckdb::params![
-            &launch.physical_run_id,
-            &launch.game,
-            label,
-            config,
-            crate::BUILD_INFO.git_sha,
-            crate::BUILD_INFO.git_dirty,
-            hostname(),
-            launched.pid as i64,
-            &started_at,
-            &log_path,
-        ],
-    )?;
-    identity::create_child_identity(&transaction, &launch.physical_run_id, parent)
-        .map_err(identity_bench_error)?;
-    mcts_bench::tuning_store::register_lifecycle_source(
-        &transaction,
-        &launch.lifecycle_path,
-        &launch.physical_run_id,
-    )?;
-    transaction.commit()?;
-    Ok(())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -650,19 +563,10 @@ pub(crate) fn project_legacy_stop(
     kind: &str,
 ) -> Result<String, BenchError> {
     let ended_at = iso_timestamp_now();
-    let mut db = state.db.lock().unwrap();
-    let tx = db.transaction()?;
-    tx.execute(
-        "UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'",
-        duckdb::params![&ended_at, run_id],
-    )?;
-    if kind == "experiment" {
-        tx.execute(
-            "UPDATE experiment_cells SET status = 'cancelled', ended_at = ?1, error = COALESCE(error, 'run stopped') WHERE run_id = ?2 AND status IN ('pending', 'running')",
-            duckdb::params![&ended_at, run_id],
-        )?;
-    }
-    tx.commit()?;
+    state
+        .run_command_repository
+        .project_legacy_stop(run_id, kind, &ended_at)
+        .map_err(run_command_bench_error)?;
     Ok(ended_at)
 }
 

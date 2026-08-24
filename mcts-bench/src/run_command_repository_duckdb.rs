@@ -1,7 +1,8 @@
 //! DuckDB implementation of [`crate::run_command_repository::RunCommandRepository`].
 
 use crate::run_command_repository::{
-    ContinuationParent, RecordRunLaunch, RunCommandRepository, RunCommandRepositoryError,
+    ContinuationParent, RecordRunLaunch, RecordedTunerLaunch, RunCommandRepository,
+    RunCommandRepositoryError, TunerLaunchReservation,
 };
 use crate::{identity, tuning_store};
 use duckdb::{params, Connection};
@@ -104,6 +105,92 @@ impl RunCommandRepository for SharedDuckDbRunCommandRepository {
         let connection = self.lock()?;
         connection.execute("UPDATE runs SET ended_at = ?1, status = 'crashed' WHERE run_id = ?2 AND status = 'running'", params![ended_at, run_id]).map_err(storage)?;
         Ok(())
+    }
+    fn verify_tuner_launch_reservation(
+        &self,
+        reservation: &TunerLaunchReservation,
+    ) -> Result<(), RunCommandRepositoryError> {
+        let connection = self.lock()?;
+        let target = i64::try_from(reservation.target_trial_count)
+            .map_err(|_| RunCommandRepositoryError::Conflict)?;
+        let found: Option<(String, String, i64)> = connection
+            .query_row(
+                "SELECT attempt_id, physical_run_id, target_trial_count FROM tuning_launch_reservations WHERE session_id = ?1 AND command_id = ?2",
+                params![&reservation.session_id, &reservation.command_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok();
+        if found
+            == Some((
+                reservation.attempt_id.clone(),
+                reservation.physical_run_id.clone(),
+                target,
+            ))
+        {
+            Ok(())
+        } else {
+            Err(RunCommandRepositoryError::Conflict)
+        }
+    }
+    fn recorded_tuner_launch(
+        &self,
+        physical_run_id: &str,
+    ) -> Result<Option<RecordedTunerLaunch>, RunCommandRepositoryError> {
+        let connection = self.lock()?;
+        match connection.query_row(
+            "SELECT pid, log_path FROM runs WHERE run_id = ?1 AND kind = 'tuner'",
+            params![physical_run_id],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok((pid, log_path)) => Ok(Some(RecordedTunerLaunch {
+                run_id: physical_run_id.into(),
+                pid: u32::try_from(pid.unwrap_or_default()).unwrap_or_default(),
+                log_path,
+            })),
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(storage(error)),
+        }
+    }
+    fn prepare_latest_tuner_continuation(
+        &self,
+        session_id: &str,
+    ) -> Result<ContinuationParent, RunCommandRepositoryError> {
+        let connection = self.lock()?;
+        let parent_run_id: String = connection.query_row(
+            "SELECT bench_run_id FROM tuning_attempts WHERE session_id = ?1 AND bench_run_id IS NOT NULL ORDER BY started_at DESC, attempt_id DESC LIMIT 1",
+            params![session_id],
+            |row| row.get(0),
+        ).map_err(|error| match error {
+            duckdb::Error::QueryReturnedNoRows => RunCommandRepositoryError::NotFound,
+            error => storage(error),
+        })?;
+        identity::prepare_continuation(&connection, &parent_run_id)
+            .map(|parent| ContinuationParent {
+                logical_run_id: parent.logical_run_id,
+                parent_attempt_id: parent.parent_attempt_id,
+                attempt_ordinal: parent.attempt_ordinal,
+            })
+            .map_err(identity_error)
+    }
+    fn record_tuner_attempt_launch(
+        &self,
+        launch: RecordRunLaunch,
+    ) -> Result<(), RunCommandRepositoryError> {
+        self.record_launch(launch)
+    }
+    fn project_legacy_stop(
+        &self,
+        run_id: &str,
+        kind: &str,
+        ended_at: &str,
+    ) -> Result<(), RunCommandRepositoryError> {
+        let mut connection = self.lock()?;
+        let tx = connection.transaction().map_err(storage)?;
+        tx.execute("UPDATE runs SET status = 'stopped', ended_at = ?1 WHERE run_id = ?2 AND status = 'running'", params![ended_at, run_id]).map_err(storage)?;
+        if kind == "experiment" {
+            tx.execute("UPDATE experiment_cells SET status = 'cancelled', ended_at = ?1, error = COALESCE(error, 'run stopped') WHERE run_id = ?2 AND status IN ('pending', 'running')", params![ended_at, run_id]).map_err(storage)?;
+        }
+        tx.commit().map_err(storage)
     }
 }
 fn storage(error: duckdb::Error) -> RunCommandRepositoryError {
@@ -250,5 +337,126 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn tuner_reservation_replay_continuation_and_legacy_stop_are_durable() {
+        let (connection, repository) = repository();
+        let db = connection.lock().unwrap();
+        db.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session', 'idle', '{}', CURRENT_TIMESTAMP, 0)", []).unwrap();
+        db.execute("INSERT INTO tuning_launch_reservations (session_id, command_id, attempt_id, physical_run_id, target_trial_count, reserved_at) VALUES ('session', 'command', 'next', 'child', 8, CURRENT_TIMESTAMP)", []).unwrap();
+        drop(db);
+        let reservation = TunerLaunchReservation {
+            session_id: "session".into(),
+            command_id: "command".into(),
+            attempt_id: "next".into(),
+            physical_run_id: "child".into(),
+            target_trial_count: 8,
+        };
+        repository
+            .verify_tuner_launch_reservation(&reservation)
+            .unwrap();
+        let mut mismatch = reservation.clone();
+        mismatch.physical_run_id = "other".into();
+        assert_eq!(
+            repository.verify_tuner_launch_reservation(&mismatch),
+            Err(RunCommandRepositoryError::Conflict)
+        );
+        let mut missing = reservation.clone();
+        missing.command_id = "missing".into();
+        assert_eq!(
+            repository.verify_tuner_launch_reservation(&missing),
+            Err(RunCommandRepositoryError::Conflict)
+        );
+        assert_eq!(repository.recorded_tuner_launch("child").unwrap(), None);
+        assert_eq!(
+            repository.prepare_latest_tuner_continuation("missing"),
+            Err(RunCommandRepositoryError::NotFound)
+        );
+
+        repository.record_launch(launch("parent")).unwrap();
+        connection.lock().unwrap().execute("INSERT INTO tuning_attempts (attempt_id, session_id, bench_run_id, status, started_at) VALUES ('parent-attempt', 'session', 'parent', 'completed', CURRENT_TIMESTAMP)", []).unwrap();
+        let parent = repository
+            .prepare_latest_tuner_continuation("session")
+            .unwrap();
+        let mut child = launch("child");
+        child.kind = "tuner".into();
+        child.continuation_parent = Some(parent);
+        child.tuner_lifecycle_source = Some("/tmp/child.lifecycle".into());
+        repository.record_tuner_attempt_launch(child).unwrap();
+        assert_eq!(
+            repository.recorded_tuner_launch("child").unwrap(),
+            Some(RecordedTunerLaunch {
+                run_id: "child".into(),
+                pid: 42,
+                log_path: "/tmp/child.jsonl".into()
+            })
+        );
+
+        let db = connection.lock().unwrap();
+        db.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('experiment', 'experiment', 'druid', 'test', false, 'test', CURRENT_TIMESTAMP, 'running', '/tmp/experiment')", []).unwrap();
+        db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES ('experiment', 'pending', 'druid', '{}', 'v', 'v', '{}', 'b', 'b', '{}', '{}', 1, 1, 'pending'), ('experiment', 'done', 'druid', '{}', 'v', 'v', '{}', 'b', 'b', '{}', '{}', 1, 1, 'completed')", []).unwrap();
+        drop(db);
+        repository
+            .project_legacy_stop("experiment", "experiment", "2026-01-02T00:00:00Z")
+            .unwrap();
+        let statuses: Vec<String> = connection
+            .lock()
+            .unwrap()
+            .prepare(
+                "SELECT status FROM experiment_cells WHERE run_id = 'experiment' ORDER BY cell_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(statuses, ["completed", "cancelled"]);
+
+        repository.record_launch(launch("ordinary")).unwrap();
+        repository
+            .project_legacy_stop("ordinary", "round_robin", "2026-01-02T00:00:00Z")
+            .unwrap();
+        assert_eq!(
+            connection
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT status FROM runs WHERE run_id = 'ordinary'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "stopped"
+        );
+    }
+
+    #[test]
+    fn failed_lifecycle_source_registration_rolls_back_tuner_run() {
+        let (connection, repository) = repository();
+        connection
+            .lock()
+            .unwrap()
+            .execute("DROP TABLE tuning_lifecycle_sources", [])
+            .unwrap();
+        let mut broken = launch("broken-source");
+        broken.kind = "tuner".into();
+        broken.tuner_lifecycle_source = Some("/tmp/broken.lifecycle".into());
+        assert!(matches!(
+            repository.record_tuner_attempt_launch(broken),
+            Err(RunCommandRepositoryError::Storage(_))
+        ));
+        assert_eq!(
+            connection
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM runs WHERE run_id = 'broken-source'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
     }
 }
