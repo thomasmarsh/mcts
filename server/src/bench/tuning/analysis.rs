@@ -7,7 +7,10 @@ use axum::{
     extract::{Path as AxumPath, State as AxumState},
     response::Json,
 };
-use duckdb::Connection;
+use mcts_bench::tuning_analysis_repository::{
+    TuningAnalysisData, TuningAnalysisPoolAnchor, TuningAnalysisPoolRevision, TuningAnalysisReport,
+    TuningAnalysisRepositoryError, TuningAnalysisTrialCounts,
+};
 use mcts_bench::tuning_lifecycle::{TrialReportOutcome, TrialReportReason};
 
 use super::super::{
@@ -17,10 +20,7 @@ use super::super::{
     TuningDecisionAggregate, TuningPoolAnchorView, TuningPoolRevisionView, TuningSessionControl,
 };
 use super::commands::session_control;
-use super::sessions::{
-    decode_json, decode_manifest, decode_manifest_policy, decode_report_enum, load_session,
-    load_trial_counts, rating_view,
-};
+use super::sessions::{decode_manifest, decode_manifest_policy, rating_view};
 
 const ANALYSIS_POINT_LIMIT: usize = 2_000;
 
@@ -28,10 +28,18 @@ pub(crate) async fn get_tuning_analysis_overview(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(session_id): AxumPath<String>,
 ) -> Result<Json<TuningAnalysisOverview>, BenchError> {
-    let db = state.db.lock().unwrap();
-    let control = session_control(&db, &session_id)?;
-    let overview =
-        load_tuning_analysis_overview(&db, &session_id, control)?.ok_or_else(|| BenchError {
+    let control = {
+        let db = state.db.lock().unwrap();
+        session_control(&db, &session_id)?
+    };
+    let analysis = state
+        .tuning_analysis_repository
+        .load_analysis(&session_id)
+        .map_err(tuning_analysis_repository_error)?;
+    let overview = analysis
+        .map(|analysis| load_tuning_analysis_overview(analysis, control))
+        .transpose()?
+        .ok_or_else(|| BenchError {
             status: axum::http::StatusCode::NOT_FOUND,
             message: format!("tuning session '{session_id}' not found"),
         })?;
@@ -39,25 +47,32 @@ pub(crate) async fn get_tuning_analysis_overview(
 }
 
 fn load_tuning_analysis_overview(
-    db: &Connection,
-    session_id: &str,
+    analysis: TuningAnalysisData,
     control: TuningSessionControl,
-) -> Result<Option<TuningAnalysisOverview>, BenchError> {
-    let Some(session) = load_session(db, session_id)? else {
-        return Ok(None);
-    };
-    let manifest = decode_manifest(&session.manifest)?;
-    let reports = load_analysis_reports(db, session_id)?;
-    let counts = load_trial_counts(db, session_id)?;
-    let pairs = load_analysis_pair_coverage(db, session_id)?;
-    let pool_revisions = load_pool_revisions(db, session_id)?;
-    let best = load_analysis_best(db, session_id)?;
+) -> Result<TuningAnalysisOverview, BenchError> {
+    let manifest = decode_manifest(&analysis.session.manifest)?;
+    let reports = analysis
+        .reports
+        .into_iter()
+        .map(AnalysisReportRow::from)
+        .collect::<Vec<_>>();
+    let counts = trial_counts(analysis.trial_counts);
+    let pairs = pair_coverage(analysis.pair_coverage);
+    let pool_revisions = analysis
+        .pool_revisions
+        .into_iter()
+        .map(|revision| pool_revision(&revision))
+        .collect();
+    let best = analysis.best.map(|best| TuningAnalysisBest {
+        score: best.score,
+        trial_ids: best.trial_ids,
+    });
     let (bracket_resources, decision_groups) = aggregate_analysis_reports(&reports);
     let points = sample_analysis_points(&reports);
     let returned = points.len() as i64;
     let total = reports.len() as i64;
 
-    Ok(Some(TuningAnalysisOverview {
+    Ok(TuningAnalysisOverview {
         schema_version: 1,
         policy: decode_manifest_policy(&manifest)?,
         objective: TuningAnalysisObjective {
@@ -66,7 +81,7 @@ fn load_tuning_analysis_overview(
             complete_trials_only: true,
         },
         cursor: TuningCursorBoundary {
-            session_sequence: session.last_sequence,
+            session_sequence: analysis.session.last_sequence,
         },
         coverage: TuningAnalysisCoverage {
             trials: counts,
@@ -84,7 +99,7 @@ fn load_tuning_analysis_overview(
         best,
         pool_revisions,
         control,
-    }))
+    })
 }
 
 struct AnalysisReportRow {
@@ -102,73 +117,53 @@ struct AnalysisReportRow {
     rung_resource: Option<u64>,
 }
 
+impl From<TuningAnalysisReport> for AnalysisReportRow {
+    fn from(report: TuningAnalysisReport) -> Self {
+        Self {
+            trial_id: report.trial_id,
+            trial_number: report.trial_number,
+            trial_status: report.trial_status,
+            resource: report.resource,
+            mu: report.mu,
+            sigma: report.sigma,
+            score: report.score,
+            outcome: report.outcome,
+            reason: report.reason,
+            pruning_exempt: report.pruning_exempt,
+            bracket_id: report.bracket_id,
+            rung_resource: report.rung_resource,
+        }
+    }
+}
+
 type AnalysisResourceKey = (Option<String>, u64, Option<u64>);
 type AnalysisResourceAggregate = (i64, BTreeSet<String>);
 type AnalysisDecisionKey = (u8, u8, bool);
 type AnalysisDecisionAggregate = (TrialReportOutcome, TrialReportReason, i64);
 
-fn load_analysis_reports(
-    db: &Connection,
-    session_id: &str,
-) -> Result<Vec<AnalysisReportRow>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT reports.trial_id, reports.trial_number, trials.status, reports.completed_pairs, \
-                reports.mu, reports.sigma, reports.score, reports.outcome, reports.reason, \
-                reports.pruning_exempt, reports.bracket_id, reports.rung_resource \
-         FROM tuning_trial_reports reports \
-         JOIN tuning_trials trials USING (session_id, trial_id) \
-         WHERE reports.session_id = ?1 \
-         ORDER BY reports.bracket_id ASC NULLS FIRST, reports.completed_pairs ASC, \
-                  reports.outcome ASC, reports.trial_number ASC, reports.event_id ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id], |row| {
-            let outcome: String = row.get(7)?;
-            let reason: String = row.get(8)?;
-            Ok(AnalysisReportRow {
-                trial_id: row.get(0)?,
-                trial_number: row.get(1)?,
-                trial_status: row.get(2)?,
-                resource: row.get(3)?,
-                mu: row.get(4)?,
-                sigma: row.get(5)?,
-                score: row.get(6)?,
-                outcome: decode_report_enum(&outcome, 7)?,
-                reason: decode_report_enum(&reason, 8)?,
-                pruning_exempt: row.get(9)?,
-                bracket_id: row.get(10)?,
-                rung_resource: row.get(11)?,
-            })
-        })?
-        .collect()
+fn trial_counts(counts: TuningAnalysisTrialCounts) -> super::super::TuningTrialCounts {
+    super::super::TuningTrialCounts {
+        total: counts.total,
+        queued: counts.queued,
+        running: counts.running,
+        terminal: counts.terminal,
+        completed: counts.completed,
+        failed: counts.failed,
+        pruned: counts.pruned,
+        cancelled: counts.cancelled,
+    }
 }
 
-fn load_analysis_pair_coverage(
-    db: &Connection,
-    session_id: &str,
-) -> Result<TuningAnalysisPairCoverage, duckdb::Error> {
-    db.query_row(
-        "SELECT COUNT(*), \
-                COALESCE(SUM(CASE WHEN pairs.status = 'running' THEN 1 ELSE 0 END), 0), \
-                COALESCE(SUM(CASE WHEN pairs.status = 'complete' THEN 1 ELSE 0 END), 0), \
-                COALESCE(SUM(CASE WHEN pairs.status = 'failed' THEN 1 ELSE 0 END), 0), \
-                COALESCE(SUM(CASE WHEN revisions.pool_snapshot_fingerprint IS NULL THEN 1 ELSE 0 END), 0) \
-         FROM tuning_evaluation_pairs pairs \
-         LEFT JOIN tuning_pool_revisions revisions \
-           ON revisions.session_id = pairs.session_id \
-          AND revisions.pool_snapshot_fingerprint = pairs.pool_snapshot_fingerprint \
-         WHERE pairs.session_id = ?1",
-        duckdb::params![session_id],
-        |row| {
-            Ok(TuningAnalysisPairCoverage {
-                total: row.get(0)?,
-                running: row.get(1)?,
-                complete: row.get(2)?,
-                failed: row.get(3)?,
-                unmatched_pool_revisions: row.get(4)?,
-            })
-        },
-    )
+fn pair_coverage(
+    coverage: mcts_bench::tuning_analysis_repository::TuningAnalysisPairCoverage,
+) -> TuningAnalysisPairCoverage {
+    TuningAnalysisPairCoverage {
+        total: coverage.total,
+        running: coverage.running,
+        complete: coverage.complete,
+        failed: coverage.failed,
+        unmatched_pool_revisions: coverage.unmatched_pool_revisions,
+    }
 }
 
 fn aggregate_analysis_reports(
@@ -298,92 +293,33 @@ fn analysis_point(report: &AnalysisReportRow) -> TuningAnalysisPoint {
     }
 }
 
-fn load_analysis_best(
-    db: &Connection,
-    session_id: &str,
-) -> Result<Option<TuningAnalysisBest>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT trial_id, trial_number, score \
-         FROM tuning_trials \
-         WHERE session_id = ?1 AND status = 'complete' AND score IS NOT NULL \
-         ORDER BY score DESC, trial_number ASC, trial_id ASC",
-    )?;
-    let trials: Vec<(String, i64, f64)> = query
-        .query_map(duckdb::params![session_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
-        .collect::<Result<_, _>>()?;
-    let Some((_, _, score)) = trials.first() else {
-        return Ok(None);
-    };
-    let score = *score;
-    Ok(Some(TuningAnalysisBest {
-        score,
-        trial_ids: trials
-            .into_iter()
-            .take_while(|(_, _, trial_score)| trial_score.total_cmp(&score).is_eq())
-            .map(|(trial_id, _, _)| trial_id)
-            .collect(),
-    }))
+pub(super) fn pool_revision(revision: &TuningAnalysisPoolRevision) -> TuningPoolRevisionView {
+    TuningPoolRevisionView {
+        pool_snapshot_fingerprint: revision.pool_snapshot_fingerprint.clone(),
+        display_ordinal: revision.display_ordinal,
+        observed_at: revision.observed_at.clone(),
+        pair_count: revision.pair_count,
+        anchors: revision.anchors.iter().map(pool_anchor).collect(),
+    }
 }
 
-fn load_pool_revisions(
-    db: &Connection,
-    session_id: &str,
-) -> Result<Vec<TuningPoolRevisionView>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT revisions.pool_snapshot_fingerprint, revisions.display_ordinal, \
-                CAST(revisions.observed_at AS TEXT), COUNT(pairs.pair_id) \
-         FROM tuning_pool_revisions revisions \
-         LEFT JOIN tuning_evaluation_pairs pairs \
-           ON pairs.session_id = revisions.session_id \
-          AND pairs.pool_snapshot_fingerprint = revisions.pool_snapshot_fingerprint \
-         WHERE revisions.session_id = ?1 \
-         GROUP BY revisions.pool_snapshot_fingerprint, revisions.display_ordinal, revisions.observed_at \
-         ORDER BY revisions.display_ordinal ASC, revisions.pool_snapshot_fingerprint ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id], |row| {
-            let fingerprint: String = row.get(0)?;
-            Ok(TuningPoolRevisionView {
-                pool_snapshot_fingerprint: fingerprint.clone(),
-                display_ordinal: row.get(1)?,
-                observed_at: row.get(2)?,
-                pair_count: row.get(3)?,
-                anchors: load_pool_anchors(db, session_id, &fingerprint)?,
-            })
-        })?
-        .collect()
+fn pool_anchor(anchor: &TuningAnalysisPoolAnchor) -> TuningPoolAnchorView {
+    TuningPoolAnchorView {
+        anchor_ordinal: anchor.anchor_ordinal,
+        anchor_id: anchor.anchor_id.clone(),
+        config: anchor.config.clone(),
+        rating: rating_view(anchor.mu, anchor.sigma),
+        provenance: anchor.provenance.clone(),
+        insertion_reason: anchor.insertion_reason.clone(),
+        source_trial_id: anchor.source_trial_id.clone(),
+    }
 }
 
-pub(super) fn load_pool_anchors(
-    db: &Connection,
-    session_id: &str,
-    fingerprint: &str,
-) -> Result<Vec<TuningPoolAnchorView>, duckdb::Error> {
-    let mut query = db.prepare(
-        "SELECT anchor_ordinal, anchor_id, CAST(config AS TEXT), mu, sigma, provenance, \
-                insertion_reason, source_trial_id \
-         FROM tuning_pool_anchors \
-         WHERE session_id = ?1 AND pool_snapshot_fingerprint = ?2 \
-         ORDER BY anchor_ordinal ASC, anchor_id ASC",
-    )?;
-    query
-        .query_map(duckdb::params![session_id, fingerprint], |row| {
-            let config: String = row.get(2)?;
-            let provenance: String = row.get(5)?;
-            let insertion_reason: String = row.get(6)?;
-            Ok(TuningPoolAnchorView {
-                anchor_ordinal: row.get(0)?,
-                anchor_id: row.get(1)?,
-                config: decode_json(&config, 2)?,
-                rating: rating_view(row.get(3)?, row.get(4)?),
-                provenance: decode_report_enum(&provenance, 5)?,
-                insertion_reason: decode_report_enum(&insertion_reason, 6)?,
-                source_trial_id: row.get(7)?,
-            })
-        })?
-        .collect()
+pub(super) fn tuning_analysis_repository_error(error: TuningAnalysisRepositoryError) -> BenchError {
+    BenchError {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("tuning analysis storage error: {error}"),
+    }
 }
 
 fn report_outcome_rank(outcome: TrialReportOutcome) -> u8 {
