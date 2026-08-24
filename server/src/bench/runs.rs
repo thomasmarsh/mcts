@@ -27,7 +27,9 @@ use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
-use mcts_bench::run_repository::{RunRepository, RunRepositoryError};
+use mcts_bench::run_repository::{
+    LeaderboardQuery, RunListQuery, RunRepository, RunRepositoryError,
+};
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
 use mcts_bench::StrategyInfo;
@@ -37,79 +39,35 @@ pub(crate) async fn list_runs(
     AxumState(state): AxumState<Arc<BenchState>>,
     Query(params): Query<ListRunsParams>,
 ) -> Result<Json<Vec<RunSummary>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    // Cast TIMESTAMP columns to TEXT so DuckDB's Rust bindings can read
-    // them as strings without the `chrono` feature.
-    let mut sql = String::from(
-        "SELECT r.run_id, r.kind, r.game, r.label, r.git_sha, r.git_dirty, \
-                r.host, r.pid, \
-                CAST(r.started_at AS TEXT), \
-                CAST(r.ended_at AS TEXT), \
-                r.status, r.project_id, r.experiment_id, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                COALESCE( \
-                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                         THEN attempt.session_id END, \
-                    CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
-                         THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
-                ) \
-         FROM runs r \
-         LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
-           ON r.run_id = m.run_id \
-         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
-           ON r.run_id = t.run_id \
-         LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
-         LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
-         WHERE 1=1",
-    );
-
-    // Build optional WHERE clauses by interpolating values directly into
-    // the SQL.  These are internal API query params (status/game strings,
-    // integer limit), not user-submitted SQL — injection is not a concern.
-    if let Some(ref game) = params.game {
-        sql.push_str(&format!(" AND r.game = '{}'", game.replace('\'', "''")));
-    }
-    if let Some(ref experiment_id) = params.experiment_id {
-        sql.push_str(&format!(
-            " AND r.experiment_id = '{}'",
-            experiment_id.replace('\'', "''")
-        ));
-    }
-    if let Some(ref project_id) = params.project_id {
-        sql.push_str(&format!(
-            " AND r.project_id = '{}'",
-            project_id.replace('\'', "''")
-        ));
-    }
-
-    sql.push_str(" ORDER BY CAST(r.started_at AS TEXT) DESC");
-
-    let mut stmt = db.prepare(&sql)?;
-
-    let mut runs: Vec<RunSummary> = stmt
-        .query_map([], |row| {
-            Ok(RunSummary {
-                run_id: row.get(0)?,
-                kind: row.get(1)?,
-                game: row.get(2)?,
-                project_id: row.get(11)?,
-                experiment_id: row.get(12)?,
-                label: row.get(3)?,
-                git_sha: row.get(4)?,
-                git_dirty: row.get(5)?,
-                host: row.get(6)?,
-                pid: row.get(7)?,
-                started_at: row.get(8)?,
-                ended_at: row.get(9)?,
-                status: row.get(10)?,
-                match_count: row.get(13)?,
-                trial_count: row.get(14)?,
-                tuning_session_id: row.get(15)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let query = RunListQuery {
+        game: params.game,
+        experiment_id: params.experiment_id,
+        project_id: params.project_id,
+    };
+    let mut runs = state
+        .run_repository
+        .list_runs(&query)
+        .map_err(run_repository_error)?
+        .into_iter()
+        .map(|run| RunSummary {
+            run_id: run.run_id,
+            kind: run.kind,
+            game: run.game,
+            project_id: run.project_id,
+            experiment_id: run.experiment_id,
+            label: run.label,
+            git_sha: run.git_sha,
+            git_dirty: run.git_dirty,
+            host: run.host,
+            pid: run.pid,
+            started_at: run.started_at,
+            ended_at: run.ended_at,
+            status: run.status,
+            match_count: run.match_count,
+            trial_count: run.trial_count,
+            tuning_session_id: run.tuning_session_id,
+        })
+        .collect::<Vec<_>>();
     if let Some(ref status) = params.status {
         runs.retain(|run| run.status == *status);
     }
@@ -125,82 +83,36 @@ pub(crate) async fn get_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<RunDetail>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    let detail = db.query_row(
-        "SELECT r.run_id, r.kind, r.game, r.label, \
-                CAST(r.config AS TEXT), r.project_id, r.experiment_id, CAST(r.experiment_spec AS TEXT), \
-                r.git_sha, r.git_dirty, \
-                r.host, r.pid, \
-                CAST(r.started_at AS TEXT), \
-                CAST(r.ended_at AS TEXT), \
-                r.status, r.log_path, r.exit_code, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                CAST(i.config AS TEXT), i.cost, \
-                COALESCE( \
-                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                         THEN attempt.session_id END, \
-                    CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
-                         THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
-                ) \
-         FROM runs r \
-         LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
-           ON r.run_id = m.run_id \
-         LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
-           ON r.run_id = t.run_id \
-         LEFT JOIN incumbents i ON r.run_id = i.run_id \
-         LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
-         LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
-         WHERE r.run_id = ?1",
-        duckdb::params![&run_id],
-        |row| {
-            let config_str: Option<String> = row.get::<_, Option<String>>(4).ok().flatten();
-            let config = config_str.and_then(|s| serde_json::from_str(&s).ok());
-            let incumbent_config_str: Option<String> =
-                row.get::<_, Option<String>>(19).ok().flatten();
-            let incumbent_cost: Option<f64> = row.get(20)?;
-            let experiment_spec = row.get::<_, Option<String>>(7).ok().flatten().and_then(|s| serde_json::from_str(&s).ok());
-            let incumbent =
-                incumbent_config_str
-                    .zip(incumbent_cost)
-                    .map(|(s, cost)| IncumbentInfo {
-                        config: serde_json::from_str(&s).unwrap_or(Value::Null),
-                        cost,
-                    });
-            Ok(RunDetail {
-                run_id: row.get(0)?,
-                kind: row.get(1)?,
-                game: row.get(2)?,
-                project_id: row.get(5)?,
-                experiment_id: row.get(6)?,
-                experiment_spec,
-                label: row.get(3)?,
-                config,
-                git_sha: row.get(8)?,
-                git_dirty: row.get(9)?,
-                host: row.get(10)?,
-                pid: row.get(11)?,
-                started_at: row.get(12)?,
-                ended_at: row.get(13)?,
-                status: row.get(14)?,
-                log_path: row.get(15)?,
-                exit_code: row.get(16)?,
-                match_count: row.get(17)?,
-                trial_count: row.get(18)?,
-                incumbent,
-                tuning_session_id: row.get(21)?,
-            })
-        },
-    );
-
-    match detail {
-        Ok(run) => Ok(Json(run)),
-        Err(duckdb::Error::QueryReturnedNoRows) => Err(BenchError {
-            status: StatusCode::NOT_FOUND,
-            message: format!("run '{run_id}' not found"),
+    let run = state
+        .run_repository
+        .load_run(&run_id)
+        .map_err(|error| run_repository_error_for_run(error, &run_id))?;
+    Ok(Json(RunDetail {
+        run_id: run.run_id,
+        kind: run.kind,
+        game: run.game,
+        project_id: run.project_id,
+        experiment_id: run.experiment_id,
+        experiment_spec: run.experiment_spec,
+        label: run.label,
+        config: run.config,
+        git_sha: run.git_sha,
+        git_dirty: run.git_dirty,
+        host: run.host,
+        pid: run.pid,
+        started_at: run.started_at,
+        ended_at: run.ended_at,
+        status: run.status,
+        log_path: run.log_path,
+        exit_code: run.exit_code,
+        match_count: run.match_count,
+        trial_count: run.trial_count,
+        tuning_session_id: run.tuning_session_id,
+        incumbent: run.incumbent.map(|incumbent| IncumbentInfo {
+            config: incumbent.config,
+            cost: incumbent.cost,
         }),
-        Err(e) => Err(BenchError::from(e)),
-    }
+    }))
 }
 
 /// `GET /api/bench/runs/{run_id}/stdout`
@@ -232,58 +144,29 @@ pub(crate) async fn get_run_stdout(
 fn load_run_log_path(repository: &dyn RunRepository, run_id: &str) -> Result<String, BenchError> {
     repository
         .load_log_path(run_id)
-        .map_err(|error| match error {
-            RunRepositoryError::NotFound => BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            },
-            RunRepositoryError::Storage(message) => BenchError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("run storage error: {message}"),
-            },
-        })
+        .map_err(|error| run_repository_error_for_run(error, run_id))
 }
 
-#[cfg(test)]
-mod run_repository_tests {
-    use super::*;
-
-    struct FakeRunRepository {
-        result: Result<String, RunRepositoryError>,
+fn run_repository_error(error: RunRepositoryError) -> BenchError {
+    match error {
+        RunRepositoryError::NotFound => BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: "run not found".into(),
+        },
+        RunRepositoryError::Storage(message) => BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("run storage error: {message}"),
+        },
     }
+}
 
-    impl RunRepository for FakeRunRepository {
-        fn load_log_path(&self, _: &str) -> Result<String, RunRepositoryError> {
-            self.result.clone()
-        }
-    }
-
-    #[test]
-    fn log_path_lookup_uses_logical_not_found_error() {
-        let error = load_run_log_path(
-            &FakeRunRepository {
-                result: Err(RunRepositoryError::NotFound),
-            },
-            "missing",
-        )
-        .unwrap_err();
-
-        assert_eq!(error.status, StatusCode::NOT_FOUND);
-        assert_eq!(error.message, "run 'missing' not found");
-    }
-
-    #[test]
-    fn log_path_lookup_uses_logical_storage_error() {
-        let error = load_run_log_path(
-            &FakeRunRepository {
-                result: Err(RunRepositoryError::Storage("unavailable".into())),
-            },
-            "known",
-        )
-        .unwrap_err();
-
-        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(error.message, "run storage error: unavailable");
+fn run_repository_error_for_run(error: RunRepositoryError, run_id: &str) -> BenchError {
+    match error {
+        RunRepositoryError::NotFound => BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("run '{run_id}' not found"),
+        },
+        error => run_repository_error(error),
     }
 }
 
@@ -296,23 +179,7 @@ pub(crate) async fn get_run_log(
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<RunLogParams>,
 ) -> Result<Json<RunLogResponse>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    // Resolve the log_path from the runs table.
-    let log_path: String = match db.query_row(
-        "SELECT log_path FROM runs WHERE run_id = ?1",
-        duckdb::params![&run_id],
-        |row| row.get(0),
-    ) {
-        Ok(p) => p,
-        Err(duckdb::Error::QueryReturnedNoRows) => {
-            return Err(BenchError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("run '{run_id}' not found"),
-            });
-        }
-        Err(e) => return Err(BenchError::from(e)),
-    };
+    let log_path = load_run_log_path(state.run_repository.as_ref(), &run_id)?;
 
     let path = Path::new(&log_path);
     if !path.exists() {
@@ -356,74 +223,21 @@ pub(crate) async fn get_leaderboard(
     AxumState(state): AxumState<Arc<BenchState>>,
     Query(params): Query<LeaderboardParams>,
 ) -> Result<Json<Vec<LeaderboardEntry>>, BenchError> {
-    let db = state.db.lock().unwrap();
-
-    // Build the SQL with optional WHERE clauses.  DuckDB's Rust bindings
-    // use positional parameters ($1, $2, ...).  We chain filters and track
-    // the parameter index.
-    let mut conditions = String::from("r.status IN ('completed', 'crashed', 'stopped')");
-
-    // Build filter clauses with 1-based parameter indices.  Hardcode
-    // indices since there are at most 3 optional params.
-    if let Some(ref game) = params.game {
-        conditions.push_str(&format!(" AND r.game = '{}'", game.replace('\'', "''")));
-    }
-    if let Some(ref sha) = params.git_sha {
-        conditions.push_str(&format!(" AND r.git_sha = '{}'", sha.replace('\'', "''")));
-    }
-    if let Some(ref since) = params.since {
-        conditions.push_str(&format!(
-            " AND r.started_at >= '{}'",
-            since.replace('\'', "''")
-        ));
-    }
-
-    let sql = format!(
-        "WITH a_stats AS (
-            SELECT mr.strategy_a AS strategy,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN mr.outcome = 'win_a' THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN mr.outcome = 'win_b' THEN 1 ELSE 0 END) AS losses,
-                   SUM(CASE WHEN mr.outcome = 'draw' THEN 1 ELSE 0 END) AS draws
-            FROM match_results mr
-            JOIN runs r ON mr.run_id = r.run_id
-            WHERE {conditions}
-            GROUP BY mr.strategy_a
-        ),
-        b_stats AS (
-            SELECT mr.strategy_b AS strategy,
-                   COUNT(*) AS total,
-                   SUM(CASE WHEN mr.outcome = 'win_b' THEN 1 ELSE 0 END) AS wins,
-                   SUM(CASE WHEN mr.outcome = 'win_a' THEN 1 ELSE 0 END) AS losses,
-                   SUM(CASE WHEN mr.outcome = 'draw' THEN 1 ELSE 0 END) AS draws
-            FROM match_results mr
-            JOIN runs r ON mr.run_id = r.run_id
-            WHERE {conditions}
-            GROUP BY mr.strategy_b
-        )
-        SELECT COALESCE(a.strategy, b.strategy) AS strategy,
-               COALESCE(a.total, 0) + COALESCE(b.total, 0) AS total,
-               COALESCE(a.wins, 0) + COALESCE(b.wins, 0) AS wins,
-               COALESCE(a.losses, 0) + COALESCE(b.losses, 0) AS losses,
-               COALESCE(a.draws, 0) + COALESCE(b.draws, 0) AS draws
-        FROM a_stats a
-        FULL OUTER JOIN b_stats b ON a.strategy = b.strategy
-        ORDER BY wins DESC, losses ASC"
-    );
-
-    let mut stmt = db.prepare(&sql)?;
-
-    let entries: Vec<LeaderboardEntry> = stmt
-        .query_map([], |row| {
-            let total_i: i64 = row.get(1)?;
-            let wins_i: i64 = row.get(2)?;
-            let losses_i: i64 = row.get(3)?;
-            let draws_i: i64 = row.get(4)?;
-
-            let total = total_i as usize;
-            let wins = wins_i as usize;
-            let losses = losses_i as usize;
-            let draws = draws_i as usize;
+    let query = LeaderboardQuery {
+        game: params.game,
+        git_sha: params.git_sha,
+        since: params.since,
+    };
+    let entries = state
+        .run_repository
+        .load_leaderboard(&query)
+        .map_err(run_repository_error)?
+        .into_iter()
+        .map(|entry| {
+            let total = entry.total as usize;
+            let wins = entry.wins as usize;
+            let losses = entry.losses as usize;
+            let draws = entry.draws as usize;
             let score = wins as f64 + 0.5 * draws as f64;
             let (win_rate, (ci_lower, ci_upper)) = if total > 0 {
                 (score / total as f64, wilson_interval(score, total, 1.96))
@@ -431,8 +245,8 @@ pub(crate) async fn get_leaderboard(
                 (0.5, (0.0, 1.0))
             };
 
-            Ok(LeaderboardEntry {
-                strategy: row.get(0)?,
+            LeaderboardEntry {
+                strategy: entry.strategy,
                 total,
                 wins,
                 losses,
@@ -440,128 +254,32 @@ pub(crate) async fn get_leaderboard(
                 win_rate,
                 ci_lower,
                 ci_upper,
-            })
-        })?
-        .filter_map(|r| r.ok())
+            }
+        })
         .collect();
 
     Ok(Json(entries))
 }
 
-/// `GET /api/bench/kinds`
-///
-/// Returns metadata for every available run kind, including which games
-/// and strategies are registered per kind.  Data-driven counterpart to
-/// `POST /api/bench/launch` — the UI uses this to populate the launch form
-/// dynamically rather than hardcoding one form per kind.
-pub(crate) type ExperimentCellRow = (
-    String,
-    Option<u64>,
-    String,
-    Value,
-    String,
-    String,
-    Value,
-    String,
-    String,
-    Value,
-    Value,
-    i64,
-    u64,
-    u64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
 pub(crate) async fn get_run_cells(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<Vec<CellResponse>>, BenchError> {
-    let db = state.db.lock().unwrap();
-    let exists: i64 = db.query_row(
-        "SELECT COUNT(*) FROM runs WHERE run_id = ?1",
-        duckdb::params![run_id],
-        |row| row.get(0),
-    )?;
-    if exists == 0 {
-        return Err(BenchError {
-            status: StatusCode::NOT_FOUND,
-            message: "run not found".into(),
-        });
-    }
-    let mut stmt = db.prepare("SELECT cell_id, cell_seed, game, CAST(game_config AS TEXT), variant_id, variant_label, CAST(candidate_config AS TEXT), baseline_id, baseline_label, CAST(baseline_config AS TEXT), CAST(budget AS TEXT), rounds, planned_games, completed_games, status, CAST(started_at AS TEXT), CAST(ended_at AS TEXT), error FROM experiment_cells WHERE run_id = ?1 ORDER BY cell_id")?;
-    let rows: Vec<ExperimentCellRow> = stmt
-        .query_map(duckdb::params![run_id], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Value::Null),
-                row.get(4)?,
-                row.get(5)?,
-                serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or(Value::Null),
-                row.get(7)?,
-                row.get(8)?,
-                serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or(Value::Null),
-                serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or(Value::Null),
-                row.get(11)?,
-                row.get(12)?,
-                row.get(13)?,
-                row.get(14)?,
-                row.get(15)?,
-                row.get(16)?,
-                row.get(17)?,
-            ))
-        })?
-        .filter_map(Result::ok)
-        .collect();
-    let mut result = Vec::with_capacity(rows.len());
-    for (
-        cell_id,
-        cell_seed,
-        game,
-        game_config,
-        variant_id,
-        variant_label,
-        candidate_config,
-        baseline_id,
-        baseline_label,
-        baseline_config,
-        budget,
-        rounds,
-        planned_games,
-        completed_games,
-        status,
-        started_at,
-        ended_at,
-        error,
-    ) in rows
-    {
+    let cells = state
+        .run_repository
+        .load_experiment_cells(&run_id)
+        .map_err(run_repository_error)?;
+    let mut result = Vec::with_capacity(cells.len());
+    for cell in cells {
         let mut wins = 0_u64;
         let mut losses = 0_u64;
         let mut draws = 0_u64;
-        let mut matches = db.prepare("SELECT CAST(metrics AS TEXT) FROM match_results WHERE run_id = ?1 AND cell_id = ?2 ORDER BY seq")?;
-        for row in matches.query_map(duckdb::params![run_id, cell_id], |row| {
-            row.get::<_, Option<String>>(0)
-        })? {
-            if let Ok(Some(row)) = row {
-                match serde_json::from_str::<Value>(&row)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("outcome")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .as_deref()
-                {
-                    Some("candidate_win") => wins += 1,
-                    Some("baseline_win") => losses += 1,
-                    Some("draw") => draws += 1,
-                    _ => {}
-                }
+        for outcome in cell.match_outcomes.iter().flatten() {
+            match outcome.as_str() {
+                "candidate_win" => wins += 1,
+                "baseline_win" => losses += 1,
+                "draw" => draws += 1,
+                _ => {}
             }
         }
         let total = wins + losses + draws;
@@ -575,24 +293,24 @@ pub(crate) async fn get_run_cells(
             )
         };
         result.push(CellResponse {
-            cell_id,
-            cell_seed,
-            game,
-            game_config,
-            variant_id,
-            variant_label,
-            candidate_config,
-            baseline_id,
-            baseline_label,
-            baseline_config,
-            budget,
-            rounds,
-            planned_games,
-            completed_games,
-            status,
-            started_at,
-            ended_at,
-            error,
+            cell_id: cell.cell_id,
+            cell_seed: cell.cell_seed,
+            game: cell.game,
+            game_config: cell.game_config,
+            variant_id: cell.variant_id,
+            variant_label: cell.variant_label,
+            candidate_config: cell.candidate_config,
+            baseline_id: cell.baseline_id,
+            baseline_label: cell.baseline_label,
+            baseline_config: cell.baseline_config,
+            budget: cell.budget,
+            rounds: cell.rounds,
+            planned_games: cell.planned_games,
+            completed_games: cell.completed_games,
+            status: cell.status,
+            started_at: cell.started_at,
+            ended_at: cell.ended_at,
+            error: cell.error,
             wins,
             losses,
             draws,
@@ -602,4 +320,75 @@ pub(crate) async fn get_run_cells(
         });
     }
     Ok(Json(result))
+}
+
+#[cfg(test)]
+mod run_repository_tests {
+    use super::*;
+
+    struct FakeRunRepository {
+        result: Result<String, RunRepositoryError>,
+    }
+
+    impl RunRepository for FakeRunRepository {
+        fn load_log_path(&self, _: &str) -> Result<String, RunRepositoryError> {
+            self.result.clone()
+        }
+
+        fn list_runs(
+            &self,
+            _: &RunListQuery,
+        ) -> Result<Vec<mcts_bench::run_repository::RunSummary>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_run(
+            &self,
+            _: &str,
+        ) -> Result<mcts_bench::run_repository::RunDetail, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_leaderboard(
+            &self,
+            _: &LeaderboardQuery,
+        ) -> Result<Vec<mcts_bench::run_repository::LeaderboardRow>, RunRepositoryError> {
+            unreachable!()
+        }
+
+        fn load_experiment_cells(
+            &self,
+            _: &str,
+        ) -> Result<Vec<mcts_bench::run_repository::ExperimentCell>, RunRepositoryError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn log_path_lookup_uses_logical_not_found_error() {
+        let error = load_run_log_path(
+            &FakeRunRepository {
+                result: Err(RunRepositoryError::NotFound),
+            },
+            "missing",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::NOT_FOUND);
+        assert_eq!(error.message, "run 'missing' not found");
+    }
+
+    #[test]
+    fn log_path_lookup_uses_logical_storage_error() {
+        let error = load_run_log_path(
+            &FakeRunRepository {
+                result: Err(RunRepositoryError::Storage("unavailable".into())),
+            },
+            "known",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.message, "run storage error: unavailable");
+    }
 }
