@@ -9,6 +9,7 @@ import { TuningTrialsView } from "./TuningTrialsView.js";
 import { TuningProgressView } from "./TuningProgressView.js";
 import { TuningPruningView } from "./TuningPruningView.js";
 import { TuningLadderView } from "./TuningLadderView.js";
+import { TuningGameEvidence } from "./TuningGameEvidence.js";
 import { sessionLabel } from "./tuning-view-model.js";
 
 export const TuningSessionWorkbench: Component<{
@@ -25,11 +26,13 @@ export const TuningSessionWorkbench: Component<{
       <header class="tuning-workbench-header">
         <div>
           <h3>{title()}</h3>
-          <Show when={detail()}>{(value) => <><div class="tuning-summary-status">Session status: {value().summary.status}</div><div class="tuning-summary-counts">queued {value().summary.counts.queued} · running {value().summary.counts.running} · complete {value().summary.counts.completed} · failed {value().summary.counts.failed} · pruned {value().summary.counts.pruned} · cancelled {value().summary.counts.cancelled}</div></>}</Show>
+          <Show when={detail()} fallback={<Show when={session()}>{(value) => <><div class="tuning-summary-status">Session status: {value().status}</div><div class="tuning-summary-counts">queued {value().counts.queued} · running {value().counts.running} · complete {value().counts.completed} · failed {value().counts.failed} · pruned {value().counts.pruned} · cancelled {value().counts.cancelled}</div></>}</Show>}>
+            {(value) => <><div class="tuning-summary-status">Session status: {value().summary.status}</div><div class="tuning-summary-counts">queued {value().summary.counts.queued} · running {value().summary.counts.running} · complete {value().summary.counts.completed} · failed {value().summary.counts.failed} · pruned {value().summary.counts.pruned} · cancelled {value().summary.counts.cancelled}</div></>}
+          </Show>
           <Show when={navigation().unavailable}><div class="tuning-unavailable" role="status">{navigation().unavailable}</div></Show>
           <Show when={navigation().detail.error}><div class="tuning-load-error" role="alert">{navigation().detail.error}</div></Show>
         </div>
-        <Show when={detail()}>{(value) => <SessionProgress detail={value()} />}</Show>
+        <Show when={detail()} fallback={<Show when={session()}>{(value) => <SessionProgress summary={value()} />}</Show>}>{(value) => <SessionProgress summary={value().summary} />}</Show>
         <button onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "clearSession" } })}>Close</button>
       </header>
       <div class="tuning-workbench-tabs" role="tablist" aria-label="Tuning session views">
@@ -37,18 +40,18 @@ export const TuningSessionWorkbench: Component<{
         <button role="tab" aria-selected={navigation().tab === "pruning"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "pruning" } })}>Pruning</button>
         <button role="tab" aria-selected={navigation().tab === "ladder"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "ladder" } })}>Ladder</button>
         <button role="tab" aria-selected={navigation().tab === "trials"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "trials" } })}>Trials</button>
-        <button role="tab" aria-selected={navigation().tab === "game"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "game" } })}>Game evidence</button>
+        <button role="tab" aria-selected={navigation().tab === "game"} onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "setAnalysisTab", tab: "game" } })}>Game</button>
       </div>
-      <Show when={navigation().tab === "progress"} fallback={<Show when={navigation().tab === "pruning"} fallback={<Show when={navigation().tab === "ladder"} fallback={<Show when={navigation().tab === "trials"} fallback={<Show when={detail()} fallback={<div class="loading-bench">Loading tuning session…</div>}>{(value) => <div class="tuning-workbench-grid"><TuningHierarchy store={props.store} detail={value()} /><TuningEvidenceDetail store={props.store} detail={value()} session={session()} Spectator={props.Spectator} /></div>}</Show>}><TuningTrialsView store={props.store} /></Show>}><TuningLadderView store={props.store} /></Show>}><TuningPruningView store={props.store} /></Show>}>
+      <Show when={navigation().tab === "progress"} fallback={<Show when={navigation().tab === "pruning"} fallback={<Show when={navigation().tab === "ladder"} fallback={<Show when={navigation().tab === "trials"} fallback={<Show when={session()?.capabilities.has_lifecycle} fallback={<Show when={detail()} fallback={<div class="loading-bench">Loading legacy tuning session…</div>}>{(value) => <div class="tuning-workbench-grid"><TuningHierarchy store={props.store} detail={value()} /><TuningEvidenceDetail store={props.store} detail={value()} session={session()} Spectator={props.Spectator} /></div>}</Show>}><TuningGameEvidence store={props.store} session={session()} Spectator={props.Spectator} /></Show>}><TuningTrialsView store={props.store} /></Show>}><TuningLadderView store={props.store} /></Show>}><TuningPruningView store={props.store} /></Show>}>
         <TuningProgressView store={props.store} />
       </Show>
     </main>
   );
 };
 
-const SessionProgress: Component<{ detail: TuningSessionDetail }> = (props) => {
-  const target = () => props.detail.summary.target_trial_count;
-  const terminal = () => props.detail.summary.counts.terminal;
+const SessionProgress: Component<{ summary: TuningSessionDetail["summary"] }> = (props) => {
+  const target = () => props.summary.target_trial_count;
+  const terminal = () => props.summary.counts.terminal;
   return (
     <div class="tuning-summary-progress">
       <span>{terminal()} {target() === null ? "terminal trials" : `/ ${target()} terminal trials`}</span>

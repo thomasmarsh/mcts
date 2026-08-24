@@ -171,7 +171,6 @@ export { LaunchForm } from "./LaunchForm.js";
 export { TunerLaunchFields } from "./TunerLaunchFields.js";
 export { RunList } from "./RunList.js";
 export { RunDetailPanel } from "./RunDetailPanel.js";
-export { TunerRunDetail } from "./TunerRunDetail.js";
 export { LeaderboardTable } from "./LeaderboardTable.js";
 export { WinRateChart } from "./WinRateChart.js";
 export { CommitComparison } from "./CommitComparison.js";

@@ -8,8 +8,6 @@ import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { createBenchApiClient } from "./api-client.js";
 import type { BenchAction, BenchState } from "./index.js";
-import { TunerRunDetail } from "./TunerRunDetail.js";
-import { TunerGamesProgress } from "./tuner/TunerGamesProgress.js";
 import type { BenchSpectatorProps } from "./types.js";
 
 const MAX_VISIBLE_LINES = 500;
@@ -73,12 +71,6 @@ export const RunDetailPanel: Component<{
   // can always change it before clicking Resume.
   const resumeDefaultTrials = createMemo(() => (detail()?.trial_count ?? 0) + 200);
   const [resumeTrials, setResumeTrials] = createSignal<number | null>(null);
-  const tunerTuner = createMemo(() => {
-    const d = detail();
-    const kinds = state().tunerKinds;
-    if (!d || kinds.status !== "done") return null;
-    return kinds.result?.find((g) => g.game === d.game)?.tuner ?? null;
-  });
 
   // One-shot fetch for the raw stdout.log (stderr output).  Not part of
   // the reducer — this is a debug view fetched on demand.
@@ -257,17 +249,7 @@ export const RunDetailPanel: Component<{
           </Show>
 
           <Show when={isTuner()}>
-            <TunerRunDetail
-              trials={openRun()?.trials ?? []}
-              chain={openRun()?.chain ?? []}
-              chainedTrials={openRun()?.chainedTrials ?? []}
-              tuner={tunerTuner()}
-              launchConfig={detail()?.config ?? null}
-              incumbent={detail()?.incumbent ?? null}
-              matchCount={detail()?.match_count ?? 0}
-              trialCount={detail()?.trial_count ?? 0}
-              status={detail()?.status}
-            />
+            <p class="tuning-run-diagnostics">This physical run keeps its log and diagnostics here. Use its logical tuning session for analysis.</p>
           </Show>
         </div>
 
@@ -275,8 +257,7 @@ export const RunDetailPanel: Component<{
           {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game ?? ""} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
         </Show>
 
-        <Show when={!isTuner()}>
-          <div id="log-panel">
+        <div id="log-panel">
             <div id="log-header">
               <span>Log Tail</span>
               <Show when={tail()}>
@@ -303,8 +284,7 @@ export const RunDetailPanel: Component<{
                 <div ref={logEndRef} />
               </Show>
             </div>
-          </div>
-        </Show>
+        </div>
 
         {/* Stdout button + content shown for every run kind — the raw
             stderr output (clap errors, panic traces) is the primary
@@ -340,12 +320,6 @@ export const RunDetailPanel: Component<{
           </Show>
         </div>
 
-        <Show when={isTuner()}>
-          <TunerGamesProgress
-            detail={detail()}
-            games={openRun()?.games ?? []}
-          />
-        </Show>
       </div>
     </Show>
   );

@@ -623,36 +623,14 @@ export function benchReducer(
     const { runId } = open;
     const since = open.tail.offset;
     const { generation } = action;
-    // Trials have no incremental cursor (unlike the log), so this refetches
-    // the full list every tick -- fine at tuner's trial-count scale. Fetched
-    // unconditionally rather than gated on `detail.kind === "tuner"":
-    // opening an *already-completed* run goes terminal on this very first
-    // tick (before any prior tick could have told us the kind), which would
-    // otherwise mean its trials are never fetched at all. The cost for
-    // every other run kind is one query returning an empty row set.
     return Effect.fromPromise(async () => {
-      const [log, detail, trials, chain, cells, games] = await Promise.all([
+      const [log, detail, cells, games] = await Promise.all([
         toPromise(env.getRunLog(runId, since)),
         toPromise(env.getRun(runId)),
-        toPromise(env.getRunTrials(runId, 5000)),
-        toPromise(env.getRunChain(runId)),
         toPromise(env.getRunCells(runId)),
         toPromise(env.getRunGames(runId, 5000, draft.selectedCellId)),
       ]);
-      // Refetched per rung every tick, same "just refetch the whole thing"
-      // tradeoff `trials` above already makes rather than an incremental
-      // cursor -- fine at tuner's trial-count *and* chain-length scale.
-      // This duplicates fetching `runId`'s own trials a second time when
-      // it's already in the chain (rather than reusing `trials` above) --
-      // deliberately, to keep this uniform across every rung instead of
-      // special-casing the currently-open one.
-      const rungTrials = await Promise.all(
-        chain.map((rung) => toPromise(env.getRunTrials(rung.run_id, 5000))),
-      );
-      const chainedTrials: ChainedTrial[] = rungTrials.flatMap((list, rungIndex) =>
-        list.map((trial) => ({ rungIndex, trial })),
-      );
-      return { log, detail, trials, chain, chainedTrials, cells, games };
+      return { log, detail, cells, games };
     })
       .map((r): BenchAction => ({
         tag: "tailed",
@@ -660,9 +638,9 @@ export function benchReducer(
         lines: r.log.lines,
         nextOffset: r.log.next_offset,
         detail: r.detail,
-        trials: r.trials,
-        chain: r.chain,
-        chainedTrials: r.chainedTrials,
+        trials: [],
+        chain: [],
+        chainedTrials: [],
         ...(r.cells.length > 0 ? { cells: r.cells } : {}),
         ...(r.games.length > 0 ? { games: r.games } : {}),
       }))

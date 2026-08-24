@@ -2528,6 +2528,51 @@ body.bench-active #analysis-panel {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.tuning-run-diagnostics,
+.tuning-game-evidence {
+  margin: 12px 0;
+}
+
+.tuning-run-diagnostics,
+.tuning-game-trials,
+.tuning-game-detail,
+.tuning-game-pair {
+  color: #aeb0bc;
+}
+
+.tuning-game-trials,
+.tuning-game-pairs,
+.tuning-game-list {
+  display: grid;
+  gap: 6px;
+}
+
+.tuning-game-trial,
+.tuning-game-pair > button,
+.tuning-game-list button {
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: #d7d8e0;
+  background: rgba(255, 255, 255, 0.025);
+  text-align: left;
+}
+
+.tuning-game-trial-selected,
+.tuning-game-pair > button[aria-pressed="true"],
+.tuning-game-list button[aria-pressed="true"] {
+  border-color: #5b7fd6;
+  background: rgba(91, 127, 214, 0.18);
+}
+
+.tuning-game-detail,
+.tuning-game-pair {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+}
+
 @media (max-width: 980px) {
   .tuning-workbench-grid {
     grid-template-columns: 1fr;

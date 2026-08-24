@@ -92,7 +92,7 @@ export const fakeRunningDetail: RunDetail = {
 
 export const FAKE_tuner_RUN_ID = "tuner-traffic-lights-20260301T000000-abc1234";
 
-export const fakeTunerRunDetail: RunDetail = {
+export const fakePhysicalTunerRun: RunDetail = {
   ...fakeRunDetail,
   run_id: FAKE_tuner_RUN_ID,
   kind: "tuner",
@@ -296,7 +296,7 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     listRuns: () => Effect.send(fakeRunSummaries),
     getRun: (runId: string) =>
       Effect.send(
-        runId === FAKE_RUN_ID ? fakeRunDetail : runId === FAKE_tuner_RUN_ID ? fakeTunerRunDetail : fakeRunningDetail,
+        runId === FAKE_RUN_ID ? fakeRunDetail : runId === FAKE_tuner_RUN_ID ? fakePhysicalTunerRun : fakeRunningDetail,
       ),
     getRunLog: (_runId: string, _since: number): Effect<RunLogResponse> =>
       Effect.send({ lines: ['{"type":"match_result","seq":1}'], next_offset: 42 }),

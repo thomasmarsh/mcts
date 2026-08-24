@@ -111,7 +111,7 @@ function sessionCanAnalyze(state: TuningNavigationState, sessionId: string): boo
 }
 function sessionIsActive(state: TuningNavigationState, sessionId: string): boolean {
   const status = state.list.snapshot?.sessions.find((session) => session.session_id === sessionId)?.status;
-  return status === "active" || state.detail.snapshot?.summary.status === "active";
+  return status === "active";
 }
 function pageQuery(state: TuningNavigationState): TuningTrialPageQuery {
   const { filters, sort, trialPage } = state;
@@ -171,17 +171,22 @@ function selectAttempt(state: TuningNavigationState, attemptId: string): void {
   state.selection = { ...state.selection, attemptId, trialId: null, pairId: null, gameId: null }; state.unavailable = null;
 }
 function selectTrial(state: TuningNavigationState, trialId: string): void {
-  const trial = state.detail.snapshot?.trials.find((row) => row.trial_id === trialId);
-  state.selection = { ...state.selection, attemptId: trial?.attempt_id ?? state.selection.attemptId, trialId, pairId: null, gameId: null }; state.unavailable = null;
+  const legacyTrial = state.detail.snapshot?.trials.find((row) => row.trial_id === trialId);
+  const pageTrial = state.trialPage.snapshot?.trials.find((row) => row.trial_id === trialId);
+  const loadedTrial = state.trialDetails[trialId]?.snapshot?.trial;
+  state.selection = { ...state.selection, attemptId: legacyTrial?.attempt_id ?? pageTrial?.attempt_id ?? loadedTrial?.attempt_id ?? state.selection.attemptId, trialId, pairId: null, gameId: null }; state.unavailable = null;
 }
 function selectPair(state: TuningNavigationState, pairId: string): void {
-  const trial = state.detail.snapshot?.trials.find((row) => row.pairs.some((pair) => pair.pair_id === pairId));
-  state.selection = { ...state.selection, attemptId: trial?.attempt_id ?? null, trialId: trial?.trial_id ?? null, pairId, gameId: null }; state.unavailable = null;
+  const legacyTrial = state.detail.snapshot?.trials.find((row) => row.pairs.some((pair) => pair.pair_id === pairId));
+  const loadedTrial = Object.values(state.trialDetails).map((value) => value.snapshot?.trial).find((trial) => trial?.pairs.some((pair) => pair.pair_id === pairId));
+  state.selection = { ...state.selection, attemptId: legacyTrial?.attempt_id ?? loadedTrial?.attempt_id ?? state.selection.attemptId, trialId: legacyTrial?.trial_id ?? loadedTrial?.trial_id ?? state.selection.trialId, pairId, gameId: null }; state.unavailable = null;
 }
 function selectGame(state: TuningNavigationState, gameId: string): void {
-  const trial = state.detail.snapshot?.trials.find((row) => row.pairs.some((pair) => pair.games.some((game) => game.game_id === gameId)));
+  const legacyTrial = state.detail.snapshot?.trials.find((row) => row.pairs.some((pair) => pair.games.some((game) => game.game_id === gameId)));
+  const loadedTrial = Object.values(state.trialDetails).map((value) => value.snapshot?.trial).find((trial) => trial?.pairs.some((pair) => pair.games.some((game) => game.game_id === gameId)));
+  const trial = legacyTrial ?? loadedTrial;
   const pair = trial?.pairs.find((row) => row.games.some((game) => game.game_id === gameId));
-  state.selection = { sessionId: state.selection.sessionId, attemptId: trial?.attempt_id ?? null, trialId: trial?.trial_id ?? null, pairId: pair?.pair_id ?? null, gameId }; state.unavailable = null;
+  state.selection = { sessionId: state.selection.sessionId, attemptId: trial?.attempt_id ?? state.selection.attemptId, trialId: trial?.trial_id ?? state.selection.trialId, pairId: pair?.pair_id ?? state.selection.pairId, gameId }; state.unavailable = null;
 }
 function unavailable(state: TuningNavigationState, entity: "attempt" | "trial" | "pair" | "game"): void {
   const selected = state.selection;
@@ -267,7 +272,10 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
     state.tab = sessionCanAnalyze(state, action.sessionId) ? "progress" : "game";
     state.ladderRevision = null; state.ladderAnchorKey = null;
     state.unavailable = null; clearAnalysis(state);
-    return merge(requestDetail(state, action.sessionId, env), requestOverview(state, action.sessionId, env));
+    return merge(
+      sessionCanAnalyze(state, action.sessionId) ? null : requestDetail(state, action.sessionId, env),
+      requestOverview(state, action.sessionId, env),
+    );
   }
   if (action.tag === "clearSession") {
     state.selection = selectionForSession(null); state.ladderRevision = null; state.ladderAnchorKey = null; clearDetail(state); clearAnalysis(state); state.unavailable = null; return null;
@@ -275,6 +283,12 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   if (action.tag === "setAnalysisTab") {
     state.tab = action.tab;
     if (action.tab === "trials" && state.selection.sessionId && state.trialPage.snapshot === null) return requestTrialPage(state, state.selection.sessionId, env);
+    if (action.tab === "game" && state.selection.sessionId && sessionCanAnalyze(state, state.selection.sessionId)) {
+      return merge(
+        state.trialPage.snapshot === null ? requestTrialPage(state, state.selection.sessionId, env) : null,
+        state.selection.trialId ? requestTrialDetail(state, state.selection.sessionId, state.selection.trialId, env) : null,
+      );
+    }
     if (action.tab === "ladder" && state.selection.sessionId && state.selection.trialId) return requestTrialDetail(state, state.selection.sessionId, state.selection.trialId, env);
     return null;
   }
@@ -303,7 +317,8 @@ export function tuningNavigationReducer(state: TuningNavigationState, action: Tu
   if (action.tag === "selectAttempt") selectAttempt(state, action.attemptId);
   if (action.tag === "selectTrial") {
     selectTrial(state, action.trialId);
-    return state.tab === "ladder" && state.selection.sessionId ? requestTrialDetail(state, state.selection.sessionId, action.trialId, env) : null;
+    return (state.tab === "ladder" || state.tab === "game") && state.selection.sessionId && sessionCanAnalyze(state, state.selection.sessionId)
+      ? requestTrialDetail(state, state.selection.sessionId, action.trialId, env) : null;
   }
   if (action.tag === "selectPair") selectPair(state, action.pairId);
   if (action.tag === "selectGame") selectGame(state, action.gameId);
