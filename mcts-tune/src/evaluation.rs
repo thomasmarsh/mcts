@@ -64,6 +64,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     state_to_value: impl Fn(&G::S) -> Value,
     move_to_value: impl Fn(&G::S, &G::A) -> Option<Value>,
     trace_path: Option<&std::path::Path>,
+    trace_game_sequence_start: Option<u64>,
     on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<TuneEvalOutcome, HostError> {
     let trial: TrialParams = serde_json::from_value(params.clone())
@@ -80,10 +81,22 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         });
     }
 
-    let mut tracer = trace_path
-        .map(trace::MoveTracer::open)
-        .transpose()
-        .map_err(|e| HostError::bad_request(format!("failed to open --trace-path: {e}")))?;
+    let mut tracer = match (trace_path, trace_game_sequence_start) {
+        (Some(path), Some(sequence)) => Some(
+            trace::MoveTracer::open_with_sequence(path, sequence)
+                .map_err(|e| HostError::bad_request(format!("failed to open --trace-path: {e}")))?,
+        ),
+        (Some(path), None) => Some(
+            trace::MoveTracer::open(path)
+                .map_err(|e| HostError::bad_request(format!("failed to open --trace-path: {e}")))?,
+        ),
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(HostError::bad_request(
+                "--trace-game-sequence-start requires --trace-path",
+            ))
+        }
+    };
 
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     let mut seq = 0u64;
@@ -174,6 +187,7 @@ pub fn generic_tune_eval<G: Game + 'static>(
     state_to_value: impl Fn(&G::S) -> Value,
     move_to_value: impl Fn(&G::S, &G::A) -> Option<Value>,
     trace_path: Option<std::path::PathBuf>,
+    trace_game_sequence_start: Option<u64>,
     on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<Value, HostError> {
     // `use_transpositions: true` requires a real `Game::zobrist_hash`
@@ -211,6 +225,7 @@ pub fn generic_tune_eval<G: Game + 'static>(
             &state_to_value,
             &move_to_value,
             trace_path.as_deref(),
+            trace_game_sequence_start,
             on_game,
         )?
     } else {
@@ -239,6 +254,7 @@ pub fn generic_tune_eval<G: Game + 'static>(
             &state_to_value,
             &move_to_value,
             trace_path.as_deref(),
+            trace_game_sequence_start,
             on_game,
         )?
     };

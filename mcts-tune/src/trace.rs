@@ -41,11 +41,18 @@ impl MoveTracer {
     /// under heavy concurrency would only cost that one line, not corrupt
     /// the file).
     pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
         let next_game_seq = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
+        Self::open_with_sequence(path, next_game_seq)
+    }
+
+    /// Opens a tracer whose first game has an externally assigned sequence.
+    /// This is used by one isolated evaluation task; callers without a
+    /// durable task identity continue to use [`Self::open`].
+    pub fn open_with_sequence(path: &Path, next_game_seq: u64) -> std::io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
             writer: BufWriter::new(file),
             next_game_seq,
@@ -53,11 +60,9 @@ impl MoveTracer {
     }
 
     /// Mints a fresh `game_seq` for one game's worth of plies. Distinct
-    /// games traced by this tracer never share a `game_seq`; distinct
-    /// tracers (different processes/trials) are seeded from a nanosecond
-    /// timestamp so collisions across processes are practically
-    /// negligible -- and harmless if one ever happens, since the ingest
-    /// side's primary key just drops the duplicate ply.
+    /// games traced by this tracer never share a `game_seq`. [`Self::open`]
+    /// seeds independent experiment tracers from a timestamp; task-owned
+    /// tracers instead receive their noncolliding start from the caller.
     pub fn start_game(&mut self) -> u64 {
         let seq = self.next_game_seq;
         self.next_game_seq += 1;

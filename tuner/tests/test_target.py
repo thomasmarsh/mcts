@@ -89,7 +89,7 @@ def _cfg() -> SearchConfig:
 
 def test_parse_baseline_configs_preserves_id_and_raw_config():
     parsed = _parse_baseline_configs(
-        ['strong-plus=' + json.dumps({"family": "ucb1", "c": 1.5})]
+        ["strong-plus=" + json.dumps({"family": "ucb1", "c": 1.5})]
     )
     assert parsed == {"strong-plus": {"family": "ucb1", "c": 1.5}}
 
@@ -134,6 +134,20 @@ def test_parser_returns_two_ordered_physical_games_with_trace_ids():
     assert pair.games[0].game_id != pair.games[1].game_id
 
 
+def test_parser_requires_descriptor_assigned_trace_game_sequences():
+    task = replace(_task(), trace_game_sequence_start=40)
+    assert [
+        game.trace_game_seq for game in parse_pair_output(_output(), task).games
+    ] == [
+        40,
+        41,
+    ]
+    records = [json.loads(line) for line in _output().splitlines()]
+    records[1]["trace_game_seq"] = 42
+    with pytest.raises(ValueError, match="trace_game_seq"):
+        parse_pair_output("\n".join(json.dumps(record) for record in records), task)
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -171,7 +185,9 @@ def test_evaluate_pair_turns_timeout_and_invalid_output_into_pair_errors(monkeyp
 
 def test_evaluate_pair_rejects_nonzero_exit_and_mutually_exclusive_budgets(monkeypatch):
     failed = subprocess.CompletedProcess([], 2, "", "bad config")
-    monkeypatch.setattr("tuner_cli.target._run_with_heartbeat", lambda *_args, **_kwargs: failed)
+    monkeypatch.setattr(
+        "tuner_cli.target._run_with_heartbeat", lambda *_args, **_kwargs: failed
+    )
     with pytest.raises(PairExecutionError, match="code 2"):
         evaluate_pair(_cfg(), Path("game-fake"), _task())
 

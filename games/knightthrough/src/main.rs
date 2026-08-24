@@ -253,6 +253,7 @@ impl GameAdapter for KtAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // Knightthrough's `Game::zobrist_hash` is the default constant `0`,
@@ -278,6 +279,7 @@ impl GameAdapter for KtAdapter {
                 ]))
             },
             trace_path,
+            trace_game_sequence_start,
             on_game,
         )
     }

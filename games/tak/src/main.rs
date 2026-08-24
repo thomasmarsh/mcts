@@ -244,6 +244,7 @@ impl GameAdapter for TakAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         mcts_tune::generic_tune_eval::<Tak<5>>(
@@ -261,6 +262,7 @@ impl GameAdapter for TakAdapter {
             state_to_value,
             |_, action| Some(Value::String(move_to_ptn(*action))),
             trace_path,
+            trace_game_sequence_start,
             on_game,
         )
     }

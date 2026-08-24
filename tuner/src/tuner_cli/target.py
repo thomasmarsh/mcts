@@ -82,6 +82,8 @@ def _build_pair_cmd(cfg: SearchConfig, binary: Path, task: PairTask) -> list[str
         ]
     if task.trace_path is not None:
         cmd += ["--trace-path", task.trace_path]
+    if task.trace_game_sequence_start is not None:
+        cmd += ["--trace-game-sequence-start", str(task.trace_game_sequence_start)]
     return cmd
 
 
@@ -160,6 +162,10 @@ def _decode_game(
         not isinstance(trace, int) or isinstance(trace, bool) or trace < 0
     ):
         raise ValueError("trace_game_seq must be an integer or null")
+    if task.trace_game_sequence_start is not None:
+        expected_trace = task.trace_game_sequence_start + expected_seq - 1
+        if trace != expected_trace:
+            raise ValueError("trace_game_seq does not match candidate side")
     return GameResult(
         game_id_for(task.pair_id, side),
         side,

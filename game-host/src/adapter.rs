@@ -109,6 +109,7 @@ pub trait GameAdapter: Send + Sync {
                     Some(1),
                     None,
                     None,
+                    None,
                     &mut sink,
                 ) {
                     errors.push(CompareValidationField {
@@ -127,6 +128,7 @@ pub trait GameAdapter: Send + Sync {
                 None,
                 game_config,
                 Some(1),
+                None,
                 None,
                 None,
                 &mut sink,
@@ -175,6 +177,9 @@ pub trait GameAdapter: Send + Sync {
     /// lines to as self-play games are played -- for live monitoring/
     /// sanity-checking a tuner run in progress. `None` disables tracing
     /// entirely (no file opened, no per-ply overhead).
+    /// `trace_game_sequence_start` optionally assigns the first traced game
+    /// sequence; it requires `trace_path` and is intended for isolated task
+    /// bundles rather than shared experiment traces.
     #[allow(unused_variables)]
     #[allow(clippy::too_many_arguments)]
     fn tune_eval(
@@ -188,6 +193,7 @@ pub trait GameAdapter: Send + Sync {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         Err(HostError::not_found("tuning not supported"))

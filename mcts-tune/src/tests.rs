@@ -204,6 +204,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
         |state| json!({"position": state.0}),
         |state, _| Some(json!({"kind": "advance", "from": state.0})),
         Some(&path),
+        Some(17),
         &mut |record| {
             records.push(record);
             Ok(())
@@ -217,8 +218,11 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(records.len(), 2);
+    assert_eq!(records[0].trace_game_seq, Some(17));
+    assert_eq!(records[1].trace_game_seq, Some(18));
     assert_eq!(rows.len(), 6);
     for (game, rows) in rows.chunks_exact(3).enumerate() {
+        assert!(rows.iter().all(|row| row["game_seq"] == 17 + game as u64));
         assert!(rows.iter().all(|row| row["state"].is_object()));
         assert!(rows.iter().all(|row| row["trace_schema_version"] == 1));
         assert_eq!(rows[0]["ply"], 0);
@@ -333,6 +337,7 @@ fn configured_eval_streams_alternating_results_and_matches_aggregate() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut sink,
     )
     .unwrap();
@@ -401,6 +406,7 @@ fn configured_eval_sink_error_stops_before_later_games() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut sink,
     )
     .expect_err("sink failure should abort the comparison");
@@ -448,6 +454,7 @@ fn test_tune_eval_rejects_params_missing_required_field() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut |_| Ok(()),
     )
     .expect_err("missing `rave` must be rejected");
@@ -472,6 +479,7 @@ fn zero_round_internal_validation_builds_candidate_without_playing() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut |_| Ok(()),
     )
     .expect_err("zero-round validation must reach the strategy builder");
@@ -492,6 +500,7 @@ fn test_tune_eval_rejects_unknown_schedule() {
         <Nim as Game>::S::default(),
         nim_trace_state_value,
         nim_trace_move_value,
+        None,
         None,
         &mut |_| Ok(()),
     )
@@ -514,6 +523,7 @@ fn test_tune_eval_rejects_unknown_final_action() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut |_| Ok(()),
     )
     .expect_err("unknown final_action must be rejected");
@@ -534,6 +544,7 @@ fn test_tune_eval_rejects_unknown_contempt() {
         <Nim as Game>::S::default(),
         nim_trace_state_value,
         nim_trace_move_value,
+        None,
         None,
         &mut |_| Ok(()),
     )
@@ -557,6 +568,7 @@ fn test_tune_eval_rejects_contempt_on_missing_contempt_factor() {
         nim_trace_state_value,
         nim_trace_move_value,
         None,
+        None,
         &mut |_| Ok(()),
     )
     .expect_err("contempt=on without contempt_factor must be rejected");
@@ -577,6 +589,7 @@ fn test_tune_eval_rejects_unknown_family() {
         <Nim as Game>::S::default(),
         nim_trace_state_value,
         nim_trace_move_value,
+        None,
         None,
         &mut |_| Ok(()),
     )
@@ -608,6 +621,7 @@ fn assert_family_round_trips(mut params: Value) {
         <Nim as Game>::S::default(),
         nim_trace_state_value,
         nim_trace_move_value,
+        None,
         None,
         &mut |_| Ok(()),
     )
@@ -1347,6 +1361,7 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
         <Nim as Game>::S::default(),
         nim_trace_state_value,
         nim_trace_move_value,
+        None,
         None,
         &mut |_| Ok(()),
     )

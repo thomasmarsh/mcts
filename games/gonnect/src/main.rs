@@ -388,6 +388,7 @@ impl GameAdapter for GonnectAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         let size = match game_config {
@@ -435,6 +436,7 @@ impl GameAdapter for GonnectAdapter {
                     Some(serde_json::to_value(action).expect("Gonnect action always serializes"))
                 },
                 trace_path.as_deref(),
+                trace_game_sequence_start,
                 on_game,
             )?
         } else {
@@ -462,6 +464,7 @@ impl GameAdapter for GonnectAdapter {
                     Some(serde_json::to_value(action).expect("Gonnect action always serializes"))
                 },
                 trace_path.as_deref(),
+                trace_game_sequence_start,
                 on_game,
             )?
         };

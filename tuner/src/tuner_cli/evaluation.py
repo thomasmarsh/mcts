@@ -67,6 +67,7 @@ class PairTask:
     pool_snapshot_fingerprint: str
     rating_before: Rating
     trace_path: str | None = None
+    trace_game_sequence_start: int | None = None
 
 
 @dataclass(frozen=True)

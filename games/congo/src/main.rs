@@ -312,6 +312,7 @@ impl GameAdapter for CongoAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // Congo's `Game::zobrist_hash` is the default constant `0`, so
@@ -332,6 +333,7 @@ impl GameAdapter for CongoAdapter {
             state_to_value,
             |_, action| Some(move_to_value(action)),
             trace_path,
+            trace_game_sequence_start,
             on_game,
         )
     }

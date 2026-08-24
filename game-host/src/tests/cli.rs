@@ -81,6 +81,7 @@ impl GameAdapter for TunableFakeAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         VALIDATION_COUNTS.with(|counts| counts.borrow_mut().builds += 1);
@@ -98,7 +99,8 @@ impl GameAdapter for TunableFakeAdapter {
                 seed: seed.unwrap_or(0),
                 candidate_side: ConfiguredCandidateSide::First,
                 outcome: ConfiguredOutcome::CandidateWin,
-                trace_game_seq: None,
+                trace_game_seq: trace_game_sequence_start
+                    .map(|start| start + u64::from(round.saturating_sub(1)) * 2),
                 plies: 0,
                 elapsed_ms: 0,
                 candidate: ConfiguredStrategyMetrics::default(),
@@ -111,7 +113,8 @@ impl GameAdapter for TunableFakeAdapter {
                 seed: seed.unwrap_or(0),
                 candidate_side: ConfiguredCandidateSide::Second,
                 outcome: ConfiguredOutcome::BaselineWin,
-                trace_game_seq: None,
+                trace_game_seq: trace_game_sequence_start
+                    .map(|start| start + u64::from(round.saturating_sub(1)) * 2 + 1),
                 plies: 0,
                 elapsed_ms: 0,
                 candidate: ConfiguredStrategyMetrics::default(),
@@ -324,6 +327,39 @@ fn compare_eval_uses_stable_round_seeds_and_run_sequences() {
 }
 
 #[test]
+fn compare_eval_uses_the_assigned_trace_game_sequences() {
+    let (out, code) = run_cli_capture_with(
+        TunableFakeAdapter,
+        &[
+            "compare",
+            "eval",
+            "--candidate-config",
+            "{}",
+            "--baseline-config",
+            "{}",
+            "--rounds",
+            "1",
+            "--seed",
+            "42",
+            "--max-iterations",
+            "1",
+            "--trace-path",
+            "task-trace.jsonl",
+            "--trace-game-sequence-start",
+            "17",
+        ],
+        "",
+    );
+    assert_eq!(code, 0);
+    let lines: Vec<Value> = out
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["trace_game_seq"], 17);
+    assert_eq!(lines[1]["trace_game_seq"], 18);
+}
+
+#[test]
 fn compare_validate_returns_structured_success_without_matches() {
     let (out, code) = run_cli_capture_with(
         TunableFakeAdapter,
@@ -496,6 +532,7 @@ fn test_run_cli_compare_eval_rejects_invalid_invocations_before_play() {
         vec!["--max-time-ms", "0"],
         vec!["--max-iterations", "1", "--max-time-ms", "1"],
         vec!["--max-iterations", "1", "--unknown"],
+        vec!["--max-iterations", "1", "--trace-game-sequence-start", "1"],
     ] {
         let mut args = base.to_vec();
         args.extend(extra);

@@ -436,6 +436,7 @@ impl GameAdapter for DruidAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // `use_transpositions: true` requires a real `Game::zobrist_hash`
@@ -473,6 +474,7 @@ impl GameAdapter for DruidAdapter {
                 state_to_value,
                 trace_move_to_value,
                 trace_path.as_deref(),
+                trace_game_sequence_start,
                 on_game,
             )?
         } else {
@@ -533,6 +535,7 @@ impl GameAdapter for DruidAdapter {
                 state_to_value,
                 trace_move_to_value,
                 trace_path.as_deref(),
+                trace_game_sequence_start,
                 on_game,
             )?
         };

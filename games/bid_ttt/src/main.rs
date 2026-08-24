@@ -245,6 +245,7 @@ impl GameAdapter for BttAdapter {
         max_iterations: Option<usize>,
         max_time_ms: Option<u64>,
         trace_path: Option<std::path::PathBuf>,
+        trace_game_sequence_start: Option<u64>,
         on_game: &mut dyn FnMut(game_host::ConfiguredMatchResult) -> Result<(), HostError>,
     ) -> Result<Value, HostError> {
         // BiddingTicTacToe's `Game::zobrist_hash` is the default constant
@@ -270,6 +271,7 @@ impl GameAdapter for BttAdapter {
                 )
             },
             trace_path,
+            trace_game_sequence_start,
             on_game,
         )
     }

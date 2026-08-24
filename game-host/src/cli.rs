@@ -213,6 +213,7 @@ where
             max_iterations,
             max_time_ms,
             trace_path.map(std::path::PathBuf::from),
+            None,
             &mut on_game,
         )
     })();
@@ -329,6 +330,7 @@ where
     let mut max_time_ms: Option<u64> = None;
     let mut game_config: Option<String> = None;
     let mut trace_path: Option<String> = None;
+    let mut trace_game_sequence_start: Option<u64> = None;
 
     let result = (|| -> Result<(), HostError> {
         while let Some(flag) = args.next() {
@@ -369,6 +371,12 @@ where
                 }
                 "--game-config" => game_config = Some(value(&flag, &mut args)?),
                 "--trace-path" => trace_path = Some(value(&flag, &mut args)?),
+                "--trace-game-sequence-start" => {
+                    let raw = value(&flag, &mut args)?;
+                    trace_game_sequence_start = Some(raw.parse().map_err(|_| {
+                        HostError::bad_request("invalid --trace-game-sequence-start")
+                    })?);
+                }
                 _ => return Err(HostError::bad_request(format!("unknown flag: {flag}"))),
             }
         }
@@ -382,6 +390,11 @@ where
             return Err(HostError::bad_request("--rounds must be positive"));
         }
         let seed = seed.ok_or_else(|| HostError::bad_request("missing --seed"))?;
+        if trace_game_sequence_start.is_some() && trace_path.is_none() {
+            return Err(HostError::bad_request(
+                "--trace-game-sequence-start requires --trace-path",
+            ));
+        }
         if max_iterations.is_some() == max_time_ms.is_some() {
             return Err(HostError::bad_request(
                 "exactly one of --max-iterations and --max-time-ms is required",
@@ -413,6 +426,14 @@ where
             let baseline_config = baseline_config.clone();
             let game_config = game_config.clone();
             let trace_path = trace_path.clone();
+            let trace_game_sequence_start = match trace_game_sequence_start {
+                Some(start) => Some(
+                    start
+                        .checked_add(sequence)
+                        .ok_or_else(|| HostError::bad_request("trace game sequence overflow"))?,
+                ),
+                None => None,
+            };
             let mut on_game = |mut record: ConfiguredMatchResult| -> Result<(), HostError> {
                 sequence = sequence
                     .checked_add(1)
@@ -420,6 +441,16 @@ where
                 record.seq = sequence;
                 record.round = round;
                 record.seed = round_seed;
+                if let Some(start) = trace_game_sequence_start {
+                    let expected = start
+                        .checked_add(sequence - 1)
+                        .ok_or_else(|| HostError::internal("trace game sequence overflow"))?;
+                    if record.trace_game_seq != Some(expected) {
+                        return Err(HostError::internal(
+                            "configured comparison trace sequence does not match candidate side",
+                        ));
+                    }
+                }
                 let json = serde_json::to_string(&record).map_err(|e| {
                     HostError::internal(format!("failed to serialize match result: {e}"))
                 })?;
@@ -437,6 +468,7 @@ where
                 max_iterations,
                 max_time_ms,
                 trace_path.map(std::path::PathBuf::from),
+                trace_game_sequence_start,
                 &mut on_game,
             )?;
             wins =
