@@ -57,7 +57,9 @@ describe("tuningNavigationReducer analysis state", () => {
     const ts = createTestStore(reducer, env(), initial);
     ts.send({ tag: "selectSession", sessionId: "session-1" }, (state) => {
       state.tab = "progress"; state.selection = { sessionId: "session-1", attemptId: null, trialId: null, pairId: null, gameId: null };
-      state.detail.status = "loading"; state.detail.sessionId = "session-1"; state.detail.generation = 1;
+      // Capable sessions begin with compact analysis evidence; the retired
+      // whole-session detail read remains idle until legacy fallback needs it.
+      state.detail.status = "idle"; state.detail.sessionId = null; state.detail.generation = 0;
       state.overview.status = "loading"; state.overview.sessionId = "session-1"; state.overview.generation = 2;
       state.trialPage.generation = 1;
     });
@@ -112,7 +114,7 @@ describe("tuningNavigationReducer analysis state", () => {
     ts.send({ tag: "selectSession", sessionId: "session-1" });
     ts.send({ tag: "selectSession", sessionId: "session-2" }, (s) => {
       s.selection = { sessionId: "session-2", attemptId: null, trialId: null, pairId: null, gameId: null };
-      s.tab = "progress"; s.detail.sessionId = "session-2"; s.detail.generation = 2;
+      s.tab = "progress"; s.detail.sessionId = null; s.detail.generation = 0;
       s.overview.sessionId = "session-2"; s.overview.generation = 4; s.trialPage.generation = 2;
     });
     ts.send({ tag: "overviewLoaded", sessionId: "session-1", generation: 2, overview: overview(9) });
