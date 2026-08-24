@@ -7,6 +7,15 @@ pub(crate) struct TuningSessionCommandBody {
     pub(crate) expected_version: u64,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct TuningSessionBudgetBody {
+    pub(crate) command_id: String,
+    pub(crate) expected_version: u64,
+    pub(crate) delta: u64,
+    pub(crate) start: bool,
+    pub(crate) n_workers: Option<u64>,
+}
+
 #[derive(Serialize)]
 pub(crate) struct TuningSessionCommandResponse {
     pub(crate) schema_version: u32,
@@ -16,7 +25,18 @@ pub(crate) struct TuningSessionCommandResponse {
     pub(crate) attempt_id: Option<String>,
     pub(crate) bench_run_id: Option<String>,
     pub(crate) signal: Option<TuningStopSignal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) budget: Option<TuningBudgetResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) launch_error: Option<String>,
     pub(crate) control: TuningSessionControl,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TuningBudgetResult {
+    pub(crate) previous_target_trial_count: u64,
+    pub(crate) delta: u64,
+    pub(crate) target_trial_count: u64,
 }
 
 #[derive(Serialize)]

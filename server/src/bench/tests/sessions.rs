@@ -258,6 +258,277 @@ async fn tuning_session_resume_releases_a_failed_spawn_reservation() {
 }
 
 #[tokio::test]
+async fn tuning_session_budget_extends_an_active_attempt_once_without_relaunching_it() {
+    let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = launches.clone();
+    let (app, _, state) = seeded_app_with_state(
+        |conn, _| control_session_seed(conn, "running", "running"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(move |_, _, _, _, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(mcts_bench::launch::LaunchedRun {
+                run_id: "unexpected".into(),
+                pid: 1,
+                log_path: std::path::PathBuf::from("/tmp/unexpected.log"),
+                log_dir: std::path::PathBuf::from("/tmp"),
+            })
+        }),
+    );
+    let request = serde_json::json!({
+        "command_id": "active-extend",
+        "expected_version": 0,
+        "delta": 2,
+        "start": false,
+    });
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    let value = body_json(&body);
+    assert_eq!(value["status"], "extended");
+    assert_eq!(
+        value["budget"],
+        serde_json::json!({"previous_target_trial_count": 4, "delta": 2, "target_trial_count": 6})
+    );
+    assert_eq!(
+        value["control"]["continuation"]["active_attempt_id"],
+        "attempt-parent"
+    );
+    assert_eq!(value["control"]["continuation"]["target_trial_count"], 6);
+    assert_eq!(value["control"]["version"], 1);
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        request,
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["replay"], true);
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    let (status, _) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        serde_json::json!({"command_id":"active-extend", "expected_version":0, "delta":3, "start":false}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    let (status, _) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/budget",
+        serde_json::json!({"command_id":"stale-extend", "expected_version":0, "delta":1, "start":false}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CONFLICT);
+    let target: i64 = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT target_trial_count FROM tuning_sessions WHERE session_id = 'control'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(target, 6);
+}
+
+#[tokio::test]
+async fn tuning_session_budget_starts_one_attempt_at_the_new_absolute_target() {
+    let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed_launches = launches.clone();
+    let observed_commands = commands.clone();
+    let (app, _, _) = seeded_app_with_state(
+        |conn, _| control_session_seed(conn, "completed", "completed"),
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(move |run_id, command, _, _, _| {
+            observed_launches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            observed_commands.lock().unwrap().push(command);
+            Ok(mcts_bench::launch::LaunchedRun {
+                run_id,
+                pid: 11,
+                log_path: std::path::PathBuf::from("/tmp/budget.log"),
+                log_dir: std::path::PathBuf::from("/tmp"),
+            })
+        }),
+    );
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        serde_json::json!({"command_id":"idle-extend", "expected_version":0, "delta":2, "start":false}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(
+        body_json(&body)["control"]["continuation"]["remaining_trial_count"],
+        6
+    );
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["sessions"][0]["target_trial_count"], 6);
+    assert_eq!(
+        body_json(&body)["sessions"][0]["control"]["continuation"]["remaining_trial_count"],
+        6
+    );
+    assert_eq!(body_json(&body)["sessions"][0]["control"]["version"], 1);
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/sessions/control/analysis").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(
+        body_json(&body)["control"]["continuation"]["target_trial_count"],
+        6
+    );
+    assert!(body_json(&body)["control"]["allowed_commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["command"] == "add_budget" && command["allowed"] == true));
+
+    let request = serde_json::json!({
+        "command_id":"extend-and-start",
+        "expected_version":1,
+        "delta":3,
+        "start":true,
+        "n_workers":4,
+    });
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    let value = body_json(&body);
+    assert_eq!(value["status"], "starting");
+    assert_eq!(value["budget"]["previous_target_trial_count"], 6);
+    assert_eq!(value["budget"]["target_trial_count"], 9);
+    assert_eq!(value["control"]["version"], 2);
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let command = commands.lock().unwrap()[0].clone();
+    let overrides = command
+        .windows(2)
+        .filter(|arguments| arguments[0] == "--override")
+        .map(|arguments| arguments[1].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        overrides
+            .iter()
+            .filter(|override_value| **override_value == "optimizer.n_trials=9")
+            .count(),
+        1
+    );
+    assert!(overrides.contains(&"optimizer.n_workers=4"));
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        request,
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    assert_eq!(body_json(&body)["replay"], true);
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    let (status, body) = http_get(app, "/api/bench/tuner/sessions/control").await;
+    assert_eq!(status, HttpStatusCode::OK);
+    assert_eq!(body_json(&body)["summary"]["target_trial_count"], 9);
+    assert_eq!(
+        body_json(&body)["control"]["continuation"]["remaining_trial_count"],
+        9
+    );
+}
+
+#[tokio::test]
+async fn tuning_session_budget_validates_workers_and_releases_failed_starts_for_resume() {
+    let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = launches.clone();
+    let (app, _, _) = seeded_app_with_state(
+        |conn, _| {
+            control_session_seed(conn, "completed", "completed");
+            conn.execute(
+                "UPDATE tuning_sessions SET manifest = '{\"semantic_inputs\":{\"optimizer\":{\"pruning\":{\"enabled\":true}}}}' WHERE session_id = 'control'",
+                [],
+            )
+            .unwrap();
+        },
+        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
+        Arc::new(move |run_id, _, _, _, _| {
+            let call = observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if call == 0 {
+                return Err(std::io::Error::other("injected spawn failure"));
+            }
+            Ok(mcts_bench::launch::LaunchedRun {
+                run_id,
+                pid: 12,
+                log_path: std::path::PathBuf::from("/tmp/recovered.log"),
+                log_dir: std::path::PathBuf::from("/tmp"),
+            })
+        }),
+    );
+    for request in [
+        serde_json::json!({"command_id":"zero", "expected_version":0, "delta":0, "start":false}),
+        serde_json::json!({"command_id":"too-many", "expected_version":0, "delta":1_000_001, "start":false}),
+        serde_json::json!({"command_id":"workers-idle", "expected_version":0, "delta":1, "start":false, "n_workers":1}),
+        serde_json::json!({"command_id":"workers-range", "expected_version":0, "delta":1, "start":true, "n_workers":1025}),
+        serde_json::json!({"command_id":"pruning-workers", "expected_version":0, "delta":1, "start":true, "n_workers":2}),
+    ] {
+        let (status, _) = http_post_json(
+            app.clone(),
+            "/api/bench/tuner/sessions/control/budget",
+            request,
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::BAD_REQUEST);
+    }
+
+    let failure = serde_json::json!({"command_id":"failed-start", "expected_version":0, "delta":3, "start":true, "n_workers":1});
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        failure.clone(),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    let value = body_json(&body);
+    assert_eq!(value["status"], "launch_failed");
+    assert_eq!(value["budget"]["target_trial_count"], 7);
+    assert_eq!(value["control"]["version"], 2);
+    assert!(value["launch_error"]
+        .as_str()
+        .unwrap()
+        .contains("injected spawn failure"));
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/sessions/control/budget",
+        failure,
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_json(&body)["replay"], true);
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/sessions/control/resume",
+        serde_json::json!({"command_id":"resume-after-failure", "expected_version":2}),
+    )
+    .await;
+    assert_eq!(status, HttpStatusCode::CREATED);
+    assert_eq!(
+        body_json(&body)["control"]["continuation"]["target_trial_count"],
+        7
+    );
+    assert_eq!(launches.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
 async fn tuning_session_control_rejects_stale_and_exhausted_resume_commands() {
     let app = seeded_app(|conn, _| {
         control_session_seed(conn, "completed", "completed");

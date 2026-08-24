@@ -7,15 +7,16 @@ use super::{
     BenchError, BenchState, TuningAnalysisBest, TuningAnalysisCoverage, TuningAnalysisObjective,
     TuningAnalysisOverview, TuningAnalysisPairCoverage, TuningAnalysisPoint,
     TuningAnalysisPointCoverage, TuningAttemptSummary, TuningAttemptView,
-    TuningBracketResourceAggregate, TuningCapabilities, TuningCursorBoundary,
+    TuningBracketResourceAggregate, TuningBudgetResult, TuningCapabilities, TuningCursorBoundary,
     TuningDecisionAggregate, TuningGameView, TuningOpponentView, TuningPairView, TuningPolicyView,
     TuningPoolAnchorView, TuningPoolRevisionView, TuningPruningPolicyView, TuningRatingPolicyView,
     TuningRatingView, TuningReplayReference, TuningResourcePolicyView, TuningSamplerPolicyView,
-    TuningSessionCommandBody, TuningSessionCommandResponse, TuningSessionControl,
-    TuningSessionDetail, TuningSessionList, TuningSessionListItem, TuningSessionSummary,
-    TuningStopSignal, TuningStrategyMetricsView, TuningTrialCounts, TuningTrialDetail,
-    TuningTrialDetailGameView, TuningTrialDetailPairView, TuningTrialDetailView, TuningTrialPage,
-    TuningTrialReportDecisionView, TuningTrialReportView, TuningTrialSummaryView, TuningTrialView,
+    TuningSessionBudgetBody, TuningSessionCommandBody, TuningSessionCommandResponse,
+    TuningSessionControl, TuningSessionDetail, TuningSessionList, TuningSessionListItem,
+    TuningSessionSummary, TuningStopSignal, TuningStrategyMetricsView, TuningTrialCounts,
+    TuningTrialDetail, TuningTrialDetailGameView, TuningTrialDetailPairView, TuningTrialDetailView,
+    TuningTrialPage, TuningTrialReportDecisionView, TuningTrialReportView, TuningTrialSummaryView,
+    TuningTrialView,
 };
 use axum::{
     extract::{Path as AxumPath, Query, State as AxumState},
@@ -65,6 +66,7 @@ pub(crate) async fn stop_tuning_session(
         &body,
         mcts_bench::tuning_command_store::SessionCommand::Stop,
         None,
+        None,
     )?;
     let decision = {
         let db = state.db.lock().unwrap();
@@ -106,6 +108,8 @@ pub(crate) async fn stop_tuning_session(
             attempt_id,
             bench_run_id: None,
             signal,
+            budget: None,
+            launch_error: None,
             control: decision.control.into(),
         }),
     ))
@@ -119,7 +123,7 @@ pub(crate) async fn resume_tuning_session(
     Json(body): Json<TuningSessionCommandBody>,
 ) -> Result<(StatusCode, Json<TuningSessionCommandResponse>), BenchError> {
     validate_command_id(&body.command_id)?;
-    let mut launch = continuation_launch(&state, &session_id, &body.command_id)?;
+    let mut launch = continuation_launch(&state, &session_id, &body.command_id, None)?;
     let request = command_request(
         &state,
         &session_id,
@@ -129,6 +133,7 @@ pub(crate) async fn resume_tuning_session(
             attempt_id: launch.attempt_id.clone(),
             physical_run_id: launch.physical_run_id.clone(),
         }),
+        None,
     )?;
     if let Some(reservation) = &request.launch {
         launch.attempt_id.clone_from(&reservation.attempt_id);
@@ -184,9 +189,235 @@ pub(crate) async fn resume_tuning_session(
             attempt_id: Some(launch.attempt_id),
             bench_run_id: Some(launch.physical_run_id),
             signal: None,
+            budget: None,
+            launch_error: None,
             control: decision.control.into(),
         }),
     ))
+}
+
+/// Add positive trial capacity to a logical session, optionally reserving and
+/// launching its next physical attempt at the resulting absolute target.
+pub(crate) async fn add_tuning_session_budget(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(body): Json<TuningSessionBudgetBody>,
+) -> Result<(StatusCode, Json<TuningSessionCommandResponse>), BenchError> {
+    validate_command_id(&body.command_id)?;
+    validate_budget_body(&state, &session_id, &body)?;
+
+    let mut launch = body
+        .start
+        .then(|| continuation_launch(&state, &session_id, &body.command_id, body.n_workers))
+        .transpose()?;
+    let request = command_request(
+        &state,
+        &session_id,
+        &TuningSessionCommandBody {
+            command_id: body.command_id.clone(),
+            expected_version: body.expected_version,
+        },
+        mcts_bench::tuning_command_store::SessionCommand::AddBudget {
+            delta: body.delta,
+            start: body.start,
+        },
+        launch.as_ref().map(
+            |launch| mcts_bench::tuning_command_store::LaunchReservation {
+                attempt_id: launch.attempt_id.clone(),
+                physical_run_id: launch.physical_run_id.clone(),
+            },
+        ),
+        body.n_workers,
+    )?;
+    if let (Some(launch), Some(reservation)) = (&mut launch, &request.launch) {
+        launch.attempt_id.clone_from(&reservation.attempt_id);
+        launch
+            .physical_run_id
+            .clone_from(&reservation.physical_run_id);
+    }
+    let decision = {
+        let db = state.db.lock().unwrap();
+        mcts_bench::tuning_command_store::apply_command(&db, &session_id, &request)
+            .map_err(command_bench_error)?
+    };
+    let budget = budget_result(&decision, body.delta)?;
+
+    if !body.start {
+        return Ok((
+            StatusCode::OK,
+            Json(TuningSessionCommandResponse {
+                schema_version: 1,
+                command_id: decision.command_id,
+                replay: decision.replay,
+                status: "extended",
+                attempt_id: None,
+                bench_run_id: None,
+                signal: None,
+                budget: Some(budget),
+                launch_error: None,
+                control: decision.control.into(),
+            }),
+        ));
+    }
+
+    let mut launch = launch.expect("a start command has a launch reservation");
+    launch.target_trial_count = budget.target_trial_count;
+    let replay_state = if decision.replay {
+        Some(resume_replay_state(
+            &state,
+            &session_id,
+            &decision.command_id,
+            &launch,
+        )?)
+    } else {
+        None
+    };
+    if matches!(replay_state, Some(ResumeReplayState::Failed)) {
+        let control = {
+            let db = state.db.lock().unwrap();
+            session_control(&db, &session_id)?
+        };
+        return Ok((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TuningSessionCommandResponse {
+                schema_version: 1,
+                command_id: decision.command_id,
+                replay: true,
+                status: "launch_failed",
+                attempt_id: Some(launch.attempt_id),
+                bench_run_id: Some(launch.physical_run_id),
+                signal: None,
+                budget: Some(budget),
+                launch_error: Some(
+                    "the recorded launch failed before a process was created".into(),
+                ),
+                control,
+            }),
+        ));
+    }
+    if !matches!(replay_state, Some(ResumeReplayState::Launched)) {
+        if let Err(error) = super::launch_reserved_tuner_attempt(
+            &state,
+            &decision.command_id,
+            launch.clone(),
+            Some(&format!("budget extension of {session_id}")),
+        ) {
+            let control = {
+                let db = state.db.lock().unwrap();
+                session_control(&db, &session_id)?
+            };
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(TuningSessionCommandResponse {
+                    schema_version: 1,
+                    command_id: decision.command_id,
+                    replay: decision.replay,
+                    status: "launch_failed",
+                    attempt_id: Some(launch.attempt_id),
+                    bench_run_id: Some(launch.physical_run_id),
+                    signal: None,
+                    budget: Some(budget),
+                    launch_error: Some(error.message),
+                    control,
+                }),
+            ));
+        }
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(TuningSessionCommandResponse {
+            schema_version: 1,
+            command_id: decision.command_id,
+            replay: decision.replay,
+            status: "starting",
+            attempt_id: Some(launch.attempt_id),
+            bench_run_id: Some(launch.physical_run_id),
+            signal: None,
+            budget: Some(budget),
+            launch_error: None,
+            control: decision.control.into(),
+        }),
+    ))
+}
+
+const MAX_BUDGET_DELTA: u64 = 1_000_000;
+
+fn validate_budget_body(
+    state: &Arc<BenchState>,
+    session_id: &str,
+    body: &TuningSessionBudgetBody,
+) -> Result<(), BenchError> {
+    if !(1..=MAX_BUDGET_DELTA).contains(&body.delta) {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("delta must be between 1 and {MAX_BUDGET_DELTA}"),
+        });
+    }
+    let Some(workers) = body.n_workers else {
+        return Ok(());
+    };
+    if !body.start {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: "n_workers is allowed only when start is true".into(),
+        });
+    }
+    if !(1..=1_024).contains(&workers) {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: "n_workers must be between 1 and 1024".into(),
+        });
+    }
+    let manifest: Option<String> = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT CAST(manifest AS TEXT) FROM tuning_sessions WHERE session_id = ?1",
+            duckdb::params![session_id],
+            |row| row.get(0),
+        )
+        .ok()
+    };
+    let pruning_enabled = manifest
+        .as_deref()
+        .and_then(|manifest| serde_json::from_str::<serde_json::Value>(manifest).ok())
+        .and_then(|manifest| {
+            manifest
+                .pointer("/semantic_inputs/optimizer/pruning/enabled")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false);
+    if pruning_enabled && workers != 1 {
+        return Err(BenchError {
+            status: StatusCode::BAD_REQUEST,
+            message: "pruning-enabled tuning sessions require n_workers to be 1".into(),
+        });
+    }
+    Ok(())
+}
+
+fn budget_result(
+    decision: &mcts_bench::tuning_command_store::CommandDecision,
+    delta: u64,
+) -> Result<TuningBudgetResult, BenchError> {
+    let target_trial_count = decision
+        .control
+        .target_trial_count
+        .ok_or_else(|| BenchError {
+            status: StatusCode::CONFLICT,
+            message: "tuning session has no continuation target".into(),
+        })?;
+    let previous_target_trial_count =
+        target_trial_count
+            .checked_sub(delta)
+            .ok_or_else(|| BenchError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "recorded budget command has an invalid target".into(),
+            })?;
+    Ok(TuningBudgetResult {
+        previous_target_trial_count,
+        delta,
+        target_trial_count,
+    })
 }
 
 enum ResumeReplayState {
@@ -251,6 +482,7 @@ fn command_request(
     body: &TuningSessionCommandBody,
     command: mcts_bench::tuning_command_store::SessionCommand,
     launch: Option<mcts_bench::tuning_command_store::LaunchReservation>,
+    n_workers: Option<u64>,
 ) -> Result<mcts_bench::tuning_command_store::CommandRequest, BenchError> {
     let existing = {
         let db = state.db.lock().unwrap();
@@ -267,6 +499,7 @@ fn command_request(
         if stored_session == session_id
             && request.expected_version == body.expected_version
             && request.command == command
+            && request.n_workers == n_workers
         {
             return Ok(request);
         }
@@ -276,6 +509,7 @@ fn command_request(
         expected_version: body.expected_version,
         command,
         launch,
+        n_workers,
         observed_at: super::iso_timestamp_now(),
     })
 }
@@ -284,6 +518,7 @@ fn continuation_launch(
     state: &Arc<BenchState>,
     session_id: &str,
     command_id: &str,
+    n_workers: Option<u64>,
 ) -> Result<super::TunerAttemptLaunch, BenchError> {
     let db = state.db.lock().unwrap();
     let (game, config, optimizer_id, lifecycle_path): (String, Option<String>, String, String) = db
@@ -326,7 +561,7 @@ fn continuation_launch(
         attempt_id: format!("tuning-attempt-{physical_run_id}"),
         physical_run_id,
         target_trial_count: 1,
-        workers: None,
+        workers: n_workers,
     })
 }
 

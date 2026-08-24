@@ -27,6 +27,8 @@ pub struct CommandRequest {
     pub expected_version: u64,
     pub command: SessionCommand,
     pub launch: Option<LaunchReservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_workers: Option<u64>,
     pub observed_at: String,
 }
 
@@ -401,7 +403,12 @@ fn decide(
             )?;
         }
         SessionCommand::AddBudget { delta, start } => {
-            if *delta == 0
+            if !(1..=MAX_BUDGET_DELTA).contains(delta)
+                || (!*start && request.n_workers.is_some())
+                || (*start
+                    && request
+                        .n_workers
+                        .is_some_and(|workers| workers == 0 || workers > 1_024))
                 || (*start != request.launch.is_some())
                 || (*start && !has_valid_launch(request))
             {
@@ -435,6 +442,9 @@ fn decide(
             let Some(next_target) = target.checked_add(*delta) else {
                 return reject(StoredError::TargetOverflow { control });
             };
+            if next_target > MAX_JAVASCRIPT_SAFE_INTEGER {
+                return reject(StoredError::TargetOverflow { control });
+            }
             tx.execute(
                 "UPDATE tuning_sessions SET target_trial_count = ?1 WHERE session_id = ?2",
                 params![
@@ -599,7 +609,7 @@ fn synchronize_control(
 ) -> Result<SessionControl, CommandStoreError> {
     let snapshot = load_snapshot(tx, session_id)?;
     let mut control = control_from_snapshot(&snapshot)?;
-    let signature = serde_json::to_string(&control.allowed_commands)?;
+    let signature = serde_json::to_string(&ControlSignature::from(&control))?;
     match snapshot.control_signature {
         None => {
             tx.execute(
@@ -620,6 +630,32 @@ fn synchronize_control(
         Some(_) => {}
     }
     Ok(control)
+}
+
+const MAX_BUDGET_DELTA: u64 = 1_000_000;
+const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Serialize)]
+struct ControlSignature<'a> {
+    target_trial_count: Option<u64>,
+    active_attempt_id: &'a Option<String>,
+    launch_reservation: &'a Option<LaunchReservation>,
+    stop_attempt_id: &'a Option<String>,
+    recovery_required: bool,
+    allowed_commands: &'a [AllowedCommand],
+}
+
+impl<'a> From<&'a SessionControl> for ControlSignature<'a> {
+    fn from(control: &'a SessionControl) -> Self {
+        Self {
+            target_trial_count: control.target_trial_count,
+            active_attempt_id: &control.active_attempt_id,
+            launch_reservation: &control.launch_reservation,
+            stop_attempt_id: &control.stop_attempt_id,
+            recovery_required: control.recovery_required,
+            allowed_commands: &control.allowed_commands,
+        }
+    }
 }
 
 struct Snapshot {
@@ -732,9 +768,8 @@ fn control_from_snapshot(snapshot: &Snapshot) -> Result<SessionControl, CommandS
     } else {
         None
     };
-    let add_budget_denial = if recovery_required {
-        Some(DenialReason::RecoveryRequired)
-    } else if snapshot.optimizer_id.is_none() || snapshot.lifecycle_path.is_none() {
+    let add_budget_denial = if snapshot.optimizer_id.is_none() || snapshot.lifecycle_path.is_none()
+    {
         Some(DenialReason::NoncontinuableLegacy)
     } else {
         None
@@ -803,6 +838,7 @@ mod tests {
             expected_version: version,
             command,
             launch,
+            n_workers: None,
             observed_at: "2026-01-01T00:00:00Z".into(),
         }
     }
@@ -867,13 +903,18 @@ mod tests {
             apply_command(&conn, "s", &mismatch),
             Err(CommandStoreError::CommandIdReuseMismatch { .. })
         ));
-        conn.execute("UPDATE tuning_sessions SET target_trial_count = 9223372036854775807 WHERE session_id = 's'", []).unwrap();
+        conn.execute(
+            "UPDATE tuning_sessions SET target_trial_count = 9007199254740991 WHERE session_id = 's'",
+            [],
+        )
+        .unwrap();
+        let at_safe_limit = reconcile(&conn, "s").unwrap();
         let error = apply_command(
             &conn,
             "s",
             &request(
                 "overflow",
-                0,
+                at_safe_limit.control_version,
                 SessionCommand::AddBudget {
                     delta: 1,
                     start: false,
@@ -882,6 +923,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, CommandStoreError::TargetOverflow { .. }));
+    }
+
+    #[test]
+    fn budget_commands_advance_versions_and_preserve_absolute_slot_denominators() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO tuning_attempts (attempt_id, session_id, status, started_at) VALUES ('old', 's', 'completed', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        for number in 1..=4 {
+            conn.execute(
+                "INSERT INTO tuning_trials (session_id, trial_id, attempt_id, trial_number, status, created_at) VALUES ('s', ?1, 'old', ?2, 'complete', '2026-01-01T00:00:00Z')",
+                params![format!("trial-{number}"), number],
+            )
+            .unwrap();
+        }
+        let initial = reconcile(&conn, "s").unwrap();
+        let add = request(
+            "extend-slots",
+            initial.control_version,
+            SessionCommand::AddBudget {
+                delta: 2,
+                start: false,
+            },
+        );
+        let accepted = apply_command(&conn, "s", &add).unwrap();
+        assert_eq!(accepted.control.target_trial_count, Some(5));
+        assert_eq!(accepted.control.consumed_trial_count, 4);
+        assert_eq!(
+            accepted
+                .control
+                .target_trial_count
+                .unwrap()
+                .saturating_sub(accepted.control.consumed_trial_count),
+            1
+        );
+        assert_eq!(
+            accepted.control.control_version,
+            initial.control_version + 1
+        );
+        assert!(matches!(
+            apply_command(
+                &conn,
+                "s",
+                &request(
+                    "stale-extend",
+                    initial.control_version,
+                    SessionCommand::AddBudget {
+                        delta: 1,
+                        start: false,
+                    },
+                ),
+            ),
+            Err(CommandStoreError::ExpectedVersionConflict { .. })
+        ));
     }
 
     #[test]

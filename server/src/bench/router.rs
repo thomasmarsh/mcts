@@ -38,8 +38,9 @@ use super::{
     runs::*,
     traces::*,
     tuning::{
-        get_tuning_analysis_overview, get_tuning_session, get_tuning_sessions,
-        get_tuning_trial_detail, get_tuning_trials, resume_tuning_session, stop_tuning_session,
+        add_tuning_session_budget, get_tuning_analysis_overview, get_tuning_session,
+        get_tuning_sessions, get_tuning_trial_detail, get_tuning_trials, resume_tuning_session,
+        stop_tuning_session,
     },
     types::*,
 };
@@ -87,6 +88,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route(
             "/api/bench/tuner/sessions/{session_id}/resume",
             post(resume_tuning_session).layer(launch_timeout),
+        )
+        .route(
+            "/api/bench/tuner/sessions/{session_id}/budget",
+            post(add_tuning_session_budget).layer(launch_timeout),
         )
         .route(
             "/api/bench/tuner/sessions/{session_id}/analysis",
