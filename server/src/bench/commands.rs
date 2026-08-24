@@ -80,7 +80,12 @@ pub(crate) async fn launch_and_record(
         None
     };
     let (cmd, config) = if kind == "tuner" {
-        let attempt = TunerAttemptLaunch::from_config(game, config.clone(), &run_id);
+        let attempt = TunerAttemptLaunch::from_config(
+            game,
+            config.clone(),
+            &run_id,
+            tuner_artifact_root(&state.bench_runs_dir, &run_id),
+        );
         let built = build_tuner_attempt(&attempt)?;
         (built.command, built.config)
     } else {
@@ -511,6 +516,7 @@ pub(crate) struct TunerAttemptLaunch {
     pub(crate) lifecycle_path: String,
     pub(crate) attempt_id: String,
     pub(crate) physical_run_id: String,
+    pub(crate) artifact_root: PathBuf,
     pub(crate) target_trial_count: u64,
     pub(crate) workers: Option<u64>,
 }
@@ -521,7 +527,12 @@ pub(crate) struct BuiltTunerAttempt {
 }
 
 impl TunerAttemptLaunch {
-    fn from_config(game: &str, config: Option<Value>, physical_run_id: &str) -> Self {
+    fn from_config(
+        game: &str,
+        config: Option<Value>,
+        physical_run_id: &str,
+        artifact_root: PathBuf,
+    ) -> Self {
         let optimizer_id = tuner_optimizer_id(config.as_ref(), physical_run_id);
         let session_id = tuner_session_id(config.as_ref(), &optimizer_id);
         let lifecycle_path = tuner_lifecycle_path_from_config(config.as_ref(), &optimizer_id);
@@ -534,10 +545,23 @@ impl TunerAttemptLaunch {
             lifecycle_path,
             attempt_id: format!("tuning-attempt-{physical_run_id}"),
             physical_run_id: physical_run_id.to_owned(),
+            artifact_root,
             target_trial_count,
             workers: None,
         }
     }
+}
+
+pub(crate) fn canonical_tuner_artifact_root(physical_run_id: &str) -> PathBuf {
+    tuner_artifact_root(&PathBuf::from(launch::BENCH_RUNS_DIR), physical_run_id)
+}
+
+pub(crate) fn tuner_artifact_root(bench_runs_dir: &Path, physical_run_id: &str) -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|error| panic!("cannot determine current directory: {error}"))
+        .join(bench_runs_dir)
+        .join(physical_run_id)
+        .join("tuning-artifacts")
 }
 
 /// Build a tuner argv from stable session artifacts and one physical attempt.
@@ -555,6 +579,18 @@ pub(crate) fn build_tuner_attempt(
         || launch.lifecycle_path.is_empty()
         || launch.attempt_id.is_empty()
         || launch.physical_run_id.is_empty()
+        || !launch.artifact_root.is_absolute()
+        || launch
+            .artifact_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some("tuning-artifacts")
+        || launch
+            .artifact_root
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            != Some(launch.physical_run_id.as_str())
         || launch.target_trial_count == 0
     {
         return Err(BenchError {
@@ -575,14 +611,8 @@ pub(crate) fn build_tuner_attempt(
         launch.game.clone(),
     ];
     append_tuner_config_arguments(&mut command, &config);
-    command.push("--trace-path".into());
-    command.push(
-        Path::new(launch::BENCH_RUNS_DIR)
-            .join(&launch.physical_run_id)
-            .join("moves.jsonl")
-            .to_string_lossy()
-            .into_owned(),
-    );
+    command.push("--artifact-root".into());
+    command.push(launch.artifact_root.to_string_lossy().into_owned());
     command.extend([
         "--optimizer-id".into(),
         launch.optimizer_id.clone(),
@@ -708,6 +738,7 @@ pub(crate) fn build_command(
             game,
             config.clone(),
             run_id,
+            canonical_tuner_artifact_root(run_id),
         ))?
         .command),
         "round_robin" => {

@@ -49,7 +49,7 @@ def _descriptor(
     tmp_path: Path,
 ) -> tuple[TaskDescriptorAllocator, DescriptorCommit, Path]:
     allocator = TaskDescriptorAllocator.start(
-        tmp_path / "attempt",
+        tmp_path / "bench-runs" / "attempt" / "tuning-artifacts",
         session_id="session-a",
         optimizer_id="optimizer-a",
         attempt_id="attempt-a",

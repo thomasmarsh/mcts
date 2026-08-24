@@ -18,27 +18,33 @@ use super::cursor::{get_cursor, set_cursor};
 use super::IngestError;
 
 pub(super) fn process_runs(conn: &Connection) -> Result<(), IngestError> {
-    let mut stmt = conn.prepare("SELECT run_id, log_path FROM runs WHERE status IN ('starting', 'running', 'completed', 'completed_with_errors', 'crashed', 'stopped')")?;
-    let running_runs: Vec<(String, String)> = stmt
+    let mut stmt = conn.prepare("SELECT run_id, kind, log_path FROM runs WHERE status IN ('starting', 'running', 'completed', 'completed_with_errors', 'crashed', 'stopped')")?;
+    let running_runs: Vec<(String, String, String)> = stmt
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
-    for (run_id, log_path_str) in &running_runs {
+    for (run_id, kind, log_path_str) in &running_runs {
         validate_typed_projects_attempt(conn, run_id)?;
         process_one_log_file(conn, run_id, Path::new(log_path_str))?;
 
-        // Move-trace lines land in a dedicated `moves.jsonl` next to
+        // Move-trace lines for non-tuner runs land in a dedicated `moves.jsonl` next to
         // `log.jsonl` (see `LogRecord::Move`'s doc comment for why they're
         // kept out of the main log) -- same directory, derived rather than
         // stored as its own `runs` column. Not every run kind writes one
-        // (only round-robin/tuner launches that pass `--trace-path`;
-        // ad hoc `bench round-robin` runs without it don't), so a missing
-        // file here is normal, not an error.
-        let moves_path = Path::new(log_path_str).with_file_name("moves.jsonl");
-        process_one_log_file(conn, run_id, &moves_path)?;
+        // (round-robin and experiment launches that pass `--trace-path`;
+        // ad hoc runs without it don't). Tuner tasks are ingested from their
+        // partitioned artifacts, so a missing sibling file is normal.
+        if kind != "tuner" {
+            let moves_path = Path::new(log_path_str).with_file_name("moves.jsonl");
+            process_one_log_file(conn, run_id, &moves_path)?;
+        }
         finalize_projects_attempt(conn, run_id)?;
     }
 

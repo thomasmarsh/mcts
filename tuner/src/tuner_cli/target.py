@@ -80,10 +80,6 @@ def _build_pair_cmd(cfg: SearchConfig, binary: Path, task: PairTask) -> list[str
             "--max-iterations",
             str(cfg.target.max_iterations or _DEFAULT_MAX_ITERATIONS),
         ]
-    if task.trace_path is not None:
-        cmd += ["--trace-path", task.trace_path]
-    if task.trace_game_sequence_start is not None:
-        cmd += ["--trace-game-sequence-start", str(task.trace_game_sequence_start)]
     return cmd
 
 

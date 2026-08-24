@@ -97,13 +97,18 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
         optimizer=OptimizerConfig(n_trials=1, deterministic=True, seed=7),
         target=TargetConfig(binary=binary, rounds=1, max_iterations=50),
     )
-    trace_path = tmp_dir / "traces.jsonl"
+    artifact_root = tmp_dir / "bench-runs" / "records" / "tuning-artifacts"
 
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         os.chdir(str(tmp_dir))
         study, _pool = run_optimization(
-            cfg, run_id="records", git_sha="test-sha", trace_path=str(trace_path)
+            cfg,
+            run_id="records",
+            git_sha="test-sha",
+            bench_run_id="records",
+            attempt_id="attempt-records",
+            artifact_root=artifact_root,
         )
 
     lifecycle_path = tmp_dir / "optuna_output" / "records" / "lifecycle.jsonl"
@@ -137,7 +142,7 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
         assert all(isinstance(game["trace_game_seq"], int) for game in games)
         assert len({game["trace_game_seq"] for game in games}) == 2
         assert all(game["seed"] == payload["seed"] and game["round"] == 1 for game in games)
-    assert trace_path.is_file() and trace_path.read_text().strip(), "trace evidence missing"
+    assert list((artifact_root / "tasks").glob("*/trace.jsonl")), "trace evidence missing"
     _assert_rust_projection(lifecycle_path)
 
     records = []
@@ -207,13 +212,21 @@ def test_reusing_run_id_completes_only_new_trials_and_reloads_pool(
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         os.chdir(str(tmp_dir))
-        first, first_pool = run_optimization(cfg(1), run_id="resume")
+        first, first_pool = run_optimization(
+            cfg(1), run_id="resume", bench_run_id="resume-1",
+            attempt_id="attempt-resume-1",
+            artifact_root=tmp_dir / "bench-runs" / "resume-1" / "tuning-artifacts",
+        )
     first_ids = [anchor.id for anchor in first_pool.anchors]
     assert len(first.trials) == 1, f"expected 1 trial, got {len(first.trials)}"
 
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
-        second, second_pool = run_optimization(cfg(2), run_id="resume")
+        second, second_pool = run_optimization(
+            cfg(2), run_id="resume", bench_run_id="resume-2",
+            attempt_id="attempt-resume-2",
+            artifact_root=tmp_dir / "bench-runs" / "resume-2" / "tuning-artifacts",
+        )
     assert len(second.trials) == 2, f"expected 2 trials after resume, got {len(second.trials)}"
     assert [anchor.id for anchor in second_pool.anchors][: len(first_ids)] == first_ids, (
         "pool anchors from first run not preserved"

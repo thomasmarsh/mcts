@@ -381,10 +381,10 @@ pub(crate) async fn live_run_moves(
 /// Removes a run's rows from every table (`game_moves`, `incumbents`,
 /// `trials`, `match_results`, `runs`, in FK-safe child-before-parent order)
 /// plus its `_ingest_cursor` entries and its `bench-runs/<run_id>/`
-/// directory (`log.jsonl`/`moves.jsonl`/`stdout.log`). This is the only
-/// deletion path; there is no automatic retention/pruning of traces. A physical
-/// attempt attached to a modern tuning session is retained with its trace and
-/// search evidence; session deletion will own that lifecycle. Other running
+/// directory and its artifact-root and cursor records. This is the only deletion
+/// path; there is no automatic retention/pruning of traces. A physical attempt
+/// attached to a modern tuning session is retained with its trace and search
+/// evidence; session deletion will own that lifecycle. Other running
 /// runs are refused with 409 rather than deleting out from a live process.
 pub(crate) async fn delete_run(
     AxumState(state): AxumState<Arc<BenchState>>,

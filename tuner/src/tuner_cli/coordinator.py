@@ -28,7 +28,6 @@ from .lifecycle import (
     OrphanedAttempt,
     SessionId,
     TrialId,
-    make_attempt_id,
     trial_id_for,
 )
 from .hyperband import OptunaHyperbandAdapter
@@ -73,12 +72,11 @@ def run_optimization(
     optimizer_id: str | None = None,
     bench_run_id: str | None = None,
     git_sha: str | None = None,
-    trace_path: str | None = None,
     session_id: str | None = None,
     attempt_id: str | None = None,
     lifecycle_path: str | Path | None = None,
     game_kind: str | None = None,
-    physical_attempt_root: str | Path | None = None,
+    artifact_root: str | Path,
 ) -> tuple[optuna.Study, OpponentPool]:
     """Run unfinished study work while recording lifecycle evidence."""
     cfg.validate()
@@ -87,7 +85,10 @@ def run_optimization(
     if optimizer is None:
         raise ValueError("optimizer_id or legacy run_id is required")
     session = SessionId(session_id or optimizer)
-    attempt = AttemptId(attempt_id) if attempt_id is not None else make_attempt_id()
+    if attempt_id is None:
+        raise ValueError("artifact_root requires a physical attempt_id")
+    attempt = AttemptId(attempt_id)
+    artifact_root = _validate_artifact_root(artifact_root, bench_run_id, attempt)
     output_dir = Path("optuna_output") / optimizer
     output_dir.mkdir(parents=True, exist_ok=True)
     _resolve_search_space(cfg, binary)
@@ -116,17 +117,13 @@ def run_optimization(
             _emit_session_started(
                 lifecycle, manifest, manifest_path, optimizer, cfg.optimizer.n_trials
             )
-            task_descriptors = (
-                TaskDescriptorAllocator.start(
-                    physical_attempt_root,
-                    session_id=session,
-                    optimizer_id=optimizer,
-                    attempt_id=attempt,
-                    bench_run_id=bench_run_id,
-                    manifest_fingerprint=manifest["fingerprint"],
-                )
-                if physical_attempt_root is not None
-                else None
+            task_descriptors = TaskDescriptorAllocator.start(
+                artifact_root,
+                session_id=session,
+                optimizer_id=optimizer,
+                attempt_id=attempt,
+                bench_run_id=bench_run_id,
+                manifest_fingerprint=manifest["fingerprint"],
             )
             _emit_attempt_started(
                 lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
@@ -145,12 +142,27 @@ def run_optimization(
                 lifecycle=lifecycle,
                 resolved_sha=resolved_sha,
                 manifest_fingerprint=manifest["fingerprint"],
-                trace_path=trace_path,
                 pruning_adapter=pruning_adapter,
                 should_stop=stop_request.requested,
                 task_descriptors=task_descriptors,
             )
     return study, pool
+
+
+def _validate_artifact_root(
+    artifact_root: str | Path, bench_run_id: str | None, attempt_id: AttemptId
+) -> Path:
+    """Accept only the server-owned root for this physical attempt."""
+    if bench_run_id is None or not bench_run_id:
+        raise ValueError("artifact_root requires a physical bench_run_id")
+    root = Path(artifact_root)
+    if not root.is_absolute():
+        raise ValueError("artifact_root must be absolute")
+    if root.name != "tuning-artifacts" or root.parent.name != bench_run_id:
+        raise ValueError("artifact_root must belong to the physical bench_run_id")
+    if root.parent.parent.name != "bench-runs":
+        raise ValueError("artifact_root must be below a bench-runs directory")
+    return root
 
 
 def _resolve_search_space(cfg: SearchConfig, binary: Path) -> None:
@@ -340,10 +352,9 @@ def _run_attempt(
     lifecycle: LifecycleWriter,
     resolved_sha: str,
     manifest_fingerprint: str = "legacy",
-    trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
-    task_descriptors: TaskDescriptorAllocator | None = None,
+    task_descriptors: TaskDescriptorAllocator,
 ) -> bool:
     futures: dict[Any, _ActiveTrial] = {}
     active: dict[TrialId, _ActiveTrial] = {}
@@ -367,7 +378,6 @@ def _run_attempt(
             pool,
             study,
             lifecycle,
-            trace_path,
             pruning_adapter,
             should_stop,
             task_descriptors,
@@ -385,7 +395,6 @@ def _run_attempt(
             study,
             lifecycle,
             resolved_sha,
-            trace_path,
             wait,
             pruning_adapter,
             should_stop,

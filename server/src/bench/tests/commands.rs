@@ -15,6 +15,7 @@ use tower::ServiceExt;
 
 #[test]
 fn test_build_command_tuner_includes_config_and_overrides() {
+    let artifact_root = canonical_tuner_artifact_root("test-run");
     let cmd = build_command(
         "tuner",
         "traffic-lights",
@@ -40,8 +41,8 @@ fn test_build_command_tuner_includes_config_and_overrides() {
             "optimizer.n_trials=10",
             "--override",
             "optimizer.n_workers=2",
-            "--trace-path",
-            "bench-runs/test-run/moves.jsonl",
+            "--artifact-root",
+            artifact_root.to_str().unwrap(),
             "--optimizer-id",
             "tuning-session-test-run",
             "--bench-run-id",
@@ -60,6 +61,7 @@ fn test_build_command_tuner_includes_config_and_overrides() {
 
 #[test]
 fn test_build_command_tuner_with_no_config_is_just_game() {
+    let artifact_root = canonical_tuner_artifact_root("test-run");
     let cmd = build_command("tuner", "druid", &None, "test-run").unwrap();
     assert_eq!(
         cmd[1..],
@@ -69,8 +71,8 @@ fn test_build_command_tuner_with_no_config_is_just_game() {
             "druid",
             "--override",
             "optimizer.n_trials=1000",
-            "--trace-path",
-            "bench-runs/test-run/moves.jsonl",
+            "--artifact-root",
+            artifact_root.to_str().unwrap(),
             "--optimizer-id",
             "tuning-session-test-run",
             "--bench-run-id",
@@ -88,7 +90,7 @@ fn test_build_command_tuner_with_no_config_is_just_game() {
 }
 
 #[test]
-fn test_build_command_tuner_includes_trace_path_derived_from_run_id() {
+fn test_build_command_tuner_includes_artifact_root_derived_from_run_id() {
     let cmd = build_command(
         "tuner",
         "druid",
@@ -98,11 +100,11 @@ fn test_build_command_tuner_includes_trace_path_derived_from_run_id() {
     .unwrap();
     let idx = cmd
         .iter()
-        .position(|a| a == "--trace-path")
-        .expect("--trace-path flag present");
+        .position(|a| a == "--artifact-root")
+        .expect("--artifact-root flag present");
     assert_eq!(
         cmd[idx + 1],
-        "bench-runs/tuner-druid-20260101T000000-abcdef/moves.jsonl"
+        canonical_tuner_artifact_root("tuner-druid-20260101T000000-abcdef")
     );
 }
 
@@ -141,6 +143,7 @@ fn test_build_command_tuner_omits_null_game_config() {
 
 #[test]
 fn test_build_command_tuner_includes_baseline_configs() {
+    let artifact_root = canonical_tuner_artifact_root("test-run");
     let cmd = build_command(
         "tuner",
         "nim",
@@ -164,8 +167,8 @@ fn test_build_command_tuner_includes_baseline_configs() {
             "optimizer.n_trials=10",
             "--baseline-config",
             r#"ladder1={"c":1.5,"family":"ucb1"}"#,
-            "--trace-path",
-            "bench-runs/test-run/moves.jsonl",
+            "--artifact-root",
+            artifact_root.to_str().unwrap(),
             "--optimizer-id",
             "tuning-session-test-run",
             "--bench-run-id",
@@ -209,6 +212,11 @@ fn test_tuner_attempt_builder_keeps_session_artifacts_stable_across_three_physic
             lifecycle_path: journal.clone(),
             attempt_id: attempt_id.into(),
             physical_run_id: physical_run_id.into(),
+            artifact_root: std::env::current_dir()
+                .unwrap()
+                .join("bench-runs")
+                .join(physical_run_id)
+                .join("tuning-artifacts"),
             target_trial_count: target,
             workers,
         })
@@ -218,10 +226,15 @@ fn test_tuner_attempt_builder_keeps_session_artifacts_stable_across_three_physic
         assert_eq!(
             command[command
                 .iter()
-                .position(|argument| argument == "--trace-path")
+                .position(|argument| argument == "--artifact-root")
                 .unwrap()
                 + 1],
-            format!("bench-runs/{physical_run_id}/moves.jsonl")
+            std::env::current_dir()
+                .unwrap()
+                .join("bench-runs")
+                .join(physical_run_id)
+                .join("tuning-artifacts")
+                .to_string_lossy()
         );
         assert_eq!(
             command[command
@@ -343,6 +356,9 @@ fn test_reserved_tuner_launch_records_once_and_reuses_the_physical_identity() {
         lifecycle_path: "/tmp/session-a.jsonl".into(),
         attempt_id: "attempt-next".into(),
         physical_run_id: "physical-next".into(),
+        artifact_root: std::env::current_dir()
+            .unwrap()
+            .join("bench-runs/physical-next/tuning-artifacts"),
         target_trial_count: 8,
         workers: Some(4),
     };
@@ -418,6 +434,9 @@ fn test_reserved_tuner_spawn_failure_releases_its_reservation() {
             lifecycle_path: "/tmp/session-failure.jsonl".into(),
             attempt_id: "attempt-failure".into(),
             physical_run_id: "physical-failure".into(),
+            artifact_root: std::env::current_dir()
+                .unwrap()
+                .join("bench-runs/physical-failure/tuning-artifacts"),
             target_trial_count: 8,
             workers: None,
         },

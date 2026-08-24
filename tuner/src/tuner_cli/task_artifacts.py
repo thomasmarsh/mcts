@@ -63,7 +63,7 @@ class TaskDescriptorAllocator:
     @classmethod
     def start(
         cls,
-        physical_attempt_root: str | Path,
+        artifact_root: str | Path,
         *,
         session_id: str,
         optimizer_id: str,
@@ -73,7 +73,7 @@ class TaskDescriptorAllocator:
     ) -> TaskDescriptorAllocator:
         """Publish one immutable attempt record before any task can be allocated."""
         allocator = cls(
-            ArtifactLayout.for_attempt_root(physical_attempt_root),
+            ArtifactLayout.for_artifact_root(artifact_root),
             session_id,
             optimizer_id,
             attempt_id,

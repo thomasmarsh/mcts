@@ -201,7 +201,14 @@ def test_manifest_conflict_stops_before_opening_or_recovering_a_study(
         lambda *_: pytest.fail("manifest conflict opened the study"),
     )
     with pytest.raises(SessionForkRequired, match="fork required"):
-        coordinator.run_optimization(cfg, optimizer_id="session-conflict")
+        coordinator.run_optimization(
+            cfg,
+            optimizer_id="session-conflict",
+            bench_run_id="session-conflict-run",
+            attempt_id="attempt-session-conflict-run",
+            artifact_root=Path.cwd()
+            / "bench-runs/session-conflict-run/tuning-artifacts",
+        )
 
 
 def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):

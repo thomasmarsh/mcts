@@ -496,11 +496,10 @@ def _decode_descriptor(
         OpponentSnapshot(
             opponent["anchor_id"], opponent["config"], opponent["mu"], opponent["sigma"]
         ),
-        payload["pool_snapshot_fingerprint"],
-        Rating(rating["mu"], rating["sigma"]),
-        None,
-        sequences.candidate_first,
-    )
+            payload["pool_snapshot_fingerprint"],
+            Rating(rating["mu"], rating["sigma"]),
+            sequences.candidate_first,
+        )
     return identity, task, Path(payload["binary"]["path"])
 
 
@@ -646,7 +645,7 @@ def _build_pair_cmd_for_execution(execution: _Execution) -> list[str]:
         "--trace-path",
         str(execution.task_directory / "trace.jsonl"),
         "--trace-game-sequence-start",
-        str(execution.task.trace_game_sequence_start),
+        str(execution.payload["trace_game_sequences"]["candidate_first"]),
     ]
     return command
 

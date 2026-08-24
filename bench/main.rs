@@ -151,12 +151,10 @@ enum Command {
         #[arg(long)]
         bench_run_id: Option<String>,
 
-        /// Optional path to append per-ply move-trace JSONL lines to
-        /// (opened in append mode by each trial's game-binary subprocess,
-        /// same file across the whole run). Passed through as `tuner
-        /// --trace-path`. Omit to disable move tracing entirely.
+        /// Absolute directory owned by this physical tuning attempt.
+        /// Every evaluation receives its own task directory below this root.
         #[arg(long)]
-        trace_path: Option<String>,
+        artifact_root: Option<String>,
 
         /// Opaque logical tuning session identity.
         #[arg(long)]
@@ -233,7 +231,7 @@ fn main() {
             run_id,
             optimizer_id,
             bench_run_id,
-            trace_path,
+            artifact_root,
             session_id,
             attempt_id,
             lifecycle_path,
@@ -249,7 +247,7 @@ fn main() {
             run_id.as_deref(),
             optimizer_id.as_deref(),
             bench_run_id.as_deref(),
-            trace_path.as_deref(),
+            artifact_root.as_deref(),
             session_id.as_deref(),
             attempt_id.as_deref(),
             lifecycle_path.as_deref(),
@@ -417,6 +415,16 @@ fn cmd_launch(kind: &str, game: &str, label: Option<&str>, cmd: &[String]) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
+fn tuner_artifact_root(physical_run_id: &str) -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|error| panic!("cannot determine current directory: {error}"))
+        .join("bench-runs")
+        .join(physical_run_id)
+        .join("tuning-artifacts")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Build the argv for a ``uv run --project tuner/ tuner ...``
 /// invocation, incorporating the config file, overrides, and git SHA.
 ///
@@ -437,7 +445,7 @@ fn build_tuner_command(
     game: &str,
     game_kind: Option<&str>,
     run_id: Option<&str>,
-    trace_path: Option<&str>,
+    artifact_root: Option<&str>,
     optimizer_id: Option<&str>,
     bench_run_id: Option<&str>,
     session_id: Option<&str>,
@@ -492,8 +500,8 @@ fn build_tuner_command(
         cmd.push(id.to_string());
     }
 
-    if let Some(path) = trace_path {
-        cmd.push("--trace-path".to_string());
+    if let Some(path) = artifact_root {
+        cmd.push("--artifact-root".to_string());
         cmd.push(path.to_string());
     }
 
@@ -581,7 +589,7 @@ fn cmd_tuner(
     run_id: Option<&str>,
     optimizer_id: Option<&str>,
     bench_run_id: Option<&str>,
-    trace_path: Option<&str>,
+    artifact_root: Option<&str>,
     session_id: Option<&str>,
     attempt_id: Option<&str>,
     lifecycle_path: Option<&str>,
@@ -596,6 +604,7 @@ fn cmd_tuner(
             .map(str::to_string)
             .unwrap_or_else(|| launch::generate_run_id("tuner", game, BUILD_INFO));
         let lifecycle = derive_background_tuner_lifecycle_arguments(&run_id);
+        let default_artifact_root = tuner_artifact_root(bench_run_id.unwrap_or(&run_id));
         let cmd = build_tuner_command(
             config,
             overrides,
@@ -604,7 +613,7 @@ fn cmd_tuner(
             game,
             game_kind,
             Some(&run_id),
-            trace_path,
+            artifact_root.or(Some(&default_artifact_root)),
             optimizer_id.or(Some(&lifecycle.optimizer_id)),
             bench_run_id.or(Some(&lifecycle.bench_run_id)),
             session_id.or(Some(&lifecycle.session_id)),
@@ -651,7 +660,7 @@ fn cmd_tuner(
             game,
             game_kind,
             run_id,
-            trace_path,
+            artifact_root,
             optimizer_id,
             bench_run_id,
             session_id,
@@ -914,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tuner_command_forwards_trace_path() {
+    fn test_build_tuner_command_forwards_artifact_root() {
         let cmd = build_tuner_command(
             None,
             &[],
@@ -923,7 +932,7 @@ mod tests {
             "druid",
             None,
             None,
-            Some("bench-runs/tuner-druid-run-1/moves.jsonl"),
+            Some("/tmp/bench-runs/tuner-druid-run-1/tuning-artifacts"),
             None,
             None,
             None,
@@ -932,13 +941,16 @@ mod tests {
         );
         let idx = cmd
             .iter()
-            .position(|a| a == "--trace-path")
-            .expect("--trace-path flag present");
-        assert_eq!(cmd[idx + 1], "bench-runs/tuner-druid-run-1/moves.jsonl");
+            .position(|a| a == "--artifact-root")
+            .expect("--artifact-root flag present");
+        assert_eq!(
+            cmd[idx + 1],
+            "/tmp/bench-runs/tuner-druid-run-1/tuning-artifacts"
+        );
     }
 
     #[test]
-    fn test_build_tuner_command_omits_trace_path_when_absent() {
+    fn test_build_tuner_command_omits_artifact_root_when_absent() {
         let cmd = build_tuner_command(
             None,
             &[],
@@ -954,6 +966,6 @@ mod tests {
             None,
             None,
         );
-        assert!(!cmd.iter().any(|a| a == "--trace-path"));
+        assert!(!cmd.iter().any(|a| a == "--artifact-root"));
     }
 }

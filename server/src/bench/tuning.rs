@@ -559,6 +559,7 @@ fn continuation_launch(
         optimizer_id,
         lifecycle_path,
         attempt_id: format!("tuning-attempt-{physical_run_id}"),
+        artifact_root: super::tuner_artifact_root(&state.bench_runs_dir, &physical_run_id),
         physical_run_id,
         target_trial_count: 1,
         workers: n_workers,

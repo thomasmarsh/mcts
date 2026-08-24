@@ -124,7 +124,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Stable game kind recorded in the session manifest.",
     )
-    parser.add_argument("--trace-path", type=str, default=None, metavar="PATH")
+    parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="Absolute server-owned root for this physical attempt's task artifacts.",
+    )
     return parser
 
 
@@ -173,7 +179,7 @@ def main() -> None:
         optimizer_id=optimizer_id,
         bench_run_id=args.bench_run_id,
         git_sha=args.git_sha,
-        trace_path=args.trace_path,
+        artifact_root=args.artifact_root,
         session_id=args.session_id,
         attempt_id=args.attempt_id,
         lifecycle_path=args.lifecycle_path,

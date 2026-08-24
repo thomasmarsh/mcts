@@ -22,7 +22,6 @@ from .lifecycle import LifecycleWriter
 from .pool import OpponentPool
 from .task_artifacts import DescriptorCommit, TaskDescriptorAllocator
 from .task_execution import execute_task_bundle, read_task_bundle
-from .target import evaluate_pair
 
 
 @dataclass(frozen=True)
@@ -39,7 +38,6 @@ def make_next_pair_task(
     active_trial: Any,
     pool: OpponentPool,
     lifecycle: LifecycleWriter,
-    trace_path: str | None,
 ) -> PairTask:
     """Select and snapshot the closest frozen anchor for the next pair."""
     pair_index = active_trial.evaluation.completed_pairs
@@ -54,7 +52,6 @@ def make_next_pair_task(
         OpponentSnapshot.from_anchor(anchor),
         pool_snapshot_fingerprint(pool.anchors),
         active_trial.evaluation.rating,
-        trace_path,
     )
 
 
@@ -67,39 +64,30 @@ def submit_next_pair(
     pool: OpponentPool,
     study: optuna.Study,
     lifecycle: LifecycleWriter,
-    trace_path: str | None,
     terminalize_trial: Callable[[optuna.Study, Any, str, str], None],
-    task_descriptors: TaskDescriptorAllocator | None = None,
+    task_descriptors: TaskDescriptorAllocator,
 ) -> None:
     """Commit pair evidence, then emit its start event and submit one worker."""
-    task = make_next_pair_task(active_trial, pool, lifecycle, trace_path)
-    descriptor: DescriptorCommit | None = None
-    descriptor_path: Path | None = None
-    if task_descriptors is not None:
-        try:
-            descriptor = task_descriptors.commit_task(
-                task,
-                cfg=cfg,
-                binary=binary,
-                pool_snapshot=[
-                    OpponentSnapshot.from_anchor(anchor) for anchor in pool.anchors
-                ],
-            )
-            descriptor_path = task_descriptors.layout.descriptor(descriptor.identity)
-        except Exception as error:
-            message = f"task descriptor commit failed: {error}"
-            terminalize_trial(study, active_trial, "trial_failed", message)
-            raise
+    task = make_next_pair_task(active_trial, pool, lifecycle)
+    try:
+        descriptor = task_descriptors.commit_task(
+            task,
+            cfg=cfg,
+            binary=binary,
+            pool_snapshot=[OpponentSnapshot.from_anchor(anchor) for anchor in pool.anchors],
+        )
+        descriptor_path = task_descriptors.layout.descriptor(descriptor.identity)
+    except Exception as error:
+        message = f"task descriptor commit failed: {error}"
+        terminalize_trial(study, active_trial, "trial_failed", message)
+        raise
     lifecycle.emit("pair_started", pair_started_payload(task, descriptor))
     try:
-        if descriptor is None:
-            future = executor.submit(evaluate_pair, cfg, binary, task)
-        else:
-            future = executor.submit(
-                execute_task_bundle,
-                descriptor_path,
-                descriptor.digest,
-            )
+        future = executor.submit(
+            execute_task_bundle,
+            descriptor_path,
+            descriptor.digest,
+        )
     except Exception as error:
         message = f"worker submission failed: {error}"
         emit_pair_failed(lifecycle, task, message, descriptor)

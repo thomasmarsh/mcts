@@ -74,8 +74,12 @@ def test_pair_game_sequences_are_checked_and_do_not_collide():
 def test_paths_are_exact_relative_to_the_artifact_root_and_relocatable(tmp_path: Path):
     identity = _identity()
     descriptor = TaskDescriptor.for_identity(identity)
-    layout = ArtifactLayout.for_attempt_root(tmp_path / "bench-runs" / "run-a")
-    moved = ArtifactLayout.for_attempt_root(tmp_path / "other-bench-runs" / "run-a")
+    layout = ArtifactLayout.for_artifact_root(
+        tmp_path / "bench-runs" / "run-a" / "tuning-artifacts"
+    )
+    moved = ArtifactLayout.for_artifact_root(
+        tmp_path / "other-bench-runs" / "run-a" / "tuning-artifacts"
+    )
 
     assert layout.attempt == tmp_path / "bench-runs/run-a/tuning-artifacts/attempt.json"
     assert layout.descriptor(identity).relative_to(layout.root) == Path(

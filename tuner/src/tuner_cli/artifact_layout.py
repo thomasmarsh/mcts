@@ -225,9 +225,9 @@ class ArtifactLayout:
     root: Path
 
     @classmethod
-    def for_attempt_root(cls, physical_attempt_root: str | Path) -> ArtifactLayout:
-        """Place artifacts below the server-chosen physical attempt root."""
-        return cls(_validate_root(physical_attempt_root) / ARTIFACT_DIRECTORY_NAME)
+    def for_artifact_root(cls, artifact_root: str | Path) -> ArtifactLayout:
+        """Use the complete server-chosen artifact root without rewriting it."""
+        return cls(_validate_root(artifact_root))
 
     def __post_init__(self) -> None:
         root = _validate_root(self.root)
@@ -266,8 +266,8 @@ def _validate_root(value: str | Path) -> Path:
     if not isinstance(value, (str, Path)):
         raise ValueError("artifact root must be a path")
     path = Path(value)
-    if not str(path) or ".." in path.parts:
-        raise ValueError("artifact root must not contain traversal")
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("artifact root must be an absolute path without traversal")
     return path
 
 

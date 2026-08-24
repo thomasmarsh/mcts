@@ -218,8 +218,27 @@ def _context(
     pool: OpponentPool,
     pool_path: Path,
 ) -> attempt._AttemptContext:
+    descriptors = TaskDescriptorAllocator.start(
+        pool_path.parent / "bench-runs" / "attempt" / "tuning-artifacts",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id="attempt",
+        manifest_fingerprint="manifest",
+    )
     return attempt._AttemptContext(
-        cfg, Path("game-nim"), pool, pool_path, study, writer, "sha", None
+        cfg, Path("game-nim"), pool, pool_path, study, writer, "sha", task_descriptors=descriptors
+    )
+
+
+def _test_descriptors(tmp_path: Path) -> TaskDescriptorAllocator:
+    return TaskDescriptorAllocator.start(
+        tmp_path / "bench-runs" / "attempt" / "tuning-artifacts",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id="attempt",
+        manifest_fingerprint="manifest",
     )
 
 
@@ -277,9 +296,7 @@ def _stopped_attempt(
     def stop_after_wait(futures, **_kwargs):
         if completed_future:
             for future in futures:
-                task = next(
-                    call[3] for call in executor.calls if future in executor.futures
-                )
+                task = futures[future].task
                 future.value = _result(task)
         stop_request.request()
         if repeat_stop:
@@ -292,6 +309,14 @@ def _stopped_attempt(
     monkeypatch.setattr(coordinator, "ProcessPoolExecutor", lambda **_kwargs: executor)
     monkeypatch.setattr(coordinator, "wait", stop_after_wait)
     event_path = tmp_path / "events.jsonl"
+    descriptors = TaskDescriptorAllocator.start(
+        tmp_path / "bench-runs" / "attempt" / "tuning-artifacts",
+        session_id="session",
+        optimizer_id="optimizer",
+        attempt_id="attempt",
+        bench_run_id="attempt",
+        manifest_fingerprint="manifest",
+    )
     with LifecycleWriter(
         event_path, SessionId("session"), AttemptId("attempt")
     ) as writer:
@@ -303,8 +328,8 @@ def _stopped_attempt(
             study=study,
             lifecycle=writer,
             resolved_sha="sha",
-            trace_path=None,
             should_stop=stop_request.requested,
+            task_descriptors=descriptors,
         )
     return study, pool, executor, event_path
 
@@ -486,6 +511,7 @@ def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path
             "sha",
             None,
             adapter,
+            task_descriptors=_test_descriptors(tmp_path),
         )
         scheduled = ScheduledPair(active, _task(active))
         assert attempt.continue_trial(
@@ -536,6 +562,7 @@ def test_startup_exempt_trial_is_not_delegated_before_max_completion(
             "sha",
             None,
             adapter,
+            task_descriptors=_test_descriptors(tmp_path),
         )
         scheduled = ScheduledPair(active, _task(active))
         assert attempt.continue_trial(
@@ -602,6 +629,7 @@ def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output
             "sha",
             None,
             adapter,
+            task_descriptors=_test_descriptors(tmp_path),
         )
         scheduled = ScheduledPair(active, _task(active))
         assert attempt.continue_trial(
@@ -655,6 +683,7 @@ def test_completion_precedes_a_pending_prune(
             "sha",
             None,
             adapter,
+            task_descriptors=_test_descriptors(tmp_path),
         )
         scheduled = ScheduledPair(active, _task(active))
         assert not attempt.continue_trial(
@@ -698,6 +727,7 @@ def test_pruned_terminal_replenishes_the_sequential_scheduler(
             "sha",
             None,
             adapter,
+            task_descriptors=_test_descriptors(tmp_path),
         )
         attempt.schedule_trial(
             executor,
@@ -708,8 +738,8 @@ def test_pruned_terminal_replenishes_the_sequential_scheduler(
             pool,
             study,
             writer,
-            None,
             adapter,
+            task_descriptors=context.task_descriptors,
         )
         future, scheduled = futures.popitem()
         assert not attempt.continue_trial(
@@ -748,12 +778,16 @@ def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Pat
             pool,
             study,
             writer,
-            None,
             attempt._terminalize_from_pair(writer),
+            TaskDescriptorAllocator.start(
+                tmp_path / "bench-runs" / "submission" / "tuning-artifacts",
+                session_id="session", optimizer_id="optimizer", attempt_id="attempt",
+                bench_run_id="submission", manifest_fingerprint="manifest",
+            ),
         )
     assert len(futures) == 1
-    assert executor.calls[0][0] is pair_orchestration.evaluate_pair
-    task = executor.calls[0][3]
+    assert executor.calls[0][0] is pair_orchestration.execute_task_bundle
+    task = next(iter(futures.values())).task
     assert task.pair_index == 0
     records = [
         json.loads(line)
@@ -772,7 +806,7 @@ def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: P
         optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
     )
     executor, futures = _Executor(), {}
-    physical_root = tmp_path / "physical-attempt"
+    physical_root = tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts"
     descriptors = TaskDescriptorAllocator.start(
         physical_root,
         session_id="session",
@@ -821,7 +855,6 @@ def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: P
             pool,
             study,
             writer,
-            "legacy-trace.jsonl",
             attempt._terminalize_from_pair(writer),
             descriptors,
         )
@@ -884,7 +917,7 @@ def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path
     )
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
-        tmp_path / "physical-attempt",
+        tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
         session_id="session",
         optimizer_id="optimizer",
         attempt_id="attempt",
@@ -903,7 +936,6 @@ def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path
             pool,
             study,
             writer,
-            None,
             attempt._terminalize_from_pair(writer),
             descriptors,
         )
@@ -919,7 +951,6 @@ def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path
             pool,
             study,
             writer,
-            None,
             attempt._terminalize_from_pair(writer),
             descriptors,
         )
@@ -948,7 +979,7 @@ def test_descriptor_commit_failure_prevents_worker_submission(
     )
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
-        tmp_path / "physical-attempt",
+        tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
         session_id="session",
         optimizer_id="optimizer",
         attempt_id="attempt",
@@ -974,7 +1005,6 @@ def test_descriptor_commit_failure_prevents_worker_submission(
                 pool,
                 study,
                 writer,
-                None,
                 attempt._terminalize_from_pair(writer),
                 descriptors,
             )
@@ -996,7 +1026,7 @@ def test_exhausted_descriptor_sequence_prevents_worker_submission(tmp_path: Path
     )
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
-        tmp_path / "physical-attempt",
+        tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
         session_id="session",
         optimizer_id="optimizer",
         attempt_id="attempt",
@@ -1017,7 +1047,6 @@ def test_exhausted_descriptor_sequence_prevents_worker_submission(tmp_path: Path
                 pool,
                 study,
                 writer,
-                None,
                 attempt._terminalize_from_pair(writer),
                 descriptors,
             )
@@ -1035,7 +1064,7 @@ def test_stop_before_scheduling_does_not_allocate_a_descriptor(tmp_path: Path):
     )
     executor, futures, active = _Executor(), {}, {}
     descriptors = TaskDescriptorAllocator.start(
-        tmp_path / "physical-attempt",
+        tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
         session_id="session",
         optimizer_id="optimizer",
         attempt_id="attempt",
@@ -1056,7 +1085,6 @@ def test_stop_before_scheduling_does_not_allocate_a_descriptor(tmp_path: Path):
             pool,
             study,
             writer,
-            None,
             should_stop=lambda: True,
             task_descriptors=descriptors,
         )
@@ -1068,7 +1096,7 @@ def test_stop_before_scheduling_does_not_allocate_a_descriptor(tmp_path: Path):
 
 
 def test_attempt_root_cannot_be_reused_by_a_new_physical_attempt(tmp_path: Path):
-    root = tmp_path / "physical-attempt"
+    root = tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts"
     TaskDescriptorAllocator.start(
         root,
         session_id="session",
@@ -1112,11 +1140,15 @@ def test_initial_scheduling_keeps_multiple_trials_active_with_one_pair_each(
             pool,
             study,
             writer,
-            None,
+            task_descriptors=TaskDescriptorAllocator.start(
+                tmp_path / "bench-runs" / "initial" / "tuning-artifacts",
+                session_id="session", optimizer_id="optimizer", attempt_id="attempt",
+                bench_run_id="initial", manifest_fingerprint="manifest",
+            ),
         )
     assert len(active) == len(futures) == len(executor.calls) == 2
-    assert all(call[0] is pair_orchestration.evaluate_pair for call in executor.calls)
-    assert {call[3].trial_id for call in executor.calls} == set(active)
+    assert all(call[0] is pair_orchestration.execute_task_bundle for call in executor.calls)
+    assert {call[1].parent.name for call in executor.calls} == {"descriptors"}
 
 
 def test_worker_failure_emits_pair_failure_before_trial_terminal(tmp_path: Path):
@@ -1151,7 +1183,7 @@ def _artifact_scheduled(
     tmp_path: Path, active: attempt._ActiveTrial
 ) -> tuple[ScheduledPair, TaskDescriptorAllocator]:
     descriptors = TaskDescriptorAllocator.start(
-        tmp_path / "physical-attempt",
+        tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
         session_id="session",
         optimizer_id="optimizer",
         attempt_id="attempt",

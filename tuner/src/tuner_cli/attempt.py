@@ -59,7 +59,7 @@ class _AttemptContext:
     study: optuna.Study
     lifecycle: LifecycleWriter
     resolved_sha: str
-    trace_path: str | None
+    reserved: object | None = None
     pruning_adapter: OptunaHyperbandAdapter | None = None
     manifest_fingerprint: str = "legacy"
     task_descriptors: TaskDescriptorAllocator | None = None
@@ -85,7 +85,6 @@ def schedule_initial_trials(
     pool: OpponentPool,
     study: optuna.Study,
     lifecycle: LifecycleWriter,
-    trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     task_descriptors: TaskDescriptorAllocator | None = None,
@@ -103,7 +102,6 @@ def schedule_initial_trials(
             pool,
             study,
             lifecycle,
-            trace_path,
             pruning_adapter,
             should_stop,
             task_descriptors,
@@ -119,7 +117,6 @@ def schedule_trial(
     pool: OpponentPool,
     study: optuna.Study,
     lifecycle: LifecycleWriter,
-    trace_path: str | None,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
     task_descriptors: TaskDescriptorAllocator | None = None,
@@ -143,7 +140,6 @@ def schedule_trial(
         pool,
         study,
         lifecycle,
-        trace_path,
         _terminalize_from_pair(lifecycle),
         task_descriptors,
     )
@@ -205,7 +201,6 @@ def drain_scheduled_trials(
     study: optuna.Study,
     lifecycle: LifecycleWriter,
     resolved_sha: str,
-    trace_path: str | None,
     wait_for_completion: Any,
     pruning_adapter: OptunaHyperbandAdapter | None = None,
     should_stop: Callable[[], bool] | None = None,
@@ -221,7 +216,7 @@ def drain_scheduled_trials(
         study,
         lifecycle,
         resolved_sha,
-        trace_path,
+        None,
         pruning_adapter,
         manifest_fingerprint,
         task_descriptors,
@@ -297,7 +292,6 @@ def continue_trial(
         context.pool,
         context.study,
         context.lifecycle,
-        context.trace_path,
         _terminalize_from_pair(context.lifecycle),
         context.task_descriptors,
     )
@@ -382,7 +376,6 @@ def replenish_trial(
             context.pool,
             context.study,
             context.lifecycle,
-            context.trace_path,
             context.pruning_adapter,
             should_stop,
             context.task_descriptors,

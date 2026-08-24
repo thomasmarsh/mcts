@@ -152,6 +152,6 @@ def test_next_pair_selects_against_updated_candidate_rating(tmp_path):
         Anchor("updated", {"family": "rave"}, state.rating.mu, 0.5)
     )
     lifecycle = SimpleNamespace(session_id=SessionId("session"))
-    task = make_next_pair_task(active, pool, lifecycle, str(tmp_path / "trace.jsonl"))
+    task = make_next_pair_task(active, pool, lifecycle)
     assert task.opponent.anchor_id == "updated"
     assert task.rating_before == state.rating

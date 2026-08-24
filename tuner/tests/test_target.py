@@ -107,7 +107,7 @@ def test_pair_command_uses_one_configured_comparison_and_default_budget():
     assert cmd[cmd.index("--max-iterations") + 1] == "10000"
 
 
-def test_pair_command_forwards_configs_time_budget_game_config_and_trace():
+def test_pair_command_forwards_configs_time_budget_and_game_config():
     cfg = SearchConfig(
         optimizer=OptimizerConfig(),
         target=TargetConfig(
@@ -116,13 +116,13 @@ def test_pair_command_forwards_configs_time_budget_game_config_and_trace():
             max_time_ms=25,
         ),
     )
-    task = replace(_task(), trace_path="moves.jsonl")
+    task = _task()
     cmd = _build_pair_cmd(cfg, Path("game-fake"), task)
     assert json.loads(cmd[cmd.index("--candidate-config") + 1]) == task.candidate_config
     assert json.loads(cmd[cmd.index("--baseline-config") + 1]) == task.opponent.config
     assert json.loads(cmd[cmd.index("--game-config") + 1]) == {"size": 7}
     assert cmd[cmd.index("--max-time-ms") + 1] == "25"
-    assert cmd[cmd.index("--trace-path") + 1] == "moves.jsonl"
+    assert "--trace-path" not in cmd
     assert "--max-iterations" not in cmd
 
 
