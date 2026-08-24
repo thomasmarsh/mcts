@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Final
 
+from .artifact_layout import ARTIFACT_LAYOUT_SCHEMA_VERSION
 from .config import SearchConfig
 from .lifecycle import LIFECYCLE_SCHEMA_VERSION, strict_json_dumps
 
@@ -119,6 +120,7 @@ def session_semantic_inputs(
         "schema_versions": {
             "manifest": MANIFEST_SCHEMA_VERSION,
             "lifecycle": LIFECYCLE_SCHEMA_VERSION,
+            "artifact_layout": ARTIFACT_LAYOUT_SCHEMA_VERSION,
         },
     }
 
