@@ -70,6 +70,12 @@ pub struct MemoryStats {
 /// graph_diagnostics`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GraphDiagnostics {
+    /// The keying mode this search is actually running under -- see
+    /// `TranspositionKeying`'s doc comment. Every other field's meaning
+    /// depends on it: under `StateOnly`, `transposition_nodes`/
+    /// `max_incoming_edges` can reflect real cross-ply cycles, which are
+    /// structurally impossible under `PerPly`/legacy keying.
+    pub keying: TranspositionKeying,
     /// Cumulative transposition-table lookups (across both the legacy and
     /// ply-keyed graph tables) that found an already-resolved node rather
     /// than creating a new one -- `TranspositionTable::hits`.
@@ -378,6 +384,7 @@ where
     /// same as `memory_stats`: a profiling tool, not a hot-path call.
     pub fn graph_diagnostics(&self) -> GraphDiagnostics {
         let mut diag = GraphDiagnostics {
+            keying: self.config.transposition_keying,
             table_hits: self.table.hits.load(Relaxed),
             unique_graph_nodes: self.table.len(),
             ..Default::default()
@@ -457,8 +464,9 @@ where
         if self.config.uses_transpositions() {
             let diag = self.graph_diagnostics();
             eprintln!(
-                "Graph: {} table hits, {} unique nodes, {} resolved edges, \
+                "Graph ({:?}): {} table hits, {} unique nodes, {} resolved edges, \
                  {} transposition nodes, {} max incoming edges",
+                diag.keying,
                 diag.table_hits,
                 diag.unique_graph_nodes,
                 diag.resolved_edges,

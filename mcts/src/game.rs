@@ -361,6 +361,23 @@ pub trait Game: Sized + Clone + Sync + Send {
 
     /// A zobrist hash is expected to be cheap and precomputed upon move
     /// application.
+    ///
+    /// Enabling `GraphSearch::Dag` (or the legacy `use_transpositions(true)`)
+    /// for a game asserts that this hash, together with `Self::S`'s `Eq`,
+    /// fully captures every fact the game's rules make a position's value
+    /// depend on -- not just the visible board, but repetition counts, ko
+    /// state, or anything else history can carry that isn't in the raw
+    /// board representation. Two histories the engine treats as "the same
+    /// state" (matching hash, and matching ply under
+    /// `TranspositionKeying::PerPly`, or matching hash alone under
+    /// `TranspositionKeying::StateOnly`) are merged into one graph node with
+    /// one shared value -- if their true values can actually differ, this is
+    /// silent incorrectness, not a performance question. This is the Graph
+    /// History Interaction problem (Kishimoto & Müller, AAAI 2004); see
+    /// `TranspositionKeying`'s doc comment for how `StateOnly` widens the
+    /// requirement beyond what `PerPly` already needs. A game whose hash
+    /// omits a history-relevant fact (Gonnect's ko rule is this codebase's
+    /// concrete example) must not enable DAG search until audited.
     #[allow(unused_variables)]
     fn zobrist_hash(state: &Self::S) -> u64 {
         0

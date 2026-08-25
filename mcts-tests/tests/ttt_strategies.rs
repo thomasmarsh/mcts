@@ -223,7 +223,7 @@ fn test_graph_diagnostics_reports_hits_edges_and_transposition_nodes() {
     // `GraphStats::Both` search actually built, cross-checked against the
     // lower-level counters/walks it's built from.
     use game_ttt::*;
-    use mcts::{GraphSearch, GraphStats};
+    use mcts::{GraphSearch, GraphStats, TranspositionKeying};
 
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
@@ -239,6 +239,7 @@ fn test_graph_diagnostics_reports_hits_edges_and_transposition_nodes() {
     search.choose_action(&state);
 
     let diag = search.graph_diagnostics();
+    assert_eq!(diag.keying, TranspositionKeying::PerPly);
     assert_eq!(
         diag.table_hits,
         search.table.hits.load(std::sync::atomic::Ordering::Relaxed)

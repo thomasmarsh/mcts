@@ -51,6 +51,20 @@ pub enum GraphSearch {
 /// graph can contain real cycles -- a hot loop descending it needs its own
 /// depth bound rather than relying on ply's strict increase to terminate
 /// (see `SearchConfig::max_playout_depth`).
+///
+/// `StateOnly` also raises the bar on `Game::zobrist_hash`/`Game::S`
+/// equality beyond what `PerPly` already required. Merging two histories
+/// into one node is only correct if the position's true value cannot depend
+/// on which history reached it -- the Graph History Interaction problem
+/// (Kishimoto & Müller, AAAI 2004). `PerPly` narrows this to "two histories
+/// agreeing on `(hash, ply)`"; `StateOnly` widens it to "two histories
+/// agreeing on `hash` alone, at any two plies", which a hash that omits a
+/// history-relevant fact (a repetition counter, ko state, anything not
+/// visible on the raw board) can satisfy while the true values still
+/// differ. Games with such rules (Gonnect's ko rule is the concrete example
+/// in this codebase) must not enable `StateOnly` until their hash is
+/// audited to fully capture history. See `Game::zobrist_hash`'s doc comment
+/// for the per-game contract this implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TranspositionKeying {
     #[default]

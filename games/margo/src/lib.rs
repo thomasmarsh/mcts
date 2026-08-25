@@ -908,8 +908,12 @@ impl Game for Margo {
                 // when one of its members disappears.
                 state.groups.place(index, mover_black, adjacency);
                 if state.occupied.count_ones() != prev_occupied_count + 1 {
-                    state.groups =
-                        groups::Groups::rebuild(state.occupied.n(), &state.occupied, &state.black, adjacency);
+                    state.groups = groups::Groups::rebuild(
+                        state.occupied.n(),
+                        &state.occupied,
+                        &state.black,
+                        adjacency,
+                    );
                 }
             }
             Action::Swap => {
@@ -937,8 +941,12 @@ impl Game for Margo {
                 // rebuild than to patch each root's `color` in place, and a
                 // swap is only ever legal at a one-piece board.
                 let adjacency = pyramid::get_adjacency(state.occupied.n());
-                state.groups =
-                    groups::Groups::rebuild(state.occupied.n(), &state.occupied, &state.black, adjacency);
+                state.groups = groups::Groups::rebuild(
+                    state.occupied.n(),
+                    &state.occupied,
+                    &state.black,
+                    adjacency,
+                );
             }
         }
         state.previous = Some(previous);

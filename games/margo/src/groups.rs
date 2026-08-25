@@ -91,7 +91,12 @@ impl Groups {
     /// board size (a fresh flood-equivalent walk), not to what changed
     /// since some earlier state -- see the module docs for when this is
     /// the right call vs. incremental `place`.
-    pub fn rebuild(n: usize, occupied: &Cells, black: &Cells, adjacency: &TouchingAdjacency) -> Self {
+    pub fn rebuild(
+        n: usize,
+        occupied: &Cells,
+        black: &Cells,
+        adjacency: &TouchingAdjacency,
+    ) -> Self {
         let mut groups = Self::new(n);
         for index in occupied.iter_set() {
             groups.place(index, black.get_index(index), adjacency);
