@@ -314,10 +314,9 @@ where
 /// search *iteration* (its own per-ply `select_move` calls happen inside
 /// whichever concrete type's own `playout` body runs, fully statically
 /// dispatched there), so the one indirect call this adds per iteration is
-/// cheap relative to a whole rollout's game-state work -- unlike `select`,
-/// which is deliberately left fully monomorphized in `SelectStage` below
-/// because it's called once per *child* at every node on every
-/// tree-descent step, a much hotter path.
+/// cheap relative to a whole rollout's game-state work -- `select`'s own,
+/// hotter per-child dispatch (once per child, at every node, every
+/// tree-descent step) is erased the same way, via `DynSelect`.
 pub struct DynSimulate<G: Game>(Box<dyn ErasedSimulateStrategy<G>>);
 
 impl<G: Game> Clone for DynSimulate<G> {

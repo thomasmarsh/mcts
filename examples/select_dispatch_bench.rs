@@ -1,14 +1,13 @@
-//! Compares a `select`-axis search built the way `mcts-tune::config_ir::
-//! build_search` builds it today (`select` fully monomorphized into
-//! `TreeSearch`'s type parameter) against the same search with `select`
+//! Compares a `select`-axis search with `select` fully monomorphized into
+//! `TreeSearch`'s type parameter against the same search with `select`
 //! erased through `mcts_tune::config_ir::DynSelect<G>`
-//! (`Box<dyn ErasedSelectStrategy<G>>` under a `SelectStrategy<G>` newtype).
+//! (`Box<dyn ErasedSelectStrategy<G>>` under a `SelectStrategy<G>` newtype) --
+//! the latter is what `mcts_tune::config_ir::build_search` actually builds.
 //! `simulate`/`final_action` are erased in both builds via `DynSimulate<G>`/
-//! `DynFinalAction<G>`, matching what `build_search` already does regardless
-//! of how `select` is handled, so those two axes contribute no difference
-//! between the two columns below -- only `select`'s own dispatch mechanism
-//! varies. `backprop` is fixed to `Classic` in both builds for the same
-//! reason.
+//! `DynFinalAction<G>`, matching what `build_search` does regardless of how
+//! `select` is handled, so those two axes contribute no difference between
+//! the two columns below -- only `select`'s own dispatch mechanism varies.
+//! `backprop` is fixed to `Classic` in both builds for the same reason.
 //!
 //! Reports iterations/sec, mean and standard deviation over several seeds
 //! per (game, select family) pair, single-threaded, at a fixed iteration

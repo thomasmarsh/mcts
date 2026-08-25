@@ -171,9 +171,12 @@ pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
 /// scoring loop inside its own `best_child` (the default implementation in
 /// `mcts::select::SelectStrategy`), fully statically dispatched there --
 /// only the one per-node call into the box is erased, not the per-child
-/// comparisons inside it. Blanket-implemented over every real
-/// `SelectStrategy`, so nothing here can drift from `register_select!`'s
-/// table.
+/// comparisons inside it. Unlike `SelectStrategy` itself, this shadow is
+/// object-safe (no `Self`-by-value `Default`/`Clone`, no associated `Score`/
+/// `Aux` types in its signature), which is what lets `DynSelect` below erase
+/// every concrete family `with_select` can produce into one type.
+/// Blanket-implemented over every real `SelectStrategy`, so nothing here can
+/// drift from `register_select!`'s table.
 trait ErasedSelectStrategy<G: Game>: Send + Sync {
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize;
     fn backprop_flags(&self) -> BackpropFlags;
@@ -201,13 +204,16 @@ where
 /// One `SelectStrategy<G>` impl standing in for all of `with_select`'s
 /// concrete leaf types (the `register_select!` table, each optionally
 /// wrapped in `EpsilonGreedy`), via a `Box<dyn ErasedSelectStrategy<G>>` --
-/// mirrors `DynSimulate`/`DynFinalAction` exactly. Not wired into
-/// `SelectStage`'s real dispatch; it exists so a benchmark can compare this
-/// erased path's throughput against the statically-monomorphized one.
-/// `Score`/`Aux` are fixed to `()`: nothing outside `best_child`'s own
-/// delegated call ever reads them, since `best_child` is always overridden
-/// here rather than falling back to the trait's default (which is the only
-/// thing that would call `score_child`/`unvisited_value`/`setup` on `Self`).
+/// mirrors `DynSimulate`/`DynFinalAction` exactly, and is what
+/// `config_ir::build_search` composes `select` from: `select_step` runs a
+/// `dyn` call once per tree-descent step rather than one of ~16 statically
+/// monomorphized bodies, collapsing that axis's contribution to
+/// `build_search`'s output to a single `TreeSearch` shape per game
+/// regardless of which `select` family a config names. `Score`/`Aux` are
+/// fixed to `()`: nothing outside `best_child`'s own delegated call ever
+/// reads them, since `best_child` is always overridden here rather than
+/// falling back to the trait's default (which is the only thing that would
+/// call `score_child`/`unvisited_value`/`setup` on `Self`).
 pub struct DynSelect<G: Game>(Box<dyn ErasedSelectStrategy<G>>);
 
 impl<G: Game> Clone for DynSelect<G> {
@@ -267,10 +273,9 @@ impl<G: Game + 'static> SelectCont<G> for EraseSelectCont<G> {
     }
 }
 
-/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- not
-/// called anywhere yet (see `DynSelect`'s doc comment); a benchmark can call
-/// this to build the erased alternative to compare against the
-/// statically-monomorphized path `with_select` still drives directly.
+/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- see
+/// `DynSelect`'s doc comment for why `build_search` uses this instead of
+/// routing `S1` generically through its whole stage chain.
 pub fn resolve_select<G: Game + 'static>(spec: &SelectSpec) -> DynSelect<G> {
     with_select::<G, _>(spec, EraseSelectCont(std::marker::PhantomData))
 }
