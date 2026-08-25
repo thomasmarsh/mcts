@@ -1,6 +1,10 @@
 use mcts::game::Game;
-use mcts::select::{self, SelectStrategy};
+use mcts::index::Id;
+use mcts::node::ChildArray;
+use mcts::select::{self, SelectContext, SelectStrategy};
+use mcts::strategies::mcts::config::BackpropFlags;
 use mcts::Requirements;
+use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 /// Invokes a continuation after resolving a concrete selection strategy.
@@ -155,4 +159,118 @@ impl<G: Game> SelectCont<G> for RequirementsCont<G> {
 
 pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
     with_select::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
+}
+
+/// A shadow of `SelectStrategy<G>` covering only `best_child` (the one
+/// method `select_step` calls on a search's `select` component, once per
+/// tree-descent step) plus `backprop_flags`/`Clone`/`Send`/`Sync` -- the
+/// `select`-axis counterpart of `ErasedSimulateStrategy`/
+/// `ErasedFinalActionStrategy` in `simulate.rs`/`final_action.rs`.
+/// `score_child`/`unvisited_value` aren't part of this shadow: whichever
+/// concrete family a `DynSelect` box holds still runs its own per-child
+/// scoring loop inside its own `best_child` (the default implementation in
+/// `mcts::select::SelectStrategy`), fully statically dispatched there --
+/// only the one per-node call into the box is erased, not the per-child
+/// comparisons inside it. Blanket-implemented over every real
+/// `SelectStrategy`, so nothing here can drift from `register_select!`'s
+/// table.
+trait ErasedSelectStrategy<G: Game>: Send + Sync {
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize;
+    fn backprop_flags(&self) -> BackpropFlags;
+    fn clone_box(&self) -> Box<dyn ErasedSelectStrategy<G>>;
+}
+
+impl<G, S> ErasedSelectStrategy<G> for S
+where
+    G: Game,
+    S: SelectStrategy<G> + 'static,
+{
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        SelectStrategy::best_child(self, ctx, rng)
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        SelectStrategy::backprop_flags(self)
+    }
+
+    fn clone_box(&self) -> Box<dyn ErasedSelectStrategy<G>> {
+        Box::new(self.clone())
+    }
+}
+
+/// One `SelectStrategy<G>` impl standing in for all of `with_select`'s
+/// concrete leaf types (the `register_select!` table, each optionally
+/// wrapped in `EpsilonGreedy`), via a `Box<dyn ErasedSelectStrategy<G>>` --
+/// mirrors `DynSimulate`/`DynFinalAction` exactly. Not wired into
+/// `SelectStage`'s real dispatch; it exists so a benchmark can compare this
+/// erased path's throughput against the statically-monomorphized one.
+/// `Score`/`Aux` are fixed to `()`: nothing outside `best_child`'s own
+/// delegated call ever reads them, since `best_child` is always overridden
+/// here rather than falling back to the trait's default (which is the only
+/// thing that would call `score_child`/`unvisited_value`/`setup` on `Self`).
+pub struct DynSelect<G: Game>(Box<dyn ErasedSelectStrategy<G>>);
+
+impl<G: Game> Clone for DynSelect<G> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone_box())
+    }
+}
+
+impl<G: Game> Default for DynSelect<G> {
+    fn default() -> Self {
+        Self(Box::new(select::Ucb1::default()))
+    }
+}
+
+impl<G: Game> SelectStrategy<G> for DynSelect<G> {
+    type Score = ();
+    type Aux = ();
+
+    fn setup(&mut self, _ctx: &SelectContext<'_, G>) -> Self::Aux {}
+
+    fn score_child(
+        &self,
+        _ctx: &SelectContext<'_, G>,
+        _child_id: Id,
+        _children: &ChildArray<G::A>,
+        _idx: usize,
+        _aux: Self::Aux,
+    ) -> Self::Score {
+        unreachable!("DynSelect always overrides best_child directly")
+    }
+
+    fn unvisited_value(&self, _ctx: &SelectContext<'_, G>, _aux: Self::Aux) -> Self::Score {
+        unreachable!("DynSelect always overrides best_child directly")
+    }
+
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        self.0.best_child(ctx, rng)
+    }
+
+    fn backprop_flags(&self) -> BackpropFlags {
+        self.0.backprop_flags()
+    }
+}
+
+/// A `SelectCont` that erases whatever concrete strategy `with_select`
+/// resolves to into a `DynSelect<G>` -- reuses `with_select`'s existing
+/// dispatch (so `EpsilonGreedy` wrapping still works) but stops that
+/// dispatch's fan-out from propagating any further: everything downstream
+/// of `resolve_select` sees one fixed type.
+struct EraseSelectCont<G>(std::marker::PhantomData<G>);
+
+impl<G: Game + 'static> SelectCont<G> for EraseSelectCont<G> {
+    type Output = DynSelect<G>;
+
+    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> DynSelect<G> {
+        DynSelect(Box::new(select))
+    }
+}
+
+/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- not
+/// called anywhere yet (see `DynSelect`'s doc comment); a benchmark can call
+/// this to build the erased alternative to compare against the
+/// statically-monomorphized path `with_select` still drives directly.
+pub fn resolve_select<G: Game + 'static>(spec: &SelectSpec) -> DynSelect<G> {
+    with_select::<G, _>(spec, EraseSelectCont(std::marker::PhantomData))
 }
