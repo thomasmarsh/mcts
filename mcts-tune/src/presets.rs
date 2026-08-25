@@ -234,20 +234,27 @@ impl PresetTable {
 const PLAYOUT_DEPTH: usize = 200;
 const EXPAND_THRESHOLD: u32 = 1;
 
-/// An inline, JSON-driven `config_ir::SearchSpec` -- the "Custom" strategy
-/// wire payload: unlike [`PresetSpec`] (`params` is `TrialParams`-shaped,
-/// dispatched through `family_catalog`'s ~18 pre-composed family names),
-/// `search` is a full `config_ir::SearchSpec`, built through
+/// The "Custom" strategy wire payload, in one of two mutually exclusive
+/// shapes: [`Self::search`] is a full `config_ir::SearchSpec`, built through
 /// [`build_custom`] via `config_ir::build_search` directly -- true free
-/// composition of all four axes, not a named combination. Field shape
-/// otherwise mirrors [`PresetSpec`] minus `id`/`label`/`description` (which
-/// only make sense for a table entry, not a one-off inline config).
+/// composition of all four axes, not a named combination (unlike
+/// [`PresetSpec`]'s `params`, which is `TrialParams`-shaped and dispatched
+/// through `family_catalog`'s pre-composed family names). [`Self::params`]
+/// is that same `TrialParams`-shaped JSON instead, for naming an ordinary
+/// family (including a [`crate::family_catalog::DirectFamily`] one, e.g.
+/// `"random"`) inline rather than composing axes by hand -- `build_custom`
+/// resolves it through the exact same [`crate::build_search`] a
+/// [`PresetSpec`] already goes through. Exactly one of the two must be set.
+/// Field shape otherwise mirrors [`PresetSpec`] minus `id`/`label`/
+/// `description` (which only make sense for a table entry, not a one-off
+/// inline config).
 ///
 /// `Serialize`/`Deserialize` are hand-implemented below, the same way and
 /// for the same reason as [`PresetSpec`]'s -- see that struct's doc comment.
 #[derive(Debug, Clone)]
 pub struct CustomStrategySpec {
-    pub search: config_ir::SearchSpec,
+    pub search: Option<config_ir::SearchSpec>,
+    pub params: Option<Value>,
     pub max_time_ms: Option<u64>,
     pub max_iterations: Option<usize>,
     /// `0` means "every available core" -- same convention as
@@ -288,6 +295,7 @@ impl Serialize for CustomStrategySpec {
     {
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("search", &self.search)?;
+        map.serialize_entry("params", &self.params)?;
         map.serialize_entry("max_time_ms", &self.max_time_ms)?;
         map.serialize_entry("max_iterations", &self.max_iterations)?;
         map.serialize_entry("threads", &self.threads)?;
@@ -305,8 +313,9 @@ impl<'de> Deserialize<'de> for CustomStrategySpec {
         D: Deserializer<'de>,
     {
         let v = Value::deserialize(deserializer)?;
-        Ok(CustomStrategySpec {
-            search: field(&v, "search").map_err(D::Error::custom)?,
+        let spec = CustomStrategySpec {
+            search: field_opt(&v, "search").map_err(D::Error::custom)?,
+            params: field_opt(&v, "params").map_err(D::Error::custom)?,
             max_time_ms: field_opt(&v, "max_time_ms").map_err(D::Error::custom)?,
             max_iterations: field_opt(&v, "max_iterations").map_err(D::Error::custom)?,
             threads: field_opt(&v, "threads")
@@ -324,7 +333,16 @@ impl<'de> Deserialize<'de> for CustomStrategySpec {
             state_only_keying: field_opt(&v, "state_only_keying")
                 .map_err(D::Error::custom)?
                 .unwrap_or_default(),
-        })
+        };
+        if spec.search.is_none() && spec.params.is_none() {
+            return Err(D::Error::custom("must set one of `search`/`params`"));
+        }
+        if spec.search.is_some() && spec.params.is_some() {
+            return Err(D::Error::custom(
+                "`search` and `params` are mutually exclusive",
+            ));
+        }
+        Ok(spec)
     }
 }
 
@@ -346,20 +364,39 @@ impl CustomStrategySpec {
 }
 
 /// Builds a runnable search straight from a [`CustomStrategySpec`] --
-/// bypassing `TrialParams`/`family_catalog` entirely and calling
-/// `config_ir::build_search` directly, the first real (non-test) caller of
-/// that function: `family_catalog`'s ~18 families are pre-composed
-/// combinations, never free per-axis composition, so a "Custom" strategy
-/// needs this parallel path rather than routing through [`build_search`]
-/// (this crate's `TrialParams`-based one, re-exported at the crate root).
+/// either [`CustomStrategySpec::search`] (bypassing `TrialParams`/
+/// `family_catalog` entirely and calling `config_ir::build_search` directly,
+/// for a free per-axis composition no named family produces) or
+/// [`CustomStrategySpec::params`] (naming an ordinary family, resolved
+/// through the exact same [`build_search`] a [`PresetSpec`] already goes
+/// through -- "Custom" naming a family is the same code path as a preset
+/// naming one, not a parallel implementation).
 pub fn build_custom<G: Game + 'static>(
     spec: &CustomStrategySpec,
     seed: u64,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
+    let budget = spec.budget();
+    match (&spec.search, &spec.params) {
+        (Some(search), None) => build_custom_search::<G>(spec, search, seed, &budget),
+        (None, Some(params)) => build_search::<G>(params, seed, spec.use_transpositions, &budget),
+        (Some(_), Some(_)) | (None, None) => Err(HostError::bad_request(
+            "custom strategy spec must set exactly one of `search`/`params`",
+        )),
+    }
+}
+
+/// [`build_custom`]'s `search` branch -- free composition of all four
+/// `config_ir::SearchSpec` axes, going through `config_ir::build_search`
+/// directly.
+fn build_custom_search<G: Game + 'static>(
+    spec: &CustomStrategySpec,
+    search: &config_ir::SearchSpec,
+    seed: u64,
+    budget: &SearchBudget,
+) -> Result<Box<dyn Search<G = G>>, HostError> {
     let q_init = QInit::from_str(&spec.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", spec.q_init)))?;
-    config_ir::validate_search_spec::<G>(&spec.search).map_err(HostError::bad_request)?;
-    let budget = spec.budget();
+    config_ir::validate_search_spec::<G>(search).map_err(HostError::bad_request)?;
     let (use_transpositions, reuse_tree, graph_search, transposition_keying) =
         crate::resolve_graph_search(spec.mcgs, spec.use_transpositions, spec.state_only_keying)?;
     let settings = config_ir::SearchSettings {
@@ -378,7 +415,7 @@ pub fn build_custom<G: Game + 'static>(
         solver_loss_threshold: None,
         contempt_factor: None,
     };
-    Ok(config_ir::build_search::<G>(&spec.search, &settings))
+    Ok(config_ir::build_search::<G>(search, &settings))
 }
 
 /// Resolves either a named preset or an inline [`CustomStrategySpec`] to a
@@ -410,7 +447,7 @@ mod tests {
 
     fn sample_custom_spec() -> CustomStrategySpec {
         CustomStrategySpec {
-            search: config_ir::SearchSpec {
+            search: Some(config_ir::SearchSpec {
                 select: SelectSpec::EpsilonGreedy {
                     epsilon: 0.1,
                     inner: BaseSelectSpec::Ucb1 { c: 1.4 },
@@ -418,9 +455,24 @@ mod tests {
                 simulate: SimulateSpec::Uniform {},
                 backprop: BackpropSpec::Classic {},
                 final_action: FinalActionSpec::RobustChild {},
-            },
+            }),
+            params: None,
             max_time_ms: None,
             max_iterations: Some(50),
+            threads: 1,
+            use_transpositions: false,
+            q_init: "Infinity".to_string(),
+            mcgs: false,
+            state_only_keying: false,
+        }
+    }
+
+    fn sample_custom_params_spec() -> CustomStrategySpec {
+        CustomStrategySpec {
+            search: None,
+            params: Some(json!({"family": "random", "q_init": "Infinity"})),
+            max_time_ms: None,
+            max_iterations: Some(1),
             threads: 1,
             use_transpositions: false,
             q_init: "Infinity".to_string(),
@@ -482,6 +534,40 @@ mod tests {
         spec.mcgs = true;
         spec.use_transpositions = true;
         let _ai = build_custom::<Nim>(&spec, 0).unwrap();
+    }
+
+    #[test]
+    fn build_custom_resolves_a_named_family_via_params() {
+        // `params` names an ordinary `family_catalog` family (including a
+        // `DirectFamily` one, e.g. `"random"`) rather than composing axes by
+        // hand -- proof `build_custom` routes it through the same
+        // `build_search` a `PresetSpec` already goes through.
+        let spec = sample_custom_params_spec();
+        let mut ai = build_custom::<Nim>(&spec, 0).unwrap();
+        let state = <Nim as Game>::S::default();
+        let _ = ai.choose_action(&state);
+    }
+
+    #[test]
+    fn build_custom_rejects_a_spec_with_neither_search_nor_params() {
+        let mut spec = sample_custom_spec();
+        spec.search = None;
+        let err = match build_custom::<Nim>(&spec, 0) {
+            Err(e) => e,
+            Ok(_) => panic!("a spec with neither search nor params must be rejected"),
+        };
+        assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn build_custom_rejects_a_spec_with_both_search_and_params() {
+        let mut spec = sample_custom_spec();
+        spec.params = Some(json!({"family": "random", "q_init": "Infinity"}));
+        let err = match build_custom::<Nim>(&spec, 0) {
+            Err(e) => e,
+            Ok(_) => panic!("a spec with both search and params must be rejected"),
+        };
+        assert_eq!(err.code, 400);
     }
 
     #[test]
@@ -674,5 +760,33 @@ mod tests {
     fn custom_strategy_spec_deserialize_rejects_missing_required_field() {
         let err = serde_json::from_value::<CustomStrategySpec>(json!({})).unwrap_err();
         assert!(err.to_string().contains("search"), "{err}");
+    }
+
+    #[test]
+    fn custom_strategy_spec_deserialize_rejects_both_search_and_params() {
+        let err = serde_json::from_value::<CustomStrategySpec>(json!({
+            "search": {
+                "select": {"kind": "ucb1", "c": 1.4},
+                "simulate": {"kind": "uniform"},
+                "backprop": {"kind": "classic"},
+                "final_action": {"kind": "robust_child"},
+            },
+            "params": {"family": "random", "q_init": "Infinity"},
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn custom_strategy_spec_deserialize_accepts_params_in_place_of_search() {
+        let spec: CustomStrategySpec = serde_json::from_value(json!({
+            "params": {"family": "random", "q_init": "Infinity"},
+        }))
+        .unwrap();
+        assert!(spec.search.is_none());
+        assert_eq!(
+            spec.params,
+            Some(json!({"family": "random", "q_init": "Infinity"}))
+        );
     }
 }

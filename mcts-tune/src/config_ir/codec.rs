@@ -54,8 +54,8 @@ pub(crate) fn field_opt<T: serde::de::DeserializeOwned>(
 ) -> Result<Option<T>, String> {
     match v.get(name) {
         None | Some(Value::Null) => Ok(None),
-        Some(raw) => {
-            serde_json::from_value(raw.clone()).map(Some).map_err(|e| format!("field `{name}`: {e}"))
-        }
+        Some(raw) => serde_json::from_value(raw.clone())
+            .map(Some)
+            .map_err(|e| format!("field `{name}`: {e}")),
     }
 }

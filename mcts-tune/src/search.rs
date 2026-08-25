@@ -15,7 +15,8 @@ use serde_json::Value;
 
 use crate::{
     config_ir,
-    family_catalog::{dispatch_family, FamilySpec, TrialParams},
+    direct_search::build_direct,
+    family_catalog::{dispatch_family, ComposeSpec, FamilySpec, TrialParams},
 };
 
 pub(crate) const PLAYOUT_DEPTH: usize = 200;
@@ -250,37 +251,38 @@ impl SearchBudget {
     }
 }
 
-/// Converts one trial's `TrialParams` into `config_ir`'s `SearchSpec`/
-/// `SearchSettings` -- the `config_ir`-based counterpart of `make_candidate`'s
-/// `match p.family.as_str()` dispatch, covering every family except
-/// `"random"`/`"flat_mc"` (not a `Compose<..>` `Strategy`, so they stay direct
-/// arms in `make_candidate` permanently; see its own comment on why). Per-
-/// family construction is `family_catalog::dispatch_family`'s
-/// `register_family!` table; this function only handles what's common to
-/// every family (`q_init`, `mcgs`, the fixed `SearchSettings` knobs).
-/// `make_candidate` calls this and then `config_ir::build_search` for every
-/// other family.
-pub(crate) fn to_search_spec(
+/// Converts one trial's `TrialParams` and its already-dispatched
+/// `ComposeSpec` into `config_ir`'s `SearchSpec`/`SearchSettings` -- the
+/// part of candidate construction common to every `FamilySpec::Compose`
+/// family (`q_init`, `mcgs`, the fixed `SearchSettings` knobs), factored out
+/// of `to_search_spec` so `make_candidate` can call it directly for a
+/// `Compose` family without re-dispatching `p.family`.
+fn compose_settings(
+    cs: ComposeSpec,
     p: &TrialParams,
     seed: u64,
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
-    let q_init = QInit::from_str(&p.q_init)
-        .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
+    let q_init_str = p
+        .q_init
+        .as_deref()
+        .ok_or_else(|| HostError::bad_request("missing param: q_init".to_string()))?;
+    let q_init = QInit::from_str(q_init_str)
+        .map_err(|_| HostError::bad_request(format!("invalid q_init: {q_init_str}")))?;
     let mcgs = p.mcgs.unwrap_or(false);
     let state_only_keying = p.state_only_keying.unwrap_or(false);
     let (use_transpositions, reuse_tree, graph_search, transposition_keying) =
         resolve_graph_search(mcgs, use_transpositions, state_only_keying)?;
 
-    let FamilySpec {
+    let ComposeSpec {
         select,
         simulate,
         final_action,
         backprop,
         solver_loss_threshold: solver_loss_threshold_setting,
         contempt_factor: contempt_factor_setting,
-    } = dispatch_family(&p.family, p)?;
+    } = cs;
 
     let spec = config_ir::SearchSpec {
         select,
@@ -305,6 +307,32 @@ pub(crate) fn to_search_spec(
         contempt_factor: contempt_factor_setting,
     };
     Ok((spec, settings))
+}
+
+/// Converts one trial's `TrialParams` into `config_ir`'s `SearchSpec`/
+/// `SearchSettings`, valid only for a family that resolves to
+/// `FamilySpec::Compose` (a `Direct` family, e.g. `"random"`, has no such
+/// representation; calling this with one returns the `Err` below). Per-family
+/// construction is `family_catalog::dispatch_family`'s `register_family!`
+/// table; `compose_settings` handles what's common to every `Compose` family.
+/// `make_candidate` builds its own `Box<dyn Search<G>>` straight from
+/// `compose_settings`/`build_direct` rather than through this function, so
+/// this is exercised only by `tests.rs`'s direct `SearchSpec`/
+/// `SearchSettings`-level assertions.
+#[cfg(test)]
+pub(crate) fn to_search_spec(
+    p: &TrialParams,
+    seed: u64,
+    use_transpositions: bool,
+    budget: &SearchBudget,
+) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
+    match dispatch_family(&p.family, p)? {
+        FamilySpec::Compose(cs) => compose_settings(cs, p, seed, use_transpositions, budget),
+        FamilySpec::Direct(_) => Err(HostError::bad_request(format!(
+            "family {:?} has no config_ir::SearchSpec representation",
+            p.family
+        ))),
+    }
 }
 
 /// Derives `SearchSettings`'s `use_transpositions`/`reuse_tree`/
@@ -383,21 +411,23 @@ pub(crate) fn make_candidate<G: Game + 'static>(
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    match p.family.as_str() {
-        // Baseline-only floor families -- deliberately *not* in
+    if p.family == "flat_mc" {
+        // Baseline-only floor family -- deliberately *not* in
         // `strategy_tuner_info`'s searchable `family` choices (a candidate
-        // sampled as `random`/`flat_mc` would just hover around a ~0.5 cost
-        // forever, wasting the tuner's trial budget). Reachable only via
+        // sampled as `flat_mc` would just hover around a ~0.5 cost forever,
+        // wasting the tuner's trial budget). Reachable only via
         // `build_search`/`--baseline-config`, e.g. as a ladder's floor rung.
-        // Neither reads `q_init` or any other `TrialParams` field beyond
-        // `family` itself. Not a `Compose<..>` `Strategy`, so these two stay
-        // outside `to_search_spec`/`config_ir::build_search` permanently.
-        "random" => Ok(Box::new(mcts::strategies::random::Random::<G>::new())),
-        "flat_mc" => Ok(Box::new(
+        // Reads no `TrialParams` field beyond `family` itself. Not yet a
+        // `family_catalog` row (no `register_family!` entry, so
+        // `dispatch_family` doesn't know it), so it stays a direct arm here.
+        return Ok(Box::new(
             mcts::strategies::flat_mc::FlatMonteCarloStrategy::<G>::new(),
-        )),
-        _ => {
-            let (spec, settings) = to_search_spec(p, seed, use_transpositions, budget)?;
+        ));
+    }
+    match dispatch_family(&p.family, p)? {
+        FamilySpec::Direct(direct) => Ok(build_direct::<G>(&direct, budget)),
+        FamilySpec::Compose(cs) => {
+            let (spec, settings) = compose_settings(cs, p, seed, use_transpositions, budget)?;
             config_ir::validate_search_spec::<G>(&spec).map_err(HostError::bad_request)?;
             Ok(config_ir::build_search(&spec, &settings))
         }

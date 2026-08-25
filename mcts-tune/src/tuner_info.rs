@@ -2,7 +2,8 @@ use game_host::TunerInfo;
 use serde_json::json;
 
 use crate::family_catalog::{
-    condition, family_choices, family_conditions, param, tunable_field_parameters,
+    condition, direct_family_names, family_choices, family_conditions, param,
+    tunable_field_parameters,
 };
 
 /// Search-space metadata for the full multi-family catalog above, for `tune
@@ -40,6 +41,17 @@ pub fn strategy_tuner_info_with_mcgs(
         },
         conditions: {
             let mut conditions = family_conditions();
+            // `q_init` is meaningless to a `Direct` family (no Q-values for
+            // it to initialize -- see `DirectFamily`'s doc comment), so its
+            // activation is gated on `family` naming one of the *other*
+            // (`Compose`) rows, rather than being an unconditional root like
+            // `family` itself.
+            let direct = direct_family_names();
+            let compose_families: Vec<&str> = family_choices()
+                .into_iter()
+                .filter(|f| !direct.contains(f))
+                .collect();
+            conditions.push(condition(json!({"family": compose_families}), &["q_init"]));
             // Gated by another field's own sampled value (`final_action`,
             // `schedule`, `rave_ucb`, `contempt`), not by `family` directly --
             // see `register_family!`'s doc comment in `family_catalog.rs` for

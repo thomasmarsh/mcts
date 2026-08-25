@@ -71,8 +71,7 @@ where
 
 fn mean_stddev(samples: &[f64]) -> (f64, f64) {
     let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-    let variance =
-        samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / samples.len() as f64;
+    let variance = samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / samples.len() as f64;
     (mean, variance.sqrt())
 }
 
@@ -136,8 +135,22 @@ where
     G: Game + 'static,
     G::S: std::fmt::Display,
 {
-    compare::<G, Ucb1>(name, "ucb1", &state, iterations, Ucb1::default, &ucb1_spec());
-    compare::<G, Rave>(name, "rave", &state, iterations, Rave::default, &rave_spec());
+    compare::<G, Ucb1>(
+        name,
+        "ucb1",
+        &state,
+        iterations,
+        Ucb1::default,
+        &ucb1_spec(),
+    );
+    compare::<G, Rave>(
+        name,
+        "rave",
+        &state,
+        iterations,
+        Rave::default,
+        &rave_spec(),
+    );
 }
 
 fn main() {
@@ -152,7 +165,11 @@ fn main() {
         SEEDS.len()
     );
 
-    run_game::<Nim>("nim", NimState::default(), iterations_override.unwrap_or(50_000));
+    run_game::<Nim>(
+        "nim",
+        NimState::default(),
+        iterations_override.unwrap_or(50_000),
+    );
     run_game::<Othello>(
         "othello",
         OthelloState::default(),

@@ -22,5 +22,14 @@
             "final_action": "robust_child"
         },
         "max_iterations": 5000
+    },
+    {
+        "id": "random",
+        "label": "random",
+        "description": "",
+        "params": {
+            "family": "random"
+        },
+        "max_iterations": 1
     }
 ]

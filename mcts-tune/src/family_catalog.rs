@@ -3,14 +3,17 @@
 //! one source, instead of the same field list being hand-declared twice.
 //!
 //! Four fields stay hand-declared on `TrialParams` and hand-reported by
-//! `strategy_tuner_info_with_mcgs` instead of living in this table:
-//! `family` and `q_init` are unconditionally active regardless of which
-//! family a trial names (nothing in `conditions` gates them), and `mcgs`/
-//! `state_only_keying` are reported only when a game's own `supports_mcgs`
-//! flag is set (`state_only_keying` additionally gated on `mcgs`'s own
-//! sampled value via a `conditions` entry, since it's meaningless without
-//! graph search on) -- none of the four is "a field some family's
-//! `conditions` entry activates", which is what this table exists to cover.
+//! `strategy_tuner_info_with_mcgs` instead of living in this table: `family`
+//! is unconditionally active regardless of which family a trial names
+//! (nothing in `conditions` gates it); `q_init` is meaningless to a `Direct`
+//! family (no `select`/backprop Q-values for it to initialize -- see
+//! `DirectFamily`'s doc comment), so it's gated on `family` naming a
+//! `Compose` row via a `conditions` entry built from `direct_family_names()`,
+//! the same way `mcgs`/`state_only_keying` are reported only when a game's
+//! own `supports_mcgs` flag is set (`state_only_keying` additionally gated
+//! on `mcgs`'s own sampled value, since it's meaningless without graph
+//! search on) -- none of the four is "a field some family's `conditions`
+//! entry activates", which is what this table exists to cover.
 
 use crate::config_ir::codec::{field, field_opt};
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
@@ -60,10 +63,12 @@ macro_rules! register_field {
         /// JSON object `strategy_tune_eval` receives -- the merged
         /// active-parameter set a tuner harness builds from its search-space
         /// YAML. `family` selects which of the fields below are actually
-        /// required; everything except `family`/`q_init` is `Option`
-        /// because it's only meaningful for a subset of families (validated
-        /// per-family in `to_search_spec`, the same way missing required
-        /// fields were already rejected before `family` existed).
+        /// required; everything except `family` is `Option` because it's
+        /// only meaningful for a subset of families (validated per-family in
+        /// `compose_settings`, the same way missing required fields were
+        /// already rejected before `family` existed) -- `q_init` included:
+        /// every `Compose` family requires it, but a `Direct` family
+        /// (`direct_search::build_direct`) never reads it at all.
         ///
         /// `Deserialize` is hand-implemented below (routed through
         /// `serde_json::Value`, via the same `config_ir::codec` helpers
@@ -76,7 +81,7 @@ macro_rules! register_field {
         #[derive(Debug)]
         pub struct TrialParams {
             pub(crate) family: String,
-            pub(crate) q_init: String,
+            pub(crate) q_init: Option<String>,
             $(
                 $(#[$doc])*
                 pub(crate) $field: Option<$ty>,
@@ -98,7 +103,7 @@ macro_rules! register_field {
                 let v = Value::deserialize(deserializer)?;
                 Ok(TrialParams {
                     family: field(&v, "family").map_err(D::Error::custom)?,
-                    q_init: field(&v, "q_init").map_err(D::Error::custom)?,
+                    q_init: field_opt(&v, "q_init").map_err(D::Error::custom)?,
                     $(
                         $field: field_opt(&v, stringify!($field)).map_err(D::Error::custom)?,
                     )+
@@ -226,14 +231,14 @@ pub(crate) fn to_final_action_spec(p: &TrialParams) -> Result<FinalActionSpec, H
     }
 }
 
-/// `to_search_spec`'s per-family output: the `SelectSpec`/`SimulateSpec`/
-/// `FinalActionSpec` triple every family builds, plus the two extra
+/// `compose_settings`'s per-family output: the `SelectSpec`/`SimulateSpec`/
+/// `FinalActionSpec` triple every MCTS family builds, plus the two extra
 /// `SearchSettings` fields only the PN families (Kowalski et al. 2023)
 /// populate -- `None` for every other family. Bundled into one struct rather
 /// than a growing tuple so a row that doesn't need the PN-only fields can
 /// just leave them `None` instead of every row threading extra positional
 /// values through.
-pub(crate) struct FamilySpec {
+pub(crate) struct ComposeSpec {
     pub select: SelectSpec,
     pub simulate: SimulateSpec,
     pub final_action: FinalActionSpec,
@@ -248,10 +253,29 @@ pub(crate) struct FamilySpec {
     pub contempt_factor: Option<f64>,
 }
 
-/// Generates `dispatch_family`, the single source for `to_search_spec`'s
-/// per-family construction -- one row per family, each a literal
-/// transcription of that family's own `to_search_spec` match arm as a
-/// closure over `p: &TrialParams`. A closure (rather than a bare `expr`
+/// `dispatch_family`'s result: either a pre-composed MCTS family (`Compose`,
+/// resolved through `config_ir::build_search`, same as every axis-composed
+/// `TreeSearch`) or a standalone `Search` impl with no `config_ir::SearchSpec`
+/// representation at all (`Direct`, resolved through
+/// `direct_search::build_direct`). A family can't mix the two: it either
+/// names a point in the four-axis `select`/`simulate`/`backprop`/
+/// `final_action` space, or it's a different algorithm entirely.
+pub(crate) enum FamilySpec {
+    Compose(ComposeSpec),
+    Direct(DirectFamily),
+}
+
+/// One `FamilySpec::Direct` payload per standalone `Search` impl in the
+/// catalog -- the parameters `direct_search::build_direct` needs to
+/// construct it, already resolved out of `TrialParams`'s `Option` fields.
+pub(crate) enum DirectFamily {
+    Random,
+}
+
+/// Generates `dispatch_family`, the single source of per-family
+/// construction `compose_settings`/`make_candidate` both dispatch through --
+/// one row per family, each a closure over `p: &TrialParams`. A closure
+/// (rather than a bare `expr`
 /// referencing an outer `p`) keeps every row fully self-contained: macro
 /// hygiene gives each row's closure parameter its own binding, so there's no
 /// need for a row's `$ctor` to share identifier context with code written in
@@ -271,8 +295,11 @@ pub(crate) struct FamilySpec {
 /// they're a different kind of condition than "this family always needs
 /// this field".
 ///
-/// `"random"`/`"flat_mc"` are not rows here -- see `make_candidate`'s own
-/// comment on why those two stay permanently outside this table.
+/// A row's `$ctor` returns `FamilySpec`, not `ComposeSpec` directly -- most
+/// rows wrap their result in `FamilySpec::Compose(...)`, but a family with
+/// no `config_ir::SearchSpec` representation (`"random"`) instead returns
+/// `FamilySpec::Direct(...)`, built by `direct_search::build_direct` rather
+/// than `config_ir::build_search`.
 macro_rules! register_family {
     (
         $(
@@ -293,8 +320,7 @@ macro_rules! register_family {
         }
 
         /// The `family` categorical's `choices` list -- every row's name, in
-        /// declaration order. Deliberately excludes `"random"`/`"flat_mc"`
-        /// (not rows in this table -- see this macro's doc comment).
+        /// declaration order.
         pub(crate) fn family_choices() -> Vec<&'static str> {
             vec![$( $name ),+]
         }
@@ -315,15 +341,15 @@ macro_rules! register_family {
 }
 
 register_family! {
-    "ucb1" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {
             mode: DecisiveMoveMode::Win,
@@ -333,14 +359,14 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
     // `mode` is fixed per family (like every other `*_dm*` row below) rather
     // than exposed as its own tunable field, so a tuner search that wants to
     // compare Teytaud & Teytaud 2010's decisive-move-only check against the
     // pricier anti-decisive one (see `simulate::DecisiveMoveMode::AntiDecisive`'s
     // doc comment) needs both named explicitly -- this is `ucb1_dm`'s
     // anti-decisive counterpart.
-    "ucb1_adm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_adm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {
             mode: DecisiveMoveMode::AntiDecisive,
@@ -350,8 +376,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -361,8 +387,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_lgr" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_lgr" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -372,8 +398,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_lgr2" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_lgr2" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -383,8 +409,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_lgr2_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_lgr2_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -394,8 +420,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::EpsilonGreedy {
             epsilon: epsilon(p)?,
@@ -409,11 +435,11 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
     // Druid's "strong"/"master" presets (`games/druid/src/main.rs`'s
     // `build_ai`) -- plain Ucb1 select with a decisive-move-checking,
     // NST-guided playout policy.
-    "ucb1_dm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_dm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMoveNst {
             mode: DecisiveMoveMode::Win,
@@ -426,11 +452,11 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
     // `ucb1_dm_nst`'s anti-decisive counterpart -- same NST-guided playout,
     // Druid's actual "strong"/"master" shape, but the pricier two-ply block
     // check instead of a same-ply win check.
-    "ucb1_adm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_adm_nst" => [c, epsilon, nst_backoff_threshold, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::DecisiveMoveNst {
             mode: DecisiveMoveMode::AntiDecisive,
@@ -443,8 +469,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_progressive_history" => [c, ph_weight, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_progressive_history" => [c, ph_weight, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::ProgressiveHistory {
             c: c(p)?,
             ph_weight: p.ph_weight.ok_or_else(|| missing("ph_weight"))?,
@@ -454,8 +480,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "amaf" => [amaf_alpha, c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "amaf" => [amaf_alpha, c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Amaf {
             alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
             c: c(p)?,
@@ -465,8 +491,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "amaf_mast" => [amaf_alpha, c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "amaf_mast" => [amaf_alpha, c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Amaf {
             alpha: p.amaf_alpha.ok_or_else(|| missing("amaf_alpha"))?,
             c: c(p)?,
@@ -479,24 +505,24 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_tuned" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_tuned" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_tuned_mast" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_tuned_mast" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::Mast {},
         final_action: to_final_action_spec(p)?,
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_tuned_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_tuned_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {
             mode: DecisiveMoveMode::Win,
@@ -506,8 +532,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "ucb1_tuned_dm_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_tuned_dm_mast" => [c, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::DecisiveMoveMast {
             mode: DecisiveMoveMode::Win,
@@ -517,7 +543,7 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
     "rave" => [threshold, schedule, rave_ucb, epsilon, final_action] => |p: &TrialParams| {
         let schedule = match p.schedule.as_deref().ok_or_else(|| missing("schedule"))? {
             "hand_selected" => RaveSchedule::HandSelected {
@@ -541,7 +567,7 @@ register_family! {
             },
             other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
         };
-        Ok(FamilySpec {
+        Ok(FamilySpec::Compose(ComposeSpec {
             select: SelectSpec::Rave {
                 threshold: p.threshold.ok_or_else(|| missing("threshold"))?,
                 schedule,
@@ -555,9 +581,9 @@ register_family! {
             backprop: BackpropSpec::Classic {},
             solver_loss_threshold: None,
             contempt_factor: None,
-        })
+        }))
     },
-    "ucb1_pn" => [c, c_pn, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "ucb1_pn" => [c, c_pn, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::UctPn {
             c: c(p)?,
             c_pn: c_pn(p)?,
@@ -567,8 +593,8 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
-    }),
-    "ucb1_pn_mast" => [c, c_pn, epsilon, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_pn_mast" => [c, c_pn, epsilon, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::UctPn {
             c: c(p)?,
             c_pn: c_pn(p)?,
@@ -581,16 +607,16 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: Some(solver_loss_threshold(p)?),
         contempt_factor: contempt_factor(p)?,
-    }),
-    "ucb1_max_robust" => [c] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "ucb1_max_robust" => [c] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: FinalActionSpec::MaxRobustChild {},
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "meta_mcts" => [c] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "meta_mcts" => [c] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(p)? },
         simulate: SimulateSpec::MetaMcts {
             iterations: crate::META_MCTS_INNER_ITERATIONS,
@@ -599,13 +625,13 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
     // Tesauro/Rajan/Segal 2010's Bayesian MCTS: `select`/`backprop` have to
     // travel together (`config_ir.rs`'s `needs_posterior`), so these two
     // families each pin one concrete pairing for tuner to tune rather than
     // leaving the select<->backprop choice free (only `build_custom`'s
     // Custom-UI path composes those two axes independently).
-    "bayes_uct1_gaussian" => [c, prior_variance, obs_variance, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    "bayes_uct1_gaussian" => [c, prior_variance, obs_variance, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::BayesUct1 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
@@ -615,8 +641,8 @@ register_family! {
         },
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
-    "bayes_uct2_numeric" => [c, prior_variance, obs_variance, value_lo, value_hi, final_action] => |p: &TrialParams| Ok(FamilySpec {
+    })),
+    "bayes_uct2_numeric" => [c, prior_variance, obs_variance, value_lo, value_hi, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::BayesUct2 { c: c(p)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(p)?,
@@ -628,5 +654,21 @@ register_family! {
         },
         solver_loss_threshold: None,
         contempt_factor: None,
-    }),
+    })),
+    // Uniform-random move choice -- no hyperparameters of its own, so its
+    // field list is empty and its `TrialParams` reads nothing beyond
+    // `family` itself.
+    "random" => [] => |_p: &TrialParams| Ok(FamilySpec::Direct(DirectFamily::Random)),
+}
+
+/// Family names whose `register_family!` row resolves to `FamilySpec::Direct`
+/// -- one entry per `DirectFamily` variant. Hand-maintained rather than
+/// generated: unlike a row's field list (read directly off the macro table
+/// by `family_conditions()`), whether a row's `$ctor` returns `Compose` or
+/// `Direct` is a runtime fact about its closure body, not something the
+/// macro can inspect to generate this list itself. Used by
+/// `strategy_tuner_info_with_mcgs` to gate `q_init`'s activation on `family`
+/// naming a `Compose` row -- see this module's doc comment.
+pub(crate) fn direct_family_names() -> &'static [&'static str] {
+    &["random"]
 }

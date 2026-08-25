@@ -1,4 +1,6 @@
-use crate::family_catalog::{family_choices, TrialParams};
+use crate::family_catalog::{
+    dispatch_family, family_choices, DirectFamily, FamilySpec, TrialParams,
+};
 use crate::*;
 use game_host::{ConfiguredCandidateSide, ConfiguredOutcome, HostError, TunerInfo};
 use game_nim::Nim;
@@ -641,6 +643,16 @@ fn test_family_ucb1_round_trips() {
     }));
 }
 
+/// Unlike every other family exercised here, `random` resolves to
+/// `FamilySpec::Direct` and is built by `direct_search::build_direct`
+/// rather than `config_ir::build_search` -- this proves it still round-trips
+/// through the exact same `strategy_tune_eval` pipeline every `Compose`
+/// family does, with no special-cased caller-side handling.
+#[test]
+fn test_family_random_round_trips() {
+    assert_family_round_trips(json!({"family": "random"}));
+}
+
 #[test]
 fn test_family_ucb1_dm_round_trips() {
     assert_family_round_trips(json!({
@@ -801,14 +813,16 @@ fn trial(params: Value) -> TrialParams {
 }
 
 #[test]
-fn trial_params_deserialize_rejects_missing_family_and_q_init() {
+fn trial_params_deserialize_rejects_missing_family() {
     let err = serde_json::from_value::<TrialParams>(json!({"q_init": "Infinity"})).unwrap_err();
     assert!(err.to_string().contains("family"), "{err}");
-
-    let err = serde_json::from_value::<TrialParams>(json!({"family": "ucb1"})).unwrap_err();
-    assert!(err.to_string().contains("q_init"), "{err}");
 }
 
+/// `q_init` is required for a `Compose` family (rejected by
+/// `compose_settings`, not `TrialParams::deserialize` -- see
+/// `to_search_spec_rejects_missing_q_init` below) but meaningless to a
+/// `Direct` one, so unlike `family` it's `Option` at the deserialize level:
+/// a trial naming `"ucb1"` with no `q_init` at all still parses.
 #[test]
 fn trial_params_deserialize_treats_absent_and_null_optional_fields_alike() {
     let absent = trial(json!({"family": "ucb1", "q_init": "Infinity"}));
@@ -818,6 +832,9 @@ fn trial_params_deserialize_treats_absent_and_null_optional_fields_alike() {
     let null = trial(json!({"family": "ucb1", "q_init": "Infinity", "c": null, "mcgs": null}));
     assert_eq!(null.c, None);
     assert_eq!(null.mcgs, None);
+
+    let no_q_init = trial(json!({"family": "ucb1"}));
+    assert_eq!(no_q_init.q_init, None);
 }
 
 #[test]
@@ -1347,6 +1364,21 @@ fn to_search_spec_rejects_missing_required_field() {
     assert!(err.message.contains("rave"));
 }
 
+/// `q_init` is `Option` at the `TrialParams` deserialize level (see
+/// `trial_params_deserialize_treats_absent_and_null_optional_fields_alike`)
+/// since a `Direct` family never needs it, but a `Compose` family still
+/// requires a value -- `compose_settings` (not `TrialParams::deserialize`)
+/// is what rejects it missing.
+#[test]
+fn to_search_spec_rejects_missing_q_init() {
+    let params = json!({"family": "ucb1", "c": 1.4, "final_action": "robust_child"});
+    let err = match to_search_spec(&trial(params), 0, false, &SearchBudget::default()) {
+        Err(e) => e,
+        Ok(_) => panic!("missing `q_init` must be rejected for a Compose family"),
+    };
+    assert!(err.message.contains("q_init"));
+}
+
 #[test]
 fn to_search_spec_rejects_unknown_family() {
     let mut params = rave_params();
@@ -1356,6 +1388,30 @@ fn to_search_spec_rejects_unknown_family() {
         Ok(_) => panic!("unknown family must be rejected"),
     };
     assert!(err.message.contains("family"));
+}
+
+#[test]
+fn dispatch_family_resolves_random_to_the_direct_variant() {
+    let trial = trial(json!({"family": "random", "q_init": "Infinity"}));
+    match dispatch_family("random", &trial) {
+        Ok(FamilySpec::Direct(DirectFamily::Random)) => {}
+        Ok(FamilySpec::Compose(_)) => panic!("random must not resolve to a Compose family"),
+        Err(e) => panic!("random must dispatch: {}", e.message),
+    }
+}
+
+/// `random` resolves to `FamilySpec::Direct`, which has no
+/// `config_ir::SearchSpec` representation -- `to_search_spec` (unlike
+/// `make_candidate`, which builds it via `direct_search::build_direct`)
+/// rejects it rather than silently producing a nonsensical spec.
+#[test]
+fn to_search_spec_rejects_direct_family() {
+    let params = json!({"family": "random", "q_init": "Infinity"});
+    let err = match to_search_spec(&trial(params), 0, false, &SearchBudget::default()) {
+        Err(e) => e,
+        Ok(_) => panic!("a Direct family must be rejected by to_search_spec"),
+    };
+    assert!(err.message.contains("random"));
 }
 
 /// Proves `build_search` (the public entry point `GameAdapter::
@@ -1389,12 +1445,13 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
     assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
 }
 
-/// `random`/`flat_mc` are floor families reachable only via
-/// `build_search`/`--baseline-config` (a ladder's floor rung), never
-/// sampled as a tuner candidate -- proven by their absence from
-/// `strategy_tuner_info().parameters`'s `family` choices below.
+/// `random` is an ordinary `family_catalog` row (a `DirectFamily`, built by
+/// `direct_search::build_direct` rather than `config_ir::build_search`, but
+/// otherwise reachable exactly like any other family) -- `build_search`
+/// resolves it from just `family`/`q_init`, the same as an MCTS family with
+/// no other required params (`ucb1_max_robust`, `meta_mcts`).
 #[test]
-fn test_build_search_builds_random_floor_family() {
+fn test_build_search_builds_random_family() {
     build_search::<Nim>(
         &json!({"family": "random", "q_init": "Infinity"}),
         0,
@@ -1404,6 +1461,10 @@ fn test_build_search_builds_random_floor_family() {
     .expect("random should build with just family/q_init");
 }
 
+/// `flat_mc` is still a floor family reachable only via `build_search`/
+/// `--baseline-config` (a ladder's floor rung), not yet a `family_catalog`
+/// row, so it stays a direct arm in `make_candidate` rather than showing up
+/// in `strategy_tuner_info().parameters`'s `family` choices.
 #[test]
 fn test_build_search_builds_flat_mc_floor_family() {
     build_search::<Nim>(
@@ -1416,7 +1477,7 @@ fn test_build_search_builds_flat_mc_floor_family() {
 }
 
 #[test]
-fn test_strategy_tuner_info_excludes_floor_families_from_searchable_choices() {
+fn test_strategy_tuner_info_includes_every_family_choice() {
     let tuner = strategy_tuner_info(&["strong"], 1);
     let family = tuner
         .parameters
@@ -1429,9 +1490,35 @@ fn test_strategy_tuner_info_excludes_floor_families_from_searchable_choices() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect::<Vec<_>>();
+    for name in family_choices() {
+        assert!(
+            choices.contains(&name),
+            "family {name:?} must be a tuner-searchable choice: {choices:?}"
+        );
+    }
+    // `flat_mc` isn't a `family_catalog` row yet -- see
+    // `test_build_search_builds_flat_mc_floor_family`.
+    assert!(!choices.contains(&"flat_mc"));
+}
+
+/// A `Direct` family (`random`) never reads `q_init`, so Optuna shouldn't
+/// waste trials sampling it across `q_init`'s five otherwise-equivalent
+/// values for that family -- `active_params` (the same fixed-point
+/// evaluation `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
+/// uses) must not mark `q_init` active for `family: random`, but must for
+/// an ordinary `Compose` family.
+#[test]
+fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
+    let tuner = strategy_tuner_info(&["strong"], 1);
+    let random_active = active_params(&tuner, &json!({"family": "random"}));
     assert!(
-        !choices.contains(&"random") && !choices.contains(&"flat_mc"),
-        "floor families must never be tuner-searchable candidates: {choices:?}"
+        !random_active.contains("q_init"),
+        "q_init must not be active for a Direct family: {random_active:?}"
+    );
+    let ucb1_active = active_params(&tuner, &json!({"family": "ucb1"}));
+    assert!(
+        ucb1_active.contains("q_init"),
+        "q_init must be active for a Compose family: {ucb1_active:?}"
     );
 }
 
@@ -1572,6 +1659,7 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
                 "final_action": "robust_child",
             }),
         ),
+        ("random", json!({"family": "random"})),
     ]
 }
 
@@ -1599,11 +1687,14 @@ fn test_family_required_params_covers_every_registered_family() {
 /// same any-of/if-then evaluation a tuner `ConfigSpace` performs,
 /// chasing multi-level conditions (e.g. `family: rave` activates
 /// `schedule`, whose own sampled value in turn activates one of
-/// `rave`/`k`/`bias`).
+/// `rave`/`k`/`bias`). `family` is the only unconditional root -- `q_init`
+/// is itself gated on `family` naming a `Compose` row (see
+/// `strategy_tuner_info_with_mcgs`), so it has to reach "active" through
+/// the same condition-chasing loop below, not be seeded here.
 fn active_params(tuner: &TunerInfo, chosen: &Value) -> std::collections::HashSet<String> {
     let chosen = chosen.as_object().expect("params must be an object");
     let mut active: std::collections::HashSet<String> =
-        ["family", "q_init"].iter().map(|s| s.to_string()).collect();
+        ["family"].iter().map(|s| s.to_string()).collect();
     loop {
         let mut added = false;
         for cond in &tuner.conditions {

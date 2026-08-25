@@ -22,6 +22,7 @@
 
 pub mod config_ir;
 pub mod config_ir_schema;
+mod direct_search;
 mod evaluation;
 mod family_catalog;
 pub mod presets;
