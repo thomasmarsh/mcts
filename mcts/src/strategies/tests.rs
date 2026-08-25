@@ -863,6 +863,165 @@ mod cycle_game_tests {
     }
 }
 
+// A reversible-move fixture used only to prove `TranspositionKeying::StateOnly`
+// actually merges cross-ply transpositions (`PerPly`'s only ever merges
+// same-ply ones, already covered by `converge_game_tests`).
+mod reversible_game_tests {
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
+
+    // Bit 2 of `mask` is a one-way "started" flag: the only legal move from
+    // the root (mask 0) sets it, and no action ever clears it, so the root
+    // itself is never reached a second time -- required by `backprop`'s
+    // invariant that a root node is otherwise unreachable from any
+    // non-root node (see `cycle_game_tests`). Bits 0 and 1 are freely
+    // reversible once started (a "pick" sets, "unpick" clears), so any pick
+    // can be undone by its matching unpick to return to an earlier state --
+    // the reversible-move situation `TranspositionKeying::StateOnly` exists
+    // to merge across ply. `mask == 0b111` is reachable directly (start,
+    // pick, pick -- ply 3) and via a detour (start, pick, unpick, pick,
+    // pick -- ply 5): two histories converging on the identical state at
+    // different depths.
+    //
+    // `moves` is a hidden move counter forcing termination once it hits
+    // `MAX_MOVES`, independent of `mask` -- without it the reversible bits
+    // let a search wander this graph forever, and `PerPly` keying (unlike
+    // `StateOnly`) has no descent-depth guard of its own to stop that (see
+    // `select_step`), the same way a real game's own finite length is what
+    // normally bounds it. `zobrist_hash` deliberately excludes `moves`, the
+    // same way `games/atarigo`'s hash excludes ply: it's bookkeeping for
+    // this fixture's termination, not part of the position being merged on.
+    const MAX_MOVES: u8 = 6;
+    const STARTED: u8 = 0b100;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State {
+        mask: u8,
+        moves: u8,
+    }
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:03b}@{}", self.mask, self.moves)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Action {
+        bit: u8,
+        set: bool,
+    }
+
+    #[derive(Clone)]
+    struct ReversibleGame;
+
+    impl Game for ReversibleGame {
+        type S = State;
+        type A = Action;
+        type P = Player;
+
+        fn apply(state: Self::S, action: &Self::A) -> Self::S {
+            let bit = 1 << action.bit;
+            State {
+                mask: if action.set {
+                    state.mask | bit
+                } else {
+                    state.mask & !bit
+                },
+                moves: state.moves + 1,
+            }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            if state.moves >= MAX_MOVES {
+                return;
+            }
+            if state.mask & STARTED == 0 {
+                actions.push(Action { bit: 2, set: true });
+                return;
+            }
+            for bit in 0..2 {
+                let set = state.mask & (1 << bit) == 0;
+                actions.push(Action { bit, set });
+            }
+        }
+
+        fn winner(_state: &Self::S) -> Option<Self::P> {
+            None
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Player(0)
+        }
+
+        fn num_players() -> usize {
+            1
+        }
+
+        fn zobrist_hash(state: &Self::S) -> u64 {
+            state.mask as u64
+        }
+    }
+
+    fn count_nodes_with_hash(search: &TreeSearch<ReversibleGame, Ucb1>, hash: u64) -> usize {
+        let mut count = 0;
+        search.index.for_each(|node| {
+            if node.hash == hash {
+                count += 1;
+            }
+        });
+        count
+    }
+
+    #[test]
+    fn state_only_keying_merges_the_same_state_reached_at_different_plies() {
+        let state = State::default();
+        let target_hash = 0b111u64;
+
+        let mut state_only = TreeSearch::<ReversibleGame, Ucb1>::default().config(
+            SearchConfig::default()
+                .max_iterations(500)
+                .expand_threshold(0)
+                .max_playout_depth(MAX_MOVES as usize)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::StateOnly),
+        );
+        state_only.choose_action(&state);
+
+        let mut per_ply = TreeSearch::<ReversibleGame, Ucb1>::default().config(
+            SearchConfig::default()
+                .max_iterations(500)
+                .expand_threshold(0)
+                .max_playout_depth(MAX_MOVES as usize)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both)),
+        );
+        per_ply.choose_action(&state);
+
+        assert_eq!(
+            count_nodes_with_hash(&state_only, target_hash),
+            1,
+            "StateOnly must merge every ply at which mask=0b111 is reached into one arena node"
+        );
+        assert!(
+            count_nodes_with_hash(&per_ply, target_hash) > 1,
+            "PerPly must keep mask=0b111 reached at different plies as separate arena nodes"
+        );
+    }
+}
+
 // PN-MCTS (Kowalski et al. 2023): `derive_pn_dpn`'s negamax recurrence,
 // hand-verified on a tiny 3-child arena rather than through a real game --
 // small enough to compute the expected pn/dpn by hand, which a purely
