@@ -53,6 +53,8 @@
 //! occupancy-dependent relation from the touching graph built here -- a
 //! buried piece still physically touches its neighbors.
 
+use std::sync::OnceLock;
+
 use bitboard::{Adjacency, NeighborList};
 
 use crate::{dependent_positions, index, level_side, total_cells};
@@ -126,6 +128,27 @@ impl Adjacency for TouchingAdjacency {
     fn neighbors(&self, index: usize) -> NeighborList {
         NeighborList::from_neighbors(self.table[index].iter().copied())
     }
+}
+
+/// Global cache of [`TouchingAdjacency`] tables keyed by base width `n`.
+/// `touching_neighbors` allocates a fresh table every call;
+/// `get_adjacency` computes each `n` at most once, then reuses it across
+/// `generate_actions`, `apply`, and heuristic evaluation within a
+/// single-process lifetime. Maximum supported `n` is 10 (see
+/// [`crate::MAX_N`]).
+static ADJACENCY_CACHE: OnceLock<Vec<TouchingAdjacency>> = OnceLock::new();
+
+/// Returns a `&'static` reference to a precomputed [`TouchingAdjacency`]
+/// for base width `n`. Cheaper than [`TouchingAdjacency::new`], which
+/// allocates a fresh neighbor table on every invocation, and safe to share
+/// across threads once initialized.
+///
+/// # Panics
+/// Panics if `n == 0` or `n > 10` (no such board size is valid), same as
+/// [`TouchingAdjacency::new`].
+pub fn get_adjacency(n: usize) -> &'static TouchingAdjacency {
+    let table = ADJACENCY_CACHE.get_or_init(|| (0..=10).map(TouchingAdjacency::new).collect());
+    &table[n]
 }
 
 #[cfg(test)]

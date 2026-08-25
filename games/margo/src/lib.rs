@@ -43,6 +43,8 @@ use serde::{Deserialize, Serialize};
 
 pub use heuristic::Heuristic;
 
+mod raster;
+
 /// Smallest supported base width -- "Spargo", the size a physical Shibumi
 /// ball set (4x4x4) plays Margo on.
 pub const MIN_N: usize = 4;
@@ -83,25 +85,53 @@ fn ground_mask(n: usize, cells: usize) -> GoBoard {
     mask
 }
 
-/// The visible (non-buried, non-zombie) subset of `black`/`white` occupancy,
-/// split into per-colour [`GoBoard`]s -- the input [`resolve_captures`] runs
-/// its touching-adjacency flood fill over. Buried and zombie cells are
-/// dropped entirely (neither colour): buried because a piece hidden by an
-/// occluder "does not count in any connection", zombie because a captured
-/// group's pinned survivor is permanently excluded from connectivity the
-/// same way (see the module docs' zombie summary).
-fn visible_boards(occupied: &Cells, black: &Cells, zombie: &Cells) -> (GoBoard, GoBoard) {
+/// Build per-level raster-indexed color masks: `own[l]` has bits set
+/// at raster positions where the mover has a piece at level `l`.
+fn build_color_masks(
+    n: usize,
+    state: &State,
+) -> (Vec<raster::LevelBoard>, Vec<raster::LevelBoard>) {
+    use bitboard::{Board, Dyn};
+    let mut own: Vec<Board<[u64; 2], Dyn, Dyn>> =
+        (0..n).map(|_| Board::new(Dyn(n), Dyn(n))).collect();
+    let mut opp: Vec<Board<[u64; 2], Dyn, Dyn>> =
+        (0..n).map(|_| Board::new(Dyn(n), Dyn(n))).collect();
+    let mover_black = state.turn == Player::Black;
+    for idx in 0..state.occupied.total_cells() {
+        if !state.occupied.get_index(idx) {
+            continue;
+        }
+        let (col, row, level) = state.occupied.to_coord(idx);
+        let pos = row * n + col;
+        let is_black = state.black.get_index(idx);
+        if (is_black && mover_black) || (!is_black && !mover_black) {
+            own[level].set_index(pos);
+        } else {
+            opp[level].set_index(pos);
+        }
+    }
+    (own, opp)
+}
+
+/// The non-zombie subset of `black`/`white` occupancy, split into per-colour
+/// [`GoBoard`]s -- the input [`resolve_captures`] runs its touching-adjacency
+/// flood fill over. Zombie cells are NOT excluded: a zombie still physically
+/// touches its neighbors and participates in group connectivity. The zombie
+/// mask only determines which group members survive capture (zombies stay,
+/// non-zombies are removed).
+///
+/// "Buried" (visually occluded from two levels up) does *not* affect
+/// connectivity -- a buried piece still physically touches its neighbors,
+/// and only the touching graph determines group membership.
+fn visible_boards(occupied: &Cells, black: &Cells) -> (GoBoard, GoBoard) {
     let cells = occupied.total_cells();
     let mut black_board = go_board(cells);
     let mut white_board = go_board(cells);
-    for index in 0..cells {
-        if !occupied.get_index(index) {
-            continue;
-        }
-        let (col, row, level) = occupied.to_coord(index);
-        if occupied.is_buried(col, row, level) || zombie.get_index(index) {
-            continue;
-        }
+    for index in occupied.iter_set() {
+        // Note: we do NOT filter out zombies here. A zombie still
+        // physically touches its neighbors and participates in group
+        // connectivity. The zombie mask only determines which group
+        // members survive capture (zombies stay, non-zombies are removed).
         if black.get_index(index) {
             black_board.set_index(index);
         } else {
@@ -190,6 +220,13 @@ fn apply_captures(
     mover_black: bool,
 ) -> (Cells, Cells, Cells) {
     for cell in captured {
+        if zombie.get_index(cell) {
+            // An existing zombie permanently survives every future
+            // capture it participates in -- it's pinned for good,
+            // regardless of whether its original pinning piece is
+            // still on the board.
+            continue;
+        }
         let (c, r, l) = occupied.to_coord(cell);
         let pinned_by_capturer = occupied
             .dependents(c, r, l)
@@ -614,7 +651,36 @@ impl State {
             return None;
         }
         let mover_black = self.turn == Player::Black;
+        let (black_board, white_board) = visible_boards(&self.occupied, &self.black);
+        let (own, opp) = if mover_black {
+            let mut own = black_board;
+            own.set_index(index);
+            (own, white_board)
+        } else {
+            let mut own = white_board;
+            own.set_index(index);
+            (own, black_board)
+        };
+        let ground = ground_mask(self.occupied.n(), self.occupied.total_cells());
+        self.resolve_place_inner(index, adjacency, own, opp, ground)
+    }
 
+    /// Core of [`resolve_place`]: assumes `index` is already physically
+    /// placeable (`can_place` already passed, cell not occupied). Checks
+    /// capture legality (suicide), applies captures/zombification, and
+    /// enforces ko. The caller supplies precomputed `own`/`opp` visible
+    /// boards (with the candidate stone already set in `own`) and `ground`
+    /// mask so `generate_actions` can compute them once instead of per
+    /// candidate.
+    fn resolve_place_inner(
+        &self,
+        index: usize,
+        adjacency: &TouchingAdjacency,
+        own: GoBoard,
+        opp: GoBoard,
+        ground: GoBoard,
+    ) -> Option<(Cells, Cells, Cells)> {
+        let mover_black = self.turn == Player::Black;
         let mut new_occupied = self.occupied;
         new_occupied.set_index(index);
         let mut new_black = self.black;
@@ -622,23 +688,7 @@ impl State {
             new_black.set_index(index);
         }
 
-        let (black_board, white_board) = visible_boards(&new_occupied, &new_black, &self.zombie);
-        let (own_board, opp_board) = if mover_black {
-            (black_board, white_board)
-        } else {
-            (white_board, black_board)
-        };
-
-        let captured = if new_occupied.is_buried(col, row, level) {
-            // A newly-placed piece that's instantly buried takes part in no
-            // connection at all -- neither at risk of suicide nor able to
-            // capture anything -- so it's trivially legal with no captures.
-            own_board.empty_like()
-        } else {
-            let ground = ground_mask(self.occupied.n(), self.occupied.total_cells());
-            resolve_captures(own_board, opp_board, index, adjacency, ground)?
-        };
-
+        let captured = resolve_captures(own, opp, index, adjacency, ground)?;
         let (new_occupied, new_black, new_zombie) =
             apply_captures(new_occupied, new_black, self.zombie, captured, mover_black);
 
@@ -687,9 +737,9 @@ impl Game for Margo {
         let previous = (state.occupied, state.black);
         match *action {
             Action::Place(index, _n) => {
-                let adjacency = TouchingAdjacency::new(state.occupied.n());
+                let adjacency = pyramid::get_adjacency(state.occupied.n());
                 let (new_occupied, new_black, new_zombie) = state
-                    .resolve_place(index as usize, &adjacency)
+                    .resolve_place(index as usize, adjacency)
                     .expect("action generated by generate_actions must be legal");
                 state.occupied = new_occupied;
                 state.black = new_black;
@@ -732,10 +782,87 @@ impl Game for Margo {
         if state.can_swap() {
             actions.push(Action::Swap);
         }
-        let adjacency = TouchingAdjacency::new(state.occupied.n());
+        let adjacency = pyramid::get_adjacency(state.occupied.n());
         let n = state.occupied.n() as u8;
+        let n_usize = state.occupied.n();
+        let (base_black, base_white) = visible_boards(&state.occupied, &state.black);
+        let ground = ground_mask(n_usize, state.occupied.total_cells());
+        let mover_black = state.turn == Player::Black;
+
+        // Raster fast path: mutable, place/remove per candidate.
+        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
+        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
+
         for index in 0..state.occupied.total_cells() {
-            if !state.is_occupied(index) && state.resolve_place(index, &adjacency).is_some() {
+            if state.is_occupied(index) {
+                continue;
+            }
+            let (col, row, level) = state.occupied.to_coord(index);
+            if !state.occupied.can_place(col, row, level) {
+                continue;
+            }
+
+            // Temporarily place on raster, check, then roll back.
+            let raster_pos = raster.place(col, row, level);
+            own_color[level].set_index(raster_pos);
+
+            let group = raster.flood(col, row, level, &own_color);
+            let libs = raster.count_liberties(&group);
+            let fast_ok = if libs < 2 {
+                false
+            } else {
+                let seeds = raster.enemies_touching(&group, &own_color);
+                // Deduplicate: flood each enemy group only once.
+                let mut enemy_seen: Vec<raster::LevelBoard> = (0..n_usize)
+                    .map(|_| raster::LevelBoard::new(Dyn(n_usize), Dyn(n_usize)))
+                    .collect();
+                seeds.iter().all(|&(ec, er, el)| {
+                    let ep = raster.raster_index(ec, er);
+                    if enemy_seen[el].get_index(ep) {
+                        return true;
+                    }
+                    let eg = raster.flood(ec, er, el, &opp_color);
+                    for l2 in 0..n_usize {
+                        enemy_seen[l2] |= eg[l2];
+                    }
+                    raster.count_liberties(&eg) > 0
+                })
+            };
+
+            // Roll back.
+            own_color[level].clear_index(raster_pos);
+            raster.remove(col, row, level);
+
+            // Raster says legal, but we must also check ko: if placing
+            // here recreates the previous board state.
+            let ko_safe = if let Some((ref prev_occ, _)) = state.previous {
+                // Candidate was NOT in prev_occupied → can't recreate it.
+                // If it WAS, last turn captured a stone here; re-placing it
+                // might be ko.
+                !prev_occ.get_index(index)
+            } else {
+                true // no previous state, ko impossible
+            };
+
+            if fast_ok && ko_safe {
+                actions.push(Action::Place(index as u16, n));
+                continue;
+            }
+
+            // Full 3D path for edge cases (suicide, capture, ko).
+            let (own, opp) = if mover_black {
+                let mut own = base_black;
+                own.set_index(index);
+                (own, base_white)
+            } else {
+                let mut own = base_white;
+                own.set_index(index);
+                (own, base_black)
+            };
+            if state
+                .resolve_place_inner(index, adjacency, own, opp, ground)
+                .is_some()
+            {
                 actions.push(Action::Place(index as u16, n));
             }
         }
@@ -1056,40 +1183,90 @@ mod tests {
         assert!(!new_zombie.get_index(removed));
     }
 
-    /// A buried piece (hidden by an occluder two levels up) must not count
-    /// toward its own colour's group liberties: constructed directly with a
-    /// buried white stone that would otherwise have zero visible liberties
-    /// if it counted, but here isn't even part of any group, so it's simply
-    /// absent from `visible_boards`'s output.
+    /// A zombie that was already pinned before the current capture (from
+    /// an earlier move) unconditionally survives every future capture it
+    /// participates in -- it is permanently excluded from removal, even if
+    /// its original pinning piece is no longer on the board.
     #[test]
-    fn buried_piece_excluded_from_visible_boards() {
+    fn existing_zombie_survives_later_capture_of_its_group() {
+        let mut occupied = Cells::new(Dyn(DEFAULT_N));
+        let black = Cells::new(Dyn(DEFAULT_N));
+        let mut zombie = Cells::new(Dyn(DEFAULT_N));
+
+        // Two adjacent white pieces at level 0, one is already a zombie.
+        let zombie_cell = occupied.index(0, 0, 0);
+        let non_zombie = occupied.index(1, 0, 0);
+        occupied.set_index(zombie_cell);
+        occupied.set_index(non_zombie);
+        zombie.set_index(zombie_cell);
+
+        // Capture both together. The zombie must survive, the non-zombie
+        // must be removed (no pinning piece above this time).
+        let mut captured = go_board(occupied.total_cells());
+        captured.set_index(zombie_cell);
+        captured.set_index(non_zombie);
+
+        let (new_occupied, _new_black, new_zombie) =
+            apply_captures(occupied, black, zombie, captured, true);
+
+        assert!(
+            new_occupied.get_index(zombie_cell),
+            "pre-existing zombie survives the capture"
+        );
+        assert!(new_zombie.get_index(zombie_cell));
+
+        assert!(
+            !new_occupied.get_index(non_zombie),
+            "non-zombie group member is removed"
+        );
+        assert!(!new_zombie.get_index(non_zombie));
+    }
+
+    /// "Buried" is a visual aid (a piece hidden by another two levels
+    /// above), not a connectivity rule -- a buried piece still physically
+    /// touches its neighbors via the touching-adjacency graph, so it must
+    /// appear in `visible_boards` alongside every other non-zombie piece.
+    #[test]
+    fn buried_piece_still_present_in_visible_boards() {
         let mut state = State::new(DEFAULT_N);
-        // Build a full pyramid tip around (1, 1) so a piece at level 0
-        // becomes buried: occluder sits at (col - 1, row - 1, level + 2).
-        // Buried target: (1, 1, 0); occluder: (0, 0, 2).
+        // Build a full pyramid tip: base 2x2, one level-1, then occluder
+        // at level 2 which buries the level-0 cell at (1, 1).
         let base = [(1, 1), (2, 1), (1, 2), (2, 2)];
         for &(col, row) in &base {
-            let idx = state.occupied.index(col, row, 0);
-            state.occupied.set_index(idx);
+            state.occupied.set_index(state.occupied.index(col, row, 0));
         }
-        let mid = [(1, 1), (2, 1), (1, 2)];
-        for &(col, row) in &mid {
-            let idx = state.occupied.index(col, row, 1);
-            state.occupied.set_index(idx);
+        for &(col, row) in &[(1, 1), (2, 1), (1, 2)] {
+            state.occupied.set_index(state.occupied.index(col, row, 1));
         }
-        let occluder = state.occupied.index(0, 0, 2);
-        state.occupied.set_index(occluder);
+        state.occupied.set_index(state.occupied.index(0, 0, 2));
 
         let target = state.occupied.index(1, 1, 0);
-        assert!(
-            state.occupied.is_buried(1, 1, 0),
-            "test setup must actually bury the target"
-        );
+        assert!(state.occupied.is_buried(1, 1, 0));
 
-        let (black_board, white_board) =
-            visible_boards(&state.occupied, &state.black, &state.zombie);
-        assert!(!black_board.get_index(target));
-        assert!(!white_board.get_index(target));
+        let (_black_board, white_board) = visible_boards(&state.occupied, &state.black);
+        // All occupied cells (no zombies, no black) are white. The buried
+        // one must be present -- it still touches its neighbors.
+        assert!(white_board.get_index(target));
+    }
+
+    /// A zombie piece still touches its same-colour neighbors, so it must
+    /// participate in group connectivity. Only during capture does the
+    /// zombie mask matter (zombies survive, non-zombies are removed).
+    #[test]
+    fn zombie_participates_in_visible_connectivity() {
+        let mut state = State::new(DEFAULT_N);
+        // Two adjacent white pieces. Mark one as a zombie.
+        let a = state.occupied.index(0, 0, 0);
+        let b = state.occupied.index(1, 0, 0);
+        state.occupied.set_index(a);
+        state.occupied.set_index(b);
+        state.zombie.set_index(b);
+
+        let (_black_board, white_board) = visible_boards(&state.occupied, &state.black);
+        // Both cells must appear in white_board -- the zombie still touches
+        // cell a and participates in the touching-adjacency group.
+        assert!(white_board.get_index(a));
+        assert!(white_board.get_index(b));
     }
 
     /// Placing into a spot with zero liberties and no capture is illegal.
@@ -1104,6 +1281,187 @@ mod tests {
     /// liberties of their own below (level 1 is untouched here), capturing
     /// them isn't possible either, so placing white at the apex is plain
     /// suicide.
+    /// From the game `margo-2026-08-24T23-46-45-862Z.game.json` n28→n29:
+    /// a row of four black stones at level 0 (indices 29, 30, 31, 32),
+    /// with the middle two (30, 31) pinned as zombies under a white stone
+    /// at level 1 (index 69). White placing at the group's last empty
+    /// ground-level liberty (index 39, (4,5)) must capture the entire
+    /// group — zombies 30 and 31 survive, 29 and 32 are removed.
+    #[test]
+    fn zombie_group_captured_when_last_liberty_filled() {
+        let mut state = State::new(7);
+        state.turn = Player::White;
+
+        // Build the n28 position (Black's turn — Black just placed at 32).
+        let occupied: &[(usize, usize, usize)] = &[
+            (1, 0, 0), //  1  black
+            (2, 0, 0), //  2  black
+            (3, 0, 0), //  3  black
+            (4, 0, 0), //  4  black
+            (1, 3, 0), // 22  white
+            (2, 3, 0), // 23  white
+            (3, 3, 0), // 24  white
+            (4, 3, 0), // 25  white
+            (0, 4, 0), // 28  white
+            (1, 4, 0), // 29  black
+            (2, 4, 0), // 30  black (zombie)
+            (3, 4, 0), // 31  black (zombie)
+            (4, 4, 0), // 32  black
+            (5, 4, 0), // 33  white
+            (0, 5, 0), // 35  white
+            (1, 5, 0), // 36  white
+            (2, 5, 0), // 37  white
+            (3, 5, 0), // 38  white
+            (5, 5, 0), // 40  white
+            (1, 6, 0), // 43  white
+            (4, 6, 0), // 46  white
+            (2, 3, 1), // 69  white (level 1, pins 30 & 31)
+        ];
+        for &(col, row, level) in occupied {
+            let idx = state.occupied.index(col, row, level);
+            state.occupied.set_index(idx);
+        }
+        let black: &[(usize, usize, usize)] = &[
+            (1, 0, 0),
+            (2, 0, 0),
+            (3, 0, 0),
+            (4, 0, 0),
+            (1, 4, 0),
+            (2, 4, 0),
+            (3, 4, 0),
+            (4, 4, 0),
+        ];
+        for &(col, row, level) in black {
+            let idx = state.occupied.index(col, row, level);
+            state.black.set_index(idx);
+        }
+        state.zombie.set_index(state.occupied.index(2, 4, 0));
+        state.zombie.set_index(state.occupied.index(3, 4, 0));
+
+        // n28 was Black's turn. White should now be able to place at 39
+        // (4, 5, 0) and capture the black group.
+        let adjacency = TouchingAdjacency::new(7);
+        let idx = state.occupied.index(4, 5, 0);
+        let (new_occupied, new_black, new_zombie) = state
+            .resolve_place(idx, &adjacency)
+            .expect("placement at (4,5) must be legal");
+
+        // The non-zombie black stones at 29 and 32 must be removed.
+        assert!(
+            !new_occupied.get_index(state.occupied.index(1, 4, 0)),
+            "black (1,4)=29 must be captured"
+        );
+        assert!(
+            !new_occupied.get_index(state.occupied.index(4, 4, 0)),
+            "black (4,4)=32 must be captured"
+        );
+
+        // Zombies 30 and 31 must survive.
+        assert!(
+            new_occupied.get_index(state.occupied.index(2, 4, 0)),
+            "zombie (2,4)=30 must survive"
+        );
+        assert!(
+            new_zombie.get_index(state.occupied.index(2, 4, 0)),
+            "(2,4)=30 must still be a zombie"
+        );
+        assert!(
+            new_occupied.get_index(state.occupied.index(3, 4, 0)),
+            "zombie (3,4)=31 must survive"
+        );
+        assert!(
+            new_zombie.get_index(state.occupied.index(3, 4, 0)),
+            "(3,4)=31 must still be a zombie"
+        );
+
+        // The white stone at (4,5) must be on the board.
+        assert!(new_occupied.get_index(idx));
+        assert!(!new_black.get_index(idx));
+    }
+
+    /// Black group B4-C4-D4-E4 (indices 22,23,24,25) on row 4 has exactly
+    /// one ground-level liberty at E3 (4,2). When White plays E3, the group
+    /// has no liberties and must be captured. Zombies C4 and D4 (pinned by
+    /// the White stone at C4↑ level 1) survive; B4 and E4 are removed.
+    #[test]
+    fn capture_of_group_on_row_4() {
+        let mut state = State::new(7);
+        state.turn = Player::White;
+
+        // Set up the board as described.
+        // Row 2:  B2=W                             E2=W
+        // Row 3:  A3=W  B3=W  C3=W  D3=W         F3=W
+        // Row 4:  A4=W  B4=B  C4=Bz D4=Bz E4=B   F4=W
+        // Row 5:        B5=W  C5=W  D5=W  E5=W
+        let occupied: &[(usize, usize, usize)] = &[
+            (1, 1, 0), // B2  white
+            (4, 1, 0), // E2  white
+            (0, 2, 0), // A3  white
+            (1, 2, 0), // B3  white
+            (2, 2, 0), // C3  white
+            (3, 2, 0), // D3  white
+            (5, 2, 0), // F3  white
+            (0, 3, 0), // A4  white
+            (1, 3, 0), // B4  black
+            (2, 3, 0), // C4  black (zombie)
+            (3, 3, 0), // D4  black (zombie)
+            (4, 3, 0), // E4  black
+            (5, 3, 0), // F4  white
+            (1, 4, 0), // B5  white
+            (2, 4, 0), // C5  white
+            (3, 4, 0), // D5  white
+            (4, 4, 0), // E5  white
+            (2, 3, 1), // C4↑ level 1 white (pins C4 and D4)
+        ];
+        for &(col, row, level) in occupied {
+            let idx = state.occupied.index(col, row, level);
+            state.occupied.set_index(idx);
+        }
+        for &(col, row) in &[(1, 3), (2, 3), (3, 3), (4, 3)] {
+            state.black.set_index(state.occupied.index(col, row, 0));
+        }
+        state.zombie.set_index(state.occupied.index(2, 3, 0));
+        state.zombie.set_index(state.occupied.index(3, 3, 0));
+
+        let adjacency = TouchingAdjacency::new(7);
+        let e3 = state.occupied.index(4, 2, 0);
+        let (new_occupied, new_black, new_zombie) = state
+            .resolve_place(e3, &adjacency)
+            .expect("E3 must be a legal placement");
+
+        // B4 and E4 must be removed.
+        assert!(
+            !new_occupied.get_index(state.occupied.index(1, 3, 0)),
+            "B4 must be captured"
+        );
+        assert!(
+            !new_occupied.get_index(state.occupied.index(4, 3, 0)),
+            "E4 must be captured"
+        );
+
+        // C4 and D4 survive as zombies.
+        assert!(
+            new_occupied.get_index(state.occupied.index(2, 3, 0)),
+            "C4 must survive"
+        );
+        assert!(
+            new_zombie.get_index(state.occupied.index(2, 3, 0)),
+            "C4 must remain zombie"
+        );
+        assert!(
+            new_occupied.get_index(state.occupied.index(3, 3, 0)),
+            "D4 must survive"
+        );
+        assert!(
+            new_zombie.get_index(state.occupied.index(3, 3, 0)),
+            "D4 must remain zombie"
+        );
+
+        // E3 is on the board.
+        assert!(new_occupied.get_index(e3));
+        assert!(!new_black.get_index(e3));
+    }
+
     /// Ko rejects a placement whose resulting `(occupied, black)` pair
     /// exactly matches `previous`, and allows the same placement once
     /// `previous` no longer matches. Reuses

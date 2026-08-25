@@ -13,7 +13,7 @@
 //! counting sees neither a piece about to be captured nor a piece worth
 //! more for the connections it cuts.
 
-use pyramid::TouchingAdjacency;
+use pyramid::{self, TouchingAdjacency};
 
 use mcts::evaluator::{Evaluator, Score, EVAL_MAGNITUDE_LIMIT};
 
@@ -81,11 +81,11 @@ fn liberty_term(own: GoBoard, opp: GoBoard, ground: GoBoard, adjacency: &Touchin
 fn black_relative_value(state: &State) -> i32 {
     let material = height_weighted_material(state);
 
-    let adjacency = TouchingAdjacency::new(state.occupied.n());
+    let adjacency = pyramid::get_adjacency(state.occupied.n());
     let ground = ground_mask(state.occupied.n(), state.occupied.total_cells());
-    let (black_board, white_board) = visible_boards(&state.occupied, &state.black, &state.zombie);
-    let liberties = liberty_term(black_board, white_board, ground, &adjacency)
-        - liberty_term(white_board, black_board, ground, &adjacency);
+    let (black_board, white_board) = visible_boards(&state.occupied, &state.black);
+    let liberties = liberty_term(black_board, white_board, ground, adjacency)
+        - liberty_term(white_board, black_board, ground, adjacency);
 
     material + liberties
 }
