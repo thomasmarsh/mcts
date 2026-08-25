@@ -639,6 +639,19 @@ pub fn select_step<G: Game>(
             }
         }
 
+        // Under `TranspositionKeying::StateOnly`, node ply no longer strictly
+        // increases along a descent path (see `TranspositionKeying`'s doc
+        // comment), so the graph can contain real cycles and this loop needs
+        // its own stopping point. `PerPly` and the legacy transposition path
+        // are already structurally cycle-free -- ply's strict increase alone
+        // guarantees termination -- so they don't pay for this check.
+        if shared.explicit_dag
+            && shared.keying == TranspositionKeying::StateOnly
+            && stack.len() > shared.max_playout_depth
+        {
+            return None;
+        }
+
         let best_idx =
             match proven_win_child::<G>(shared.use_mcts_solver, node, shared.index, player) {
                 Some(idx) => idx,

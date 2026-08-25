@@ -2,7 +2,7 @@ use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::Real;
 use crate::game::Transform;
-use crate::strategies::mcts::config::{GraphSearch, GraphStats};
+use crate::strategies::mcts::config::{GraphSearch, GraphStats, TranspositionKeying};
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
@@ -493,7 +493,15 @@ where
         let mut stack = NodeStack::new(vec![(node_id, 0)]);
         let grave = self.stats.grave.read().unwrap();
         let canonicalizes = self.config.uses_transpositions();
-        while node.is_expanded() {
+        // Same cycle hazard `select_step`'s descent guard exists for (see
+        // its comment in `search/shared.rs`): under
+        // `TranspositionKeying::StateOnly` this replay can walk a real graph
+        // cycle, and "still expanded" never stops being true on its own.
+        let explicit_dag = matches!(self.config.graph_search, GraphSearch::Dag(_));
+        let bound_descent =
+            explicit_dag && self.config.transposition_keying == TranspositionKeying::StateOnly;
+        while node.is_expanded() && !(bound_descent && stack.len() > self.config.max_playout_depth)
+        {
             let player = node.player_idx;
             // Recomputed fresh from `state` every iteration, like
             // `select_step`'s local of the same name -- see `crate::

@@ -763,6 +763,106 @@ mod converge_game_tests {
     }
 }
 
+mod cycle_game_tests {
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    // The root state (`kind == 0`) leads into a two-node cycle between `A`
+    // (`kind == 1`) and `B` (`kind == 2`) that never returns to the root --
+    // under `TranspositionKeying::StateOnly` these merge into a single
+    // two-node cycle in the graph, since ply is dropped from the key (see
+    // `TranspositionKeying`'s doc comment). The root only ever occupies the
+    // first stack entry this way (a search's root node is otherwise
+    // unreachable from any non-root node, an invariant `backprop` relies
+    // on), so the only thing exercised is whether `select_step`'s descent
+    // guard bounds the A/B cycle -- ply's strict increase, which `PerPly`
+    // gets for free, can't do it, since `StateOnly` deliberately drops ply
+    // from the key.
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State {
+        kind: u8,
+    }
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.kind)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Flip;
+
+    #[derive(Clone)]
+    struct CycleGame;
+
+    impl Game for CycleGame {
+        type S = State;
+        type A = Flip;
+        type P = Player;
+
+        fn apply(state: Self::S, _action: &Self::A) -> Self::S {
+            let kind = match state.kind {
+                0 => 1,
+                1 => 2,
+                _ => 1,
+            };
+            State { kind }
+        }
+
+        fn generate_actions(_state: &Self::S, actions: &mut Vec<Self::A>) {
+            actions.push(Flip);
+        }
+
+        fn winner(_state: &Self::S) -> Option<Self::P> {
+            None
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Player(0)
+        }
+
+        fn num_players() -> usize {
+            1
+        }
+
+        fn zobrist_hash(state: &Self::S) -> u64 {
+            state.kind as u64
+        }
+    }
+
+    #[test]
+    fn state_only_keying_descent_guard_terminates_on_a_two_cycle() {
+        let state = State::default();
+        let mut search = TreeSearch::<CycleGame, Ucb1>::default().config(
+            SearchConfig::default()
+                .max_iterations(50)
+                .expand_threshold(0)
+                .max_playout_depth(8)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::StateOnly),
+        );
+
+        // Without the depth guard, `select_step` would either descend the
+        // A<->B cycle forever or overflow `stack` -- this call returning at
+        // all, with a legal action, is the regression test.
+        let action = search.choose_action(&state);
+
+        assert_eq!(action, Flip, "the only legal action must be the one chosen");
+    }
+}
+
 // PN-MCTS (Kowalski et al. 2023): `derive_pn_dpn`'s negamax recurrence,
 // hand-verified on a tiny 3-child arena rather than through a real game --
 // small enough to compute the expected pn/dpn by hand, which a purely
