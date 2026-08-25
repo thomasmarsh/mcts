@@ -19,8 +19,10 @@
             "family": "ucb1",
             "c": 1.4142135623730951,
             "q_init": "Loss",
+            "mcgs": true,
             "final_action": "robust_child"
         },
-        "max_iterations": 5000
+        "max_iterations": 5000,
+        "use_transpositions": true
     }
 ]

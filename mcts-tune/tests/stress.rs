@@ -40,6 +40,7 @@ fn test_family_meta_mcts_round_trips() {
         |_| json!({"canonical": "nim"}),
         |_, action| Some(serde_json::to_value(action).expect("Nim action always serializes")),
         None,
+        None,
         &mut |_| Ok(()),
     )
     .expect("meta_mcts should round-trip with a minimal config");

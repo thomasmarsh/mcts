@@ -369,11 +369,19 @@ fn transform_cells(cells: &Cells, sym: &PyramidD4, sym_idx: usize) -> Cells {
 
 /// A comparable key for a board's set-cell pattern, for picking the
 /// lexicographically minimal symmetric image -- `Cells` has no `Ord` impl of
-/// its own (a bare `[u64; 7]` word pattern isn't otherwise meaningful to
-/// compare), so this uses the ascending list of set indices instead, which
-/// `iter_set` already produces in order.
-fn cells_key(cells: &Cells) -> Vec<usize> {
-    cells.iter_set().collect()
+/// its own. Copies the raw backing words into a fixed-size array (mirrors
+/// `games/gonnect`'s `board_key`) rather than collecting `iter_set` into a
+/// `Vec<usize>`: this runs on every candidate symmetry, for every geometric
+/// channel, on every node of the MCTS selection path whenever transpositions
+/// are enabled (`crate::symmetry::incoming_sym` recomputes it fresh per
+/// iteration), so avoiding a heap allocation here matters far more than it
+/// would for a one-off comparison.
+fn cells_key(cells: &Cells) -> [u64; 7] {
+    let mut out = [0u64; 7];
+    for (i, w) in cells.words().enumerate() {
+        out[i] = w;
+    }
+    out
 }
 
 /// Index of the symmetry whose image of the *entire* geometric state
@@ -725,6 +733,87 @@ impl State {
     }
 }
 
+/// Checks whether placing at `(col, row, level)`/`index` is currently legal,
+/// via the same raster-fast-path-then-full-3D-fallback logic
+/// `Margo::generate_actions` runs per candidate -- factored out so
+/// `Margo::random_action`'s rejection sampling can check a single candidate
+/// without re-deriving that logic (and without disagreeing with it).
+/// `raster`/`own_color` are mutated to test the candidate and rolled back
+/// before returning, so the caller can reuse them across many candidates
+/// (looping over every cell in `generate_actions`, or across repeated random
+/// draws in `random_action`) without rebuilding them each time.
+#[allow(clippy::too_many_arguments)]
+fn candidate_is_legal(
+    state: &State,
+    index: usize,
+    col: usize,
+    row: usize,
+    level: usize,
+    adjacency: &TouchingAdjacency,
+    n_usize: usize,
+    base_black: GoBoard,
+    base_white: GoBoard,
+    ground: GoBoard,
+    mover_black: bool,
+    raster: &mut raster::Raster,
+    own_color: &mut [raster::LevelBoard],
+    opp_color: &[raster::LevelBoard],
+) -> bool {
+    // Temporarily place on raster, check, then roll back.
+    let raster_pos = raster.place(col, row, level);
+    own_color[level].set_index(raster_pos);
+
+    let group = raster.flood(col, row, level, own_color);
+    let libs = raster.count_liberties(&group);
+    let fast_ok = if libs < 2 {
+        false
+    } else {
+        let seeds = raster.enemies_touching(&group, own_color);
+        let mut enemy_seen: Vec<raster::LevelBoard> = (0..n_usize)
+            .map(|_| raster::LevelBoard::new(Dyn(n_usize), Dyn(n_usize)))
+            .collect();
+        seeds.iter().all(|&(ec, er, el)| {
+            let ep = raster.raster_index(ec, er);
+            if enemy_seen[el].get_index(ep) {
+                return true;
+            }
+            let eg = raster.flood(ec, er, el, opp_color);
+            for l2 in 0..n_usize {
+                enemy_seen[l2] |= eg[l2];
+            }
+            raster.count_liberties(&eg) > 0
+        })
+    };
+
+    // Roll back.
+    own_color[level].clear_index(raster_pos);
+    raster.remove(col, row, level);
+
+    let ko_safe = if let Some((ref prev_occ, _)) = state.previous {
+        !prev_occ.get_index(index)
+    } else {
+        true
+    };
+
+    if fast_ok && ko_safe {
+        return true;
+    }
+
+    // Full 3D path for edge cases (suicide, capture, ko).
+    let (own, opp) = if mover_black {
+        let mut own = base_black;
+        own.set_index(index);
+        (own, base_white)
+    } else {
+        let mut own = base_white;
+        own.set_index(index);
+        (own, base_black)
+    };
+    state
+        .resolve_place_inner(index, adjacency, own, opp, ground)
+        .is_some()
+}
+
 #[derive(Clone)]
 pub struct Margo;
 
@@ -802,63 +891,167 @@ impl Game for Margo {
                 continue;
             }
 
-            // Temporarily place on raster, check, then roll back.
-            let raster_pos = raster.place(col, row, level);
-            own_color[level].set_index(raster_pos);
-
-            let group = raster.flood(col, row, level, &own_color);
-            let libs = raster.count_liberties(&group);
-            let fast_ok = if libs < 2 {
-                false
-            } else {
-                let seeds = raster.enemies_touching(&group, &own_color);
-                let mut enemy_seen: Vec<raster::LevelBoard> = (0..n_usize)
-                    .map(|_| raster::LevelBoard::new(Dyn(n_usize), Dyn(n_usize)))
-                    .collect();
-                seeds.iter().all(|&(ec, er, el)| {
-                    let ep = raster.raster_index(ec, er);
-                    if enemy_seen[el].get_index(ep) {
-                        return true;
-                    }
-                    let eg = raster.flood(ec, er, el, &opp_color);
-                    for l2 in 0..n_usize {
-                        enemy_seen[l2] |= eg[l2];
-                    }
-                    raster.count_liberties(&eg) > 0
-                })
-            };
-
-            // Roll back.
-            own_color[level].clear_index(raster_pos);
-            raster.remove(col, row, level);
-
-            let ko_safe = if let Some((ref prev_occ, _)) = state.previous {
-                !prev_occ.get_index(index)
-            } else {
-                true
-            };
-
-            if fast_ok && ko_safe {
+            if candidate_is_legal(
+                state,
+                index,
+                col,
+                row,
+                level,
+                adjacency,
+                n_usize,
+                base_black,
+                base_white,
+                ground,
+                mover_black,
+                &mut raster,
+                &mut own_color,
+                &opp_color,
+            ) {
                 actions.push(Action::Place(index as u16, n));
+            }
+        }
+    }
+
+    /// Short-circuiting terminal check -- the default `Game::is_terminal`
+    /// calls `generate_actions` and checks `is_empty()`, which (like the
+    /// default `random_action` this game's own override replaces) always
+    /// pays the full `total_cells` scan collecting *every* legal action,
+    /// even though only "is there at least one" is needed. This stops at
+    /// the first legal candidate found via the same per-candidate check
+    /// `generate_actions` uses, so it's cheap whenever legal moves are
+    /// abundant (nearly all of the game) and only pays the full scan when
+    /// the position genuinely is terminal (rare, near the very end).
+    ///
+    /// This matters independently of `random_action`'s own fix:
+    /// `SimulateStrategy::Uniform::playout` calls `G::is_terminal` (via
+    /// `terminal_status`) on *every* rollout ply to decide whether to keep
+    /// going, so without this override the full-board scan `random_action`
+    /// eliminated from move selection was still being paid right next to
+    /// it, on the same ply, for the terminal check alone.
+    fn is_terminal(state: &State) -> bool {
+        if state.can_swap() {
+            return false;
+        }
+        let total_cells = state.occupied.total_cells();
+        if state.occupied.count_ones() as usize == total_cells {
+            return true;
+        }
+
+        let adjacency = pyramid::get_adjacency(state.occupied.n());
+        let n_usize = state.occupied.n();
+        let (base_black, base_white) = visible_boards(&state.occupied, &state.black);
+        let ground = ground_mask(n_usize, total_cells);
+        let mover_black = state.turn == Player::Black;
+        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
+        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
+
+        for index in 0..total_cells {
+            if state.is_occupied(index) {
                 continue;
             }
-
-            // Full 3D path for edge cases (suicide, capture, ko).
-            let (own, opp) = if mover_black {
-                let mut own = base_black;
-                own.set_index(index);
-                (own, base_white)
-            } else {
-                let mut own = base_white;
-                own.set_index(index);
-                (own, base_black)
-            };
-            if state
-                .resolve_place_inner(index, adjacency, own, opp, ground)
-                .is_some()
-            {
-                actions.push(Action::Place(index as u16, n));
+            let (col, row, level) = state.occupied.to_coord(index);
+            if !state.occupied.can_place(col, row, level) {
+                continue;
             }
+            if candidate_is_legal(
+                state,
+                index,
+                col,
+                row,
+                level,
+                adjacency,
+                n_usize,
+                base_black,
+                base_white,
+                ground,
+                mover_black,
+                &mut raster,
+                &mut own_color,
+                &opp_color,
+            ) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// uniform rollouts -- same idea as `games/gonnect`/`games/atarigo`'s
+    /// `random_action`: draw a random cell and run
+    /// [`candidate_is_legal`]'s single-candidate check on just that one
+    /// instead of probing every cell via `generate_actions`, falling back to
+    /// the full enumeration once `max_attempts` misses in a row (bounds cost
+    /// when legal placements are sparse, and is also what correctly proves
+    /// "no legal move"). This matters more here than in most games: unlike a
+    /// flat board, `generate_actions`'s cost doesn't shrink as the game
+    /// progresses (every one of `total_cells` positions is still probed each
+    /// call), so without this override the default `random_action` -- which
+    /// just calls `generate_actions` once per rollout ply -- pays that full
+    /// board-sized scan on every single ply of every playout.
+    ///
+    /// The swap-eligible state (exactly one stone on the board) is left to
+    /// the `generate_actions` fallback unconditionally, same as
+    /// `games/gonnect`: it's already a single-stone board (cheap to
+    /// enumerate), and giving `Swap` its correct uniform weight against an
+    /// a-priori-unknown count of legal placements isn't something rejection
+    /// sampling over cells alone can do.
+    fn random_action(state: &State, rng: &mut rand::rngs::SmallRng) -> Option<Action> {
+        use rand::Rng;
+        if state.can_swap() {
+            let mut actions = Vec::new();
+            Self::generate_actions(state, &mut actions);
+            return Some(actions[rng.gen_range(0..actions.len())]);
+        }
+        let total_cells = state.occupied.total_cells();
+        if state.occupied.count_ones() as usize == total_cells {
+            return None;
+        }
+
+        let adjacency = pyramid::get_adjacency(state.occupied.n());
+        let n = state.occupied.n() as u8;
+        let n_usize = state.occupied.n();
+        let (base_black, base_white) = visible_boards(&state.occupied, &state.black);
+        let ground = ground_mask(n_usize, total_cells);
+        let mover_black = state.turn == Player::Black;
+        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
+        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
+
+        let max_attempts = 64;
+        for _ in 0..max_attempts {
+            let index = rng.gen_range(0..total_cells);
+            if state.is_occupied(index) {
+                continue;
+            }
+            let (col, row, level) = state.occupied.to_coord(index);
+            if !state.occupied.can_place(col, row, level) {
+                continue;
+            }
+            if candidate_is_legal(
+                state,
+                index,
+                col,
+                row,
+                level,
+                adjacency,
+                n_usize,
+                base_black,
+                base_white,
+                ground,
+                mover_black,
+                &mut raster,
+                &mut own_color,
+                &opp_color,
+            ) {
+                return Some(Action::Place(index as u16, n));
+            }
+        }
+
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        if actions.is_empty() {
+            None
+        } else {
+            Some(actions[rng.gen_range(0..actions.len())])
         }
     }
 
@@ -979,6 +1172,14 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "unbounded and unseeded: mcts::util::random_play's Random search uses \
+                SmallRng::from_entropy() and loops with no ply cap until Margo::is_terminal, and \
+                Margo enforces only single-position ko (not full positional superko), so random \
+                play can cycle through repeated positions for a very long time before a draw \
+                breaks the cycle by chance -- occasionally taking far longer than a fast-suite \
+                test should. every_recommended_board_size_supports_random_play covers the same \
+                'random play reaches a legal, non-stuck state' concern deterministically and with \
+                a ply cap."]
     fn random_play_smoke_test() {
         random_play::<Margo>();
     }
@@ -1054,6 +1255,93 @@ mod tests {
                 let action = actions[rng.gen_range(0..actions.len())];
                 state = Margo::apply(state, &action);
             }
+        }
+    }
+
+    /// `random_action`'s rejection-sampling fast path must always agree with
+    /// `generate_actions`'s full enumeration: every draw is either `None`
+    /// exactly when `generate_actions` is empty, or an action also present
+    /// in `generate_actions`'s output (`Swap` included, since that state is
+    /// left to the `generate_actions` fallback unconditionally). Mirrors
+    /// `games/gonnect`'s `random_action_matches_generate_actions`.
+    fn random_action_matches_generate_actions(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.occupied.total_cells() + 2;
+
+        for _ in 0..max_plies {
+            if Margo::is_terminal(&state) {
+                return;
+            }
+            let mut actions = Vec::new();
+            Margo::generate_actions(&state, &mut actions);
+            assert!(
+                !actions.is_empty(),
+                "n={n} seed={seed}: no legal moves on a non-terminal state"
+            );
+            // Draw several times from the same state to exercise both the
+            // rejection-sampling success path and (near the end of the
+            // game, when legal placements are sparse) its full-enumeration
+            // fallback.
+            for _ in 0..8 {
+                let drawn = Margo::random_action(&state, &mut rng).expect(
+                    "random_action must return Some whenever generate_actions is non-empty",
+                );
+                assert!(
+                    actions.contains(&drawn),
+                    "n={n} seed={seed}: random_action drew {drawn:?}, not present in \
+                     generate_actions {actions:?}"
+                );
+            }
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Margo::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn test_margo_random_action_matches_generate_actions() {
+        for seed in 0..20 {
+            random_action_matches_generate_actions(4, seed);
+        }
+        for seed in 0..10 {
+            random_action_matches_generate_actions(7, seed);
+        }
+    }
+
+    /// `Margo::is_terminal`'s short-circuiting rewrite must agree with the
+    /// default (`generate_actions(state).is_empty()`) at every ply, in both
+    /// directions -- a false positive (claiming terminal too early) would
+    /// silently cut a game short, a false negative would make `is_terminal`
+    /// worthless as a stopping condition. Seeded and ply-capped, unlike
+    /// `random_play_smoke_test`, so this stays fast and deterministic.
+    fn is_terminal_matches_generate_actions_emptiness(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.occupied.total_cells() + 2;
+
+        for _ in 0..max_plies {
+            let mut actions = Vec::new();
+            Margo::generate_actions(&state, &mut actions);
+            assert_eq!(
+                Margo::is_terminal(&state),
+                actions.is_empty(),
+                "n={n} seed={seed}: is_terminal disagreed with generate_actions().is_empty()"
+            );
+            if actions.is_empty() {
+                return;
+            }
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Margo::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn test_margo_is_terminal_matches_generate_actions_emptiness() {
+        for seed in 0..20 {
+            is_terminal_matches_generate_actions_emptiness(4, seed);
+        }
+        for seed in 0..10 {
+            is_terminal_matches_generate_actions_emptiness(7, seed);
         }
     }
 

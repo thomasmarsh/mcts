@@ -603,6 +603,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &mut |_| Ok(()),
             )
             .expect("tune_eval should round-trip with a minimal RAVE config");
@@ -636,6 +637,7 @@ mod tests {
                 Some(0),
                 None,
                 Some(baseline_config),
+                None,
                 None,
                 None,
                 None,
@@ -678,6 +680,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &mut |_| Ok(()),
             )
             .expect("tune_eval should round-trip on a non-default board size");
@@ -709,6 +712,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &mut |_| Ok(()),
             )
             .expect_err("an unsupported board size should error before any games are played");
@@ -723,6 +727,7 @@ mod tests {
                 1,
                 Some(0),
                 Some("nonexistent".into()),
+                None,
                 None,
                 None,
                 None,

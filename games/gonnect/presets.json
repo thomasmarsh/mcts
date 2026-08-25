@@ -22,5 +22,20 @@
             "final_action": "robust_child"
         },
         "max_iterations": 5000
+    },
+    {
+        "id": "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f",
+        "label": "Tuned candidate",
+        "description": "Candidate snapshot from trial 415 (trial-8511d30bd7395abfa0f03a77f8473a8f).",
+        "params": {
+            "c": 0.7239492926382561,
+            "epsilon": 0.9222837149108224,
+            "family": "ucb1_tuned_dm_mast",
+            "final_action": "robust_child",
+            "q_init": "Win"
+        },
+        "max_iterations": 10000,
+        "threads": 1,
+        "use_transpositions": false
     }
 ]

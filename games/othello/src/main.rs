@@ -334,6 +334,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &mut |_| Ok(()),
             )
             .expect("tune_eval should round-trip with a minimal RAVE config");

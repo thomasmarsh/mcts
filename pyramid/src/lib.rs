@@ -210,6 +210,13 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
             .sum()
     }
 
+    /// The raw backing words, low word first -- for a caller that needs to
+    /// fold over every word generically (e.g. hashing or an ordering key)
+    /// independent of `S`'s concrete layout. Mirrors `bitboard::Board::words`.
+    pub fn words(&self) -> impl Iterator<Item = u64> + '_ {
+        (0..S::CAPACITY_WORDS).map(move |w| self.bits.word(w))
+    }
+
     /// Iterates set flat indices in ascending order -- same trailing-zeros
     /// idiom as `bitboard::Board::iter_set`.
     pub fn iter_set(&self) -> impl Iterator<Item = usize> + '_ {
