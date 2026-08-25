@@ -20,7 +20,9 @@ use std::time::Duration;
 use game_host::{AiPresetInfo, HostError};
 use mcts::game::Game;
 use mcts::strategies::Search;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use std::str::FromStr;
@@ -28,6 +30,7 @@ use std::str::FromStr;
 use mcts::node::QInit;
 
 use crate::config_ir;
+use crate::config_ir::codec::{field, field_opt};
 use crate::{build_search, SearchBudget};
 
 fn one() -> usize {
@@ -40,26 +43,71 @@ fn one() -> usize {
 /// fields that family needs, `q_init` as a string) -- the exact shape
 /// `build_search` already parses, so nothing new to validate here beyond
 /// what `build_search` itself already rejects at build time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Serialize`/`Deserialize` are hand-implemented below (routed through
+/// `serde_json::Value`, via the same `config_ir::codec` helpers the
+/// `register_*!` axis macros use) rather than `#[derive]`d, for the same
+/// compile-cost reason -- see `config_ir/backprop.rs`'s `BackpropSpec` doc
+/// comment. A flat struct with no `kind` tag, so unlike the axis specs
+/// there's only one shape to match, not one per enum variant.
+#[derive(Debug, Clone)]
 pub struct PresetSpec {
     pub id: String,
     pub label: String,
-    #[serde(default)]
     pub description: String,
     pub params: Value,
-    #[serde(default)]
     pub max_time_ms: Option<u64>,
-    #[serde(default)]
     pub max_iterations: Option<usize>,
     /// Tree-parallelism thread count; `0` means "use every available core"
     /// (mirrors `games/druid/src/main.rs`'s `ai_thread_count`/
     /// `preset_threads` convention -- `SearchBudget::threads` itself has no
     /// such meaning, so [`PresetSpec::budget`] resolves `0` before
     /// constructing one).
-    #[serde(default = "one")]
     pub threads: usize,
-    #[serde(default)]
     pub use_transpositions: bool,
+}
+
+impl Serialize for PresetSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("label", &self.label)?;
+        map.serialize_entry("description", &self.description)?;
+        map.serialize_entry("params", &self.params)?;
+        map.serialize_entry("max_time_ms", &self.max_time_ms)?;
+        map.serialize_entry("max_iterations", &self.max_iterations)?;
+        map.serialize_entry("threads", &self.threads)?;
+        map.serialize_entry("use_transpositions", &self.use_transpositions)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PresetSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = Value::deserialize(deserializer)?;
+        Ok(PresetSpec {
+            id: field(&v, "id").map_err(D::Error::custom)?,
+            label: field(&v, "label").map_err(D::Error::custom)?,
+            description: field_opt(&v, "description")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+            params: field(&v, "params").map_err(D::Error::custom)?,
+            max_time_ms: field_opt(&v, "max_time_ms").map_err(D::Error::custom)?,
+            max_iterations: field_opt(&v, "max_iterations").map_err(D::Error::custom)?,
+            threads: field_opt(&v, "threads")
+                .map_err(D::Error::custom)?
+                .unwrap_or_else(one),
+            use_transpositions: field_opt(&v, "use_transpositions")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+        })
+    }
 }
 
 impl PresetSpec {
@@ -194,24 +242,22 @@ const EXPAND_THRESHOLD: u32 = 1;
 /// composition of all four axes, not a named combination. Field shape
 /// otherwise mirrors [`PresetSpec`] minus `id`/`label`/`description` (which
 /// only make sense for a table entry, not a one-off inline config).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Serialize`/`Deserialize` are hand-implemented below, the same way and
+/// for the same reason as [`PresetSpec`]'s -- see that struct's doc comment.
+#[derive(Debug, Clone)]
 pub struct CustomStrategySpec {
     pub search: config_ir::SearchSpec,
-    #[serde(default)]
     pub max_time_ms: Option<u64>,
-    #[serde(default)]
     pub max_iterations: Option<usize>,
     /// `0` means "every available core" -- same convention as
-    /// [`PresetSpec::threads`], but defaulting to `1` here too (`#[serde(default = "one")]`)
-    /// rather than requiring every caller to name a thread count.
-    #[serde(default = "one")]
+    /// [`PresetSpec::threads`], but defaulting to `1` here too rather than
+    /// requiring every caller to name a thread count.
     pub threads: usize,
-    #[serde(default)]
     pub use_transpositions: bool,
     /// `QInit`'s wire form is a name string (`"Parent"`/`"Win"`/`"Loss"`/
     /// `"Draw"`/`"Infinity"`), matching `TrialParams::q_init` -- `QInit`
     /// itself has no `Serialize`/`Deserialize` derive to reuse directly.
-    #[serde(default = "default_q_init")]
     pub q_init: String,
     /// Same wire name and semantics as `TrialParams::mcgs`
     /// ([`crate::family_catalog`]/`to_search_spec`): `true` switches on Monte
@@ -221,7 +267,6 @@ pub struct CustomStrategySpec {
     /// makes sense against a game with a real zobrist hash. See
     /// `crate::resolve_graph_search`, the shared derivation both this and
     /// `to_search_spec` call.
-    #[serde(default)]
     pub mcgs: bool,
     /// Same wire name and semantics as `TrialParams::state_only_keying`:
     /// `true` selects `TranspositionKeying::StateOnly` over the default
@@ -229,12 +274,58 @@ pub struct CustomStrategySpec {
     /// [`build_custom`] otherwise, via `crate::resolve_graph_search`). See
     /// `mcts::TranspositionKeying`'s doc comment for the per-game GHI
     /// precondition this asserts.
-    #[serde(default)]
     pub state_only_keying: bool,
 }
 
 fn default_q_init() -> String {
     "Parent".to_string()
+}
+
+impl Serialize for CustomStrategySpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("search", &self.search)?;
+        map.serialize_entry("max_time_ms", &self.max_time_ms)?;
+        map.serialize_entry("max_iterations", &self.max_iterations)?;
+        map.serialize_entry("threads", &self.threads)?;
+        map.serialize_entry("use_transpositions", &self.use_transpositions)?;
+        map.serialize_entry("q_init", &self.q_init)?;
+        map.serialize_entry("mcgs", &self.mcgs)?;
+        map.serialize_entry("state_only_keying", &self.state_only_keying)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CustomStrategySpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = Value::deserialize(deserializer)?;
+        Ok(CustomStrategySpec {
+            search: field(&v, "search").map_err(D::Error::custom)?,
+            max_time_ms: field_opt(&v, "max_time_ms").map_err(D::Error::custom)?,
+            max_iterations: field_opt(&v, "max_iterations").map_err(D::Error::custom)?,
+            threads: field_opt(&v, "threads")
+                .map_err(D::Error::custom)?
+                .unwrap_or_else(one),
+            use_transpositions: field_opt(&v, "use_transpositions")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+            q_init: field_opt(&v, "q_init")
+                .map_err(D::Error::custom)?
+                .unwrap_or_else(default_q_init),
+            mcgs: field_opt(&v, "mcgs")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+            state_only_keying: field_opt(&v, "state_only_keying")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+        })
+    }
 }
 
 impl CustomStrategySpec {
@@ -315,6 +406,7 @@ mod tests {
         BackpropSpec, BaseSelectSpec, FinalActionSpec, SelectSpec, SimulateSpec,
     };
     use game_nim::Nim;
+    use serde_json::json;
 
     fn sample_custom_spec() -> CustomStrategySpec {
         CustomStrategySpec {
@@ -505,5 +597,82 @@ mod tests {
         .unwrap();
         let budget = table.presets[0].budget();
         assert!(budget.threads >= 1);
+    }
+
+    #[test]
+    fn preset_spec_round_trips_through_json() {
+        let json = json!({
+            "id": "strong",
+            "label": "Strong",
+            "description": "beatable but tries",
+            "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity"},
+            "max_time_ms": 500,
+            "max_iterations": 1000,
+            "threads": 4,
+            "use_transpositions": true,
+        });
+        let spec: PresetSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(spec.id, "strong");
+        assert_eq!(spec.threads, 4);
+        assert!(spec.use_transpositions);
+        assert_eq!(serde_json::to_value(&spec).unwrap(), json);
+    }
+
+    #[test]
+    fn preset_spec_deserialize_applies_defaults_for_omitted_fields() {
+        let spec: PresetSpec = serde_json::from_value(json!({
+            "id": "easy",
+            "label": "Easy",
+            "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity"},
+        }))
+        .unwrap();
+        assert_eq!(spec.description, "");
+        assert_eq!(spec.max_time_ms, None);
+        assert_eq!(spec.max_iterations, None);
+        assert_eq!(spec.threads, 1);
+        assert!(!spec.use_transpositions);
+    }
+
+    #[test]
+    fn preset_spec_deserialize_rejects_missing_required_field() {
+        let err = serde_json::from_value::<PresetSpec>(json!({"label": "Easy", "params": {}}))
+            .unwrap_err();
+        assert!(err.to_string().contains("id"), "{err}");
+    }
+
+    #[test]
+    fn custom_strategy_spec_round_trips_through_json() {
+        let spec = sample_custom_spec();
+        let json = serde_json::to_value(&spec).unwrap();
+        let back: CustomStrategySpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back.search, spec.search);
+        assert_eq!(back.max_iterations, spec.max_iterations);
+        assert_eq!(back.q_init, spec.q_init);
+    }
+
+    #[test]
+    fn custom_strategy_spec_deserialize_applies_defaults_for_omitted_fields() {
+        let spec: CustomStrategySpec = serde_json::from_value(json!({
+            "search": {
+                "select": {"kind": "ucb1", "c": 1.4},
+                "simulate": {"kind": "uniform"},
+                "backprop": {"kind": "classic"},
+                "final_action": {"kind": "robust_child"},
+            },
+        }))
+        .unwrap();
+        assert_eq!(spec.max_time_ms, None);
+        assert_eq!(spec.max_iterations, None);
+        assert_eq!(spec.threads, 1);
+        assert!(!spec.use_transpositions);
+        assert_eq!(spec.q_init, "Parent");
+        assert!(!spec.mcgs);
+        assert!(!spec.state_only_keying);
+    }
+
+    #[test]
+    fn custom_strategy_spec_deserialize_rejects_missing_required_field() {
+        let err = serde_json::from_value::<CustomStrategySpec>(json!({})).unwrap_err();
+        assert!(err.to_string().contains("search"), "{err}");
     }
 }

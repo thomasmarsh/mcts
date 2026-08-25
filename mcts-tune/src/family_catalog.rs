@@ -12,10 +12,13 @@
 //! graph search on) -- none of the four is "a field some family's
 //! `conditions` entry activates", which is what this table exists to cover.
 
+use crate::config_ir::codec::{field, field_opt};
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
 use game_host::{HostError, TunerCondition, TunerParameter};
 use mcts::select::{RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 /// Builds one `TunerParameter` from a name and its JSON-schema spec --
@@ -61,7 +64,16 @@ macro_rules! register_field {
         /// because it's only meaningful for a subset of families (validated
         /// per-family in `to_search_spec`, the same way missing required
         /// fields were already rejected before `family` existed).
-        #[derive(Debug, serde::Deserialize)]
+        ///
+        /// `Deserialize` is hand-implemented below (routed through
+        /// `serde_json::Value`, via the same `config_ir::codec` helpers
+        /// `register_backprop!`/`register_select!`/`register_simulate!` use)
+        /// rather than `#[derive]`d, for the same compile-cost reason --
+        /// see `config_ir/backprop.rs`'s `BackpropSpec` doc comment. Never
+        /// `Serialize` -- nothing in this crate ever serializes a
+        /// `TrialParams` back to JSON, only parses one out of a tuner
+        /// trial's `params`.
+        #[derive(Debug)]
         pub struct TrialParams {
             pub(crate) family: String,
             pub(crate) q_init: String,
@@ -76,6 +88,24 @@ macro_rules! register_field {
             /// `mcts::TranspositionKeying`'s doc comment for the GHI
             /// precondition this asserts about the game's zobrist hash.
             pub(crate) state_only_keying: Option<bool>,
+        }
+
+        impl<'de> Deserialize<'de> for TrialParams {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                Ok(TrialParams {
+                    family: field(&v, "family").map_err(D::Error::custom)?,
+                    q_init: field(&v, "q_init").map_err(D::Error::custom)?,
+                    $(
+                        $field: field_opt(&v, stringify!($field)).map_err(D::Error::custom)?,
+                    )+
+                    mcgs: field_opt(&v, "mcgs").map_err(D::Error::custom)?,
+                    state_only_keying: field_opt(&v, "state_only_keying").map_err(D::Error::custom)?,
+                })
+            }
         }
 
         /// `strategy_tuner_info`'s `TunerParameter` entries for every row in

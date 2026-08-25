@@ -801,6 +801,26 @@ fn trial(params: Value) -> TrialParams {
 }
 
 #[test]
+fn trial_params_deserialize_rejects_missing_family_and_q_init() {
+    let err = serde_json::from_value::<TrialParams>(json!({"q_init": "Infinity"})).unwrap_err();
+    assert!(err.to_string().contains("family"), "{err}");
+
+    let err = serde_json::from_value::<TrialParams>(json!({"family": "ucb1"})).unwrap_err();
+    assert!(err.to_string().contains("q_init"), "{err}");
+}
+
+#[test]
+fn trial_params_deserialize_treats_absent_and_null_optional_fields_alike() {
+    let absent = trial(json!({"family": "ucb1", "q_init": "Infinity"}));
+    assert_eq!(absent.c, None);
+    assert_eq!(absent.mcgs, None);
+
+    let null = trial(json!({"family": "ucb1", "q_init": "Infinity", "c": null, "mcgs": null}));
+    assert_eq!(null.c, None);
+    assert_eq!(null.mcgs, None);
+}
+
+#[test]
 fn to_search_spec_ucb1() {
     let (spec, _) = to_search_spec(
         &trial(json!({

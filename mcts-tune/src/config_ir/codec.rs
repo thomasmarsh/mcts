@@ -38,3 +38,24 @@ pub(crate) fn field<T: serde::de::DeserializeOwned>(v: &Value, name: &str) -> Re
         .ok_or_else(|| format!("missing field `{name}`"))?;
     serde_json::from_value(raw.clone()).map_err(|e| format!("field `{name}`: {e}"))
 }
+
+/// [`field`]'s counterpart for a field serde's derive would treat as
+/// implicitly optional -- an `Option<T>`-typed struct field with no
+/// `#[serde(default)]` annotation still defaults to `None` when the key is
+/// missing (serde's derive special-cases `Option<T>` fields this way, not
+/// just fields with an explicit `#[serde(default = ...)]`), and treats an
+/// explicit JSON `null` the same as a missing key rather than trying to
+/// deserialize `T` from `null`. Also doubles as the concrete counterpart of
+/// `#[serde(default)]`/`#[serde(default = "...")]` on a non-`Option` field --
+/// call this and fall back with `.unwrap_or_default()`/`.unwrap_or(...)`.
+pub(crate) fn field_opt<T: serde::de::DeserializeOwned>(
+    v: &Value,
+    name: &str,
+) -> Result<Option<T>, String> {
+    match v.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => {
+            serde_json::from_value(raw.clone()).map(Some).map_err(|e| format!("field `{name}`: {e}"))
+        }
+    }
+}
