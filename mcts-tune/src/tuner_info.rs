@@ -58,6 +58,15 @@ pub fn strategy_tuner_info_with_mcgs(
     if supports_mcgs {
         info.parameters
             .push(param("mcgs", json!({"type": "bool", "default": false})));
+        info.parameters.push(param(
+            "state_only_keying",
+            json!({"type": "bool", "default": false}),
+        ));
+        // Only meaningful (and only accepted by `resolve_graph_search`)
+        // when `mcgs` is also sampled `true` -- see
+        // `TrialParams::state_only_keying`'s doc comment.
+        info.conditions
+            .push(condition(json!({"mcgs": true}), &["state_only_keying"]));
     }
     info
 }

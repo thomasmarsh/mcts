@@ -301,7 +301,7 @@ impl GameAdapter for MargoAdapter {
         let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
-            ..mcts_tune::strategy_tuner_info(&baselines, TUNE_EVAL_ROUNDS)
+            ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
         })
     }
 
@@ -336,15 +336,20 @@ impl GameAdapter for MargoAdapter {
         let outcome =
             if let Some(cfg) = baseline_config {
                 let baseline_seed = seed.unwrap_or(0);
-                mcts_tune::build_search::<Margo>(&cfg, baseline_seed, false, &budget)?;
+                // `true`: Margo has a real `Game::zobrist_hash` (already
+                // trusted in production by its "strong" preset's
+                // `use_transpositions: true`), so merging transposed nodes
+                // during tuning is safe -- mirrors `generic_tune_eval`'s own
+                // doc comment on this precondition.
+                mcts_tune::build_search::<Margo>(&cfg, baseline_seed, true, &budget)?;
                 mcts_tune::strategy_tune_eval(
                     &params,
                     rounds,
                     seed,
-                    false,
+                    true,
                     budget,
                     move || {
-                        mcts_tune::build_search::<Margo>(&cfg, baseline_seed, false, &budget)
+                        mcts_tune::build_search::<Margo>(&cfg, baseline_seed, true, &budget)
                             .expect("baseline_config already validated above")
                     },
                     initial_state,
@@ -364,7 +369,7 @@ impl GameAdapter for MargoAdapter {
                     &params,
                     rounds,
                     seed,
-                    false,
+                    true,
                     budget,
                     move || {
                         presets().build::<Margo>(&baseline_id, PRESET_SEED).unwrap_or_else(|e| {

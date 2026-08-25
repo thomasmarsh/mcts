@@ -2,13 +2,15 @@
 //! fields and `strategy_tuner_info`'s matching `TunerParameter` entries from
 //! one source, instead of the same field list being hand-declared twice.
 //!
-//! Three fields stay hand-declared on `TrialParams` and hand-reported by
+//! Four fields stay hand-declared on `TrialParams` and hand-reported by
 //! `strategy_tuner_info_with_mcgs` instead of living in this table:
 //! `family` and `q_init` are unconditionally active regardless of which
-//! family a trial names (nothing in `conditions` gates them), and `mcgs`
-//! is reported only when a game's own `supports_mcgs` flag is set -- none
-//! of the three is "a field some family's `conditions` entry activates",
-//! which is what this table exists to cover.
+//! family a trial names (nothing in `conditions` gates them), and `mcgs`/
+//! `state_only_keying` are reported only when a game's own `supports_mcgs`
+//! flag is set (`state_only_keying` additionally gated on `mcgs`'s own
+//! sampled value via a `conditions` entry, since it's meaningless without
+//! graph search on) -- none of the four is "a field some family's
+//! `conditions` entry activates", which is what this table exists to cover.
 
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
 use game_host::{HostError, TunerCondition, TunerParameter};
@@ -68,12 +70,19 @@ macro_rules! register_field {
                 pub(crate) $field: Option<$ty>,
             )+
             pub(crate) mcgs: Option<bool>,
+            /// Selects `TranspositionKeying::StateOnly` over the default
+            /// `PerPly` when `mcgs` is also `true`; meaningless (and
+            /// rejected by `resolve_graph_search`) otherwise. See
+            /// `mcts::TranspositionKeying`'s doc comment for the GHI
+            /// precondition this asserts about the game's zobrist hash.
+            pub(crate) state_only_keying: Option<bool>,
         }
 
         /// `strategy_tuner_info`'s `TunerParameter` entries for every row in
-        /// this table, in declaration order. `family`/`q_init`/`mcgs` are
-        /// appended by hand in `strategy_tuner_info_with_mcgs` -- see this
-        /// module's doc comment for why those three don't belong here.
+        /// this table, in declaration order. `family`/`q_init`/`mcgs`/
+        /// `state_only_keying` are appended by hand in
+        /// `strategy_tuner_info_with_mcgs` -- see this module's doc comment
+        /// for why those four don't belong here.
         pub(crate) fn tunable_field_parameters() -> Vec<TunerParameter> {
             vec![
                 $( param(stringify!($field), $spec) ),+

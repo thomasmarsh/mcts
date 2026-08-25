@@ -8,7 +8,7 @@ use mcts::node::QInit;
 use mcts::select::SelectStrategy;
 use mcts::strategies::mcts::strategy::Compose;
 use mcts::strategies::Search;
-use mcts::{GraphSearch, SearchConfig, TreeSearch};
+use mcts::{GraphSearch, SearchConfig, TranspositionKeying, TreeSearch};
 use serde::{Deserialize, Serialize};
 
 /// One configuration node for each axis of a composed MCTS strategy.
@@ -38,6 +38,7 @@ pub struct SearchSettings {
     pub seed: u64,
     pub max_time: Option<std::time::Duration>,
     pub graph_search: Option<GraphSearch>,
+    pub transposition_keying: TranspositionKeying,
     pub solver_loss_threshold: Option<u32>,
     pub contempt_factor: Option<f64>,
 }
@@ -131,6 +132,7 @@ where
             .use_transpositions(self.settings.use_transpositions)
             .use_mcts_solver(self.settings.use_mcts_solver)
             .reuse_tree(self.settings.reuse_tree)
+            .transposition_keying(self.settings.transposition_keying)
             .num_tree_threads(self.settings.num_tree_threads)
             .seed(self.settings.seed)
             .select(self.select)

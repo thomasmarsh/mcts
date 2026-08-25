@@ -543,6 +543,7 @@ mod tests {
             seed: 1,
             max_time: None,
             graph_search: None,
+            transposition_keying: mcts::TranspositionKeying::PerPly,
             solver_loss_threshold: None,
             contempt_factor: None,
         };

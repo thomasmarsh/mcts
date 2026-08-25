@@ -2305,4 +2305,116 @@ mod tests {
         }
         assert_eq!(Margo::winner(&tied), None);
     }
+
+    /// A reproducible mid-game position reached by playing `target_plies`
+    /// random legal moves from the empty board -- same construction
+    /// `examples/bench_mcgs_midgame.rs` uses to get past the opening's tiny
+    /// group sizes into a region where captures (and thus real cross-ply
+    /// transpositions) actually occur, shared by the `StateOnly` keying
+    /// tests below.
+    fn mid_game_state(n: usize, target_plies: usize, seed: u64) -> State {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        for _ in 0..target_plies {
+            if Margo::is_terminal(&state) {
+                break;
+            }
+            match Margo::random_action(&state, &mut rng) {
+                Some(action) => state = Margo::apply(state, &action),
+                None => break,
+            }
+        }
+        state
+    }
+
+    /// `GraphSearch::Dag(GraphStats::Both)` + `TranspositionKeying::StateOnly`
+    /// (the shape `games/margo/presets.json`'s "strong" preset now builds,
+    /// see `resolve_graph_search`) against a real mid-game position, where
+    /// Margo's Go-style captures make cross-ply merging actually reachable
+    /// (unlike `games/atarigo`, whose "first capture wins" rule means no
+    /// state ever recurs at a different ply). Just proves `choose_action`
+    /// returns a legal move with no panic/hang -- the correctness bar
+    /// `TranspositionKeying::StateOnly`'s doc comment asks for, given
+    /// Margo's hash captures the one-ply-back ko snapshot the state's
+    /// future legality depends on (`State::previous`; see the module doc's
+    /// "single-position ko, not full positional superko").
+    #[test]
+    fn regression_state_only_keying_no_corruption_with_real_captures() {
+        use mcts::strategies::mcts::{
+            node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
+            TranspositionKeying, TreeSearch,
+        };
+        use mcts::strategies::Search;
+
+        type TS = TreeSearch<Margo, strategy::Ucb1>;
+        let n = 4;
+        let target_plies = (State::new(n).total_cells() as f64 * 0.4) as usize;
+        let state = mid_game_state(n, target_plies, 1);
+        let mut ts = TS::default().config(
+            SearchConfig::new()
+                .use_transpositions(false)
+                .reuse_tree(false)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::StateOnly)
+                .q_init(QInit::Loss)
+                .max_playout_depth(200)
+                .max_iterations(300)
+                .seed(1)
+                .select(select::Ucb1::with_c(std::f64::consts::SQRT_2)),
+        );
+        let action = ts.choose_action(&state);
+        let mut legal = Vec::new();
+        Margo::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&action), "chosen action must be legal");
+    }
+
+    /// Unlike `games/atarigo`'s
+    /// `state_only_keying_matches_per_ply_arena_size_when_no_recapture_is_
+    /// possible` (a negative result: AtariGo's rules make cross-ply
+    /// transpositions structurally unreachable), Margo's real Go-style
+    /// capture/recapture makes the same state reachable at different plies,
+    /// so `StateOnly` merges nodes `PerPly` keeps separate and produces a
+    /// strictly smaller arena. `per_ply=298 state_only=295` at this exact
+    /// seed/budget was found by an ad hoc comparison sweep across board
+    /// sizes/seeds/iteration counts (not kept); encoded as a real regression
+    /// here so a future change to `StateOnly`'s merge logic or Margo's rules
+    /// that silently stops the merge from happening gets caught.
+    #[test]
+    fn state_only_keying_shrinks_the_arena_via_a_real_recapture_transposition() {
+        use mcts::strategies::mcts::{
+            node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
+            TranspositionKeying, TreeSearch,
+        };
+        use mcts::strategies::Search;
+
+        type TS = TreeSearch<Margo, strategy::Ucb1>;
+        let n = 4;
+        let target_plies = (State::new(n).total_cells() as f64 * 0.4) as usize;
+        let state = mid_game_state(n, target_plies, 1);
+        let config = |keying| {
+            SearchConfig::new()
+                .use_transpositions(false)
+                .reuse_tree(false)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(keying)
+                .q_init(QInit::Loss)
+                .max_playout_depth(200)
+                .max_iterations(300)
+                .seed(1)
+                .select(select::Ucb1::with_c(std::f64::consts::SQRT_2))
+        };
+
+        let mut per_ply = TS::default().config(config(TranspositionKeying::PerPly));
+        let _ = per_ply.choose_action(&state);
+        let mut state_only = TS::default().config(config(TranspositionKeying::StateOnly));
+        let _ = state_only.choose_action(&state);
+
+        assert!(
+            state_only.table.graph_len() < per_ply.table.graph_len(),
+            "expected StateOnly to merge at least one real cross-ply recapture \
+             transposition (per_ply={}, state_only={})",
+            per_ply.table.graph_len(),
+            state_only.table.graph_len()
+        );
+    }
 }

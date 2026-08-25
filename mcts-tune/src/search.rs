@@ -5,7 +5,7 @@ use game_host::{
     SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats};
+use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats, TranspositionKeying};
 use mcts::strategies::{
     Search, SearchGraphMode as EngineSearchGraphMode, SearchReport as EngineSearchReport,
     SearchReportReason as EngineSearchReportReason, SearchReportStatus as EngineSearchReportStatus,
@@ -269,8 +269,9 @@ pub(crate) fn to_search_spec(
     let q_init = QInit::from_str(&p.q_init)
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", p.q_init)))?;
     let mcgs = p.mcgs.unwrap_or(false);
-    let (use_transpositions, reuse_tree, graph_search) =
-        resolve_graph_search(mcgs, use_transpositions)?;
+    let state_only_keying = p.state_only_keying.unwrap_or(false);
+    let (use_transpositions, reuse_tree, graph_search, transposition_keying) =
+        resolve_graph_search(mcgs, use_transpositions, state_only_keying)?;
 
     let FamilySpec {
         select,
@@ -299,6 +300,7 @@ pub(crate) fn to_search_spec(
         seed,
         max_time: budget.max_time,
         graph_search,
+        transposition_keying,
         solver_loss_threshold: solver_loss_threshold_setting,
         contempt_factor: contempt_factor_setting,
     };
@@ -306,28 +308,45 @@ pub(crate) fn to_search_spec(
 }
 
 /// Derives `SearchSettings`'s `use_transpositions`/`reuse_tree`/
-/// `graph_search` from a requested `mcgs` flag and whether the game supports
-/// transpositions at all -- the one place "`mcgs` implies `Dag(Both)`, turns
-/// off the plain transposition table and tree reuse, and requires a real
-/// zobrist hash" is decided. Both [`to_search_spec`] and
-/// [`presets::build_custom`] call this rather than each re-deriving the same
-/// three fields from `mcgs`, so that mapping can't drift into two different
-/// answers as either caller changes independently -- see this repo's
-/// `AGENTS.md` on why config axes like this one need to be correct by
-/// construction rather than duplicated by convention.
+/// `graph_search`/`transposition_keying` from a requested `mcgs` flag and
+/// whether the game supports transpositions at all -- the one place "`mcgs`
+/// implies `Dag(Both)`, turns off the plain transposition table and tree
+/// reuse, and requires a real zobrist hash" is decided. Both
+/// [`to_search_spec`] and [`presets::build_custom`] call this rather than
+/// each re-deriving the same fields from `mcgs`, so that mapping can't drift
+/// into two different answers as either caller changes independently -- see
+/// this repo's `AGENTS.md` on why config axes like this one need to be
+/// correct by construction rather than duplicated by convention.
+///
+/// `state_only_keying` selects `TranspositionKeying::StateOnly` over the
+/// default `PerPly` and is rejected unless `mcgs` is also `true` -- it's
+/// meaningless without graph search on, and enabling it asserts the game's
+/// zobrist hash meets `TranspositionKeying::StateOnly`'s stricter GHI
+/// precondition (see that type's doc comment), which is a per-game claim
+/// only the caller (a specific game's preset/tuner wiring) can make, not
+/// something this shared helper can verify.
 pub(crate) fn resolve_graph_search(
     mcgs: bool,
     use_transpositions: bool,
-) -> Result<(bool, bool, Option<GraphSearch>), HostError> {
+    state_only_keying: bool,
+) -> Result<(bool, bool, Option<GraphSearch>, TranspositionKeying), HostError> {
     if mcgs && !use_transpositions {
         return Err(HostError::bad_request(
             "mcgs requires a game with a zobrist hash",
         ));
     }
+    if state_only_keying && !mcgs {
+        return Err(HostError::bad_request("state_only_keying requires mcgs"));
+    }
     Ok((
         use_transpositions && !mcgs,
         !mcgs,
         mcgs.then_some(GraphSearch::Dag(GraphStats::Both)),
+        if state_only_keying {
+            TranspositionKeying::StateOnly
+        } else {
+            TranspositionKeying::PerPly
+        },
     ))
 }
 

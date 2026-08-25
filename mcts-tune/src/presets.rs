@@ -223,6 +223,14 @@ pub struct CustomStrategySpec {
     /// `to_search_spec` call.
     #[serde(default)]
     pub mcgs: bool,
+    /// Same wire name and semantics as `TrialParams::state_only_keying`:
+    /// `true` selects `TranspositionKeying::StateOnly` over the default
+    /// `PerPly`, and requires `mcgs` also be `true` (rejected by
+    /// [`build_custom`] otherwise, via `crate::resolve_graph_search`). See
+    /// `mcts::TranspositionKeying`'s doc comment for the per-game GHI
+    /// precondition this asserts.
+    #[serde(default)]
+    pub state_only_keying: bool,
 }
 
 fn default_q_init() -> String {
@@ -261,8 +269,8 @@ pub fn build_custom<G: Game + 'static>(
         .map_err(|_| HostError::bad_request(format!("invalid q_init: {}", spec.q_init)))?;
     config_ir::validate_search_spec::<G>(&spec.search).map_err(HostError::bad_request)?;
     let budget = spec.budget();
-    let (use_transpositions, reuse_tree, graph_search) =
-        crate::resolve_graph_search(spec.mcgs, spec.use_transpositions)?;
+    let (use_transpositions, reuse_tree, graph_search, transposition_keying) =
+        crate::resolve_graph_search(spec.mcgs, spec.use_transpositions, spec.state_only_keying)?;
     let settings = config_ir::SearchSettings {
         max_iterations: budget.iteration_limit(),
         max_playout_depth: PLAYOUT_DEPTH,
@@ -275,6 +283,7 @@ pub fn build_custom<G: Game + 'static>(
         seed,
         max_time: budget.max_time,
         graph_search,
+        transposition_keying,
         solver_loss_threshold: None,
         contempt_factor: None,
     };
@@ -324,6 +333,7 @@ mod tests {
             use_transpositions: false,
             q_init: "Infinity".to_string(),
             mcgs: false,
+            state_only_keying: false,
         }
     }
 
