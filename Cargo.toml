@@ -116,7 +116,7 @@ lto = true
 # Line tables only — full debug info (debug=true) made release 7+ GB.
 # profiling/samply profiles below override with debug=true when needed.
 debug = 1
-lto = true
+lto = "thin"
 
 [profile.samply]
 inherits = "release"
