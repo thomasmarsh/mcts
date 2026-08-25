@@ -211,7 +211,7 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
 
     assert_eq!(
         table.get_or_insert_graph(
-            TranspositionKey {
+            TranspositionKey::PerPly {
                 position_hash: 42,
                 ply: 1,
             },
@@ -221,7 +221,7 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
     );
     assert_eq!(
         table.get_or_insert_graph(
-            TranspositionKey {
+            TranspositionKey::PerPly {
                 position_hash: 42,
                 ply: 3,
             },
@@ -230,6 +230,54 @@ fn test_graph_table_keeps_equal_hashes_at_distinct_plies_separate() {
         deep
     );
     assert_eq!(table.len(), 2);
+}
+
+#[test]
+fn test_transposition_key_new_selects_the_configured_variant() {
+    use crate::strategies::mcts::config::TranspositionKeying;
+    use crate::strategies::mcts::table::TranspositionKey;
+
+    assert_eq!(
+        TranspositionKey::new(TranspositionKeying::PerPly, 42, 3),
+        TranspositionKey::PerPly {
+            position_hash: 42,
+            ply: 3,
+        },
+        "PerPly must keep producing exactly today's key shape -- no behavior change"
+    );
+    assert_eq!(
+        TranspositionKey::new(TranspositionKeying::StateOnly, 42, 3),
+        TranspositionKey::StateOnly { position_hash: 42 },
+        "StateOnly drops ply from the key entirely"
+    );
+}
+
+#[test]
+fn test_graph_table_merges_equal_hashes_at_distinct_plies_under_state_only() {
+    use crate::strategies::mcts::node::Node;
+    use crate::strategies::mcts::search::TreeIndex;
+    use crate::strategies::mcts::table::{TranspositionKey, TranspositionTable};
+
+    let index = TreeIndex::<u32>::new();
+    let shallow = index.insert(Node::new_at_ply(0, 42, 1, 2, false, false));
+    let table = TranspositionTable::default();
+
+    assert_eq!(
+        table.get_or_insert_graph(TranspositionKey::StateOnly { position_hash: 42 }, || {
+            shallow
+        }),
+        shallow
+    );
+    // A lookup at a different ply for the same position hashes to the same
+    // `StateOnly` key, so it returns the node already inserted rather than
+    // creating a second one -- the cross-ply merge this keying mode exists
+    // for.
+    let deep = index.insert(Node::new_at_ply(0, 42, 3, 2, false, false));
+    assert_eq!(
+        table.get_or_insert_graph(TranspositionKey::StateOnly { position_hash: 42 }, || deep),
+        shallow
+    );
+    assert_eq!(table.len(), 1);
 }
 
 #[test]
@@ -452,7 +500,7 @@ mod converge_game_tests {
     use crate::strategies::mcts::node::NodeState;
     use crate::strategies::mcts::strategy::Ucb1;
     use crate::strategies::Search;
-    use crate::{GraphSearch, GraphStats, SearchConfig, TreeSearch};
+    use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
     // 6 distinct "pick" actions; a state is the order-independent set of 4
     // already picked, so two orders that pick the same 4-of-6 subset
@@ -645,6 +693,73 @@ mod converge_game_tests {
                 "{graph_stats:?}: edge/shared-node Q divergence should only appear in Both mode"
             );
         }
+    }
+
+    #[test]
+    fn per_ply_keying_config_produces_the_same_search_as_leaving_it_unset() {
+        let state = State::default();
+
+        let mut default_keying = TS::default().config(
+            SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both)),
+        );
+        let default_action = default_keying.choose_action(&state);
+
+        let mut explicit_per_ply = TS::default().config(
+            SearchConfig::default()
+                .max_iterations(300)
+                .expand_threshold(0)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::PerPly),
+        );
+        let explicit_action = explicit_per_ply.choose_action(&state);
+
+        assert_eq!(
+            explicit_per_ply.arena_len(),
+            default_keying.arena_len(),
+            "explicitly requesting the default PerPly keying must not change how many \
+             arena nodes a search creates"
+        );
+        assert_eq!(
+            explicit_action, default_action,
+            "explicitly requesting the default PerPly keying must not change the chosen action"
+        );
+    }
+
+    #[test]
+    fn state_only_keying_is_rejected_with_reuse_tree_or_unbounded_playout_depth() {
+        let base = SearchConfig::<ConvergeGame, Ucb1>::default()
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .transposition_keying(TranspositionKeying::StateOnly);
+
+        assert!(
+            base.clone().max_playout_depth(50).validate().is_ok(),
+            "StateOnly with a bounded max_playout_depth and reuse_tree off must validate"
+        );
+        assert!(
+            base.clone()
+                .max_playout_depth(50)
+                .reuse_tree(true)
+                .validate()
+                .is_err(),
+            "StateOnly is not yet supported together with reuse_tree"
+        );
+        assert!(
+            base.clone().validate().is_err(),
+            "StateOnly requires a finite max_playout_depth to bound descent under cycles"
+        );
+        assert!(
+            SearchConfig::<ConvergeGame, Ucb1>::default()
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::PerPly)
+                .validate()
+                .is_ok(),
+            "PerPly keeps today's behavior: neither new restriction applies to it"
+        );
     }
 }
 

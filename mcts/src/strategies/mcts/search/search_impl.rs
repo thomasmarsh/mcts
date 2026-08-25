@@ -158,10 +158,7 @@ where
         };
         if explicit_dag {
             self.table.insert_graph(
-                TranspositionKey {
-                    position_hash: hash,
-                    ply: 0,
-                },
+                TranspositionKey::new(self.config.transposition_keying, hash, 0),
                 root_id,
             );
         } else if self.config.use_transpositions {

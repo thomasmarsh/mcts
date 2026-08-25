@@ -6,6 +6,7 @@ use crate::strategies::mcts::backprop::BackpropStrategy;
 use crate::strategies::mcts::config::BackpropFlags;
 use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::config::McgsCorrection;
+use crate::strategies::mcts::config::TranspositionKeying;
 use crate::strategies::mcts::correction::residual_correction;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
@@ -200,6 +201,9 @@ pub struct Shared<'a, G: Game> {
     /// Only explicit `GraphSearch::Dag`: legacy transpositions deliberately
     /// retain their historic hash-only key and reuse behavior.
     pub explicit_dag: bool,
+    /// Only consulted when `explicit_dag` is set -- see
+    /// `TranspositionKeying`'s doc comment.
+    pub keying: TranspositionKeying,
     pub use_mcts_solver: bool,
     pub max_playout_depth: usize,
     pub solver_loss_threshold: u32,
@@ -300,6 +304,7 @@ pub(crate) struct TranspositionCtx<'a, G: Game> {
     pub index: &'a TreeIndex<G::A>,
     pub table: &'a TranspositionTable,
     pub explicit_dag: bool,
+    pub keying: TranspositionKeying,
     pub use_transpositions: bool,
     pub has_amaf: bool,
     pub use_mcts_solver: bool,
@@ -311,6 +316,7 @@ impl<'a, G: Game> Shared<'a, G> {
             index: self.index,
             table: self.table,
             explicit_dag: self.explicit_dag,
+            keying: self.keying,
             use_transpositions: self.use_transpositions,
             has_amaf: self.has_amaf,
             use_mcts_solver: self.use_mcts_solver,
@@ -324,7 +330,7 @@ impl<'a, G: Game> Shared<'a, G> {
 /// `new_child` so `select_step`'s existing-child branch can also reach it
 /// (see `verified_child_id`'s doc comment for why it needs to).
 /// `parent_ply` is the *child's* ply (parent's ply + 1), matching
-/// `TranspositionKey::ply`.
+/// `TranspositionKey::PerPly`'s `ply`.
 fn resolve_child_id<G: Game>(ctx: &TranspositionCtx<'_, G>, state: &G::S, child_ply: u32) -> Id {
     if ctx.explicit_dag {
         let canon_state = G::canonical_representation(Real(state.clone()))
@@ -332,10 +338,7 @@ fn resolve_child_id<G: Game>(ctx: &TranspositionCtx<'_, G>, state: &G::S, child_
             .into_inner();
         let canon_hash = G::zobrist_hash(&canon_state);
         ctx.table.get_or_insert_graph(
-            TranspositionKey {
-                position_hash: canon_hash,
-                ply: child_ply,
-            },
+            TranspositionKey::new(ctx.keying, canon_hash, child_ply),
             || {
                 ctx.index.insert(Node::new_at_ply(
                     G::player_to_move(state).to_index(),

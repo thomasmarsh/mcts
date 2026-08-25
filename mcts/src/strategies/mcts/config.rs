@@ -39,6 +39,25 @@ pub enum GraphSearch {
     Dag(GraphStats),
 }
 
+/// How `GraphSearch::Dag` derives a `table::TranspositionKey` from a
+/// resolved successor state. `PerPly` (the default) pairs the position hash
+/// with the node's root-relative ply, so two histories only ever merge when
+/// they reach the same state at the same depth -- the graph this produces is
+/// necessarily acyclic, since a node's ply strictly increases along any
+/// path. `StateOnly` drops ply from the key, merging on position alone
+/// regardless of depth: this is what lets a genuine transposition from
+/// reversible or capturing moves (the same state reached after a different
+/// number of plies) share one graph node, at the cost that the resulting
+/// graph can contain real cycles -- a hot loop descending it needs its own
+/// depth bound rather than relying on ply's strict increase to terminate
+/// (see `SearchConfig::max_playout_depth`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TranspositionKeying {
+    #[default]
+    PerPly,
+    StateOnly,
+}
+
 /// The owner of MCTS visit and value statistics in graph search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphStats {
@@ -307,6 +326,11 @@ where
     pub graph_search: GraphSearch,
     pub use_transpositions: bool,
 
+    /// Only meaningful under `GraphSearch::Dag` -- see
+    /// `TranspositionKeying`'s doc comment. `PerPly` (the default) matches
+    /// every existing `GraphSearch::Dag` behavior unchanged.
+    pub transposition_keying: TranspositionKeying,
+
     /// Residual information-leak correction, only meaningful under
     /// `GraphSearch::Dag(GraphStats::Both)` -- see `McgsCorrection`'s doc
     /// comment. `Disabled` (the default) never checks, so this is a no-op
@@ -442,6 +466,7 @@ where
             max_time: Default::default(),
             graph_search: GraphSearch::Tree,
             use_transpositions: false,
+            transposition_keying: TranspositionKeying::PerPly,
             mcgs_correction: McgsCorrection::Disabled,
             use_mcts_solver: false,
             contempt_factor: None,
@@ -497,6 +522,33 @@ where
     /// e.g. `UctPn`'s doc comment), which isn't an error worth rejecting.
     pub fn validate(&self) -> Result<(), String> {
         self.requirements().validate(G::num_players())?;
+        if self.transposition_keying == TranspositionKeying::StateOnly {
+            // `reroot.rs`'s ply rebase (`rebuild_reachable_graph`) assumes
+            // `Node::ply` is unique per node, which only holds under
+            // `PerPly` -- a `StateOnly` node can be reached at different
+            // depths through different parents. Lifting this is future work
+            // (deciding what a shared node's `ply` even means post-reroot).
+            if self.reuse_tree {
+                return Err(
+                    "TranspositionKeying::StateOnly is not yet supported with reuse_tree \
+                     -- reroot.rs's ply rebase assumes ply is unique per node, which \
+                     StateOnly's cross-ply merging violates"
+                        .to_string(),
+                );
+            }
+            // `StateOnly` lets the graph contain real cycles (a shared node
+            // reachable from itself via a reversible/capturing move
+            // sequence), so `select_step`'s descent needs a real depth
+            // bound to guarantee termination.
+            if self.max_playout_depth == usize::MAX {
+                return Err(
+                    "TranspositionKeying::StateOnly requires a finite max_playout_depth \
+                     -- it gates the descent-depth guard against unbounded cycles in the \
+                     merged graph"
+                        .to_string(),
+                );
+            }
+        }
         if self.requirements().needs_posterior && !self.backprop.provides_posterior() {
             return Err(
                 "select/final_action strategy requires a Bayesian backprop strategy \
@@ -596,6 +648,11 @@ where
 
     pub fn graph_search(mut self, graph_search: GraphSearch) -> Self {
         self.graph_search = graph_search;
+        self
+    }
+
+    pub fn transposition_keying(mut self, transposition_keying: TranspositionKeying) -> Self {
+        self.transposition_keying = transposition_keying;
         self
     }
 

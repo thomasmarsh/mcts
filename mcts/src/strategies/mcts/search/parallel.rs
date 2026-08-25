@@ -253,10 +253,7 @@ where
         };
         if explicit_dag {
             self.table.insert_graph(
-                TranspositionKey {
-                    position_hash: hash,
-                    ply: 0,
-                },
+                TranspositionKey::new(self.config.transposition_keying, hash, 0),
                 root_id,
             );
         } else if self.config.use_transpositions {
@@ -276,6 +273,7 @@ where
             use_transpositions: self.config.uses_transpositions(),
             graph_stats: self.config.graph_stats(),
             explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
+            keying: self.config.transposition_keying,
             use_mcts_solver: self.config.use_mcts_solver,
             max_playout_depth: self.config.max_playout_depth,
             solver_loss_threshold: self.config.solver_loss_threshold,

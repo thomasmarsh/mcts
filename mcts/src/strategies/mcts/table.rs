@@ -1,3 +1,4 @@
+use super::config::TranspositionKeying;
 use super::index;
 use crate::zobrist::ZobristHashMap;
 
@@ -6,13 +7,26 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::RwLock;
 
-/// A root-relative key for explicit graph search. Including ply means every
-/// graph edge advances strictly forward and a repeated board position cannot
-/// introduce a cycle into the search structure.
+/// A key for explicit graph search, shaped by `TranspositionKeying`.
+/// `PerPly` pairs the position hash with a root-relative ply, so every graph
+/// edge advances strictly forward and a repeated board position cannot
+/// introduce a cycle into the search structure. `StateOnly` drops ply,
+/// merging purely on position -- see `TranspositionKeying`'s doc comment for
+/// why that trades acyclicity for catching real transpositions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TranspositionKey {
-    pub position_hash: u64,
-    pub ply: u32,
+pub enum TranspositionKey {
+    PerPly { position_hash: u64, ply: u32 },
+    StateOnly { position_hash: u64 },
+}
+
+impl TranspositionKey {
+    #[inline]
+    pub fn new(keying: TranspositionKeying, position_hash: u64, ply: u32) -> Self {
+        match keying {
+            TranspositionKeying::PerPly => Self::PerPly { position_hash, ply },
+            TranspositionKeying::StateOnly => Self::StateOnly { position_hash },
+        }
+    }
 }
 
 /// Maps a Zobrist hash to the arena node for that position. Stores no state

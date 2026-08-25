@@ -240,8 +240,12 @@ where
                 children.remap_child_ids(&old_to_new);
             }
             if !node.is_root {
+                // `reuse_tree` is rejected together with `StateOnly` at
+                // config-validation time (see `SearchConfig::validate`), so
+                // this path only ever runs under `PerPly` -- the `ply`
+                // rebase two lines above is only meaningful there.
                 graph_entries.push((
-                    TranspositionKey {
+                    TranspositionKey::PerPly {
                         position_hash: node.hash,
                         ply: node.ply,
                     },
