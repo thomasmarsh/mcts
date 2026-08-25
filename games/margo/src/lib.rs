@@ -35,7 +35,7 @@ mod heuristic;
 
 use std::fmt;
 
-use bitboard::{Board, Dyn};
+use bitboard::{Adjacency, Board, Dyn};
 use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;
 use pyramid::{Pyramid, PyramidD4, TouchingAdjacency};
@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 
 pub use heuristic::Heuristic;
 
+mod groups;
 mod raster;
 
 /// Smallest supported base width -- "Spargo", the size a physical Shibumi
@@ -83,34 +84,6 @@ fn ground_mask(n: usize, cells: usize) -> GoBoard {
         mask.set_index(index);
     }
     mask
-}
-
-/// Build per-level raster-indexed color masks: `own[l]` has bits set
-/// at raster positions where the mover has a piece at level `l`.
-fn build_color_masks(
-    n: usize,
-    state: &State,
-) -> (Vec<raster::LevelBoard>, Vec<raster::LevelBoard>) {
-    use bitboard::{Board, Dyn};
-    let mut own: Vec<Board<[u64; 2], Dyn, Dyn>> =
-        (0..n).map(|_| Board::new(Dyn(n), Dyn(n))).collect();
-    let mut opp: Vec<Board<[u64; 2], Dyn, Dyn>> =
-        (0..n).map(|_| Board::new(Dyn(n), Dyn(n))).collect();
-    let mover_black = state.turn == Player::Black;
-    for idx in 0..state.occupied.total_cells() {
-        if !state.occupied.get_index(idx) {
-            continue;
-        }
-        let (col, row, level) = state.occupied.to_coord(idx);
-        let pos = row * n + col;
-        let is_black = state.black.get_index(idx);
-        if (is_black && mover_black) || (!is_black && !mover_black) {
-            own[level].set_index(pos);
-        } else {
-            opp[level].set_index(pos);
-        }
-    }
-    (own, opp)
 }
 
 /// The non-zombie subset of `black`/`white` occupancy, split into per-colour
@@ -496,7 +469,7 @@ pub enum Action {
 /// `can_swap` pattern: closed by any placement that isn't the very first,
 /// and explicitly by `Action::Swap` itself, so it can never reopen even if
 /// a later capture happens to drop the piece count back to 1.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct State {
     occupied: Cells,
     black: Cells,
@@ -504,7 +477,29 @@ pub struct State {
     previous: Option<(Cells, Cells)>,
     turn: Player,
     can_swap: bool,
+    /// Incremental group/liberty tracking (see `groups.rs`'s module docs),
+    /// maintained alongside `occupied`/`black` through every real move and
+    /// read by `candidate_is_legal` to answer most legality checks without
+    /// flooding the board. A pure deterministic function of `occupied`/
+    /// `black`, so it's excluded from equality below rather than compared:
+    /// two `State`s with equal `occupied`/`black` always carry equal
+    /// `groups` content too, and comparing it would require `GoBoard`'s
+    /// liberty bitboards to implement `PartialEq`, which they don't.
+    groups: groups::Groups,
 }
+
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool {
+        self.occupied == other.occupied
+            && self.black == other.black
+            && self.zombie == other.zombie
+            && self.previous == other.previous
+            && self.turn == other.turn
+            && self.can_swap == other.can_swap
+    }
+}
+
+impl Eq for State {}
 
 impl Default for State {
     fn default() -> Self {
@@ -526,6 +521,7 @@ impl State {
             previous: None,
             turn: Player::default(),
             can_swap: true,
+            groups: groups::Groups::new(n),
         }
     }
 
@@ -616,9 +612,13 @@ impl State {
             }
             cells
         };
+        let occupied = fill(occupied);
+        let black = fill(black);
+        let adjacency = pyramid::get_adjacency(n);
         Self {
-            occupied: fill(occupied),
-            black: fill(black),
+            groups: groups::Groups::rebuild(n, &occupied, &black, adjacency),
+            occupied,
+            black,
             zombie: fill(zombie),
             previous: previous.map(|(o, b)| (fill(o), fill(b))),
             turn,
@@ -733,85 +733,148 @@ impl State {
     }
 }
 
-/// Checks whether placing at `(col, row, level)`/`index` is currently legal,
-/// via the same raster-fast-path-then-full-3D-fallback logic
-/// `Margo::generate_actions` runs per candidate -- factored out so
-/// `Margo::random_action`'s rejection sampling can check a single candidate
-/// without re-deriving that logic (and without disagreeing with it).
-/// `raster`/`own_color` are mutated to test the candidate and rolled back
-/// before returning, so the caller can reuse them across many candidates
-/// (looping over every cell in `generate_actions`, or across repeated random
-/// draws in `random_action`) without rebuilding them each time.
-#[allow(clippy::too_many_arguments)]
+/// Read-only suicide/capture legality check against `state.groups`' cached
+/// liberty bitboards -- no flood at all, cost proportional to `index`'s own
+/// neighbour count. Computes the same "does the placed stone's own group
+/// keep a liberty, or does the move capture at least one enemy group"
+/// question `resolve_captures`'s `safe`/`will_capture` answers, without
+/// ever walking the board or materializing a capture mask -- but only by
+/// examining `index`'s own direct neighbours, not the whole post-union
+/// group the way `resolve_captures` does. That makes a `true` here fully
+/// trustworthy (own liberty or a direct capture, either one is real and
+/// sufficient), but a `false` merely "not decidable from `index` alone" --
+/// see [`groups_candidate_is_legal`], which is the only thing that should
+/// interpret this return value.
+///
+/// Liberty bitboards only ever contain ground-level bits (`Groups::place`
+/// seeds them that way), so a cached liberty bitboard's popcount/membership
+/// already carries the "freedoms only exist on the board level" rule --
+/// no separate ground-level check is needed when reading an existing
+/// group's liberties, only when seeding a liberty from a *newly* empty
+/// neighbour that has no group of its own yet.
+fn groups_fast_ok(
+    state: &State,
+    index: usize,
+    adjacency: &TouchingAdjacency,
+    ground: GoBoard,
+    mover_black: bool,
+) -> bool {
+    let groups = &state.groups;
+    let mut own_liberties = go_board(state.total_cells());
+    let mut captures = false;
+    for nb in adjacency.neighbors(index) {
+        match groups.color(nb) {
+            None => {
+                if ground.get_index(nb) {
+                    own_liberties.set_index(nb);
+                }
+            }
+            Some(color) if color == mover_black => {
+                own_liberties |= groups.liberties(nb);
+            }
+            Some(_) => {
+                // Captured iff this placement leaves the touching enemy
+                // group with zero liberties: its liberty count minus one if
+                // `index` was among its liberties (this placement fills
+                // it), unchanged otherwise. Handled this way rather than
+                // just "exactly one liberty, and it's `index`" so it stays
+                // correct even for an enemy group that was somehow already
+                // at zero real liberties before this placement (not a
+                // zombie -- a zombie's pinning is tracked separately in
+                // `state.zombie`, not by its liberty count) -- whatever the
+                // cause, any group already at zero liberties is captured by
+                // the next placement that touches it, matching
+                // `resolve_captures`'s own fresh-liberty-count check.
+                let enemy_libs = groups.liberties(nb);
+                let remaining = enemy_libs.count_ones() - u32::from(enemy_libs.get_index(index));
+                if remaining == 0 {
+                    captures = true;
+                }
+            }
+        }
+    }
+    // `index` was a shared liberty of any same-colour neighbouring group
+    // before this placement; it no longer is one afterward.
+    own_liberties.clear_index(index);
+    !own_liberties.none_set() || captures
+}
+
+/// Read-only legality check via `state.groups` -- same overall shape as the
+/// old raster-based fast path (a cheap `fast_ok && ko_safe` shortcut that
+/// returns `Some(true)`, deferring to the authoritative
+/// `resolve_place_inner` fallback via `None` for everything else), just
+/// with [`groups_fast_ok`]'s cached-liberty computation in place of the
+/// raster flood.
+///
+/// Both `fast_ok` and `ko_safe` here are **one-sided**: each is only
+/// trustworthy when it says "definitely fine," never when it says
+/// "not fine." `groups_fast_ok` only examines `index`'s own direct
+/// neighbours, but `resolve_captures`'s authoritative rule captures *any*
+/// enemy group touching the mover's whole post-union group, which can
+/// include a neighbour of some other, pre-existing member of that group --
+/// e.g. joining a large group can sweep up a distant enemy group that
+/// separately happened to already be at zero liberties. So a `false` from
+/// `groups_fast_ok` does not mean illegal, only "not decidable from
+/// `index`'s own neighbours alone." Likewise `ko_safe` here is the same
+/// cheap-but-incomplete shortcut the old raster path used (true only when
+/// `index` provably wasn't part of the ko-relevant previous position).
+/// Only the fallback resolves either case precisely, since doing so needs
+/// the actual resulting `(occupied, black)` pair -- exactly what the
+/// cached liberty bitboards exist to avoid computing on every candidate.
+fn groups_candidate_is_legal(
+    state: &State,
+    index: usize,
+    adjacency: &TouchingAdjacency,
+    ground: GoBoard,
+    mover_black: bool,
+) -> Option<bool> {
+    let fast_ok = groups_fast_ok(state, index, adjacency, ground, mover_black);
+    let ko_safe = match state.previous {
+        Some((ref prev_occ, _)) => !prev_occ.get_index(index),
+        None => true,
+    };
+    if fast_ok && ko_safe {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Checks whether placing at `index` is currently legal -- the entry point
+/// `Margo::generate_actions`/`Margo::is_terminal` call per candidate and
+/// `Margo::random_action` calls per rejection-sampling draw.
+/// [`groups_candidate_is_legal`] resolves a candidate directly from
+/// `state.groups`' cached liberties whenever `index`'s own neighbours alone
+/// already prove it legal (a real liberty, or a direct capture); everything
+/// else -- genuine suicide, a capture that only shows up once you consider
+/// the whole post-union group, and the rare ko-ambiguous case -- falls back
+/// to the authoritative `resolve_place_inner` check.
 fn candidate_is_legal(
     state: &State,
     index: usize,
-    col: usize,
-    row: usize,
-    level: usize,
     adjacency: &TouchingAdjacency,
-    n_usize: usize,
     base_black: GoBoard,
     base_white: GoBoard,
     ground: GoBoard,
     mover_black: bool,
-    raster: &mut raster::Raster,
-    own_color: &mut [raster::LevelBoard],
-    opp_color: &[raster::LevelBoard],
 ) -> bool {
-    // Temporarily place on raster, check, then roll back.
-    let raster_pos = raster.place(col, row, level);
-    own_color[level].set_index(raster_pos);
-
-    let group = raster.flood(col, row, level, own_color);
-    let libs = raster.count_liberties(&group);
-    let fast_ok = if libs < 2 {
-        false
-    } else {
-        let seeds = raster.enemies_touching(&group, own_color);
-        let mut enemy_seen: Vec<raster::LevelBoard> = (0..n_usize)
-            .map(|_| raster::LevelBoard::new(Dyn(n_usize), Dyn(n_usize)))
-            .collect();
-        seeds.iter().all(|&(ec, er, el)| {
-            let ep = raster.raster_index(ec, er);
-            if enemy_seen[el].get_index(ep) {
-                return true;
-            }
-            let eg = raster.flood(ec, er, el, opp_color);
-            for l2 in 0..n_usize {
-                enemy_seen[l2] |= eg[l2];
-            }
-            raster.count_liberties(&eg) > 0
-        })
-    };
-
-    // Roll back.
-    own_color[level].clear_index(raster_pos);
-    raster.remove(col, row, level);
-
-    let ko_safe = if let Some((ref prev_occ, _)) = state.previous {
-        !prev_occ.get_index(index)
-    } else {
-        true
-    };
-
-    if fast_ok && ko_safe {
-        return true;
+    match groups_candidate_is_legal(state, index, adjacency, ground, mover_black) {
+        Some(answer) => answer,
+        None => {
+            let (own, opp) = if mover_black {
+                let mut own = base_black;
+                own.set_index(index);
+                (own, base_white)
+            } else {
+                let mut own = base_white;
+                own.set_index(index);
+                (own, base_black)
+            };
+            state
+                .resolve_place_inner(index, adjacency, own, opp, ground)
+                .is_some()
+        }
     }
-
-    // Full 3D path for edge cases (suicide, capture, ko).
-    let (own, opp) = if mover_black {
-        let mut own = base_black;
-        own.set_index(index);
-        (own, base_white)
-    } else {
-        let mut own = base_white;
-        own.set_index(index);
-        (own, base_black)
-    };
-    state
-        .resolve_place_inner(index, adjacency, own, opp, ground)
-        .is_some()
 }
 
 #[derive(Clone)]
@@ -827,12 +890,27 @@ impl Game for Margo {
         match *action {
             Action::Place(index, _n) => {
                 let adjacency = pyramid::get_adjacency(state.occupied.n());
+                let index = index as usize;
+                let mover_black = state.turn == Player::Black;
+                let prev_occupied_count = state.occupied.count_ones();
                 let (new_occupied, new_black, new_zombie) = state
-                    .resolve_place(index as usize, adjacency)
+                    .resolve_place(index, adjacency)
                     .expect("action generated by generate_actions must be legal");
                 state.occupied = new_occupied;
                 state.black = new_black;
                 state.zombie = new_zombie;
+
+                // Incremental maintenance of `groups` (see `groups.rs`'s
+                // module docs): `place` handles the common case cheaply;
+                // a capture (occupied count changed by anything other than
+                // the placed stone itself) needs a full `rebuild` since a
+                // union-find structure has no cheap way to un-union a group
+                // when one of its members disappears.
+                state.groups.place(index, mover_black, adjacency);
+                if state.occupied.count_ones() != prev_occupied_count + 1 {
+                    state.groups =
+                        groups::Groups::rebuild(state.occupied.n(), &state.occupied, &state.black, adjacency);
+                }
             }
             Action::Swap => {
                 debug_assert!(
@@ -855,6 +933,12 @@ impl Game for Margo {
                     }
                 }
                 state.can_swap = false;
+                // Recolouring flips every group's colour label; cheaper to
+                // rebuild than to patch each root's `color` in place, and a
+                // swap is only ever legal at a one-piece board.
+                let adjacency = pyramid::get_adjacency(state.occupied.n());
+                state.groups =
+                    groups::Groups::rebuild(state.occupied.n(), &state.occupied, &state.black, adjacency);
             }
         }
         state.previous = Some(previous);
@@ -878,10 +962,6 @@ impl Game for Margo {
         let ground = ground_mask(n_usize, state.occupied.total_cells());
         let mover_black = state.turn == Player::Black;
 
-        // Raster fast path: mutable, place/remove per candidate.
-        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
-        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
-
         for index in 0..state.occupied.total_cells() {
             if state.is_occupied(index) {
                 continue;
@@ -894,18 +974,11 @@ impl Game for Margo {
             if candidate_is_legal(
                 state,
                 index,
-                col,
-                row,
-                level,
                 adjacency,
-                n_usize,
                 base_black,
                 base_white,
                 ground,
                 mover_black,
-                &mut raster,
-                &mut own_color,
-                &opp_color,
             ) {
                 actions.push(Action::Place(index as u16, n));
             }
@@ -942,8 +1015,6 @@ impl Game for Margo {
         let (base_black, base_white) = visible_boards(&state.occupied, &state.black);
         let ground = ground_mask(n_usize, total_cells);
         let mover_black = state.turn == Player::Black;
-        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
-        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
 
         for index in 0..total_cells {
             if state.is_occupied(index) {
@@ -956,18 +1027,11 @@ impl Game for Margo {
             if candidate_is_legal(
                 state,
                 index,
-                col,
-                row,
-                level,
                 adjacency,
-                n_usize,
                 base_black,
                 base_white,
                 ground,
                 mover_black,
-                &mut raster,
-                &mut own_color,
-                &opp_color,
             ) {
                 return false;
             }
@@ -1013,8 +1077,6 @@ impl Game for Margo {
         let (base_black, base_white) = visible_boards(&state.occupied, &state.black);
         let ground = ground_mask(n_usize, total_cells);
         let mover_black = state.turn == Player::Black;
-        let mut raster = raster::Raster::from_pyramid(n_usize, &state.occupied);
-        let (mut own_color, opp_color) = build_color_masks(n_usize, state);
 
         let max_attempts = 64;
         for _ in 0..max_attempts {
@@ -1029,18 +1091,11 @@ impl Game for Margo {
             if candidate_is_legal(
                 state,
                 index,
-                col,
-                row,
-                level,
                 adjacency,
-                n_usize,
                 base_black,
                 base_white,
                 ground,
                 mover_black,
-                &mut raster,
-                &mut own_color,
-                &opp_color,
             ) {
                 return Some(Action::Place(index as u16, n));
             }
@@ -1097,14 +1152,24 @@ impl Game for Margo {
                 transform_cells(&b, &sym, sym_idx),
             )
         });
+        let n = state.occupied.n();
+        let occupied = transform_cells(&state.occupied, &sym, sym_idx);
+        let black = transform_cells(&state.black, &sym, sym_idx);
+        // The symmetry relabels cell indices, so `state.groups` (keyed by
+        // the pre-transform indices) no longer applies -- rebuild against
+        // the transformed occupancy rather than transform the union-find
+        // structure's own internals.
+        let adjacency = pyramid::get_adjacency(n);
+        let groups = groups::Groups::rebuild(n, &occupied, &black, adjacency);
         (
             Canonical(State {
-                occupied: transform_cells(&state.occupied, &sym, sym_idx),
-                black: transform_cells(&state.black, &sym, sym_idx),
+                occupied,
+                black,
                 zombie: transform_cells(&state.zombie, &sym, sym_idx),
                 previous,
                 turn: state.turn,
                 can_swap: state.can_swap,
+                groups,
             }),
             Transform::new(sym_idx),
         )
@@ -2009,16 +2074,23 @@ mod tests {
     /// the same position viewed from 8 different orientations. `turn`/
     /// `can_swap` aren't geometric, so they ride along unchanged.
     fn state_symmetries(state: &State) -> [State; 8] {
-        let sym = PyramidD4::new(state.occupied.n());
-        std::array::from_fn(|i| State {
-            occupied: transform_cells(&state.occupied, &sym, i),
-            black: transform_cells(&state.black, &sym, i),
-            zombie: transform_cells(&state.zombie, &sym, i),
-            previous: state
-                .previous
-                .map(|(o, b)| (transform_cells(&o, &sym, i), transform_cells(&b, &sym, i))),
-            turn: state.turn,
-            can_swap: state.can_swap,
+        let n = state.occupied.n();
+        let sym = PyramidD4::new(n);
+        let adjacency = pyramid::get_adjacency(n);
+        std::array::from_fn(|i| {
+            let occupied = transform_cells(&state.occupied, &sym, i);
+            let black = transform_cells(&state.black, &sym, i);
+            State {
+                groups: groups::Groups::rebuild(n, &occupied, &black, adjacency),
+                occupied,
+                black,
+                zombie: transform_cells(&state.zombie, &sym, i),
+                previous: state
+                    .previous
+                    .map(|(o, b)| (transform_cells(&o, &sym, i), transform_cells(&b, &sym, i))),
+                turn: state.turn,
+                can_swap: state.can_swap,
+            }
         })
     }
 
