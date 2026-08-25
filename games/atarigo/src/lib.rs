@@ -1141,6 +1141,87 @@ mod tests {
         _ = ts.choose_action(&state);
     }
 
+    /// `TranspositionKeying::StateOnly` sibling of the regression above:
+    /// same seed/board/config shape, but merging graph nodes by state alone
+    /// (`GraphSearch::Dag(GraphStats::Both)` + `StateOnly` keying, the
+    /// current-generation graph search) instead of the legacy
+    /// `use_transpositions` path. Proves `StateOnly` doesn't reintroduce the
+    /// `ChildArray` staleness bug `verified_child_id` fixed above, on the
+    /// same seed that used to reproduce it, and that `select_step`'s
+    /// depth-guarded descent (required once merging can create real graph
+    /// cycles) still terminates with a legal PV.
+    #[test]
+    fn regression_state_only_keying_no_corruption_past_symmetry_ply_limit() {
+        use mcts::strategies::mcts::{
+            node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
+            TreeSearch,
+        };
+        use mcts::strategies::Search;
+
+        type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+        let mut ts = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(100)
+                .q_init(QInit::Loss)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::StateOnly)
+                .max_playout_depth(200)
+                .seed(9),
+        );
+        let state = State::new(7);
+        _ = ts.choose_action(&state);
+    }
+
+    /// `StateOnly` cross-ply merging can only reduce the arena below
+    /// `PerPly`'s when the identical `(occupancy, turn, winner)` state is
+    /// reachable at two different real plies from the root. On AtariGo that
+    /// never happens: "first capture wins" ends the game on the very first
+    /// capture, so every non-terminal move places exactly one stone and
+    /// removes none -- a non-terminal state's occupied-cell count *is* its
+    /// ply, and no two histories can disagree on ply while agreeing on
+    /// state. So `StateOnly` and `PerPly` build byte-identical graphs here at
+    /// matched seed/budget; this is a property of the game's rules (no
+    /// capture-recapture is possible), not a limitation of `StateOnly`
+    /// itself. Asserting the two arenas match, rather than asserting
+    /// nothing, keeps this documented and catches any future rule change
+    /// (e.g. allowing play to continue after a capture) that would make
+    /// cross-ply merging newly reachable here.
+    #[test]
+    fn state_only_keying_matches_per_ply_arena_size_when_no_recapture_is_possible() {
+        use mcts::strategies::mcts::{
+            node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
+            TreeSearch,
+        };
+        use mcts::strategies::Search;
+
+        type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+        for seed in 0..5u64 {
+            let config = |keying| {
+                SearchConfig::default()
+                    .expand_threshold(0)
+                    .max_iterations(150)
+                    .q_init(QInit::Loss)
+                    .graph_search(GraphSearch::Dag(GraphStats::Both))
+                    .transposition_keying(keying)
+                    .max_playout_depth(200)
+                    .seed(seed)
+            };
+
+            let mut per_ply = TS::default().config(config(TranspositionKeying::PerPly));
+            _ = per_ply.choose_action(&State::new(7));
+
+            let mut state_only = TS::default().config(config(TranspositionKeying::StateOnly));
+            _ = state_only.choose_action(&State::new(7));
+
+            assert_eq!(
+                per_ply.table.graph_len(),
+                state_only.table.graph_len(),
+                "seed {seed}: expected identical arenas absent any real recapture"
+            );
+        }
+    }
+
     // A broader sweep of this same regression across board sizes/iteration
     // counts/seeds (the original bug-hunt found this crashed 92/150 such
     // combinations) lives in `mcts-tests/tests/stress.rs` -- too slow for
