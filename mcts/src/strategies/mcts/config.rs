@@ -523,19 +523,6 @@ where
     pub fn validate(&self) -> Result<(), String> {
         self.requirements().validate(G::num_players())?;
         if self.transposition_keying == TranspositionKeying::StateOnly {
-            // `reroot.rs`'s ply rebase (`rebuild_reachable_graph`) assumes
-            // `Node::ply` is unique per node, which only holds under
-            // `PerPly` -- a `StateOnly` node can be reached at different
-            // depths through different parents. Lifting this is future work
-            // (deciding what a shared node's `ply` even means post-reroot).
-            if self.reuse_tree {
-                return Err(
-                    "TranspositionKeying::StateOnly is not yet supported with reuse_tree \
-                     -- reroot.rs's ply rebase assumes ply is unique per node, which \
-                     StateOnly's cross-ply merging violates"
-                        .to_string(),
-                );
-            }
             // `StateOnly` lets the graph contain real cycles (a shared node
             // reachable from itself via a reversible/capturing move
             // sequence), so `select_step`'s descent needs a real depth

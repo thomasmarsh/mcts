@@ -2,6 +2,7 @@ use crate::game::Canonical;
 use crate::game::Game;
 use crate::game::Real;
 use crate::strategies::mcts::config::GraphStats;
+use crate::strategies::mcts::config::TranspositionKeying;
 use crate::strategies::mcts::index;
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node;
@@ -11,7 +12,7 @@ use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::table::TranspositionKey;
 use crate::symmetry::incoming_sym;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -173,10 +174,15 @@ where
         self.root_id = matched_id;
         self.index.get_mut(self.root_id).is_root = true;
 
-        // The new root's `ply` is exactly how many edges the walk crossed
-        // to reach it (root-relative, incremented by exactly one per edge
-        // -- see `shared::new_child`), so it *is* the rebase amount, with
-        // no need to separately count the path length.
+        // Under `PerPly`, the new root's `ply` is exactly how many edges the
+        // walk crossed to reach it (root-relative, incremented by exactly
+        // one per edge -- see `shared::new_child`), so it *is* the rebase
+        // amount, with no need to separately count the path length.
+        // `StateOnly` doesn't have this property -- a shared node's `ply` is
+        // just whichever depth first created it, not necessarily the depth
+        // this promotion just walked -- so `rebuild_reachable_graph` ignores
+        // `depth` under that keying and recomputes every node's `ply` from
+        // its own BFS distance to the new root instead.
         let depth = self.index.get(self.root_id).ply;
         self.rebuild_reachable_graph(depth);
 
@@ -191,22 +197,40 @@ where
     /// `compact` (a DAG walk, deduping any node reached through more than
     /// one surviving parent) -- but, unlike `compact`, unconditional rather
     /// than gated on `max_arena_len`: every retained node's `ply` also gets
-    /// rebased by `-depth` here, and a stale `ply` isn't just wasted memory,
-    /// it corrupts every future `TranspositionKey` lookup at this depth or
+    /// recomputed here, and a stale `ply` isn't just wasted memory, it
+    /// corrupts every future `TranspositionKey` lookup at this depth or
     /// deeper. The ply-keyed graph table is therefore rebuilt from scratch
     /// alongside the arena rather than remapped in place -- there is no way
     /// to "fix up" an old `TranspositionKey` without recomputing it.
+    ///
+    /// Under `PerPly`, `depth` (the number of real plies just advanced) is
+    /// subtracted from every retained node's `ply` -- sound because `ply` is
+    /// unique per `PerPly` node: every path from the old root to a given
+    /// node has the same length, since a different length would have kept
+    /// the two occurrences as separate nodes in the first place (that's the
+    /// keying's whole acyclicity argument, see `TranspositionKeying`'s doc
+    /// comment). `StateOnly` has no such guarantee -- a shared node's stored
+    /// `ply` is only ever whichever depth first created it, not necessarily
+    /// the depth this promotion's own walk just crossed -- so `depth` is
+    /// ignored for it and `ply` is instead recomputed as this walk's own BFS
+    /// distance from the new root, the only value that's still well-defined
+    /// once the root has moved.
     fn rebuild_reachable_graph(&mut self, depth: u32) {
+        let keying = self.config.transposition_keying;
         let mut order: Vec<Id> = Vec::new();
-        let mut visited: FxHashSet<Id> = FxHashSet::default();
+        let mut distance: FxHashMap<Id, u32> = FxHashMap::default();
         let mut queue: VecDeque<Id> = VecDeque::new();
         queue.push_back(self.root_id);
-        visited.insert(self.root_id);
+        distance.insert(self.root_id, 0);
         while let Some(id) = queue.pop_front() {
+            let node_distance = distance[&id];
             if let Some(NodeState::Expanded(children)) = self.index.get(id).status() {
                 for i in 0..children.len() {
                     if let Some(child_id) = children.node_id(i) {
-                        if visited.insert(child_id) {
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            distance.entry(child_id)
+                        {
+                            e.insert(node_distance + 1);
                             queue.push_back(child_id);
                         }
                     }
@@ -220,18 +244,24 @@ where
         old_to_new.reserve(order.len());
         for &old_id in &order {
             let mut node = self.index.get(old_id).clone();
-            node.ply -= depth;
+            node.ply = match keying {
+                TranspositionKeying::PerPly => node.ply - depth,
+                TranspositionKeying::StateOnly => distance[&old_id],
+            };
             let new_id = new_index.insert(node);
             old_to_new.insert(old_id, new_id);
         }
 
-        // Every retained non-root node's `(hash, ply)` becomes the rebuilt
-        // graph table -- the root deliberately gets no entry here: its own
-        // key uses the literal-board hash the caller computes from the real
+        // Every retained non-root node's key becomes the rebuilt graph
+        // table -- the root deliberately gets no entry here: its own key
+        // uses the literal-board hash the caller computes from the real
         // state (see `choose_action`'s `table.insert_graph` call), not the
         // canonical hash a non-root `Node::hash` stores (see
-        // `search::shared::resolve_child_id`), and no other node can ever
-        // collide with it (every non-root node's `ply` is >= 1).
+        // `search::shared::resolve_child_id`). Under `PerPly` no other node
+        // can ever collide with it (every non-root node's `ply` is >= 1,
+        // the root's is always 0); under `StateOnly` the same is instead
+        // guaranteed by the per-game contract that a root position never
+        // recurs within a search (see `cycle_game_tests`'s doc comment).
         let mut graph_entries: Vec<(TranspositionKey, Id)> = Vec::with_capacity(order.len());
         for &old_id in &order {
             let new_id = old_to_new[&old_id];
@@ -240,17 +270,7 @@ where
                 children.remap_child_ids(&old_to_new);
             }
             if !node.is_root {
-                // `reuse_tree` is rejected together with `StateOnly` at
-                // config-validation time (see `SearchConfig::validate`), so
-                // this path only ever runs under `PerPly` -- the `ply`
-                // rebase two lines above is only meaningful there.
-                graph_entries.push((
-                    TranspositionKey::PerPly {
-                        position_hash: node.hash,
-                        ply: node.ply,
-                    },
-                    new_id,
-                ));
+                graph_entries.push((TranspositionKey::new(keying, node.hash, node.ply), new_id));
             }
         }
 

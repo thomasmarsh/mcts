@@ -731,7 +731,7 @@ mod converge_game_tests {
     }
 
     #[test]
-    fn state_only_keying_is_rejected_with_reuse_tree_or_unbounded_playout_depth() {
+    fn state_only_keying_is_rejected_only_with_unbounded_playout_depth() {
         let base = SearchConfig::<ConvergeGame, Ucb1>::default()
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .transposition_keying(TranspositionKeying::StateOnly);
@@ -745,8 +745,9 @@ mod converge_game_tests {
                 .max_playout_depth(50)
                 .reuse_tree(true)
                 .validate()
-                .is_err(),
-            "StateOnly is not yet supported together with reuse_tree"
+                .is_ok(),
+            "StateOnly together with reuse_tree must validate once reroot.rs's ply \
+             rebase no longer assumes ply is unique per node"
         );
         assert!(
             base.clone().validate().is_err(),
@@ -1018,6 +1019,183 @@ mod reversible_game_tests {
         assert!(
             count_nodes_with_hash(&per_ply, target_hash) > 1,
             "PerPly must keep mask=0b111 reached at different plies as separate arena nodes"
+        );
+    }
+}
+
+// A finite DAG with a genuine multi-parent diamond, used to exercise
+// `GraphSearch::Dag` re-rooting (`SearchConfig::reuse_tree`) under
+// `TranspositionKeying::StateOnly`: `D` is reachable from the root two
+// different ways at two different depths -- directly through `P1`
+// (root -> P1 -> D, 2 plies) and via a detour through `P2` (root -> P2 ->
+// X -> D, 3 plies). `StateOnly` merges both routes into the same arena
+// node, so `D`'s own `ply` field only ever reflects whichever route
+// happened to create it first -- exactly the situation a flat
+// `ply -= depth` rebase after re-rooting gets wrong once the surviving
+// subtree reaches `D` by a different route than the one that created it.
+mod diamond_game_tests {
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State {
+        node: u8,
+    }
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.node)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Action(u8);
+
+    #[derive(Clone)]
+    struct DiamondGame;
+
+    // Node ids: 0 = root, 1 = P1, 2 = P2, 3 = X, 4 = D (terminal, the
+    // diamond's merge point).
+    impl Game for DiamondGame {
+        type S = State;
+        type A = Action;
+        type P = Player;
+
+        fn apply(state: Self::S, action: &Self::A) -> Self::S {
+            let node = match (state.node, action.0) {
+                (0, 0) => 1,
+                (0, 1) => 2,
+                (1, 0) => 4,
+                (2, 0) => 3,
+                (3, 0) => 4,
+                _ => unreachable!("illegal action {action:?} at node {}", state.node),
+            };
+            State { node }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            match state.node {
+                0 => actions.extend([Action(0), Action(1)]),
+                1..=3 => actions.push(Action(0)),
+                _ => {}
+            }
+        }
+
+        fn winner(_state: &Self::S) -> Option<Self::P> {
+            None
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Player(0)
+        }
+
+        fn num_players() -> usize {
+            1
+        }
+
+        fn zobrist_hash(state: &Self::S) -> u64 {
+            state.node as u64
+        }
+    }
+
+    fn ply_for_hash(search: &TreeSearch<DiamondGame, Ucb1>, hash: u64) -> u32 {
+        let mut found = None;
+        search.index.for_each(|node| {
+            if node.hash == hash {
+                found = Some(node.ply);
+            }
+        });
+        found.unwrap_or_else(|| panic!("no arena node with hash {hash}"))
+    }
+
+    fn contains_hash(search: &TreeSearch<DiamondGame, Ucb1>, hash: u64) -> bool {
+        let mut found = false;
+        search.index.for_each(|node| {
+            if node.hash == hash {
+                found = true;
+            }
+        });
+        found
+    }
+
+    fn node_count(search: &TreeSearch<DiamondGame, Ucb1>) -> usize {
+        let mut count = 0;
+        search.index.for_each(|_| count += 1);
+        count
+    }
+
+    #[test]
+    fn state_only_reroot_recomputes_a_shared_nodes_ply_from_its_new_root() {
+        let root_state = State { node: 0 };
+        let p1_state = State { node: 1 };
+        let p2_state = State { node: 2 };
+        let d_hash = DiamondGame::zobrist_hash(&State { node: 4 });
+
+        let mut search = TreeSearch::<DiamondGame, Ucb1>::default().config(
+            SearchConfig::default()
+                .max_iterations(20)
+                .expand_threshold(0)
+                .max_playout_depth(10)
+                .seed(7)
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .transposition_keying(TranspositionKeying::StateOnly)
+                .reuse_tree(true),
+        );
+        search.choose_action(&root_state);
+
+        let d_ply_before = ply_for_hash(&search, d_hash);
+        assert!(
+            d_ply_before == 2 || d_ply_before == 3,
+            "D must be created via either the 2-ply P1 route or the 3-ply P2/X route, \
+             got {d_ply_before}"
+        );
+
+        // Re-root through whichever child did *not* win the race to create
+        // `D`: its real distance to `D` then disagrees with what a naive
+        // `ply -= depth` rebase (using this promotion's 1-ply depth) would
+        // compute from `D`'s stale, first-created `ply`, so only a correct
+        // recompute survives this assertion.
+        let (promote_through, expected_d_ply_after, pruned_hash, expected_node_count) =
+            if d_ply_before == 2 {
+                (p2_state, 2u32, DiamondGame::zobrist_hash(&p1_state), 3)
+            } else {
+                (p1_state, 1u32, DiamondGame::zobrist_hash(&p2_state), 2)
+            };
+
+        search.reuse_or_reset_graph(0, &promote_through);
+
+        assert_eq!(
+            ply_for_hash(&search, d_hash),
+            expected_d_ply_after,
+            "D's ply must be recomputed as its real distance from the new root, not a \
+             naive subtraction from whichever ply first created it"
+        );
+        assert!(
+            !contains_hash(&search, pruned_hash),
+            "the sibling subtree no longer reachable from the new root must be pruned, \
+             not kept stale"
+        );
+        assert_eq!(
+            node_count(&search),
+            expected_node_count,
+            "the rebuilt arena must contain exactly the new root's reachable subtree"
+        );
+        assert_eq!(
+            search.table.graph_len(),
+            node_count(&search) - 1,
+            "every non-root retained node must have exactly one live graph-table entry \
+             after rebuild -- no stale entries left over from the old rooting"
         );
     }
 }
