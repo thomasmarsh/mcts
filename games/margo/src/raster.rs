@@ -38,13 +38,12 @@ fn level_board(n: usize) -> LevelBoard {
 #[derive(Clone, Debug)]
 pub struct Raster {
     levels: Vec<LevelBoard>,
-    surface: LevelBoard,
     n: usize,
     /// Wall masks for shift operations — prevent bit wrap-around.
-    east_wall: LevelBoard, // rightmost column (col = n-1)
-    west_wall: LevelBoard,  // leftmost column  (col = 0)
-    south_wall: LevelBoard, // bottom row       (row = n-1)
-    north_wall: LevelBoard, // top row          (row = 0)
+    east_wall: LevelBoard,
+    west_wall: LevelBoard,
+    south_wall: LevelBoard,
+    north_wall: LevelBoard,
 }
 
 impl Raster {
@@ -56,10 +55,8 @@ impl Raster {
                 levels[level].set_index(row * n + col);
             }
         }
-        let surface = Self::compute_surface(n, &levels);
         Raster {
             levels,
-            surface,
             n,
             east_wall: wall_col(n, n - 1),
             west_wall: wall_col(n, 0),
@@ -68,29 +65,13 @@ impl Raster {
         }
     }
 
-    pub fn surface(&self) -> &LevelBoard {
-        &self.surface
+    /// Compute the top-down visibility mask. Not used by the fast-path
+    /// flood/capture checks — callers who need it pay the O(n²) cost.
+    pub fn surface(&self) -> LevelBoard {
+        Self::compute_surface(self.n, &self.levels)
     }
     pub fn n(&self) -> usize {
         self.n
-    }
-
-    // ── wall builders ──────────────────────────────────────────────────
-
-    fn col_wall(n: usize, col: usize) -> LevelBoard {
-        let mut w = level_board(n);
-        for r in 0..n {
-            w.set_index(r * n + col);
-        }
-        w
-    }
-
-    fn row_wall(n: usize, row: usize) -> LevelBoard {
-        let mut w = level_board(n);
-        for c in 0..n {
-            w.set_index(row * n + c);
-        }
-        w
     }
 
     // ── surface computation ────────────────────────────────────────────
@@ -131,6 +112,12 @@ impl Raster {
     fn shift_n(&self, b: &LevelBoard) -> LevelBoard {
         (*b & !self.north_wall) >> self.n
     }
+    fn shift_se(&self, b: &LevelBoard) -> LevelBoard {
+        self.shift_s(&self.shift_e(b))
+    }
+    fn shift_nw(&self, b: &LevelBoard) -> LevelBoard {
+        self.shift_n(&self.shift_w(b))
+    }
 
     // ── public API ─────────────────────────────────────────────────────
 
@@ -138,26 +125,26 @@ impl Raster {
         row * self.n + col
     }
 
-    /// Place a piece at `(col, row, level)`, regenerating the surface.
+    /// Place a piece at `(col, row, level)`. Only toggles the bit in
+    /// `levels`. Returns the linear raster index.
     pub fn place(&mut self, col: usize, row: usize, level: usize) -> usize {
         let pos = self.raster_index(col, row);
         debug_assert!(level < self.n);
         self.levels[level].set_index(pos);
-        self.surface = Self::compute_surface(self.n, &self.levels);
         pos
     }
 
-    /// Remove a piece, regenerating the surface.
+    /// Remove a piece from `levels`.
     pub fn remove(&mut self, col: usize, row: usize, level: usize) {
         let pos = self.raster_index(col, row);
         self.levels[level].clear_index(pos);
-        self.surface = Self::compute_surface(self.n, &self.levels);
     }
 
-    /// Flood connected same-color pieces from `(col, row, level)`.
-    /// `color` provides per-level masks: `color[l]` has bits set for
-    /// pieces of this group's colour at level `l`. Returns per-level
-    /// bitboards of all group members.
+    /// Flood connected same-color pieces starting from `(col, row, level)`.
+    /// Uses bulk bitwise expansion: same-level 4-way neighbors via shift
+    /// stencils, cross-level support/dependent edges via composed shifts.
+    /// Iterates to a fixed point across all levels simultaneously — each
+    /// iteration processes all frontier cells in parallel.
     pub fn flood(
         &self,
         col: usize,
@@ -167,71 +154,63 @@ impl Raster {
     ) -> Vec<LevelBoard> {
         let n = self.n;
         let mut result: Vec<LevelBoard> = (0..n).map(|_| level_board(n)).collect();
-        let mut seen: Vec<LevelBoard> = (0..n).map(|_| level_board(n)).collect();
-        let mut queue: Vec<(usize, usize, usize)> = Vec::new();
-
         let sp = self.raster_index(col, row);
         result[level].set_index(sp);
-        seen[level].set_index(sp);
-        queue.push((col, row, level));
 
-        while let Some((c, r, l)) = queue.pop() {
-            // Same-level 4-way.
-            for (dc, dr) in &[(1isize, 0isize), (-1, 0), (0, 1), (0, -1)] {
-                let nc = c as isize + dc;
-                let nr = r as isize + dr;
-                if nc < 0 || nr < 0 || nc >= n as isize || nr >= n as isize {
+        loop {
+            let mut changed = false;
+
+            // Same-level bulk expansion.
+            for l in 0..n {
+                let frontier = &result[l];
+                if frontier.count_ones() == 0 {
                     continue;
                 }
-                let np = (nr as usize) * n + (nc as usize);
-                if seen[l].get_index(np) {
-                    continue;
-                }
-                if self.levels[l].get_index(np) && color[l].get_index(np) {
-                    seen[l].set_index(np);
-                    result[l].set_index(np);
-                    queue.push((nc as usize, nr as usize, l));
+                let nbrs = self.shift_e(frontier)
+                    | self.shift_w(frontier)
+                    | self.shift_s(frontier)
+                    | self.shift_n(frontier);
+                let new_same = nbrs & self.levels[l] & color[l] & !result[l];
+                if new_same.count_ones() > 0 {
+                    result[l] |= new_same;
+                    changed = true;
                 }
             }
 
-            // Supporters (level-1): peel-back.
-            if l > 0 {
-                for (dc, dr) in &[(0isize, 0isize), (1, 0), (0, 1), (1, 1)] {
-                    let sc = c as isize + dc;
-                    let sr = r as isize + dr;
-                    if sc < 0 || sr < 0 || sc >= n as isize || sr >= n as isize {
-                        continue;
-                    }
-                    let sp2 = (sr as usize) * n + (sc as usize);
-                    if seen[l - 1].get_index(sp2) {
-                        continue;
-                    }
-                    if self.levels[l - 1].get_index(sp2) && color[l - 1].get_index(sp2) {
-                        seen[l - 1].set_index(sp2);
-                        result[l - 1].set_index(sp2);
-                        queue.push((sc as usize, sr as usize, l - 1));
-                    }
+            // Cross-level: supporters at level-1.
+            // A piece at (c,r,L) is supported by (c,r,L-1), (c+1,r,L-1),
+            // (c,r+1,L-1), (c+1,r+1,L-1). In bulk: shift E, S, SE and OR.
+            for l in 1..n {
+                let above = &result[l];
+                if above.count_ones() == 0 {
+                    continue;
+                }
+                let sup = *above | self.shift_e(above) | self.shift_s(above) | self.shift_se(above);
+                let new_sup = sup & self.levels[l - 1] & color[l - 1] & !result[l - 1];
+                if new_sup.count_ones() > 0 {
+                    result[l - 1] |= new_sup;
+                    changed = true;
                 }
             }
 
-            // Dependents (level+1).
-            if l + 1 < n {
-                for (dc, dr) in &[(-1isize, -1isize), (0, -1), (-1, 0), (0, 0)] {
-                    let dc2 = c as isize + dc;
-                    let dr2 = r as isize + dr;
-                    if dc2 < 0 || dr2 < 0 || dc2 >= n as isize || dr2 >= n as isize {
-                        continue;
-                    }
-                    let dp = (dr2 as usize) * n + (dc2 as usize);
-                    if seen[l + 1].get_index(dp) {
-                        continue;
-                    }
-                    if self.levels[l + 1].get_index(dp) && color[l + 1].get_index(dp) {
-                        seen[l + 1].set_index(dp);
-                        result[l + 1].set_index(dp);
-                        queue.push((dc2 as usize, dr2 as usize, l + 1));
-                    }
+            // Cross-level: dependents at level+1.
+            // A piece at (c,r,L) supports (c-1,r-1,L+1), (c,r-1,L+1),
+            // (c-1,r,L+1), (c,r,L+1). In bulk: shift W, N, NW and OR.
+            for l in 0..(n - 1) {
+                let below = &result[l];
+                if below.count_ones() == 0 {
+                    continue;
                 }
+                let dep = *below | self.shift_w(below) | self.shift_n(below) | self.shift_nw(below);
+                let new_dep = dep & self.levels[l + 1] & color[l + 1] & !result[l + 1];
+                if new_dep.count_ones() > 0 {
+                    result[l + 1] |= new_dep;
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                break;
             }
         }
         result
@@ -255,8 +234,10 @@ impl Raster {
         (adjacent & empty).count_ones() as usize
     }
 
-    /// Find enemy cells touching `group`. Returns `(col, row, level)` seeds
-    /// for flooding enemy groups. `color` is the own-color mask.
+    /// Find enemy cells touching `group`. Uses bulk shift stencils to
+    /// compute the frontier of the group on each level, then masks with
+    /// occupation and enemy color. Cross-level support/dependent edges
+    /// are also handled via composed shifts.
     pub fn enemies_touching(
         &self,
         group: &[LevelBoard],
@@ -266,55 +247,118 @@ impl Raster {
         let mut seeds = Vec::new();
 
         for l in 0..n {
-            for pos in group[l].iter_set() {
-                let col = pos % n;
-                let row = pos / n;
+            if group[l].count_ones() == 0 {
+                continue;
+            }
 
-                // Same-level 4-way.
-                for (dc, dr) in &[(1isize, 0isize), (-1, 0), (0, 1), (0, -1)] {
-                    let nc = col as isize + dc;
-                    let nr = row as isize + dr;
-                    if nc < 0 || nr < 0 || nc >= n as isize || nr >= n as isize {
-                        continue;
-                    }
-                    let np = (nr as usize) * n + (nc as usize);
-                    if self.levels[l].get_index(np) && !color[l].get_index(np) {
-                        seeds.push((nc as usize, nr as usize, l));
-                    }
+            // Same-level 4-way frontier.
+            let frontier = self.shift_e(&group[l])
+                | self.shift_w(&group[l])
+                | self.shift_s(&group[l])
+                | self.shift_n(&group[l]);
+            let enemies = frontier & self.levels[l] & !color[l];
+            for pos in enemies.iter_set() {
+                seeds.push((pos % n, pos / n, l));
+            }
+
+            // Supporters at level-1: group[l] shifted E, S, SE.
+            if l > 0 {
+                let sup = group[l]
+                    | self.shift_e(&group[l])
+                    | self.shift_s(&group[l])
+                    | self.shift_se(&group[l]);
+                let enemies = sup & self.levels[l - 1] & !color[l - 1];
+                for pos in enemies.iter_set() {
+                    seeds.push((pos % n, pos / n, l - 1));
                 }
+            }
 
-                // Above (resting on us).
-                if l + 1 < n {
-                    for (dc, dr) in &[(-1isize, -1isize), (0, -1), (-1, 0), (0, 0)] {
-                        let nc = col as isize + dc;
-                        let nr = row as isize + dr;
-                        if nc < 0 || nr < 0 || nc >= n as isize || nr >= n as isize {
-                            continue;
-                        }
-                        let np = (nr as usize) * n + (nc as usize);
-                        if self.levels[l + 1].get_index(np) && !color[l + 1].get_index(np) {
-                            seeds.push((nc as usize, nr as usize, l + 1));
-                        }
-                    }
-                }
-
-                // Below (supporting us).
-                if l > 0 {
-                    for (dc, dr) in &[(0isize, 0isize), (1, 0), (0, 1), (1, 1)] {
-                        let nc = col as isize + dc;
-                        let nr = row as isize + dr;
-                        if nc < 0 || nr < 0 || nc >= n as isize || nr >= n as isize {
-                            continue;
-                        }
-                        let np = (nr as usize) * n + (nc as usize);
-                        if self.levels[l - 1].get_index(np) && !color[l - 1].get_index(np) {
-                            seeds.push((nc as usize, nr as usize, l - 1));
-                        }
-                    }
+            // Dependents at level+1: group[l] shifted W, N, NW.
+            if l + 1 < n {
+                let dep = group[l]
+                    | self.shift_w(&group[l])
+                    | self.shift_n(&group[l])
+                    | self.shift_nw(&group[l]);
+                let enemies = dep & self.levels[l + 1] & !color[l + 1];
+                for pos in enemies.iter_set() {
+                    seeds.push((pos % n, pos / n, l + 1));
                 }
             }
         }
         seeds
+    }
+
+    /// Own-colored pieces that would connect to a stone placed at
+    /// `(col, row, level)`. Uses the same stencils as [`flood`] but for a
+    /// single seed position.
+    pub fn connecting_own(
+        &self,
+        col: usize,
+        row: usize,
+        level: usize,
+        color: &[LevelBoard],
+    ) -> Vec<(usize, usize, usize)> {
+        let n = self.n;
+        let mut result = Vec::with_capacity(12);
+        let pos = self.raster_index(col, row);
+        let mut singleton = level_board(n);
+        singleton.set_index(pos);
+
+        // Same-level 4-way neighbors.
+        let nbrs = self.shift_e(&singleton)
+            | self.shift_w(&singleton)
+            | self.shift_s(&singleton)
+            | self.shift_n(&singleton);
+        for np in (nbrs & self.levels[level] & color[level]).iter_set() {
+            result.push((np % n, np / n, level));
+        }
+
+        // Supporters at level-1.
+        if level > 0 {
+            let sup = singleton
+                | self.shift_e(&singleton)
+                | self.shift_s(&singleton)
+                | self.shift_se(&singleton);
+            for sp in (sup & self.levels[level - 1] & color[level - 1]).iter_set() {
+                result.push((sp % n, sp / n, level - 1));
+            }
+        }
+
+        // Dependents at level+1.
+        if level + 1 < n {
+            let dep = singleton
+                | self.shift_w(&singleton)
+                | self.shift_n(&singleton)
+                | self.shift_nw(&singleton);
+            for dp in (dep & self.levels[level + 1] & color[level + 1]).iter_set() {
+                result.push((dp % n, dp / n, level + 1));
+            }
+        }
+        result
+    }
+
+    /// Partition all pieces of `color` into connected groups.
+    /// Each group is a `Vec<LevelBoard>` (one bitboard per level).
+    pub fn groups(&self, color: &[LevelBoard]) -> Vec<Vec<LevelBoard>> {
+        let n = self.n;
+        let mut seen: Vec<LevelBoard> = (0..n).map(|_| level_board(n)).collect();
+        let mut groups = Vec::new();
+
+        for l in 0..n {
+            for pos in (self.levels[l] & color[l]).iter_set() {
+                if seen[l].get_index(pos) {
+                    continue;
+                }
+                let col = pos % n;
+                let row = pos / n;
+                let group = self.flood(col, row, l, color);
+                for l2 in 0..n {
+                    seen[l2] |= group[l2];
+                }
+                groups.push(group);
+            }
+        }
+        groups
     }
 }
 

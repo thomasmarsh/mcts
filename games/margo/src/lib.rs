@@ -812,7 +812,6 @@ impl Game for Margo {
                 false
             } else {
                 let seeds = raster.enemies_touching(&group, &own_color);
-                // Deduplicate: flood each enemy group only once.
                 let mut enemy_seen: Vec<raster::LevelBoard> = (0..n_usize)
                     .map(|_| raster::LevelBoard::new(Dyn(n_usize), Dyn(n_usize)))
                     .collect();
@@ -833,15 +832,10 @@ impl Game for Margo {
             own_color[level].clear_index(raster_pos);
             raster.remove(col, row, level);
 
-            // Raster says legal, but we must also check ko: if placing
-            // here recreates the previous board state.
             let ko_safe = if let Some((ref prev_occ, _)) = state.previous {
-                // Candidate was NOT in prev_occupied → can't recreate it.
-                // If it WAS, last turn captured a stone here; re-placing it
-                // might be ko.
                 !prev_occ.get_index(index)
             } else {
-                true // no previous state, ko impossible
+                true
             };
 
             if fast_ok && ko_safe {
