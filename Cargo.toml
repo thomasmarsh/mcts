@@ -16,10 +16,14 @@ publish = false
 [dependencies]
 mcts = { path = "mcts" }
 mcts-bench = { path = "mcts-bench" }
+mcts-tune = { path = "mcts-tune" }
 game-druid = { path = "games/druid" }
 game-knightthrough = { path = "games/knightthrough" }
 game-gonnect = { path = "games/gonnect" }
 game-breakthrough = { path = "games/breakthrough" }
+game-nim = { path = "games/nim" }
+game-othello = { path = "games/othello" }
+game-margo = { path = "games/margo" }
 rand = { version = "0.8.5", features = ["small_rng"] }
 rustc-hash = "1.1.0"
 
