@@ -533,6 +533,22 @@ fn backprop_spec_round_trips_through_json() {
     assert_eq!(serde_json::to_string(&spec).unwrap(), json);
 }
 
+/// `BackpropSpec`'s `Deserialize` is hand-implemented (see
+/// `register_backprop!`'s doc comment), not `#[derive]`d -- these pin the
+/// same error behavior a derive would have given for free, since nothing
+/// enforces that automatically anymore.
+#[test]
+fn backprop_spec_deserialize_rejects_unknown_kind_and_missing_fields() {
+    let err = serde_json::from_str::<BackpropSpec>(r#"{"kind":"not_a_real_kind"}"#).unwrap_err();
+    assert!(err.to_string().contains("not_a_real_kind"), "{err}");
+
+    let err = serde_json::from_str::<BackpropSpec>(r#"{"kind":"bayes_gaussian"}"#).unwrap_err();
+    assert!(err.to_string().contains("prior_variance"), "{err}");
+
+    let err = serde_json::from_str::<BackpropSpec>(r#"{"prior_variance":1.0}"#).unwrap_err();
+    assert!(err.to_string().contains("kind"), "{err}");
+}
+
 /// A `BackpropCont` whose `Output` is just a marker proving `with_backprop`
 /// actually resolved to a real `BackpropStrategy` -- there's no
 /// `requirements()` to check (see `register_backprop!`'s doc comment on

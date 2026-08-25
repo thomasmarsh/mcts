@@ -1,11 +1,15 @@
 use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
+use super::codec::{field, to_snake_case};
 use super::search::SearchSpec;
 use super::select::{requirements_of, DynSelect, EraseSelectCont, RequirementsCont, SelectCont};
 use mcts::backprop::BackpropStrategy;
 use mcts::game::Game;
 use mcts::select;
 use mcts::Requirements;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// The config-IR node for the `final_action` axis. It is deliberately a
 /// separate, smaller table from `SelectSpec`/`register_select!`: `final_action` only ever
@@ -25,12 +29,60 @@ macro_rules! register_final_action {
         ),+ $(,)?
     ) => {
         /// The config-IR node for the `final_action` axis.
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below rather than
+        /// `#[derive]`d -- see `register_backprop!`'s doc comment in
+        /// `backprop.rs` for why (identical wire format, none of serde's
+        /// generic derive machinery).
+        #[derive(Debug, Clone, PartialEq)]
         pub enum FinalActionSpec {
             $(
                 $variant { $($field: $ty),* },
             )+
+        }
+
+        impl Serialize for FinalActionSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        FinalActionSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for FinalActionSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(FinalActionSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                Err(D::Error::custom(format!("unknown final_action kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` to the concrete `SelectStrategy<G>` it names by

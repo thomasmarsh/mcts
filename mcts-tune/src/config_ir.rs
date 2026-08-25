@@ -4,6 +4,7 @@
 //! [`search`] combines the four resolved components into a runnable search.
 
 mod backprop;
+mod codec;
 mod final_action;
 mod search;
 mod select;

@@ -1,3 +1,4 @@
+use super::codec::{field, to_snake_case};
 use mcts::game::Game;
 use mcts::search::TreeStats;
 use mcts::select;
@@ -6,7 +7,10 @@ use mcts::strategies::mcts::config::BackpropFlags;
 use mcts::strategies::mcts::strategy::Compose;
 use mcts::{Requirements, SearchConfig, TreeSearch};
 use rand::rngs::SmallRng;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Invokes a continuation after resolving a concrete simulation strategy.
 pub trait SimulateCont<G: Game> {
@@ -51,12 +55,59 @@ macro_rules! register_simulate {
         /// The inner spec `EpsilonGreedy`/`DecisiveMove` wrap -- the table's
         /// families, with no wrapper variant of its own (see
         /// `register_simulate!`'s doc comment on why).
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below rather than
+        /// `#[derive]`d -- see `register_backprop!`'s doc comment in
+        /// `backprop.rs` for why.
+        #[derive(Debug, Clone, PartialEq)]
         pub enum BaseSimulateSpec {
             $(
                 $variant { $($field: $ty),* },
             )+
+        }
+
+        impl Serialize for BaseSimulateSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        BaseSimulateSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for BaseSimulateSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(BaseSimulateSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                Err(D::Error::custom(format!("unknown simulate kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` to the concrete `SimulateStrategy<G>` it names
@@ -79,8 +130,18 @@ macro_rules! register_simulate {
         /// The config-IR node for the `simulate` axis: every
         /// `BaseSimulateSpec` family, plus `EpsilonGreedy`/`DecisiveMove`
         /// each wrapping one of them.
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below rather than
+        /// `#[derive]`d -- see `register_backprop!`'s doc comment in
+        /// `backprop.rs` for why. The five wrapper variants below aren't
+        /// part of `$variant`'s table (see this macro's doc comment on why
+        /// `EpsilonGreedy`/`DecisiveMove`/`DecisiveMoveMast`/
+        /// `DecisiveMoveNst`/`MetaMcts` are hand-written here rather than
+        /// table rows), so their match arms are hand-written too, the same
+        /// way their `with_simulate` dispatch arms already are below --
+        /// adding a new one still means touching this macro body in one
+        /// place, not a second file.
+        #[derive(Debug, Clone, PartialEq)]
         pub enum SimulateSpec {
             $(
                 $variant { $($field: $ty),* },
@@ -122,6 +183,120 @@ macro_rules! register_simulate {
             MetaMcts {
                 iterations: usize,
             },
+        }
+
+        impl Serialize for SimulateSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        SimulateSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                    SimulateSpec::EpsilonGreedy { epsilon, inner } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(EpsilonGreedy)))?;
+                        map.serialize_entry("epsilon", epsilon)?;
+                        map.serialize_entry("inner", inner)?;
+                        map.end()
+                    }
+                    SimulateSpec::DecisiveMove { mode, inner } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(DecisiveMove)))?;
+                        map.serialize_entry("mode", mode)?;
+                        map.serialize_entry("inner", inner)?;
+                        map.end()
+                    }
+                    SimulateSpec::DecisiveMoveMast { mode, epsilon } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(DecisiveMoveMast)))?;
+                        map.serialize_entry("mode", mode)?;
+                        map.serialize_entry("epsilon", epsilon)?;
+                        map.end()
+                    }
+                    SimulateSpec::DecisiveMoveNst {
+                        mode,
+                        epsilon,
+                        nst_backoff_threshold,
+                    } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(DecisiveMoveNst)))?;
+                        map.serialize_entry("mode", mode)?;
+                        map.serialize_entry("epsilon", epsilon)?;
+                        map.serialize_entry("nst_backoff_threshold", nst_backoff_threshold)?;
+                        map.end()
+                    }
+                    SimulateSpec::MetaMcts { iterations } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(MetaMcts)))?;
+                        map.serialize_entry("iterations", iterations)?;
+                        map.end()
+                    }
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for SimulateSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(SimulateSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                if kind == to_snake_case(stringify!(EpsilonGreedy)) {
+                    return Ok(SimulateSpec::EpsilonGreedy {
+                        epsilon: field(&v, "epsilon").map_err(D::Error::custom)?,
+                        inner: field(&v, "inner").map_err(D::Error::custom)?,
+                    });
+                }
+                if kind == to_snake_case(stringify!(DecisiveMove)) {
+                    return Ok(SimulateSpec::DecisiveMove {
+                        mode: field(&v, "mode").map_err(D::Error::custom)?,
+                        inner: field(&v, "inner").map_err(D::Error::custom)?,
+                    });
+                }
+                if kind == to_snake_case(stringify!(DecisiveMoveMast)) {
+                    return Ok(SimulateSpec::DecisiveMoveMast {
+                        mode: field(&v, "mode").map_err(D::Error::custom)?,
+                        epsilon: field(&v, "epsilon").map_err(D::Error::custom)?,
+                    });
+                }
+                if kind == to_snake_case(stringify!(DecisiveMoveNst)) {
+                    return Ok(SimulateSpec::DecisiveMoveNst {
+                        mode: field(&v, "mode").map_err(D::Error::custom)?,
+                        epsilon: field(&v, "epsilon").map_err(D::Error::custom)?,
+                        nst_backoff_threshold: field(&v, "nst_backoff_threshold")
+                            .map_err(D::Error::custom)?,
+                    });
+                }
+                if kind == to_snake_case(stringify!(MetaMcts)) {
+                    return Ok(SimulateSpec::MetaMcts {
+                        iterations: field(&v, "iterations").map_err(D::Error::custom)?,
+                    });
+                }
+                Err(D::Error::custom(format!("unknown simulate kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` the same way `with_base_simulate` does, plus

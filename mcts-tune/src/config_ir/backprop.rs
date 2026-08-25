@@ -1,5 +1,9 @@
+use super::codec::{field, to_snake_case};
 use mcts::backprop::{self, BackpropStrategy};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Invokes a continuation after resolving a concrete backpropagation strategy.
 pub trait BackpropCont {
@@ -35,12 +39,69 @@ macro_rules! register_backprop {
         ),+ $(,)?
     ) => {
         /// The config-IR node for the `backprop` axis.
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below (routed
+        /// through `serde_json::Value`, whose own impls are hand-written in
+        /// `serde_json`, not derived) rather than `#[derive]`d: a
+        /// `#[serde(tag = "kind", rename_all = "snake_case")]` derive here
+        /// would expand into serde's generic `Visitor`/`Content`-buffering
+        /// trait machinery, a compile-cost tax paid in full by every game
+        /// binary that links this crate under LTO. The concrete match
+        /// below produces the identical wire format from the same table
+        /// with none of that generic machinery, while still implementing
+        /// the real `serde::Serialize`/`Deserialize` traits --
+        /// so `SearchSpec`/`CustomStrategySpec`'s own `#[derive(Serialize,
+        /// Deserialize)]`, and every `serde_json::from_value::<
+        /// CustomStrategySpec>` call site, keep working unmodified.
+        #[derive(Debug, Clone, PartialEq)]
         pub enum BackpropSpec {
             $(
                 $variant { $($field: $ty),* },
             )+
+        }
+
+        impl Serialize for BackpropSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        BackpropSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for BackpropSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(BackpropSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                Err(D::Error::custom(format!("unknown backprop kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` to the concrete `BackpropStrategy` it names by

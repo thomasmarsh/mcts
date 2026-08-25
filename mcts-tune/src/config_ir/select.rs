@@ -1,3 +1,4 @@
+use super::codec::{field, to_snake_case};
 use mcts::game::Game;
 use mcts::index::Id;
 use mcts::node::ChildArray;
@@ -5,7 +6,10 @@ use mcts::select::{self, SelectContext, SelectStrategy};
 use mcts::strategies::mcts::config::BackpropFlags;
 use mcts::Requirements;
 use rand::rngs::SmallRng;
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Invokes a continuation after resolving a concrete selection strategy.
 pub trait SelectCont<G: Game> {
@@ -43,12 +47,60 @@ macro_rules! register_select {
         /// The inner spec an `EpsilonGreedy` wraps -- the table's families,
         /// with no `EpsilonGreedy` variant of its own (see
         /// `register_select!`'s doc comment on why).
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below rather than
+        /// `#[derive]`d -- see `register_backprop!`'s doc comment in
+        /// `backprop.rs` for why (identical wire format, none of serde's
+        /// generic derive machinery).
+        #[derive(Debug, Clone, PartialEq)]
         pub enum BaseSelectSpec {
             $(
                 $variant { $($field: $ty),* },
             )+
+        }
+
+        impl Serialize for BaseSelectSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        BaseSelectSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for BaseSelectSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(BaseSelectSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                Err(D::Error::custom(format!("unknown select kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` to the concrete `SelectStrategy<G>` it names by
@@ -71,8 +123,18 @@ macro_rules! register_select {
 
         /// The config-IR node for the `select` axis: every `BaseSelectSpec`
         /// family, plus `EpsilonGreedy` wrapping one of them.
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
+        ///
+        /// `Serialize`/`Deserialize` are hand-implemented below rather than
+        /// `#[derive]`d -- see `register_backprop!`'s doc comment in
+        /// `backprop.rs` for why. `EpsilonGreedy`'s `inner: BaseSelectSpec`
+        /// field routes through `BaseSelectSpec`'s own hand-implemented
+        /// impls above via `field::<BaseSelectSpec>`/`serialize_entry`,
+        /// exactly like any other field type -- no recursion-depth concern
+        /// the way a derive-based `Content`-buffering implementation would
+        /// have had, since this isn't a self-referential type (`SelectSpec`
+        /// wraps `BaseSelectSpec`, which has no `SelectSpec`/`EpsilonGreedy`
+        /// variant of its own).
+        #[derive(Debug, Clone, PartialEq)]
         pub enum SelectSpec {
             $(
                 $variant { $($field: $ty),* },
@@ -81,6 +143,63 @@ macro_rules! register_select {
                 epsilon: f64,
                 inner: BaseSelectSpec,
             },
+        }
+
+        impl Serialize for SelectSpec {
+            fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+            where
+                Ser: Serializer,
+            {
+                match self {
+                    $(
+                        SelectSpec::$variant { $($field),* } => {
+                            #[allow(unused_mut)]
+                            let mut map = serializer.serialize_map(None)?;
+                            map.serialize_entry("kind", &to_snake_case(stringify!($variant)))?;
+                            $(
+                                map.serialize_entry(stringify!($field), $field)?;
+                            )*
+                            map.end()
+                        }
+                    )+
+                    SelectSpec::EpsilonGreedy { epsilon, inner } => {
+                        let mut map = serializer.serialize_map(None)?;
+                        map.serialize_entry("kind", &to_snake_case(stringify!(EpsilonGreedy)))?;
+                        map.serialize_entry("epsilon", epsilon)?;
+                        map.serialize_entry("inner", inner)?;
+                        map.end()
+                    }
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for SelectSpec {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let v = Value::deserialize(deserializer)?;
+                let kind = v
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| D::Error::custom("missing `kind` field"))?;
+                $(
+                    if kind == to_snake_case(stringify!($variant)) {
+                        return Ok(SelectSpec::$variant {
+                            $(
+                                $field: field(&v, stringify!($field)).map_err(D::Error::custom)?,
+                            )*
+                        });
+                    }
+                )+
+                if kind == to_snake_case(stringify!(EpsilonGreedy)) {
+                    return Ok(SelectSpec::EpsilonGreedy {
+                        epsilon: field(&v, "epsilon").map_err(D::Error::custom)?,
+                        inner: field(&v, "inner").map_err(D::Error::custom)?,
+                    });
+                }
+                Err(D::Error::custom(format!("unknown select kind: {kind:?}")))
+            }
         }
 
         /// Dispatches `spec` the same way `with_base_select` does, plus the
