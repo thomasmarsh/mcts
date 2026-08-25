@@ -23,6 +23,7 @@
             "final_action": "robust_child"
         },
         "max_iterations": 5000,
+        "reuse_tree": true,
         "use_transpositions": true
     }
 ]
