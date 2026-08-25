@@ -4,9 +4,12 @@
 //! (`Box<dyn ErasedSelectStrategy<G>>` under a `SelectStrategy<G>` newtype) --
 //! the latter is what `mcts_tune::config_ir::build_search` actually builds.
 //! `simulate`/`final_action` are erased in both builds via `DynSimulate<G>`/
-//! `DynFinalAction<G>`, matching what `build_search` does regardless of how
-//! `select` is handled, so those two axes contribute no difference between
-//! the two columns below -- only `select`'s own dispatch mechanism varies.
+//! `DynSelect<G>` (`final_action` erases through the same `DynSelect<G>`
+//! `select` does, since both axes erase the identical `SelectStrategy<G>`
+//! trait -- see `mcts_tune::config_ir::select`'s `DynSelect` doc comment),
+//! matching what `build_search` does regardless of how `select` is handled,
+//! so those two axes contribute no difference between the two columns below
+//! -- only `select`'s own dispatch mechanism varies.
 //! `backprop` is fixed to `Classic` in both builds for the same reason.
 //!
 //! Reports iterations/sec, mean and standard deviation over several seeds
@@ -27,7 +30,7 @@ use mcts::select::{Rave, SelectStrategy, Ucb1};
 use mcts::strategies::mcts::strategy::Compose;
 use mcts::strategies::Search;
 use mcts::{SearchConfig, TreeSearch};
-use mcts_tune::config_ir::{resolve_select, DynFinalAction, DynSimulate, SelectSpec};
+use mcts_tune::config_ir::{resolve_select, DynSelect, DynSimulate, SelectSpec};
 
 /// Enough seeds to see run-to-run noise without the benchmark itself taking
 /// too long at the expensive end (`margo`).
@@ -50,7 +53,7 @@ where
     G::S: std::fmt::Display,
     S1: SelectStrategy<G> + 'static,
 {
-    type Strat<G, S1> = Compose<S1, DynSimulate<G>, backprop::Classic, DynFinalAction<G>>;
+    type Strat<G, S1> = Compose<S1, DynSimulate<G>, backprop::Classic, DynSelect<G>>;
     let config = SearchConfig::<G, Strat<G, S1>>::new()
         .max_iterations(iterations)
         .max_playout_depth(MAX_PLAYOUT_DEPTH)
@@ -59,7 +62,7 @@ where
         .select(select)
         .simulate(DynSimulate::default())
         .backprop(backprop::Classic)
-        .final_action(DynFinalAction::default());
+        .final_action(DynSelect::default());
     let mut search = TreeSearch::<G, Strat<G, S1>>::new().config(config);
     let started = Instant::now();
     let _ = search.choose_action(state);

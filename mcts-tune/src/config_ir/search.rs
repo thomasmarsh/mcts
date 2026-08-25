@@ -1,5 +1,5 @@
 use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
-use super::final_action::{resolve_final_action, DynFinalAction, FinalActionSpec};
+use super::final_action::{resolve_final_action, FinalActionSpec};
 use super::select::{resolve_select, DynSelect, SelectSpec};
 use super::simulate::{resolve_simulate, DynSimulate, SimulateSpec};
 use mcts::backprop::BackpropStrategy;
@@ -44,9 +44,12 @@ pub struct SearchSettings {
 
 /// Resolves `spec.backprop` -- the one remaining generic link in
 /// `build_search`'s dispatch chain. `select`, `simulate`, and `final_action`
-/// are all resolved eagerly, before this stage, into the fixed `DynSelect<G>`/
-/// `DynSimulate<G>`/`DynFinalAction<G>` types: chaining every axis through a
-/// fully generic continuation (contrast an earlier version of this file)
+/// are all resolved eagerly, before this stage, into fixed types: `select`
+/// and `final_action` both resolve to `DynSelect<G>` (two independently
+/// configured specs that happen to erase through the same type -- see
+/// `select.rs`'s `DynSelect` doc comment), and `simulate` resolves to
+/// `DynSimulate<G>`. Chaining every axis through a fully generic continuation
+/// (contrast an earlier version of this file)
 /// makes each one a multiplicative factor in what rustc has to
 /// monomorphize -- `select` (~9 variants once `EpsilonGreedy` wrapping is
 /// counted) x `simulate` (~10) x `final_action` (4) x `backprop` (3), each
@@ -61,7 +64,7 @@ struct BackpropStage<'a, G: Game> {
     settings: &'a SearchSettings,
     select: DynSelect<G>,
     simulate: DynSimulate<G>,
-    final_action: DynFinalAction<G>,
+    final_action: DynSelect<G>,
     marker: std::marker::PhantomData<G>,
 }
 
@@ -73,7 +76,7 @@ where
     type Output = Box<dyn Search<G = G>>;
 
     fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output {
-        type S<G, B> = Compose<DynSelect<G>, DynSimulate<G>, B, DynFinalAction<G>>;
+        type S<G, B> = Compose<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>;
         let mut config = SearchConfig::<G, S<G, B>>::new()
             .max_iterations(self.settings.max_iterations)
             .max_playout_depth(self.settings.max_playout_depth)

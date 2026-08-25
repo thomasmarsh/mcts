@@ -164,8 +164,10 @@ pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
 /// A shadow of `SelectStrategy<G>` covering only `best_child` (the one
 /// method `select_step` calls on a search's `select` component, once per
 /// tree-descent step) plus `backprop_flags`/`Clone`/`Send`/`Sync` -- the
-/// `select`-axis counterpart of `ErasedSimulateStrategy`/
-/// `ErasedFinalActionStrategy` in `simulate.rs`/`final_action.rs`.
+/// `select`-axis counterpart of `ErasedSimulateStrategy` in `simulate.rs`.
+/// `final_action.rs`'s `resolve_final_action` reuses this same shadow trait
+/// and `DynSelect` rather than defining its own copy, since both axes erase
+/// the identical `SelectStrategy<G>` trait.
 /// `score_child`/`unvisited_value` aren't part of this shadow: whichever
 /// concrete family a `DynSelect` box holds still runs its own per-child
 /// scoring loop inside its own `best_child` (the default implementation in
@@ -204,8 +206,11 @@ where
 /// One `SelectStrategy<G>` impl standing in for all of `with_select`'s
 /// concrete leaf types (the `register_select!` table, each optionally
 /// wrapped in `EpsilonGreedy`), via a `Box<dyn ErasedSelectStrategy<G>>` --
-/// mirrors `DynSimulate`/`DynFinalAction` exactly, and is what
-/// `config_ir::build_search` composes `select` from: `select_step` runs a
+/// mirrors `DynSimulate` in `simulate.rs`, and is also what
+/// `final_action.rs`'s `resolve_final_action` returns directly (`select` and
+/// `final_action` are two independently-configured axes that both happen to
+/// erase through this one type). This is what `config_ir::build_search`
+/// composes `select` from: `select_step` runs a
 /// `dyn` call once per tree-descent step rather than one of ~16 statically
 /// monomorphized bodies, collapsing that axis's contribution to
 /// `build_search`'s output to a single `TreeSearch` shape per game
@@ -263,7 +268,7 @@ impl<G: Game> SelectStrategy<G> for DynSelect<G> {
 /// dispatch (so `EpsilonGreedy` wrapping still works) but stops that
 /// dispatch's fan-out from propagating any further: everything downstream
 /// of `resolve_select` sees one fixed type.
-struct EraseSelectCont<G>(std::marker::PhantomData<G>);
+pub(super) struct EraseSelectCont<G>(pub(super) std::marker::PhantomData<G>);
 
 impl<G: Game + 'static> SelectCont<G> for EraseSelectCont<G> {
     type Output = DynSelect<G>;

@@ -1,14 +1,10 @@
 use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
 use super::search::SearchSpec;
-use super::select::{requirements_of, RequirementsCont, SelectCont};
+use super::select::{requirements_of, DynSelect, EraseSelectCont, RequirementsCont, SelectCont};
 use mcts::backprop::BackpropStrategy;
 use mcts::game::Game;
-use mcts::index::Id;
-use mcts::node::ChildArray;
-use mcts::select::{self, SelectContext, SelectStrategy};
-use mcts::strategies::mcts::config::BackpropFlags;
+use mcts::select;
 use mcts::Requirements;
-use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 /// The config-IR node for the `final_action` axis. It is deliberately a
@@ -108,106 +104,11 @@ pub fn validate_search_spec<G: Game + 'static>(spec: &SearchSpec) -> Result<(), 
     Ok(())
 }
 
-/// The `final_action`-axis counterpart of `ErasedSimulateStrategy` -- a
-/// shadow of `SelectStrategy<G>` covering only `best_child` (the one method
-/// `TreeSearch` actually calls on `config.final_action`, once per move, at
-/// the very end of a search) plus `backprop_flags`/`Clone`/`Send`/`Sync`.
-/// Blanket-implemented the same way, for the same single-source-of-truth
-/// reason.
-trait ErasedFinalActionStrategy<G: Game>: Send + Sync {
-    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize;
-    fn backprop_flags(&self) -> BackpropFlags;
-    fn clone_box(&self) -> Box<dyn ErasedFinalActionStrategy<G>>;
-}
-
-impl<G, S> ErasedFinalActionStrategy<G> for S
-where
-    G: Game,
-    S: SelectStrategy<G> + 'static,
-{
-    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        SelectStrategy::best_child(self, ctx, rng)
-    }
-
-    fn backprop_flags(&self) -> BackpropFlags {
-        SelectStrategy::backprop_flags(self)
-    }
-
-    fn clone_box(&self) -> Box<dyn ErasedFinalActionStrategy<G>> {
-        Box::new(self.clone())
-    }
-}
-
-/// One `SelectStrategy<G>` impl standing in for all four `final_action`
-/// families, via `Box<dyn ErasedFinalActionStrategy<G>>` -- the
-/// `final_action`-axis half of collapsing `build_search`'s monomorphization
-/// product (see `DynSimulate`'s doc comment). `final_action` is called once
-/// per move, the coldest of the four axes, so this is the cheapest of the
-/// two erasures to add. `Score`/`Aux` are fixed to `()`: nothing outside
-/// `best_child`'s own delegated call ever reads them, since `best_child` is
-/// always overridden here rather than falling back to the trait's default
-/// (which is the only thing that would call `score_child`/`unvisited_value`/
-/// `setup` on `Self`).
-pub struct DynFinalAction<G: Game>(Box<dyn ErasedFinalActionStrategy<G>>);
-
-impl<G: Game> Clone for DynFinalAction<G> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone_box())
-    }
-}
-
-impl<G: Game> Default for DynFinalAction<G> {
-    fn default() -> Self {
-        Self(Box::new(select::RobustChild))
-    }
-}
-
-impl<G: Game> SelectStrategy<G> for DynFinalAction<G> {
-    type Score = ();
-    type Aux = ();
-
-    fn setup(&mut self, _ctx: &SelectContext<'_, G>) -> Self::Aux {}
-
-    fn score_child(
-        &self,
-        _ctx: &SelectContext<'_, G>,
-        _child_id: Id,
-        _children: &ChildArray<G::A>,
-        _idx: usize,
-        _aux: Self::Aux,
-    ) -> Self::Score {
-        unreachable!("DynFinalAction always overrides best_child directly")
-    }
-
-    fn unvisited_value(&self, _ctx: &SelectContext<'_, G>, _aux: Self::Aux) -> Self::Score {
-        unreachable!("DynFinalAction always overrides best_child directly")
-    }
-
-    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        self.0.best_child(ctx, rng)
-    }
-
-    fn backprop_flags(&self) -> BackpropFlags {
-        self.0.backprop_flags()
-    }
-}
-
-/// A `SelectCont` that erases whatever concrete `final_action` strategy
-/// `with_final_action` resolves to into a `DynFinalAction<G>` -- the
-/// `final_action`-axis counterpart of `EraseSimulateCont`.
-struct EraseFinalActionCont<G>(std::marker::PhantomData<G>);
-
-impl<G: Game + 'static> SelectCont<G> for EraseFinalActionCont<G> {
-    type Output = DynFinalAction<G>;
-
-    fn call<S: SelectStrategy<G> + 'static>(self, final_action: S) -> DynFinalAction<G> {
-        DynFinalAction(Box::new(final_action))
-    }
-}
-
-/// Resolves `spec` to a single `DynFinalAction<G>`, regardless of family --
-/// see `DynFinalAction`'s doc comment for why `build_search` uses this
-/// instead of routing `FA` generically through its whole stage chain.
-pub fn resolve_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> DynFinalAction<G> {
-    with_final_action::<G, _>(spec, EraseFinalActionCont(std::marker::PhantomData))
+/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- reuses
+/// `select.rs`'s own erasure machinery directly rather than duplicating it,
+/// since `final_action` erases the identical `SelectStrategy<G>` trait
+/// `select` does (see `DynSelect`'s doc comment for why `build_search` wants
+/// this instead of routing `FA` generically through its whole stage chain).
+pub fn resolve_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> DynSelect<G> {
+    with_final_action::<G, _>(spec, EraseSelectCont(std::marker::PhantomData))
 }
