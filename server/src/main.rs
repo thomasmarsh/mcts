@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use tower_http::{cors::CorsLayer, services::ServeDir, timeout::TimeoutLayer};
 
 use adapter::{AdapterError, AiMoveResult, AiPresetInfo, Analysis, GameAdapter};
-use game_host::SearchReport;
+use game_host::{SearchReport, TunerInfo};
 
 // A stateless server still shouldn't let a client tie up a `spawn_blocking`
 // thread indefinitely -- this bounds `ai_move`/`analyze` well above the
@@ -174,6 +174,14 @@ async fn get_ai_presets(
     Ok(Json(adapter.ai_presets()))
 }
 
+async fn get_strategy_families(
+    AxumState(app): AxumState<Arc<AppState>>,
+    Path(kind): Path<String>,
+) -> Result<Json<Option<TunerInfo>>, AdapterError> {
+    let adapter = find_adapter(&app, &kind)?;
+    Ok(Json(adapter.tuner()))
+}
+
 #[derive(Deserialize)]
 struct AiMoveRequest {
     state: Value,
@@ -276,7 +284,11 @@ fn api_router(app_state: Arc<AppState>) -> Router {
         .route("/api/games/{kind}/legal_moves", post(post_legal_moves))
         .route("/api/games/{kind}/view", post(post_view))
         .route("/api/games/{kind}/apply", post(post_apply))
-        .route("/api/games/{kind}/ai_presets", get(get_ai_presets));
+        .route("/api/games/{kind}/ai_presets", get(get_ai_presets))
+        .route(
+            "/api/games/{kind}/strategy-families",
+            get(get_strategy_families),
+        );
 
     // Explicitly scoped, not wildcard -- there's no cross-origin need today
     // (the Vite dev proxy and the production `ServeDir` both serve the API
@@ -544,6 +556,10 @@ mod tests {
                 suggested_move: Some(json!("chosen")),
                 search: transport_search(preset),
             })
+        }
+
+        fn tuner(&self) -> Option<TunerInfo> {
+            None
         }
     }
 
@@ -998,6 +1014,27 @@ mod tests {
             http_post_json(app, "/api/games/ttt/legal_moves", json!({ "state": state })).await;
         assert_eq!(status, HttpStatusCode::OK);
         assert_eq!(body_json(&body)["moves"].as_array().unwrap().len(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_ttt_strategy_families_lists_family_choices() {
+        let (status, body) = http_get(test_app(), "/api/games/ttt/strategy-families").await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        let family_choices = body["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "family")
+            .expect("tuner info has a family parameter")["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(family_choices.contains(&"ucb1"));
+        assert!(family_choices.contains(&"random"));
+        assert!(family_choices.contains(&"negamax"));
     }
 
     #[tokio::test]

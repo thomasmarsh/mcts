@@ -20,7 +20,7 @@ use game_host::GameAdapter as _; // trait with methods SubprocessAdapter impleme
 use serde::Serialize;
 use serde_json::Value;
 
-pub use game_host::{AiMoveResult, AiPresetInfo, Analysis};
+pub use game_host::{AiMoveResult, AiPresetInfo, Analysis, TunerInfo};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -126,6 +126,11 @@ pub trait GameAdapter: Send + Sync {
         custom: Option<&Value>,
         budget_ms: Option<u64>,
     ) -> Result<Analysis, AdapterError>;
+
+    /// Tunable strategy search-space metadata (families, their parameters,
+    /// and the conditions gating which parameters apply to which family).
+    /// `None` for a game with no tuner support.
+    fn tuner(&self) -> Option<TunerInfo>;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +207,10 @@ impl GameAdapter for SubprocessGameAdapter {
         self.inner
             .analyze(state, preset, custom, budget_ms)
             .map_err(host_to_adapter)
+    }
+
+    fn tuner(&self) -> Option<TunerInfo> {
+        self.inner.tuner()
     }
 }
 
