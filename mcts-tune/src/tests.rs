@@ -672,6 +672,35 @@ fn test_family_flat_mc_ucb1_round_trips() {
     }));
 }
 
+/// Like `random`/`flat_mc`, `negamax` resolves to `FamilySpec::Direct`.
+/// `max_depth`/`table_bits` are kept small: `Nim`'s heaps allow arbitrary
+/// splits, so its game tree is not the trivially shallow one a fixed-heap
+/// take-only Nim would be, and an unbounded iterative-deepening search
+/// (negamax's own default `max_depth: 64`) would make this a real
+/// multi-second search rather than a fast round-trip check -- see
+/// `AGENTS.md`'s "keep `cargo test --lib` fast" rule.
+#[test]
+fn test_family_negamax_round_trips() {
+    assert_family_round_trips(json!({
+        "family": "negamax", "max_depth": 3, "table_bits": 10,
+        "negamax_replacement": "depth_preferred",
+        "principal_variation_search": true, "history_heuristic": true,
+        "singular_extension": true, "countermove_heuristic": true,
+        "negamax_aspiration": "off",
+    }));
+}
+
+#[test]
+fn test_family_negamax_aspiration_round_trips() {
+    assert_family_round_trips(json!({
+        "family": "negamax", "max_depth": 3, "table_bits": 10,
+        "negamax_replacement": "two_tier",
+        "principal_variation_search": true, "history_heuristic": true,
+        "singular_extension": true, "countermove_heuristic": true,
+        "negamax_aspiration": "on", "aspiration_window": 50,
+    }));
+}
+
 #[test]
 fn test_family_ucb1_dm_round_trips() {
     assert_family_round_trips(json!({
@@ -1452,6 +1481,52 @@ fn dispatch_family_resolves_flat_mc_ucb1_selection() {
     }
 }
 
+#[test]
+fn dispatch_family_resolves_negamax_to_the_direct_variant() {
+    let trial = trial(json!({
+        "family": "negamax", "max_depth": 3, "table_bits": 10,
+        "negamax_replacement": "always",
+        "principal_variation_search": false, "history_heuristic": false,
+        "singular_extension": false, "countermove_heuristic": false,
+        "negamax_aspiration": "off",
+    }));
+    match dispatch_family("negamax", &trial) {
+        Ok(FamilySpec::Direct(DirectFamily::Negamax {
+            max_depth: 3,
+            table_bits: 10,
+            replacement: mcts::strategies::negamax::Replacement::Always,
+            aspiration_window: None,
+            principal_variation_search: false,
+            history_heuristic: false,
+            singular_extension: false,
+            countermove_heuristic: false,
+        })) => {}
+        Ok(_) => panic!("negamax must resolve to DirectFamily::Negamax with the parsed fields"),
+        Err(e) => panic!("negamax must dispatch: {}", e.message),
+    }
+}
+
+#[test]
+fn dispatch_family_resolves_negamax_aspiration_window() {
+    let trial = trial(json!({
+        "family": "negamax", "max_depth": 3, "table_bits": 10,
+        "negamax_replacement": "depth_preferred",
+        "principal_variation_search": true, "history_heuristic": true,
+        "singular_extension": true, "countermove_heuristic": true,
+        "negamax_aspiration": "on", "aspiration_window": 75,
+    }));
+    match dispatch_family("negamax", &trial) {
+        Ok(FamilySpec::Direct(DirectFamily::Negamax {
+            aspiration_window: Some(window),
+            ..
+        })) => {
+            assert_eq!(window, 75);
+        }
+        Ok(_) => panic!("negamax with aspiration on must carry the window value"),
+        Err(e) => panic!("negamax must dispatch: {}", e.message),
+    }
+}
+
 /// `random` resolves to `FamilySpec::Direct`, which has no
 /// `config_ir::SearchSpec` representation -- `to_search_spec` (unlike
 /// `make_candidate`, which builds it via `direct_search::build_direct`)
@@ -1530,6 +1605,28 @@ fn test_build_search_builds_flat_mc_family() {
     .expect("flat_mc should build from its own required params");
 }
 
+/// `negamax` is a `DirectFamily` row too, built by
+/// `direct_search::build_direct` rather than `config_ir::build_search`, and
+/// (unlike `random`/`flat_mc`) actually reads `SearchBudget` (`threads`/
+/// `max_time`) -- this only proves it builds, so `max_depth` doesn't need to
+/// be tight here (`choose_action` is never called).
+#[test]
+fn test_build_search_builds_negamax_family() {
+    build_search::<Nim>(
+        &json!({
+            "family": "negamax", "max_depth": 8, "table_bits": 16,
+            "negamax_replacement": "depth_preferred",
+            "principal_variation_search": true, "history_heuristic": true,
+            "singular_extension": true, "countermove_heuristic": true,
+            "negamax_aspiration": "off",
+        }),
+        0,
+        false,
+        &SearchBudget::default(),
+    )
+    .expect("negamax should build from its own required params");
+}
+
 #[test]
 fn test_strategy_tuner_info_includes_every_family_choice() {
     let tuner = strategy_tuner_info(&["strong"], 1);
@@ -1552,13 +1649,13 @@ fn test_strategy_tuner_info_includes_every_family_choice() {
     }
 }
 
-/// A `Direct` family (`random`, `flat_mc`) never reads `q_init`, so Optuna
-/// shouldn't waste trials sampling it across `q_init`'s five otherwise-
-/// equivalent values for that family -- `active_params` (the same
+/// A `Direct` family (`random`, `flat_mc`, `negamax`) never reads `q_init`,
+/// so Optuna shouldn't waste trials sampling it across `q_init`'s five
+/// otherwise-equivalent values for that family -- `active_params` (the same
 /// fixed-point evaluation
 /// `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
-/// uses) must not mark `q_init` active for either, but must for an ordinary
-/// `Compose` family.
+/// uses) must not mark `q_init` active for any of them, but must for an
+/// ordinary `Compose` family.
 #[test]
 fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
     let tuner = strategy_tuner_info(&["strong"], 1);
@@ -1571,6 +1668,11 @@ fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
     assert!(
         !flat_mc_active.contains("q_init"),
         "q_init must not be active for a Direct family: {flat_mc_active:?}"
+    );
+    let negamax_active = active_params(&tuner, &json!({"family": "negamax"}));
+    assert!(
+        !negamax_active.contains("q_init"),
+        "q_init must not be active for a Direct family: {negamax_active:?}"
     );
     let ucb1_active = active_params(&tuner, &json!({"family": "ucb1"}));
     assert!(
@@ -1722,6 +1824,16 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
             json!({
                 "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
                 "flat_mc_selection": "win_rate",
+            }),
+        ),
+        (
+            "negamax",
+            json!({
+                "family": "negamax", "max_depth": 8, "table_bits": 16,
+                "negamax_replacement": "depth_preferred",
+                "principal_variation_search": true, "history_heuristic": true,
+                "singular_extension": true, "countermove_heuristic": true,
+                "negamax_aspiration": "on", "aspiration_window": 50,
             }),
         ),
     ]

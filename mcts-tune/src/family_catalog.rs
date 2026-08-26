@@ -18,8 +18,10 @@
 use crate::config_ir::codec::{field, field_opt};
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
 use game_host::{HostError, TunerCondition, TunerParameter};
+use mcts::evaluator::Score;
 use mcts::select::{RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
+use mcts::strategies::negamax;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
@@ -169,6 +171,25 @@ register_field! {
     // the `c` field every other UCB1-flavored family already has, rather
     // than adding a near-duplicate exploration-constant field).
     flat_mc_selection: String => json!({"type": "categorical", "choices": ["win_rate", "ucb1"], "default": "win_rate"}),
+    // `negamax::NegamaxOptions`'s iterative-deepening ceiling and
+    // transposition table size (`1 << table_bits` slots, `0` disables it).
+    max_depth: u32 => json!({"type": "int", "bounds": [1, 64], "default": 8}),
+    table_bits: u32 => json!({"type": "int", "bounds": [0, 24], "default": 20}),
+    // `negamax::Replacement`'s three policies, named rather than passed as
+    // the real enum -- see this module's doc comment on why `TrialParams`
+    // never depends on the concrete type.
+    negamax_replacement: String => json!({"type": "categorical", "choices": ["always", "depth_preferred", "two_tier"], "default": "depth_preferred"}),
+    principal_variation_search: bool => json!({"type": "bool", "default": true}),
+    history_heuristic: bool => json!({"type": "bool", "default": true}),
+    singular_extension: bool => json!({"type": "bool", "default": true}),
+    countermove_heuristic: bool => json!({"type": "bool", "default": true}),
+    // Gates `aspiration_window` on/off, the same on/off-plus-conditioned-
+    // value shape `contempt`/`contempt_factor` already uses -- Optuna has
+    // no native "sometimes absent" numeric type for
+    // `NegamaxOptions::aspiration_window: Option<Score>` to map onto
+    // directly.
+    negamax_aspiration: String => json!({"type": "categorical", "choices": ["off", "on"], "default": "off"}),
+    aspiration_window: u32 => json!({"type": "int", "bounds": [1, mcts::evaluator::EVAL_MAGNITUDE_LIMIT as u32], "default": 50}),
 }
 
 fn missing(field: &str) -> HostError {
@@ -286,6 +307,19 @@ pub(crate) enum DirectFamily {
         /// `None` is plain win-rate comparison.
         ucb1: Option<f64>,
     },
+    Negamax {
+        max_depth: u32,
+        table_bits: u32,
+        replacement: negamax::Replacement,
+        /// `Some(window)` primes the transposition table with a narrow
+        /// aspiration pass before each depth's definitive search; `None`
+        /// disables it. See `NegamaxOptions::aspiration_window`.
+        aspiration_window: Option<Score>,
+        principal_variation_search: bool,
+        history_heuristic: bool,
+        singular_extension: bool,
+        countermove_heuristic: bool,
+    },
 }
 
 /// Resolves `flat_mc_selection` (plus `c` when it names the UCB1 branch)
@@ -298,6 +332,41 @@ fn flat_mc_ucb1(p: &TrialParams) -> Result<Option<f64>, HostError> {
             "unknown flat_mc_selection: {other}"
         ))),
         None => Err(missing("flat_mc_selection")),
+    }
+}
+
+/// Matches `negamax_replacement`'s wire name to `negamax::Replacement`'s
+/// variants by hand, the same way `to_final_action_spec` matches
+/// `final_action` -- `TrialParams` carries the name rather than the real
+/// enum so it never needs `negamax::Replacement: Deserialize`.
+fn negamax_replacement(p: &TrialParams) -> Result<negamax::Replacement, HostError> {
+    match p.negamax_replacement.as_deref() {
+        Some("always") => Ok(negamax::Replacement::Always),
+        Some("depth_preferred") => Ok(negamax::Replacement::DepthPreferred),
+        Some("two_tier") => Ok(negamax::Replacement::TwoTier),
+        Some(other) => Err(HostError::bad_request(format!(
+            "unknown negamax_replacement: {other}"
+        ))),
+        None => Err(missing("negamax_replacement")),
+    }
+}
+
+/// Resolves `negamax_aspiration` (plus `aspiration_window` when it's `"on"`)
+/// into `NegamaxOptions::aspiration_window`'s own `Option<Score>` field --
+/// the same on/off-plus-conditioned-value shape `contempt_factor` above
+/// uses for the same reason (no native "sometimes absent" numeric type on
+/// the tuner side).
+fn negamax_aspiration_window(p: &TrialParams) -> Result<Option<Score>, HostError> {
+    match p.negamax_aspiration.as_deref() {
+        Some("off") => Ok(None),
+        Some("on") => Ok(Some(
+            p.aspiration_window
+                .ok_or_else(|| missing("aspiration_window"))? as Score,
+        )),
+        Some(other) => Err(HostError::bad_request(format!(
+            "unknown negamax_aspiration: {other}"
+        ))),
+        None => Err(missing("negamax_aspiration")),
     }
 }
 
@@ -697,6 +766,27 @@ register_family! {
         max_rollout_depth: p.max_rollout_depth.ok_or_else(|| missing("max_rollout_depth"))?,
         ucb1: flat_mc_ucb1(p)?,
     })),
+    // Iterative-deepening alpha-beta search -- only sound for a
+    // deterministic, perfect-information, two-player alternating-move game
+    // (see `negamax::supports`); a game outside that shape still compiles
+    // against this row but silently searches only the state in front of it.
+    "negamax" => [
+        max_depth, table_bits, negamax_replacement, principal_variation_search,
+        history_heuristic, singular_extension, countermove_heuristic, negamax_aspiration,
+    ] => |p: &TrialParams| Ok(FamilySpec::Direct(DirectFamily::Negamax {
+        max_depth: p.max_depth.ok_or_else(|| missing("max_depth"))?,
+        table_bits: p.table_bits.ok_or_else(|| missing("table_bits"))?,
+        replacement: negamax_replacement(p)?,
+        aspiration_window: negamax_aspiration_window(p)?,
+        principal_variation_search: p
+            .principal_variation_search
+            .ok_or_else(|| missing("principal_variation_search"))?,
+        history_heuristic: p.history_heuristic.ok_or_else(|| missing("history_heuristic"))?,
+        singular_extension: p.singular_extension.ok_or_else(|| missing("singular_extension"))?,
+        countermove_heuristic: p
+            .countermove_heuristic
+            .ok_or_else(|| missing("countermove_heuristic"))?,
+    })),
 }
 
 /// Family names whose `register_family!` row resolves to `FamilySpec::Direct`
@@ -708,5 +798,5 @@ register_family! {
 /// `strategy_tuner_info_with_mcgs` to gate `q_init`'s activation on `family`
 /// naming a `Compose` row -- see this module's doc comment.
 pub(crate) fn direct_family_names() -> &'static [&'static str] {
-    &["random", "flat_mc"]
+    &["random", "flat_mc", "negamax"]
 }

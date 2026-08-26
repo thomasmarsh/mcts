@@ -628,21 +628,30 @@ mod tests {
         assert_eq!(err.code, 404);
     }
 
-    /// `"random"`/`"flat_mc"` are non-composable families -- `family_catalog`
-    /// rows that resolve to `FamilySpec::Direct`, built by
+    /// `"random"`/`"flat_mc"`/`"negamax"` are non-composable families --
+    /// `family_catalog` rows that resolve to `FamilySpec::Direct`, built by
     /// `direct_search::build_direct` rather than `config_ir::build_search`
     /// (see `search.rs`'s `config_ir::build_search` comment) -- but
     /// `PresetTable::build` is just `build_search` under a preset id, so a
-    /// game's `presets.json` can name either one directly (e.g. a
+    /// game's `presets.json` can name any of them directly (e.g. a
     /// "baseline"/"random" preset), same as any composable family. This is
     /// the proof: nothing about the preset layer restricts `family` to
-    /// composable strategies.
+    /// composable strategies. `negamax`'s `max_depth` is kept tight (see
+    /// `tests.rs`'s `test_family_negamax_round_trips`) since `Nim`'s
+    /// splittable heaps make its game tree deeper than a fixed-heap Nim.
     #[test]
     fn build_resolves_non_composable_direct_families() {
         let table = PresetTable::from_json(
             r#"[
                 {"id": "random", "label": "Random", "description": "", "params": {"family": "random", "q_init": "Infinity"}, "max_iterations": 1},
-                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100}
+                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100},
+                {"id": "negamax", "label": "Negamax", "description": "", "params": {
+                    "family": "negamax", "max_depth": 3, "table_bits": 10,
+                    "negamax_replacement": "depth_preferred",
+                    "principal_variation_search": true, "history_heuristic": true,
+                    "singular_extension": true, "countermove_heuristic": true,
+                    "negamax_aspiration": "off"
+                }}
             ]"#,
         )
         .unwrap();
@@ -653,6 +662,9 @@ mod tests {
 
         let mut flat_mc_ai = table.build::<Nim>("flat_mc", 0).unwrap();
         let _ = flat_mc_ai.choose_action(&state);
+
+        let mut negamax_ai = table.build::<Nim>("negamax", 0).unwrap();
+        let _ = negamax_ai.choose_action(&state);
     }
 
     #[test]
