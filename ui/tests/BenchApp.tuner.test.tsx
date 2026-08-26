@@ -1,14 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { createStore } from "@mcts/core";
-import { benchReducer, initialBenchState, type BenchAction, type BenchState, LaunchForm, RunDetailPanel } from "@mcts/bench";
+import {
+  benchReducer,
+  initialBenchState,
+  type BenchAction,
+  type BenchState,
+  LaunchForm,
+  RunDetailPanel,
+} from "@mcts/bench";
 import { createMockBenchEnv, FAKE_tuner_RUN_ID } from "./fixtures/fake-bench.js";
 
 afterEach(cleanup);
 
 describe("tuner launch and physical-run diagnostics", () => {
   it("renders resolved tuner launch fields without retired baseline controls", () => {
-    const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, createMockBenchEnv());
+    const store = createStore<BenchState, BenchAction>(
+      initialBenchState(),
+      benchReducer,
+      createMockBenchEnv(),
+    );
     store.dispatch({ tag: "kinds", action: { tag: "request" } });
     store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
     render(() => <LaunchForm store={store} />);
@@ -20,7 +31,11 @@ describe("tuner launch and physical-run diagnostics", () => {
   });
 
   it("keeps a modern physical tuner run compact and links it to its session", async () => {
-    const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, createMockBenchEnv());
+    const store = createStore<BenchState, BenchAction>(
+      initialBenchState(),
+      benchReducer,
+      createMockBenchEnv(),
+    );
     render(() => <RunDetailPanel store={store} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
     expect(await screen.findByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument();

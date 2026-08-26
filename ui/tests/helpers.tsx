@@ -11,7 +11,15 @@
 import { cleanup } from "@solidjs/testing-library";
 import { afterEach } from "vitest";
 import { Effect, createStore, type Store } from "@mcts/core";
-import { appReducer, initialAppState, type AppAction, type AppState, type AxisSchema, type Env, type TunerInfo } from "@mcts/game";
+import {
+  appReducer,
+  initialAppState,
+  type AppAction,
+  type AppState,
+  type AxisSchema,
+  type Env,
+  type TunerInfo,
+} from "@mcts/game";
 
 // A minimal but real-shaped `AxisSchema` fixture -- one variant per axis
 // (`ucb1`/`uniform`/`classic`/`robust_child`), plus an `epsilon_greedy`
@@ -22,7 +30,10 @@ import { appReducer, initialAppState, type AppAction, type AppState, type AxisSc
 export const fixtureAxisSchema: AxisSchema = {
   select: {
     variants: [
-      { kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] },
+      {
+        kind: "ucb1",
+        fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }],
+      },
       {
         kind: "epsilon_greedy",
         fields: [{ name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 }],
@@ -31,7 +42,12 @@ export const fixtureAxisSchema: AxisSchema = {
     ],
   },
   select_base: {
-    variants: [{ kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] }],
+    variants: [
+      {
+        kind: "ucb1",
+        fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }],
+      },
+    ],
   },
   simulate: { variants: [{ kind: "uniform", fields: [] }] },
   simulate_base: { variants: [{ kind: "uniform", fields: [] }] },
@@ -39,7 +55,8 @@ export const fixtureAxisSchema: AxisSchema = {
   final_action: { variants: [{ kind: "robust_child", fields: [] }] },
 };
 
-export const mockFetchStrategySchema = (): Promise<AxisSchema> => Promise.resolve(fixtureAxisSchema);
+export const mockFetchStrategySchema = (): Promise<AxisSchema> =>
+  Promise.resolve(fixtureAxisSchema);
 
 // No fixture game in these tests exposes a tuner, so the default mock mirrors
 // that: every `GameShell` test drives the free-composition-only path unless a
@@ -70,14 +87,13 @@ export interface TestStoreResult {
 export function createTestStore(gameKind: string, env: Env = mockEnv): TestStoreResult {
   const captured: AppAction<unknown, unknown, unknown>[] = [];
   const init = initialAppState<unknown, unknown, unknown>(gameKind, null);
-  const store = createStore<AppState<unknown, unknown, unknown>, AppAction<unknown, unknown, unknown>, Env>(
-    init,
-    appReducer<unknown, unknown, unknown>,
-    env,
-    (action) => {
-      captured.push(action);
-    },
-  );
+  const store = createStore<
+    AppState<unknown, unknown, unknown>,
+    AppAction<unknown, unknown, unknown>,
+    Env
+  >(init, appReducer<unknown, unknown, unknown>, env, (action) => {
+    captured.push(action);
+  });
   return { store, captured };
 }
 

@@ -36,16 +36,27 @@ export const RunList: Component<{
   const dispatch = props.store.dispatch;
 
   const runsStatus = createMemo(() => state().runs.status);
-  const runs = createMemo(() => (state().runs.status === "done" ? state().runs.result ?? [] : []));
+  const runs = createMemo(() =>
+    state().runs.status === "done" ? (state().runs.result ?? []) : [],
+  );
   const openRunId = createMemo(() => state().openRun?.runId ?? null);
   const sessions = createMemo(() => state().tuningNavigation.list.snapshot?.sessions ?? []);
   const sessionsStatus = createMemo(() => state().tuningNavigation.list.status);
   const sessionsError = createMemo(() => state().tuningNavigation.list.error);
   const selectedSessionId = createMemo(() => state().tuningNavigation.selection.sessionId);
-  const projectedTunerRunIds = createMemo(() => new Set(
-    sessions().flatMap((session) => session.attempts.flatMap((attempt) => attempt.bench_run_id ? [attempt.bench_run_id] : [])),
-  ));
-  const visibleRuns = createMemo(() => runs().filter((run) => run.kind !== "tuner" || !projectedTunerRunIds().has(run.run_id)));
+  const projectedTunerRunIds = createMemo(
+    () =>
+      new Set(
+        sessions().flatMap((session) =>
+          session.attempts.flatMap((attempt) =>
+            attempt.bench_run_id ? [attempt.bench_run_id] : [],
+          ),
+        ),
+      ),
+  );
+  const visibleRuns = createMemo(() =>
+    runs().filter((run) => run.kind !== "tuner" || !projectedTunerRunIds().has(run.run_id)),
+  );
   const showLaunchForm = createMemo(() => state().showLaunchForm);
   const runFilters = createMemo(() => state().runFilters);
   const busy = createMemo(() => runsStatus() === "pending" || sessionsStatus() === "loading");
@@ -85,10 +96,7 @@ export const RunList: Component<{
       </div>
 
       <div id="run-filters">
-        <select
-          value={filterStatus()}
-          onChange={(e) => setFilterStatus(e.currentTarget.value)}
-        >
+        <select value={filterStatus()} onChange={(e) => setFilterStatus(e.currentTarget.value)}>
           <option value="">All statuses</option>
           <option value="running">Running</option>
           <option value="completed">Completed</option>
@@ -107,7 +115,11 @@ export const RunList: Component<{
       </div>
 
       <Show when={sessionsError()}>
-        {(error) => <div class="tuning-list-error" role="alert">Tuning sessions could not refresh: {error()}</div>}
+        {(error) => (
+          <div class="tuning-list-error" role="alert">
+            Tuning sessions could not refresh: {error()}
+          </div>
+        )}
       </Show>
 
       <Show
@@ -166,18 +178,21 @@ const RunRow: Component<{
   });
 
   return (
-    <div
-      class="run-row"
-      classList={{ "run-row-open": props.isOpen }}
-      onClick={props.onClick}
-    >
+    <div class="run-row" classList={{ "run-row-open": props.isOpen }} onClick={props.onClick}>
       <span class={`status-badge ${statusBadgeClass(props.run.status)}`}>
         {statusLabel(props.run.status)}
       </span>
       <span class="run-row-game">{props.run.game}</span>
       <Show
         when={props.legacyTuner}
-        fallback={<Show when={props.modernTuner} fallback={<span class="run-row-matches">{props.run.match_count} matches</span>}><span class="modern-tuner-label">Tuning attempt</span></Show>}
+        fallback={
+          <Show
+            when={props.modernTuner}
+            fallback={<span class="run-row-matches">{props.run.match_count} matches</span>}
+          >
+            <span class="modern-tuner-label">Tuning attempt</span>
+          </Show>
+        }
       >
         <span class="legacy-tuner-label">Legacy tuner run</span>
       </Show>
@@ -198,7 +213,10 @@ const TuningSessionRow: Component<{
 
   function selectSession(): void {
     props.store.dispatch({ tag: "closeRun" });
-    props.store.dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: props.session.session_id } });
+    props.store.dispatch({
+      tag: "tuningNavigation",
+      action: { tag: "selectSession", sessionId: props.session.session_id },
+    });
   }
 
   function selectAttempt(attemptId: string): void {
@@ -213,21 +231,35 @@ const TuningSessionRow: Component<{
           class="tuning-session-disclosure"
           aria-label={`${expanded() ? "Collapse" : "Expand"} attempts for ${sessionLabel(props.session)}`}
           aria-expanded={expanded()}
-          onClick={() => props.store.dispatch({ tag: "tuningNavigation", action: { tag: "toggleExpanded", id: expansionId() } })}
+          onClick={() =>
+            props.store.dispatch({
+              tag: "tuningNavigation",
+              action: { tag: "toggleExpanded", id: expansionId() },
+            })
+          }
         >
           {expanded() ? "−" : "+"}
         </button>
-        <button class="tuning-session-select" aria-current={props.selected ? "page" : undefined} onClick={selectSession}>
+        <button
+          class="tuning-session-select"
+          aria-current={props.selected ? "page" : undefined}
+          onClick={selectSession}
+        >
           <span class="tuning-session-label">{sessionLabel(props.session)}</span>
           <span class="tuning-session-progress">{terminalProgress(props.session)}</span>
         </button>
-        <span class={`status-badge ${props.session.status === "active" ? "badge-running" : "badge-stopped"}`}>
+        <span
+          class={`status-badge ${props.session.status === "active" ? "badge-running" : "badge-stopped"}`}
+        >
           {props.session.status}
         </span>
         <span class="tuning-session-counts">
-          {props.session.counts.running} active · {props.session.counts.completed} complete · {props.session.counts.failed} failed · {props.session.counts.pruned} pruned
+          {props.session.counts.running} active · {props.session.counts.completed} complete ·{" "}
+          {props.session.counts.failed} failed · {props.session.counts.pruned} pruned
         </span>
-        <span class="tuning-session-time">Updated {formatTimestamp(props.session.last_activity_at)}</span>
+        <span class="tuning-session-time">
+          Updated {formatTimestamp(props.session.last_activity_at)}
+        </span>
       </div>
       <Show when={expanded()}>
         <TuningAttemptList session={props.session} onSelect={selectAttempt} />

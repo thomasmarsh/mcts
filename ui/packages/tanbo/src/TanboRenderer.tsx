@@ -67,7 +67,9 @@ export const TanboRenderer: Component<GameRendererProps<GameState, Move, GameVie
       <div class="tanbo-grid" style={{ width: `${BOARD_PX}px`, height: `${BOARD_PX}px` }}>
         <svg class="tanbo-lines" width={BOARD_PX} height={BOARD_PX}>
           <For each={gridLines()}>{(l) => <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} />}</For>
-          <For each={STAR_POINTS}>{(cell) => <circle class="tanbo-star" cx={pointX(cell)} cy={pointY(cell)} r={4} />}</For>
+          <For each={STAR_POINTS}>
+            {(cell) => <circle class="tanbo-star" cx={pointX(cell)} cy={pointY(cell)} r={4} />}
+          </For>
         </svg>
 
         <For each={Array.from({ length: BOARD_SIZE }, (_, i) => i)}>
@@ -144,7 +146,9 @@ export const TanboRenderer: Component<GameRendererProps<GameState, Move, GameVie
                 >
                   {stoneColor() && <div class={`tanbo-stone stone-${stoneColor()}`} />}
                   {!stoneColor() && legal() && props.hoveredMove === cell && (
-                    <div class={`tanbo-ghost stone-${props.state.turn === "Black" ? "black" : "white"}`} />
+                    <div
+                      class={`tanbo-ghost stone-${props.state.turn === "Black" ? "black" : "white"}`}
+                    />
                   )}
                 </button>
               </>

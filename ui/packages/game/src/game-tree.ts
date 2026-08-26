@@ -37,7 +37,14 @@ export function initialGameTree<S, M>(rootState: S): GameTree<S, M> {
   const rootId = "n0";
   return {
     nodes: {
-      [rootId]: { id: rootId, state: rootState, move: null, search: null, parentId: null, childIds: [] },
+      [rootId]: {
+        id: rootId,
+        state: rootState,
+        move: null,
+        search: null,
+        parentId: null,
+        childIds: [],
+      },
     },
     rootId,
     currentId: rootId,
@@ -82,72 +89,77 @@ export function gameTreeReducer<S, M>(
   _env: unknown,
 ): Effect<GameTreeAction<S, M>> | null {
   switch (action.tag) {
-  case "applyMove": {
-    const current = draft.nodes[draft.currentId];
-    if (!current) return null;
-    const existingChildId = current.childIds.find((id) => {
-      const child = draft.nodes[id];
-      return child !== undefined && child.move !== null && moveEquals(child.move, action.move);
-    });
-    if (existingChildId !== undefined) {
-      const child = draft.nodes[existingChildId];
-      if (child && child.search === null && action.search !== undefined && action.search !== null) {
-        child.search = action.search;
+    case "applyMove": {
+      const current = draft.nodes[draft.currentId];
+      if (!current) return null;
+      const existingChildId = current.childIds.find((id) => {
+        const child = draft.nodes[id];
+        return child !== undefined && child.move !== null && moveEquals(child.move, action.move);
+      });
+      if (existingChildId !== undefined) {
+        const child = draft.nodes[existingChildId];
+        if (
+          child &&
+          child.search === null &&
+          action.search !== undefined &&
+          action.search !== null
+        ) {
+          child.search = action.search;
+        }
+        draft.currentId = existingChildId;
+        return null;
       }
-      draft.currentId = existingChildId;
+      const id = `n${draft.nextId}`;
+      draft.nextId += 1;
+      draft.nodes[id] = {
+        id,
+        state: action.state,
+        move: action.move,
+        search: action.search ?? null,
+        parentId: current.id,
+        childIds: [],
+      };
+      current.childIds.push(id);
+      draft.currentId = id;
       return null;
     }
-    const id = `n${draft.nextId}`;
-    draft.nextId += 1;
-    draft.nodes[id] = {
-      id,
-      state: action.state,
-      move: action.move,
-      search: action.search ?? null,
-      parentId: current.id,
-      childIds: [],
-    };
-    current.childIds.push(id);
-    draft.currentId = id;
-    return null;
-  }
-  case "undo": {
-    const current = draft.nodes[draft.currentId];
-    if (current?.parentId) draft.currentId = current.parentId;
-    return null;
-  }
-  case "redo": {
-    const current = draft.nodes[draft.currentId];
-    if (!current || current.childIds.length === 0) return null;
-    const targetId = action.childId ?? current.childIds[current.childIds.length - 1];
-    if (targetId !== undefined && current.childIds.includes(targetId)) draft.currentId = targetId;
-    return null;
-  }
-  case "jumpTo": {
-    if (draft.nodes[action.id]) draft.currentId = action.id;
-    return null;
-  }
-  case "deleteBranch": {
-    const target = draft.nodes[action.id];
-    if (!target || target.id === draft.rootId) return null; // can't delete the root
-    const parentId = target.parentId;
-    const toDelete: string[] = [];
-    const stack = [target.id];
-    while (stack.length > 0) {
-      const id = stack.pop();
-      if (id === undefined) break;
-      toDelete.push(id);
-      const node = draft.nodes[id];
-      if (node) stack.push(...node.childIds);
+    case "undo": {
+      const current = draft.nodes[draft.currentId];
+      if (current?.parentId) draft.currentId = current.parentId;
+      return null;
     }
-    if (parentId) {
-      const parent = draft.nodes[parentId];
-      if (parent) parent.childIds = parent.childIds.filter((id) => id !== target.id);
+    case "redo": {
+      const current = draft.nodes[draft.currentId];
+      if (!current || current.childIds.length === 0) return null;
+      const targetId = action.childId ?? current.childIds[current.childIds.length - 1];
+      if (targetId !== undefined && current.childIds.includes(targetId)) draft.currentId = targetId;
+      return null;
     }
-    const deletedSet = new Set(toDelete);
-    for (const id of toDelete) delete draft.nodes[id];
-    if (deletedSet.has(draft.currentId)) draft.currentId = parentId ?? draft.rootId;
-    return null;
-  }
+    case "jumpTo": {
+      if (draft.nodes[action.id]) draft.currentId = action.id;
+      return null;
+    }
+    case "deleteBranch": {
+      const target = draft.nodes[action.id];
+      if (!target || target.id === draft.rootId) return null; // can't delete the root
+      const parentId = target.parentId;
+      const toDelete: string[] = [];
+      const stack = [target.id];
+      while (stack.length > 0) {
+        const id = stack.pop();
+        if (id === undefined) break;
+        toDelete.push(id);
+        const node = draft.nodes[id];
+        if (node) stack.push(...node.childIds);
+      }
+      if (parentId) {
+        const parent = draft.nodes[parentId];
+        if (parent) parent.childIds = parent.childIds.filter((id) => id !== target.id);
+      }
+      const deletedSet = new Set(toDelete);
+      for (const id of toDelete) delete draft.nodes[id];
+      if (deletedSet.has(draft.currentId)) draft.currentId = parentId ?? draft.rootId;
+      return null;
+    }
   }
 }

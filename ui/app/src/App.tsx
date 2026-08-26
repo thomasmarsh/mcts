@@ -36,7 +36,11 @@ const BenchApp = lazy(() => import("@mcts/bench").then((m) => ({ default: m.Benc
 const App = () => {
   const api = createApiClient();
   const env = createEnv(api);
-  const store = createStore<AppState<unknown, unknown, unknown>, AppAction<unknown, unknown, unknown>, Env>(
+  const store = createStore<
+    AppState<unknown, unknown, unknown>,
+    AppAction<unknown, unknown, unknown>,
+    Env
+  >(
     initialAppState<unknown, unknown, unknown>(DEFAULT_GAME_KIND, null),
     appReducer<unknown, unknown, unknown>,
     env,

@@ -35,7 +35,7 @@ export const CommitComparison: Component<{
 
   const trends = createMemo(() => state().commitTrends);
   const runsState = createMemo(() => state().runs);
-  const runs = createMemo(() => (runsState().status === "done" ? runsState().result ?? [] : []));
+  const runs = createMemo(() => (runsState().status === "done" ? (runsState().result ?? []) : []));
 
   // Available games from runs.
   const availableGames = createMemo(() => {
@@ -114,14 +114,9 @@ export const CommitComparison: Component<{
         <h3>Commit Comparison</h3>
         <div id="comparison-controls">
           <Show when={availableGames().length > 0}>
-            <select
-              value={selectedGame()}
-              onChange={(e) => onGameChange(e.currentTarget.value)}
-            >
+            <select value={selectedGame()} onChange={(e) => onGameChange(e.currentTarget.value)}>
               <option value="">All games</option>
-              <For each={availableGames()}>
-                {(g) => <option value={g}>{g}</option>}
-              </For>
+              <For each={availableGames()}>{(g) => <option value={g}>{g}</option>}</For>
             </select>
           </Show>
         </div>
@@ -167,9 +162,15 @@ export const CommitComparison: Component<{
       </Show>
 
       <Show
-        when={availableCommits().length < 2 && trends().status !== "loading" && trends().status !== "error"}
+        when={
+          availableCommits().length < 2 &&
+          trends().status !== "loading" &&
+          trends().status !== "error"
+        }
       >
-        <div class="lb-empty">Need at least 2 commits with data to compare. Select a game above.</div>
+        <div class="lb-empty">
+          Need at least 2 commits with data to compare. Select a game above.
+        </div>
       </Show>
 
       <Show when={rows().length > 0}>
@@ -188,12 +189,16 @@ export const CommitComparison: Component<{
                 {(row) => {
                   const wrA = row.a ? fmtRate(row.a.win_rate) : "—";
                   const wrB = row.b ? fmtRate(row.b.win_rate) : "—";
-                  const deltaLabel = row.winRateDelta >= 0 ? `+${fmtRate(row.winRateDelta)}` : fmtRate(row.winRateDelta);
-                  const deltaClass = row.winRateDelta > 0.02
-                    ? "delta-up"
-                    : row.winRateDelta < -0.02
-                      ? "delta-down"
-                      : "delta-flat";
+                  const deltaLabel =
+                    row.winRateDelta >= 0
+                      ? `+${fmtRate(row.winRateDelta)}`
+                      : fmtRate(row.winRateDelta);
+                  const deltaClass =
+                    row.winRateDelta > 0.02
+                      ? "delta-up"
+                      : row.winRateDelta < -0.02
+                        ? "delta-down"
+                        : "delta-flat";
                   return (
                     <tr class="comp-row">
                       <td class="comp-strategy">{row.strategy}</td>

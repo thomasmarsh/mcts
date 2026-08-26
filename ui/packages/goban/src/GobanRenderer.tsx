@@ -79,7 +79,9 @@ export const GobanRenderer: Component<GameRendererProps<GameState, Move, GameVie
       <div class="goban-grid" style={{ width: `${boardPx()}px`, height: `${boardPx()}px` }}>
         <svg class="goban-lines" width={boardPx()} height={boardPx()}>
           <For each={gridLines()}>{(l) => <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} />}</For>
-          <For each={starPoints()}>{(cell) => <circle class="goban-star" cx={pointX(cell)} cy={pointY(cell)} r={4} />}</For>
+          <For each={starPoints()}>
+            {(cell) => <circle class="goban-star" cx={pointX(cell)} cy={pointY(cell)} r={4} />}
+          </For>
         </svg>
 
         <For each={Array.from({ length: boardSize() }, (_, i) => i)}>
@@ -124,7 +126,9 @@ export const GobanRenderer: Component<GameRendererProps<GameState, Move, GameVie
               >
                 {stoneColor() && <div class={`goban-stone goban-stone-${stoneColor()}`} />}
                 {!stoneColor() && legal() && hoveredCell() === cell && (
-                  <div class={`goban-ghost goban-stone-${props.state.turn === "Black" ? "black" : "white"}`} />
+                  <div
+                    class={`goban-ghost goban-stone-${props.state.turn === "Black" ? "black" : "white"}`}
+                  />
                 )}
               </button>
             );

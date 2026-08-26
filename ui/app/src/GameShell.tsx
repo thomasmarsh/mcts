@@ -13,20 +13,48 @@
 // Per the hard rule, this component never touches the network
 // itself: every effect below only ever calls `props.store.dispatch(...)`.
 
-import { type Component, createEffect, createMemo, createResource, createSignal, For, lazy, onCleanup, onMount, Show } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  For,
+  lazy,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
-import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, AxisSchema, GameTreeNode, MoveStep, TunerInfo } from "@mcts/game";
+import type {
+  AiStrategyRef,
+  AnalysisOverlayEntry,
+  AppAction,
+  AppState,
+  AxisSchema,
+  GameTreeNode,
+  MoveStep,
+  TunerInfo,
+} from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
 import { defaultCustomStrategySpec, StrategyConfigEditor } from "@mcts/strategy-config";
 import { GAME_META, GAME_MODULES } from "./games.js";
 
 // Panels are lazy-loaded so they only pull in their own dependencies when
 // the user actually starts a game (`state().epoch >= 1`).
-const MoveListPanel = lazy(() => import("./MoveListPanel.js").then((m) => ({ default: m.MoveListPanel })));
-const AnalysisPanel = lazy(() => import("./AnalysisPanel.js").then((m) => ({ default: m.AnalysisPanel })));
-const MoveSearchPanel = lazy(() => import("./MoveSearchPanel.js").then((m) => ({ default: m.MoveSearchPanel })));
-const SaveLoadPanel = lazy(() => import("./SaveLoadPanel.js").then((m) => ({ default: m.SaveLoadPanel })));
+const MoveListPanel = lazy(() =>
+  import("./MoveListPanel.js").then((m) => ({ default: m.MoveListPanel })),
+);
+const AnalysisPanel = lazy(() =>
+  import("./AnalysisPanel.js").then((m) => ({ default: m.AnalysisPanel })),
+);
+const MoveSearchPanel = lazy(() =>
+  import("./MoveSearchPanel.js").then((m) => ({ default: m.MoveSearchPanel })),
+);
+const SaveLoadPanel = lazy(() =>
+  import("./SaveLoadPanel.js").then((m) => ({ default: m.SaveLoadPanel })),
+);
 
 type S = unknown;
 type M = unknown;
@@ -239,7 +267,8 @@ export const GameShell: Component<{
     if (!sum || sum.currentPlayer === null) return;
     const seat = state().seats[sum.currentPlayer] ?? "human";
     if (seat === "human") return;
-    if (state().aiMove.status === "error" && state().aiMoveFailedNodeId === state().tree.currentId) return;
+    if (state().aiMove.status === "error" && state().aiMoveFailedNodeId === state().tree.currentId)
+      return;
     dispatch({ tag: "aiMove", action: { tag: "request", strategy: seat } });
   });
 
@@ -273,7 +302,8 @@ export const GameShell: Component<{
   function openDialog(): void {
     setPendingConfig(undefined);
     const seats: Record<string, "human" | AiStrategyRef> = {};
-    for (const p of GAME_META[state().gameKind]?.players ?? []) seats[p] = state().seats[p] ?? "human";
+    for (const p of GAME_META[state().gameKind]?.players ?? [])
+      seats[p] = state().seats[p] ?? "human";
     setPendingSeats(seats);
     setDialogOpen(true);
   }
@@ -313,7 +343,8 @@ export const GameShell: Component<{
     return seat === "human" ? presetStrategy("strong") : seat;
   };
 
-  const presetOptions = () => (state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : []);
+  const presetOptions = () =>
+    state().aiPresets.status === "done" ? (state().aiPresets.result ?? []) : [];
 
   // Falls back to "strong" the same way `manualMovePreset` above does, only
   // once the user hasn't picked one yet (`ui.selectedPreset`, a
@@ -336,14 +367,12 @@ export const GameShell: Component<{
     if (a.status !== "done" || !a.result) return undefined;
     const total = a.result.total_visits || 1;
     const suggested = a.result.suggested_move;
-    return a.result.actions.map(
-      (c): AnalysisOverlayEntry<M> => ({
-        move: c.action,
-        visitShare: c.visits / total,
-        isProven: c.is_proven,
-        isSuggested: suggested !== null && moveEquals(c.action, suggested),
-      }),
-    );
+    return a.result.actions.map((c): AnalysisOverlayEntry<M> => ({
+      move: c.action,
+      visitShare: c.visits / total,
+      isProven: c.is_proven,
+      isSuggested: suggested !== null && moveEquals(c.action, suggested),
+    }));
   });
 
   return (
@@ -396,10 +425,23 @@ export const GameShell: Component<{
                 </div>
               </Show>
               <div id="actions">
-                <button id="ai-move" disabled={busy()} onClick={() => dispatch({ tag: "aiMove", action: { tag: "request", strategy: manualMoveStrategy() } })}>
+                <button
+                  id="ai-move"
+                  disabled={busy()}
+                  onClick={() =>
+                    dispatch({
+                      tag: "aiMove",
+                      action: { tag: "request", strategy: manualMoveStrategy() },
+                    })
+                  }
+                >
                   AI Move
                 </button>
-                <button id="autoplay-toggle" classList={{ paused: autoplayPaused() }} onClick={() => setAutoplayPaused((v) => !v)}>
+                <button
+                  id="autoplay-toggle"
+                  classList={{ paused: autoplayPaused() }}
+                  onClick={() => setAutoplayPaused((v) => !v)}
+                >
                   {autoplayPaused() ? "Resume" : "Pause"}
                 </button>
                 <button id="new-game" onClick={openDialog}>
@@ -411,13 +453,20 @@ export const GameShell: Component<{
                   gameKind={state().gameKind}
                   config={state().config}
                   tree={state().tree}
-                  onLoad={(gameKind, config, tree) => dispatch({ tag: "load", gameKind, config, tree })}
+                  onLoad={(gameKind, config, tree) =>
+                    dispatch({ tag: "load", gameKind, config, tree })
+                  }
                 />
               </Show>
               <div id="banner" style={{ color: summary()?.bannerColor }}>
                 {summary()?.bannerText ?? ""}
               </div>
-              <Show when={state().aiMove.status === "error" && state().aiMoveFailedNodeId === state().tree.currentId}>
+              <Show
+                when={
+                  state().aiMove.status === "error" &&
+                  state().aiMoveFailedNodeId === state().tree.currentId
+                }
+              >
                 <div id="ai-move-error" style={{ color: "#c0392b" }}>
                   AI move failed: {state().aiMove.error}
                 </div>
@@ -440,7 +489,12 @@ export const GameShell: Component<{
                 busy={busy()}
                 hoveredMove={hoveredMove()}
                 onSelectPreset={(preset) => dispatch({ tag: "setPreset", preset })}
-                onAnalyze={() => dispatch({ tag: "analysis", action: { tag: "request", strategy: presetStrategy(analysisPreset()) } })}
+                onAnalyze={() =>
+                  dispatch({
+                    tag: "analysis",
+                    action: { tag: "request", strategy: presetStrategy(analysisPreset()) },
+                  })
+                }
                 onHoverMove={setHoveredMove}
               />
             </Show>
@@ -451,10 +505,7 @@ export const GameShell: Component<{
       {/* Dialog is outside the mod() Show wrapper so it stays open across
           game-kind switches even while the new module is still loading. */}
       <Show when={dialogOpen()}>
-        <dialog
-          id="new-game-dialog"
-          ref={(el) => queueMicrotask(() => el.showModal())}
-        >
+        <dialog id="new-game-dialog" ref={(el) => queueMicrotask(() => el.showModal())}>
           <form
             id="new-game-form"
             onSubmit={(e) => {
@@ -466,7 +517,10 @@ export const GameShell: Component<{
             <Show when={Object.keys(GAME_MODULES).length > 1}>
               <label>
                 Game
-                <select value={state().gameKind} onChange={(e) => onGameKindChange(e.currentTarget.value)}>
+                <select
+                  value={state().gameKind}
+                  onChange={(e) => onGameKindChange(e.currentTarget.value)}
+                >
                   <For each={Object.keys(GAME_MODULES)}>
                     {(kind) => {
                       const label = state().gamesInfo.find((g) => g.kind === kind)?.label ?? kind;
@@ -477,7 +531,13 @@ export const GameShell: Component<{
               </label>
             </Show>
             <Show when={mod()?.NewGameFields}>
-              {(Fields) => <Dynamic component={Fields()} config={pendingConfig()} onChange={setPendingConfig} />}
+              {(Fields) => (
+                <Dynamic
+                  component={Fields()}
+                  config={pendingConfig()}
+                  onChange={setPendingConfig}
+                />
+              )}
             </Show>
             <For each={GAME_META[state().gameKind]?.players ?? []}>
               {(player) => (
@@ -493,23 +553,32 @@ export const GameShell: Component<{
                           if (value === "custom") {
                             const sch = schema();
                             if (!sch) return s;
-                            return { ...s, [player]: { kind: "custom", spec: defaultCustomStrategySpec(sch) } };
+                            return {
+                              ...s,
+                              [player]: { kind: "custom", spec: defaultCustomStrategySpec(sch) },
+                            };
                           }
                           return { ...s, [player]: { kind: "preset", id: value } };
                         });
                       }}
                     >
                       <option value="human">Human</option>
-                      <For each={presetOptions()}>{(preset) => <option value={preset.id}>AI: {preset.label}</option>}</For>
+                      <For each={presetOptions()}>
+                        {(preset) => <option value={preset.id}>AI: {preset.label}</option>}
+                      </For>
                       <option value="custom" disabled={!schema()}>
                         Custom…
                       </option>
                     </select>
                   </label>
-                  <Show when={(() => {
-                    const control = pendingSeats()[player];
-                    return control !== "human" && control?.kind === "custom" ? control : undefined;
-                  })()}>
+                  <Show
+                    when={(() => {
+                      const control = pendingSeats()[player];
+                      return control !== "human" && control?.kind === "custom"
+                        ? control
+                        : undefined;
+                    })()}
+                  >
                     {(custom) => (
                       <Show when={schema()}>
                         {(sch) => (
@@ -517,7 +586,9 @@ export const GameShell: Component<{
                             schema={sch()}
                             config={custom().spec}
                             tunerInfo={tunerInfo() ?? null}
-                            onChange={(spec) => setPendingSeats((s) => ({ ...s, [player]: { kind: "custom", spec } }))}
+                            onChange={(spec) =>
+                              setPendingSeats((s) => ({ ...s, [player]: { kind: "custom", spec } }))
+                            }
                           />
                         )}
                       </Show>

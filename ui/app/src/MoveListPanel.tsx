@@ -39,7 +39,10 @@ export const MoveListPanel: Component<{
     return chain.map((n, i) => ({
       node: n,
       ply: i,
-      label: i === 0 ? "Start" : (props.formatMove?.(n.move as M, chain[i - 1]!.state) ?? JSON.stringify(n.move)),
+      label:
+        i === 0
+          ? "Start"
+          : (props.formatMove?.(n.move as M, chain[i - 1]!.state) ?? JSON.stringify(n.move)),
     }));
   });
 
@@ -58,7 +61,11 @@ export const MoveListPanel: Component<{
         <For each={path()}>
           {(row) => (
             <li>
-              <button class="move-row" classList={{ current: row.node.id === props.tree.currentId }} onClick={() => jump(row.node.id)}>
+              <button
+                class="move-row"
+                classList={{ current: row.node.id === props.tree.currentId }}
+                onClick={() => jump(row.node.id)}
+              >
                 <Show when={row.ply > 0}>
                   <span class="ply">{row.ply}.</span>
                 </Show>
@@ -78,10 +85,16 @@ export const MoveListPanel: Component<{
                       {(childId) => {
                         const child = props.tree.nodes[childId];
                         if (!child) return null;
-                        const label = props.formatMove?.(child.move as M, row.node.state) ?? JSON.stringify(child.move);
+                        const label =
+                          props.formatMove?.(child.move as M, row.node.state) ??
+                          JSON.stringify(child.move);
                         return (
                           <li>
-                            <button class="branch-option" classList={{ active: path().some((r) => r.node.id === childId) }} onClick={() => jump(childId)}>
+                            <button
+                              class="branch-option"
+                              classList={{ active: path().some((r) => r.node.id === childId) }}
+                              onClick={() => jump(childId)}
+                            >
                               {label}
                             </button>
                           </li>

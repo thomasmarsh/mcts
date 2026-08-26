@@ -48,7 +48,12 @@ export const TttRenderer: Component<GameRendererProps<GameState, Move, GameView>
                 onMouseEnter={() => legal() && props.onHover(cell)}
                 onMouseLeave={() => props.onHover(null)}
               >
-                {mark ?? (legal() && props.hoveredMove === cell ? <span class="ttt-ghost">{props.state.turn}</span> : "")}
+                {mark ??
+                  (legal() && props.hoveredMove === cell ? (
+                    <span class="ttt-ghost">{props.state.turn}</span>
+                  ) : (
+                    ""
+                  ))}
               </button>
             );
           }}

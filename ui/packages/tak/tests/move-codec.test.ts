@@ -41,19 +41,49 @@ describe("parsePtn", () => {
   });
 
   it("parses a single-piece spread with no count/drop suffix", () => {
-    expect(parsePtn("a1>", 5)).toEqual({ tag: "Spread", square: 0, direction: "East", drop_sizes: [1] });
+    expect(parsePtn("a1>", 5)).toEqual({
+      tag: "Spread",
+      square: 0,
+      direction: "East",
+      drop_sizes: [1],
+    });
   });
 
   it("parses a multi-piece spread: take count + drop sizes", () => {
     // take 3 from c3 (square 12 on a 5x5 board) moving east, dropping 1 then 2.
-    expect(parsePtn("3c3>12", 5)).toEqual({ tag: "Spread", square: 12, direction: "East", drop_sizes: [1, 2] });
+    expect(parsePtn("3c3>12", 5)).toEqual({
+      tag: "Spread",
+      square: 12,
+      direction: "East",
+      drop_sizes: [1, 2],
+    });
   });
 
   it("parses spreads in all four directions", () => {
-    expect(parsePtn("a1+", 5)).toEqual({ tag: "Spread", square: 0, direction: "North", drop_sizes: [1] });
-    expect(parsePtn("a1>", 5)).toEqual({ tag: "Spread", square: 0, direction: "East", drop_sizes: [1] });
-    expect(parsePtn("a1-", 5)).toEqual({ tag: "Spread", square: 0, direction: "South", drop_sizes: [1] });
-    expect(parsePtn("a1<", 5)).toEqual({ tag: "Spread", square: 0, direction: "West", drop_sizes: [1] });
+    expect(parsePtn("a1+", 5)).toEqual({
+      tag: "Spread",
+      square: 0,
+      direction: "North",
+      drop_sizes: [1],
+    });
+    expect(parsePtn("a1>", 5)).toEqual({
+      tag: "Spread",
+      square: 0,
+      direction: "East",
+      drop_sizes: [1],
+    });
+    expect(parsePtn("a1-", 5)).toEqual({
+      tag: "Spread",
+      square: 0,
+      direction: "South",
+      drop_sizes: [1],
+    });
+    expect(parsePtn("a1<", 5)).toEqual({
+      tag: "Spread",
+      square: 0,
+      direction: "West",
+      drop_sizes: [1],
+    });
   });
 });
 
@@ -85,7 +115,9 @@ describe("notation (ParsedMove -> PTN round-trip)", () => {
   });
 
   it("formats a single-piece spread with no count/drop suffix", () => {
-    expect(notation({ tag: "Spread", square: 0, direction: "East", drop_sizes: [1] }, 5)).toBe("a1>");
+    expect(notation({ tag: "Spread", square: 0, direction: "East", drop_sizes: [1] }, 5)).toBe(
+      "a1>",
+    );
   });
 
   it("formats a multi-piece spread: take-count prefix + per-square drop suffix", () => {

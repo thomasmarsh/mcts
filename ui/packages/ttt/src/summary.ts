@@ -9,8 +9,18 @@ import type { GameState, GameView, Move } from "./types.js";
 export function summarize(view: GameView): GameSummary {
   if (view.terminal) {
     return view.winner
-      ? { turnText: "Game over", bannerText: `${view.winner} wins!`, lines: [], currentPlayer: null }
-      : { turnText: "Game over", bannerText: "No moves left — draw.", lines: [], currentPlayer: null };
+      ? {
+          turnText: "Game over",
+          bannerText: `${view.winner} wins!`,
+          lines: [],
+          currentPlayer: null,
+        }
+      : {
+          turnText: "Game over",
+          bannerText: "No moves left — draw.",
+          lines: [],
+          currentPlayer: null,
+        };
   }
   return { turnText: `${view.turn} to move`, bannerText: "", lines: [], currentPlayer: view.turn };
 }

@@ -13,7 +13,11 @@ export interface SizeConfig {
 }
 
 function isSizeConfig(config: unknown): config is SizeConfig {
-  return !!config && typeof config === "object" && typeof (config as { size?: unknown }).size === "number";
+  return (
+    !!config &&
+    typeof config === "object" &&
+    typeof (config as { size?: unknown }).size === "number"
+  );
 }
 
 /** Builds a `NewGameFields` component offering `sizes` as board-size

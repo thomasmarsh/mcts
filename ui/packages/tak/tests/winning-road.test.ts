@@ -14,7 +14,12 @@ function emptyCells(n: number): (ParsedStack | null)[] {
   return Array.from({ length: n * n }, () => null);
 }
 
-function place(cells: (ParsedStack | null)[], square: number, color: Player, topKind: "Flat" | "Wall" | "Cap" = "Flat"): void {
+function place(
+  cells: (ParsedStack | null)[],
+  square: number,
+  color: Player,
+  topKind: "Flat" | "Wall" | "Cap" = "Flat",
+): void {
   cells[square] = { colors: [color], topKind };
 }
 

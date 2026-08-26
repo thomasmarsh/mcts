@@ -26,11 +26,7 @@ import type { BenchEnv, RunSummary } from "@mcts/bench";
 /** Create a seeded test store with a mocked bench env. */
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
   const env = createMockBenchEnv(envOverrides);
-  const store = createStore<BenchState, BenchAction>(
-    initialBenchState(),
-    benchReducer,
-    env,
-  );
+  const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, env);
   // Pre-fetch kinds and runs so the UI shows data immediately.
   store.dispatch({ tag: "kinds", action: { tag: "request" } });
   store.dispatch({ tag: "runs", action: { tag: "request" } });
@@ -174,15 +170,21 @@ describe("RunDetailPanel", () => {
   it("opens the read-only spectator and deletes a completed run through the env", async () => {
     const deleteRun = vi.fn(() => Effect.send(undefined));
     const { store } = createTestStore({ deleteRun });
-    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
-      <div data-testid="spectator">{props.runId}:{props.game}:{props.kind}:{String(props.live)}</div>
+    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (
+      props,
+    ) => (
+      <div data-testid="spectator">
+        {props.runId}:{props.game}:{props.kind}:{String(props.live)}
+      </div>
     );
     render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "openRun", runId: FAKE_RUN_ID });
 
     await vi.waitFor(() => expect(screen.getByText("Browse games")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Browse games"));
-    expect(screen.getByTestId("spectator")).toHaveTextContent(`${FAKE_RUN_ID}:druid:round_robin:false`);
+    expect(screen.getByTestId("spectator")).toHaveTextContent(
+      `${FAKE_RUN_ID}:druid:round_robin:false`,
+    );
 
     fireEvent.click(screen.getByText("Delete"));
     fireEvent.click(screen.getByText("Confirm delete"));
@@ -192,13 +194,19 @@ describe("RunDetailPanel", () => {
 
   it("keeps a modern tuner attempt focused on its logical session", async () => {
     const { store } = createTestStore();
-    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (props) => (
-      <div data-testid="spectator">{props.runId}:{props.kind}</div>
+    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (
+      props,
+    ) => (
+      <div data-testid="spectator">
+        {props.runId}:{props.kind}
+      </div>
     );
     render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
-    await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument());
+    await vi.waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument(),
+    );
     expect(screen.queryByText("3 / 50 (6%) complete")).not.toBeInTheDocument();
     expect(screen.queryByText("Browse games")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open tuning session" }));

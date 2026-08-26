@@ -19,7 +19,11 @@ import {
   trialPageSummary,
   trialTrajectories,
 } from "../src/tuning/analysis-models.js";
-import type { TuningAnalysisOverview, TuningTrialDetailView, TuningTrialPage } from "../src/types.js";
+import type {
+  TuningAnalysisOverview,
+  TuningTrialDetailView,
+  TuningTrialPage,
+} from "../src/types.js";
 
 const overview: TuningAnalysisOverview = {
   schema_version: 1,
@@ -27,14 +31,31 @@ const overview: TuningAnalysisOverview = {
   objective: { metric: "score", direction: "maximize", complete_trials_only: true },
   cursor: { session_sequence: 4 },
   coverage: {
-    trials: { total: 5, queued: 1, running: 1, terminal: 3, completed: 2, failed: 1, pruned: 0, cancelled: 0 },
+    trials: {
+      total: 5,
+      queued: 1,
+      running: 1,
+      terminal: 3,
+      completed: 2,
+      failed: 1,
+      pruned: 0,
+      cancelled: 0,
+    },
     reports: 4,
     pairs: { total: 6, running: 1, complete: 4, failed: 1, unmatched_pool_revisions: 2 },
     points: { total: 8, returned: 5, sampled: true },
   },
   control: {
     version: 0,
-    continuation: { target_trial_count: 5, consumed_trial_count: 3, remaining_trial_count: 2, active_attempt_id: null, launch_reservation: null, stop_attempt_id: null, recovery_required: false },
+    continuation: {
+      target_trial_count: 5,
+      consumed_trial_count: 3,
+      remaining_trial_count: 2,
+      active_attempt_id: null,
+      launch_reservation: null,
+      stop_attempt_id: null,
+      recovery_required: false,
+    },
     allowed_commands: [],
   },
   bracket_resources: [
@@ -47,16 +68,98 @@ const overview: TuningAnalysisOverview = {
     { outcome: "complete", reason: "max_pairs", pruning_exempt: true, reports: 0 },
   ],
   points: [
-    { trial_id: "trial-2", trial_number: 2, trial_status: "complete", resource: 10, rating: { mu: 30, sigma: 2 }, score: 24, outcome: "complete", reason: "max_pairs", pruning_exempt: false, bracket_id: "bracket-10", rung_resource: 10 },
-    { trial_id: "trial-1", trial_number: 1, trial_status: "pruned", resource: 2, rating: { mu: 20, sigma: 3 }, score: 11, outcome: "continue", reason: "startup_exempt", pruning_exempt: true, bracket_id: "bracket-2", rung_resource: 2 },
-    { trial_id: "trial-1", trial_number: 1, trial_status: "pruned", resource: 10, rating: { mu: 22, sigma: 3 }, score: 13, outcome: "prune", reason: "hyperband_prune", pruning_exempt: false, bracket_id: "bracket-10", rung_resource: 10 },
-    { trial_id: "trial-tie", trial_number: 4, trial_status: "complete", resource: 10, rating: { mu: 30, sigma: 2 }, score: 24, outcome: "complete", reason: "max_pairs", pruning_exempt: false, bracket_id: "bracket-10", rung_resource: 10 },
-    { trial_id: "trial-3", trial_number: 3, trial_status: "failed", resource: 3, rating: { mu: 10, sigma: 4 }, score: -2, outcome: "failed", reason: "worker_failed", pruning_exempt: false, bracket_id: null, rung_resource: null },
+    {
+      trial_id: "trial-2",
+      trial_number: 2,
+      trial_status: "complete",
+      resource: 10,
+      rating: { mu: 30, sigma: 2 },
+      score: 24,
+      outcome: "complete",
+      reason: "max_pairs",
+      pruning_exempt: false,
+      bracket_id: "bracket-10",
+      rung_resource: 10,
+    },
+    {
+      trial_id: "trial-1",
+      trial_number: 1,
+      trial_status: "pruned",
+      resource: 2,
+      rating: { mu: 20, sigma: 3 },
+      score: 11,
+      outcome: "continue",
+      reason: "startup_exempt",
+      pruning_exempt: true,
+      bracket_id: "bracket-2",
+      rung_resource: 2,
+    },
+    {
+      trial_id: "trial-1",
+      trial_number: 1,
+      trial_status: "pruned",
+      resource: 10,
+      rating: { mu: 22, sigma: 3 },
+      score: 13,
+      outcome: "prune",
+      reason: "hyperband_prune",
+      pruning_exempt: false,
+      bracket_id: "bracket-10",
+      rung_resource: 10,
+    },
+    {
+      trial_id: "trial-tie",
+      trial_number: 4,
+      trial_status: "complete",
+      resource: 10,
+      rating: { mu: 30, sigma: 2 },
+      score: 24,
+      outcome: "complete",
+      reason: "max_pairs",
+      pruning_exempt: false,
+      bracket_id: "bracket-10",
+      rung_resource: 10,
+    },
+    {
+      trial_id: "trial-3",
+      trial_number: 3,
+      trial_status: "failed",
+      resource: 3,
+      rating: { mu: 10, sigma: 4 },
+      score: -2,
+      outcome: "failed",
+      reason: "worker_failed",
+      pruning_exempt: false,
+      bracket_id: null,
+      rung_resource: null,
+    },
   ],
   best: { score: 24, trial_ids: ["trial-2", "trial-tie"] },
   pool_revisions: [
-    { pool_snapshot_fingerprint: "rev-3", display_ordinal: 3, observed_at: "2026-08-23T12:03:00Z", pair_count: 2, anchors: [{ anchor_ordinal: 1, anchor_id: "anchor-3", config: { family: "ucb1" }, rating: { mu: 20, sigma: 2 }, provenance: "candidate", insertion_reason: "promotion", source_trial_id: "trial-2" }] },
-    { pool_snapshot_fingerprint: "rev-1", display_ordinal: 1, observed_at: "2026-08-23T12:01:00Z", pair_count: 1, anchors: [] },
+    {
+      pool_snapshot_fingerprint: "rev-3",
+      display_ordinal: 3,
+      observed_at: "2026-08-23T12:03:00Z",
+      pair_count: 2,
+      anchors: [
+        {
+          anchor_ordinal: 1,
+          anchor_id: "anchor-3",
+          config: { family: "ucb1" },
+          rating: { mu: 20, sigma: 2 },
+          provenance: "candidate",
+          insertion_reason: "promotion",
+          source_trial_id: "trial-2",
+        },
+      ],
+    },
+    {
+      pool_snapshot_fingerprint: "rev-1",
+      display_ordinal: 1,
+      observed_at: "2026-08-23T12:01:00Z",
+      pair_count: 1,
+      anchors: [],
+    },
   ],
 };
 
@@ -67,8 +170,48 @@ const page: TuningTrialPage = {
   next_cursor: "next",
   cursor: { session_sequence: 4 },
   trials: [
-    { trial_id: "trial-2", trial_number: 2, attempt_id: "attempt", state: "complete", reason: "max_pairs", rating: { mu: 30, sigma: 2 }, score: 24, family: "ucb1", config_summary: "", bracket_id: "bracket-10", resource: 10, pair_count: 2, wins: 3, losses: 1, draws: 2, elapsed_ms: 40, search_iterations_total: 100, search_move_time_ms: 12, has_detail: true },
-    { trial_id: "trial-1", trial_number: 1, attempt_id: "attempt", state: "pruned", reason: "hyperband_prune", rating: { mu: 20, sigma: 3 }, score: 11, family: "rave", config_summary: "", bracket_id: "bracket-2", resource: 2, pair_count: 1, wins: 1, losses: 2, draws: 0, elapsed_ms: 20, search_iterations_total: 25, search_move_time_ms: 7, has_detail: true },
+    {
+      trial_id: "trial-2",
+      trial_number: 2,
+      attempt_id: "attempt",
+      state: "complete",
+      reason: "max_pairs",
+      rating: { mu: 30, sigma: 2 },
+      score: 24,
+      family: "ucb1",
+      config_summary: "",
+      bracket_id: "bracket-10",
+      resource: 10,
+      pair_count: 2,
+      wins: 3,
+      losses: 1,
+      draws: 2,
+      elapsed_ms: 40,
+      search_iterations_total: 100,
+      search_move_time_ms: 12,
+      has_detail: true,
+    },
+    {
+      trial_id: "trial-1",
+      trial_number: 1,
+      attempt_id: "attempt",
+      state: "pruned",
+      reason: "hyperband_prune",
+      rating: { mu: 20, sigma: 3 },
+      score: 11,
+      family: "rave",
+      config_summary: "",
+      bracket_id: "bracket-2",
+      resource: 2,
+      pair_count: 1,
+      wins: 1,
+      losses: 2,
+      draws: 0,
+      elapsed_ms: 20,
+      search_iterations_total: 25,
+      search_move_time_ms: 7,
+      has_detail: true,
+    },
   ],
 };
 
@@ -81,13 +224,18 @@ describe("tuning analysis models", () => {
       ["bracket-10", [10], false],
       ["empty", [], true],
     ]);
-    expect(resourceDomains(overview, ["empty"])).toMatchObject({ shared: [2, 3, 10], local: facets });
+    expect(resourceDomains(overview, ["empty"])).toMatchObject({
+      shared: [2, 3, 10],
+      local: facets,
+    });
   });
 
   it("exposes sampled point metadata, exact scores, best ties, and selection without mutating snapshots", () => {
     const rows = exactPlotRows(overview, "trial-1");
     expect(analysisSampleMetadata(overview)).toEqual({ total: 8, returned: 5, sampled: true });
-    expect(rows.map((row) => [row.trial_id, row.resource, row.score, row.best, row.selected])).toEqual([
+    expect(
+      rows.map((row) => [row.trial_id, row.resource, row.score, row.best, row.selected]),
+    ).toEqual([
       ["trial-1", 2, 11, false, true],
       ["trial-1", 10, 13, false, true],
       ["trial-2", 10, 24, true, false],
@@ -95,11 +243,22 @@ describe("tuning analysis models", () => {
       ["trial-tie", 10, 24, true, false],
     ]);
     expect(overview.points[0]).not.toHaveProperty("selected");
-    expect(highlightSelectedTrial(page.trials, "trial-2").map((row) => row.selected)).toEqual([true, false]);
+    expect(highlightSelectedTrial(page.trials, "trial-2").map((row) => row.selected)).toEqual([
+      true,
+      false,
+    ]);
   });
 
   it("models every decision group and known or unknown state/reason symbols", () => {
-    expect(decisionGroupRows(overview).map((row) => [row.outcome, row.reason, row.reports, row.outcomeSymbol.symbol, row.reasonSymbol.symbol])).toEqual([
+    expect(
+      decisionGroupRows(overview).map((row) => [
+        row.outcome,
+        row.reason,
+        row.reports,
+        row.outcomeSymbol.symbol,
+        row.reasonSymbol.symbol,
+      ]),
+    ).toEqual([
       ["complete", "max_pairs", 0, "✓", "✓"],
       ["prune", "hyperband_prune", 1, "↯", "↯"],
     ]);
@@ -108,13 +267,25 @@ describe("tuning analysis models", () => {
   });
 
   it("sorts funnel rungs and terminates each trajectory at its final reported point", () => {
-    expect(rungFunnelRows(overview, "bracket-10").map((row) => [row.bracket, row.resource, row.selected])).toEqual([
+    expect(
+      rungFunnelRows(overview, "bracket-10").map((row) => [
+        row.bracket,
+        row.resource,
+        row.selected,
+      ]),
+    ).toEqual([
       ["Unassigned", 3, false],
       ["bracket-2", 2, false],
       ["bracket-10", 10, true],
     ]);
     const trajectories = trialTrajectories(overview, "trial-1");
-    expect(trajectories.map((path) => [path.trialId, path.reportCount, path.points.map((point) => point.terminal)])).toEqual([
+    expect(
+      trajectories.map((path) => [
+        path.trialId,
+        path.reportCount,
+        path.points.map((point) => point.terminal),
+      ]),
+    ).toEqual([
       ["trial-1", 2, [false, true]],
       ["trial-2", 1, [true]],
       ["trial-3", 1, [true]],
@@ -138,9 +309,12 @@ describe("tuning analysis models", () => {
     };
     const funnel = pruningFunnelRows(allReasons);
     expect(funnel.map((row) => [row.key, row.reason, row.reports])).toEqual([
-      ["below_minimum", "below_min_pairs", 1], ["startup_exempt", "startup_exempt", 2],
-      ["pruning_disabled", "pruning_disabled", 3], ["continued", "hyperband_keep", 4],
-      ["pruned", "hyperband_prune", 5], ["confidence_completed", "confidence", 6],
+      ["below_minimum", "below_min_pairs", 1],
+      ["startup_exempt", "startup_exempt", 2],
+      ["pruning_disabled", "pruning_disabled", 3],
+      ["continued", "hyperband_keep", 4],
+      ["pruned", "hyperband_prune", 5],
+      ["confidence_completed", "confidence", 6],
       ["max_completed", "max_pairs", 7],
     ]);
     expect(funnel.reduce((total, row) => total + row.reports, 0)).toBe(allReasons.coverage.reports);
@@ -163,43 +337,152 @@ describe("tuning analysis models", () => {
       pairCount: 3,
       anchorCount: 1,
       unmatchedPoolRevisions: 2,
-      revisions: [{ display_ordinal: 1, gapBefore: [] }, { display_ordinal: 3, gapBefore: [2] }],
+      revisions: [
+        { display_ordinal: 1, gapBefore: [] },
+        { display_ordinal: 3, gapBefore: [2] },
+      ],
     });
     const trial: Pick<TuningTrialDetailView, "pairs"> = {
-      pairs: [{ pair_id: "pair-2", pair_index: 2, state: "complete", seed: 1, round: 1, opponent: { anchor_id: "anchor", config: {}, mu: 17, sigma: 1, label: null, provenance: null }, pool_snapshot_fingerprint: "rev", pool_revision: null, rating_before: { mu: 20, sigma: 3 }, rating_after: null, score: 1, failure: null, games: [] }],
+      pairs: [
+        {
+          pair_id: "pair-2",
+          pair_index: 2,
+          state: "complete",
+          seed: 1,
+          round: 1,
+          opponent: {
+            anchor_id: "anchor",
+            config: {},
+            mu: 17,
+            sigma: 1,
+            label: null,
+            provenance: null,
+          },
+          pool_snapshot_fingerprint: "rev",
+          pool_revision: null,
+          rating_before: { mu: 20, sigma: 3 },
+          rating_after: null,
+          score: 1,
+          failure: null,
+          games: [],
+        },
+      ],
     };
-    expect(opponentDistances(trial)).toEqual([{
-      pairId: "pair-2", pairIndex: 2, opponentId: "anchor", candidateMu: 20, opponentMu: 17,
-      deltaMu: 3, absoluteMuDistance: 3, candidateSigma: 3, opponentSigma: 1, deltaSigma: 2,
-    }]);
+    expect(opponentDistances(trial)).toEqual([
+      {
+        pairId: "pair-2",
+        pairIndex: 2,
+        opponentId: "anchor",
+        candidateMu: 20,
+        opponentMu: 17,
+        deltaMu: 3,
+        absoluteMuDistance: 3,
+        candidateSigma: 3,
+        opponentSigma: 1,
+        deltaSigma: 2,
+      },
+    ]);
   });
 
   it("keeps immutable anchor snapshots distinct while deriving intervals and selected-trial ratings", () => {
     const historical = {
       ...overview,
       pool_revisions: [
-        { pool_snapshot_fingerprint: "rev-3", display_ordinal: 3, observed_at: "", pair_count: 2, anchors: [
-          { anchor_ordinal: 2, anchor_id: "anchor-a", config: { family: "rave" }, rating: { mu: 25, sigma: 1 }, provenance: "candidate", insertion_reason: "promotion", source_trial_id: "trial-2" },
-          { anchor_ordinal: 1, anchor_id: "anchor-b", config: { family: "ucb" }, rating: { mu: 16, sigma: 3 }, provenance: "baseline", insertion_reason: "seed", source_trial_id: null },
-        ] },
-        { pool_snapshot_fingerprint: "rev-1", display_ordinal: 1, observed_at: "", pair_count: 1, anchors: [
-          { anchor_ordinal: 1, anchor_id: "anchor-a", config: { family: "rave" }, rating: { mu: 20, sigma: 2 }, provenance: "candidate", insertion_reason: "promotion", source_trial_id: "trial-1" },
-        ] },
+        {
+          pool_snapshot_fingerprint: "rev-3",
+          display_ordinal: 3,
+          observed_at: "",
+          pair_count: 2,
+          anchors: [
+            {
+              anchor_ordinal: 2,
+              anchor_id: "anchor-a",
+              config: { family: "rave" },
+              rating: { mu: 25, sigma: 1 },
+              provenance: "candidate",
+              insertion_reason: "promotion",
+              source_trial_id: "trial-2",
+            },
+            {
+              anchor_ordinal: 1,
+              anchor_id: "anchor-b",
+              config: { family: "ucb" },
+              rating: { mu: 16, sigma: 3 },
+              provenance: "baseline",
+              insertion_reason: "seed",
+              source_trial_id: null,
+            },
+          ],
+        },
+        {
+          pool_snapshot_fingerprint: "rev-1",
+          display_ordinal: 1,
+          observed_at: "",
+          pair_count: 1,
+          anchors: [
+            {
+              anchor_ordinal: 1,
+              anchor_id: "anchor-a",
+              config: { family: "rave" },
+              rating: { mu: 20, sigma: 2 },
+              provenance: "candidate",
+              insertion_reason: "promotion",
+              source_trial_id: "trial-1",
+            },
+          ],
+        },
       ],
     };
     const anchors = ladderAnchorRows(historical, null, "rev-3:anchor-a");
-    expect(anchors.map((row) => [row.key, row.lower, row.upper, row.historyOrdinals, row.selected])).toEqual([
+    expect(
+      anchors.map((row) => [row.key, row.lower, row.upper, row.historyOrdinals, row.selected]),
+    ).toEqual([
       ["rev-1:anchor-a", 16, 24, [1, 3], false],
       ["rev-3:anchor-b", 10, 22, [3], false],
       ["rev-3:anchor-a", 23, 27, [1, 3], true],
     ]);
-    expect(ladderAnchorRows(historical, 3).map((row) => row.anchorId)).toEqual(["anchor-b", "anchor-a"]);
-    const candidate = candidateRatingTrajectory({ reports: [
-      { completed_pairs: 4, rating: { mu: 24, sigma: 1 }, score: 21, score_formula_version: 1, conservative_k: 3, decision: { outcome: "complete", reason: "max_pairs", pruning_exempt: false, bracket_id: null, rung_resource: null }, reported_at: "" },
-      { completed_pairs: 2, rating: { mu: 18, sigma: 2 }, score: 12, score_formula_version: 1, conservative_k: 3, decision: { outcome: "continue", reason: "hyperband_keep", pruning_exempt: false, bracket_id: null, rung_resource: null }, reported_at: "" },
-    ] });
+    expect(ladderAnchorRows(historical, 3).map((row) => row.anchorId)).toEqual([
+      "anchor-b",
+      "anchor-a",
+    ]);
+    const candidate = candidateRatingTrajectory({
+      reports: [
+        {
+          completed_pairs: 4,
+          rating: { mu: 24, sigma: 1 },
+          score: 21,
+          score_formula_version: 1,
+          conservative_k: 3,
+          decision: {
+            outcome: "complete",
+            reason: "max_pairs",
+            pruning_exempt: false,
+            bracket_id: null,
+            rung_resource: null,
+          },
+          reported_at: "",
+        },
+        {
+          completed_pairs: 2,
+          rating: { mu: 18, sigma: 2 },
+          score: 12,
+          score_formula_version: 1,
+          conservative_k: 3,
+          decision: {
+            outcome: "continue",
+            reason: "hyperband_keep",
+            pruning_exempt: false,
+            bracket_id: null,
+            rung_resource: null,
+          },
+          reported_at: "",
+        },
+      ],
+    });
     expect(candidate.map((point) => point.resource)).toEqual([2, 4]);
-    expect(ladderMuDomain(anchors, candidate)).toEqual(expect.arrayContaining([expect.any(Number), expect.any(Number)]));
+    expect(ladderMuDomain(anchors, candidate)).toEqual(
+      expect.arrayContaining([expect.any(Number), expect.any(Number)]),
+    );
     expect(ladderMuDomain(anchors, candidate)[0]).toBeLessThanOrEqual(10);
     expect(ladderMuDomain(anchors, candidate)[1]).toBeGreaterThanOrEqual(27);
   });

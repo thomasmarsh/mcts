@@ -9,7 +9,18 @@ import { TakRenderer } from "./TakRenderer.js";
 import type { GameState, GameView, Move } from "./types.js";
 
 export * from "./types.js";
-export { coordFor, footprintFor, isCapPlacement, isFlatPlacement, isPlacement, isWallPlacement, notation, parsePtn, type ParsedMove, type Direction } from "./move-codec.js";
+export {
+  coordFor,
+  footprintFor,
+  isCapPlacement,
+  isFlatPlacement,
+  isPlacement,
+  isWallPlacement,
+  notation,
+  parsePtn,
+  type ParsedMove,
+  type Direction,
+} from "./move-codec.js";
 export { parseTps, type ParsedStack, type ParsedTps } from "./tps-parser.js";
 export { TakRenderer } from "./TakRenderer.js";
 export { NewGameFields } from "./NewGameFields.js";

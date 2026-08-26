@@ -35,7 +35,8 @@ export interface AnalysisAction<M> {
 }
 
 /** Why a final search report is unavailable or partial. */
-export type SearchReportReason = "strategy_unsupported" | "search_not_run" | "root_parallel_pv_single_tree";
+export type SearchReportReason =
+  "strategy_unsupported" | "search_not_run" | "root_parallel_pv_single_tree";
 
 /** The condition that stopped the most recent search. */
 export type SearchTermination = "iterations" | "time" | "solved" | "unknown";
@@ -99,7 +100,8 @@ export interface UnavailableSearchReport<M> extends SearchReportBase<M> {
 }
 
 /** Versioned final-search evidence, discriminated by its availability. */
-export type SearchReport<M> = AvailableSearchReport<M> | PartialSearchReport<M> | UnavailableSearchReport<M>;
+export type SearchReport<M> =
+  AvailableSearchReport<M> | PartialSearchReport<M> | UnavailableSearchReport<M>;
 
 /** `POST /api/games/{kind}/analyze` response, mirroring `server::adapters::Analysis`. */
 export interface Analysis<M> {
@@ -153,11 +155,7 @@ export type RaveUcb =
   | { kind: "ucb1_tuned"; exploration_constant: number };
 
 /** `mcts::simulate::DecisiveMoveMode`'s wire form. */
-export type DecisiveMoveMode =
-  | "win"
-  | "win_loss"
-  | "win_loss_draw"
-  | "anti_decisive";
+export type DecisiveMoveMode = "win" | "win_loss" | "win_loss_draw" | "anti_decisive";
 
 /** `config_ir::BaseSelectSpec` -- the families an `EpsilonGreedy` may wrap. */
 export type BaseSelectSpec =
@@ -172,7 +170,8 @@ export type BaseSelectSpec =
 
 /** `config_ir::SelectSpec` -- `BaseSelectSpec`'s families plus the
  * `epsilon_greedy` wrapper. */
-export type SelectSpec = BaseSelectSpec | { kind: "epsilon_greedy"; epsilon: number; inner: BaseSelectSpec };
+export type SelectSpec =
+  BaseSelectSpec | { kind: "epsilon_greedy"; epsilon: number; inner: BaseSelectSpec };
 
 /** `config_ir::BaseSimulateSpec` -- the families `epsilon_greedy`/
  * `decisive_move` may wrap. */
@@ -193,7 +192,12 @@ export type SimulateSpec =
   | { kind: "epsilon_greedy"; epsilon: number; inner: BaseSimulateSpec }
   | { kind: "decisive_move"; mode: DecisiveMoveMode; inner: BaseSimulateSpec }
   | { kind: "decisive_move_mast"; mode: DecisiveMoveMode; epsilon: number }
-  | { kind: "decisive_move_nst"; mode: DecisiveMoveMode; epsilon: number; nst_backoff_threshold: number }
+  | {
+      kind: "decisive_move_nst";
+      mode: DecisiveMoveMode;
+      epsilon: number;
+      nst_backoff_threshold: number;
+    }
   | { kind: "meta_mcts"; iterations: number };
 
 /** `config_ir::BackpropSpec`. `bayes_gaussian`/`bayes_numeric` are the two
@@ -204,7 +208,13 @@ export type SimulateSpec =
 export type BackpropSpec =
   | { kind: "classic" }
   | { kind: "bayes_gaussian"; prior_variance: number; obs_variance: number }
-  | { kind: "bayes_numeric"; prior_variance: number; obs_variance: number; value_lo: number; value_hi: number };
+  | {
+      kind: "bayes_numeric";
+      prior_variance: number;
+      obs_variance: number;
+      value_lo: number;
+      value_hi: number;
+    };
 
 /** `config_ir::FinalActionSpec`. */
 export type FinalActionSpec =
@@ -243,7 +253,8 @@ export interface CustomStrategySpec {
  * `server::main::AiMoveRequest`/`AnalyzeRequest`'s actual shape (`preset`
  * stays a required sentinel string, `"custom"`, alongside `custom` --  see
  * that struct's doc comment). */
-export type AiStrategyRef = { kind: "preset"; id: string } | { kind: "custom"; spec: CustomStrategySpec };
+export type AiStrategyRef =
+  { kind: "preset"; id: string } | { kind: "custom"; spec: CustomStrategySpec };
 
 /** A field's leaf shape in `AxisSchema` -- mirrors
  * `mcts_tune::config_ir_schema::axis_schema()`'s per-field JSON. `bare`

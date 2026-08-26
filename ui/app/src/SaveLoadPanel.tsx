@@ -59,7 +59,13 @@ export const SaveLoadPanel: Component<{
         <button onClick={exportGame}>Save</button>
         <button onClick={() => fileInput?.click()}>Load</button>
       </div>
-      <input ref={fileInput} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => void onFileChange(e)} />
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={(e) => void onFileChange(e)}
+      />
       <Show when={error()}>{(e) => <div class="save-load-error">{e()}</div>}</Show>
     </div>
   );

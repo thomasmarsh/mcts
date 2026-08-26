@@ -13,7 +13,9 @@ function isNewGameConfig(config: unknown): config is NewGameConfig {
   return !!size && typeof size === "object" && "w" in size && "h" in size;
 }
 
-export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (props) => {
+export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (
+  props,
+) => {
   const size = () => (isNewGameConfig(props.config) ? props.config.size : DEFAULT_SIZE);
 
   return (
@@ -28,7 +30,11 @@ export const NewGameFields: Component<{ config: unknown; onChange: (config: unkn
         }}
       >
         <For each={BOARD_SIZES}>
-          {(s) => <option value={`${s.w}x${s.h}`}>{s.w} × {s.h}</option>}
+          {(s) => (
+            <option value={`${s.w}x${s.h}`}>
+              {s.w} × {s.h}
+            </option>
+          )}
         </For>
       </select>
     </label>

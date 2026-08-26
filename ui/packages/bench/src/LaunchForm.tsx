@@ -58,10 +58,14 @@ export const LaunchForm: Component<{
   const currentKind = createMemo(() => kinds().find((k) => k.kind === selectedKind()));
   const currentGame = createMemo(() => currentKind()?.games.find((g) => g.game === selectedGame()));
   const isTuner = createMemo(() => selectedKind() === "tuner");
-  const currentTunerTuner = createMemo(() => tunerGames().find((g) => g.game === selectedGame())?.tuner ?? null);
+  const currentTunerTuner = createMemo(
+    () => tunerGames().find((g) => g.game === selectedGame())?.tuner ?? null,
+  );
 
   const launchStatus = createMemo(() => state().launch.status);
-  const launchError = createMemo(() => (state().launch.status === "error" ? state().launch.error : null));
+  const launchError = createMemo(() =>
+    state().launch.status === "error" ? state().launch.error : null,
+  );
   const launchResponseError = createMemo(() => {
     const r = state().launch.result;
     return r?.launch_error ?? null;
@@ -128,7 +132,9 @@ export const LaunchForm: Component<{
   function canLaunch(): boolean {
     if (busy() || selectedKind() === "" || selectedGame() === "") return false;
     if (isTuner()) {
-      return tunerGameConfigError() === null && validateTunerLaunchPolicy(tunerLaunchPolicy()) === null;
+      return (
+        tunerGameConfigError() === null && validateTunerLaunchPolicy(tunerLaunchPolicy()) === null
+      );
     }
     return selectedStrategies().size >= 2 && rounds() >= 1;
   }
@@ -160,11 +166,19 @@ export const LaunchForm: Component<{
 
   function tunerLaunchPolicy() {
     return {
-      nTrials: tunerNTrials(), nWorkers: tunerNWorkers(), deterministic: tunerDeterministic(), seed: tunerSeed(),
-      minPairs: tunerMinPairs(), maxPairs: tunerMaxPairs(), pruningEnabled: tunerPruningEnabled(),
-      reductionFactor: tunerReductionFactor(), pruningStartupTrials: tunerPruningStartupTrials(),
-      sigmaStop: tunerSigmaStop(), tpeStartupTrials: tunerTpeStartupTrials(),
-      maxIterations: tunerMaxIterations(), maxTimeMs: tunerMaxTimeMs(),
+      nTrials: tunerNTrials(),
+      nWorkers: tunerNWorkers(),
+      deterministic: tunerDeterministic(),
+      seed: tunerSeed(),
+      minPairs: tunerMinPairs(),
+      maxPairs: tunerMaxPairs(),
+      pruningEnabled: tunerPruningEnabled(),
+      reductionFactor: tunerReductionFactor(),
+      pruningStartupTrials: tunerPruningStartupTrials(),
+      sigmaStop: tunerSigmaStop(),
+      tpeStartupTrials: tunerTpeStartupTrials(),
+      maxIterations: tunerMaxIterations(),
+      maxTimeMs: tunerMaxTimeMs(),
     };
   }
 
@@ -199,65 +213,77 @@ export const LaunchForm: Component<{
         <div class="launch-error">{state().kinds.error}</div>
       </Show>
 
-      <Show when={kinds().length > 0} fallback={<div class="loading-bench">Loading run kinds…</div>}>
+      <Show
+        when={kinds().length > 0}
+        fallback={<div class="loading-bench">Loading run kinds…</div>}
+      >
         <label>
           Run Kind
-          <select value={selectedKind()} onChange={(e) => onKindChange(e.currentTarget.value)} disabled={busy()}>
+          <select
+            value={selectedKind()}
+            onChange={(e) => onKindChange(e.currentTarget.value)}
+            disabled={busy()}
+          >
             <option value="">— Select —</option>
-            <For each={kinds()}>
-              {(k) => <option value={k.kind}>{k.label}</option>}
-            </For>
+            <For each={kinds()}>{(k) => <option value={k.kind}>{k.label}</option>}</For>
           </select>
         </label>
 
-        <Show when={isTuner()} fallback={
-          <>
-            <Show when={currentKind()}>
-              <label>
-                Game
-                <select value={selectedGame()} onChange={(e) => onGameChange(e.currentTarget.value)} disabled={busy()}>
-                  <option value="">— Select —</option>
-                  <For each={currentKind()!.games}>
-                    {(g) => <option value={g.game}>{g.game}</option>}
+        <Show
+          when={isTuner()}
+          fallback={
+            <>
+              <Show when={currentKind()}>
+                <label>
+                  Game
+                  <select
+                    value={selectedGame()}
+                    onChange={(e) => onGameChange(e.currentTarget.value)}
+                    disabled={busy()}
+                  >
+                    <option value="">— Select —</option>
+                    <For each={currentKind()!.games}>
+                      {(g) => <option value={g.game}>{g.game}</option>}
+                    </For>
+                  </select>
+                </label>
+              </Show>
+
+              <Show when={currentGame()}>
+                <fieldset id="strategy-picker">
+                  <legend>Strategies (select at least 2)</legend>
+                  <For each={currentGame()!.strategies}>
+                    {(s) => (
+                      <label class="strategy-option">
+                        <input
+                          type="checkbox"
+                          checked={selectedStrategies().has(s.id)}
+                          onChange={() => toggleStrategy(s.id)}
+                          disabled={busy()}
+                        />
+                        <span class="strategy-label">{s.label}</span>
+                        <span class="strategy-desc">{s.description}</span>
+                      </label>
+                    )}
                   </For>
-                </select>
-              </label>
-            </Show>
+                </fieldset>
+              </Show>
 
-            <Show when={currentGame()}>
-              <fieldset id="strategy-picker">
-                <legend>Strategies (select at least 2)</legend>
-                <For each={currentGame()!.strategies}>
-                  {(s) => (
-                    <label class="strategy-option">
-                      <input
-                        type="checkbox"
-                        checked={selectedStrategies().has(s.id)}
-                        onChange={() => toggleStrategy(s.id)}
-                        disabled={busy()}
-                      />
-                      <span class="strategy-label">{s.label}</span>
-                      <span class="strategy-desc">{s.description}</span>
-                    </label>
-                  )}
-                </For>
-              </fieldset>
-            </Show>
-
-            <Show when={selectedGame()}>
-              <label>
-                Rounds
-                <input
-                  type="number"
-                  min={1}
-                  value={rounds()}
-                  onInput={(e) => setRounds(Math.max(1, parseInt(e.currentTarget.value) || 1))}
-                  disabled={busy()}
-                />
-              </label>
-            </Show>
-          </>
-        }>
+              <Show when={selectedGame()}>
+                <label>
+                  Rounds
+                  <input
+                    type="number"
+                    min={1}
+                    value={rounds()}
+                    onInput={(e) => setRounds(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                    disabled={busy()}
+                  />
+                </label>
+              </Show>
+            </>
+          }
+        >
           <TunerLaunchFields
             games={tunerGames()}
             gamesLoading={tunerGamesLoading()}

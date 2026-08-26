@@ -40,7 +40,11 @@ function searchReport(selectedAction: M): SearchReport<M> {
 
 function branchedTree() {
   const tree = initialGameTree<S, M>(0);
-  gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1, search: searchReport("a") }, undefined);
+  gameTreeReducer(
+    tree,
+    { tag: "applyMove", move: "a", state: 1, search: searchReport("a") },
+    undefined,
+  );
   gameTreeReducer(tree, { tag: "applyMove", move: "c", state: 3 }, undefined);
   gameTreeReducer(tree, { tag: "undo" }, undefined);
   gameTreeReducer(tree, { tag: "undo" }, undefined);
@@ -73,11 +77,21 @@ describe("serializeSave / parseSave", () => {
   it("upgrades legacy nodes without a search field to null", () => {
     const tree = branchedTree();
     for (const node of Object.values(tree.nodes)) delete (node as { search?: unknown }).search;
-    const legacy = JSON.stringify({ formatVersion: SAVE_FORMAT_VERSION, gameKind: "druid", config: null, tree });
+    const legacy = JSON.stringify({
+      formatVersion: SAVE_FORMAT_VERSION,
+      gameKind: "druid",
+      config: null,
+      tree,
+    });
 
     const loaded = parseSave<S, M>(legacy);
 
-    expect(Object.values(loaded.tree.nodes).map((node) => node.search)).toEqual([null, null, null, null]);
+    expect(Object.values(loaded.tree.nodes).map((node) => node.search)).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   it("rejects invalid JSON", () => {
@@ -89,12 +103,21 @@ describe("serializeSave / parseSave", () => {
   });
 
   it("rejects a mismatched format version", () => {
-    const bad = JSON.stringify({ formatVersion: 999, gameKind: "druid", config: null, tree: initialGameTree<S, M>(0) });
+    const bad = JSON.stringify({
+      formatVersion: 999,
+      gameKind: "druid",
+      config: null,
+      tree: initialGameTree<S, M>(0),
+    });
     expect(() => parseSave(bad)).toThrow(/format version/);
   });
 
   it("rejects a missing gameKind", () => {
-    const bad = JSON.stringify({ formatVersion: SAVE_FORMAT_VERSION, config: null, tree: initialGameTree<S, M>(0) });
+    const bad = JSON.stringify({
+      formatVersion: SAVE_FORMAT_VERSION,
+      config: null,
+      tree: initialGameTree<S, M>(0),
+    });
     expect(() => parseSave(bad)).toThrow(/gameKind/);
   });
 
@@ -123,7 +146,12 @@ describe("serializeSave / parseSave", () => {
     const tree = initialGameTree<S, M>(0);
     const nodes = tree.nodes as Record<string, unknown>;
     delete (nodes[tree.rootId] as { childIds?: unknown }).childIds;
-    const bad = JSON.stringify({ formatVersion: SAVE_FORMAT_VERSION, gameKind: "druid", config: null, tree });
+    const bad = JSON.stringify({
+      formatVersion: SAVE_FORMAT_VERSION,
+      gameKind: "druid",
+      config: null,
+      tree,
+    });
     expect(() => parseSave(bad)).toThrow(/tree/);
   });
 });

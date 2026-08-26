@@ -23,21 +23,37 @@ function startState(): GameState {
 // Legal moves for the black front rank (engine row 6). Each black piece on
 // row 6 can move forward to row 5, or diagonally.
 const BLACK_LEGAL_MOVES: Move[] = [
-  [48, 40], [48, 41], // a7 → a6, b6
-  [49, 40], [49, 41], [49, 42], // b7 → a6, b6, c6
-  [50, 41], [50, 42], [50, 43], // c7 → b6, c6, d6
-  [51, 42], [51, 43], [51, 44], // d7 → c6, d6, e6
-  [52, 43], [52, 44], [52, 45], // e7 → d6, e6, f6
-  [53, 44], [53, 45], [53, 46], // f7 → e6, f6, g6
-  [54, 45], [54, 46], [54, 47], // g7 → f6, g6, h6
-  [55, 46], [55, 47], // h7 → g6, h6
+  [48, 40],
+  [48, 41], // a7 → a6, b6
+  [49, 40],
+  [49, 41],
+  [49, 42], // b7 → a6, b6, c6
+  [50, 41],
+  [50, 42],
+  [50, 43], // c7 → b6, c6, d6
+  [51, 42],
+  [51, 43],
+  [51, 44], // d7 → c6, d6, e6
+  [52, 43],
+  [52, 44],
+  [52, 45], // e7 → d6, e6, f6
+  [53, 44],
+  [53, 45],
+  [53, 46], // f7 → e6, f6, g6
+  [54, 45],
+  [54, 46],
+  [54, 47], // g7 → f6, g6, h6
+  [55, 46],
+  [55, 47], // h7 → g6, h6
 ];
 
 function startView(): GameView {
   return { black: START_BLACK, white: START_WHITE, turn: "Black", winner: null, terminal: false };
 }
 
-function makeProps(overrides: Partial<GameRendererProps<GameState, Move, GameView>> = {}): GameRendererProps<GameState, Move, GameView> {
+function makeProps(
+  overrides: Partial<GameRendererProps<GameState, Move, GameView>> = {},
+): GameRendererProps<GameState, Move, GameView> {
   return {
     state: startState(),
     view: startView(),

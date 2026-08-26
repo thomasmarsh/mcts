@@ -132,8 +132,13 @@ export const HexGenRenderer: Component<GameRendererProps<GameState, Move, GameVi
               >
                 <polygon class="hex-gen-hex" points={hexPoints(cell.cx, cell.cy)} />
                 {mark() !== null && (
-                  <circle class="hex-gen-stone" classList={{ p0: mark() === "P0", p1: mark() === "P1" }}
-                    cx={cell.cx} cy={cell.cy} r={HEX_SIZE * 0.55} />
+                  <circle
+                    class="hex-gen-stone"
+                    classList={{ p0: mark() === "P0", p1: mark() === "P1" }}
+                    cx={cell.cx}
+                    cy={cell.cy}
+                    r={HEX_SIZE * 0.55}
+                  />
                 )}
                 {mark() === null && legal() && props.hoveredMove === cell.index && (
                   <circle

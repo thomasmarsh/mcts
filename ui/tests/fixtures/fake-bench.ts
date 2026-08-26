@@ -98,7 +98,7 @@ export const fakePhysicalTunerRun: RunDetail = {
   kind: "tuner",
   game: "traffic-lights",
   config: {
-    overrides: ["optimizer.n_trials=50", "target.baselines=[\"flat_mc\"]"],
+    overrides: ["optimizer.n_trials=50", 'target.baselines=["flat_mc"]'],
     baseline_settings: { flat_mc: { family: "flat_mc", q_init: "Infinity" } },
   },
   trial_count: 3,
@@ -121,13 +121,33 @@ export const fakeTunerKinds: TunerGameInfo[] = [
       baselines: ["strong"],
       eval_rounds: 20,
       parameters: [
-        { name: "family", type: "categorical", choices: ["ucb1", "ucb1_tuned", "rave"], default: "rave" },
-        { name: "final_action", type: "categorical", choices: ["max_avg", "secure_child", "robust_child"], default: "robust_child" },
+        {
+          name: "family",
+          type: "categorical",
+          choices: ["ucb1", "ucb1_tuned", "rave"],
+          default: "rave",
+        },
+        {
+          name: "final_action",
+          type: "categorical",
+          choices: ["max_avg", "secure_child", "robust_child"],
+          default: "robust_child",
+        },
         { name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 },
         { name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 },
         { name: "rave", type: "int", bounds: [0, 2000], default: 700 },
-        { name: "schedule", type: "categorical", choices: ["hand_selected", "min_mse", "threshold"], default: "threshold" },
-        { name: "rave_ucb", type: "categorical", choices: ["none", "ucb1", "tuned"], default: "tuned" },
+        {
+          name: "schedule",
+          type: "categorical",
+          choices: ["hand_selected", "min_mse", "threshold"],
+          default: "threshold",
+        },
+        {
+          name: "rave_ucb",
+          type: "categorical",
+          choices: ["none", "ucb1", "tuned"],
+          default: "tuned",
+        },
       ],
       conditions: [
         { if: { family: ["ucb1", "ucb1_tuned", "rave"] }, then: ["final_action"] },
@@ -165,7 +185,15 @@ export const fakeTrialRows: TrialRow[] = [
   {
     trial_id: 1,
     ts: "2026-03-01T00:00:01Z",
-    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    config: {
+      family: "rave",
+      final_action: "robust_child",
+      epsilon: 0.1,
+      schedule: "threshold",
+      rave: 700,
+      rave_ucb: "tuned",
+      c: 1.4,
+    },
     seed: 0,
     cost: 0.55,
     extra: null,
@@ -202,9 +230,27 @@ export const fakeGameTraces: GameTraceSummary[] = [
 ];
 
 export const fakeGameMoves: GameMove[] = [
-  { ply: 0, ts: "2026-01-01T00:00:00Z", state: { player: "Black", board: [] }, mv: null, player: null },
-  { ply: 1, ts: "2026-01-01T00:00:01Z", state: { player: "White", board: [] }, mv: ["Black", 0], player: "Black" },
-  { ply: 2, ts: "2026-01-01T00:00:02Z", state: { player: "Black", board: [] }, mv: ["White", 1], player: "White" },
+  {
+    ply: 0,
+    ts: "2026-01-01T00:00:00Z",
+    state: { player: "Black", board: [] },
+    mv: null,
+    player: null,
+  },
+  {
+    ply: 1,
+    ts: "2026-01-01T00:00:01Z",
+    state: { player: "White", board: [] },
+    mv: ["Black", 0],
+    player: "Black",
+  },
+  {
+    ply: 2,
+    ts: "2026-01-01T00:00:02Z",
+    state: { player: "Black", board: [] },
+    mv: ["White", 1],
+    player: "White",
+  },
 ];
 
 // A variant trial set where trial #2's exact config is re-evaluated twice
@@ -241,7 +287,15 @@ export const fakeTrialRowsMultiInstance: TrialRow[] = [
   {
     trial_id: 1,
     ts: "2026-03-01T00:00:01Z",
-    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    config: {
+      family: "rave",
+      final_action: "robust_child",
+      epsilon: 0.1,
+      schedule: "threshold",
+      rave: 700,
+      rave_ucb: "tuned",
+      c: 1.4,
+    },
     seed: 0,
     cost: 0.1,
     extra: { instance: "strong" },
@@ -249,7 +303,15 @@ export const fakeTrialRowsMultiInstance: TrialRow[] = [
   {
     trial_id: 2,
     ts: "2026-03-01T00:01:00Z",
-    config: { family: "rave", final_action: "robust_child", epsilon: 0.1, schedule: "threshold", rave: 700, rave_ucb: "tuned", c: 1.4 },
+    config: {
+      family: "rave",
+      final_action: "robust_child",
+      epsilon: 0.1,
+      schedule: "threshold",
+      rave: 700,
+      rave_ucb: "tuned",
+      c: 1.4,
+    },
     seed: 0,
     cost: 0.6,
     extra: { instance: "master" },
@@ -285,19 +347,83 @@ export const fakeKinds: BenchKindInfo[] = [
 export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
   const base: BenchEnv = {
     listProjects: () => Effect.send([]),
-    createProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
-    getProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
-    updateProject: () => Effect.send({ project_id: "project-1", name: "Test", description: "", archived: false, created_at: "", updated_at: "" }),
+    createProject: () =>
+      Effect.send({
+        project_id: "project-1",
+        name: "Test",
+        description: "",
+        archived: false,
+        created_at: "",
+        updated_at: "",
+      }),
+    getProject: () =>
+      Effect.send({
+        project_id: "project-1",
+        name: "Test",
+        description: "",
+        archived: false,
+        created_at: "",
+        updated_at: "",
+      }),
+    updateProject: () =>
+      Effect.send({
+        project_id: "project-1",
+        name: "Test",
+        description: "",
+        archived: false,
+        created_at: "",
+        updated_at: "",
+      }),
     listExperiments: () => Effect.send([]),
-    createExperiment: (_projectId, body) => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: body.name, description: body.description, spec: body.spec, created_at: "", updated_at: "" }),
-    getExperiment: () => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: "Experiment", description: "", spec: { version: 1, games: [{ game: "nim", game_config: null }], baseline: { id: "base", label: "Base", config: {} }, variants: [{ id: "variant", label: "Variant", config: {} }], budgets: [{ kind: "iterations", value: 25 }], rounds_per_cell: 1, base_seed: 42, max_parallel_cells: 1 }, created_at: "", updated_at: "" }),
-    updateExperiment: (_id, body) => Effect.send({ experiment_id: "experiment-1", project_id: "project-1", name: body.name, description: body.description, spec: body.spec, created_at: "", updated_at: "" }),
+    createExperiment: (_projectId, body) =>
+      Effect.send({
+        experiment_id: "experiment-1",
+        project_id: "project-1",
+        name: body.name,
+        description: body.description,
+        spec: body.spec,
+        created_at: "",
+        updated_at: "",
+      }),
+    getExperiment: () =>
+      Effect.send({
+        experiment_id: "experiment-1",
+        project_id: "project-1",
+        name: "Experiment",
+        description: "",
+        spec: {
+          version: 1,
+          games: [{ game: "nim", game_config: null }],
+          baseline: { id: "base", label: "Base", config: {} },
+          variants: [{ id: "variant", label: "Variant", config: {} }],
+          budgets: [{ kind: "iterations", value: 25 }],
+          rounds_per_cell: 1,
+          base_seed: 42,
+          max_parallel_cells: 1,
+        },
+        created_at: "",
+        updated_at: "",
+      }),
+    updateExperiment: (_id, body) =>
+      Effect.send({
+        experiment_id: "experiment-1",
+        project_id: "project-1",
+        name: body.name,
+        description: body.description,
+        spec: body.spec,
+        created_at: "",
+        updated_at: "",
+      }),
     launchExperiment: () => Effect.send({ run_id: FAKE_RUN_ID, pid: 1, log_path: "" }),
     getRunCells: () => Effect.send([]),
     listRuns: () => Effect.send(fakeRunSummaries),
     getRun: (runId: string) =>
       Effect.send(
-        runId === FAKE_RUN_ID ? fakeRunDetail : runId === FAKE_tuner_RUN_ID ? fakePhysicalTunerRun : fakeRunningDetail,
+        runId === FAKE_RUN_ID
+          ? fakeRunDetail
+          : runId === FAKE_tuner_RUN_ID
+            ? fakePhysicalTunerRun
+            : fakeRunningDetail,
       ),
     getRunLog: (_runId: string, _since: number): Effect<RunLogResponse> =>
       Effect.send({ lines: ['{"type":"match_result","seq":1}'], next_offset: 42 }),
@@ -313,7 +439,8 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     getTuningAnalysisOverview: () => Effect.none(),
     getTuningTrialPage: () => Effect.none(),
     getTuningTrialDetail: () => Effect.none(),
-    getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> => Effect.send(fakeTrialRows),
+    getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> =>
+      Effect.send(fakeTrialRows),
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),
     getRunGameMoves: (): Effect<GameMove[]> => Effect.send(fakeGameMoves),
     deleteRun: (): Effect<void> => Effect.send(undefined),

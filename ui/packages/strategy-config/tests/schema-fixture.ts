@@ -9,7 +9,10 @@ import type { AxisSchema } from "@mcts/game";
 export const fixtureSchema: AxisSchema = {
   select: {
     variants: [
-      { kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] },
+      {
+        kind: "ucb1",
+        fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }],
+      },
       {
         kind: "epsilon_greedy",
         fields: [{ name: "epsilon", type: "float", bounds: [0, 1], default: 0.1 }],
@@ -18,7 +21,12 @@ export const fixtureSchema: AxisSchema = {
     ],
   },
   select_base: {
-    variants: [{ kind: "ucb1", fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }] }],
+    variants: [
+      {
+        kind: "ucb1",
+        fields: [{ name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 }],
+      },
+    ],
   },
   simulate: {
     variants: [
@@ -52,7 +60,10 @@ export const fixtureSchema: AxisSchema = {
   final_action: {
     variants: [
       { kind: "robust_child", fields: [] },
-      { kind: "secure_child", fields: [{ name: "a", type: "float", bounds: [0, 10], default: 4.0 }] },
+      {
+        kind: "secure_child",
+        fields: [{ name: "a", type: "float", bounds: [0, 10], default: 4.0 }],
+      },
     ],
   },
 };

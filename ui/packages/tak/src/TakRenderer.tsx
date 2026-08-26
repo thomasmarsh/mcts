@@ -23,12 +23,26 @@
 //   single source can have many legal (direction, take, drop-schedule)
 //   combinations that plain raycasting can't disambiguate.
 
-import { type Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { For, Show } from "solid-js";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { GameRendererProps } from "@mcts/game";
-import { coordFor, footprintFor, isFlatPlacement, isPlacement, parsePtn, type ParsedMove } from "./move-codec.js";
+import {
+  coordFor,
+  footprintFor,
+  isFlatPlacement,
+  isPlacement,
+  parsePtn,
+  type ParsedMove,
+} from "./move-codec.js";
 import { parseTps, type ParsedStack } from "./tps-parser.js";
 import type { GameState, GameView, Move, Player } from "./types.js";
 import "./tak.css";
@@ -196,7 +210,11 @@ function edgesFor(color: Player, topKind: ParsedStack["topKind"]): THREE.BufferG
   return topKind === "Wall" ? wall : flat;
 }
 
-const PIECE_EDGE_MATERIAL = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+const PIECE_EDGE_MATERIAL = new THREE.LineBasicMaterial({
+  color: 0x000000,
+  transparent: true,
+  opacity: 0.35,
+});
 
 /** A gap left between stacked pieces' Y positions, on top of
  * `PIECE_THICKNESS` -- purely cosmetic (there's no gameplay meaning to the
@@ -278,7 +296,11 @@ function makeLabelPlane(text: string): THREE.Mesh {
   ctx.fillStyle = "#e9d9b8";
   ctx.fillText(text, size / 2, size / 2 + 4);
   const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false });
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+  });
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), material);
   mesh.rotation.x = -Math.PI / 2;
   return mesh;
@@ -298,7 +320,13 @@ function isRoadCell(cell: ParsedStack | null, player: Player): boolean {
   return !!cell && cell.topKind !== "Wall" && topOwner(cell) === player;
 }
 
-function bfsPath(cells: (ParsedStack | null)[], n: number, player: Player, starts: number[], goal: Set<number>): number[] | null {
+function bfsPath(
+  cells: (ParsedStack | null)[],
+  n: number,
+  player: Player,
+  starts: number[],
+  goal: Set<number>,
+): number[] | null {
   const prev = new Map<number, number>();
   const queue = starts.filter((i) => isRoadCell(cells[i] ?? null, player));
   queue.forEach((i) => prev.set(i, -1));
@@ -335,7 +363,11 @@ function bfsPath(cells: (ParsedStack | null)[], n: number, player: Player, start
  * this is real reimplemented road-connectivity logic (see the file header),
  * not just wiring, so it's worth testing directly against known board
  * layouts rather than only through a full component render. */
-export function findWinningRoad(cells: (ParsedStack | null)[], size: number, winner: Player): number[] | null {
+export function findWinningRoad(
+  cells: (ParsedStack | null)[],
+  size: number,
+  winner: Player,
+): number[] | null {
   const n = size;
   const west: number[] = [],
     east = new Set<number>();
@@ -356,7 +388,10 @@ export function findWinningRoad(cells: (ParsedStack | null)[], size: number, win
 
 /** One clickable target: either an unambiguous move (fires immediately) or
  * a source-selection target (enters the two-stage spread picker). */
-type Pickable = { mesh: THREE.Mesh; target: { kind: "move"; move: Move } | { kind: "selectSrc"; square: number } };
+type Pickable = {
+  mesh: THREE.Mesh;
+  target: { kind: "move"; move: Move } | { kind: "selectSrc"; square: number };
+};
 
 export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>> = (props) => {
   let canvasRef: HTMLCanvasElement | undefined;
@@ -394,8 +429,14 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
   function buildBoard(size: number): void {
     clearGroup(boardGroup);
-    const lightMat = new THREE.MeshStandardMaterial({ map: woodTexture(WOOD_LIGHT, WOOD_GRAIN_LIGHT), roughness: 0.55 });
-    const darkMat = new THREE.MeshStandardMaterial({ map: woodTexture(WOOD_DARK, WOOD_GRAIN_DARK), roughness: 0.55 });
+    const lightMat = new THREE.MeshStandardMaterial({
+      map: woodTexture(WOOD_LIGHT, WOOD_GRAIN_LIGHT),
+      roughness: 0.55,
+    });
+    const darkMat = new THREE.MeshStandardMaterial({
+      map: woodTexture(WOOD_DARK, WOOD_GRAIN_DARK),
+      roughness: 0.55,
+    });
     const cellGeo = new THREE.PlaneGeometry(1, 1);
 
     // The bezel extends `BEZEL_MARGIN` past the outermost cell edge on every
@@ -443,7 +484,13 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     camera.lookAt(center);
   }
 
-  function addPiece(x: number, y: number, z: number, color: Player, kind: ParsedStack["topKind"]): void {
+  function addPiece(
+    x: number,
+    y: number,
+    z: number,
+    color: Player,
+    kind: ParsedStack["topKind"],
+  ): void {
     const mesh = new THREE.Mesh(geometryFor(color, kind), pieceMaterial(color));
     mesh.position.set(x, y, z);
     piecesGroup.add(mesh);
@@ -485,7 +532,13 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
    * counts. White piles to the board's west, Black to the east, each stone
    * count arranged in short stacked columns (so 21 stones doesn't render as
    * one absurdly tall tower) with capstones in their own column past them. */
-  function buildReservePile(color: Player, x: number, stoneCount: number, capCount: number, size: number): void {
+  function buildReservePile(
+    color: Player,
+    x: number,
+    stoneCount: number,
+    capCount: number,
+    size: number,
+  ): void {
     const centerZ = (size - 1) / 2;
     for (let i = 0; i < stoneCount; i++) {
       const col = Math.floor(i / RESERVE_PIECES_PER_COLUMN);
@@ -497,7 +550,11 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     const capCol = Math.ceil(stoneCount / RESERVE_PIECES_PER_COLUMN);
     for (let i = 0; i < capCount; i++) {
       const mesh = new THREE.Mesh(CAP_GEO, pieceMaterial(color));
-      mesh.position.set(x, 0, centerZ + (capCol + 0.6) * RESERVE_COLUMN_SPACING + i * RESERVE_COLUMN_SPACING);
+      mesh.position.set(
+        x,
+        0,
+        centerZ + (capCol + 0.6) * RESERVE_COLUMN_SPACING + i * RESERVE_COLUMN_SPACING,
+      );
       reservesGroup.add(mesh);
     }
   }
@@ -518,7 +575,13 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
   function highlightPlane(color: number, opacity: number): THREE.Mesh {
     const geo = new THREE.PlaneGeometry(0.86, 0.86);
-    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false });
+    const mat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
     return new THREE.Mesh(geo, mat);
   }
 
@@ -554,7 +617,12 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
     const src = selectedSrc();
     if (src === null) {
-      const sources = new Set(legalMoves.map((m) => parsePtn(m, size)).filter((pm): pm is ParsedMove & { tag: "Spread" } => pm.tag === "Spread").map((pm) => pm.square));
+      const sources = new Set(
+        legalMoves
+          .map((m) => parsePtn(m, size))
+          .filter((pm): pm is ParsedMove & { tag: "Spread" } => pm.tag === "Spread")
+          .map((pm) => pm.square),
+      );
       sources.forEach((square) => {
         const x = square % size;
         const z = Math.floor(square / size);
@@ -569,7 +637,10 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
     const candidates = legalMoves
       .map((m) => ({ ptn: m, parsed: parsePtn(m, size) }))
-      .filter((e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } => e.parsed.tag === "Spread" && e.parsed.square === src);
+      .filter(
+        (e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } =>
+          e.parsed.tag === "Spread" && e.parsed.square === src,
+      );
     // Which final-landing cells are unambiguous (exactly one candidate ends
     // there) -- those get a direct-fire pickable; the rest are visual only,
     // resolved through the candidate list panel instead.
@@ -581,7 +652,9 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     });
 
     const touched = new Set<number>();
-    candidates.forEach(({ parsed: mv }) => footprintFor(mv, size).forEach((cell) => touched.add(cell)));
+    candidates.forEach(({ parsed: mv }) =>
+      footprintFor(mv, size).forEach((cell) => touched.add(cell)),
+    );
     touched.forEach((cell) => {
       const x = cell % size;
       const z = Math.floor(cell / size);
@@ -616,7 +689,10 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     mat.transparent = true;
     mat.opacity = 0.5;
     mat.depthWrite = false;
-    const geo = geometryFor(color, pm.kind === "Wall" ? "Wall" : pm.kind === "Cap" ? "Cap" : "Flat");
+    const geo = geometryFor(
+      color,
+      pm.kind === "Wall" ? "Wall" : pm.kind === "Cap" ? "Cap" : "Flat",
+    );
     const x = pm.square % size;
     const z = Math.floor(pm.square / size);
     const mesh = new THREE.Mesh(geo, mat);
@@ -655,7 +731,13 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
 
       const tile = new THREE.Mesh(
         tileGeo,
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
       );
       tile.rotation.x = -Math.PI / 2;
       tile.position.set(x, y, z);
@@ -681,12 +763,20 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     if (!path) return;
     const size = n();
     const glowColor = props.view.winner === "Black" ? WINNER_GLOW_BLACK : WINNER_GLOW_WHITE;
-    const points = path.map((i) => new THREE.Vector3(i % size, stackTopY(i) + 0.08, Math.floor(i / size)));
+    const points = path.map(
+      (i) => new THREE.Vector3(i % size, stackTopY(i) + 0.08, Math.floor(i / size)),
+    );
     const mat = new THREE.MeshBasicMaterial({ color: glowColor, transparent: true, opacity: 0.92 });
 
     if (points.length > 1) {
       const curve = new THREE.CatmullRomCurve3(points, false, "catmullrom", 0);
-      const tubeGeo = new THREE.TubeGeometry(curve, Math.max(points.length * 6, 8), 0.09, 12, false);
+      const tubeGeo = new THREE.TubeGeometry(
+        curve,
+        Math.max(points.length * 6, 8),
+        0.09,
+        12,
+        false,
+      );
       winnerGroup.add(new THREE.Mesh(tubeGeo, mat));
     }
     const jointGeo = new THREE.SphereGeometry(0.12, 12, 12);
@@ -786,7 +876,15 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     analysisGroup = new THREE.Group();
     winnerGroup = new THREE.Group();
     reservesGroup = new THREE.Group();
-    scene.add(boardGroup, piecesGroup, highlightGroup, ghostGroup, analysisGroup, winnerGroup, reservesGroup);
+    scene.add(
+      boardGroup,
+      piecesGroup,
+      highlightGroup,
+      ghostGroup,
+      analysisGroup,
+      winnerGroup,
+      reservesGroup,
+    );
 
     raycaster = new THREE.Raycaster();
 
@@ -873,7 +971,10 @@ export const TakRenderer: Component<GameRendererProps<GameState, Move, GameView>
     const size = n();
     return props.legalMoves
       .map((m) => ({ ptn: m, parsed: parsePtn(m, size) }))
-      .filter((e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } => e.parsed.tag === "Spread" && e.parsed.square === src);
+      .filter(
+        (e): e is { ptn: string; parsed: ParsedMove & { tag: "Spread" } } =>
+          e.parsed.tag === "Spread" && e.parsed.square === src,
+      );
   };
 
   return (

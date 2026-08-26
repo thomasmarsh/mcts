@@ -19,7 +19,11 @@ export interface SaveFile<S, M> {
   tree: GameTree<S, M>;
 }
 
-export function serializeSave<S, M>(gameKind: string, config: unknown, tree: GameTree<S, M>): string {
+export function serializeSave<S, M>(
+  gameKind: string,
+  config: unknown,
+  tree: GameTree<S, M>,
+): string {
   const file: SaveFile<S, M> = { formatVersion: SAVE_FORMAT_VERSION, gameKind, config, tree };
   return JSON.stringify(file, null, 2);
 }
@@ -40,7 +44,12 @@ function isGameTreeNode(v: unknown): v is GameTreeNode<unknown, unknown> {
 function isGameTree(v: unknown): v is GameTree<unknown, unknown> {
   if (!v || typeof v !== "object") return false;
   const t = v as Record<string, unknown>;
-  if (typeof t.rootId !== "string" || typeof t.currentId !== "string" || typeof t.nextId !== "number") return false;
+  if (
+    typeof t.rootId !== "string" ||
+    typeof t.currentId !== "string" ||
+    typeof t.nextId !== "number"
+  )
+    return false;
   if (!t.nodes || typeof t.nodes !== "object") return false;
   const nodes = t.nodes as Record<string, unknown>;
   if (!Object.values(nodes).every(isGameTreeNode)) return false;
@@ -64,7 +73,9 @@ export function parseSave<S, M>(text: string): SaveFile<S, M> {
   if (!data || typeof data !== "object") throw new Error("Save file must be a JSON object.");
   const d = data as Record<string, unknown>;
   if (d.formatVersion !== SAVE_FORMAT_VERSION) {
-    throw new Error(`Unsupported save format version ${JSON.stringify(d.formatVersion)} (expected ${SAVE_FORMAT_VERSION}).`);
+    throw new Error(
+      `Unsupported save format version ${JSON.stringify(d.formatVersion)} (expected ${SAVE_FORMAT_VERSION}).`,
+    );
   }
   if (typeof d.gameKind !== "string" || d.gameKind.length === 0) {
     throw new Error('Missing or invalid "gameKind".');
@@ -76,5 +87,10 @@ export function parseSave<S, M>(text: string): SaveFile<S, M> {
   const nodes = Object.fromEntries(
     Object.entries(tree.nodes).map(([id, node]) => [id, { ...node, search: node.search ?? null }]),
   ) as Record<string, GameTreeNode<S, M>>;
-  return { formatVersion: d.formatVersion, gameKind: d.gameKind, config: d.config, tree: { ...tree, nodes } };
+  return {
+    formatVersion: d.formatVersion,
+    gameKind: d.gameKind,
+    config: d.config,
+    tree: { ...tree, nodes },
+  };
 }

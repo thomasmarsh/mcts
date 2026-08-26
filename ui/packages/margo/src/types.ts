@@ -59,10 +59,7 @@ export const DEFAULT_N = 7;
 /** One-click board-size presets, spanning the full supported range --
  * unlike Druid's curated subset, every Margo size the server accepts is
  * worth offering directly since there are only seven of them. */
-export const BOARD_SIZES: number[] = Array.from(
-  { length: MAX_N - MIN_N + 1 },
-  (_, i) => MIN_N + i,
-);
+export const BOARD_SIZES: number[] = Array.from({ length: MAX_N - MIN_N + 1 }, (_, i) => MIN_N + i);
 
 export function isSwap(action: Action): action is "Swap" {
   return action === "Swap";

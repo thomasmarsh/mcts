@@ -50,7 +50,9 @@ export function expandExperimentSpec(spec: ExperimentSpecV1): ExpandedExperiment
           rounds: spec.rounds_per_cell,
           planned_games: plannedGames,
           cell_seed: cellSeed,
-          round_seeds: Array.from({ length: spec.rounds_per_cell }, (_, round) => deriveSeed(cellSeed, round)),
+          round_seeds: Array.from({ length: spec.rounds_per_cell }, (_, round) =>
+            deriveSeed(cellSeed, round),
+          ),
         });
         ordinal += 1;
       }

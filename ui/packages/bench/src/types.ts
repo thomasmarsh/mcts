@@ -9,14 +9,21 @@
  * src/bench/schema.rs: running | completed | crashed | stopped). The open
  * `string` union member keeps a status added server-side later from
  * failing to deserialize here. */
-export type RunStatus = "running" | "completed" | "completed_with_errors" | "crashed" | "stopped" | (string & {});
+export type RunStatus =
+  "running" | "completed" | "completed_with_errors" | "crashed" | "stopped" | (string & {});
 
 export type Budget =
-  | { kind: "iterations"; value: number }
-  | { kind: "time_per_move_ms"; value: number };
+  { kind: "iterations"; value: number } | { kind: "time_per_move_ms"; value: number };
 
-export interface NamedStrategyConfig { id: string; label: string; config: Record<string, unknown> }
-export interface ExperimentGame { game: string; game_config: unknown }
+export interface NamedStrategyConfig {
+  id: string;
+  label: string;
+  config: Record<string, unknown>;
+}
+export interface ExperimentGame {
+  game: string;
+  game_config: unknown;
+}
 export interface ExperimentSpecV1 {
   version: 1;
   games: ExperimentGame[];
@@ -27,15 +34,52 @@ export interface ExperimentSpecV1 {
   base_seed: number;
   max_parallel_cells: number;
 }
-export interface ValidationField { path: string; message: string }
-export interface Project { project_id: string; name: string; description: string; archived: boolean; created_at: string; updated_at: string }
-export interface Experiment { experiment_id: string; project_id: string; name: string; description: string; spec: ExperimentSpecV1; created_at: string; updated_at: string }
+export interface ValidationField {
+  path: string;
+  message: string;
+}
+export interface Project {
+  project_id: string;
+  name: string;
+  description: string;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export interface Experiment {
+  experiment_id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  spec: ExperimentSpecV1;
+  created_at: string;
+  updated_at: string;
+}
 export interface ExperimentCell {
-  cell_id: string; cell_seed: number | null; game: string; game_config: unknown; variant_id: string; variant_label: string;
-  candidate_config: Record<string, unknown>; baseline_id: string; baseline_label: string;
-  baseline_config: Record<string, unknown>; budget: Budget; rounds: number; planned_games: number;
-  completed_games: number; status: string; started_at: string | null; ended_at: string | null; error: string | null;
-  wins: number; losses: number; draws: number; win_rate: number; ci_lower: number; ci_upper: number;
+  cell_id: string;
+  cell_seed: number | null;
+  game: string;
+  game_config: unknown;
+  variant_id: string;
+  variant_label: string;
+  candidate_config: Record<string, unknown>;
+  baseline_id: string;
+  baseline_label: string;
+  baseline_config: Record<string, unknown>;
+  budget: Budget;
+  rounds: number;
+  planned_games: number;
+  completed_games: number;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  error: string | null;
+  wins: number;
+  losses: number;
+  draws: number;
+  win_rate: number;
+  ci_lower: number;
+  ci_upper: number;
 }
 
 export interface BenchSpectatorProps {
@@ -50,7 +94,8 @@ export interface BenchSpectatorProps {
 /** JSON carried by persisted tuning manifests and configuration snapshots.
  * Keeping this boundary explicit prevents presentation code from treating
  * lifecycle payloads as arbitrary records. */
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 /** Exact status counts shared by tuning list and detail version-1 payloads. */
 export interface TuningTrialCounts {
@@ -162,7 +207,10 @@ export interface TuningSessionsResponse {
   sessions: TuningSessionListItem[];
 }
 
-export interface TuningRating { mu: number; sigma: number }
+export interface TuningRating {
+  mu: number;
+  sigma: number;
+}
 
 /** Resolved resources used to evaluate a trial. Pair counts are logical
  * seat-swapped evaluations; each pair contains two physical games. */
@@ -293,7 +341,9 @@ export interface TuningSessionDetail {
 }
 
 /** The shared freshness boundary on every version-1 analysis response. */
-export interface TuningCursorBoundary { session_sequence: number }
+export interface TuningCursorBoundary {
+  session_sequence: number;
+}
 
 export interface TuningAnalysisObjective {
   metric: string;

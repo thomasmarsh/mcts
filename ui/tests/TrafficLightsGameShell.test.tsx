@@ -13,11 +13,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { createStore, Effect } from "@mcts/core";
-import {
-  appReducer,
-  initialAppState,
-  type Env,
-} from "@mcts/game";
+import { appReducer, initialAppState, type Env } from "@mcts/game";
 import { GameShell } from "../app/src/GameShell.js";
 import { mockFetchStrategyFamilies, mockFetchStrategySchema } from "./helpers.js";
 
@@ -71,7 +67,8 @@ function makeEnv(): Env {
     },
     aiPresets: () => Effect.send([]),
     aiMove: () => Effect.send({ move: 0, state: { ...state }, view: viewOf(state) }),
-    analyze: () => Effect.send({ actions: [], principal_variation: [], total_visits: 0, suggested_move: null }),
+    analyze: () =>
+      Effect.send({ actions: [], principal_variation: [], total_visits: 0, suggested_move: null }),
   };
 }
 
@@ -89,13 +86,19 @@ describe("TrafficLights GameShell integration", () => {
     const store = createStore(init, appReducer, env);
     capturedMoves = [];
 
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
+    render(() => (
+      <GameShell
+        store={store}
+        fetchStrategySchema={mockFetchStrategySchema}
+        fetchStrategyFamilies={mockFetchStrategyFamilies}
+      />
+    ));
 
     // Get the 9 board buttons (filter out HUD/nav buttons by class)
     function boardButtons(): HTMLButtonElement[] {
-      return screen.getAllByRole("button").filter(
-        (b) => b.classList.contains("tl-cell"),
-      ) as HTMLButtonElement[];
+      return screen
+        .getAllByRole("button")
+        .filter((b) => b.classList.contains("tl-cell")) as HTMLButtonElement[];
     }
 
     // Wait for the initial position to load (GameShell's onMount fires
@@ -180,10 +183,18 @@ describe("TrafficLights GameShell integration", () => {
     const store = createStore(init, appReducer, env);
     capturedMoves = [];
 
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
+    render(() => (
+      <GameShell
+        store={store}
+        fetchStrategySchema={mockFetchStrategySchema}
+        fetchStrategyFamilies={mockFetchStrategyFamilies}
+      />
+    ));
 
     const boardButtons = () =>
-      screen.getAllByRole("button").filter((b) => b.classList.contains("tl-cell")) as HTMLButtonElement[];
+      screen
+        .getAllByRole("button")
+        .filter((b) => b.classList.contains("tl-cell")) as HTMLButtonElement[];
 
     // See the first test's comment: wait for the board to actually be in
     // the DOM, not just for the store's position to settle.

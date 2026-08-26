@@ -58,7 +58,11 @@ import {
   type TuningSessionCommandResponse,
 } from "./types.js";
 import { expandExperimentSpec } from "./experiment-grid.js";
-import { serializeExperimentRunCsv, serializeExperimentRunJson, sanitizeExportRunId } from "./experiment-export.js";
+import {
+  serializeExperimentRunCsv,
+  serializeExperimentRunJson,
+  sanitizeExportRunId,
+} from "./experiment-export.js";
 
 /** Every network operation the bench reducer may perform, lifted to
  * `Effect` — hard rule (enforced by ui/eslint.config.js's fetch ban): no
@@ -68,11 +72,20 @@ export interface BenchEnv {
   listProjects(): Effect<Project[]>;
   createProject(name: string, description: string): Effect<Project>;
   getProject(projectId: string): Effect<Project>;
-  updateProject(projectId: string, body: { name?: string; description?: string; archived?: boolean }): Effect<Project>;
+  updateProject(
+    projectId: string,
+    body: { name?: string; description?: string; archived?: boolean },
+  ): Effect<Project>;
   listExperiments(projectId: string): Effect<Experiment[]>;
-  createExperiment(projectId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Effect<Experiment>;
+  createExperiment(
+    projectId: string,
+    body: { name: string; description: string; spec: ExperimentSpecV1 },
+  ): Effect<Experiment>;
   getExperiment(experimentId: string): Effect<Experiment>;
-  updateExperiment(experimentId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Effect<Experiment>;
+  updateExperiment(
+    experimentId: string,
+    body: { name: string; description: string; spec: ExperimentSpecV1 },
+  ): Effect<Experiment>;
   launchExperiment(experimentId: string): Effect<LaunchResponse>;
   getRunCells(runId: string): Effect<ExperimentCell[]>;
   listRuns(filters: RunFilters): Effect<RunSummary[]>;
@@ -95,9 +108,18 @@ export interface BenchEnv {
   getTuningAnalysisOverview(sessionId: string): Effect<TuningAnalysisOverview>;
   getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Effect<TuningTrialPage>;
   getTuningTrialDetail(sessionId: string, trialId: string): Effect<TuningTrialDetail>;
-  stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Effect<TuningSessionCommandResponse>;
-  resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Effect<TuningSessionCommandResponse>;
-  addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Effect<TuningSessionCommandResponse>;
+  stopTuningSession(
+    sessionId: string,
+    body: TuningSessionCommandRequest,
+  ): Effect<TuningSessionCommandResponse>;
+  resumeTuningSession(
+    sessionId: string,
+    body: TuningSessionCommandRequest,
+  ): Effect<TuningSessionCommandResponse>;
+  addTuningSessionBudget(
+    sessionId: string,
+    body: TuningSessionBudgetRequest,
+  ): Effect<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
@@ -118,13 +140,10 @@ export function tailDelayMs(idleAttempts: number): number {
   return Math.min(TAIL_BACKOFF_START_MS * 2 ** idleAttempts, TAIL_BACKOFF_MAX_MS);
 }
 
-export type RunsAction =
-  | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<RunSummary[]> };
+export type RunsAction = { tag: "request" } | { tag: "job"; action: JobPollAction<RunSummary[]> };
 
 export type LeaderboardAction =
-  | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<LeaderboardEntry[]> };
+  { tag: "request" } | { tag: "job"; action: JobPollAction<LeaderboardEntry[]> };
 
 export type LaunchAction =
   | { tag: "request"; kind: string; game: string; config?: unknown }
@@ -134,7 +153,13 @@ export type BenchAction =
   | { tag: "runs"; action: RunsAction }
   | { tag: "tuningNavigation"; action: TuningNavigationAction }
   /** Replace the run-list filters and refetch with them. */
-  | { tag: "setRunFilters"; status: string | null; game: string | null; project_id?: string | null; experiment_id?: string | null }
+  | {
+      tag: "setRunFilters";
+      status: string | null;
+      game: string | null;
+      project_id?: string | null;
+      experiment_id?: string | null;
+    }
   | { tag: "openRun"; runId: string }
   | { tag: "closeRun" }
   /** Internal, dispatched by the tail loop itself. */
@@ -153,7 +178,12 @@ export type BenchAction =
   | { tag: "tailFailed"; generation: number; error: string }
   | { tag: "leaderboard"; action: LeaderboardAction }
   /** Replace the leaderboard filters and refetch with them. */
-  | { tag: "setLeaderboardFilters"; game: string | null; gitSha: string | null; since: string | null }
+  | {
+      tag: "setLeaderboardFilters";
+      game: string | null;
+      gitSha: string | null;
+      since: string | null;
+    }
   /** Fetch win-rate data for every commit that has runs. */
   | { tag: "fetchCommitTrends"; game: string | null }
   | { tag: "commitTrendsLoaded"; data: CommitTrendData; shas: string[] }
@@ -190,10 +220,20 @@ export type BenchAction =
   | { tag: "experimentGameEdited"; index: number; game: string; gameConfig: unknown }
   | { tag: "experimentVariantAdded" }
   | { tag: "experimentVariantRemoved"; index: number }
-  | { tag: "experimentVariantEdited"; index: number; field: "id" | "label" | "config"; value: string | Record<string, unknown> }
+  | {
+      tag: "experimentVariantEdited";
+      index: number;
+      field: "id" | "label" | "config";
+      value: string | Record<string, unknown>;
+    }
   | { tag: "experimentBudgetAdded" }
   | { tag: "experimentBudgetRemoved"; index: number }
-  | { tag: "experimentBudgetEdited"; index: number; field: "kind" | "value"; value: string | number }
+  | {
+      tag: "experimentBudgetEdited";
+      index: number;
+      field: "kind" | "value";
+      value: string | number;
+    }
   | { tag: "saveExperiment" }
   | { tag: "experimentSaved"; experiment: Experiment }
   | { tag: "experimentFailed"; error: string }
@@ -207,12 +247,10 @@ export type BenchAction =
   | { tag: "experimentExportFailed"; error: string };
 
 export type KindsAction =
-  | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<BenchKindInfo[]> };
+  { tag: "request" } | { tag: "job"; action: JobPollAction<BenchKindInfo[]> };
 
 export type TunerKindsAction =
-  | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<TunerGameInfo[]> };
+  { tag: "request" } | { tag: "job"; action: JobPollAction<TunerGameInfo[]> };
 
 /** Runs an `Effect` for its single value, as a `Promise` — lets the tick
  * branch combine `getRunLog` + `getRun` with `Promise.all` while still
@@ -250,20 +288,27 @@ function startRunsFetch(draft: BenchState, env: BenchEnv): Effect<BenchAction> |
   const filters: RunFilters = { ...draft.runFilters };
   const jobEnv: JobPollEnv<RunSummary[]> = {
     submitJob: () =>
-      env.listRuns(filters).map((result): JobSubmitResult<RunSummary[]> => ({ status: "done", result })),
+      env
+        .listRuns(filters)
+        .map((result): JobSubmitResult<RunSummary[]> => ({ status: "done", result })),
     pollJob: () => {
       throw new Error("unreachable: the runs list resolves synchronously (see submitJob above)");
     },
   };
   const eff = jobPollReduce(draft.runs, { tag: "start" }, jobEnv);
-  return eff ? eff.map((a): BenchAction => ({ tag: "runs", action: { tag: "job", action: a } })) : null;
+  return eff
+    ? eff.map((a): BenchAction => ({ tag: "runs", action: { tag: "job", action: a } }))
+    : null;
 }
 
 /** Keep the logical-session navigator current whenever physical run rows refresh. */
 function refreshRunViews(draft: BenchState, env: BenchEnv): Effect<BenchAction> | null {
   const runs = startRunsFetch(draft, env);
-  const sessions = tuningNavigationReducer(draft.tuningNavigation, { tag: "listRequest" }, env)
-    ?.map((action): BenchAction => ({ tag: "tuningNavigation", action }));
+  const sessions = tuningNavigationReducer(
+    draft.tuningNavigation,
+    { tag: "listRequest" },
+    env,
+  )?.map((action): BenchAction => ({ tag: "tuningNavigation", action }));
   if (runs && sessions) return Effect.merge(runs, sessions);
   return runs ?? sessions ?? null;
 }
@@ -272,17 +317,24 @@ function startLeaderboardFetch(draft: BenchState, env: BenchEnv): Effect<BenchAc
   const filters: LeaderboardFilters = { ...draft.leaderboardFilters };
   const jobEnv: JobPollEnv<LeaderboardEntry[]> = {
     submitJob: () =>
-      env.getLeaderboard(filters).map((result): JobSubmitResult<LeaderboardEntry[]> => ({ status: "done", result })),
+      env
+        .getLeaderboard(filters)
+        .map((result): JobSubmitResult<LeaderboardEntry[]> => ({ status: "done", result })),
     pollJob: () => {
       throw new Error("unreachable: the leaderboard resolves synchronously (see submitJob above)");
     },
   };
   const eff = jobPollReduce(draft.leaderboard, { tag: "start" }, jobEnv);
-  return eff ? eff.map((a): BenchAction => ({ tag: "leaderboard", action: { tag: "job", action: a } })) : null;
+  return eff
+    ? eff.map((a): BenchAction => ({ tag: "leaderboard", action: { tag: "job", action: a } }))
+    : null;
 }
 
 function requestProjects(env: BenchEnv): Effect<BenchAction> {
-  return env.listProjects().map((projects): BenchAction => ({ tag: "projectsLoaded", projects })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) }));
+  return env
+    .listProjects()
+    .map((projects): BenchAction => ({ tag: "projectsLoaded", projects }))
+    .catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) }));
 }
 
 export function emptyExperimentSpec(game = "nim"): ExperimentSpecV1 {
@@ -303,10 +355,15 @@ function validateExperimentSpec(spec: ExperimentSpecV1): string | null {
   if (spec.games.length === 0) errors.push("spec.games: must contain at least one game");
   if (spec.variants.length === 0) errors.push("spec.variants: must contain at least one variant");
   if (spec.budgets.length === 0) errors.push("spec.budgets: must contain at least one budget");
-  if (!Number.isFinite(spec.rounds_per_cell) || spec.rounds_per_cell <= 0) errors.push("spec.rounds_per_cell: must be positive");
-  if (!Number.isSafeInteger(spec.max_parallel_cells) || spec.max_parallel_cells <= 0) errors.push("spec.max_parallel_cells: must be positive");
-  if (!Number.isSafeInteger(spec.base_seed) || spec.base_seed < 0) errors.push("spec.base_seed: must be a non-negative safe integer");
-  spec.games.forEach((game, index) => { if (!game.game.trim()) errors.push(`spec.games[${index}].game: must not be empty`); });
+  if (!Number.isFinite(spec.rounds_per_cell) || spec.rounds_per_cell <= 0)
+    errors.push("spec.rounds_per_cell: must be positive");
+  if (!Number.isSafeInteger(spec.max_parallel_cells) || spec.max_parallel_cells <= 0)
+    errors.push("spec.max_parallel_cells: must be positive");
+  if (!Number.isSafeInteger(spec.base_seed) || spec.base_seed < 0)
+    errors.push("spec.base_seed: must be a non-negative safe integer");
+  spec.games.forEach((game, index) => {
+    if (!game.game.trim()) errors.push(`spec.games[${index}].game: must not be empty`);
+  });
   if (!spec.baseline.id.trim()) errors.push("spec.baseline.id: must not be empty");
   if (!spec.baseline.label.trim()) errors.push("spec.baseline.label: must not be empty");
   const variantIds = new Set<string>();
@@ -314,16 +371,35 @@ function validateExperimentSpec(spec: ExperimentSpecV1): string | null {
   spec.variants.forEach((variant, index) => {
     if (!variant.id.trim()) errors.push(`spec.variants[${index}].id: must not be empty`);
     if (!variant.label.trim()) errors.push(`spec.variants[${index}].label: must not be empty`);
-    if (variant.id === spec.baseline.id) errors.push(`spec.variants[${index}].id: must differ from baseline.id`);
-    if (variant.label === spec.baseline.label) errors.push(`spec.variants[${index}].label: must differ from baseline.label`);
+    if (variant.id === spec.baseline.id)
+      errors.push(`spec.variants[${index}].id: must differ from baseline.id`);
+    if (variant.label === spec.baseline.label)
+      errors.push(`spec.variants[${index}].label: must differ from baseline.label`);
     if (variantIds.has(variant.id)) errors.push(`spec.variants[${index}].id: duplicate variant id`);
-    if (variantLabels.has(variant.label)) errors.push(`spec.variants[${index}].label: duplicate variant label`);
-    variantIds.add(variant.id); variantLabels.add(variant.label);
+    if (variantLabels.has(variant.label))
+      errors.push(`spec.variants[${index}].label: duplicate variant label`);
+    variantIds.add(variant.id);
+    variantLabels.add(variant.label);
   });
-  if (!spec.baseline.config || typeof spec.baseline.config !== "object" || Array.isArray(spec.baseline.config)) errors.push("spec.baseline.config: must be a JSON object");
+  if (
+    !spec.baseline.config ||
+    typeof spec.baseline.config !== "object" ||
+    Array.isArray(spec.baseline.config)
+  )
+    errors.push("spec.baseline.config: must be a JSON object");
   const budgets = new Set<string>();
-  spec.budgets.forEach((budget, index) => { if (!Number.isSafeInteger(budget.value) || budget.value <= 0) errors.push(`spec.budgets[${index}].value: must be a positive safe integer`); const key = `${budget.kind}:${budget.value}`; if (budgets.has(key)) errors.push(`spec.budgets[${index}]: duplicate budget`); budgets.add(key); });
-  try { expandExperimentSpec(spec); } catch (error) { errors.push(`spec: ${String(error)}`); }
+  spec.budgets.forEach((budget, index) => {
+    if (!Number.isSafeInteger(budget.value) || budget.value <= 0)
+      errors.push(`spec.budgets[${index}].value: must be a positive safe integer`);
+    const key = `${budget.kind}:${budget.value}`;
+    if (budgets.has(key)) errors.push(`spec.budgets[${index}]: duplicate budget`);
+    budgets.add(key);
+  });
+  try {
+    expandExperimentSpec(spec);
+  } catch (error) {
+    errors.push(`spec: ${String(error)}`);
+  }
   return errors.length > 0 ? errors.join("; ") : null;
 }
 
@@ -337,7 +413,10 @@ function sameExperimentDraft(left: ExperimentDraft | null, right: ExperimentDraf
   return left !== null && right !== null && JSON.stringify(left) === JSON.stringify(right);
 }
 
-function validationErrors(message: string): { fields: Record<string, string>; form: string | null } {
+function validationErrors(message: string): {
+  fields: Record<string, string>;
+  form: string | null;
+} {
   const fields: Record<string, string> = {};
   const parts = message.split(/;\s*/);
   const pathPattern = /^(spec\.[^:]+|name|description):\s*(.*)$/;
@@ -350,7 +429,10 @@ function validationErrors(message: string): { fields: Record<string, string>; fo
     }
     const path = match[1]!;
     const messageText = match[2]!;
-    const knownPath = /^(name|description|spec\.(games|variants|budgets)(\[\d+\])?(\.(game|game_config|id|label|config|kind|value))?|spec\.(baseline\.(id|label|config)|rounds_per_cell|base_seed|max_parallel_cells))$/.test(path);
+    const knownPath =
+      /^(name|description|spec\.(games|variants|budgets)(\[\d+\])?(\.(game|game_config|id|label|config|kind|value))?|spec\.(baseline\.(id|label|config)|rounds_per_cell|base_seed|max_parallel_cells))$/.test(
+        path,
+      );
     if (!knownPath) {
       formParts.push(`${path}: ${messageText}`);
       continue;
@@ -380,7 +462,10 @@ export function benchReducer(
   action: BenchAction,
   env: BenchEnv,
 ): Effect<BenchAction> | null {
-  if (action.tag === "setTab") { draft.activeTab = action.tab; return null; }
+  if (action.tag === "setTab") {
+    draft.activeTab = action.tab;
+    return null;
+  }
   if (action.tag === "tuningNavigation") {
     const effect = tuningNavigationReducer(draft.tuningNavigation, action.action, env);
     return effect?.map((next): BenchAction => ({ tag: "tuningNavigation", action: next })) ?? null;
@@ -389,90 +474,231 @@ export function benchReducer(
     draft.projects = { ...draft.projects, status: "pending", result: null, error: null };
     return requestProjects(env);
   }
-  if (action.tag === "projectsLoaded") { draft.projects = { ...draft.projects, status: "done", result: action.projects, error: null }; draft.projectError = null; return null; }
-  if (action.tag === "projectsFailed") { draft.projects = { ...draft.projects, status: "error", result: null, error: action.error }; draft.projectError = action.error; return null; }
-  if (action.tag === "projectDraft") { draft.projectDraft = { name: action.name, description: action.description }; return null; }
+  if (action.tag === "projectsLoaded") {
+    draft.projects = { ...draft.projects, status: "done", result: action.projects, error: null };
+    draft.projectError = null;
+    return null;
+  }
+  if (action.tag === "projectsFailed") {
+    draft.projects = { ...draft.projects, status: "error", result: null, error: action.error };
+    draft.projectError = action.error;
+    return null;
+  }
+  if (action.tag === "projectDraft") {
+    draft.projectDraft = { name: action.name, description: action.description };
+    return null;
+  }
   if (action.tag === "createProject") {
     const name = draft.projectDraft.name.trim();
-    if (!name) { draft.projectError = "name: must not be empty"; return null; }
+    if (!name) {
+      draft.projectError = "name: must not be empty";
+      return null;
+    }
     draft.projectError = null;
-    return env.createProject(name, draft.projectDraft.description).map((project): BenchAction => ({ tag: "projectCreated", project })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) }));
+    return env
+      .createProject(name, draft.projectDraft.description)
+      .map((project): BenchAction => ({ tag: "projectCreated", project }))
+      .catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) }));
   }
   if (action.tag === "projectCreated") {
-    draft.selectedProjectId = action.project.project_id; draft.selectedProject = action.project; draft.projectDraft = { name: "", description: "" };
-    draft.selectedExperimentId = null; draft.selectedExperiment = null; draft.experimentDraft = null; draft.experimentSavedDraft = null;
-    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle"; draft.experimentFieldErrors = {};
-    return Effect.merge(requestProjects(env), env.listExperiments(action.project.project_id).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
+    draft.selectedProjectId = action.project.project_id;
+    draft.selectedProject = action.project;
+    draft.projectDraft = { name: "", description: "" };
+    draft.selectedExperimentId = null;
+    draft.selectedExperiment = null;
+    draft.experimentDraft = null;
+    draft.experimentSavedDraft = null;
+    draft.experimentSaveStatus = "idle";
+    draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {};
+    return Effect.merge(
+      requestProjects(env),
+      env
+        .listExperiments(action.project.project_id)
+        .map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments }))
+        .catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })),
+    );
   }
   if (action.tag === "openProject") {
-    draft.activeTab = "projects"; draft.selectedProjectId = action.projectId; draft.selectedExperimentId = null; draft.experimentDraft = null;
-    draft.runFilters = { status: null, game: null, project_id: action.projectId, experiment_id: null };
-    const project = draft.projects.result?.find((value) => value.project_id === action.projectId) ?? null; draft.selectedProject = project;
+    draft.activeTab = "projects";
+    draft.selectedProjectId = action.projectId;
+    draft.selectedExperimentId = null;
+    draft.experimentDraft = null;
+    draft.runFilters = {
+      status: null,
+      game: null,
+      project_id: action.projectId,
+      experiment_id: null,
+    };
+    const project =
+      draft.projects.result?.find((value) => value.project_id === action.projectId) ?? null;
+    draft.selectedProject = project;
     const runsEffect = refreshRunViews(draft, env);
-    const effects = Effect.merge(env.getProject(action.projectId).map((value): BenchAction => ({ tag: "projectCreated", project: value })).catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) })), env.listExperiments(action.projectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })).catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })));
+    const effects = Effect.merge(
+      env
+        .getProject(action.projectId)
+        .map((value): BenchAction => ({ tag: "projectCreated", project: value }))
+        .catch((error): BenchAction => ({ tag: "projectsFailed", error: String(error) })),
+      env
+        .listExperiments(action.projectId)
+        .map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments }))
+        .catch((error): BenchAction => ({ tag: "experimentsFailed", error: String(error) })),
+    );
     return runsEffect ? Effect.merge(effects, runsEffect) : effects;
   }
-  if (action.tag === "experimentsLoaded") { draft.experiments = { ...draft.experiments, status: "done", result: action.experiments, error: null }; return null; }
-  if (action.tag === "experimentsFailed") { draft.experiments = { ...draft.experiments, status: "error", result: null, error: action.error }; draft.experimentError = action.error; return null; }
+  if (action.tag === "experimentsLoaded") {
+    draft.experiments = {
+      ...draft.experiments,
+      status: "done",
+      result: action.experiments,
+      error: null,
+    };
+    return null;
+  }
+  if (action.tag === "experimentsFailed") {
+    draft.experiments = {
+      ...draft.experiments,
+      status: "error",
+      result: null,
+      error: action.error,
+    };
+    draft.experimentError = action.error;
+    return null;
+  }
   if (action.tag === "newExperiment") {
     const first = draft.tunerKinds.result?.[0];
     const spec = emptyExperimentSpec(first?.game ?? "nim");
     if (first) spec.games[0]!.game_config = first.tuner.game_config;
-    draft.experimentDraft = { name: "", description: "", spec }; draft.experimentSavedDraft = null;
-    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
-    draft.experimentFieldErrors = {}; draft.selectedExperimentId = null; draft.experimentError = null; return null;
+    draft.experimentDraft = { name: "", description: "", spec };
+    draft.experimentSavedDraft = null;
+    draft.experimentSaveStatus = "idle";
+    draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {};
+    draft.selectedExperimentId = null;
+    draft.experimentError = null;
+    return null;
   }
   if (action.tag === "openExperiment") {
-    draft.selectedExperimentId = action.experimentId; draft.selectedExperiment = null; draft.experimentDraft = null;
-    draft.experimentSavedDraft = null; draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
-    draft.experimentFieldErrors = {}; draft.experimentError = null;
-    draft.runFilters = { status: null, game: null, project_id: null, experiment_id: action.experimentId };
-    const experimentEffect = env.getExperiment(action.experimentId).map((experiment): BenchAction => ({ tag: "experimentLoaded", experiment })).catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
+    draft.selectedExperimentId = action.experimentId;
+    draft.selectedExperiment = null;
+    draft.experimentDraft = null;
+    draft.experimentSavedDraft = null;
+    draft.experimentSaveStatus = "idle";
+    draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {};
+    draft.experimentError = null;
+    draft.runFilters = {
+      status: null,
+      game: null,
+      project_id: null,
+      experiment_id: action.experimentId,
+    };
+    const experimentEffect = env
+      .getExperiment(action.experimentId)
+      .map((experiment): BenchAction => ({ tag: "experimentLoaded", experiment }))
+      .catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
     const runsEffect = refreshRunViews(draft, env);
     return runsEffect ? Effect.merge(experimentEffect, runsEffect) : experimentEffect;
   }
   if (action.tag === "experimentLoaded") {
     draft.selectedExperiment = action.experiment;
-    draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec };
+    draft.experimentDraft = {
+      name: action.experiment.name,
+      description: action.experiment.description,
+      spec: action.experiment.spec,
+    };
     draft.experimentSavedDraft = cloneExperimentDraft(draft.experimentDraft);
-    draft.experimentSaveStatus = "idle"; draft.experimentLaunchStatus = "idle";
-    draft.experimentFieldErrors = {}; draft.experimentError = null; return null;
+    draft.experimentSaveStatus = "idle";
+    draft.experimentLaunchStatus = "idle";
+    draft.experimentFieldErrors = {};
+    draft.experimentError = null;
+    return null;
   }
-  if (action.tag === "experimentDraft") { draft.experimentDraft = action.draft; draft.experimentFieldErrors = {}; draft.experimentError = null; return null; }
+  if (action.tag === "experimentDraft") {
+    draft.experimentDraft = action.draft;
+    draft.experimentFieldErrors = {};
+    draft.experimentError = null;
+    return null;
+  }
   if (action.tag === "experimentGameChanged") {
     if (!draft.experimentDraft) return null;
     const spec = JSON.parse(JSON.stringify(draft.experimentDraft.spec)) as ExperimentSpecV1;
     if (!spec.games[0]) spec.games[0] = { game: action.game, game_config: action.gameConfig };
-    else { spec.games[0].game = action.game; spec.games[0].game_config = action.gameConfig; }
+    else {
+      spec.games[0].game = action.game;
+      spec.games[0].game_config = action.gameConfig;
+    }
     draft.experimentDraft = { ...draft.experimentDraft, spec };
     draft.experimentFieldErrors = {};
     draft.experimentError = null;
     return null;
   }
-  if (action.tag === "experimentGameAdded" || action.tag === "experimentGameRemoved" || action.tag === "experimentGameEdited" || action.tag === "experimentVariantAdded" || action.tag === "experimentVariantRemoved" || action.tag === "experimentVariantEdited" || action.tag === "experimentBudgetAdded" || action.tag === "experimentBudgetRemoved" || action.tag === "experimentBudgetEdited") {
+  if (
+    action.tag === "experimentGameAdded" ||
+    action.tag === "experimentGameRemoved" ||
+    action.tag === "experimentGameEdited" ||
+    action.tag === "experimentVariantAdded" ||
+    action.tag === "experimentVariantRemoved" ||
+    action.tag === "experimentVariantEdited" ||
+    action.tag === "experimentBudgetAdded" ||
+    action.tag === "experimentBudgetRemoved" ||
+    action.tag === "experimentBudgetEdited"
+  ) {
     if (!draft.experimentDraft) return null;
     const spec = JSON.parse(JSON.stringify(draft.experimentDraft.spec)) as ExperimentSpecV1;
-    if (action.tag === "experimentGameAdded") spec.games.push({ game: action.game ?? spec.games.at(-1)?.game ?? "nim", game_config: action.gameConfig ?? spec.games.at(-1)?.game_config ?? null });
-    if (action.tag === "experimentGameRemoved" && spec.games.length > 1) spec.games.splice(action.index, 1);
-    if (action.tag === "experimentGameEdited" && spec.games[action.index]) { spec.games[action.index]!.game = action.game; spec.games[action.index]!.game_config = action.gameConfig; }
-    if (action.tag === "experimentVariantAdded") { let n = spec.variants.length + 1; while (spec.variants.some((variant) => variant.id === `variant-${n}` || variant.label === `Variant ${n}`)) n += 1; spec.variants.push({ id: `variant-${n}`, label: `Variant ${n}`, config: {} }); }
-    if (action.tag === "experimentVariantRemoved" && spec.variants.length > 1) spec.variants.splice(action.index, 1);
+    if (action.tag === "experimentGameAdded")
+      spec.games.push({
+        game: action.game ?? spec.games.at(-1)?.game ?? "nim",
+        game_config: action.gameConfig ?? spec.games.at(-1)?.game_config ?? null,
+      });
+    if (action.tag === "experimentGameRemoved" && spec.games.length > 1)
+      spec.games.splice(action.index, 1);
+    if (action.tag === "experimentGameEdited" && spec.games[action.index]) {
+      spec.games[action.index]!.game = action.game;
+      spec.games[action.index]!.game_config = action.gameConfig;
+    }
+    if (action.tag === "experimentVariantAdded") {
+      let n = spec.variants.length + 1;
+      while (
+        spec.variants.some(
+          (variant) => variant.id === `variant-${n}` || variant.label === `Variant ${n}`,
+        )
+      )
+        n += 1;
+      spec.variants.push({ id: `variant-${n}`, label: `Variant ${n}`, config: {} });
+    }
+    if (action.tag === "experimentVariantRemoved" && spec.variants.length > 1)
+      spec.variants.splice(action.index, 1);
     if (action.tag === "experimentVariantEdited" && spec.variants[action.index]) {
-      if (action.field === "config") spec.variants[action.index]!.config = action.value as Record<string, unknown>;
+      if (action.field === "config")
+        spec.variants[action.index]!.config = action.value as Record<string, unknown>;
       else spec.variants[action.index]![action.field] = action.value as string;
     }
-    if (action.tag === "experimentBudgetAdded") spec.budgets.push({ kind: "iterations", value: 25 });
-    if (action.tag === "experimentBudgetRemoved" && spec.budgets.length > 1) spec.budgets.splice(action.index, 1);
+    if (action.tag === "experimentBudgetAdded")
+      spec.budgets.push({ kind: "iterations", value: 25 });
+    if (action.tag === "experimentBudgetRemoved" && spec.budgets.length > 1)
+      spec.budgets.splice(action.index, 1);
     if (action.tag === "experimentBudgetEdited" && spec.budgets[action.index]) {
-      if (action.field === "kind") spec.budgets[action.index] = { kind: action.value as "iterations" | "time_per_move_ms", value: spec.budgets[action.index]!.value };
+      if (action.field === "kind")
+        spec.budgets[action.index] = {
+          kind: action.value as "iterations" | "time_per_move_ms",
+          value: spec.budgets[action.index]!.value,
+        };
       else spec.budgets[action.index]!.value = action.value as number;
     }
-    draft.experimentDraft = { ...draft.experimentDraft, spec }; draft.experimentFieldErrors = {}; draft.experimentError = null; return null;
+    draft.experimentDraft = { ...draft.experimentDraft, spec };
+    draft.experimentFieldErrors = {};
+    draft.experimentError = null;
+    return null;
   }
   if (action.tag === "saveExperiment") {
     const draftValue = draft.experimentDraft;
     if (draft.experimentSaveStatus === "saving") return null;
-    if (!draftValue || !draftValue.name.trim()) { draft.experimentError = "Enter an experiment name."; draft.experimentFieldErrors = { name: "Experiment name is required." }; return null; }
+    if (!draftValue || !draftValue.name.trim()) {
+      draft.experimentError = "Enter an experiment name.";
+      draft.experimentFieldErrors = { name: "Experiment name is required." };
+      return null;
+    }
     const specError = validateExperimentSpec(draftValue.spec);
     if (specError) {
       const parsed = validationErrors(specError);
@@ -480,28 +706,73 @@ export function benchReducer(
       draft.experimentFieldErrors = parsed.fields;
       return null;
     }
-    const method = draft.selectedExperimentId ? env.updateExperiment(draft.selectedExperimentId, draftValue) : (draft.selectedProjectId ? env.createExperiment(draft.selectedProjectId, draftValue) : null);
-    if (!method) { draft.experimentError = "select a project first"; return null; }
-    draft.experimentError = null; draft.experimentFieldErrors = {}; draft.experimentSaveStatus = "saving";
-    return method.map((experiment): BenchAction => ({ tag: "experimentSaved", experiment })).catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
+    const method = draft.selectedExperimentId
+      ? env.updateExperiment(draft.selectedExperimentId, draftValue)
+      : draft.selectedProjectId
+        ? env.createExperiment(draft.selectedProjectId, draftValue)
+        : null;
+    if (!method) {
+      draft.experimentError = "select a project first";
+      return null;
+    }
+    draft.experimentError = null;
+    draft.experimentFieldErrors = {};
+    draft.experimentSaveStatus = "saving";
+    return method
+      .map((experiment): BenchAction => ({ tag: "experimentSaved", experiment }))
+      .catch((error): BenchAction => ({ tag: "experimentFailed", error: String(error) }));
   }
   if (action.tag === "experimentSaved") {
-    draft.selectedExperiment = action.experiment; draft.selectedExperimentId = action.experiment.experiment_id;
-    draft.experimentDraft = { name: action.experiment.name, description: action.experiment.description, spec: action.experiment.spec };
+    draft.selectedExperiment = action.experiment;
+    draft.selectedExperimentId = action.experiment.experiment_id;
+    draft.experimentDraft = {
+      name: action.experiment.name,
+      description: action.experiment.description,
+      spec: action.experiment.spec,
+    };
     draft.experimentSavedDraft = cloneExperimentDraft(draft.experimentDraft);
-    draft.experimentSaveStatus = "idle"; draft.experimentError = null; draft.experimentFieldErrors = {};
-    return draft.selectedProjectId ? env.listExperiments(draft.selectedProjectId).map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments })) : null;
+    draft.experimentSaveStatus = "idle";
+    draft.experimentError = null;
+    draft.experimentFieldErrors = {};
+    return draft.selectedProjectId
+      ? env
+          .listExperiments(draft.selectedProjectId)
+          .map((experiments): BenchAction => ({ tag: "experimentsLoaded", experiments }))
+      : null;
   }
   if (action.tag === "launchExperiment") {
     if (draft.experimentLaunchStatus === "launching") return null;
-    if (!draft.selectedExperimentId || !draft.experimentDraft || !sameExperimentDraft(draft.experimentDraft, draft.experimentSavedDraft)) { draft.experimentRunError = "Save the current experiment before launching."; return null; }
+    if (
+      !draft.selectedExperimentId ||
+      !draft.experimentDraft ||
+      !sameExperimentDraft(draft.experimentDraft, draft.experimentSavedDraft)
+    ) {
+      draft.experimentRunError = "Save the current experiment before launching.";
+      return null;
+    }
     const specError = validateExperimentSpec(draft.experimentDraft.spec);
-    if (specError) { draft.experimentRunError = "Review the experiment settings before launching."; return null; }
-    draft.experimentRunError = null; draft.experimentLaunchStatus = "launching";
-    return env.launchExperiment(draft.selectedExperimentId).map((response): BenchAction => ({ tag: "experimentLaunched", response })).catch((error): BenchAction => ({ tag: "experimentRunFailed", error: String(error) }));
+    if (specError) {
+      draft.experimentRunError = "Review the experiment settings before launching.";
+      return null;
+    }
+    draft.experimentRunError = null;
+    draft.experimentLaunchStatus = "launching";
+    return env
+      .launchExperiment(draft.selectedExperimentId)
+      .map((response): BenchAction => ({ tag: "experimentLaunched", response }))
+      .catch((error): BenchAction => ({ tag: "experimentRunFailed", error: String(error) }));
   }
-  if (action.tag === "experimentLaunched") { draft.experimentLaunchStatus = "idle"; draft.activeTab = "runs"; draft.experimentRunError = null; return Effect.send({ tag: "openRun", runId: action.response.run_id }); }
-  if (action.tag === "experimentRunFailed") { draft.experimentLaunchStatus = "idle"; draft.experimentRunError = action.error; return null; }
+  if (action.tag === "experimentLaunched") {
+    draft.experimentLaunchStatus = "idle";
+    draft.activeTab = "runs";
+    draft.experimentRunError = null;
+    return Effect.send({ tag: "openRun", runId: action.response.run_id });
+  }
+  if (action.tag === "experimentRunFailed") {
+    draft.experimentLaunchStatus = "idle";
+    draft.experimentRunError = action.error;
+    return null;
+  }
   if (action.tag === "experimentFailed") {
     draft.experimentSaveStatus = "idle";
     const parsed = validationErrors(action.error);
@@ -512,7 +783,11 @@ export function benchReducer(
   if (action.tag === "openCell") {
     draft.selectedCellId = action.cellId;
     const runId = draft.openRun?.runId;
-    return runId ? env.getRunGames(runId, 5000, action.cellId).map((games): BenchAction => ({ tag: "cellGamesLoaded", cellId: action.cellId, games })) : null;
+    return runId
+      ? env
+          .getRunGames(runId, 5000, action.cellId)
+          .map((games): BenchAction => ({ tag: "cellGamesLoaded", cellId: action.cellId, games }))
+      : null;
   }
   if (action.tag === "cellGamesLoaded") {
     if (draft.selectedCellId === action.cellId && draft.openRun) draft.openRun.games = action.games;
@@ -530,10 +805,13 @@ export function benchReducer(
     draft.experimentExportError = null;
     try {
       const isJson = action.format === "json";
-      const contents = isJson ? serializeExperimentRunJson(detail, cells) : serializeExperimentRunCsv(detail, cells);
+      const contents = isJson
+        ? serializeExperimentRunJson(detail, cells)
+        : serializeExperimentRunCsv(detail, cells);
       const filename = `experiment-${sanitizeExportRunId(detail.run_id)}.${action.format}`;
       const mimeType = isJson ? "application/json" : "text/csv;charset=utf-8";
-      return env.downloadFile(filename, mimeType, contents)
+      return env
+        .downloadFile(filename, mimeType, contents)
         .map((): BenchAction => ({ tag: "experimentExportFinished" }))
         .catch((error): BenchAction => ({ tag: "experimentExportFailed", error: String(error) }));
     } catch (error) {
@@ -559,7 +837,9 @@ export function benchReducer(
       ra.action,
       unreachableJobEnv("unreachable: a forwarded runs/job action never re-submits or polls"),
     );
-    return eff ? eff.map((a): BenchAction => ({ tag: "runs", action: { tag: "job", action: a } })) : null;
+    return eff
+      ? eff.map((a): BenchAction => ({ tag: "runs", action: { tag: "job", action: a } }))
+      : null;
   }
 
   if (action.tag === "setRunFilters") {
@@ -679,9 +959,13 @@ export function benchReducer(
     const eff = jobPollReduce(
       draft.leaderboard,
       la.action,
-      unreachableJobEnv("unreachable: a forwarded leaderboard/job action never re-submits or polls"),
+      unreachableJobEnv(
+        "unreachable: a forwarded leaderboard/job action never re-submits or polls",
+      ),
     );
-    return eff ? eff.map((a): BenchAction => ({ tag: "leaderboard", action: { tag: "job", action: a } })) : null;
+    return eff
+      ? eff.map((a): BenchAction => ({ tag: "leaderboard", action: { tag: "job", action: a } }))
+      : null;
   }
 
   if (action.tag === "setLeaderboardFilters") {
@@ -720,20 +1004,26 @@ export function benchReducer(
       const { kind, game, config } = la;
       const jobEnv: JobPollEnv<LaunchResponse> = {
         submitJob: () =>
-          env.launchRun(kind, game, config).map((result): JobSubmitResult<LaunchResponse> => ({ status: "done", result })),
+          env
+            .launchRun(kind, game, config)
+            .map((result): JobSubmitResult<LaunchResponse> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: launch resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.launch, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): BenchAction => ({ tag: "launch", action: { tag: "job", action: a } })) : null;
+      return eff
+        ? eff.map((a): BenchAction => ({ tag: "launch", action: { tag: "job", action: a } }))
+        : null;
     }
     const eff = jobPollReduce(
       draft.launch,
       la.action,
       unreachableJobEnv("unreachable: a forwarded launch/job action never re-submits or polls"),
     );
-    const launchEff = eff ? eff.map((a): BenchAction => ({ tag: "launch", action: { tag: "job", action: a } })) : null;
+    const launchEff = eff
+      ? eff.map((a): BenchAction => ({ tag: "launch", action: { tag: "job", action: a } }))
+      : null;
     // A completed launch means the runs table just gained a row — refresh
     // the list so the new run shows up without a manual reload.
     const refreshEff = draft.launch.status === "done" ? refreshRunViews(draft, env) : null;
@@ -794,39 +1084,29 @@ export function benchReducer(
     if (ka.tag === "request") {
       const jobEnv: JobPollEnv<BenchKindInfo[]> = {
         submitJob: () =>
-          env.getBenchKinds().map(
-            (result): JobSubmitResult<BenchKindInfo[]> => ({
-              status: "done",
-              result,
-            }),
-          ),
+          env.getBenchKinds().map((result): JobSubmitResult<BenchKindInfo[]> => ({
+            status: "done",
+            result,
+          })),
         pollJob: () => {
-          throw new Error(
-            "unreachable: kinds resolves synchronously (see submitJob above)",
-          );
+          throw new Error("unreachable: kinds resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.kinds, { tag: "start" }, jobEnv);
       return eff
-        ? eff.map(
-            (a): BenchAction => ({ tag: "kinds", action: { tag: "job", action: a } }),
-          )
+        ? eff.map((a): BenchAction => ({ tag: "kinds", action: { tag: "job", action: a } }))
         : null;
     }
     const eff = jobPollReduce(
       draft.kinds,
       ka.action,
-      unreachableJobEnv(
-        "unreachable: a forwarded kinds/job action never re-submits or polls",
-      ),
+      unreachableJobEnv("unreachable: a forwarded kinds/job action never re-submits or polls"),
     );
     return eff
-      ? eff.map(
-          (a): BenchAction => ({
-            tag: "kinds",
-            action: { tag: "job", action: a },
-          }),
-        )
+      ? eff.map((a): BenchAction => ({
+          tag: "kinds",
+          action: { tag: "job", action: a },
+        }))
       : null;
   }
 
@@ -835,39 +1115,29 @@ export function benchReducer(
     if (ka.tag === "request") {
       const jobEnv: JobPollEnv<TunerGameInfo[]> = {
         submitJob: () =>
-          env.getTunerKinds().map(
-            (result): JobSubmitResult<TunerGameInfo[]> => ({
-              status: "done",
-              result,
-            }),
-          ),
+          env.getTunerKinds().map((result): JobSubmitResult<TunerGameInfo[]> => ({
+            status: "done",
+            result,
+          })),
         pollJob: () => {
-          throw new Error(
-            "unreachable: tunerKinds resolves synchronously (see submitJob above)",
-          );
+          throw new Error("unreachable: tunerKinds resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.tunerKinds, { tag: "start" }, jobEnv);
       return eff
-        ? eff.map(
-            (a): BenchAction => ({ tag: "tunerKinds", action: { tag: "job", action: a } }),
-          )
+        ? eff.map((a): BenchAction => ({ tag: "tunerKinds", action: { tag: "job", action: a } }))
         : null;
     }
     const eff = jobPollReduce(
       draft.tunerKinds,
       ka.action,
-      unreachableJobEnv(
-        "unreachable: a forwarded tunerKinds/job action never re-submits or polls",
-      ),
+      unreachableJobEnv("unreachable: a forwarded tunerKinds/job action never re-submits or polls"),
     );
     return eff
-      ? eff.map(
-          (a): BenchAction => ({
-            tag: "tunerKinds",
-            action: { tag: "job", action: a },
-          }),
-        )
+      ? eff.map((a): BenchAction => ({
+          tag: "tunerKinds",
+          action: { tag: "job", action: a },
+        }))
       : null;
   }
 

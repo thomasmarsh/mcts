@@ -13,7 +13,13 @@ import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type AppAction, type Env } from "../src/reducer.js";
 import { initialAppState, type AppState } from "../src/state.js";
 import { gameTreeReducer, initialGameTree } from "../src/game-tree.js";
-import type { AiMoveResult, AiStrategyRef, Analysis, SearchReport, StateAndView } from "../src/types.js";
+import type {
+  AiMoveResult,
+  AiStrategyRef,
+  Analysis,
+  SearchReport,
+  StateAndView,
+} from "../src/types.js";
 
 // Test-only state/move types -- appReducer never inspects their shape.
 type S = number;
@@ -77,9 +83,12 @@ describe("appReducer / aiMove", () => {
     const init = initialAppState<S, M>("druid", 7);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } }, (s) => {
-      s.aiMove.status = "pending";
-    });
+    ts.send(
+      { tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } },
+      (s) => {
+        s.aiMove.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "aiMove",
@@ -94,7 +103,14 @@ describe("appReducer / aiMove", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: report, parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: result.state,
+          move: result.move,
+          search: report,
+          parentId: rootId,
+          childIds: [],
+        };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
       },
@@ -167,7 +183,14 @@ describe("appReducer / aiMove", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: null, parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: result.state,
+          move: result.move,
+          search: null,
+          parentId: rootId,
+          childIds: [],
+        };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
       },
@@ -194,12 +217,19 @@ describe("appReducer / aiMove", () => {
     const ts = createTestStore(appReducer<S, M>, env, init);
     const rootId = init.tree.rootId;
 
-    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } }, (s) => {
-      s.aiMove.status = "pending";
-    });
+    ts.send(
+      { tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } },
+      (s) => {
+        s.aiMove.status = "pending";
+      },
+    );
     await ts.drain();
     ts.receive(
-      { tag: "aiMove", action: { tag: "job", action: { tag: "failed", error: "Error: subprocess crashed" } }, epoch: 0 },
+      {
+        tag: "aiMove",
+        action: { tag: "job", action: { tag: "failed", error: "Error: subprocess crashed" } },
+        epoch: 0,
+      },
       (s) => {
         s.aiMove.status = "error";
         s.aiMove.error = "Error: subprocess crashed";
@@ -225,9 +255,15 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("test-kind", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" }, budgetMs: 1000 } }, (s) => {
-      s.analysis.status = "pending";
-    });
+    ts.send(
+      {
+        tag: "analysis",
+        action: { tag: "request", strategy: { kind: "preset", id: "strong" }, budgetMs: 1000 },
+      },
+      (s) => {
+        s.analysis.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "analysis",
@@ -242,7 +278,12 @@ describe("appReducer / analysis", () => {
   });
 
   it("forwards a custom AiStrategyRef to env.analyze unchanged", () => {
-    const result: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const result: Analysis<M> = {
+      actions: [],
+      principal_variation: [],
+      total_visits: 5,
+      suggested_move: null,
+    };
     const customStrategy: AiStrategyRef = {
       kind: "custom",
       spec: {
@@ -266,9 +307,12 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("test-kind", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", strategy: customStrategy, budgetMs: 1500 } }, (s) => {
-      s.analysis.status = "pending";
-    });
+    ts.send(
+      { tag: "analysis", action: { tag: "request", strategy: customStrategy, budgetMs: 1500 } },
+      (s) => {
+        s.analysis.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "analysis",
@@ -289,7 +333,12 @@ describe("appReducer / analysis", () => {
   // heatmap overlay/suggested-move highlight derive straight from this
   // field, so a leftover result renders against the wrong board.
   it("resets once a tree navigation changes the current position", () => {
-    const result: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const result: Analysis<M> = {
+      actions: [],
+      principal_variation: [],
+      total_visits: 5,
+      suggested_move: null,
+    };
     const env: Env = {
       ...mockEnv,
       analyze: <M2>() => Effect.send(result) as unknown as Effect<Analysis<M2>>,
@@ -297,9 +346,12 @@ describe("appReducer / analysis", () => {
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
-      s.analysis.status = "pending";
-    });
+    ts.send(
+      { tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } },
+      (s) => {
+        s.analysis.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "analysis",
@@ -322,23 +374,35 @@ describe("appReducer / analysis", () => {
   });
 
   it("resets once a human move completes and advances the tree", () => {
-    const analysisResult: Analysis<M> = { actions: [], principal_variation: [], total_visits: 5, suggested_move: null };
+    const analysisResult: Analysis<M> = {
+      actions: [],
+      principal_variation: [],
+      total_visits: 5,
+      suggested_move: null,
+    };
     const moveResult: StateAndView<S> = { state: 1, view: {} };
     const env: Env = {
       ...mockEnv,
       analyze: <M2>() => Effect.send(analysisResult) as unknown as Effect<Analysis<M2>>,
-      apply: <S2, V2 = unknown>() => Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>>,
+      apply: <S2, V2 = unknown>() =>
+        Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>>,
     };
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
-      s.analysis.status = "pending";
-    });
+    ts.send(
+      { tag: "analysis", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } },
+      (s) => {
+        s.analysis.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "analysis",
-        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: analysisResult } } },
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: analysisResult } },
+        },
         epoch: 0,
       },
       (s) => {
@@ -353,7 +417,10 @@ describe("appReducer / analysis", () => {
     ts.receive(
       {
         tag: "move",
-        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: moveResult } } },
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: moveResult } },
+        },
         move: "a",
       },
       (s) => {
@@ -362,7 +429,14 @@ describe("appReducer / analysis", () => {
         const rootId = s.tree.rootId;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", search: null, parentId: rootId, childIds: [] };
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: moveResult.state,
+          move: "a",
+          search: null,
+          parentId: rootId,
+          childIds: [],
+        };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.analysis.status = "idle";
@@ -399,12 +473,18 @@ describe("appReducer / position", () => {
   // job-poll-wrapped calls elsewhere in this file, which resolve inline
   // through `Effect.send`), so it needs a real microtask flush -- `drain()`
   // -- before `receive()` can see it queued.
-  async function loadPosition<S2, M2>(ts: ReturnType<typeof createTestStore<AppState<S2, M2>, AppAction<S2, M2>, Env>>, nodeId: string) {
+  async function loadPosition<S2, M2>(
+    ts: ReturnType<typeof createTestStore<AppState<S2, M2>, AppAction<S2, M2>, Env>>,
+    nodeId: string,
+  ) {
     ts.send({ tag: "position", action: { tag: "request" } });
     await ts.drain();
-    ts.receive({ tag: "position", action: { tag: "loaded", nodeId, epoch: 0, view: {}, moves: [] } }, (s) => {
-      s.position = { nodeId, view: {}, legalMoves: [] };
-    });
+    ts.receive(
+      { tag: "position", action: { tag: "loaded", nodeId, epoch: 0, view: {}, moves: [] } },
+      (s) => {
+        s.position = { nodeId, view: {}, legalMoves: [] };
+      },
+    );
   }
 
   it("is nulled by a tree navigation that changes currentId", async () => {
@@ -419,7 +499,11 @@ describe("appReducer / position", () => {
 
   it("is nulled in the same reduction a human move advances the tree", async () => {
     const moveResult: StateAndView<S> = { state: 1, view: {} };
-    const env: Env = { ...positionEnv, apply: <S2, V2 = unknown>() => Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>> };
+    const env: Env = {
+      ...positionEnv,
+      apply: <S2, V2 = unknown>() =>
+        Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>>,
+    };
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
     await loadPosition(ts, "n0");
@@ -430,7 +514,10 @@ describe("appReducer / position", () => {
     ts.receive(
       {
         tag: "move",
-        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: moveResult } } },
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: moveResult } },
+        },
         move: "a",
       },
       (s) => {
@@ -438,7 +525,14 @@ describe("appReducer / position", () => {
         s.move.result = moveResult;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: moveResult.state, move: "a", search: null, parentId: s.tree.rootId, childIds: [] };
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: moveResult.state,
+          move: "a",
+          search: null,
+          parentId: s.tree.rootId,
+          childIds: [],
+        };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.position = null;
@@ -448,14 +542,21 @@ describe("appReducer / position", () => {
 
   it("is nulled in the same reduction an aiMove advances the tree", async () => {
     const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {} };
-    const env: Env = { ...positionEnv, aiMove: <S2, M2, V2 = unknown>() => Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>> };
+    const env: Env = {
+      ...positionEnv,
+      aiMove: <S2, M2, V2 = unknown>() =>
+        Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>,
+    };
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
     await loadPosition(ts, "n0");
 
-    ts.send({ tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } }, (s) => {
-      s.aiMove.status = "pending";
-    });
+    ts.send(
+      { tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "strong" } } },
+      (s) => {
+        s.aiMove.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "aiMove",
@@ -467,7 +568,14 @@ describe("appReducer / position", () => {
         s.aiMove.result = result;
         const nextId = `n${s.tree.nextId}`;
         s.tree.nodes[s.tree.rootId]!.childIds.push(nextId);
-        s.tree.nodes[nextId] = { id: nextId, state: result.state, move: result.move, search: null, parentId: s.tree.rootId, childIds: [] };
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: result.state,
+          move: result.move,
+          search: null,
+          parentId: s.tree.rootId,
+          childIds: [],
+        };
         s.tree.currentId = nextId;
         s.tree.nextId += 1;
         s.position = null;
@@ -481,15 +589,23 @@ describe("appReducer / newGame", () => {
     const result: StateAndView<S> = { state: 9, view: {} };
     const env: Env = {
       ...mockEnv,
-      newGame: <S2, V2 = unknown>() => Effect.send(result) as unknown as Effect<StateAndView<S2, V2>>,
+      newGame: <S2, V2 = unknown>() =>
+        Effect.send(result) as unknown as Effect<StateAndView<S2, V2>>,
     };
     const init = initialAppState<S, M>("druid", 0);
-    gameTreeReducer(init.tree, { tag: "applyMove", move: "old-ai", state: 1, search: searchReport("old-ai") }, undefined);
+    gameTreeReducer(
+      init.tree,
+      { tag: "applyMove", move: "old-ai", state: 1, search: searchReport("old-ai") },
+      undefined,
+    );
     const ts = createTestStore(appReducer<S, M>, env, init);
 
-    ts.send({ tag: "newGame", action: { tag: "request", config: { size: { w: 7, h: 7 } } } }, (s) => {
-      s.newGame.status = "pending";
-    });
+    ts.send(
+      { tag: "newGame", action: { tag: "request", config: { size: { w: 7, h: 7 } } } },
+      (s) => {
+        s.newGame.status = "pending";
+      },
+    );
     ts.receive(
       {
         tag: "newGame",
@@ -534,7 +650,12 @@ describe("appReducer / switchGame", () => {
     init.aiPresets.status = "done";
     init.aiPresets.result = [];
     init.analysis.status = "done";
-    init.analysis.result = { actions: [], principal_variation: [], total_visits: 0, suggested_move: null };
+    init.analysis.result = {
+      actions: [],
+      principal_variation: [],
+      total_visits: 0,
+      suggested_move: null,
+    };
     init.position = { nodeId: init.tree.rootId, view: {}, legalMoves: [] };
     const ts = createTestStore(appReducer<S, M>, mockEnv, init);
 

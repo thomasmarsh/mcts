@@ -22,15 +22,29 @@ export const MoveSearchPanel: Component<{
 
   return (
     <section id="move-search-panel" aria-label="Selected move search">
-      <Show when={current()?.move === null ? undefined : parent()} fallback={<p role="status">The starting position has no selected move.</p>}>
+      <Show
+        when={current()?.move === null ? undefined : parent()}
+        fallback={<p role="status">The starting position has no selected move.</p>}
+      >
         {(parentNode) => (
           <>
             <h2>Search that selected this move</h2>
             <Show
               when={current()?.search}
-              fallback={<p role="status">No retained search report for this move. It was played by a human or comes from legacy history.</p>}
+              fallback={
+                <p role="status">
+                  No retained search report for this move. It was played by a human or comes from
+                  legacy history.
+                </p>
+              }
             >
-              {(report) => <SearchInspector report={report()} before={parentNode().state} formatMove={props.formatMove} />}
+              {(report) => (
+                <SearchInspector
+                  report={report()}
+                  before={parentNode().state}
+                  formatMove={props.formatMove}
+                />
+              )}
             </Show>
           </>
         )}

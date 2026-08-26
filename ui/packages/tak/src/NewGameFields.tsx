@@ -17,7 +17,9 @@ function isNewGameConfig(config: unknown): config is NewGameConfig {
   return typeof (config as { size?: unknown }).size === "number";
 }
 
-export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (props) => {
+export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (
+  props,
+) => {
   const size = () => (isNewGameConfig(props.config) ? props.config.size : DEFAULT_SIZE);
 
   return (
@@ -25,9 +27,17 @@ export const NewGameFields: Component<{ config: unknown; onChange: (config: unkn
       Board size
       <select
         value={size()}
-        onChange={(e) => props.onChange({ size: Number(e.currentTarget.value) } satisfies NewGameConfig)}
+        onChange={(e) =>
+          props.onChange({ size: Number(e.currentTarget.value) } satisfies NewGameConfig)
+        }
       >
-        <For each={BOARD_SIZES}>{(n) => <option value={n}>{n} × {n}</option>}</For>
+        <For each={BOARD_SIZES}>
+          {(n) => (
+            <option value={n}>
+              {n} × {n}
+            </option>
+          )}
+        </For>
       </select>
     </label>
   );

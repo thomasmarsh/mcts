@@ -7,12 +7,7 @@ import { Effect } from "./effect.js";
 
 export type Dispatch<A> = (a: A) => void;
 
-export type Reducer<S, A, Env> = (
-  draft: S,
-  action: A,
-  env: Env,
-) => Effect<A> | null;
-
+export type Reducer<S, A, Env> = (draft: S, action: A, env: Env) => Effect<A> | null;
 
 export function pullback<S, A, PS, PA, FEnv, PEnv>(
   child: Reducer<S, A, FEnv>,
@@ -35,7 +30,15 @@ export function pullback<S, A, PS, PA, FEnv, PEnv>(
  * Calls to `env.navigate` are captured synchronously during reduce and emitted
  * as parent-level effects via `widenNav`, interleaved with any feature effects.
  */
-export function pullbackWithNav<NavAction, S, A, E extends { navigate(a: NavAction): Effect<never> }, PS, PA, PEnv>(
+export function pullbackWithNav<
+  NavAction,
+  S,
+  A,
+  E extends { navigate(a: NavAction): Effect<never> },
+  PS,
+  PA,
+  PEnv,
+>(
   child: Reducer<S, A, E>,
   get: (parent: PS) => S,
   match: (action: PA) => A | null,
@@ -55,9 +58,8 @@ export function pullbackWithNav<NavAction, S, A, E extends { navigate(a: NavActi
       },
     };
     const eff = child(get(draft), local, childEnv);
-    const navEff = pending.length > 0
-      ? Effect.merge(...pending.map(a => Effect.send<PA>(a)))
-      : null;
+    const navEff =
+      pending.length > 0 ? Effect.merge(...pending.map((a) => Effect.send<PA>(a))) : null;
     if (!eff && !navEff) return null;
     if (!eff) return navEff;
     if (!navEff) return eff.map(widen);
@@ -65,9 +67,7 @@ export function pullbackWithNav<NavAction, S, A, E extends { navigate(a: NavActi
   };
 }
 
-export function combine<S, A, Env>(
-  ...reducers: Reducer<S, A, Env>[]
-): Reducer<S, A, Env> {
+export function combine<S, A, Env>(...reducers: Reducer<S, A, Env>[]): Reducer<S, A, Env> {
   return (draft, action, env) => {
     const effs: Effect<A>[] = [];
     for (const r of reducers) {

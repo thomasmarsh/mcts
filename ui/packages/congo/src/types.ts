@@ -9,14 +9,7 @@ export const RIVER_ROW = 3;
 export type Player = "Black" | "White";
 
 export type PieceCode =
-  | "giraffe"
-  | "monkey"
-  | "elephant"
-  | "lion"
-  | "crocodile"
-  | "zebra"
-  | "pawn"
-  | "superpawn";
+  "giraffe" | "monkey" | "elephant" | "lion" | "crocodile" | "zebra" | "pawn" | "superpawn";
 
 export interface Cell {
   player: Player;

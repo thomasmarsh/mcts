@@ -5,7 +5,14 @@
 
 import { initialJobPollState, type JobPollState } from "@mcts/core";
 import { initialGameTree, type GameTree } from "./game-tree.js";
-import type { AiMoveResult, AiPresetInfo, AiStrategyRef, Analysis, GameInfo, StateAndView } from "./types.js";
+import type {
+  AiMoveResult,
+  AiPresetInfo,
+  AiStrategyRef,
+  Analysis,
+  GameInfo,
+  StateAndView,
+} from "./types.js";
 
 /** Who controls each player -- keyed by the game's own player id (e.g.
  * Druid's "Black"/"White", tic-tac-toe's "X"/"O") rather than a
@@ -84,7 +91,10 @@ export interface AppState<S, M, V = unknown> {
   ui: UiState;
 }
 
-export function initialAppState<S, M, V = unknown>(gameKind: string, rootState: S): AppState<S, M, V> {
+export function initialAppState<S, M, V = unknown>(
+  gameKind: string,
+  rootState: S,
+): AppState<S, M, V> {
   return {
     gameKind,
     epoch: 0,

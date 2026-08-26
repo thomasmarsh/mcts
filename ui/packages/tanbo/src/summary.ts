@@ -18,7 +18,12 @@ function countGroups(cells: (string | null)[], player: string): number {
       const idx = stack.pop()!;
       const r = Math.floor(idx / 9);
       const c = idx % 9;
-      for (const nb of [[r - 1, c] as const, [r + 1, c] as const, [r, c - 1] as const, [r, c + 1] as const]) {
+      for (const nb of [
+        [r - 1, c] as const,
+        [r + 1, c] as const,
+        [r, c - 1] as const,
+        [r, c + 1] as const,
+      ]) {
         const nr = nb[0];
         const nc = nb[1];
         if (nr < 0 || nr >= 9 || nc < 0 || nc >= 9) continue;
@@ -52,8 +57,16 @@ export function summarize(view: GameView): GameSummary {
     turnText: `${view.turn} to move`,
     bannerText: "",
     lines: [
-      { id: "black", text: `Black — ${blackGroups} group${blackGroups !== 1 ? "s" : ""}`, swatch: "#1a1a1a" },
-      { id: "white", text: `White — ${whiteGroups} group${whiteGroups !== 1 ? "s" : ""}`, swatch: "#e0e0e0" },
+      {
+        id: "black",
+        text: `Black — ${blackGroups} group${blackGroups !== 1 ? "s" : ""}`,
+        swatch: "#1a1a1a",
+      },
+      {
+        id: "white",
+        text: `White — ${whiteGroups} group${whiteGroups !== 1 ? "s" : ""}`,
+        swatch: "#e0e0e0",
+      },
     ],
     currentPlayer: view.turn,
   };

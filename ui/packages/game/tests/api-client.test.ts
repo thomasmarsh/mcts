@@ -21,7 +21,12 @@ function stubFetch(body: unknown): CapturedCall[] {
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
-      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response;
     }),
   );
   return calls;
@@ -94,16 +99,29 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
 
     await api.aiMove("nim", { some: "state" }, strategy);
 
-    expect(bodyOf(calls[0]!)).toEqual({ state: { some: "state" }, preset: "custom", custom: strategy.spec });
+    expect(bodyOf(calls[0]!)).toEqual({
+      state: { some: "state" },
+      preset: "custom",
+      custom: strategy.spec,
+    });
   });
 
   it("analyze forwards the strategy the same way plus budget_ms", async () => {
-    const calls = stubFetch({ actions: [], principal_variation: [], total_visits: 0, suggested_move: null });
+    const calls = stubFetch({
+      actions: [],
+      principal_variation: [],
+      total_visits: 0,
+      suggested_move: null,
+    });
     const api = createApiClient();
 
     await api.analyze("druid", { some: "state" }, { kind: "preset", id: "strong" }, 1500);
 
-    expect(bodyOf(calls[0]!)).toEqual({ state: { some: "state" }, preset: "strong", budget_ms: 1500 });
+    expect(bodyOf(calls[0]!)).toEqual({
+      state: { some: "state" },
+      preset: "strong",
+      budget_ms: 1500,
+    });
   });
 
   it("preserves complete snake_case search reports and legacy search forms", async () => {
@@ -125,13 +143,23 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
       suggested_move: null,
       search: unavailableReport,
     });
-    const analysis = await api.analyze("druid", { some: "state" }, { kind: "preset", id: "random" });
+    const analysis = await api.analyze(
+      "druid",
+      { some: "state" },
+      { kind: "preset", id: "random" },
+    );
 
     expect(analysisCalls[0]!.url).toBe("/api/games/druid/analyze");
     expect(bodyOf(analysisCalls[0]!)).toEqual({ state: { some: "state" }, preset: "random" });
     expect(analysis.search).toEqual(unavailableReport);
 
-    const legacyCalls = stubFetch({ actions: [], principal_variation: [], total_visits: 0, suggested_move: null, search: null });
+    const legacyCalls = stubFetch({
+      actions: [],
+      principal_variation: [],
+      total_visits: 0,
+      suggested_move: null,
+      search: null,
+    });
     const legacy = await api.analyze("druid", { some: "state" }, { kind: "preset", id: "easy" });
 
     expect(legacyCalls[0]!.url).toBe("/api/games/druid/analyze");
@@ -156,7 +184,14 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
   });
 
   it("fetchStrategyFamilies GETs /api/games/{kind}/strategy-families", async () => {
-    const info = { id: "druid", baselines: [], eval_rounds: 1, parameters: [], conditions: [], game_config: null };
+    const info = {
+      id: "druid",
+      baselines: [],
+      eval_rounds: 1,
+      parameters: [],
+      conditions: [],
+      game_config: null,
+    };
     const calls = stubFetch(info);
     const api = createApiClient();
 

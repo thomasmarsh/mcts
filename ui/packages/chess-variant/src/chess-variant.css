@@ -103,7 +103,9 @@
 
 .cv-cell.cv-movable .cv-piece-black,
 .cv-cell.cv-movable .cv-piece-white {
-  box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.4), 0 0 0 2px rgba(0, 0, 0, 0.08);
+  box-shadow:
+    1px 2px 4px rgba(0, 0, 0, 0.4),
+    0 0 0 2px rgba(0, 0, 0, 0.08);
 }
 
 /* Selected source piece — bright ring */
@@ -112,11 +114,15 @@
 }
 
 .cv-cell.cv-selected-source .cv-piece-black {
-  box-shadow: 0 0 0 3px #ffe066, 1px 2px 6px rgba(0, 0, 0, 0.5);
+  box-shadow:
+    0 0 0 3px #ffe066,
+    1px 2px 6px rgba(0, 0, 0, 0.5);
 }
 
 .cv-cell.cv-selected-source .cv-piece-white {
-  box-shadow: 0 0 0 3px #ffe066, 1px 2px 6px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 0 0 3px #ffe066,
+    1px 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 /* Capturable piece — ring highlight */
@@ -130,7 +136,9 @@
 
 .cv-cell.legal.capture-legal .cv-piece-black,
 .cv-cell.legal.capture-legal .cv-piece-white {
-  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.2), 1px 2px 4px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    0 0 0 3px rgba(0, 0, 0, 0.2),
+    1px 2px 4px rgba(0, 0, 0, 0.4);
 }
 
 /* Hovered cell */

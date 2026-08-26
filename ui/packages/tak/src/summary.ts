@@ -41,7 +41,9 @@ export function summarize(view: GameView): GameSummary {
         };
   }
   return {
-    turnText: view.opening ? `${view.turn} to move (opening: place your opponent's piece)` : `${view.turn} to move`,
+    turnText: view.opening
+      ? `${view.turn} to move (opening: place your opponent's piece)`
+      : `${view.turn} to move`,
     bannerText: "",
     lines: reserveLines(view),
     currentPlayer: view.turn,

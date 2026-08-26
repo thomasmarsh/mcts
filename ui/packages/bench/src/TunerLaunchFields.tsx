@@ -132,7 +132,9 @@ export const TunerLaunchFields: Component<{
   validationError: string | null;
   disabled: boolean;
 }> = (props) => {
-  const currentTuner = createMemo(() => props.games.find((g) => g.game === props.game)?.tuner ?? null);
+  const currentTuner = createMemo(
+    () => props.games.find((g) => g.game === props.game)?.tuner ?? null,
+  );
 
   return (
     <div id="tuner-launch-fields">
@@ -142,7 +144,8 @@ export const TunerLaunchFields: Component<{
 
       <Show when={!props.gamesLoading && props.games.length === 0}>
         <div class="launch-empty">
-          No game implements a tuner tuner yet — see <code>tuner()</code> on <code>GameAdapter</code>.
+          No game implements a tuner tuner yet — see <code>tuner()</code> on{" "}
+          <code>GameAdapter</code>.
         </div>
       </Show>
 
@@ -164,7 +167,9 @@ export const TunerLaunchFields: Component<{
             <div id="tuner-tuner-summary">
               <div class="tuner-tuner-meta">
                 <span class="meta-label">Tuner</span>
-                <span class="meta-value"><code>{tuner().id}</code></span>
+                <span class="meta-value">
+                  <code>{tuner().id}</code>
+                </span>
               </div>
 
               <table id="tuner-param-table">
@@ -180,10 +185,16 @@ export const TunerLaunchFields: Component<{
                   <For each={tuner().parameters}>
                     {(p) => (
                       <tr>
-                        <td class="tuner-param-name" title={p.name}>{p.name}</td>
+                        <td class="tuner-param-name" title={p.name}>
+                          {p.name}
+                        </td>
                         <td class="tuner-param-type">{p.type}</td>
-                        <td class="tuner-param-range" title={paramRange(p)}>{paramRange(p)}</td>
-                        <td class="tuner-param-default" title={paramDefault(p)}>{paramDefault(p)}</td>
+                        <td class="tuner-param-range" title={paramRange(p)}>
+                          {paramRange(p)}
+                        </td>
+                        <td class="tuner-param-default" title={paramDefault(p)}>
+                          {paramDefault(p)}
+                        </td>
                       </tr>
                     )}
                   </For>
@@ -226,7 +237,9 @@ export const TunerLaunchFields: Component<{
                 type="number"
                 min={1}
                 value={props.nTrials}
-                onInput={(e) => props.onNTrialsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                onInput={(e) =>
+                  props.onNTrialsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))
+                }
                 disabled={props.disabled}
               />
             </label>
@@ -241,7 +254,9 @@ export const TunerLaunchFields: Component<{
                 onInput={(e) => props.onNWorkersChange(e.currentTarget.value)}
                 disabled={props.disabled}
               />
-              <span class="tuner-field-hint">Concurrent pair evaluations, not MCTS search threads.</span>
+              <span class="tuner-field-hint">
+                Concurrent pair evaluations, not MCTS search threads.
+              </span>
             </label>
 
             <label>
@@ -260,7 +275,9 @@ export const TunerLaunchFields: Component<{
                 type="number"
                 min={1}
                 value={props.minPairs}
-                onInput={(e) => props.onMinPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                onInput={(e) =>
+                  props.onMinPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))
+                }
                 disabled={props.disabled}
               />
               <span class="tuner-field-hint">{props.minPairs * 2} physical games</span>
@@ -272,7 +289,9 @@ export const TunerLaunchFields: Component<{
                 type="number"
                 min={1}
                 value={props.maxPairs}
-                onInput={(e) => props.onMaxPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))}
+                onInput={(e) =>
+                  props.onMaxPairsChange(Math.max(1, parseInt(e.currentTarget.value) || 1))
+                }
                 disabled={props.disabled}
               />
               <span class="tuner-field-hint">{props.maxPairs * 2} physical games</span>
@@ -284,7 +303,9 @@ export const TunerLaunchFields: Component<{
                 type="number"
                 min={0}
                 value={props.tpeStartupTrials}
-                onInput={(e) => props.onTpeStartupTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
+                onInput={(e) =>
+                  props.onTpeStartupTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))
+                }
                 disabled={props.disabled}
               />
             </label>
@@ -321,7 +342,9 @@ export const TunerLaunchFields: Component<{
                   min={2}
                   step="any"
                   value={props.reductionFactor}
-                  onInput={(e) => props.onReductionFactorChange(parseFloat(e.currentTarget.value) || 2)}
+                  onInput={(e) =>
+                    props.onReductionFactorChange(parseFloat(e.currentTarget.value) || 2)
+                  }
                   disabled={props.disabled}
                 />
               </label>
@@ -332,7 +355,11 @@ export const TunerLaunchFields: Component<{
                   type="number"
                   min={0}
                   value={props.pruningStartupTrials}
-                  onInput={(e) => props.onPruningStartupTrialsChange(Math.max(0, parseInt(e.currentTarget.value) || 0))}
+                  onInput={(e) =>
+                    props.onPruningStartupTrialsChange(
+                      Math.max(0, parseInt(e.currentTarget.value) || 0),
+                    )
+                  }
                   disabled={props.disabled}
                 />
               </label>
@@ -354,8 +381,8 @@ export const TunerLaunchFields: Component<{
               />
               <span class="tuner-field-hint">
                 MCTS iterations per move, applied to every trial's candidate (and its opponent, when
-                self-play). Blank uses the game binary's own default -- this is a compute budget, not
-                something tuner tunes for you.
+                self-play). Blank uses the game binary's own default -- this is a compute budget,
+                not something tuner tunes for you.
               </span>
             </label>
 

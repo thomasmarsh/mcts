@@ -3,10 +3,7 @@
 // game store — it gets its own `createStore(benchReducer, benchEnv)` — so
 // nothing here references game types.
 
-import {
-  initialJobPollState,
-  type JobPollState,
-} from "@mcts/core";
+import { initialJobPollState, type JobPollState } from "@mcts/core";
 import { initialTuningNavigationState, type TuningNavigationState } from "./tuning-navigation.js";
 import type {
   BenchKindInfo,

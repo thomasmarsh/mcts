@@ -28,7 +28,9 @@ export function summarize(view: GameView): GameSummary {
           currentPlayer: null,
         };
   }
-  const turnLine = view.last_pass ? `${view.turn} to move (last move was a pass)` : `${view.turn} to move`;
+  const turnLine = view.last_pass
+    ? `${view.turn} to move (last move was a pass)`
+    : `${view.turn} to move`;
   return {
     turnText: turnLine,
     bannerText: "",

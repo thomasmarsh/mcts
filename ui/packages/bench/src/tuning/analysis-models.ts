@@ -216,7 +216,10 @@ export function bracketFacets(
       id,
       key: bracketKey(id),
       label: bracketLabel(id),
-      resources: numericDomain([...resources.map((row) => row.resource), ...points.map((point) => point.resource)]),
+      resources: numericDomain([
+        ...resources.map((row) => row.resource),
+        ...points.map((point) => point.resource),
+      ]),
       reports: resources.reduce((total, row) => total + row.reports, 0),
       trials: resources.reduce((total, row) => total + row.trials, 0),
       points: points.length,
@@ -238,11 +241,23 @@ export function resourceDomains(
 }
 
 /** Exact, unrounded rows for score plots. */
-export function exactPlotRows(overview: TuningAnalysisOverview, selectedTrialId: string | null = null): AnalysisPlotRow[] {
+export function exactPlotRows(
+  overview: TuningAnalysisOverview,
+  selectedTrialId: string | null = null,
+): AnalysisPlotRow[] {
   const bestIds = new Set(overview.best?.trial_ids ?? []);
   return overview.points
-    .map((point) => ({ ...point, best: bestIds.has(point.trial_id), selected: point.trial_id === selectedTrialId }))
-    .sort((a, b) => a.trial_number - b.trial_number || a.resource - b.resource || compareText(a.trial_id, b.trial_id));
+    .map((point) => ({
+      ...point,
+      best: bestIds.has(point.trial_id),
+      selected: point.trial_id === selectedTrialId,
+    }))
+    .sort(
+      (a, b) =>
+        a.trial_number - b.trial_number ||
+        a.resource - b.resource ||
+        compareText(a.trial_id, b.trial_id),
+    );
 }
 
 /** Small semantic symbols keep labels available to non-visual consumers. */
@@ -262,7 +277,8 @@ export function stateSymbol(state: string): DecisionSymbol {
 }
 
 export function reasonSymbol(reason: string | null): DecisionSymbol {
-  if (reason === null || reason === "") return { key: "unreported", symbol: "−", label: "Not reported" };
+  if (reason === null || reason === "")
+    return { key: "unreported", symbol: "−", label: "Not reported" };
   const normalized = reason.toLowerCase();
   if (normalized === "max_pairs") return { key: reason, symbol: "✓", label: "Maximum pairs" };
   if (normalized.includes("prune")) return { key: reason, symbol: "↯", label: "Pruned" };
@@ -274,7 +290,8 @@ export function reasonSymbol(reason: string | null): DecisionSymbol {
 /** Plain-language meanings for the typed, persisted lifecycle reasons. */
 export function decisionReasonDescription(reason: string): string {
   const descriptions: Record<string, string> = {
-    below_min_pairs: "The report was recorded before the minimum pair count, so pruning did not apply.",
+    below_min_pairs:
+      "The report was recorded before the minimum pair count, so pruning did not apply.",
     pruning_disabled: "Pruning was disabled for this report, so the candidate continued.",
     startup_exempt: "The startup allowance exempted this candidate from pruning at this report.",
     hyperband_keep: "The candidate survived the observed Hyperband rung and continued.",
@@ -282,7 +299,10 @@ export function decisionReasonDescription(reason: string): string {
     max_pairs: "The candidate completed after reaching the configured maximum pair count.",
     hyperband_prune: "The candidate was pruned at the observed Hyperband rung.",
   };
-  return descriptions[reason] ?? "The server recorded this decision reason without additional explanatory evidence.";
+  return (
+    descriptions[reason] ??
+    "The server recorded this decision reason without additional explanatory evidence."
+  );
 }
 
 /**
@@ -292,35 +312,97 @@ export function decisionReasonDescription(reason: string): string {
  */
 export function pruningFunnelRows(overview: TuningAnalysisOverview): PruningFunnelRow[] {
   const counts = new Map<string, number>();
-  for (const group of overview.decision_groups) counts.set(group.reason, (counts.get(group.reason) ?? 0) + group.reports);
+  for (const group of overview.decision_groups)
+    counts.set(group.reason, (counts.get(group.reason) ?? 0) + group.reports);
   const definitions: Array<Omit<PruningFunnelRow, "reports">> = [
-    { key: "below_minimum", label: "Below minimum", reason: "below_min_pairs", description: decisionReasonDescription("below_min_pairs") },
-    { key: "startup_exempt", label: "Startup exempt", reason: "startup_exempt", description: decisionReasonDescription("startup_exempt") },
-    { key: "pruning_disabled", label: "Pruning disabled", reason: "pruning_disabled", description: decisionReasonDescription("pruning_disabled") },
-    { key: "continued", label: "Continued", reason: "hyperband_keep", description: decisionReasonDescription("hyperband_keep") },
-    { key: "pruned", label: "Pruned", reason: "hyperband_prune", description: decisionReasonDescription("hyperband_prune") },
-    { key: "confidence_completed", label: "Confidence-completed", reason: "confidence", description: decisionReasonDescription("confidence") },
-    { key: "max_completed", label: "Max-completed", reason: "max_pairs", description: decisionReasonDescription("max_pairs") },
+    {
+      key: "below_minimum",
+      label: "Below minimum",
+      reason: "below_min_pairs",
+      description: decisionReasonDescription("below_min_pairs"),
+    },
+    {
+      key: "startup_exempt",
+      label: "Startup exempt",
+      reason: "startup_exempt",
+      description: decisionReasonDescription("startup_exempt"),
+    },
+    {
+      key: "pruning_disabled",
+      label: "Pruning disabled",
+      reason: "pruning_disabled",
+      description: decisionReasonDescription("pruning_disabled"),
+    },
+    {
+      key: "continued",
+      label: "Continued",
+      reason: "hyperband_keep",
+      description: decisionReasonDescription("hyperband_keep"),
+    },
+    {
+      key: "pruned",
+      label: "Pruned",
+      reason: "hyperband_prune",
+      description: decisionReasonDescription("hyperband_prune"),
+    },
+    {
+      key: "confidence_completed",
+      label: "Confidence-completed",
+      reason: "confidence",
+      description: decisionReasonDescription("confidence"),
+    },
+    {
+      key: "max_completed",
+      label: "Max-completed",
+      reason: "max_pairs",
+      description: decisionReasonDescription("max_pairs"),
+    },
   ];
-  return definitions.map((definition) => ({ ...definition, reports: counts.get(definition.reason) ?? 0 }));
+  return definitions.map((definition) => ({
+    ...definition,
+    reports: counts.get(definition.reason) ?? 0,
+  }));
 }
 
 /** Every server-provided decision group, including zero-count groups. */
 export function decisionGroupRows(overview: TuningAnalysisOverview): DecisionGroupRow[] {
   return overview.decision_groups
-    .map((group) => ({ ...group, outcomeSymbol: stateSymbol(group.outcome), reasonSymbol: reasonSymbol(group.reason) }))
-    .sort((a, b) => compareText(a.outcome, b.outcome) || compareText(a.reason, b.reason) || Number(a.pruning_exempt) - Number(b.pruning_exempt));
+    .map((group) => ({
+      ...group,
+      outcomeSymbol: stateSymbol(group.outcome),
+      reasonSymbol: reasonSymbol(group.reason),
+    }))
+    .sort(
+      (a, b) =>
+        compareText(a.outcome, b.outcome) ||
+        compareText(a.reason, b.reason) ||
+        Number(a.pruning_exempt) - Number(b.pruning_exempt),
+    );
 }
 
 /** Funnel rows retain the API's exact aggregate values and only add display identity. */
-export function rungFunnelRows(overview: TuningAnalysisOverview, selectedBracketId: string | null = null): RungFunnelRow[] {
+export function rungFunnelRows(
+  overview: TuningAnalysisOverview,
+  selectedBracketId: string | null = null,
+): RungFunnelRow[] {
   return overview.bracket_resources
-    .map((row) => ({ ...row, bracket: bracketLabel(row.bracket_id), selected: row.bracket_id === selectedBracketId }))
+    .map((row) => ({
+      ...row,
+      bracket: bracketLabel(row.bracket_id),
+      selected: row.bracket_id === selectedBracketId,
+    }))
     .sort((a, b) => {
-      const bracket = a.bracket_id === null
-        ? (b.bracket_id === null ? 0 : -1)
-        : (b.bracket_id === null ? 1 : compareText(a.bracket_id, b.bracket_id));
-      return bracket || a.resource - b.resource || (a.rung_resource ?? -1) - (b.rung_resource ?? -1);
+      const bracket =
+        a.bracket_id === null
+          ? b.bracket_id === null
+            ? 0
+            : -1
+          : b.bracket_id === null
+            ? 1
+            : compareText(a.bracket_id, b.bracket_id);
+      return (
+        bracket || a.resource - b.resource || (a.rung_resource ?? -1) - (b.rung_resource ?? -1)
+      );
     });
 }
 
@@ -328,7 +410,10 @@ export function rungFunnelRows(overview: TuningAnalysisOverview, selectedBracket
  * One point per recorded report. No extrapolated terminal point is added, so
  * each path ends at its final recorded report even while a session is live.
  */
-export function trialTrajectories(overview: TuningAnalysisOverview, selectedTrialId: string | null = null): TrialTrajectory[] {
+export function trialTrajectories(
+  overview: TuningAnalysisOverview,
+  selectedTrialId: string | null = null,
+): TrialTrajectory[] {
   return trialTrajectoriesFromRows(exactPlotRows(overview, selectedTrialId));
 }
 
@@ -364,7 +449,12 @@ function addWld(left: WldSummary, right: WldSummary): WldSummary {
 }
 
 function trialWld(trial: TuningTrialSummary): WldSummary {
-  return { wins: trial.wins, losses: trial.losses, draws: trial.draws, total: trial.wins + trial.losses + trial.draws };
+  return {
+    wins: trial.wins,
+    losses: trial.losses,
+    draws: trial.draws,
+    total: trial.wins + trial.losses + trial.draws,
+  };
 }
 
 function trialCompute(trial: TuningTrialSummary): ComputeSummary {
@@ -384,12 +474,29 @@ function addCompute(left: ComputeSummary, right: ComputeSummary): ComputeSummary
 }
 
 /** W/L/D and compute totals for the currently returned page, never unseen rows. */
-export function trialPageSummary(page: TuningTrialPage, selectedTrialId: string | null = null): TrialPageSummary {
-  const rows = page.trials.map((trial) => ({ ...trial, wld: trialWld(trial), compute: trialCompute(trial), selected: trial.trial_id === selectedTrialId }));
+export function trialPageSummary(
+  page: TuningTrialPage,
+  selectedTrialId: string | null = null,
+): TrialPageSummary {
+  const rows = page.trials.map((trial) => ({
+    ...trial,
+    wld: trialWld(trial),
+    compute: trialCompute(trial),
+    selected: trial.trial_id === selectedTrialId,
+  }));
   return {
     rows,
-    wld: rows.reduce((total, row) => addWld(total, row.wld), { wins: 0, losses: 0, draws: 0, total: 0 }),
-    compute: rows.reduce((total, row) => addCompute(total, row.compute), { elapsedMs: 0, searchIterationsTotal: 0, searchMoveTimeMs: 0 }),
+    wld: rows.reduce((total, row) => addWld(total, row.wld), {
+      wins: 0,
+      losses: 0,
+      draws: 0,
+      total: 0,
+    }),
+    compute: rows.reduce((total, row) => addCompute(total, row.compute), {
+      elapsedMs: 0,
+      searchIterationsTotal: 0,
+      searchMoveTimeMs: 0,
+    }),
     totalCount: page.total_count,
     returnedCount: rows.length,
     sampled: page.total_count > rows.length,
@@ -398,11 +505,20 @@ export function trialPageSummary(page: TuningTrialPage, selectedTrialId: string 
 
 /** Revision order and gaps are derived from persisted ordinals, not wall-clock time. */
 export function poolRevisionCoverage(overview: TuningAnalysisOverview): PoolRevisionCoverage {
-  const revisions = [...overview.pool_revisions]
-    .sort((a, b) => a.display_ordinal - b.display_ordinal || compareText(a.pool_snapshot_fingerprint, b.pool_snapshot_fingerprint));
+  const revisions = [...overview.pool_revisions].sort(
+    (a, b) =>
+      a.display_ordinal - b.display_ordinal ||
+      compareText(a.pool_snapshot_fingerprint, b.pool_snapshot_fingerprint),
+  );
   let previous: number | null = null;
   const rows = revisions.map((revision) => {
-    const gapBefore = previous === null ? [] : Array.from({ length: Math.max(0, revision.display_ordinal - previous - 1) }, (_, i) => previous! + i + 1);
+    const gapBefore =
+      previous === null
+        ? []
+        : Array.from(
+            { length: Math.max(0, revision.display_ordinal - previous - 1) },
+            (_, i) => previous! + i + 1,
+          );
     previous = revision.display_ordinal;
     return { ...revision, gapBefore, anchorCount: revision.anchors.length };
   });
@@ -432,38 +548,56 @@ export function ladderAnchorRows(
   }
   return revisions
     .filter((revision) => revisionOrdinal === null || revision.display_ordinal === revisionOrdinal)
-    .flatMap((revision) => revision.anchors.map((anchor) => ({
-      key: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}`,
-      revisionOrdinal: revision.display_ordinal,
-      revisionFingerprint: revision.pool_snapshot_fingerprint,
-      revisionObservedAt: revision.observed_at,
-      anchorOrdinal: anchor.anchor_ordinal,
-      anchorId: anchor.anchor_id,
-      config: anchor.config,
-      mu: anchor.rating.mu,
-      sigma: anchor.rating.sigma,
-      lower: anchor.rating.mu - 2 * anchor.rating.sigma,
-      upper: anchor.rating.mu + 2 * anchor.rating.sigma,
-      provenance: anchor.provenance,
-      insertionReason: anchor.insertion_reason,
-      sourceTrialId: anchor.source_trial_id,
-      family: configFamily(anchor.config),
-      historyOrdinals: history.get(anchor.anchor_id) ?? [],
-      selected: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}` === selectedAnchorKey,
-    })))
-    .sort((a, b) => a.revisionOrdinal - b.revisionOrdinal || a.anchorOrdinal - b.anchorOrdinal || compareText(a.anchorId, b.anchorId));
+    .flatMap((revision) =>
+      revision.anchors.map((anchor) => ({
+        key: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}`,
+        revisionOrdinal: revision.display_ordinal,
+        revisionFingerprint: revision.pool_snapshot_fingerprint,
+        revisionObservedAt: revision.observed_at,
+        anchorOrdinal: anchor.anchor_ordinal,
+        anchorId: anchor.anchor_id,
+        config: anchor.config,
+        mu: anchor.rating.mu,
+        sigma: anchor.rating.sigma,
+        lower: anchor.rating.mu - 2 * anchor.rating.sigma,
+        upper: anchor.rating.mu + 2 * anchor.rating.sigma,
+        provenance: anchor.provenance,
+        insertionReason: anchor.insertion_reason,
+        sourceTrialId: anchor.source_trial_id,
+        family: configFamily(anchor.config),
+        historyOrdinals: history.get(anchor.anchor_id) ?? [],
+        selected: `${revision.pool_snapshot_fingerprint}:${anchor.anchor_id}` === selectedAnchorKey,
+      })),
+    )
+    .sort(
+      (a, b) =>
+        a.revisionOrdinal - b.revisionOrdinal ||
+        a.anchorOrdinal - b.anchorOrdinal ||
+        compareText(a.anchorId, b.anchorId),
+    );
 }
 
 /** Recorded rating reports for a selected trial; no terminal value is fabricated. */
-export function candidateRatingTrajectory(trial: Pick<TuningTrialDetailView, "reports"> | null): CandidateRatingPoint[] {
+export function candidateRatingTrajectory(
+  trial: Pick<TuningTrialDetailView, "reports"> | null,
+): CandidateRatingPoint[] {
   if (trial === null) return [];
   return [...trial.reports]
     .sort((a, b) => a.completed_pairs - b.completed_pairs)
-    .map((report) => ({ resource: report.completed_pairs, mu: report.rating.mu, sigma: report.rating.sigma, score: report.score }));
+    .map((report) => ({
+      resource: report.completed_pairs,
+      mu: report.rating.mu,
+      sigma: report.rating.sigma,
+      score: report.score,
+    }));
 }
 
 /** A stable μ domain that contains every displayed immutable interval and candidate report. */
-export function ladderMuDomain(anchors: readonly LadderAnchorRow[], candidate: readonly CandidateRatingPoint[] = [], opponents: readonly OpponentDistance[] = []): [number, number] {
+export function ladderMuDomain(
+  anchors: readonly LadderAnchorRow[],
+  candidate: readonly CandidateRatingPoint[] = [],
+  opponents: readonly OpponentDistance[] = [],
+): [number, number] {
   const values = [
     ...anchors.flatMap((anchor) => [anchor.lower, anchor.upper]),
     ...candidate.flatMap((point) => [point.mu - 2 * point.sigma, point.mu + 2 * point.sigma]),
@@ -496,6 +630,9 @@ export function opponentDistances(trial: Pick<TuningTrialDetailView, "pairs">): 
 }
 
 /** Adds selection identity without changing the source row objects. */
-export function highlightSelectedTrial<T extends { trial_id: string }>(rows: readonly T[], selectedTrialId: string | null): Array<T & { selected: boolean }> {
+export function highlightSelectedTrial<T extends { trial_id: string }>(
+  rows: readonly T[],
+  selectedTrialId: string | null,
+): Array<T & { selected: boolean }> {
   return rows.map((row) => ({ ...row, selected: row.trial_id === selectedTrialId }));
 }

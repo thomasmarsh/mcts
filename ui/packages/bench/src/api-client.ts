@@ -43,15 +43,30 @@ import type {
 } from "./types.js";
 
 export interface BenchApiClient {
-  listRuns(filters?: { status?: string | null; game?: string | null; limit?: number; project_id?: string | null; experiment_id?: string | null }): Promise<RunSummary[]>;
+  listRuns(filters?: {
+    status?: string | null;
+    game?: string | null;
+    limit?: number;
+    project_id?: string | null;
+    experiment_id?: string | null;
+  }): Promise<RunSummary[]>;
   listProjects(): Promise<Project[]>;
   createProject(name: string, description: string): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
-  updateProject(projectId: string, body: { name?: string; description?: string; archived?: boolean }): Promise<Project>;
+  updateProject(
+    projectId: string,
+    body: { name?: string; description?: string; archived?: boolean },
+  ): Promise<Project>;
   listExperiments(projectId: string): Promise<Experiment[]>;
-  createExperiment(projectId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Promise<Experiment>;
+  createExperiment(
+    projectId: string,
+    body: { name: string; description: string; spec: ExperimentSpecV1 },
+  ): Promise<Experiment>;
   getExperiment(experimentId: string): Promise<Experiment>;
-  updateExperiment(experimentId: string, body: { name: string; description: string; spec: ExperimentSpecV1 }): Promise<Experiment>;
+  updateExperiment(
+    experimentId: string,
+    body: { name: string; description: string; spec: ExperimentSpecV1 },
+  ): Promise<Experiment>;
   launchExperiment(experimentId: string): Promise<LaunchResponse>;
   getRunCells(runId: string): Promise<ExperimentCell[]>;
   getRun(runId: string): Promise<RunDetail>;
@@ -75,9 +90,18 @@ export interface BenchApiClient {
   getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview>;
   getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Promise<TuningTrialPage>;
   getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail>;
-  stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse>;
-  resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse>;
-  addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Promise<TuningSessionCommandResponse>;
+  stopTuningSession(
+    sessionId: string,
+    body: TuningSessionCommandRequest,
+  ): Promise<TuningSessionCommandResponse>;
+  resumeTuningSession(
+    sessionId: string,
+    body: TuningSessionCommandRequest,
+  ): Promise<TuningSessionCommandResponse>;
+  addTuningSessionBudget(
+    sessionId: string,
+    body: TuningSessionBudgetRequest,
+  ): Promise<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
@@ -95,14 +119,20 @@ async function errorMessage(r: Response): Promise<string> {
   if (text) {
     try {
       const body: unknown = JSON.parse(text);
-      if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+      if (
+        body &&
+        typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string"
+      ) {
         const fields = (body as { fields?: unknown }).fields;
         if (Array.isArray(fields)) {
           const fieldMessages = fields.flatMap((field): string[] => {
             if (!field || typeof field !== "object") return [];
             const path = (field as { path?: unknown }).path;
             const message = (field as { message?: unknown }).message;
-            return typeof path === "string" && typeof message === "string" ? [`${path}: ${message}`] : [];
+            return typeof path === "string" && typeof message === "string"
+              ? [`${path}: ${message}`]
+              : [];
           });
           if (fieldMessages.length > 0) return fieldMessages.join("; ");
         }
@@ -116,7 +146,10 @@ async function errorMessage(r: Response): Promise<string> {
 }
 
 class BenchApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
     super(message);
     this.name = "BenchApiError";
   }
@@ -160,23 +193,64 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
   const url = (path: string): string => baseUrl + path;
   return {
     async listRuns(filters = {}): Promise<RunSummary[]> {
-      return fetchJson(url(`/api/bench/runs${queryString({ status: filters.status, game: filters.game, limit: filters.limit, project_id: filters.project_id, experiment_id: filters.experiment_id })}`));
+      return fetchJson(
+        url(
+          `/api/bench/runs${queryString({ status: filters.status, game: filters.game, limit: filters.limit, project_id: filters.project_id, experiment_id: filters.experiment_id })}`,
+        ),
+      );
     },
-    async listProjects(): Promise<Project[]> { return fetchJson(url("/api/bench/projects")); },
-    async createProject(name: string, description: string): Promise<Project> { return postJson(url("/api/bench/projects"), { name, description }); },
-    async getProject(projectId: string): Promise<Project> { return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}`)); },
-    async updateProject(projectId: string, body): Promise<Project> { const r = await fetch(url(`/api/bench/projects/${encodeURIComponent(projectId)}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(await errorMessage(r)); return r.json() as Promise<Project>; },
-    async listExperiments(projectId: string): Promise<Experiment[]> { return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`)); },
-    async createExperiment(projectId: string, body): Promise<Experiment> { return postJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`), body); },
-    async getExperiment(experimentId: string): Promise<Experiment> { return fetchJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`)); },
-    async updateExperiment(experimentId: string, body): Promise<Experiment> { const r = await fetch(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(await errorMessage(r)); return r.json() as Promise<Experiment>; },
-    async launchExperiment(experimentId: string): Promise<LaunchResponse> { return postJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}/runs`), {}); },
-    async getRunCells(runId: string): Promise<ExperimentCell[]> { return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/cells`)); },
+    async listProjects(): Promise<Project[]> {
+      return fetchJson(url("/api/bench/projects"));
+    },
+    async createProject(name: string, description: string): Promise<Project> {
+      return postJson(url("/api/bench/projects"), { name, description });
+    },
+    async getProject(projectId: string): Promise<Project> {
+      return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}`));
+    },
+    async updateProject(projectId: string, body): Promise<Project> {
+      const r = await fetch(url(`/api/bench/projects/${encodeURIComponent(projectId)}`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await errorMessage(r));
+      return r.json() as Promise<Project>;
+    },
+    async listExperiments(projectId: string): Promise<Experiment[]> {
+      return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`));
+    },
+    async createExperiment(projectId: string, body): Promise<Experiment> {
+      return postJson(
+        url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`),
+        body,
+      );
+    },
+    async getExperiment(experimentId: string): Promise<Experiment> {
+      return fetchJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`));
+    },
+    async updateExperiment(experimentId: string, body): Promise<Experiment> {
+      const r = await fetch(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await errorMessage(r));
+      return r.json() as Promise<Experiment>;
+    },
+    async launchExperiment(experimentId: string): Promise<LaunchResponse> {
+      return postJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}/runs`), {});
+    },
+    async getRunCells(runId: string): Promise<ExperimentCell[]> {
+      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/cells`));
+    },
     async getRun(runId: string): Promise<RunDetail> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}`));
     },
     async getRunLog(runId: string, since?: number): Promise<RunLogResponse> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/log${queryString({ since })}`));
+      return fetchJson(
+        url(`/api/bench/runs/${encodeURIComponent(runId)}/log${queryString({ since })}`),
+      );
     },
     async getRunStdout(runId: string): Promise<string> {
       const r = await fetch(url(`/api/bench/runs/${encodeURIComponent(runId)}/stdout`));
@@ -185,7 +259,9 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     },
     async getLeaderboard(filters: Partial<LeaderboardFilters> = {}): Promise<LeaderboardEntry[]> {
       return fetchJson(
-        url(`/api/bench/leaderboard${queryString({ game: filters.game, git_sha: filters.gitSha, since: filters.since })}`),
+        url(
+          `/api/bench/leaderboard${queryString({ game: filters.game, git_sha: filters.gitSha, since: filters.since })}`,
+        ),
       );
     },
     async fetchCommitTrends(game: string | null): Promise<CommitTrendData> {
@@ -227,26 +303,62 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview> {
       return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/analysis`));
     },
-    async getTuningTrialPage(sessionId: string, query: TuningTrialPageQuery = {}): Promise<TuningTrialPage> {
-      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials${queryString(query)}`));
+    async getTuningTrialPage(
+      sessionId: string,
+      query: TuningTrialPageQuery = {},
+    ): Promise<TuningTrialPage> {
+      return fetchJson(
+        url(
+          `/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials${queryString(query)}`,
+        ),
+      );
     },
     async getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail> {
-      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials/${encodeURIComponent(trialId)}`));
+      return fetchJson(
+        url(
+          `/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials/${encodeURIComponent(trialId)}`,
+        ),
+      );
     },
-    async stopTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse> {
+    async stopTuningSession(
+      sessionId: string,
+      body: TuningSessionCommandRequest,
+    ): Promise<TuningSessionCommandResponse> {
       return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/stop`), body);
     },
-    async resumeTuningSession(sessionId: string, body: TuningSessionCommandRequest): Promise<TuningSessionCommandResponse> {
-      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/resume`), body);
+    async resumeTuningSession(
+      sessionId: string,
+      body: TuningSessionCommandRequest,
+    ): Promise<TuningSessionCommandResponse> {
+      return postJson(
+        url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/resume`),
+        body,
+      );
     },
-    async addTuningSessionBudget(sessionId: string, body: TuningSessionBudgetRequest): Promise<TuningSessionCommandResponse> {
-      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/budget`), body);
+    async addTuningSessionBudget(
+      sessionId: string,
+      body: TuningSessionBudgetRequest,
+    ): Promise<TuningSessionCommandResponse> {
+      return postJson(
+        url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/budget`),
+        body,
+      );
     },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`));
+      return fetchJson(
+        url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`),
+      );
     },
-    async getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit, cell_id: cellId })}`));
+    async getRunGames(
+      runId: string,
+      limit?: number,
+      cellId?: string | null,
+    ): Promise<GameTraceSummary[]> {
+      return fetchJson(
+        url(
+          `/api/bench/runs/${encodeURIComponent(runId)}/games${queryString({ limit, cell_id: cellId })}`,
+        ),
+      );
     },
     async getRunGameMoves(runId: string, gameSeq: number): Promise<GameMove[]> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/games/${gameSeq}/moves`));
@@ -262,13 +374,16 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
   return {
     listRuns: (filters: RunFilters) => lift(() => api.listRuns(filters)),
     listProjects: () => lift(() => api.listProjects()),
-    createProject: (name: string, description: string) => lift(() => api.createProject(name, description)),
+    createProject: (name: string, description: string) =>
+      lift(() => api.createProject(name, description)),
     getProject: (projectId: string) => lift(() => api.getProject(projectId)),
     updateProject: (projectId: string, body) => lift(() => api.updateProject(projectId, body)),
     listExperiments: (projectId: string) => lift(() => api.listExperiments(projectId)),
-    createExperiment: (projectId: string, body) => lift(() => api.createExperiment(projectId, body)),
+    createExperiment: (projectId: string, body) =>
+      lift(() => api.createExperiment(projectId, body)),
     getExperiment: (experimentId: string) => lift(() => api.getExperiment(experimentId)),
-    updateExperiment: (experimentId: string, body) => lift(() => api.updateExperiment(experimentId, body)),
+    updateExperiment: (experimentId: string, body) =>
+      lift(() => api.updateExperiment(experimentId, body)),
     launchExperiment: (experimentId: string) => lift(() => api.launchExperiment(experimentId)),
     getRunCells: (runId: string) => lift(() => api.getRunCells(runId)),
     getRun: (runId: string) => lift(() => api.getRun(runId)),
@@ -276,33 +391,43 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getRunStdout: (runId: string) => lift(() => api.getRunStdout(runId)),
     getLeaderboard: (filters: LeaderboardFilters) => lift(() => api.getLeaderboard(filters)),
     fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
-    launchRun: (kind: string, game: string, config?: unknown) => lift(() => api.launchRun(kind, game, config)),
+    launchRun: (kind: string, game: string, config?: unknown) =>
+      lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
     getBenchKinds: () => lift(() => api.getBenchKinds()),
     getTunerKinds: () => lift(() => api.getTunerKinds()),
     listTuningSessions: () => lift(() => api.listTuningSessions()),
     getTuningSession: (sessionId: string) => lift(() => api.getTuningSession(sessionId)),
-    getTuningAnalysisOverview: (sessionId: string) => lift(() => api.getTuningAnalysisOverview(sessionId)),
-    getTuningTrialPage: (sessionId: string, query?: TuningTrialPageQuery) => lift(() => api.getTuningTrialPage(sessionId, query)),
-    getTuningTrialDetail: (sessionId: string, trialId: string) => lift(() => api.getTuningTrialDetail(sessionId, trialId)),
-    stopTuningSession: (sessionId: string, body: TuningSessionCommandRequest) => lift(() => api.stopTuningSession(sessionId, body)),
-    resumeTuningSession: (sessionId: string, body: TuningSessionCommandRequest) => lift(() => api.resumeTuningSession(sessionId, body)),
-    addTuningSessionBudget: (sessionId: string, body: TuningSessionBudgetRequest) => lift(() => api.addTuningSessionBudget(sessionId, body)),
+    getTuningAnalysisOverview: (sessionId: string) =>
+      lift(() => api.getTuningAnalysisOverview(sessionId)),
+    getTuningTrialPage: (sessionId: string, query?: TuningTrialPageQuery) =>
+      lift(() => api.getTuningTrialPage(sessionId, query)),
+    getTuningTrialDetail: (sessionId: string, trialId: string) =>
+      lift(() => api.getTuningTrialDetail(sessionId, trialId)),
+    stopTuningSession: (sessionId: string, body: TuningSessionCommandRequest) =>
+      lift(() => api.stopTuningSession(sessionId, body)),
+    resumeTuningSession: (sessionId: string, body: TuningSessionCommandRequest) =>
+      lift(() => api.resumeTuningSession(sessionId, body)),
+    addTuningSessionBudget: (sessionId: string, body: TuningSessionBudgetRequest) =>
+      lift(() => api.addTuningSessionBudget(sessionId, body)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
-    getRunGames: (runId: string, limit?: number, cellId?: string | null) => lift(() => api.getRunGames(runId, limit, cellId)),
-    getRunGameMoves: (runId: string, gameSeq: number) => lift(() => api.getRunGameMoves(runId, gameSeq)),
+    getRunGames: (runId: string, limit?: number, cellId?: string | null) =>
+      lift(() => api.getRunGames(runId, limit, cellId)),
+    getRunGameMoves: (runId: string, gameSeq: number) =>
+      lift(() => api.getRunGameMoves(runId, gameSeq)),
     deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),
-    downloadFile: (filename: string, mimeType: string, contents: string) => Effect.fromPromise(async () => {
-      const blob = new Blob([contents], { type: mimeType });
-      const objectUrl = URL.createObjectURL(blob);
-      try {
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = filename;
-        anchor.click();
-      } finally {
-        URL.revokeObjectURL(objectUrl);
-      }
-    }),
+    downloadFile: (filename: string, mimeType: string, contents: string) =>
+      Effect.fromPromise(async () => {
+        const blob = new Blob([contents], { type: mimeType });
+        const objectUrl = URL.createObjectURL(blob);
+        try {
+          const anchor = document.createElement("a");
+          anchor.href = objectUrl;
+          anchor.download = filename;
+          anchor.click();
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+      }),
   };
 }

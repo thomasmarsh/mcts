@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildTunerOverrides, validateTunerLaunchPolicy, type TunerLaunchPolicyInput } from "../src/tuner-launch-policy.js";
+import {
+  buildTunerOverrides,
+  validateTunerLaunchPolicy,
+  type TunerLaunchPolicyInput,
+} from "../src/tuner-launch-policy.js";
 
 const input = (overrides: Partial<TunerLaunchPolicyInput> = {}): TunerLaunchPolicyInput => ({
   nTrials: 12,
@@ -36,13 +40,15 @@ describe("tuner launch policy", () => {
   it("allows parallel pair slots and includes pruning controls when enabled", () => {
     const value = input({ pruningEnabled: true, nWorkers: "3", sigmaStop: "2" });
     expect(validateTunerLaunchPolicy(value)).toBeNull();
-    expect(buildTunerOverrides(value)).toEqual(expect.arrayContaining([
-      "optimizer.n_workers=3",
-      "optimizer.pruning.enabled=True",
-      "optimizer.pruning.reduction_factor=3",
-      "optimizer.pruning.startup_trials=5",
-      "rating.sigma_stop=2",
-    ]));
+    expect(buildTunerOverrides(value)).toEqual(
+      expect.arrayContaining([
+        "optimizer.n_workers=3",
+        "optimizer.pruning.enabled=True",
+        "optimizer.pruning.reduction_factor=3",
+        "optimizer.pruning.startup_trials=5",
+        "rating.sigma_stop=2",
+      ]),
+    );
   });
 
   it("rejects an invalid explicit evaluation-slot count", () => {

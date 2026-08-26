@@ -94,9 +94,18 @@ export function defaultCustomStrategySpec(schema: AxisSchema): CustomStrategySpe
   return {
     search: {
       select: buildDefaultVariantValue(schema.select.variants[0]!, schema) as unknown as SelectSpec,
-      simulate: buildDefaultVariantValue(schema.simulate.variants[0]!, schema) as unknown as SimulateSpec,
-      backprop: buildDefaultVariantValue(schema.backprop.variants[0]!, schema) as unknown as BackpropSpec,
-      final_action: buildDefaultVariantValue(schema.final_action.variants[0]!, schema) as unknown as FinalActionSpec,
+      simulate: buildDefaultVariantValue(
+        schema.simulate.variants[0]!,
+        schema,
+      ) as unknown as SimulateSpec,
+      backprop: buildDefaultVariantValue(
+        schema.backprop.variants[0]!,
+        schema,
+      ) as unknown as BackpropSpec,
+      final_action: buildDefaultVariantValue(
+        schema.final_action.variants[0]!,
+        schema,
+      ) as unknown as FinalActionSpec,
     },
     max_time_ms: 1000,
     threads: 0,
@@ -141,7 +150,9 @@ const VariantPicker: Component<{
         <For each={current().fields}>
           {(field) => (
             <Show
-              when={field.type === "enum" && (field as Extract<AxisFieldSchema, { type: "enum" }>).bare}
+              when={
+                field.type === "enum" && (field as Extract<AxisFieldSchema, { type: "enum" }>).bare
+              }
               fallback={
                 <Show
                   when={field.type === "enum"}
@@ -159,7 +170,7 @@ const VariantPicker: Component<{
                     schema={props.schema}
                     value={
                       (props.value[field.name] as VariantValue | undefined) ??
-                      buildDefaultFieldValue(field, props.schema) as VariantValue
+                      (buildDefaultFieldValue(field, props.schema) as VariantValue)
                     }
                     onChange={(v) => setField(field.name, v)}
                   />
@@ -231,7 +242,10 @@ const NumberField: Component<{
         step={props.field.type === "int" ? 1 : "any"}
         value={(props.value as number | undefined) ?? props.field.default}
         onInput={(e) => {
-          const n = props.field.type === "int" ? parseInt(e.currentTarget.value) : parseFloat(e.currentTarget.value);
+          const n =
+            props.field.type === "int"
+              ? parseInt(e.currentTarget.value)
+              : parseFloat(e.currentTarget.value);
           props.onChange(Number.isFinite(n) ? n : props.field.default);
         }}
       />
@@ -263,7 +277,11 @@ const ScalarField: Component<{
 }> = (props) => {
   return (
     <Show
-      when={props.field.type === "bool" ? (props.field as Extract<AxisFieldSchema, { type: "bool" }>) : undefined}
+      when={
+        props.field.type === "bool"
+          ? (props.field as Extract<AxisFieldSchema, { type: "bool" }>)
+          : undefined
+      }
       fallback={
         <NumberField
           field={props.field as Extract<AxisFieldSchema, { type: "float" | "int" }>}
@@ -302,13 +320,18 @@ export const StrategyConfigEditor: Component<{
 
   const budgetError = createMemo(() => {
     const e = budgetEnabled();
-    return e.time || e.iterations ? null : "At least one of time limit or iteration limit must be set.";
+    return e.time || e.iterations
+      ? null
+      : "At least one of time limit or iteration limit must be set.";
   });
 
   function setAxis<K extends keyof CustomStrategySpec["search"]>(axis: K, value: VariantValue) {
     props.onChange({
       ...props.config,
-      search: { ...props.config.search, [axis]: value as unknown as CustomStrategySpec["search"][K] },
+      search: {
+        ...props.config.search,
+        [axis]: value as unknown as CustomStrategySpec["search"][K],
+      },
     });
   }
 
@@ -362,7 +385,11 @@ export const StrategyConfigEditor: Component<{
             type="checkbox"
             checked={budgetEnabled().time}
             onChange={(e) =>
-              commitBudget({ ...budgetEnabled(), time: e.currentTarget.checked }, timeMs(), iterations())
+              commitBudget(
+                { ...budgetEnabled(), time: e.currentTarget.checked },
+                timeMs(),
+                iterations(),
+              )
             }
           />
           Time limit (ms)
@@ -384,7 +411,11 @@ export const StrategyConfigEditor: Component<{
             type="checkbox"
             checked={budgetEnabled().iterations}
             onChange={(e) =>
-              commitBudget({ ...budgetEnabled(), iterations: e.currentTarget.checked }, timeMs(), iterations())
+              commitBudget(
+                { ...budgetEnabled(), iterations: e.currentTarget.checked },
+                timeMs(),
+                iterations(),
+              )
             }
           />
           Iteration limit

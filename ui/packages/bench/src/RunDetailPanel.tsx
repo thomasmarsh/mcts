@@ -23,7 +23,11 @@ function configOverride(config: unknown, key: string): number | null {
   return null;
 }
 
-function progress(detail: NonNullable<BenchState["openRun"]>["detail"]): { completed: number; total: number | null; workers: number | null } {
+function progress(detail: NonNullable<BenchState["openRun"]>["detail"]): {
+  completed: number;
+  total: number | null;
+  workers: number | null;
+} {
   if (!detail) return { completed: 0, total: null, workers: null };
   if (detail.kind === "tuner") {
     return {
@@ -35,7 +39,11 @@ function progress(detail: NonNullable<BenchState["openRun"]>["detail"]): { compl
   const config = detail.config as { strategies?: unknown; rounds?: unknown } | null;
   const strategies = Array.isArray(config?.strategies) ? config.strategies.length : 0;
   const rounds = typeof config?.rounds === "number" && config.rounds > 0 ? config.rounds : 1;
-  return { completed: detail.match_count, total: strategies > 1 ? strategies * (strategies - 1) * rounds : null, workers: null };
+  return {
+    completed: detail.match_count,
+    total: strategies > 1 ? strategies * (strategies - 1) * rounds : null,
+    workers: null,
+  };
 }
 
 export const RunDetailPanel: Component<{
@@ -159,7 +167,9 @@ export const RunDetailPanel: Component<{
             <div id="run-detail-meta">
               <div class="meta-row">
                 <span class="meta-label">Run ID</span>
-                <span class="meta-value"><code>{detail()!.run_id}</code></span>
+                <span class="meta-value">
+                  <code>{detail()!.run_id}</code>
+                </span>
               </div>
               <div class="meta-row">
                 <span class="meta-label">Status</span>
@@ -180,7 +190,10 @@ export const RunDetailPanel: Component<{
               <div class="meta-row progress-row">
                 <span class="meta-label">Progress</span>
                 <span class="meta-value">
-                  {runProgress().completed}{runProgress().total !== null ? ` / ${runProgress().total} (${progressPercent()}%) complete` : " completed"}
+                  {runProgress().completed}
+                  {runProgress().total !== null
+                    ? ` / ${runProgress().total} (${progressPercent()}%) complete`
+                    : " completed"}
                   <Show when={isTuner() && detail()!.status === "running"}>
                     {` · ${runProgress().workers ?? "auto"} workers`}
                   </Show>
@@ -196,7 +209,9 @@ export const RunDetailPanel: Component<{
               </div>
               <div class="meta-row">
                 <span class="meta-label">Git SHA</span>
-                <span class="meta-value"><code>{detail()!.git_sha.slice(0, 12)}</code></span>
+                <span class="meta-value">
+                  <code>{detail()!.git_sha.slice(0, 12)}</code>
+                </span>
               </div>
               <Show when={detail()!.pid}>
                 <div class="meta-row">
@@ -215,28 +230,56 @@ export const RunDetailPanel: Component<{
 
           <Show when={isTuner() && !isModernTuningAttempt()}>
             <p class="tuning-run-diagnostics">
-              This physical run keeps its log and diagnostics here.
-              This legacy run has no logical session.
+              This physical run keeps its log and diagnostics here. This legacy run has no logical
+              session.
             </p>
           </Show>
           <Show when={isModernTuningAttempt() && detail()}>
             <section class="tuning-attempt-summary" aria-label="Tuning attempt">
-              <div><strong>{detail()!.status}</strong> tuning attempt</div>
+              <div>
+                <strong>{detail()!.status}</strong> tuning attempt
+              </div>
               <p>Continue and analyze this work from its logical tuning session.</p>
-              <button id="open-tuning-session-btn" type="button" onClick={() => dispatch({ tag: "tuningNavigation", action: { tag: "selectSession", sessionId: tuningSessionId()! } })}>Open tuning session</button>
+              <button
+                id="open-tuning-session-btn"
+                type="button"
+                onClick={() =>
+                  dispatch({
+                    tag: "tuningNavigation",
+                    action: { tag: "selectSession", sessionId: tuningSessionId()! },
+                  })
+                }
+              >
+                Open tuning session
+              </button>
               <details id="tuning-attempt-diagnostics">
                 <summary>Attempt diagnostics</summary>
                 <dl>
-                  <div><dt>Run ID</dt><dd><code>{detail()!.run_id}</code></dd></div>
-                  <Show when={detail()!.ended_at}><div><dt>Ended</dt><dd>{detail()!.ended_at}</dd></div></Show>
-                  <Show when={detail()!.exit_code !== null}><div><dt>Exit code</dt><dd>{detail()!.exit_code}</dd></div></Show>
+                  <div>
+                    <dt>Run ID</dt>
+                    <dd>
+                      <code>{detail()!.run_id}</code>
+                    </dd>
+                  </div>
+                  <Show when={detail()!.ended_at}>
+                    <div>
+                      <dt>Ended</dt>
+                      <dd>{detail()!.ended_at}</dd>
+                    </div>
+                  </Show>
+                  <Show when={detail()!.exit_code !== null}>
+                    <div>
+                      <dt>Exit code</dt>
+                      <dd>{detail()!.exit_code}</dd>
+                    </div>
+                  </Show>
                 </dl>
-                <button
-                  id="show-stdout-btn"
-                  onClick={fetchStdout}
-                  disabled={stdoutLoading()}
-                >
-                  {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh error output" : "Show error output"}
+                <button id="show-stdout-btn" onClick={fetchStdout} disabled={stdoutLoading()}>
+                  {stdoutLoading()
+                    ? "Loading…"
+                    : stdoutContent() !== null
+                      ? "Refresh error output"
+                      : "Show error output"}
                 </button>
                 <Show when={stdoutVisible() && stdoutContent() !== null}>
                   <pre id="stdout-content">{stdoutContent()}</pre>
@@ -250,7 +293,14 @@ export const RunDetailPanel: Component<{
         </div>
 
         <Show when={!isModernTuningAttempt() && spectatorVisible() && Spectator && detail()}>
-          {Spectator ? <Spectator runId={openRun()!.runId} game={detail()!.game ?? ""} kind={detail()!.kind} live={detail()!.status === "running"} /> : null}
+          {Spectator ? (
+            <Spectator
+              runId={openRun()!.runId}
+              game={detail()!.game ?? ""}
+              kind={detail()!.kind}
+              live={detail()!.status === "running"}
+            />
+          ) : null}
         </Show>
 
         <Show when={!isModernTuningAttempt()}>
@@ -260,7 +310,9 @@ export const RunDetailPanel: Component<{
               <Show when={tail()}>
                 <span class="log-status">
                   {tail()!.active ? (
-                    <>Polling (<code>{tail()!.offset}</code> bytes)…</>
+                    <>
+                      Polling (<code>{tail()!.offset}</code> bytes)…
+                    </>
                   ) : (
                     <>Complete ({tail()!.lines.length} lines)</>
                   )}
@@ -290,36 +342,39 @@ export const RunDetailPanel: Component<{
             TODO: rename the backend's file to avoid "stdout" for stderr output. */}
         <Show when={!isModernTuningAttempt()}>
           <div id="run-stdout-section">
-          <button
-            id="show-stdout-btn"
-            onClick={fetchStdout}
-            disabled={stdoutLoading()}
-            title="Fetch the raw stdout.log (stderr output from the run process)"
-          >
-            {stdoutLoading() ? "Loading…" : stdoutContent() !== null ? "Refresh Stderr Log" : "Show Stderr Log"}
-          </button>
+            <button
+              id="show-stdout-btn"
+              onClick={fetchStdout}
+              disabled={stdoutLoading()}
+              title="Fetch the raw stdout.log (stderr output from the run process)"
+            >
+              {stdoutLoading()
+                ? "Loading…"
+                : stdoutContent() !== null
+                  ? "Refresh Stderr Log"
+                  : "Show Stderr Log"}
+            </button>
 
-          <Show when={stdoutVisible() && stdoutContent() !== null}>
-            <div id="stdout-panel">
-              <div id="stdout-header">
-                <span>Stdout Log (stderr output)</span>
-                <button onClick={() => setStdoutVisible(false)}>Hide</button>
+            <Show when={stdoutVisible() && stdoutContent() !== null}>
+              <div id="stdout-panel">
+                <div id="stdout-header">
+                  <span>Stdout Log (stderr output)</span>
+                  <button onClick={() => setStdoutVisible(false)}>Hide</button>
+                </div>
+                <Show when={stdoutContent() && stdoutContent()!.length > 0}>
+                  <pre id="stdout-content">{stdoutContent()}</pre>
+                </Show>
+                <Show when={stdoutContent() !== null && stdoutContent()!.length === 0}>
+                  <div class="log-empty">stdout.log is empty</div>
+                </Show>
               </div>
-              <Show when={stdoutContent() && stdoutContent()!.length > 0}>
-                <pre id="stdout-content">{stdoutContent()}</pre>
-              </Show>
-              <Show when={stdoutContent() !== null && stdoutContent()!.length === 0}>
-                <div class="log-empty">stdout.log is empty</div>
-              </Show>
-            </div>
-          </Show>
+            </Show>
 
-          <Show when={stdoutError()}>
-            <div class="log-error">Stdout fetch error: {stdoutError()}</div>
-          </Show>
+            <Show when={stdoutError()}>
+              <div class="log-error">Stdout fetch error: {stdoutError()}</div>
+            </Show>
           </div>
         </Show>
-
       </div>
     </Show>
   );

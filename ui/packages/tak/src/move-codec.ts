@@ -34,11 +34,16 @@ export type ParsedMove =
 /** PTN direction glyph to compass direction. */
 function parseDirectionGlyph(glyph: string): Direction {
   switch (glyph) {
-    case "+": return "North";
-    case ">": return "East";
-    case "-": return "South";
-    case "<": return "West";
-    default: throw new Error(`Invalid PTN direction '${glyph}'`);
+    case "+":
+      return "North";
+    case ">":
+      return "East";
+    case "-":
+      return "South";
+    case "<":
+      return "West";
+    default:
+      throw new Error(`Invalid PTN direction '${glyph}'`);
   }
 }
 

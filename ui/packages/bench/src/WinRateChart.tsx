@@ -43,7 +43,7 @@ export const WinRateChart: Component<{
 
   const trends = createMemo(() => state().commitTrends);
   const runsState = createMemo(() => state().runs);
-  const runs = createMemo(() => (runsState().status === "done" ? runsState().result ?? [] : []));
+  const runs = createMemo(() => (runsState().status === "done" ? (runsState().result ?? []) : []));
 
   // Derive available strategies and games from the loaded trend data.
   const availableStrategies = createMemo(() => {
@@ -66,7 +66,10 @@ export const WinRateChart: Component<{
   // Local selection state.
   const [selectedStrategy, setSelectedStrategy] = createSignal("");
   const [selectedGame, setSelectedGame] = createSignal("");
-  const [hoveredPoint, setHoveredPoint] = createSignal<{ sha: string; entry: LeaderboardEntry } | null>(null);
+  const [hoveredPoint, setHoveredPoint] = createSignal<{
+    sha: string;
+    entry: LeaderboardEntry;
+  } | null>(null);
 
   // Fetch trends when the game filter changes.
   function applyGame(game: string): void {
@@ -141,10 +144,14 @@ export const WinRateChart: Component<{
     const scale = yScale();
     // Upper edge (left to right)
     const upper = pts.points
-      .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${scale(p.entry.ci_upper).toFixed(1)}`)
+      .map(
+        (p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${scale(p.entry.ci_upper).toFixed(1)}`,
+      )
       .join(" ");
     // Lower edge (right to left)
-    const lower = pts.points.slice().reverse()
+    const lower = pts.points
+      .slice()
+      .reverse()
       .map((p: PlotPoint) => `L${p.x.toFixed(1)},${scale(p.entry.ci_lower).toFixed(1)}`)
       .join(" ");
     return `${upper} ${lower} Z`;
@@ -154,7 +161,7 @@ export const WinRateChart: Component<{
   const yTicks = createMemo(() => {
     const { min, max } = yRange();
     const ticks: number[] = [];
-    const step = Math.max(0.05, Math.round((max - min) / 4 * 20) / 20);
+    const step = Math.max(0.05, Math.round(((max - min) / 4) * 20) / 20);
     let t = Math.ceil(min / step) * step;
     while (t <= max) {
       ticks.push(t);
@@ -169,14 +176,9 @@ export const WinRateChart: Component<{
         <h3>Win Rate Over Commits</h3>
         <div id="chart-controls">
           <Show when={availableGames().length > 0}>
-            <select
-              value={selectedGame()}
-              onChange={(e) => applyGame(e.currentTarget.value)}
-            >
+            <select value={selectedGame()} onChange={(e) => applyGame(e.currentTarget.value)}>
               <option value="">All games</option>
-              <For each={availableGames()}>
-                {(g) => <option value={g}>{g}</option>}
-              </For>
+              <For each={availableGames()}>{(g) => <option value={g}>{g}</option>}</For>
             </select>
           </Show>
           <Show when={trends().shas.length > 0 && availableStrategies().length > 0}>
@@ -185,9 +187,7 @@ export const WinRateChart: Component<{
               onChange={(e) => setSelectedStrategy(e.currentTarget.value)}
             >
               <option value="">— Select strategy —</option>
-              <For each={availableStrategies()}>
-                {(s) => <option value={s}>{s}</option>}
-              </For>
+              <For each={availableStrategies()}>{(s) => <option value={s}>{s}</option>}</For>
             </select>
           </Show>
         </div>
@@ -200,13 +200,25 @@ export const WinRateChart: Component<{
         <div class="lb-error">{trends().error}</div>
       </Show>
 
-      <Show when={trends().shas.length === 0 && trends().status !== "loading" && trends().status !== "error"}>
+      <Show
+        when={
+          trends().shas.length === 0 && trends().status !== "loading" && trends().status !== "error"
+        }
+      >
         <div class="lb-empty">No commit data yet. Select a game above and ensure runs exist.</div>
       </Show>
 
-      <Show when={selectedStrategy() && !plotData() && trends().status !== "loading" && trends().shas.length > 0}>
+      <Show
+        when={
+          selectedStrategy() &&
+          !plotData() &&
+          trends().status !== "loading" &&
+          trends().shas.length > 0
+        }
+      >
         <div class="lb-empty">
-          Need at least 2 data points for strategy &quot;{selectedStrategy()}&quot; to draw a trend line.
+          Need at least 2 data points for strategy &quot;{selectedStrategy()}&quot; to draw a trend
+          line.
         </div>
       </Show>
 
@@ -250,7 +262,13 @@ export const WinRateChart: Component<{
             <path d={ciPathD()} fill="rgba(91,127,214,0.12)" stroke="none" />
 
             {/* Line */}
-            <path d={pathD()} fill="none" stroke="#5b7fd6" stroke-width="2" stroke-linejoin="round" />
+            <path
+              d={pathD()}
+              fill="none"
+              stroke="#5b7fd6"
+              stroke-width="2"
+              stroke-linejoin="round"
+            />
 
             {/* Dots with hover */}
             <For each={plotData()?.points ?? []}>
@@ -282,7 +300,9 @@ export const WinRateChart: Component<{
                 <text
                   x={p.x}
                   y={CHART_H - 8}
-                  text-anchor={i() === 0 ? "start" : i() === plotData()!.points.length - 1 ? "end" : "middle"}
+                  text-anchor={
+                    i() === 0 ? "start" : i() === plotData()!.points.length - 1 ? "end" : "middle"
+                  }
                   fill="#6b6e78"
                   font-size="9"
                   transform={`rotate(-25, ${p.x}, ${CHART_H - 8})`}
@@ -306,13 +326,15 @@ export const WinRateChart: Component<{
           <div class="tooltip-row">
             <span class="tooltip-label">95% CI</span>
             <span class="tooltip-value">
-              {(hoveredPoint()!.entry.ci_lower * 100).toFixed(1)}% – {(hoveredPoint()!.entry.ci_upper * 100).toFixed(1)}%
+              {(hoveredPoint()!.entry.ci_lower * 100).toFixed(1)}% –{" "}
+              {(hoveredPoint()!.entry.ci_upper * 100).toFixed(1)}%
             </span>
           </div>
           <div class="tooltip-row">
             <span class="tooltip-label">Games</span>
             <span class="tooltip-value">
-              {hoveredPoint()!.entry.wins}W / {hoveredPoint()!.entry.losses}L / {hoveredPoint()!.entry.draws}D
+              {hoveredPoint()!.entry.wins}W / {hoveredPoint()!.entry.losses}L /{" "}
+              {hoveredPoint()!.entry.draws}D
             </span>
           </div>
         </div>

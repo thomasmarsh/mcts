@@ -1,4 +1,9 @@
-import type { JsonValue, TuningPoolAnchor, TuningPoolRevision, TuningTrialDetailView } from "../types.js";
+import type {
+  JsonValue,
+  TuningPoolAnchor,
+  TuningPoolRevision,
+  TuningTrialDetailView,
+} from "../types.js";
 
 export type JsonObject = { [key: string]: JsonValue };
 
@@ -56,8 +61,12 @@ function isJsonValue(value: unknown): value is JsonValue {
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    && Object.values(value).every(isJsonValue);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isJsonValue)
+  );
 }
 
 function validBudget(value: number | null | undefined): value is number {
@@ -67,17 +76,23 @@ function validBudget(value: number | null | undefined): value is number {
 /** Reversible, source-stable identifier encoding for arbitrary recorded IDs. */
 export function safePresetId(kind: PresetSource["kind"], sourceId: string): string | null {
   if (sourceId.length === 0) return null;
-  const encoded = [...sourceId].map((character) => {
-    if (/^[a-z0-9]$/.test(character)) return character;
-    return `_x${character.codePointAt(0)!.toString(16)}_`;
-  }).join("");
+  const encoded = [...sourceId]
+    .map((character) => {
+      if (/^[a-z0-9]$/.test(character)) return character;
+      return `_x${character.codePointAt(0)!.toString(16)}_`;
+    })
+    .join("");
   return `${kind}-${encoded}`;
 }
 
 function stableValue(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(stableValue);
   if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(Object.keys(value).sort(compareKey).map((key) => [key, stableValue(value[key]!)]));
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort(compareKey)
+      .map((key) => [key, stableValue(value[key]!)]),
+  );
 }
 
 function compareKey(a: string, b: string): number {
@@ -107,26 +122,66 @@ export function serializeRecordedParams(params: unknown): string | null {
 /** Validates one persisted candidate/opponent snapshot and resolves its one budget. */
 export function buildPresetSpec(source: PresetSource): PresetBuildResult {
   const id = safePresetId(source.kind, source.sourceId);
-  if (id === null) return { enabled: false, reason: { code: "invalid_source_id", message: "This snapshot has no stable source id." } };
+  if (id === null)
+    return {
+      enabled: false,
+      reason: { code: "invalid_source_id", message: "This snapshot has no stable source id." },
+    };
   if (source.params === null || source.params === undefined) {
-    return { enabled: false, reason: { code: "legacy_missing_config", message: "This legacy snapshot did not record a strategy configuration." } };
+    return {
+      enabled: false,
+      reason: {
+        code: "legacy_missing_config",
+        message: "This legacy snapshot did not record a strategy configuration.",
+      },
+    };
   }
   if (!isJsonObject(source.params)) {
-    return { enabled: false, reason: { code: "invalid_params", message: "The recorded strategy configuration is not a JSON object." } };
+    return {
+      enabled: false,
+      reason: {
+        code: "invalid_params",
+        message: "The recorded strategy configuration is not a JSON object.",
+      },
+    };
   }
   if (typeof source.params.family !== "string" || source.params.family.length === 0) {
-    return { enabled: false, reason: { code: "missing_family", message: "The recorded strategy configuration has no family." } };
+    return {
+      enabled: false,
+      reason: {
+        code: "missing_family",
+        message: "The recorded strategy configuration has no family.",
+      },
+    };
   }
   if (Object.hasOwn(source.params, "mcgs") && typeof source.params.mcgs !== "boolean") {
-    return { enabled: false, reason: { code: "invalid_mcgs", message: "The recorded mcgs capability is not boolean." } };
+    return {
+      enabled: false,
+      reason: { code: "invalid_mcgs", message: "The recorded mcgs capability is not boolean." },
+    };
   }
   const hasTime = source.max_time_ms !== null && source.max_time_ms !== undefined;
   const hasIterations = source.max_iterations !== null && source.max_iterations !== undefined;
   if (hasTime && hasIterations) {
-    return { enabled: false, reason: { code: "multiple_budgets", message: "The snapshot records both a time and an iteration budget." } };
+    return {
+      enabled: false,
+      reason: {
+        code: "multiple_budgets",
+        message: "The snapshot records both a time and an iteration budget.",
+      },
+    };
   }
-  if ((hasTime && !validBudget(source.max_time_ms)) || (hasIterations && !validBudget(source.max_iterations))) {
-    return { enabled: false, reason: { code: "invalid_budget", message: "The recorded search budget must be a positive integer." } };
+  if (
+    (hasTime && !validBudget(source.max_time_ms)) ||
+    (hasIterations && !validBudget(source.max_iterations))
+  ) {
+    return {
+      enabled: false,
+      reason: {
+        code: "invalid_budget",
+        message: "The recorded search budget must be a positive integer.",
+      },
+    };
   }
   const preset: PresetSpec = {
     id,
@@ -135,7 +190,7 @@ export function buildPresetSpec(source: PresetSource): PresetBuildResult {
     params: source.params,
     ...(hasTime
       ? { max_time_ms: source.max_time_ms as number }
-      : { max_iterations: hasIterations ? source.max_iterations as number : 10_000 }),
+      : { max_iterations: hasIterations ? (source.max_iterations as number) : 10_000 }),
     threads: 1,
     // The recorded search-space's `mcgs` key is the durable capability
     // marker. Its boolean value chooses graph search for that trial, not
@@ -173,7 +228,10 @@ export function opponentPresetSource(
 }
 
 /** Thin, injectable clipboard action with text suitable for an aria-live status. */
-export async function copyPreset(build: PresetBuildResult, clipboard: ClipboardWriter): Promise<PresetCopyState> {
+export async function copyPreset(
+  build: PresetBuildResult,
+  clipboard: ClipboardWriter,
+): Promise<PresetCopyState> {
   if (!build.enabled) return { status: "disabled", announcement: build.reason.message };
   try {
     await clipboard.writeText(build.text);

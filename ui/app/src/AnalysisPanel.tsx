@@ -42,7 +42,9 @@ export const AnalysisPanel: Component<{
   onAnalyze: () => void;
   onHoverMove: (move: M | null) => void;
 }> = (props) => {
-  const result = createMemo(() => (props.analysis.status === "done" ? props.analysis.result : null));
+  const result = createMemo(() =>
+    props.analysis.status === "done" ? props.analysis.result : null,
+  );
 
   const rows = createMemo((): CandidateRow[] => {
     const r = result();
@@ -69,7 +71,9 @@ export const AnalysisPanel: Component<{
     const r = result();
     if (!r || r.principal_variation.length === 0) return null;
     return r.principal_variation
-      .map((m, i) => (i === 0 ? (props.formatMove?.(m, props.before) ?? JSON.stringify(m)) : JSON.stringify(m)))
+      .map((m, i) =>
+        i === 0 ? (props.formatMove?.(m, props.before) ?? JSON.stringify(m)) : JSON.stringify(m),
+      )
       .join(" → ");
   });
 
@@ -83,7 +87,10 @@ export const AnalysisPanel: Component<{
         >
           <For each={props.presets}>{(p) => <option value={p.id}>{p.label}</option>}</For>
         </select>
-        <button disabled={props.busy || props.presets.length === 0} onClick={() => props.onAnalyze()}>
+        <button
+          disabled={props.busy || props.presets.length === 0}
+          onClick={() => props.onAnalyze()}
+        >
           {props.analysis.status === "pending" ? "Analyzing…" : "Analyze"}
         </button>
       </div>
@@ -95,7 +102,7 @@ export const AnalysisPanel: Component<{
           <>
             <Show
               when={r().search}
-              fallback={(
+              fallback={
                 <section aria-label="Legacy analysis">
                   <h3>Legacy analysis (reduced capability)</h3>
                   <div class="analysis-summary">{r().total_visits} visits</div>
@@ -104,11 +111,18 @@ export const AnalysisPanel: Component<{
                     <For each={rows()}>
                       {(row) => (
                         <li
-                          classList={{ suggested: row.isSuggested, hovered: props.hoveredMove !== null && moveEquals(props.hoveredMove, row.move) }}
+                          classList={{
+                            suggested: row.isSuggested,
+                            hovered:
+                              props.hoveredMove !== null && moveEquals(props.hoveredMove, row.move),
+                          }}
                           onMouseEnter={() => props.onHoverMove(row.move)}
                           onMouseLeave={() => props.onHoverMove(null)}
                         >
-                          <span class="candidate-bar" style={{ width: `${Math.round(row.visitShare * 100)}%` }} />
+                          <span
+                            class="candidate-bar"
+                            style={{ width: `${Math.round(row.visitShare * 100)}%` }}
+                          />
                           <span class="candidate-label">{row.label}</span>
                           <Show when={row.isProven}>
                             <span class="candidate-proven" title="Outcome proven">
@@ -122,9 +136,15 @@ export const AnalysisPanel: Component<{
                     </For>
                   </ul>
                 </section>
-              )}
+              }
             >
-              {(search) => <SearchInspector report={search()} before={props.before} formatMove={props.formatMove} />}
+              {(search) => (
+                <SearchInspector
+                  report={search()}
+                  before={props.before}
+                  formatMove={props.formatMove}
+                />
+              )}
             </Show>
           </>
         )}

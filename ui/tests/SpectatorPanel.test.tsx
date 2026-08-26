@@ -1,7 +1,11 @@
 import { createSignal } from "solid-js";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SpectatorPanel, type TraceEnvironment, type TraceEventSource } from "../app/src/SpectatorPanel.js";
+import {
+  SpectatorPanel,
+  type TraceEnvironment,
+  type TraceEventSource,
+} from "../app/src/SpectatorPanel.js";
 import type { GameMove, GameTraceSummary } from "../packages/bench/src/types.js";
 import type { SearchReport } from "@mcts/game";
 
@@ -9,20 +13,48 @@ vi.mock("../app/src/games.js", () => import("./fixtures/fake-games-registry.js")
 
 function trace(gameSeq: number): GameTraceSummary {
   return {
-    game_seq: gameSeq, match_seq: gameSeq, cell_id: null, seed: gameSeq, metrics: null, ply_count: 2,
-    started_at: "2026-01-01T00:00:00Z", ended_at: "2026-01-01T00:00:01Z",
-    strategy_a: "Candidate", strategy_b: "Base", outcome: "win_a", winner: "Candidate",
+    game_seq: gameSeq,
+    match_seq: gameSeq,
+    cell_id: null,
+    seed: gameSeq,
+    metrics: null,
+    ply_count: 2,
+    started_at: "2026-01-01T00:00:00Z",
+    ended_at: "2026-01-01T00:00:01Z",
+    strategy_a: "Candidate",
+    strategy_b: "Base",
+    outcome: "win_a",
+    winner: "Candidate",
   };
 }
 
-function report(iterations: number, status: SearchReport<string>["status"] = "available"): SearchReport<string> {
+function report(
+  iterations: number,
+  status: SearchReport<string>["status"] = "available",
+): SearchReport<string> {
   return {
-    status, schema_version: 1, reason: status === "unavailable" ? "strategy_unsupported" : null,
-    elapsed_seconds: 0.01, iteration_limit: iterations, time_limit_seconds: null, completed_iterations: iterations,
-    termination: "iterations", selected_action: "inc", actions: [{ action: "inc", visits: iterations, share: 1, mean_value: 0.5, is_proven: false }],
-    principal_variation: ["inc"], root_visits: iterations, tree_nodes: iterations, mean_depth: 1, max_depth: 1,
-    graph_mode: "tree", tt_reads: 0, tt_writes: 0, tt_hits: 0, tt_hit_ratio: 0,
-    iterations_per_second: iterations * 100, warnings: status === "partial" ? ["actions_truncated"] : [],
+    status,
+    schema_version: 1,
+    reason: status === "unavailable" ? "strategy_unsupported" : null,
+    elapsed_seconds: 0.01,
+    iteration_limit: iterations,
+    time_limit_seconds: null,
+    completed_iterations: iterations,
+    termination: "iterations",
+    selected_action: "inc",
+    actions: [{ action: "inc", visits: iterations, share: 1, mean_value: 0.5, is_proven: false }],
+    principal_variation: ["inc"],
+    root_visits: iterations,
+    tree_nodes: iterations,
+    mean_depth: 1,
+    max_depth: 1,
+    graph_mode: "tree",
+    tt_reads: 0,
+    tt_writes: 0,
+    tt_hits: 0,
+    tt_hit_ratio: 0,
+    iterations_per_second: iterations * 100,
+    warnings: status === "partial" ? ["actions_truncated"] : [],
   };
 }
 
@@ -37,7 +69,11 @@ interface FakeSource extends TraceEventSource {
   closed: boolean;
 }
 
-function environment(): { env: TraceEnvironment; api: { getRunGames: ReturnType<typeof vi.fn>; getRunGameMoves: ReturnType<typeof vi.fn> }; sources: FakeSource[] } {
+function environment(): {
+  env: TraceEnvironment;
+  api: { getRunGames: ReturnType<typeof vi.fn>; getRunGameMoves: ReturnType<typeof vi.fn> };
+  sources: FakeSource[];
+} {
   const sources: FakeSource[] = [];
   const api = { getRunGames: vi.fn(), getRunGameMoves: vi.fn() };
   return {
@@ -47,10 +83,19 @@ function environment(): { env: TraceEnvironment; api: { getRunGames: ReturnType<
       api,
       eventSource: (url) => {
         const source: FakeSource = {
-          url, closed: false, onmessage: null, onerror: null,
-          emit(data) { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent<string>); },
-          fail() { this.onerror?.(new Event("error")); },
-          close() { this.closed = true; },
+          url,
+          closed: false,
+          onmessage: null,
+          onerror: null,
+          emit(data) {
+            this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent<string>);
+          },
+          fail() {
+            this.onerror?.(new Event("error"));
+          },
+          close() {
+            this.closed = true;
+          },
         };
         sources.push(source);
         return source;
@@ -59,10 +104,21 @@ function environment(): { env: TraceEnvironment; api: { getRunGames: ReturnType<
   };
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
-  return { promise: new Promise<T>((ok, fail) => { resolve = ok; reject = fail; }), resolve, reject };
+  return {
+    promise: new Promise<T>((ok, fail) => {
+      resolve = ok;
+      reject = fail;
+    }),
+    resolve,
+    reject,
+  };
 }
 
 afterEach(cleanup);
@@ -73,13 +129,24 @@ describe("SpectatorPanel trace boundary", () => {
   it("replays renderer state and every selected-ply search report with explicit ply controls", async () => {
     const { api, env } = environment();
     api.getRunGames.mockResolvedValue([trace(1)]);
-    api.getRunGameMoves.mockResolvedValue(moves(
-      { ply: 0, state: { board: 0 } },
-      { ply: 1, state: { board: 1 }, mv: "inc", player: "A", search: report(12, "unavailable") },
-      { ply: 2, state: { board: 2 }, mv: "inc", player: "B", search: report(18, "partial") },
-    ));
+    api.getRunGameMoves.mockResolvedValue(
+      moves(
+        { ply: 0, state: { board: 0 } },
+        { ply: 1, state: { board: 1 }, mv: "inc", player: "A", search: report(12, "unavailable") },
+        { ply: 2, state: { board: 2 }, mv: "inc", player: "B", search: report(18, "partial") },
+      ),
+    );
 
-    render(() => <SpectatorPanel runId="run-a" game="fake" kind="experiment" live={false} initialGameSeq={1} traceEnv={env} />);
+    render(() => (
+      <SpectatorPanel
+        runId="run-a"
+        game="fake"
+        kind="experiment"
+        live={false}
+        initialGameSeq={1}
+        traceEnv={env}
+      />
+    ));
     expect(await screen.findByTestId("fake-board")).toHaveTextContent('state:{"board":0}');
     expect(screen.getByRole("status")).toHaveTextContent("No final-search report");
     expect(screen.getByRole("button", { name: "First" })).toBeDisabled();
@@ -103,7 +170,16 @@ describe("SpectatorPanel trace boundary", () => {
     api.getRunGames.mockResolvedValue([trace(2)]);
     api.getRunGameMoves.mockResolvedValue(moves({ ply: 0, state: "legacy trace text" }));
 
-    render(() => <SpectatorPanel runId="run-a" game="fake" kind="tuner" live={false} initialGameSeq={2} traceEnv={env} />);
+    render(() => (
+      <SpectatorPanel
+        runId="run-a"
+        game="fake"
+        kind="tuner"
+        live={false}
+        initialGameSeq={2}
+        traceEnv={env}
+      />
+    ));
     expect(await screen.findByText("tuner trace", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("legacy trace text")).toBeInTheDocument();
     expect(screen.queryByTestId("fake-board")).toBeNull();
@@ -111,13 +187,26 @@ describe("SpectatorPanel trace boundary", () => {
 
   it("keeps the chosen game and ply stable while live evidence adds games and plies", async () => {
     const { api, env, sources } = environment();
-    api.getRunGames.mockResolvedValueOnce([trace(1)]).mockResolvedValueOnce([trace(3), trace(2), trace(1)]);
-    api.getRunGameMoves.mockResolvedValue(moves(
-      { ply: 0, state: { board: 0 } },
-      { ply: 1, state: { board: 1 }, mv: "inc", player: "A", search: report(3) },
-    ));
+    api.getRunGames
+      .mockResolvedValueOnce([trace(1)])
+      .mockResolvedValueOnce([trace(3), trace(2), trace(1)]);
+    api.getRunGameMoves.mockResolvedValue(
+      moves(
+        { ply: 0, state: { board: 0 } },
+        { ply: 1, state: { board: 1 }, mv: "inc", player: "A", search: report(3) },
+      ),
+    );
 
-    render(() => <SpectatorPanel runId="run-a" game="fake" kind="experiment" live initialGameSeq={1} traceEnv={env} />);
+    render(() => (
+      <SpectatorPanel
+        runId="run-a"
+        game="fake"
+        kind="experiment"
+        live
+        initialGameSeq={1}
+        traceEnv={env}
+      />
+    ));
     await screen.findByTestId("fake-board");
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     const selected = await vi.waitFor(() => {
@@ -125,7 +214,15 @@ describe("SpectatorPanel trace boundary", () => {
       expect(source).toBeDefined();
       return source!;
     });
-    selected.emit({ game_seq: 1, ply: 2, ts: "now", state: { board: 2 }, mv: "inc", player: "B", search: report(9) });
+    selected.emit({
+      game_seq: 1,
+      ply: 2,
+      ts: "now",
+      state: { board: 2 },
+      mv: "inc",
+      player: "B",
+      search: report(9),
+    });
 
     await vi.waitFor(() => expect(screen.getByText("2 newer games")).toBeInTheDocument());
     expect(screen.getByText(/Ply 1 \/ 2 · 1 newer ply/)).toBeInTheDocument();
@@ -139,9 +236,20 @@ describe("SpectatorPanel trace boundary", () => {
     const newList = deferred<GameTraceSummary[]>();
     const oldMoves = deferred<GameMove[]>();
     const newMoves = deferred<GameMove[]>();
-    api.getRunGames.mockReturnValueOnce(oldList.promise).mockReturnValueOnce(newList.promise).mockResolvedValue([trace(2), trace(1)]);
-    api.getRunGameMoves.mockImplementation((_runId: string, gameSeq: number) => gameSeq === 1 ? oldMoves.promise : newMoves.promise);
-    const [props, setProps] = createSignal({ runId: "run-a", game: "fake", kind: "experiment", live: true, initialGameSeq: undefined as number | undefined });
+    api.getRunGames
+      .mockReturnValueOnce(oldList.promise)
+      .mockReturnValueOnce(newList.promise)
+      .mockResolvedValue([trace(2), trace(1)]);
+    api.getRunGameMoves.mockImplementation((_runId: string, gameSeq: number) =>
+      gameSeq === 1 ? oldMoves.promise : newMoves.promise,
+    );
+    const [props, setProps] = createSignal({
+      runId: "run-a",
+      game: "fake",
+      kind: "experiment",
+      live: true,
+      initialGameSeq: undefined as number | undefined,
+    });
     render(() => <SpectatorPanel {...props()} traceEnv={env} />);
 
     setProps({ ...props(), runId: "run-b" });
@@ -149,7 +257,9 @@ describe("SpectatorPanel trace boundary", () => {
     newList.resolve([trace(1), trace(2)]);
     await vi.waitFor(() => expect(screen.queryByText(/old list failure/)).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: /#1/ }));
-    await vi.waitFor(() => expect(sources.some((source) => source.url.includes("game_seq=1"))).toBe(true));
+    await vi.waitFor(() =>
+      expect(sources.some((source) => source.url.includes("game_seq=1"))).toBe(true),
+    );
     const oldSource = sources.find((source) => source.url.includes("game_seq=1"))!;
     fireEvent.click(screen.getByRole("button", { name: /#2/ }));
     expect(oldSource.closed).toBe(true);

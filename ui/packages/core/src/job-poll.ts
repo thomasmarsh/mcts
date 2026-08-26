@@ -20,13 +20,10 @@ export function initialJobPollState<T>(): JobPollState<T> {
 }
 
 export type JobSubmitResult<T> =
-  | { status: "done"; result: T }
-  | { status: "pending"; jobId: string };
+  { status: "done"; result: T } | { status: "pending"; jobId: string };
 
 export type JobPollResult<T> =
-  | { status: "pending" }
-  | { status: "done"; result: T }
-  | { status: "error"; error: string };
+  { status: "pending" } | { status: "done"; result: T } | { status: "error"; error: string };
 
 export type JobPollAction<T> =
   | { tag: "start" }
@@ -54,56 +51,61 @@ export function jobPollReduce<T>(
   env: JobPollEnv<T>,
 ): Effect<JobPollAction<T>> | null {
   switch (action.tag) {
-  case "start": {
-    if (draft.status === "pending") return null;
-    draft.status = "pending";
-    draft.jobId = null;
-    draft.result = null;
-    draft.error = null;
-    draft.attempt = 0;
-    return env.submitJob()
-      .map((result): JobPollAction<T> => ({ tag: "submitted", result }))
-      .catch((e): JobPollAction<T> => ({ tag: "failed", error: String(e) }));
-  }
-  case "submitted": {
-    if (action.result.status === "done") {
-      draft.status = "done";
-      draft.result = action.result.result;
-      return null;
+    case "start": {
+      if (draft.status === "pending") return null;
+      draft.status = "pending";
+      draft.jobId = null;
+      draft.result = null;
+      draft.error = null;
+      draft.attempt = 0;
+      return env
+        .submitJob()
+        .map((result): JobPollAction<T> => ({ tag: "submitted", result }))
+        .catch((e): JobPollAction<T> => ({ tag: "failed", error: String(e) }));
     }
-    draft.jobId = action.result.jobId;
-    return Effect.send<JobPollAction<T>>({ tag: "tick", jobId: action.result.jobId });
-  }
-  case "tick": {
-    if (draft.jobId !== action.jobId) return null; // superseded by a newer job
-    return env.pollJob(action.jobId)
-      .map((result): JobPollAction<T> => ({ tag: "polled", jobId: action.jobId, result }))
-      .catch((e): JobPollAction<T> => ({ tag: "failed", error: String(e) }));
-  }
-  case "polled": {
-    if (draft.jobId !== action.jobId) return null; // stale poll from a superseded job
-    if (action.result.status === "done") {
-      draft.status = "done";
-      draft.result = action.result.result;
-      return null;
+    case "submitted": {
+      if (action.result.status === "done") {
+        draft.status = "done";
+        draft.result = action.result.result;
+        return null;
+      }
+      draft.jobId = action.result.jobId;
+      return Effect.send<JobPollAction<T>>({ tag: "tick", jobId: action.result.jobId });
     }
-    if (action.result.status === "error") {
+    case "tick": {
+      if (draft.jobId !== action.jobId) return null; // superseded by a newer job
+      return env
+        .pollJob(action.jobId)
+        .map((result): JobPollAction<T> => ({ tag: "polled", jobId: action.jobId, result }))
+        .catch((e): JobPollAction<T> => ({ tag: "failed", error: String(e) }));
+    }
+    case "polled": {
+      if (draft.jobId !== action.jobId) return null; // stale poll from a superseded job
+      if (action.result.status === "done") {
+        draft.status = "done";
+        draft.result = action.result.result;
+        return null;
+      }
+      if (action.result.status === "error") {
+        draft.status = "error";
+        draft.error = action.result.error;
+        return null;
+      }
+      draft.attempt += 1;
+      if (draft.attempt >= JOB_POLL_MAX_ATTEMPTS) {
+        draft.status = "error";
+        draft.error = "Timed out waiting for job to complete";
+        return null;
+      }
+      return Effect.delay(nextDelayMs(draft.attempt), {
+        tag: "tick",
+        jobId: action.jobId,
+      } as JobPollAction<T>);
+    }
+    case "failed": {
       draft.status = "error";
-      draft.error = action.result.error;
+      draft.error = action.error;
       return null;
     }
-    draft.attempt += 1;
-    if (draft.attempt >= JOB_POLL_MAX_ATTEMPTS) {
-      draft.status = "error";
-      draft.error = "Timed out waiting for job to complete";
-      return null;
-    }
-    return Effect.delay(nextDelayMs(draft.attempt), { tag: "tick", jobId: action.jobId } as JobPollAction<T>);
-  }
-  case "failed": {
-    draft.status = "error";
-    draft.error = action.error;
-    return null;
-  }
   }
 }

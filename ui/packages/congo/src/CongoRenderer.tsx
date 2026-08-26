@@ -347,7 +347,12 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
                   if (c) {
                     return (
                       <span class={`cg-piece cg-piece-${c.player.toLowerCase()}`}>
-                        <img class="cg-piece-icon" src={PIECE_ICON[c.piece]} alt={c.piece} draggable={false} />
+                        <img
+                          class="cg-piece-icon"
+                          src={PIECE_ICON[c.piece]}
+                          alt={c.piece}
+                          draggable={false}
+                        />
                         {c.piece === "superpawn" ? <span class="cg-badge">★</span> : null}
                         {atRisk() ? <span class="cg-risk-ring" /> : null}
                       </span>
@@ -357,8 +362,15 @@ export const CongoRenderer: Component<GameRendererProps<GameState, Move, GameVie
                     const srcCell = cellAt(selectedSource() as number);
                     if (srcCell) {
                       return (
-                        <span class={`cg-piece cg-piece-ghost cg-piece-${srcCell.player.toLowerCase()}`}>
-                          <img class="cg-piece-icon" src={PIECE_ICON[srcCell.piece]} alt="" draggable={false} />
+                        <span
+                          class={`cg-piece cg-piece-ghost cg-piece-${srcCell.player.toLowerCase()}`}
+                        >
+                          <img
+                            class="cg-piece-icon"
+                            src={PIECE_ICON[srcCell.piece]}
+                            alt=""
+                            draggable={false}
+                          />
                         </span>
                       );
                     }

@@ -12,7 +12,9 @@ function isNewGameConfig(config: unknown): config is NewGameConfig {
   return typeof (config as { n?: unknown }).n === "number";
 }
 
-export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (props) => {
+export const NewGameFields: Component<{ config: unknown; onChange: (config: unknown) => void }> = (
+  props,
+) => {
   const n = () => (isNewGameConfig(props.config) ? props.config.n : DEFAULT_N);
 
   return (

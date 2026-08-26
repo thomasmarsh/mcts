@@ -36,7 +36,10 @@
   font-weight: 700;
   font-family: inherit;
   cursor: default;
-  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    box-shadow 0.12s;
 }
 
 /* Empty cell — subtle inner glow */

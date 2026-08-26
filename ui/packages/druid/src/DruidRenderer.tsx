@@ -102,15 +102,33 @@ function makeLabelSprite(text: string): THREE.Sprite {
   return sprite;
 }
 
-function frameQuad(v0: [number, number], v1: [number, number], v2: [number, number], v3: [number, number], color: string): THREE.Mesh {
+function frameQuad(
+  v0: [number, number],
+  v1: [number, number],
+  v2: [number, number],
+  v3: [number, number],
+  color: string,
+): THREE.Mesh {
   const y = 0.01;
   const positions = new Float32Array([
-    v0[0], y, v0[1],
-    v1[0], y, v1[1],
-    v2[0], y, v2[1],
-    v0[0], y, v0[1],
-    v2[0], y, v2[1],
-    v3[0], y, v3[1],
+    v0[0],
+    y,
+    v0[1],
+    v1[0],
+    y,
+    v1[1],
+    v2[0],
+    y,
+    v2[1],
+    v0[0],
+    y,
+    v0[1],
+    v2[0],
+    y,
+    v2[1],
+    v3[0],
+    y,
+    v3[1],
   ]);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -134,7 +152,12 @@ function makeFaceTexture(fillColor: string, faceW: number, faceH: number): THREE
   return new THREE.CanvasTexture(canvas);
 }
 
-function buildBoxMaterials(colorHex: number, sizeX: number, sizeY: number, sizeZ: number): THREE.MeshStandardMaterial[] {
+function buildBoxMaterials(
+  colorHex: number,
+  sizeX: number,
+  sizeY: number,
+  sizeZ: number,
+): THREE.MeshStandardMaterial[] {
   const fillColor = `#${colorHex.toString(16).padStart(6, "0")}`;
   const matFor = (faceW: number, faceH: number) =>
     new THREE.MeshStandardMaterial({
@@ -163,7 +186,14 @@ function playerAccent(player: Player): string {
   return player === "Black" ? "#9aa2b8" : "#f2e9d8";
 }
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+): void {
   const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
   ctx.moveTo(x + rr, y);
@@ -178,7 +208,12 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
  * bottom row; White: left column to right column). Returns cell indices
  * along one winning route, or `null`. Computed client-side (not returned by
  * the server) purely for the minimap's cosmetic glow. */
-function findWinningPath(board: GameView["board"], w: number, h: number, color: Player): number[] | null {
+function findWinningPath(
+  board: GameView["board"],
+  w: number,
+  h: number,
+  color: Player,
+): number[] | null {
   const idx = (x: number, y: number) => y * w + x;
   const owned = (i: number) => board[i]?.piece === color;
   const starts: number[] = [];
@@ -204,7 +239,12 @@ function findWinningPath(board: GameView["board"], w: number, h: number, color: 
     }
     const cx = cur % w;
     const cy = Math.floor(cur / w);
-    const neighbors: [number, number][] = [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]];
+    const neighbors: [number, number][] = [
+      [cx - 1, cy],
+      [cx + 1, cy],
+      [cx, cy - 1],
+      [cx, cy + 1],
+    ];
     for (const [nx, ny] of neighbors) {
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const ni = idx(nx, ny);
@@ -244,12 +284,22 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
   function buildGoalEdges(size: Size): void {
     const { w, h } = size;
     const t = 0.14;
-    const x0 = -0.5, x1 = w - 0.5;
-    const z0 = -0.5, z1 = h - 0.5;
-    boardGroup.add(frameQuad([x0, z0], [x1, z0], [x1 + t, z0 - t], [x0 - t, z0 - t], EDGE_COLOR_BLACK));
-    boardGroup.add(frameQuad([x0, z1], [x1, z1], [x1 + t, z1 + t], [x0 - t, z1 + t], EDGE_COLOR_BLACK));
-    boardGroup.add(frameQuad([x0, z0], [x0, z1], [x0 - t, z1 + t], [x0 - t, z0 - t], EDGE_COLOR_WHITE));
-    boardGroup.add(frameQuad([x1, z0], [x1, z1], [x1 + t, z1 + t], [x1 + t, z0 - t], EDGE_COLOR_WHITE));
+    const x0 = -0.5,
+      x1 = w - 0.5;
+    const z0 = -0.5,
+      z1 = h - 0.5;
+    boardGroup.add(
+      frameQuad([x0, z0], [x1, z0], [x1 + t, z0 - t], [x0 - t, z0 - t], EDGE_COLOR_BLACK),
+    );
+    boardGroup.add(
+      frameQuad([x0, z1], [x1, z1], [x1 + t, z1 + t], [x0 - t, z1 + t], EDGE_COLOR_BLACK),
+    );
+    boardGroup.add(
+      frameQuad([x0, z0], [x0, z1], [x0 - t, z1 + t], [x0 - t, z0 - t], EDGE_COLOR_WHITE),
+    );
+    boardGroup.add(
+      frameQuad([x1, z0], [x1, z1], [x1 + t, z1 + t], [x1 + t, z0 - t], EDGE_COLOR_WHITE),
+    );
   }
 
   function buildLabels(size: Size): void {
@@ -293,7 +343,11 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
       points.push(new THREE.Vector3(-0.5, 0, j - 0.5), new THREE.Vector3(w - 0.5, 0, j - 0.5));
     }
     const gridGeo = new THREE.BufferGeometry().setFromPoints(points);
-    const gridMat = new THREE.LineBasicMaterial({ color: 0x4b4d55, transparent: true, opacity: 0.55 });
+    const gridMat = new THREE.LineBasicMaterial({
+      color: 0x4b4d55,
+      transparent: true,
+      opacity: 0.55,
+    });
     boardGroup.add(new THREE.LineSegments(gridGeo, gridMat));
 
     buildGoalEdges(size);
@@ -456,7 +510,13 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
 
         const tile = new THREE.Mesh(
           tileGeo,
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }),
+          new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
         );
         tile.rotation.x = -Math.PI / 2;
         tile.position.set(x, y, z);
@@ -548,7 +608,10 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     const { w, h } = view.size;
     const pad = 14;
     const gap = 3;
-    const cell = Math.max(3, Math.min((cssW - pad * 2 - (w - 1) * gap) / w, (cssH - pad * 2 - (h - 1) * gap) / h));
+    const cell = Math.max(
+      3,
+      Math.min((cssW - pad * 2 - (w - 1) * gap) / w, (cssH - pad * 2 - (h - 1) * gap) / h),
+    );
     const gridW = cell * w + gap * (w - 1);
     const gridH = cell * h + gap * (h - 1);
     const ox = (cssW - gridW) / 2;
@@ -558,7 +621,14 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
     const ringOffset = frameT + 4;
     const backingPad = ringOffset + 3;
 
-    roundRect(ctx, ox - backingPad, oy - backingPad, gridW + backingPad * 2, gridH + backingPad * 2, 10);
+    roundRect(
+      ctx,
+      ox - backingPad,
+      oy - backingPad,
+      gridW + backingPad * 2,
+      gridH + backingPad * 2,
+      10,
+    );
     ctx.fillStyle = "#9a9da6";
     ctx.fill();
 
@@ -609,11 +679,46 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
       ctx.fillStyle = color;
       ctx.fill();
     };
-    const fx0 = ox, fx1 = ox + gridW, fy0 = oy, fy1 = oy + gridH;
-    frameQuad2d([[fx0, fy0], [fx1, fy0], [fx1 + frameT, fy0 - frameT], [fx0 - frameT, fy0 - frameT]], EDGE_COLOR_BLACK);
-    frameQuad2d([[fx0, fy1], [fx1, fy1], [fx1 + frameT, fy1 + frameT], [fx0 - frameT, fy1 + frameT]], EDGE_COLOR_BLACK);
-    frameQuad2d([[fx0, fy0], [fx0, fy1], [fx0 - frameT, fy1 + frameT], [fx0 - frameT, fy0 - frameT]], EDGE_COLOR_WHITE);
-    frameQuad2d([[fx1, fy0], [fx1, fy1], [fx1 + frameT, fy1 + frameT], [fx1 + frameT, fy0 - frameT]], EDGE_COLOR_WHITE);
+    const fx0 = ox,
+      fx1 = ox + gridW,
+      fy0 = oy,
+      fy1 = oy + gridH;
+    frameQuad2d(
+      [
+        [fx0, fy0],
+        [fx1, fy0],
+        [fx1 + frameT, fy0 - frameT],
+        [fx0 - frameT, fy0 - frameT],
+      ],
+      EDGE_COLOR_BLACK,
+    );
+    frameQuad2d(
+      [
+        [fx0, fy1],
+        [fx1, fy1],
+        [fx1 + frameT, fy1 + frameT],
+        [fx0 - frameT, fy1 + frameT],
+      ],
+      EDGE_COLOR_BLACK,
+    );
+    frameQuad2d(
+      [
+        [fx0, fy0],
+        [fx0, fy1],
+        [fx0 - frameT, fy1 + frameT],
+        [fx0 - frameT, fy0 - frameT],
+      ],
+      EDGE_COLOR_WHITE,
+    );
+    frameQuad2d(
+      [
+        [fx1, fy0],
+        [fx1, fy1],
+        [fx1 + frameT, fy1 + frameT],
+        [fx1 + frameT, fy0 - frameT],
+      ],
+      EDGE_COLOR_WHITE,
+    );
 
     if (view.terminal && view.winner) {
       const path = findWinningPath(view.board, w, h, view.winner);
@@ -638,18 +743,33 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
       }
     }
 
-    const ringColor = view.terminal ? (view.winner ? playerAccent(view.winner) : "#6b6e78") : playerAccent(view.player);
+    const ringColor = view.terminal
+      ? view.winner
+        ? playerAccent(view.winner)
+        : "#6b6e78"
+      : playerAccent(view.player);
     ctx.strokeStyle = ringColor;
     ctx.lineWidth = 2;
-    roundRect(ctx, ox - ringOffset, oy - ringOffset, gridW + ringOffset * 2, gridH + ringOffset * 2, 8);
+    roundRect(
+      ctx,
+      ox - ringOffset,
+      oy - ringOffset,
+      gridW + ringOffset * 2,
+      gridH + ringOffset * 2,
+      8,
+    );
     ctx.stroke();
 
     if (dotRef) {
       dotRef.style.background = view.terminal
         ? view.winner
-          ? view.winner === "Black" ? "#3a3d46" : "#f2e9d8"
+          ? view.winner === "Black"
+            ? "#3a3d46"
+            : "#f2e9d8"
           : "#6b6e78"
-        : view.player === "Black" ? "#3a3d46" : "#f2e9d8";
+        : view.player === "Black"
+          ? "#3a3d46"
+          : "#f2e9d8";
     }
   }
 

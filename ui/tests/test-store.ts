@@ -55,7 +55,8 @@ export class TestScheduler implements Scheduler {
         const s = this.sleeps[i]!;
         if (s.at > target) continue;
         const best = this.sleeps[next];
-        if (next === -1 || s.at < best!.at || (s.at === best!.at && s.order < best!.order)) next = i;
+        if (next === -1 || s.at < best!.at || (s.at === best!.at && s.order < best!.order))
+          next = i;
       }
       if (next === -1) break;
       const [s] = this.sleeps.splice(next, 1);

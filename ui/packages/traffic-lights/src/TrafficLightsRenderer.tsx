@@ -15,9 +15,9 @@ function moveCellIndex(mv: Move): number {
   return mv >> 2;
 }
 
-export const TrafficLightsRenderer: Component<
-  GameRendererProps<GameState, Move, GameView>
-> = (props) => {
+export const TrafficLightsRenderer: Component<GameRendererProps<GameState, Move, GameView>> = (
+  props,
+) => {
   const legalSet = createMemo<Set<number>>(() => {
     const set = new Set<number>();
     for (const mv of props.legalMoves) {
@@ -38,12 +38,8 @@ export const TrafficLightsRenderer: Component<
   });
 
   const overlayByCell = createMemo(() => {
-    const map = new Map<
-      number,
-      { visitShare: number; isProven: boolean; isSuggested: boolean }
-    >();
-    for (const entry of props.analysisOverlay ?? [])
-      map.set(moveCellIndex(entry.move), entry);
+    const map = new Map<number, { visitShare: number; isProven: boolean; isSuggested: boolean }>();
+    for (const entry of props.analysisOverlay ?? []) map.set(moveCellIndex(entry.move), entry);
     return map;
   });
 
@@ -87,7 +83,10 @@ export const TrafficLightsRenderer: Component<
             const overlay = () => overlayByCell().get(cell);
             const heat = () => overlay()?.visitShare ?? 0;
             const isGhost = () =>
-              mark === null && legal() && props.hoveredMove != null && moveCellIndex(props.hoveredMove) === cell;
+              mark === null &&
+              legal() &&
+              props.hoveredMove != null &&
+              moveCellIndex(props.hoveredMove) === cell;
 
             return (
               <button

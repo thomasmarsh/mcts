@@ -25,8 +25,16 @@ export function summarize(view: GameView): GameSummary {
   const blackCount = countPieces(view, "Black");
   const whiteCount = countPieces(view, "White");
   const lines = [
-    { id: "black", text: `Black — ${blackCount} piece${blackCount !== 1 ? "s" : ""}`, swatch: "#2a2a2a" },
-    { id: "white", text: `White — ${whiteCount} piece${whiteCount !== 1 ? "s" : ""}`, swatch: "#f0ead6" },
+    {
+      id: "black",
+      text: `Black — ${blackCount} piece${blackCount !== 1 ? "s" : ""}`,
+      swatch: "#2a2a2a",
+    },
+    {
+      id: "white",
+      text: `White — ${whiteCount} piece${whiteCount !== 1 ? "s" : ""}`,
+      swatch: "#f0ead6",
+    },
   ];
 
   if (view.terminal) {
@@ -35,7 +43,8 @@ export function summarize(view: GameView): GameSummary {
       bannerText: view.winner
         ? `${view.winner} wins — the ${view.winner === "Black" ? "White" : "Black"} lion has fallen!`
         : "Bare lions, neither can strike — draw.",
-      bannerColor: view.winner === "Black" ? "#2a2a2a" : view.winner === "White" ? "#f0ead6" : undefined,
+      bannerColor:
+        view.winner === "Black" ? "#2a2a2a" : view.winner === "White" ? "#f0ead6" : undefined,
       lines,
       currentPlayer: null,
     };

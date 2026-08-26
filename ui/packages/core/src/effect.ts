@@ -38,37 +38,52 @@ export class Effect<A> {
 
   /** An effect that immediately sends a single value. Useful in tests. */
   static send<A>(a: A): Effect<A> {
-    return new Effect(send => { send(a); return Promise.resolve(); });
+    return new Effect((send) => {
+      send(a);
+      return Promise.resolve();
+    });
   }
 
   /** Lift a promise thunk; errors propagate (store catches unhandled rejections). */
   static fromPromise<A>(thunk: () => Promise<A>): Effect<A> {
-    return new Effect(send => thunk().then(a => { send(a); }));
+    return new Effect((send) =>
+      thunk().then((a) => {
+        send(a);
+      }),
+    );
   }
 
   /** An effect that sends a single value after `ms` milliseconds. For poll-loop backoff. */
   static delay<A>(ms: number, a: A): Effect<A> {
-    return new Effect((send, ctx) => new Promise(resolve => {
-      ctx.scheduler.schedule(ms, () => { send(a); resolve(); });
-    }));
+    return new Effect(
+      (send, ctx) =>
+        new Promise((resolve) => {
+          ctx.scheduler.schedule(ms, () => {
+            send(a);
+            resolve();
+          });
+        }),
+    );
   }
 
   /** Run all effects concurrently; each sends into the same channel. */
   static merge<A>(...effects: Effect<A>[]): Effect<A> {
     return new Effect((send, ctx) =>
-      Promise.all(effects.map(e => e.runner(send, ctx))).then(() => {})
+      Promise.all(effects.map((e) => e.runner(send, ctx))).then(() => {}),
     );
   }
 
   /** Transform the output value of this effect. */
   map<B>(f: (a: A) => B): Effect<B> {
-    return new Effect((send, ctx) => this.runner(a => send(f(a)), ctx));
+    return new Effect((send, ctx) => this.runner((a) => send(f(a)), ctx));
   }
 
   /** Convert a rejected promise into a sent value rather than a thrown error. */
   catch(onReject: (e: unknown) => A): Effect<A> {
     return new Effect((send, ctx) =>
-      this.runner(send, ctx).catch(e => { send(onReject(e)); })
+      this.runner(send, ctx).catch((e) => {
+        send(onReject(e));
+      }),
     );
   }
 

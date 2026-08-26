@@ -80,17 +80,53 @@ export type {
   TuningTrialDetail,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
-export { deriveSeed, expandExperimentSpec, cellFromResponse, JS_MAX_SAFE_INTEGER } from "./experiment-grid.js";
+export {
+  deriveSeed,
+  expandExperimentSpec,
+  cellFromResponse,
+  JS_MAX_SAFE_INTEGER,
+} from "./experiment-grid.js";
 export { buildExperimentMatrix, budgetLabel } from "./experiment-matrix.js";
-export type { ExperimentMatrix, ExperimentMatrixSection, MatrixCell, MatrixCoordinate, MatrixRow, MatrixWarning } from "./experiment-matrix.js";
-export { serializeExperimentRunJson, serializeExperimentRunCsv, sanitizeExportRunId } from "./experiment-export.js";
+export type {
+  ExperimentMatrix,
+  ExperimentMatrixSection,
+  MatrixCell,
+  MatrixCoordinate,
+  MatrixRow,
+  MatrixWarning,
+} from "./experiment-matrix.js";
+export {
+  serializeExperimentRunJson,
+  serializeExperimentRunCsv,
+  sanitizeExportRunId,
+} from "./experiment-export.js";
 export type { ExperimentRunExportV1 } from "./experiment-export.js";
-export { formatRate, formatInterval, formatWld, formatProgress, formatObservedResult, formatLeaderboardResult, formatTime, statusLabel } from "./result-format.js";
+export {
+  formatRate,
+  formatInterval,
+  formatWld,
+  formatProgress,
+  formatObservedResult,
+  formatLeaderboardResult,
+  formatTime,
+  statusLabel,
+} from "./result-format.js";
 
 export type { BenchState, OpenRunState, LogTailState, CommitTrendsState } from "./state.js";
 export { initialBenchState } from "./state.js";
-export type { TuningLoadState, TuningSelection, TuningNavigationState, TuningNavigationAction, TuningProgressMetric, TuningProgressScale } from "./tuning-navigation.js";
-export { initialTuningNavigationState, tuningNavigationReducer, TUNING_DETAIL_REFRESH_MS } from "./tuning-navigation.js";
+export type {
+  TuningLoadState,
+  TuningSelection,
+  TuningNavigationState,
+  TuningNavigationAction,
+  TuningProgressMetric,
+  TuningProgressScale,
+} from "./tuning-navigation.js";
+export {
+  initialTuningNavigationState,
+  tuningNavigationReducer,
+  TUNING_DETAIL_REFRESH_MS,
+} from "./tuning-navigation.js";
 export {
   UNASSIGNED_BRACKET,
   analysisSampleMetadata,

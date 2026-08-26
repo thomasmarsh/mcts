@@ -116,13 +116,13 @@
   position: absolute;
   inset: 4px;
   border-radius: 50%;
-  background: rgba(255, 169, 77, calc(0.10 + var(--heat) * 0.50));
+  background: rgba(255, 169, 77, calc(0.1 + var(--heat) * 0.5));
   pointer-events: none;
   z-index: -1;
 }
 
 .tanbo-point.proven::after {
-  background: rgba(76, 175, 122, calc(0.10 + var(--heat) * 0.50));
+  background: rgba(76, 175, 122, calc(0.1 + var(--heat) * 0.5));
 }
 
 .tanbo-point.suggested {

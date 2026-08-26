@@ -19,7 +19,12 @@ import {
   type JobPollEnv,
   type JobSubmitResult,
 } from "@mcts/core";
-import { gameTreeReducer, initialGameTree, type GameTree, type GameTreeAction } from "./game-tree.js";
+import {
+  gameTreeReducer,
+  initialGameTree,
+  type GameTree,
+  type GameTreeAction,
+} from "./game-tree.js";
 import type { AppState } from "./state.js";
 import type {
   AiMoveResult,
@@ -44,8 +49,17 @@ export interface Env {
   view<S, V = unknown>(kind: string, state: S): Effect<V>;
   apply<S, M, V = unknown>(kind: string, state: S, move: M): Effect<StateAndView<S, V>>;
   aiPresets(kind: string): Effect<AiPresetInfo[]>;
-  aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Effect<AiMoveResult<S, M, V>>;
-  analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Effect<Analysis<M>>;
+  aiMove<S, M, V = unknown>(
+    kind: string,
+    state: S,
+    strategy: AiStrategyRef,
+  ): Effect<AiMoveResult<S, M, V>>;
+  analyze<S, M>(
+    kind: string,
+    state: S,
+    strategy: AiStrategyRef,
+    budgetMs?: number,
+  ): Effect<Analysis<M>>;
 }
 
 /** Runs an `Effect` for its single value, as a `Promise` -- lets a reducer
@@ -59,12 +73,10 @@ function toPromise<T>(effect: Effect<T>): Promise<T> {
 }
 
 export type NewGameJobAction<S, V> =
-  | { tag: "request"; config?: unknown }
-  | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
+  { tag: "request"; config?: unknown } | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
 
 export type MoveJobAction<S, M, V> =
-  | { tag: "request"; move: M }
-  | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
+  { tag: "request"; move: M } | { tag: "job"; action: JobPollAction<StateAndView<S, V>> };
 
 export type AiMoveJobAction<S, M, V> =
   | { tag: "request"; strategy: AiStrategyRef }
@@ -88,8 +100,7 @@ export type PositionAction<V, M> =
   | { tag: "loaded"; nodeId: string; epoch: number; view: V; moves: M[] };
 
 export type AiPresetsJobAction =
-  | { tag: "request" }
-  | { tag: "job"; action: JobPollAction<AiPresetInfo[]> };
+  { tag: "request" } | { tag: "job"; action: JobPollAction<AiPresetInfo[]> };
 
 export type AppAction<S, M, V = unknown> =
   | { tag: "tree"; action: GameTreeAction<S, M> }
@@ -146,7 +157,14 @@ export function appReducer<S, M, V = unknown>(
   action: AppAction<S, M, V>,
   env: Env,
 ): Effect<AppAction<S, M, V>> | null {
-  const treeReducer = pullback<GameTree<S, M>, GameTreeAction<S, M>, AppState<S, M, V>, AppAction<S, M, V>, unknown, Env>(
+  const treeReducer = pullback<
+    GameTree<S, M>,
+    GameTreeAction<S, M>,
+    AppState<S, M, V>,
+    AppAction<S, M, V>,
+    unknown,
+    Env
+  >(
     gameTreeReducer,
     (s) => s.tree,
     (a) => (a.tag === "tree" ? a.action : null),
@@ -270,20 +288,33 @@ export function appReducer<S, M, V = unknown>(
     if (ja.tag === "request") {
       const { gameKind } = draft;
       const jobEnv: JobPollEnv<AiPresetInfo[]> = {
-        submitJob: () => env.aiPresets(gameKind).map((result): JobSubmitResult<AiPresetInfo[]> => ({ status: "done", result })),
+        submitJob: () =>
+          env
+            .aiPresets(gameKind)
+            .map((result): JobSubmitResult<AiPresetInfo[]> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: ai_presets resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.aiPresets, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiPresets", action: { tag: "job", action: a } })) : null;
+      return eff
+        ? eff.map((a): AppAction<S, M, V> => ({
+            tag: "aiPresets",
+            action: { tag: "job", action: a },
+          }))
+        : null;
     }
     const eff = jobPollReduce(
       draft.aiPresets,
       ja.action,
       unreachableJobEnv("unreachable: a forwarded aiPresets/job action never re-submits or polls"),
     );
-    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiPresets", action: { tag: "job", action: a } })) : null;
+    return eff
+      ? eff.map((a): AppAction<S, M, V> => ({
+          tag: "aiPresets",
+          action: { tag: "job", action: a },
+        }))
+      : null;
   }
 
   if (action.tag === "newGame") {
@@ -292,13 +323,21 @@ export function appReducer<S, M, V = unknown>(
       const { gameKind } = draft;
       const jobEnv: JobPollEnv<StateAndView<S, V>> = {
         submitJob: () =>
-          env.newGame<S, V>(gameKind, ja.config).map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
+          env
+            .newGame<S, V>(gameKind, ja.config)
+            .map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: new resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.newGame, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a }, config: ja.config })) : null;
+      return eff
+        ? eff.map((a): AppAction<S, M, V> => ({
+            tag: "newGame",
+            action: { tag: "job", action: a },
+            config: ja.config,
+          }))
+        : null;
     }
     const eff = jobPollReduce(
       draft.newGame,
@@ -324,7 +363,13 @@ export function appReducer<S, M, V = unknown>(
       draft.config = action.config;
       draft.newGame = initialJobPollState<StateAndView<S, V>>();
     }
-    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "newGame", action: { tag: "job", action: a }, config: action.config })) : null;
+    return eff
+      ? eff.map((a): AppAction<S, M, V> => ({
+          tag: "newGame",
+          action: { tag: "job", action: a },
+          config: action.config,
+        }))
+      : null;
   }
 
   if (action.tag === "move") {
@@ -336,13 +381,21 @@ export function appReducer<S, M, V = unknown>(
       const { move } = ja;
       const jobEnv: JobPollEnv<StateAndView<S, V>> = {
         submitJob: () =>
-          env.apply<S, M, V>(gameKind, current.state, move).map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
+          env
+            .apply<S, M, V>(gameKind, current.state, move)
+            .map((result): JobSubmitResult<StateAndView<S, V>> => ({ status: "done", result })),
         pollJob: () => {
           throw new Error("unreachable: apply resolves synchronously (see submitJob above)");
         },
       };
       const eff = jobPollReduce(draft.move, { tag: "start" }, jobEnv);
-      return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move })) : null;
+      return eff
+        ? eff.map((a): AppAction<S, M, V> => ({
+            tag: "move",
+            action: { tag: "job", action: a },
+            move,
+          }))
+        : null;
     }
     const eff = jobPollReduce(
       draft.move,
@@ -350,7 +403,11 @@ export function appReducer<S, M, V = unknown>(
       unreachableJobEnv("unreachable: a forwarded move/job action never re-submits or polls"),
     );
     if (draft.move.status === "done" && draft.move.result && action.move !== undefined) {
-      gameTreeReducer(draft.tree, { tag: "applyMove", move: action.move, state: draft.move.result.state }, undefined);
+      gameTreeReducer(
+        draft.tree,
+        { tag: "applyMove", move: action.move, state: draft.move.result.state },
+        undefined,
+      );
       // Same staleness reasoning as the "tree" branch above -- currentId
       // just changed, so both `analysis` and `position` must be dropped in
       // this same reduction to preserve the "`position` is null or matches
@@ -358,7 +415,13 @@ export function appReducer<S, M, V = unknown>(
       draft.analysis = initialJobPollState<Analysis<M>>();
       draft.position = null;
     }
-    return eff ? eff.map((a): AppAction<S, M, V> => ({ tag: "move", action: { tag: "job", action: a }, move: action.move })) : null;
+    return eff
+      ? eff.map((a): AppAction<S, M, V> => ({
+          tag: "move",
+          action: { tag: "job", action: a },
+          move: action.move,
+        }))
+      : null;
   }
 
   if (action.tag === "aiMove") {
@@ -380,7 +443,11 @@ export function appReducer<S, M, V = unknown>(
       };
       const eff = jobPollReduce(draft.aiMove, { tag: "start" }, jobEnv);
       return eff
-        ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: startEpoch }))
+        ? eff.map((a): AppAction<S, M, V> => ({
+            tag: "aiMove",
+            action: { tag: "job", action: a },
+            epoch: startEpoch,
+          }))
         : null;
     }
     // A response from a game that's since been replaced by "New Game" --
@@ -416,7 +483,11 @@ export function appReducer<S, M, V = unknown>(
       draft.aiMoveFailedNodeId = draft.tree.currentId;
     }
     return eff
-      ? eff.map((a): AppAction<S, M, V> => ({ tag: "aiMove", action: { tag: "job", action: a }, epoch: action.epoch }))
+      ? eff.map((a): AppAction<S, M, V> => ({
+          tag: "aiMove",
+          action: { tag: "job", action: a },
+          epoch: action.epoch,
+        }))
       : null;
   }
 
@@ -439,7 +510,11 @@ export function appReducer<S, M, V = unknown>(
       };
       const eff = jobPollReduce(draft.analysis, { tag: "start" }, jobEnv);
       return eff
-        ? eff.map((a): AppAction<S, M, V> => ({ tag: "analysis", action: { tag: "job", action: a }, epoch: startEpoch }))
+        ? eff.map((a): AppAction<S, M, V> => ({
+            tag: "analysis",
+            action: { tag: "job", action: a },
+            epoch: startEpoch,
+          }))
         : null;
     }
     if (action.epoch !== undefined && action.epoch !== draft.epoch) return null;
@@ -449,7 +524,11 @@ export function appReducer<S, M, V = unknown>(
       unreachableJobEnv("unreachable: a forwarded analysis/job action never re-submits or polls"),
     );
     return eff
-      ? eff.map((a): AppAction<S, M, V> => ({ tag: "analysis", action: { tag: "job", action: a }, epoch: action.epoch }))
+      ? eff.map((a): AppAction<S, M, V> => ({
+          tag: "analysis",
+          action: { tag: "job", action: a },
+          epoch: action.epoch,
+        }))
       : null;
   }
 

@@ -62,9 +62,9 @@ function isLightSquare(displayRow: number, col: number): boolean {
   return (displayRow + col) % 2 === 0;
 }
 
-export const ChessVariantRenderer: Component<
-  GameRendererProps<GameState, Move, GameView>
-> = (props) => {
+export const ChessVariantRenderer: Component<GameRendererProps<GameState, Move, GameView>> = (
+  props,
+) => {
   /** Engine index of the currently selected source piece, or null. */
   const [selectedSource, setSelectedSource] = createSignal<number | null>(null);
 
@@ -171,8 +171,12 @@ export const ChessVariantRenderer: Component<
             const overlay = () => overlayByDst().get(idx);
             const heat = () => overlay()?.visitShare ?? 0;
             const hovered = () =>
-              !props.busy && selectedSource() !== null && props.hoveredMove != null &&
-              props.hoveredMove[0] === selectedSource() && props.hoveredMove[1] === idx && legal();
+              !props.busy &&
+              selectedSource() !== null &&
+              props.hoveredMove != null &&
+              props.hoveredMove[0] === selectedSource() &&
+              props.hoveredMove[1] === idx &&
+              legal();
             const isGhost = () => !occ() && legal() && hovered();
 
             return (
@@ -186,10 +190,12 @@ export const ChessVariantRenderer: Component<
                   "cv-selected-source": selectedSource() === idx,
                   legal: legal(),
                   hovered: hovered(),
-                  "capture-legal": legal() && isCapture(
-                    moveLookup().get(`${selectedSource()},${idx}`) ?? [0, 0],
-                    props.state,
-                  ),
+                  "capture-legal":
+                    legal() &&
+                    isCapture(
+                      moveLookup().get(`${selectedSource()},${idx}`) ?? [0, 0],
+                      props.state,
+                    ),
                   heat: overlay() !== undefined,
                   proven: overlay()?.isProven ?? false,
                   suggested: overlay()?.isSuggested ?? false,

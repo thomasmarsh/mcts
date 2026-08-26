@@ -18,7 +18,7 @@ export const LeaderboardTable: Component<{
   const dispatch = props.store.dispatch;
 
   const status = createMemo(() => state().leaderboard.status);
-  const entries = createMemo(() => (status() === "done" ? state().leaderboard.result ?? [] : []));
+  const entries = createMemo(() => (status() === "done" ? (state().leaderboard.result ?? []) : []));
   const filters = createMemo(() => state().leaderboardFilters);
 
   // Local filter state committed on "Apply".
@@ -27,7 +27,9 @@ export const LeaderboardTable: Component<{
   const [filterSince, setFilterSince] = createSignal(filters().since ?? "");
 
   // Sort: by win_rate desc by default, toggles per column.
-  const [sortKey, setSortKey] = createSignal<"win_rate" | "strategy" | "total" | "wins">("win_rate");
+  const [sortKey, setSortKey] = createSignal<"win_rate" | "strategy" | "total" | "wins">(
+    "win_rate",
+  );
   const [sortAsc, setSortAsc] = createSignal(false);
 
   const sorted = createMemo(() => {
@@ -85,7 +87,12 @@ export const LeaderboardTable: Component<{
     <div id="leaderboard-panel">
       <div id="leaderboard-header">
         <h3>Leaderboard</h3>
-        <button id="refresh-leaderboard" onClick={refresh} disabled={status() === "pending"} title="Refresh">
+        <button
+          id="refresh-leaderboard"
+          onClick={refresh}
+          disabled={status() === "pending"}
+          title="Refresh"
+        >
           &#x21bb;
         </button>
       </div>
@@ -151,9 +158,7 @@ export const LeaderboardTable: Component<{
                     <tr class="lb-row">
                       <td class="lb-strategy">{entry.strategy}</td>
                       <td class="lb-total">{entry.total}</td>
-                      <td class="lb-wld">
-                        {formatWld(entry)}
-                      </td>
+                      <td class="lb-wld">{formatWld(entry)}</td>
                       <td class="lb-rate">
                         <div class="lb-bar-bg">
                           <div
@@ -161,9 +166,17 @@ export const LeaderboardTable: Component<{
                             style={{ width: `${entry.total === 0 ? 0 : entry.win_rate * 100}%` }}
                           />
                         </div>
-                        <span class="lb-rate-text">{entry.total === 0 ? formatLeaderboardResult(entry) : formatRate(entry.win_rate)}</span>
+                        <span class="lb-rate-text">
+                          {entry.total === 0
+                            ? formatLeaderboardResult(entry)
+                            : formatRate(entry.win_rate)}
+                        </span>
                       </td>
-                      <td class="lb-ci">{entry.total === 0 ? formatLeaderboardResult(entry) : formatInterval(entry.ci_lower, entry.ci_upper)}</td>
+                      <td class="lb-ci">
+                        {entry.total === 0
+                          ? formatLeaderboardResult(entry)
+                          : formatInterval(entry.ci_lower, entry.ci_upper)}
+                      </td>
                     </tr>
                   )}
                 </For>

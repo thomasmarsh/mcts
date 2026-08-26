@@ -112,8 +112,18 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/analysis");
 
     calls.length = 0;
-    await client.getTuningTrialPage("session/a", { state: "complete", bracket: "unassigned", q: "rave c", sort: "score", direction: "asc", limit: 25, cursor: "next/+" });
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/trials?state=complete&bracket=unassigned&q=rave+c&sort=score&direction=asc&limit=25&cursor=next%2F%2B");
+    await client.getTuningTrialPage("session/a", {
+      state: "complete",
+      bracket: "unassigned",
+      q: "rave c",
+      sort: "score",
+      direction: "asc",
+      limit: 25,
+      cursor: "next/+",
+    });
+    expect(calls[0]!.url).toBe(
+      "/api/bench/tuner/sessions/session%2Fa/trials?state=complete&bracket=unassigned&q=rave+c&sort=score&direction=asc&limit=25&cursor=next%2F%2B",
+    );
 
     calls.length = 0;
     await client.getTuningTrialDetail("session/a", "trial/b");
@@ -122,16 +132,31 @@ describe("createBenchApiClient", () => {
     calls.length = 0;
     await client.stopTuningSession("session/a", { command_id: "stop-1", expected_version: 2 });
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/stop");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ command_id: "stop-1", expected_version: 2 });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      command_id: "stop-1",
+      expected_version: 2,
+    });
 
     calls.length = 0;
     await client.resumeTuningSession("session/a", { command_id: "resume-1", expected_version: 3 });
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/resume");
 
     calls.length = 0;
-    await client.addTuningSessionBudget("session/a", { command_id: "budget-1", expected_version: 4, delta: 3, start: true, n_workers: 2 });
+    await client.addTuningSessionBudget("session/a", {
+      command_id: "budget-1",
+      expected_version: 4,
+      delta: 3,
+      start: true,
+      n_workers: 2,
+    });
     expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/budget");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ command_id: "budget-1", expected_version: 4, delta: 3, start: true, n_workers: 2 });
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      command_id: "budget-1",
+      expected_version: 4,
+      delta: 3,
+      start: true,
+      n_workers: 2,
+    });
   });
 
   it("getRunTrials passes an optional limit", async () => {
@@ -154,9 +179,17 @@ describe("createBenchApiClient", () => {
   });
 
   it("preserves structured validation paths for reducer field mapping", async () => {
-    stubFetch({ error: "validation failed", fields: [{ path: "spec.baseline.config", message: "must be an object" }] }, { ok: false, status: 422 });
+    stubFetch(
+      {
+        error: "validation failed",
+        fields: [{ path: "spec.baseline.config", message: "must be an object" }],
+      },
+      { ok: false, status: 422 },
+    );
     const client = createBenchApiClient();
 
-    await expect(client.getRun("invalid")).rejects.toThrow("spec.baseline.config: must be an object");
+    await expect(client.getRun("invalid")).rejects.toThrow(
+      "spec.baseline.config: must be an object",
+    );
   });
 });

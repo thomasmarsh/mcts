@@ -168,7 +168,12 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     // poking up out of the board rather than a hole sunk into it.
     const socketHeight = 0; // 0.14;
     const socketTopY = -RADIUS - 0.002;
-    const socketGeo = new THREE.CylinderGeometry(SOCKET_RADIUS, SOCKET_RADIUS * 0.9, socketHeight, 24);
+    const socketGeo = new THREE.CylinderGeometry(
+      SOCKET_RADIUS,
+      SOCKET_RADIUS * 0.9,
+      socketHeight,
+      24,
+    );
     const socketMat = new THREE.MeshStandardMaterial({ color: 0x3a362c, roughness: 1 });
     for (let row = 0; row < n; row++) {
       for (let col = 0; col < n; col++) {
@@ -199,7 +204,10 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     view.cells.forEach((cell, index) => {
       if (!cell) return;
       const [x, y, z] = positionFor(view.n, index);
-      const mat = buildMarbleMaterial(cell.piece === "Black" ? BLACK_COLOR : WHITE_COLOR, cell.zombie);
+      const mat = buildMarbleMaterial(
+        cell.piece === "Black" ? BLACK_COLOR : WHITE_COLOR,
+        cell.zombie,
+      );
       const sphere = new THREE.Mesh(sphereGeo, mat);
       sphere.position.set(x, y, z);
       piecesGroup.add(sphere);
@@ -247,7 +255,7 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       // playable footprint the ring merely outlines.
       const pick = new THREE.Mesh(pickGeo, pickMat);
       pick.rotation.x = -Math.PI / 2;
-      pick.position.set(x - 0.14 , y - RADIUS + 0.02, z);
+      pick.position.set(x - 0.14, y - RADIUS + 0.02, z);
       pick.userData.move = move;
       highlightGroup.add(pick);
       pickables.push(pick);
@@ -302,7 +310,13 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
       const [x, y, z] = positionFor(n, index);
       const tile = new THREE.Mesh(
         ringGeo,
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
       );
       tile.rotation.x = -Math.PI / 2;
       tile.position.set(x, y - RADIUS + 0.03, z);
@@ -491,4 +505,3 @@ export const MargoRenderer: Component<GameRendererProps<GameState, Action, GameV
     </>
   );
 };
-

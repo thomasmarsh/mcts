@@ -22,7 +22,17 @@ import {
   type BenchEnv,
 } from "../src/reducer.js";
 import { initialBenchState } from "../src/state.js";
-import type { Experiment, ExperimentCell, LaunchResponse, LeaderboardEntry, Project, RunDetail, RunFilters, RunSummary, TunerGameInfo } from "../src/types.js";
+import type {
+  Experiment,
+  ExperimentCell,
+  LaunchResponse,
+  LeaderboardEntry,
+  Project,
+  RunDetail,
+  RunFilters,
+  RunSummary,
+  TunerGameInfo,
+} from "../src/types.js";
 import { deriveSeed, expandExperimentSpec } from "../src/experiment-grid.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -72,7 +82,11 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
 }
 
 const runningDetail = makeDetail();
-const terminalDetail = makeDetail({ status: "completed", ended_at: "2026-01-01T01:00:00Z", exit_code: 0 });
+const terminalDetail = makeDetail({
+  status: "completed",
+  ended_at: "2026-01-01T01:00:00Z",
+  exit_code: 0,
+});
 function loadingTuningSessions(state: ReturnType<typeof initialBenchState>): void {
   state.tuningNavigation.list.status = "loading";
   state.tuningNavigation.list.generation += 1;
@@ -82,16 +96,34 @@ describe("experiment grid expansion", () => {
   it("matches the deterministic 2-game by 2-budget by 3-variant acceptance shape", () => {
     const plan = expandExperimentSpec({
       version: 1,
-      games: [{ game: "game-a", game_config: null }, { game: "game-b", game_config: null }],
+      games: [
+        { game: "game-a", game_config: null },
+        { game: "game-b", game_config: null },
+      ],
       baseline: { id: "base", label: "Base", config: {} },
-      variants: [{ id: "v1", label: "V1", config: {} }, { id: "v2", label: "V2", config: {} }, { id: "v3", label: "V3", config: {} }],
-      budgets: [{ kind: "iterations", value: 10 }, { kind: "time_per_move_ms", value: 20 }],
-      rounds_per_cell: 2, base_seed: 42, max_parallel_cells: 2,
+      variants: [
+        { id: "v1", label: "V1", config: {} },
+        { id: "v2", label: "V2", config: {} },
+        { id: "v3", label: "V3", config: {} },
+      ],
+      budgets: [
+        { kind: "iterations", value: 10 },
+        { kind: "time_per_move_ms", value: 20 },
+      ],
+      rounds_per_cell: 2,
+      base_seed: 42,
+      max_parallel_cells: 2,
     });
     expect(plan.cells).toHaveLength(12);
     expect(plan.total_planned_games).toBe(48);
-    expect(plan.cells.slice(0, 3).map((cell) => [cell.cell_id, cell.game, cell.budget.kind, cell.variant_id])).toEqual([
-      ["cell-000001", "game-a", "iterations", "v1"], ["cell-000002", "game-a", "iterations", "v2"], ["cell-000003", "game-a", "iterations", "v3"],
+    expect(
+      plan.cells
+        .slice(0, 3)
+        .map((cell) => [cell.cell_id, cell.game, cell.budget.kind, cell.variant_id]),
+    ).toEqual([
+      ["cell-000001", "game-a", "iterations", "v1"],
+      ["cell-000002", "game-a", "iterations", "v2"],
+      ["cell-000003", "game-a", "iterations", "v3"],
     ]);
     expect(plan.cells[0]?.cell_seed).toBe(7294331206661666);
     expect(plan.cells[0]?.round_seeds).toEqual([8360105604253074, 5482876856761435]);
@@ -154,7 +186,13 @@ describe("benchReducer / runs", () => {
       loadingTuningSessions(s);
     });
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [summary] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [summary];
@@ -179,7 +217,13 @@ describe("benchReducer / runs", () => {
       loadingTuningSessions(s);
     });
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [summary] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [summary];
@@ -191,19 +235,47 @@ describe("benchReducer / runs", () => {
 
 describe("benchReducer / persisted experiments", () => {
   const project: Project = {
-    project_id: "project-1", name: "Nim study", description: "small", archived: false,
-    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    project_id: "project-1",
+    name: "Nim study",
+    description: "small",
+    archived: false,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
   };
   const experiment: Experiment = {
-    experiment_id: "experiment-1", project_id: project.project_id, name: "Baseline", description: "one cell",
-    spec: emptyExperimentSpec(), created_at: project.created_at, updated_at: project.updated_at,
+    experiment_id: "experiment-1",
+    project_id: project.project_id,
+    name: "Baseline",
+    description: "one cell",
+    spec: emptyExperimentSpec(),
+    created_at: project.created_at,
+    updated_at: project.updated_at,
   };
   const cell: ExperimentCell = {
-    cell_id: "cell-1", cell_seed: 7294331206661666, game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant",
-    candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {},
-    budget: { kind: "iterations", value: 1 }, rounds: 1, planned_games: 2, completed_games: 1,
-    status: "running", started_at: project.created_at, ended_at: null, error: null,
-    wins: 1, losses: 0, draws: 0, win_rate: 1, ci_lower: 0.2, ci_upper: 1,
+    cell_id: "cell-1",
+    cell_seed: 7294331206661666,
+    game: "nim",
+    game_config: null,
+    variant_id: "variant",
+    variant_label: "Variant",
+    candidate_config: {},
+    baseline_id: "baseline",
+    baseline_label: "Baseline",
+    baseline_config: {},
+    budget: { kind: "iterations", value: 1 },
+    rounds: 1,
+    planned_games: 2,
+    completed_games: 1,
+    status: "running",
+    started_at: project.created_at,
+    ended_at: null,
+    error: null,
+    wins: 1,
+    losses: 0,
+    draws: 0,
+    win_rate: 1,
+    ci_lower: 0.2,
+    ci_upper: 1,
   };
 
   it("keeps project, experiment, launch, run, and cell transitions in reducer state", async () => {
@@ -213,10 +285,20 @@ describe("benchReducer / persisted experiments", () => {
       listProjects: () => Effect.none(),
       listExperiments: () => Effect.none(),
       createExperiment: () => Effect.send(experiment),
-      launchExperiment: () => Effect.send({ run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" }),
+      launchExperiment: () =>
+        Effect.send({ run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" }),
       getRunCells: () => Effect.send([cell]),
       getRunLog: () => Effect.send({ lines: [], next_offset: 0 }),
-      getRun: () => Effect.send({ ...terminalDetail, run_id: "experiment-run", kind: "experiment", game: "nim", experiment_id: experiment.experiment_id, project_id: project.project_id, experiment_spec: experiment.spec }),
+      getRun: () =>
+        Effect.send({
+          ...terminalDetail,
+          run_id: "experiment-run",
+          kind: "experiment",
+          game: "nim",
+          experiment_id: experiment.experiment_id,
+          project_id: project.project_id,
+          experiment_spec: experiment.spec,
+        }),
       listRuns: () => Effect.none(),
     };
     const ts = createTestStore(benchReducer, env, initialBenchState());
@@ -228,38 +310,83 @@ describe("benchReducer / persisted experiments", () => {
     ts.send({ tag: "newExperiment" }, (s) => {
       s.experimentDraft = { name: "", description: "", spec: emptyExperimentSpec() };
     });
-    ts.send({ tag: "experimentDraft", draft: { name: experiment.name, description: experiment.description, spec: experiment.spec } });
+    ts.send({
+      tag: "experimentDraft",
+      draft: { name: experiment.name, description: experiment.description, spec: experiment.spec },
+    });
     ts.send({ tag: "saveExperiment" });
     await ts.drain();
     ts.receive({ tag: "experimentSaved", experiment }, (s) => {
       s.selectedExperimentId = experiment.experiment_id;
       s.selectedExperiment = experiment;
-      s.experimentDraft = { name: experiment.name, description: experiment.description, spec: experiment.spec };
-      s.experimentSavedDraft = { name: experiment.name, description: experiment.description, spec: experiment.spec };
+      s.experimentDraft = {
+        name: experiment.name,
+        description: experiment.description,
+        spec: experiment.spec,
+      };
+      s.experimentSavedDraft = {
+        name: experiment.name,
+        description: experiment.description,
+        spec: experiment.spec,
+      };
       s.experimentSaveStatus = "idle";
       s.experimentFieldErrors = {};
     });
     ts.send({ tag: "launchExperiment" });
     await ts.drain();
-    ts.receive({ tag: "experimentLaunched", response: { run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" } }, (s) => {
-      s.activeTab = "runs";
-      s.experimentLaunchStatus = "idle";
-    });
+    ts.receive(
+      {
+        tag: "experimentLaunched",
+        response: { run_id: "experiment-run", pid: 7, log_path: "/tmp/log.jsonl" },
+      },
+      (s) => {
+        s.activeTab = "runs";
+        s.experimentLaunchStatus = "idle";
+      },
+    );
     ts.receive({ tag: "openRun", runId: "experiment-run" });
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
-    ts.receive({ tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: { ...terminalDetail, run_id: "experiment-run", kind: "experiment", game: "nim", experiment_id: experiment.experiment_id, project_id: project.project_id, experiment_spec: experiment.spec }, trials: [], cells: [cell] });
-    ts.send({ tag: "openCell", cellId: "cell-1" }, (s) => { s.selectedCellId = "cell-1"; });
+    ts.receive({
+      tag: "tailed",
+      generation: 1,
+      lines: [],
+      nextOffset: 0,
+      detail: {
+        ...terminalDetail,
+        run_id: "experiment-run",
+        kind: "experiment",
+        game: "nim",
+        experiment_id: experiment.experiment_id,
+        project_id: project.project_id,
+        experiment_spec: experiment.spec,
+      },
+      trials: [],
+      cells: [cell],
+    });
+    ts.send({ tag: "openCell", cellId: "cell-1" }, (s) => {
+      s.selectedCellId = "cell-1";
+    });
     expect(ts.getState().selectedCellId).toBe("cell-1");
     expect(ts.getState().openRun?.cells[0]?.completed_games).toBe(1);
   });
 
   it("surfaces one-cell validation errors before calling the API", () => {
     let called = false;
-    const env: BenchEnv = { ...mockEnv, createExperiment: () => { called = true; return Effect.send(experiment); } };
+    const env: BenchEnv = {
+      ...mockEnv,
+      createExperiment: () => {
+        called = true;
+        return Effect.send(experiment);
+      },
+    };
     const draft = initialBenchState();
     draft.selectedProjectId = project.project_id;
-    draft.experimentDraft = { name: "bad", description: "", spec: { ...emptyExperimentSpec(), variants: [] } };
+    draft.experimentDraft = {
+      name: "bad",
+      description: "",
+      spec: { ...emptyExperimentSpec(), variants: [] },
+    };
     benchReducer(draft, { tag: "saveExperiment" }, env);
     expect(called).toBe(false);
     expect(draft.experimentFieldErrors["spec.variants"]).toContain("variants");
@@ -271,8 +398,14 @@ describe("benchReducer / persisted experiments", () => {
     const saved = { ...experiment, name: "Saved definition" };
     const env: BenchEnv = {
       ...mockEnv,
-      createExperiment: () => { createCalls++; return Effect.none(); },
-      launchExperiment: () => { launchCalls++; return Effect.none(); },
+      createExperiment: () => {
+        createCalls++;
+        return Effect.none();
+      },
+      launchExperiment: () => {
+        launchCalls++;
+        return Effect.none();
+      },
     };
     const state = initialBenchState();
     state.selectedProjectId = project.project_id;
@@ -291,7 +424,11 @@ describe("benchReducer / persisted experiments", () => {
     expect(launchCalls).toBe(1);
 
     state.experimentLaunchStatus = "idle";
-    benchReducer(state, { tag: "experimentDraft", draft: { ...state.experimentDraft!, description: "changed" } }, env);
+    benchReducer(
+      state,
+      { tag: "experimentDraft", draft: { ...state.experimentDraft!, description: "changed" } },
+      env,
+    );
     benchReducer(state, { tag: "launchExperiment" }, env);
     expect(state.experimentRunError).toContain("Save the current experiment");
     expect(launchCalls).toBe(1);
@@ -299,9 +436,20 @@ describe("benchReducer / persisted experiments", () => {
 
   it("changes a game and installs the metadata-provided default configuration", () => {
     const state = initialBenchState();
-    state.experimentDraft = { name: "Game change", description: "", spec: emptyExperimentSpec("nim") };
-    benchReducer(state, { tag: "experimentGameChanged", game: "druid", gameConfig: { size: 7 } }, mockEnv);
-    expect(state.experimentDraft?.spec.games[0]).toEqual({ game: "druid", game_config: { size: 7 } });
+    state.experimentDraft = {
+      name: "Game change",
+      description: "",
+      spec: emptyExperimentSpec("nim"),
+    };
+    benchReducer(
+      state,
+      { tag: "experimentGameChanged", game: "druid", gameConfig: { size: 7 } },
+      mockEnv,
+    );
+    expect(state.experimentDraft?.spec.games[0]).toEqual({
+      game: "druid",
+      game_config: { size: 7 },
+    });
   });
 });
 
@@ -321,7 +469,11 @@ describe("benchReducer / log tail", () => {
     const env: BenchEnv = {
       ...mockEnv,
       getRunLog: () =>
-        Effect.send(++logCalls === 1 ? { lines: ["l1", "l2"], next_offset: 42 } : { lines: [], next_offset: 42 }),
+        Effect.send(
+          ++logCalls === 1
+            ? { lines: ["l1", "l2"], next_offset: 42 }
+            : { lines: [], next_offset: 42 },
+        ),
       getRun: () => Effect.send(++runCalls === 1 ? runningDetail : terminalDetail),
       listRuns: () => Effect.send([summary]),
     };
@@ -343,7 +495,14 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: ["l1", "l2"], nextOffset: 42, detail: runningDetail, trials: [] },
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: ["l1", "l2"],
+        nextOffset: 42,
+        detail: runningDetail,
+        trials: [],
+      },
       (s) => {
         s.openRun!.detail = runningDetail;
         s.openRun!.tail.lines = ["l1", "l2"];
@@ -357,7 +516,14 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 42, detail: terminalDetail, trials: [] },
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: [],
+        nextOffset: 42,
+        detail: terminalDetail,
+        trials: [],
+      },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
@@ -366,7 +532,13 @@ describe("benchReducer / log tail", () => {
       },
     );
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [summary] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [summary];
@@ -426,7 +598,14 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 1 });
     await ts.drain();
     ts.receive(
-      { tag: "tailed", generation: 1, lines: [], nextOffset: 0, detail: terminalDetail, trials: [] },
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: [],
+        nextOffset: 0,
+        detail: terminalDetail,
+        trials: [],
+      },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
@@ -437,7 +616,13 @@ describe("benchReducer / log tail", () => {
       },
     );
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [];
@@ -472,7 +657,17 @@ describe("benchReducer / log tail", () => {
     await ts.drain();
     // The tailed arrives with a valid generation but no open run — dropped,
     // no state change, no further tick scheduled.
-    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: runningDetail, trials: [] }, () => {});
+    ts.receive(
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: ["x"],
+        nextOffset: 7,
+        detail: runningDetail,
+        trials: [],
+      },
+      () => {},
+    );
   });
 
   it("drops a stale generation's tailed after a different run is opened", async () => {
@@ -513,10 +708,27 @@ describe("benchReducer / log tail", () => {
     ts.receive({ tag: "tailTick", generation: 2 });
     await ts.drain();
     // Run-a's tailed lands first (its fetch started first) and is dropped.
-    ts.receive({ tag: "tailed", generation: 1, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [] }, () => {});
+    ts.receive(
+      {
+        tag: "tailed",
+        generation: 1,
+        lines: ["x"],
+        nextOffset: 7,
+        detail: terminalDetail,
+        trials: [],
+      },
+      () => {},
+    );
     // Run-b's tailed applies normally.
     ts.receive(
-      { tag: "tailed", generation: 2, lines: ["x"], nextOffset: 7, detail: terminalDetail, trials: [] },
+      {
+        tag: "tailed",
+        generation: 2,
+        lines: ["x"],
+        nextOffset: 7,
+        detail: terminalDetail,
+        trials: [],
+      },
       (s) => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.lines = ["x"];
@@ -527,7 +739,13 @@ describe("benchReducer / log tail", () => {
       },
     );
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [];
@@ -602,7 +820,10 @@ describe("benchReducer / tunerKinds", () => {
     ts.receive(
       {
         tag: "tunerKinds",
-        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [tlKind] } } },
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [tlKind] } },
+        },
       },
       (s) => {
         s.tunerKinds.status = "done";
@@ -634,7 +855,13 @@ describe("benchReducer / leaderboard", () => {
       s.leaderboard.status = "pending";
     });
     ts.receive(
-      { tag: "leaderboard", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [entry] } } } },
+      {
+        tag: "leaderboard",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [entry] } },
+        },
+      },
       (s) => {
         s.leaderboard.status = "done";
         s.leaderboard.result = [entry];
@@ -653,12 +880,21 @@ describe("benchReducer / leaderboard", () => {
     };
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
-    ts.send({ tag: "setLeaderboardFilters", game: "druid", gitSha: "abc1234", since: null }, (s) => {
-      s.leaderboardFilters = { game: "druid", gitSha: "abc1234", since: null };
-      s.leaderboard.status = "pending";
-    });
+    ts.send(
+      { tag: "setLeaderboardFilters", game: "druid", gitSha: "abc1234", since: null },
+      (s) => {
+        s.leaderboardFilters = { game: "druid", gitSha: "abc1234", since: null };
+        s.leaderboard.status = "pending";
+      },
+    );
     ts.receive(
-      { tag: "leaderboard", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [entry] } } } },
+      {
+        tag: "leaderboard",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [entry] } },
+        },
+      },
       (s) => {
         s.leaderboard.status = "done";
         s.leaderboard.result = [entry];
@@ -669,8 +905,30 @@ describe("benchReducer / leaderboard", () => {
 
   it("fetchCommitTrends populates commitTrends on success", async () => {
     const trendData = {
-      abc1234: [{ strategy: "strong", total: 2, wins: 1, losses: 0, draws: 1, win_rate: 0.75, ci_lower: 0.3, ci_upper: 0.99 }],
-      def5678: [{ strategy: "strong", total: 5, wins: 3, losses: 1, draws: 1, win_rate: 0.7, ci_lower: 0.4, ci_upper: 0.92 }],
+      abc1234: [
+        {
+          strategy: "strong",
+          total: 2,
+          wins: 1,
+          losses: 0,
+          draws: 1,
+          win_rate: 0.75,
+          ci_lower: 0.3,
+          ci_upper: 0.99,
+        },
+      ],
+      def5678: [
+        {
+          strategy: "strong",
+          total: 5,
+          wins: 3,
+          losses: 1,
+          draws: 1,
+          win_rate: 0.7,
+          ci_lower: 0.4,
+          ci_upper: 0.92,
+        },
+      ],
     };
     const env: BenchEnv = {
       ...mockEnv,
@@ -685,7 +943,12 @@ describe("benchReducer / leaderboard", () => {
     ts.receive(
       { tag: "commitTrendsLoaded", data: trendData, shas: ["def5678", "abc1234"] },
       (s) => {
-        s.commitTrends = { data: trendData, shas: ["def5678", "abc1234"], status: "done", error: null };
+        s.commitTrends = {
+          data: trendData,
+          shas: ["def5678", "abc1234"],
+          status: "done",
+          error: null,
+        };
       },
     );
   });
@@ -701,12 +964,9 @@ describe("benchReducer / leaderboard", () => {
       s.commitTrends = { data: {}, shas: [], status: "loading", error: null };
     });
     await ts.drain();
-    ts.receive(
-      { tag: "commitTrendsFailed", error: "Error: boom" },
-      (s) => {
-        s.commitTrends = { data: {}, shas: [], status: "error", error: "Error: boom" };
-      },
-    );
+    ts.receive({ tag: "commitTrendsFailed", error: "Error: boom" }, (s) => {
+      s.commitTrends = { data: {}, shas: [], status: "error", error: "Error: boom" };
+    });
   });
 });
 
@@ -714,7 +974,11 @@ describe("benchReducer / leaderboard", () => {
 
 describe("benchReducer / launch", () => {
   it("request -> submitted('done') stores the response and refreshes the runs list", () => {
-    const launchResponse: LaunchResponse = { run_id: "new-run", pid: 4321, log_path: "/x/log.jsonl" };
+    const launchResponse: LaunchResponse = {
+      run_id: "new-run",
+      pid: 4321,
+      log_path: "/x/log.jsonl",
+    };
     const seen: { kind: string; game: string; config?: unknown }[] = [];
     const env: BenchEnv = {
       ...mockEnv,
@@ -727,7 +991,10 @@ describe("benchReducer / launch", () => {
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
     ts.send(
-      { tag: "launch", action: { tag: "request", kind: "round_robin", game: "druid", config: { rounds: 2 } } },
+      {
+        tag: "launch",
+        action: { tag: "request", kind: "round_robin", game: "druid", config: { rounds: 2 } },
+      },
       (s) => {
         s.launch.status = "pending";
       },
@@ -735,7 +1002,10 @@ describe("benchReducer / launch", () => {
     ts.receive(
       {
         tag: "launch",
-        action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: launchResponse } } },
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: launchResponse } },
+        },
       },
       (s) => {
         s.launch.status = "done";
@@ -747,7 +1017,13 @@ describe("benchReducer / launch", () => {
       },
     );
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [summary] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [summary];
@@ -772,7 +1048,13 @@ describe("benchReducer / stopRun", () => {
       loadingTuningSessions(s);
     });
     ts.receive(
-      { tag: "runs", action: { tag: "job", action: { tag: "submitted", result: { status: "done", result: [summary] } } } },
+      {
+        tag: "runs",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "done", result: [summary] } },
+        },
+      },
       (s) => {
         s.runs.status = "done";
         s.runs.result = [summary];
@@ -801,30 +1083,80 @@ describe("benchReducer / experiment exports", () => {
     const spec = emptyExperimentSpec("nim");
     state.openRun = {
       runId: "export-run",
-      detail: makeDetail({ kind: "experiment", experiment_spec: spec, run_id: "export-run", status: "completed" }),
+      detail: makeDetail({
+        kind: "experiment",
+        experiment_spec: spec,
+        run_id: "export-run",
+        status: "completed",
+      }),
       tail: { lines: [], offset: 0, active: false, error: null, idleAttempts: 0, failures: 0 },
-      trials: [], games: [],
-      cells: [{ cell_id: "export-cell", cell_seed: 1, game: "nim", game_config: null, variant_id: "variant", variant_label: "Variant", candidate_config: {}, baseline_id: "baseline", baseline_label: "Baseline", baseline_config: {}, budget: spec.budgets[0]!, rounds: 1, planned_games: 2, completed_games: 0, status: "pending", started_at: null, ended_at: null, error: null, wins: 0, losses: 0, draws: 0, win_rate: 0.5, ci_lower: 0, ci_upper: 1 }],
+      trials: [],
+      games: [],
+      cells: [
+        {
+          cell_id: "export-cell",
+          cell_seed: 1,
+          game: "nim",
+          game_config: null,
+          variant_id: "variant",
+          variant_label: "Variant",
+          candidate_config: {},
+          baseline_id: "baseline",
+          baseline_label: "Baseline",
+          baseline_config: {},
+          budget: spec.budgets[0]!,
+          rounds: 1,
+          planned_games: 2,
+          completed_games: 0,
+          status: "pending",
+          started_at: null,
+          ended_at: null,
+          error: null,
+          wins: 0,
+          losses: 0,
+          draws: 0,
+          win_rate: 0.5,
+          ci_lower: 0,
+          ci_upper: 1,
+        },
+      ],
     };
     return state;
   }
 
   it("downloads a deterministic snapshot once while pending", async () => {
     const downloads: Array<[string, string, string]> = [];
-    const env: BenchEnv = { ...mockEnv, downloadFile: (filename, mimeType, contents) => { downloads.push([filename, mimeType, contents]); return Effect.send(undefined); } };
+    const env: BenchEnv = {
+      ...mockEnv,
+      downloadFile: (filename, mimeType, contents) => {
+        downloads.push([filename, mimeType, contents]);
+        return Effect.send(undefined);
+      },
+    };
     const ts = createTestStore(benchReducer, env, exportState());
-    ts.send({ tag: "exportExperimentRun", format: "json" }, (s) => { s.experimentExportStatus = "pending"; s.experimentExportError = null; });
+    ts.send({ tag: "exportExperimentRun", format: "json" }, (s) => {
+      s.experimentExportStatus = "pending";
+      s.experimentExportError = null;
+    });
     ts.send({ tag: "exportExperimentRun", format: "json" });
     expect(downloads).toHaveLength(1);
     expect(downloads[0]![0]).toBe("experiment-export-run.json");
     expect(downloads[0]![1]).toBe("application/json");
-    ts.receive({ tag: "experimentExportFinished" }, (s) => { s.experimentExportStatus = "idle"; });
+    ts.receive({ tag: "experimentExportFinished" }, (s) => {
+      s.experimentExportStatus = "idle";
+    });
   });
 
   it("clears pending state on download failure without losing the open run", async () => {
-    const env: BenchEnv = { ...mockEnv, downloadFile: () => Effect.fromPromise(() => Promise.reject(new Error("download failed"))) };
+    const env: BenchEnv = {
+      ...mockEnv,
+      downloadFile: () => Effect.fromPromise(() => Promise.reject(new Error("download failed"))),
+    };
     const ts = createTestStore(benchReducer, env, exportState());
-    ts.send({ tag: "exportExperimentRun", format: "csv" }, (s) => { s.experimentExportStatus = "pending"; s.experimentExportError = null; });
+    ts.send({ tag: "exportExperimentRun", format: "csv" }, (s) => {
+      s.experimentExportStatus = "pending";
+      s.experimentExportError = null;
+    });
     await ts.drain();
     ts.receive({ tag: "experimentExportFailed", error: "Error: download failed" }, (s) => {
       s.experimentExportStatus = "idle";

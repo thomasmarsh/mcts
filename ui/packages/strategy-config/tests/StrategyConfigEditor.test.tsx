@@ -22,7 +22,14 @@ function renderEditor(initial: CustomStrategySpec) {
     latest = next;
     setConfig(next);
   };
-  render(() => <StrategyConfigEditor schema={fixtureSchema} config={config()} tunerInfo={null} onChange={onChange} />);
+  render(() => (
+    <StrategyConfigEditor
+      schema={fixtureSchema}
+      config={config()}
+      tunerInfo={null}
+      onChange={onChange}
+    />
+  ));
   return { getLatest: () => latest };
 }
 
@@ -63,7 +70,10 @@ describe("StrategyConfigEditor", () => {
     const selectSelect = screen.getAllByRole("combobox")[0]!;
     fireEvent.change(selectSelect, { target: { value: "epsilon_greedy" } });
     await screen.findByText("wraps");
-    expect(getLatest().search.select).toMatchObject({ kind: "epsilon_greedy", inner: { kind: "ucb1" } });
+    expect(getLatest().search.select).toMatchObject({
+      kind: "epsilon_greedy",
+      inner: { kind: "ucb1" },
+    });
 
     fireEvent.change(selectSelect, { target: { value: "ucb1" } });
     expect(getLatest().search.select).toEqual({ kind: "ucb1", c: 1.4142135623730951 });

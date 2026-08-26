@@ -21,15 +21,24 @@ export function createSimpleSummary(
     const blackCount = countStones(view.cells, "Black");
     const whiteCount = countStones(view.cells, "White");
     const lines = [
-      { id: "black", text: `Black — ${blackCount} stone${blackCount !== 1 ? "s" : ""}`, swatch: "#1a1a1a" },
-      { id: "white", text: `White — ${whiteCount} stone${whiteCount !== 1 ? "s" : ""}`, swatch: "#e0e0e0" },
+      {
+        id: "black",
+        text: `Black — ${blackCount} stone${blackCount !== 1 ? "s" : ""}`,
+        swatch: "#1a1a1a",
+      },
+      {
+        id: "white",
+        text: `White — ${whiteCount} stone${whiteCount !== 1 ? "s" : ""}`,
+        swatch: "#e0e0e0",
+      },
     ];
 
     if (view.terminal) {
       return {
         turnText: "Game over",
         bannerText: terminalMessage(view.winner),
-        bannerColor: view.winner === "Black" ? "#1a1a1a" : view.winner === "White" ? "#e0e0e0" : undefined,
+        bannerColor:
+          view.winner === "Black" ? "#1a1a1a" : view.winner === "White" ? "#e0e0e0" : undefined,
         lines,
         currentPlayer: null,
       };

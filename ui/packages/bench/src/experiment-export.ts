@@ -48,7 +48,33 @@ export function serializeExperimentRunJson(detail: RunDetail, cells: ExperimentC
 }
 
 const CSV_HEADER = [
-  "run_id", "run_status", "cell_id", "cell_status", "game", "game_config_json", "budget_kind", "budget_value", "rounds", "cell_seed", "planned_games", "completed_games", "variant_id", "variant_label", "candidate_config_json", "baseline_id", "baseline_label", "baseline_config_json", "wins", "losses", "draws", "win_rate", "ci_lower", "ci_upper", "started_at", "ended_at", "error",
+  "run_id",
+  "run_status",
+  "cell_id",
+  "cell_status",
+  "game",
+  "game_config_json",
+  "budget_kind",
+  "budget_value",
+  "rounds",
+  "cell_seed",
+  "planned_games",
+  "completed_games",
+  "variant_id",
+  "variant_label",
+  "candidate_config_json",
+  "baseline_id",
+  "baseline_label",
+  "baseline_config_json",
+  "wins",
+  "losses",
+  "draws",
+  "win_rate",
+  "ci_lower",
+  "ci_upper",
+  "started_at",
+  "ended_at",
+  "error",
 ];
 
 function compactJson(value: unknown): string {
@@ -62,11 +88,39 @@ function csvField(value: unknown): string {
 
 export function serializeExperimentRunCsv(detail: RunDetail, cells: ExperimentCell[]): string {
   if (!detail.experiment_spec) throw new Error("The run snapshot is not available yet.");
-  const rows = sortedCells(cells).map((cell) => [
-    detail.run_id, detail.status, cell.cell_id, cell.status, cell.game, compactJson(cell.game_config), cell.budget.kind, cell.budget.value, cell.rounds, cell.cell_seed,
-    cell.planned_games, cell.completed_games, cell.variant_id, cell.variant_label, compactJson(cell.candidate_config), cell.baseline_id, cell.baseline_label, compactJson(cell.baseline_config),
-    cell.wins, cell.losses, cell.draws, cell.win_rate, cell.ci_lower, cell.ci_upper, cell.started_at, cell.ended_at, cell.error,
-  ].map(csvField).join(","));
+  const rows = sortedCells(cells).map((cell) =>
+    [
+      detail.run_id,
+      detail.status,
+      cell.cell_id,
+      cell.status,
+      cell.game,
+      compactJson(cell.game_config),
+      cell.budget.kind,
+      cell.budget.value,
+      cell.rounds,
+      cell.cell_seed,
+      cell.planned_games,
+      cell.completed_games,
+      cell.variant_id,
+      cell.variant_label,
+      compactJson(cell.candidate_config),
+      cell.baseline_id,
+      cell.baseline_label,
+      compactJson(cell.baseline_config),
+      cell.wins,
+      cell.losses,
+      cell.draws,
+      cell.win_rate,
+      cell.ci_lower,
+      cell.ci_upper,
+      cell.started_at,
+      cell.ended_at,
+      cell.error,
+    ]
+      .map(csvField)
+      .join(","),
+  );
   return [CSV_HEADER.join(","), ...rows].join("\r\n") + "\r\n";
 }
 

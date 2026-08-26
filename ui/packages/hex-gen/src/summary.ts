@@ -23,7 +23,12 @@ export function summarize(view: GameView): GameSummary {
           lines: [],
           currentPlayer: null,
         }
-      : { turnText: "Game over", bannerText: "No moves left — draw.", lines: [], currentPlayer: null };
+      : {
+          turnText: "Game over",
+          bannerText: "No moves left — draw.",
+          lines: [],
+          currentPlayer: null,
+        };
   }
   return {
     turnText: `${view.turn} to move (connect ${edgesFor(view.turn)})`,

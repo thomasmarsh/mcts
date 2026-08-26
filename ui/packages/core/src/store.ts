@@ -58,10 +58,15 @@ export function scope<PS extends object, PA, NS, NA, NEnv, AppEnv>(
   env: AppEnv,
 ): ScopedStore<NS, NA> & { env: NEnv } {
   return {
-    get state(): NS { return get(parent.state); },
+    get state(): NS {
+      return get(parent.state);
+    },
     dispatch: (a: NA) => parent.dispatch(widen(a)),
     env: narrowEnv(env),
-    getState: () => { const p = parent.getState(); return createMemo(() => get(p())); },
+    getState: () => {
+      const p = parent.getState();
+      return createMemo(() => get(p()));
+    },
   };
 }
 

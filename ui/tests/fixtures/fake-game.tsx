@@ -18,7 +18,10 @@ export interface FakeView {
 }
 
 export function viewFor(state: number): FakeView {
-  return { turn: state >= TERMINAL_AT ? null : PLAYERS[state % 2]!, terminal: state >= TERMINAL_AT };
+  return {
+    turn: state >= TERMINAL_AT ? null : PLAYERS[state % 2]!,
+    terminal: state >= TERMINAL_AT,
+  };
 }
 
 /** Every mount/cleanup of `FakeRenderer`, in order -- what the no-remount

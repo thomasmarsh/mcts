@@ -29,7 +29,9 @@ import type {
  * `"custom"` sentinel, kept for server-side logging -- see that struct's doc
  * comment), with `custom` carrying the real spec alongside it. */
 function strategyBody(strategy: AiStrategyRef): { preset: string; custom?: unknown } {
-  return strategy.kind === "preset" ? { preset: strategy.id } : { preset: "custom", custom: strategy.spec };
+  return strategy.kind === "preset"
+    ? { preset: strategy.id }
+    : { preset: "custom", custom: strategy.spec };
 }
 
 export interface ApiClient {
@@ -39,8 +41,17 @@ export interface ApiClient {
   view<S, V = unknown>(kind: string, state: S): Promise<V>;
   apply<S, M, V = unknown>(kind: string, state: S, move: M): Promise<StateAndView<S, V>>;
   aiPresets(kind: string): Promise<AiPresetInfo[]>;
-  aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Promise<AiMoveResult<S, M, V>>;
-  analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Promise<Analysis<M>>;
+  aiMove<S, M, V = unknown>(
+    kind: string,
+    state: S,
+    strategy: AiStrategyRef,
+  ): Promise<AiMoveResult<S, M, V>>;
+  analyze<S, M>(
+    kind: string,
+    state: S,
+    strategy: AiStrategyRef,
+    budgetMs?: number,
+  ): Promise<Analysis<M>>;
   fetchStrategySchema(): Promise<AxisSchema>;
   fetchStrategyFamilies(kind: string): Promise<TunerInfo | null>;
 }
@@ -55,7 +66,11 @@ async function errorMessage(r: Response): Promise<string> {
   if (text) {
     try {
       const body: unknown = JSON.parse(text);
-      if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+      if (
+        body &&
+        typeof body === "object" &&
+        typeof (body as { error?: unknown }).error === "string"
+      ) {
         return (body as { error: string }).error;
       }
     } catch {
@@ -109,10 +124,22 @@ export function createApiClient(baseUrl = ""): ApiClient {
     async aiPresets(kind: string): Promise<AiPresetInfo[]> {
       return fetchJson(url(`/api/games/${encodeURIComponent(kind)}/ai_presets`));
     },
-    async aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Promise<AiMoveResult<S, M, V>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/ai_move`), { state, ...strategyBody(strategy) });
+    async aiMove<S, M, V = unknown>(
+      kind: string,
+      state: S,
+      strategy: AiStrategyRef,
+    ): Promise<AiMoveResult<S, M, V>> {
+      return postJson(url(`/api/games/${encodeURIComponent(kind)}/ai_move`), {
+        state,
+        ...strategyBody(strategy),
+      });
     },
-    async analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Promise<Analysis<M>> {
+    async analyze<S, M>(
+      kind: string,
+      state: S,
+      strategy: AiStrategyRef,
+      budgetMs?: number,
+    ): Promise<Analysis<M>> {
       return postJson(url(`/api/games/${encodeURIComponent(kind)}/analyze`), {
         state,
         ...strategyBody(strategy),
@@ -132,10 +159,12 @@ export function createEnv(api: ApiClient): Env {
   const lift = <T>(thunk: () => Promise<T>): Effect<T> => Effect.fromPromise(thunk);
   return {
     getGames: () => lift(() => api.getGames()),
-    newGame: <S, V = unknown>(kind: string, config?: unknown) => lift(() => api.newGame<S, V>(kind, config)),
+    newGame: <S, V = unknown>(kind: string, config?: unknown) =>
+      lift(() => api.newGame<S, V>(kind, config)),
     legalMoves: <S, M>(kind: string, state: S) => lift(() => api.legalMoves<S, M>(kind, state)),
     view: <S, V = unknown>(kind: string, state: S) => lift(() => api.view<S, V>(kind, state)),
-    apply: <S, M, V = unknown>(kind: string, state: S, move: M) => lift(() => api.apply<S, M, V>(kind, state, move)),
+    apply: <S, M, V = unknown>(kind: string, state: S, move: M) =>
+      lift(() => api.apply<S, M, V>(kind, state, move)),
     aiPresets: (kind: string) => lift(() => api.aiPresets(kind)),
     aiMove: <S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef) =>
       lift(() => api.aiMove<S, M, V>(kind, state, strategy)),

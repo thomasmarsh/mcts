@@ -107,12 +107,20 @@ describe("gameTreeReducer", () => {
     const laterReport = { ...searchReport("a"), completed_iterations: 200 };
 
     gameTreeReducer(tree, { tag: "undo" }, undefined);
-    gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1, search: firstReport }, undefined);
+    gameTreeReducer(
+      tree,
+      { tag: "applyMove", move: "a", state: 1, search: firstReport },
+      undefined,
+    );
     expect(tree.currentId).toBe(childId);
     expect(tree.nodes[childId]?.search).toEqual(firstReport);
 
     gameTreeReducer(tree, { tag: "undo" }, undefined);
-    gameTreeReducer(tree, { tag: "applyMove", move: "a", state: 1, search: laterReport }, undefined);
+    gameTreeReducer(
+      tree,
+      { tag: "applyMove", move: "a", state: 1, search: laterReport },
+      undefined,
+    );
     expect(tree.nodes[childId]?.search).toEqual(firstReport);
   });
 

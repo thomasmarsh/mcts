@@ -30,11 +30,7 @@ import type { BenchSpectatorProps } from "./types.js";
 export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }> = (props) => {
   const api = createBenchApiClient();
   const env = createBenchEnv(api);
-  const store: Store<BenchState, BenchAction> = createStore(
-    initialBenchState(),
-    benchReducer,
-    env,
-  );
+  const store: Store<BenchState, BenchAction> = createStore(initialBenchState(), benchReducer, env);
   const state = store.getState();
   const dispatch = store.dispatch;
 
@@ -90,10 +86,18 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
         >
           Leaderboard
         </button>
-        <button class="sub-tab-btn" classList={{ active: activeTab() === "projects" }} onClick={() => dispatch({ tag: "setTab", tab: "projects" })}>Projects</button>
+        <button
+          class="sub-tab-btn"
+          classList={{ active: activeTab() === "projects" }}
+          onClick={() => dispatch({ tag: "setTab", tab: "projects" })}
+        >
+          Projects
+        </button>
       </div>
 
-      <Show when={activeTab() === "projects"}><ProjectsApp store={store} /></Show>
+      <Show when={activeTab() === "projects"}>
+        <ProjectsApp store={store} />
+      </Show>
 
       <Show when={activeTab() === "runs"}>
         <div id="bench-runs-layout">
@@ -106,7 +110,12 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
               fallback={
                 <>
                   <Show when={openRun() !== null}>
-                    <Show when={openRun()?.detail?.kind === "experiment"} fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}><ExperimentRunDetail store={store} Spectator={props.Spectator} /></Show>
+                    <Show
+                      when={openRun()?.detail?.kind === "experiment"}
+                      fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}
+                    >
+                      <ExperimentRunDetail store={store} Spectator={props.Spectator} />
+                    </Show>
                   </Show>
                   <Show when={openRun() === null && showLaunchForm()}>
                     <LaunchForm store={store} />
