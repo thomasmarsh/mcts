@@ -4,7 +4,7 @@
 // `StrategyConfigEditor`'s recursion without pulling in the full ~20-variant
 // schema `axis_schema()` produces.
 
-import type { AxisSchema } from "@mcts/game";
+import type { AxisSchema, TunerInfo } from "@mcts/game";
 
 export const fixtureSchema: AxisSchema = {
   select: {
@@ -66,6 +66,38 @@ export const fixtureSchema: AxisSchema = {
       },
     ],
   },
+};
+
+/** A hand-built `TunerInfo`, small but exercising the shapes named-family
+ * mode's activation walk needs: `family` is the always-active root; `c` is
+ * gated by two separate conditions (`family: ucb1` and `rave_ucb: [ucb1,
+ * tuned]`), so it's active if either is satisfied; `rave_ucb` is itself
+ * gated on `family`, so activating `c` via `rave_ucb` requires a second
+ * pass; `contempt`/`contempt_factor` is a second, independent root/child
+ * pair. */
+export const fixtureTunerInfo: TunerInfo = {
+  id: "fixture",
+  baselines: ["random"],
+  eval_rounds: 10,
+  parameters: [
+    {
+      name: "family",
+      type: "categorical",
+      choices: ["ucb1", "random", "rave_ucb"],
+      default: "ucb1",
+    },
+    { name: "rave_ucb", type: "categorical", choices: ["ucb1", "tuned"], default: "ucb1" },
+    { name: "c", type: "float", bounds: [0, 3], default: 1.4142135623730951 },
+    { name: "contempt", type: "categorical", choices: ["on", "off"], default: "off" },
+    { name: "contempt_factor", type: "float", bounds: [-1, 1], default: 0 },
+  ],
+  conditions: [
+    { if: { family: "rave_ucb" }, then: ["rave_ucb"] },
+    { if: { family: "ucb1" }, then: ["c"] },
+    { if: { rave_ucb: ["ucb1", "tuned"] }, then: ["c"] },
+    { if: { contempt: "on" }, then: ["contempt_factor"] },
+  ],
+  game_config: {},
 };
 
 export function fixtureDefaultConfig() {
