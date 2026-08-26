@@ -1,0 +1,18 @@
+[package]
+name = "game-focus"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_focus"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[lints]
+workspace = true
