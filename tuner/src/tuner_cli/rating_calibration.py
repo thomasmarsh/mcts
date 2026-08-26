@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Sequence
 
 from .config import RatingPolicy, ResourcePolicy, SearchConfig
 from .evaluation import (
@@ -20,7 +20,6 @@ from .evaluation import (
     pair_id_for,
 )
 from .lifecycle import SessionId, TrialId
-
 
 _OUTCOME_ALIASES: dict[str, Outcome] = {
     "win": "candidate_win",
@@ -174,17 +173,9 @@ def calibrate(
 def render_calibration(rows: Sequence[CalibrationRow]) -> str:
     """Render values with Python's lossless float representation."""
     return "\n".join(
-        "pair={index} first={first} second={second} mu={mu!r} sigma={sigma!r} "
-        "conservative_score={score!r} decision={outcome}/{reason}".format(
-            index=row.pair_index,
-            first=row.pair.first,
-            second=row.pair.second,
-            mu=row.rating.mu,
-            sigma=row.rating.sigma,
-            score=row.score,
-            outcome=row.decision.outcome,
-            reason=row.decision.reason,
-        )
+        f"pair={row.pair_index} first={row.pair.first} second={row.pair.second} "
+        f"mu={row.rating.mu!r} sigma={row.rating.sigma!r} "
+        f"conservative_score={row.score!r} decision={row.decision.outcome}/{row.decision.reason}"
         for row in rows
     )
 

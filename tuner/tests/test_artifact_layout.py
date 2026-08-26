@@ -18,10 +18,10 @@ from tuner_cli.artifact_layout import (
     parse_descriptor_filename,
     task_id_for,
 )
+from tuner_cli.config import SearchConfig
 from tuner_cli.evaluation import PairId
 from tuner_cli.lifecycle import AttemptId
 from tuner_cli.manifest import build_session_manifest
-from tuner_cli.config import SearchConfig
 
 
 def _identity(sequence: int = 7) -> TaskIdentity:

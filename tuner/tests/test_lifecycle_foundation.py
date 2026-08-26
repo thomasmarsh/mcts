@@ -5,28 +5,27 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tuner_cli.config import SearchConfig
-import tuner_cli.coordinator as coordinator
 
+import tuner_cli.coordinator as coordinator
+from tuner_cli.attempt import save_inserted_pool_anchor
+from tuner_cli.config import SearchConfig
+from tuner_cli.coordinator import _emit_session_started, _recover_orphaned_attempt
 from tuner_cli.lifecycle import (
     AttemptId,
     LifecycleWriter,
     SessionId,
     TrialId,
+    replay_journal,
     strict_json_dumps,
     trial_id_for,
-    replay_journal,
 )
-from tuner_cli.pool import Anchor, OpponentPool
-from tuner_cli.attempt import save_inserted_pool_anchor
 from tuner_cli.manifest import (
     SessionForkRequired,
     build_session_manifest,
     manifest_fingerprint,
     write_manifest_atomic,
 )
-from tuner_cli.coordinator import _emit_session_started
-from tuner_cli.coordinator import _recover_orphaned_attempt
+from tuner_cli.pool import Anchor, OpponentPool
 
 
 def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(

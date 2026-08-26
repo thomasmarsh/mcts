@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NewType, Sequence
+from typing import TYPE_CHECKING, Literal, NewType
 from uuid import NAMESPACE_URL, uuid5
 
 from openskill.models import ThurstoneMostellerPart
@@ -12,6 +13,8 @@ from openskill.models import ThurstoneMostellerPart
 from .lifecycle import (
     SessionId,
     TrialId,
+)
+from .lifecycle import (
     pool_snapshot_fingerprint as _pool_snapshot_fingerprint,
 )
 

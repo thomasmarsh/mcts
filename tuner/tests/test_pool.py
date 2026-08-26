@@ -122,7 +122,7 @@ def test_anchors_never_mutate_once_inserted():
     )
 
     assert len(pool.anchors) == 4
-    for before, after in zip(snapshot, pool.anchors[:3]):
+    for before, after in zip(snapshot, pool.anchors[:3], strict=True):
         assert before == after
 
 

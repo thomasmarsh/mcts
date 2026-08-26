@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter, defaultdict
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -176,7 +176,9 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
         actual = Counter((entry["opponent"], entry["outcome"]) for entry in opponents)
         assert actual == expected, "legacy opponents must derive from physical games"
     last_incumbent = incumbents[-1]
-    assert last_incumbent["config"] == study.best_trial.user_attrs["config"], "incumbent config mismatch"
+    assert (
+        last_incumbent["config"] == study.best_trial.user_attrs["config"]
+    ), "incumbent config mismatch"
     assert last_incumbent["cost"] == pytest_approx(-study.best_value), "incumbent cost mismatch"
 
     print("  [PASS] test_ask_tell_loop_emits_rating_jsonl")

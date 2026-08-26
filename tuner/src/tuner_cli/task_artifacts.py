@@ -7,15 +7,15 @@ the worker heartbeat, and a completion record is the sole terminal marker.
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass
-from datetime import UTC, datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import stat
 import tempfile
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final, Literal
 
 from .artifact_layout import (

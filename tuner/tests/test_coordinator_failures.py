@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import optuna
 import pytest
 
-from tuner_cli import attempt
-from tuner_cli import coordinator
+from tuner_cli import attempt, coordinator, pair_orchestration
+from tuner_cli.artifact_layout import TASK_SEQUENCE_MAX
 from tuner_cli.config import (
     OptimizerConfig,
     PruningPolicy,
@@ -26,14 +26,12 @@ from tuner_cli.evaluation import (
     PairTask,
     Rating,
     StrategyMetrics,
+    TrialEvaluationState,
     configured_game_seed,
     game_id_for,
-    TrialEvaluationState,
 )
 from tuner_cli.hyperband import HyperbandDecision
 from tuner_cli.lifecycle import AttemptId, LifecycleWriter, SessionId, TrialId
-from tuner_cli import pair_orchestration
-from tuner_cli.artifact_layout import TASK_SEQUENCE_MAX
 from tuner_cli.pair_orchestration import ScheduledPair
 from tuner_cli.pool import Anchor, OpponentPool
 from tuner_cli.task_artifacts import (

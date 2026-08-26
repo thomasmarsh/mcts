@@ -26,7 +26,6 @@ from tuner_cli.rating_calibration import (
     resolve_policy,
 )
 
-
 OPPONENT = OpponentSnapshot("baseline", {}, 25.0, 0.5)
 INITIAL_RATING = Rating(25.0, 8.333)
 METRICS = StrategyMetrics(0, 0, 0)

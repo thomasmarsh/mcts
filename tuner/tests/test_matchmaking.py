@@ -18,9 +18,8 @@ from tuner_cli.evaluation import (
     pool_snapshot_fingerprint,
 )
 from tuner_cli.lifecycle import SessionId, TrialId
-from tuner_cli.pool import Anchor
 from tuner_cli.pair_orchestration import make_next_pair_task
-from tuner_cli.pool import OpponentPool
+from tuner_cli.pool import Anchor, OpponentPool
 
 
 def _state(**kwargs) -> TrialEvaluationState:

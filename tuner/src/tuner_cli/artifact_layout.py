@@ -7,10 +7,10 @@ separate runtime responsibilities.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from pathlib import Path, PurePosixPath
 import re
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Final, Literal, NewType
 from uuid import UUID, uuid5
 

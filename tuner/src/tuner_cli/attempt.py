@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import optuna
 from optuna.trial import TrialState
@@ -15,10 +16,10 @@ from optuna.trial import TrialState
 from .callback import emit_incumbent_record, emit_trial_record
 from .config import SearchConfig
 from .evaluation import (
-    PairResult,
     SCORE_FORMULA_VERSION,
-    TrialReportDecision,
+    PairResult,
     TrialEvaluationState,
+    TrialReportDecision,
 )
 from .hyperband import HyperbandDecision, HyperbandTrial, OptunaHyperbandAdapter
 from .lifecycle import LifecycleWriter, SessionId, TrialId, trial_id_for

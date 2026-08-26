@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import json
+import fcntl
 import hashlib
+import json
 import math
 import os
-import fcntl
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, NewType, Sequence
-from uuid import uuid4, uuid5, NAMESPACE_URL
+from typing import Any, Final, NewType
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .config import json_default
 

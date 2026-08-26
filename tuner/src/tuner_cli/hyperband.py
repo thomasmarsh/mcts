@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import optuna
-from .config import PruningPolicy, ResourcePolicy
 
+from .config import PruningPolicy, ResourcePolicy
 
 _COMPLETED_RUNG_PREFIX = "completed_rung_"
 

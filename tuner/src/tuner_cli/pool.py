@@ -560,7 +560,9 @@ def _pool_evidence(
 def _replay_decisions(
     pool: OpponentPool, terminals: list[dict[str, Any]], decisions: list[PoolDecision]
 ) -> OpponentPool:
-    for terminal, decision in zip(terminals, decisions):
+    # terminals may outnumber decisions (a completed trial whose pool decision
+    # wasn't yet recorded); only the common prefix is replayed here.
+    for terminal, decision in zip(terminals, decisions, strict=False):
         expected = pool.decide_insertion(
             terminal["config"], terminal["mu"], terminal["sigma"], terminal["trial_id"]
         )

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 import json
-from pathlib import Path
 import stat
 import subprocess
-from typing import Any, Callable, Final
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Final
 
 from .artifact_layout import (
     ARTIFACT_LAYOUT_SCHEMA_VERSION,
@@ -666,7 +667,7 @@ def _run_process(
             if elapsed >= _TRIAL_TIMEOUT_S:
                 proc.kill()
                 stdout, stderr = proc.communicate()
-                raise _TimedOut(_bytes(stdout), _bytes(stderr))
+                raise _TimedOut(_bytes(stdout), _bytes(stderr)) from None
 
 
 def _bytes(value: bytes | str | None) -> bytes:

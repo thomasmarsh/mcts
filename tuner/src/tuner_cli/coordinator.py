@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from concurrent.futures import ProcessPoolExecutor, wait
-from pathlib import Path
 import signal
-from typing import Any, Callable, Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ProcessPoolExecutor, wait
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 import optuna
 from optuna.trial import TrialState
 
 from .attempt import (
     AttemptStopRequested,
-    _ActiveTrial,
     StartupTrialAllocator,
+    _ActiveTrial,
     cancel_active_trials,
     drain_scheduled_trials,
     schedule_initial_trials,
@@ -23,6 +24,7 @@ from .attempt import (
 )
 from .callback import _resolve_git_sha
 from .config import SearchConfig
+from .hyperband import OptunaHyperbandAdapter
 from .lifecycle import (
     AttemptId,
     LifecycleWriter,
@@ -31,11 +33,10 @@ from .lifecycle import (
     TrialId,
     trial_id_for,
 )
-from .hyperband import OptunaHyperbandAdapter
 from .manifest import SessionForkRequired, build_session_manifest, write_manifest_atomic
 from .pool import OpponentPool, recover_pool
-from .task_artifacts import TaskDescriptorAllocator
 from .target import preflight_check
+from .task_artifacts import TaskDescriptorAllocator
 
 
 class _StopRequest:
