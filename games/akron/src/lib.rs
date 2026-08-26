@@ -341,6 +341,17 @@ impl State {
         self.can_swap && self.occupied.count_ones() == 1
     }
 
+    /// The raw swap-window flag, ungated by the current piece count -- unlike
+    /// [`State::can_swap`], which collapses to `false` on an empty board even
+    /// though the window is still open, this is what a wire adapter must
+    /// round-trip via [`State::from_parts`]: serializing the gated value
+    /// instead would permanently close the window the moment it's read back
+    /// on a still-empty board.
+    #[inline]
+    pub fn swap_window_open(&self) -> bool {
+        self.can_swap
+    }
+
     /// Every occupied cell's flat index, for a wire adapter to serialize.
     pub fn occupied_indices(&self) -> Vec<usize> {
         self.occupied.iter_set().collect()
@@ -350,6 +361,39 @@ impl State {
     /// serialize.
     pub fn black_indices(&self) -> Vec<usize> {
         self.black.iter_set().collect()
+    }
+
+    /// Reconstructs a `State` from flat-index lists -- the inverse of
+    /// `occupied_indices`/`black_indices`, for a wire adapter to deserialize
+    /// a JSON request back into a real `State` without going through legal
+    /// play. No legality checking is done here: the caller (a `GameAdapter`
+    /// round-tripping its own previously emitted wire format) is trusted to
+    /// pass back a state this crate itself produced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        n: usize,
+        occupied: &[usize],
+        black: &[usize],
+        white_pile: u32,
+        black_pile: u32,
+        turn: Player,
+        can_swap: bool,
+    ) -> Self {
+        let fill = |indices: &[usize]| {
+            let mut cells = Cells::new(Dyn(n));
+            for &index in indices {
+                cells.set_index(index);
+            }
+            cells
+        };
+        Self {
+            occupied: fill(occupied),
+            black: fill(black),
+            white_pile,
+            black_pile,
+            turn,
+            can_swap,
+        }
     }
 
     /// The chain of cells a relocation starting at `from` would vacate,
