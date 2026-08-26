@@ -368,6 +368,54 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
             && self.in_bounds(col - 1, row - 1, level + 2)
             && self.get(col - 1, row - 1, level + 2)
     }
+
+    /// Relocates the piece at `from` to `to`, cascading any dependent drop
+    /// (see `is_movable`): the piece(s) that were resting on `from`, and
+    /// transitively on wherever *they* land, fall one level to fill the gap
+    /// left behind rather than being left floating. Returns `false` and
+    /// leaves the board unchanged if `from` holds no piece, is pinned (or
+    /// becomes pinned partway down the drop chain -- two pieces can't fall
+    /// into one gap), or `to` isn't a legal landing spot (in bounds, empty,
+    /// and supported) once the cascade has settled.
+    ///
+    /// This is pure physics, independent of any game's movement-legality
+    /// rules (e.g. Akron's "destination must touch a connected cell", or its
+    /// restriction against landing on a cell this same cascade just vacated)
+    /// -- callers layer those on top.
+    pub fn relocate(&mut self, from: (usize, usize, usize), to: (usize, usize, usize)) -> bool {
+        let (fc, fr, fl) = from;
+        let (tc, tr, tl) = to;
+        if from == to || !self.in_bounds(fc, fr, fl) || !self.get(fc, fr, fl) {
+            return false;
+        }
+        let backup = *self;
+        self.clear(fc, fr, fl);
+        if !self.cascade_drop(fc, fr, fl) || !self.can_place(tc, tr, tl) {
+            *self = backup;
+            return false;
+        }
+        self.set(tc, tr, tl);
+        true
+    }
+
+    /// Having just vacated `(col, row, level)`, drops its single dependent
+    /// (if any) down to fill the gap, then recurses into the gap *that*
+    /// piece leaves behind at `(dependent_col, dependent_row, level + 1)`.
+    /// Returns `false` without finishing the chain if some link is pinned
+    /// (2+ dependents) -- there is only one physical gap, and it can't hold
+    /// more than one dropped piece. On `false`, the board is left partially
+    /// mutated; callers must restore from a backup rather than inspect it.
+    fn cascade_drop(&mut self, col: usize, row: usize, level: usize) -> bool {
+        match self.dependents(col, row, level).as_slice() {
+            [] => true,
+            &[(dc, dr)] => {
+                self.clear(dc, dr, level + 1);
+                self.set(col, row, level);
+                self.cascade_drop(dc, dr, level + 1)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl<S: Storage, N: Dim> PartialEq for Pyramid<S, N> {
@@ -784,6 +832,144 @@ mod tests {
             assert!(buried.contains(&(c, r, 0)), "({c},{r},0) should be buried");
         }
         assert!(buried.contains(&(1, 1, 1)), "(1,1,1) should be buried");
+    }
+
+    // Relocation + cascade: hand-built columns (like the movability tests
+    // above, these define the behavior being tested, not something
+    // re-derivable from a naive oracle).
+
+    #[test]
+    fn relocate_with_no_dependents_is_a_plain_move() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        pyramid.set(0, 0, 0);
+        assert!(pyramid.relocate((0, 0, 0), (3, 3, 0)));
+        assert!(!pyramid.get(0, 0, 0));
+        assert!(pyramid.get(3, 3, 0));
+    }
+
+    #[test]
+    fn relocate_rejects_a_no_op_move_to_the_same_cell() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        pyramid.set(0, 0, 0);
+        let before = pyramid;
+        assert!(!pyramid.relocate((0, 0, 0), (0, 0, 0)));
+        assert_eq!(pyramid, before);
+    }
+
+    #[test]
+    fn relocate_rejects_moving_an_empty_cell() {
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        let before = pyramid;
+        assert!(!pyramid.relocate((0, 0, 0), (1, 1, 0)));
+        assert_eq!(pyramid, before);
+    }
+
+    #[test]
+    fn relocate_rejects_a_destination_that_isnt_supported() {
+        // n = 3: (0, 0, 1) is unsupported since none of its four level-0
+        // supporters are occupied.
+        let mut pyramid: Pyramid<u64, Const<3>> = Pyramid::new(Const);
+        pyramid.set(2, 2, 0);
+        let before = pyramid;
+        assert!(!pyramid.relocate((2, 2, 0), (0, 0, 1)));
+        assert_eq!(before, pyramid);
+    }
+
+    #[test]
+    fn relocate_cascades_one_level() {
+        // n = 3: (1, 1, 0) is the sole support of level-1 (0, 0); moving
+        // (1, 1, 0) away must drop (0, 0, 1) down to fill (1, 1, 0).
+        let mut pyramid: Pyramid<u64, Const<3>> = Pyramid::new(Const);
+        for &(c, r) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(0, 0, 1);
+        assert_eq!(pyramid.dependents(1, 1, 0), vec![(0, 0)]);
+
+        assert!(pyramid.relocate((1, 1, 0), (2, 2, 0)));
+
+        assert!(pyramid.get(1, 1, 0), "dropped piece fills the vacated gap");
+        assert!(
+            !pyramid.get(0, 0, 1),
+            "the dropped piece's old cell is empty"
+        );
+        assert!(pyramid.get(2, 2, 0), "the relocated piece lands at `to`");
+    }
+
+    #[test]
+    fn relocate_cascades_through_a_triple_column_fig_8() {
+        // n = 4: a single column of dependents stacked from the base to the
+        // apex -- (0,0,0) supports (0,0,1) supports (0,0,2) supports the
+        // apex (0,0,3) -- so moving (0,0,0) away triggers a three-level
+        // cascade, matching the rules text's Figure 8 "triple cascade".
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        for &(c, r) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(0, 0, 1);
+        pyramid.set(0, 0, 2);
+        pyramid.set(0, 0, 3);
+
+        assert!(pyramid.relocate((0, 0, 0), (3, 3, 0)));
+
+        assert!(pyramid.get(0, 0, 0), "level-1 piece drops to fill the base");
+        assert!(pyramid.get(0, 0, 1), "level-2 piece drops to fill level 1");
+        assert!(pyramid.get(0, 0, 2), "the apex drops to fill level 2");
+        assert!(!pyramid.get(0, 0, 3), "the apex cell itself is now empty");
+        assert!(pyramid.get(3, 3, 0), "the relocated piece lands at `to`");
+    }
+
+    #[test]
+    fn relocate_rejects_a_pinned_source() {
+        // n = 3, (1, 1, 0) supports two level-1 cells at once -- same
+        // fixture as `two_or_more_dependents_are_pinned_and_immovable`.
+        let mut pyramid: Pyramid<u64, Const<3>> = Pyramid::new(Const);
+        for &(c, r) in &[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (0, 2),
+            (1, 2),
+            (2, 2),
+        ] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(0, 0, 1);
+        pyramid.set(1, 1, 1);
+        let before = pyramid;
+
+        assert!(!pyramid.relocate((1, 1, 0), (1, 0, 1)));
+        assert_eq!(
+            pyramid, before,
+            "a rejected relocate must not mutate the board"
+        );
+    }
+
+    #[test]
+    fn relocate_rejects_when_the_drop_chain_itself_becomes_pinned() {
+        // n = 4: (1, 1, 0) alone is movable (its only level-1 candidate,
+        // (1, 1, 1), is occupied -- a singleton dependent), but that
+        // dependent is itself a supporter of *all four* level-2 cells
+        // (level 2 is a 2x2 square, and (1,1) is centered under every one
+        // of them), and two of those are occupied -- so once (1, 1, 1)
+        // would have to drop, its own drop is pinned. The whole relocate
+        // must fail and leave the board untouched.
+        let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
+        for &(c, r) in &[(1, 1), (2, 1), (1, 2), (2, 2)] {
+            pyramid.set(c, r, 0);
+        }
+        pyramid.set(1, 1, 1);
+        pyramid.set(0, 0, 2);
+        pyramid.set(1, 1, 2);
+        assert_eq!(pyramid.dependents(1, 1, 0), vec![(1, 1)]);
+        assert_eq!(pyramid.dependents(1, 1, 1).len(), 2);
+        let before = pyramid;
+
+        assert!(!pyramid.relocate((1, 1, 0), (0, 0, 0)));
+        assert_eq!(pyramid, before);
     }
 
     #[test]
