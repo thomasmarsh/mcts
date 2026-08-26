@@ -23,6 +23,8 @@ use bitboard::{Adjacency, Dyn};
 use mcts::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus, Transform};
 use mcts::zobrist::LazyZobristTable;
 use pyramid::{get_adjacency, Pyramid, PyramidD4};
+use rand::rngs::SmallRng;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 pub mod connectivity;
@@ -432,22 +434,29 @@ impl State {
     /// `before` is the caller's already-computed connectivity for the
     /// current (unmodified) board -- shared across every candidate `from` a
     /// caller like `generate_actions` checks in the same pass, since it's
-    /// identical for all of them and a fresh `Groups::compute` is the most
-    /// expensive part of this check. Only the "after removing `from`"
-    /// connectivity genuinely needs a per-candidate rebuild, and even that
-    /// is skipped when `from` has at most one other group member to
-    /// disconnect (nothing to break).
+    /// identical for all of them and gives `O(1)` access (via
+    /// [`connectivity::Groups::group_members`]) to exactly the cells that
+    /// need to stay connected, without a per-candidate board scan.
+    ///
+    /// The actual removal check ([`connectivity::survives_removal`]) is a
+    /// flood fill seeded from those members, not a whole-board rebuild --
+    /// see its own doc comment for why that's both cheaper and still exactly
+    /// correct (removing `from` can newly cut a shielded connection just as
+    /// easily as it can newly restore a cut one, so this can't be shortcut
+    /// by only inspecting `before`'s existing group structure).
     fn is_freedom(&self, from: usize, before: &mut Groups) -> bool {
-        let members: Vec<usize> = (0..self.total_cells())
-            .filter(|&i| i != from && before.same_group(from, i))
+        let members: Vec<usize> = before
+            .group_members(from)
+            .iter()
+            .copied()
+            .filter(|&i| i != from)
             .collect();
         if members.len() <= 1 {
             return true;
         }
         let mut after_occupied = self.occupied;
         after_occupied.clear_index(from);
-        let mut after = Groups::compute(self.n(), &after_occupied, &self.black);
-        members.windows(2).all(|w| after.same_group(w[0], w[1]))
+        connectivity::survives_removal(self.n(), &after_occupied, &self.black, &members)
     }
 
     /// Legal destinations for relocating the piece at `from`, per the
@@ -460,28 +469,42 @@ impl State {
     ///
     /// `groups` is the caller's connectivity for the current board, shared
     /// the same way [`State::is_freedom`]'s `before` is -- see that method's
-    /// doc comment.
+    /// doc comment. Candidate anchors come from
+    /// [`connectivity::Groups::group_members`] rather than a full board
+    /// scan, since that's already exactly "every occupied, same-coloured
+    /// cell in `from`'s group".
+    ///
+    /// The board `from`'s own cascade settles into is independent of which
+    /// destination is being tried -- `chain` (already computed by the
+    /// caller) fully determines it -- so it's built once up front rather
+    /// than re-derived (via a fresh `Pyramid::relocate`, cascade recursion
+    /// and all) for every `(anchor, destination)` pair this checks. Each
+    /// candidate destination then only needs the cheap physical check
+    /// (`Pyramid::can_place`) against that already-settled board, not a
+    /// full trial relocation.
     fn move_destinations(&self, from: usize, chain: &[usize], groups: &mut Groups) -> Vec<usize> {
         let n = self.n();
         let adjacency = get_adjacency(n);
-        let color = self.is_black(from);
+
+        let mut settled = self.occupied;
+        settled.clear_index(chain[0]);
+        for i in 1..chain.len() {
+            settled.clear_index(chain[i]);
+            settled.set_index(chain[i - 1]);
+        }
 
         let mut candidates: Vec<usize> = Vec::new();
-        for anchor in 0..self.total_cells() {
-            if anchor == from
-                || !self.is_occupied(anchor)
-                || self.is_black(anchor) != color
-                || chain.contains(&anchor)
-                || !groups.same_group(from, anchor)
-            {
+        let anchors: Vec<usize> = groups.group_members(from).to_vec();
+        for anchor in anchors {
+            if anchor == from || chain.contains(&anchor) {
                 continue;
             }
             for to in adjacency.neighbors(anchor) {
-                if self.is_occupied(to) || chain.contains(&to) || candidates.contains(&to) {
+                if chain.contains(&to) || candidates.contains(&to) {
                     continue;
                 }
-                let mut trial = self.occupied;
-                if trial.relocate(self.occupied.to_coord(from), self.occupied.to_coord(to)) {
+                let (tc, tr, tl) = settled.to_coord(to);
+                if settled.can_place(tc, tr, tl) {
                     candidates.push(to);
                 }
             }
@@ -709,6 +732,59 @@ impl Game for Akron {
             for to in state.move_destinations(from, &chain, &mut groups) {
                 actions.push(Action::Move(from as u16, to as u16, n as u8));
             }
+        }
+    }
+
+    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// uniform rollouts -- same idea as `games/margo`/`games/gonnect`/
+    /// `games/atarigo`'s `random_action` overrides: an `Add` candidate is
+    /// `O(1)` to confirm (any empty level-0 cell while the pile is
+    /// non-empty, no connectivity involved), unlike a `Move`, whose
+    /// legality is inseparable from a full [`connectivity::Groups::compute`]
+    /// -- unlike `games/margo`'s own per-candidate legality check, there's
+    /// no way to cheaply spot-check "is *this one* relocation legal" here,
+    /// since [`State::is_freedom`]/[`State::move_destinations`] both need
+    /// the same whole-board connectivity regardless of which single
+    /// candidate is ultimately asked about.
+    ///
+    /// Consequently, this deliberately departs from true uniform sampling
+    /// over the full action set: whenever the mover's pile is non-empty, it
+    /// draws only from `Add`, never from `Move`, even on the (typically
+    /// rarer) states where some freedom piece also has a legal
+    /// destination -- rather than paying for a full [`Game::generate_actions`]
+    /// on every rollout ply just to weight the two types correctly. This
+    /// changes rollout *character* (playouts favour building outward with
+    /// fresh pieces over relocating existing ones while pile remains), not
+    /// legality -- every action this returns is genuinely legal, and once
+    /// the pile is actually empty (or already exhausted several random
+    /// probes against a nearly-full board), this still falls back to the
+    /// exact `generate_actions`-backed uniform draw, so `Move`/`Swap` are
+    /// never permanently unreachable, only de-weighted while `Add` remains
+    /// cheap and available.
+    fn random_action(state: &State, rng: &mut SmallRng) -> Option<Action> {
+        if state.can_swap() {
+            let mut actions = Vec::new();
+            Self::generate_actions(state, &mut actions);
+            return Some(actions[rng.gen_range(0..actions.len())]);
+        }
+
+        let n = state.n();
+        if state.pile(state.turn) > 0 {
+            let max_attempts = 64;
+            for _ in 0..max_attempts {
+                let index = rng.gen_range(0..(n * n));
+                if !state.is_occupied(index) {
+                    return Some(Action::Add(index as u16, n as u8));
+                }
+            }
+        }
+
+        let mut actions = Vec::new();
+        Self::generate_actions(state, &mut actions);
+        if actions.is_empty() {
+            None
+        } else {
+            Some(actions[rng.gen_range(0..actions.len())])
         }
     }
 
@@ -1151,6 +1227,125 @@ mod tests {
                 .any(|a| matches!(a, Action::Move(from, _, _) if *from as usize == middle)),
             "a non-freedom piece must never be offered as a Move source"
         );
+    }
+
+    /// Brute-force oracle for `State::is_freedom`: rebuilds `before`'s
+    /// members via a full board scan (rather than
+    /// `connectivity::Groups::group_members`'s cache) and the "after"
+    /// connectivity via a whole-board `Groups::compute` (rather than
+    /// `connectivity::survives_removal`'s scoped flood fill) -- an
+    /// independent-in-implementation, identical-in-definition derivation of
+    /// the same property, to cross-check the faster path against.
+    fn is_freedom_oracle(state: &State, from: usize) -> bool {
+        let mut before = Groups::compute(state.n(), &state.occupied, &state.black);
+        let members: Vec<usize> = (0..state.total_cells())
+            .filter(|&i| i != from && before.same_group(from, i))
+            .collect();
+        if members.len() <= 1 {
+            return true;
+        }
+        let mut after_occupied = state.occupied;
+        after_occupied.clear_index(from);
+        let mut after = Groups::compute(state.n(), &after_occupied, &state.black);
+        members.windows(2).all(|w| after.same_group(w[0], w[1]))
+    }
+
+    /// `State::is_freedom` (backed by `connectivity::Groups::group_members`
+    /// and `connectivity::survives_removal`'s scoped flood fill) must agree
+    /// with the whole-board brute-force oracle above for every candidate it
+    /// checks, across random play at board sizes large enough to have real
+    /// over/under crossing pillars -- not just the plain-touching case, but
+    /// specifically the case `connectivity::survives_removal`'s doc comment
+    /// calls out: removing a piece can newly *cut* a connection it had been
+    /// shielding, not just newly restore one it had been blocking. A random
+    /// sample of occupied cells (rather than every occupied cell) is checked
+    /// each ply, to keep this within `cargo test --lib`'s speed budget while
+    /// still exercising many distinct board shapes across seeds/plies.
+    fn is_freedom_matches_oracle(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.total_cells() * 2;
+
+        for _ in 0..max_plies {
+            if Akron::is_terminal(&state) {
+                return;
+            }
+            let occupied: Vec<usize> = state.occupied_indices();
+            for _ in 0..3.min(occupied.len()) {
+                let index = occupied[rng.gen_range(0..occupied.len())];
+                let mut groups = Groups::compute(n, &state.occupied, &state.black);
+                assert_eq!(
+                    state.is_freedom(index, &mut groups),
+                    is_freedom_oracle(&state, index),
+                    "n={n} seed={seed}: is_freedom disagrees with the brute-force oracle at cell {index}"
+                );
+            }
+            let mut actions = Vec::new();
+            Akron::generate_actions(&state, &mut actions);
+            if actions.is_empty() {
+                return;
+            }
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Akron::apply(state, &action);
+        }
+    }
+
+    /// `random_action`'s `Add`-biased fast path must always agree with
+    /// `generate_actions`'s full enumeration: every draw is either `None`
+    /// exactly when `generate_actions` is empty, or an action also present
+    /// in `generate_actions`'s output. Mirrors `games/margo`'s
+    /// `random_action_matches_generate_actions` -- this doesn't (and can't)
+    /// check that the draw is uniform, only that it's always legal, since
+    /// `random_action`'s own doc comment is explicit that the two
+    /// distributions differ on purpose.
+    fn random_action_matches_generate_actions(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.total_cells() * 2;
+
+        for _ in 0..max_plies {
+            if Akron::is_terminal(&state) {
+                return;
+            }
+            let mut actions = Vec::new();
+            Akron::generate_actions(&state, &mut actions);
+            assert!(
+                !actions.is_empty(),
+                "n={n} seed={seed}: no legal moves on a non-terminal state"
+            );
+            for _ in 0..8 {
+                let drawn = Akron::random_action(&state, &mut rng).expect(
+                    "random_action must return Some whenever generate_actions is non-empty",
+                );
+                assert!(
+                    actions.contains(&drawn),
+                    "n={n} seed={seed}: random_action drew {drawn:?}, not present in \
+                     generate_actions {actions:?}"
+                );
+            }
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Akron::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn test_random_action_matches_generate_actions() {
+        for seed in 0..8 {
+            random_action_matches_generate_actions(4, seed);
+        }
+        for seed in 0..4 {
+            random_action_matches_generate_actions(7, seed);
+        }
+    }
+
+    #[test]
+    fn is_freedom_matches_brute_force_oracle_across_random_play() {
+        for seed in 0..3 {
+            is_freedom_matches_oracle(4, seed);
+        }
+        for seed in 0..3 {
+            is_freedom_matches_oracle(8, seed);
+        }
     }
 
     /// Relocating a piece that uniquely supports another piece drags the

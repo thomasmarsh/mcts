@@ -268,8 +268,8 @@ pub fn get_crossing_table(n: usize) -> &'static CrossingTable {
 mod tests {
     use super::*;
     use crate::adjacency::touching_neighbors;
-    use std::collections::HashMap;
     use crate::total_cells;
+    use std::collections::HashMap;
 
     /// Independent from-scratch derivation: real 3-D center coordinates
     /// (same formula as `adjacency`'s own oracle test, not shared code) and

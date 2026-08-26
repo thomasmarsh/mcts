@@ -80,17 +80,80 @@ fn is_cut(occupied: &Cells, black: &Cells, table: &CrossingTable, edge: Edge, co
     blocker.is_some_and(|b| b != color)
 }
 
+/// Whether every cell in `seeds` (all occupied, all the same colour -- e.g.
+/// `from`'s own pre-removal group, minus `from` itself) is still mutually
+/// reachable via same-coloured, non-cut touching edges on `occupied`/`black`
+/// -- a flood fill seeded only from `seeds`, rather than a whole-board
+/// [`Groups::compute`] followed by a pairwise `same_group` check.
+///
+/// This computes exactly the same thing `Groups::compute` plus pairwise
+/// `same_group` checks would (both apply the identical per-edge [`is_cut`]
+/// test against the same `occupied`/`black`), just without first visiting
+/// every other cell on the board -- including ones in unrelated groups, of
+/// the other colour, or simply empty -- that a caller checking one
+/// particular group's post-removal connectivity was never going to ask
+/// about anyway. In particular, this is *not* a shortcut that trusts
+/// `seeds`' pre-removal grouping: the flood fill re-derives reachability
+/// from scratch against the post-removal board, so it correctly follows any
+/// edge the removal itself newly uncut (a same-coloured piece elsewhere that
+/// was cut off before `from` was removed can rejoin here), and correctly
+/// fails to follow any edge the removal newly cut (removing `from` can just
+/// as well *expose* a lower opposing connection it had been shielding -- see
+/// [`is_cut`]'s "topmost active ancestor" rule: a same-coloured piece
+/// directly beneath `from` in a pillar, only live because `from` was the
+/// nearer blocker, can lose that shielding the moment `from` is gone).
+pub fn survives_removal(n: usize, occupied: &Cells, black: &Cells, seeds: &[usize]) -> bool {
+    if seeds.len() <= 1 {
+        return true;
+    }
+    let table = get_crossing_table(n);
+    let adjacency = get_adjacency(n);
+    let color = black.get_index(seeds[0]);
+
+    let mut visited = vec![false; pyramid::total_cells(n)];
+    let mut stack = vec![seeds[0]];
+    visited[seeds[0]] = true;
+    while let Some(u) = stack.pop() {
+        for v in adjacency.neighbors(u) {
+            if visited[v] || !occupied.get_index(v) || black.get_index(v) != color {
+                continue;
+            }
+            let edge = (u.min(v), u.max(v));
+            if is_cut(occupied, black, table, edge, color) {
+                continue;
+            }
+            visited[v] = true;
+            stack.push(v);
+        }
+    }
+    seeds.iter().all(|&s| visited[s])
+}
+
 /// Cut-aware group connectivity over a board's occupancy/colour, computed
 /// fresh (see module docs on why this is a rebuild, not incremental state).
 /// Union-find (disjoint-set, path compression + union by size) restricted to
 /// occupied cells, unioning only same-coloured touching edges that survive
 /// the over/under rule.
+///
+/// Besides the union-find itself, [`compute`](Self::compute) also records
+/// each group's member list, so a caller that already has a `Groups` for the
+/// current board (e.g. `State::is_freedom`/`State::move_destinations`, both
+/// called once per candidate piece from `Game::generate_actions`) can answer
+/// "which cells are in this piece's group" in `O(1)` plus a `find`, instead
+/// of scanning every cell on the board per candidate.
 #[derive(Clone, Debug)]
 pub struct Groups {
     parent: Vec<u32>,
     size: Vec<u32>,
     /// `Some(colour)` for an occupied cell, `None` for an empty one.
     color: Vec<Option<bool>>,
+    /// Each group's members, indexed by that group's union-find root (as of
+    /// the end of `compute` -- root *identity* is stable afterward even
+    /// though `find`'s path compression keeps shortening the chains to it).
+    /// A flat, `total`-sized `Vec` rather than a hash map: a root is always
+    /// a plain cell index in `0..total`, so this is a direct index instead
+    /// of a hash + probe; every non-root entry just sits empty.
+    member_lists: Vec<Vec<usize>>,
 }
 
 impl Groups {
@@ -104,6 +167,7 @@ impl Groups {
             color: (0..total)
                 .map(|i| occupied.get_index(i).then(|| black.get_index(i)))
                 .collect(),
+            member_lists: vec![Vec::new(); total],
         };
 
         let table = get_crossing_table(n);
@@ -128,7 +192,24 @@ impl Groups {
             }
         }
 
+        for i in 0..total {
+            if groups.color[i].is_some() {
+                let root = groups.find(i);
+                groups.member_lists[root].push(i);
+            }
+        }
+
         groups
+    }
+
+    /// `index`'s group's members (including `index` itself), via the member
+    /// list [`compute`](Self::compute) built once for the whole board --
+    /// `O(1)` plus a `find`, not the `O(total cells)` board scan a caller
+    /// would otherwise need to answer "which cells share a group with
+    /// this one".
+    pub fn group_members(&mut self, index: usize) -> &[usize] {
+        let root = self.find(index);
+        &self.member_lists[root]
     }
 
     fn find(&mut self, x: usize) -> usize {
