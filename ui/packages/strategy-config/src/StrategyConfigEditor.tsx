@@ -18,6 +18,8 @@
 // only `wraps` targets) contains a further wrapping variant, so
 // `VariantPicker` terminates without needing an explicit depth guard.
 
+import "./strategy-config.css";
+
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type {
   AxisFieldSchema,

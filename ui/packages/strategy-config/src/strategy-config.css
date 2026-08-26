@@ -1,0 +1,135 @@
+/* strategy-config.css — StrategyConfigEditor's own presentation. Scoped to
+   this package's own class names, same rationale as
+   ui/packages/druid/src/druid.css and ui/packages/tak/src/tak.css: this
+   package has no dependency on the `app` workspace's app.css and shouldn't
+   gain one, so every color below is copied from (not inherited from) the
+   palette app.css establishes for the surrounding #new-game-dialog. */
+
+.strategy-config-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  color: #e8e8ec;
+}
+
+.strategy-mode-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  background: #2a2c34;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.strategy-mode-toggle button {
+  background: transparent;
+  color: #b7b8c2;
+  border: none;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.strategy-mode-toggle button:hover {
+  color: #e8e8ec;
+}
+
+.strategy-mode-toggle button.active {
+  background: #5b7fd6;
+  color: #0d0e12;
+  font-weight: 600;
+}
+
+.strategy-variant-picker,
+.strategy-family-fields {
+  background: #24252c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The axis-name label ("Select"/"Simulate"/"Backprop"/"Final action") is
+   always the variant picker's own direct-child `<label>` -- every other
+   label lives one level down, inside `.strategy-variant-fields` or (for
+   named-family mode) `.strategy-family-fields`'s own field controls. */
+.strategy-variant-picker > label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b7b8c2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.strategy-family-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+/* A `wraps` picker recurses into another axis's variant list -- indented
+   with a low-opacity accent border so the nesting reads without following
+   the DOM structure. */
+.strategy-variant-picker .strategy-variant-picker {
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(91, 127, 214, 0.4);
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.strategy-variant-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.strategy-variant-fields label,
+.strategy-family-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #b7b8c2;
+}
+
+.strategy-config-editor select,
+.strategy-config-editor input[type="number"] {
+  background: #2a2c34;
+  color: #e8e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.strategy-checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.strategy-budget-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: #b7b8c2;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.strategy-budget-error {
+  color: #e08a8a;
+}
