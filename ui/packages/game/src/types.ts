@@ -231,9 +231,14 @@ export interface SearchSpec {
   final_action: FinalActionSpec;
 }
 
-/** `mcts_tune::presets::CustomStrategySpec`. */
+/** `mcts_tune::presets::CustomStrategySpec` -- `search` and `params` are
+ * mutually exclusive, matching the Rust side's own `Option`/`Option`
+ * contract: `search` is free composition of the four axes, `params` is a
+ * named family's flat parameter dict (`{family: "ucb1", c: 1.41, ...}`,
+ * exactly `TrialParams`' wire shape) for picking a family by name instead. */
 export interface CustomStrategySpec {
-  search: SearchSpec;
+  search?: SearchSpec;
+  params?: Record<string, unknown>;
   max_time_ms?: number;
   max_iterations?: number;
   threads?: number;
@@ -244,6 +249,9 @@ export interface CustomStrategySpec {
    * by `mcts_tune::presets::build_custom` otherwise, since graph search only
    * makes sense against a game with a real zobrist hash. */
   mcgs?: boolean;
+  /** Requires `mcgs: true` -- rejected server-side otherwise. Selects
+   * per-state transposition keying over the default per-ply keying. */
+  state_only_keying?: boolean;
 }
 
 /** Which strategy an `ai_move`/`analyze` call should use for a seat -- a

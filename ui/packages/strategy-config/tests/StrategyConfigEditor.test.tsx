@@ -6,16 +6,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createSignal } from "solid-js";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
-import type { CustomStrategySpec } from "@mcts/game";
+import type { CustomStrategySpec, TunerInfo } from "@mcts/game";
 import { defaultCustomStrategySpec, StrategyConfigEditor } from "../src/index.js";
-import { fixtureDefaultConfig, fixtureSchema } from "./schema-fixture.js";
+import { fixtureDefaultConfig, fixtureSchema, fixtureTunerInfo } from "./schema-fixture.js";
 
 afterEach(() => cleanup());
 
 /** A minimal controlled harness: owns the signal, re-renders on `onChange`,
  * same convention a real caller (e.g. GameShell's New Game dialog) would
  * use. Also exposes the latest committed config for assertions. */
-function renderEditor(initial: CustomStrategySpec) {
+function renderEditor(initial: CustomStrategySpec, tunerInfo: TunerInfo | null = null) {
   const [config, setConfig] = createSignal<CustomStrategySpec>(initial);
   let latest = initial;
   const onChange = (next: CustomStrategySpec) => {
@@ -26,7 +26,7 @@ function renderEditor(initial: CustomStrategySpec) {
     <StrategyConfigEditor
       schema={fixtureSchema}
       config={config()}
-      tunerInfo={null}
+      tunerInfo={tunerInfo}
       onChange={onChange}
     />
   ));
@@ -70,14 +70,14 @@ describe("StrategyConfigEditor", () => {
     const selectSelect = screen.getAllByRole("combobox")[0]!;
     fireEvent.change(selectSelect, { target: { value: "epsilon_greedy" } });
     await screen.findByText("wraps");
-    expect(getLatest().search.select).toMatchObject({
+    expect(getLatest().search!.select).toMatchObject({
       kind: "epsilon_greedy",
       inner: { kind: "ucb1" },
     });
 
     fireEvent.change(selectSelect, { target: { value: "ucb1" } });
-    expect(getLatest().search.select).toEqual({ kind: "ucb1", c: 1.4142135623730951 });
-    expect((getLatest().search.select as { inner?: unknown }).inner).toBeUndefined();
+    expect(getLatest().search!.select).toEqual({ kind: "ucb1", c: 1.4142135623730951 });
+    expect((getLatest().search!.select as { inner?: unknown }).inner).toBeUndefined();
   });
 
   // Regression test for a live bug: a `bare` field (`DecisiveMoveMode`) used
@@ -95,10 +95,10 @@ describe("StrategyConfigEditor", () => {
 
     const modeSelect = (await screen.findByLabelText("mode")) as HTMLSelectElement;
     expect(modeSelect.value).toBe("win");
-    expect(getLatest().search.simulate).toMatchObject({ kind: "decisive_move_nst", mode: "win" });
+    expect(getLatest().search!.simulate).toMatchObject({ kind: "decisive_move_nst", mode: "win" });
 
     fireEvent.change(modeSelect, { target: { value: "win_loss" } });
-    const mode = (getLatest().search.simulate as { mode: unknown }).mode;
+    const mode = (getLatest().search!.simulate as { mode: unknown }).mode;
     expect(mode).toBe("win_loss");
     expect(typeof mode).toBe("string");
   });
@@ -150,5 +150,100 @@ describe("StrategyConfigEditor", () => {
     const latest = getLatest();
     expect(latest.max_time_ms).toBeTypeOf("number");
     expect(latest.max_iterations).toBeTypeOf("number");
+  });
+
+  it("tunerInfo=null renders no mode toggle and behaves exactly as today", () => {
+    renderEditor(fixtureDefaultConfig() as unknown as CustomStrategySpec, null);
+
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByText("Named family")).toBeNull();
+    expect(screen.getByLabelText("Select")).toBeTruthy();
+  });
+
+  describe("named-family mode", () => {
+    it("switching to Named family seeds family at its schema default plus every immediately-active field's default", () => {
+      const { getLatest } = renderEditor(
+        fixtureDefaultConfig() as unknown as CustomStrategySpec,
+        fixtureTunerInfo,
+      );
+
+      fireEvent.click(screen.getByText("Named family"));
+
+      expect(getLatest().search).toBeUndefined();
+      expect(getLatest().params).toEqual({
+        family: "ucb1",
+        c: 1.4142135623730951,
+        contempt: "off",
+      });
+    });
+
+    it("picking a different family fully replaces params, dropping the old family's now-irrelevant fields", () => {
+      const { getLatest } = renderEditor(
+        fixtureDefaultConfig() as unknown as CustomStrategySpec,
+        fixtureTunerInfo,
+      );
+      fireEvent.click(screen.getByText("Named family"));
+      expect(getLatest().params).toHaveProperty("c");
+
+      const familySelect = screen.getByLabelText("family") as HTMLSelectElement;
+      fireEvent.change(familySelect, { target: { value: "random" } });
+
+      expect(getLatest().params).toEqual({ family: "random", contempt: "off" });
+    });
+
+    it("editing a field that reveals another shows the newly-active field with a filled-in default, without disturbing already-set fields", () => {
+      const { getLatest } = renderEditor(
+        fixtureDefaultConfig() as unknown as CustomStrategySpec,
+        fixtureTunerInfo,
+      );
+      fireEvent.click(screen.getByText("Named family"));
+      expect(screen.queryByLabelText("contempt_factor")).toBeNull();
+
+      const contemptSelect = screen.getByLabelText("contempt") as HTMLSelectElement;
+      fireEvent.change(contemptSelect, { target: { value: "on" } });
+
+      expect(screen.getByLabelText("contempt_factor")).toBeTruthy();
+      expect(getLatest().params).toMatchObject({
+        family: "ucb1",
+        c: 1.4142135623730951,
+        contempt: "on",
+        contempt_factor: 0,
+      });
+    });
+
+    it("a field gated by two conditions is active if either is satisfied", () => {
+      const { getLatest } = renderEditor(
+        fixtureDefaultConfig() as unknown as CustomStrategySpec,
+        fixtureTunerInfo,
+      );
+      fireEvent.click(screen.getByText("Named family"));
+      // `family: ucb1` alone already activates `c` per the first condition.
+      expect(screen.getByLabelText("c")).toBeTruthy();
+
+      const familySelect = screen.getByLabelText("family") as HTMLSelectElement;
+      fireEvent.change(familySelect, { target: { value: "rave_ucb" } });
+
+      // `family: rave_ucb` no longer satisfies the first `c` condition, but
+      // activates `rave_ucb`, whose own default (`ucb1`) satisfies the
+      // second `c` condition instead.
+      expect(screen.getByLabelText("c")).toBeTruthy();
+      expect(getLatest().params).toMatchObject({ rave_ucb: "ucb1", c: 1.4142135623730951 });
+    });
+
+    it("switching Named family -> Free composition and back round-trips, each direction clearing the other side's field", () => {
+      const { getLatest } = renderEditor(
+        fixtureDefaultConfig() as unknown as CustomStrategySpec,
+        fixtureTunerInfo,
+      );
+      const initialSearch = getLatest().search;
+
+      fireEvent.click(screen.getByText("Named family"));
+      expect(getLatest().search).toBeUndefined();
+      expect(getLatest().params).toBeDefined();
+
+      fireEvent.click(screen.getByText("Free composition"));
+      expect(getLatest().params).toBeUndefined();
+      expect(getLatest().search).toEqual(initialSearch);
+    });
   });
 });

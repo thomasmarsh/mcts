@@ -26,10 +26,13 @@ import type {
   BackpropSpec,
   CustomStrategySpec,
   FinalActionSpec,
+  SearchSpec,
   SelectSpec,
   SimulateSpec,
   TunerInfo,
+  TunerParameter,
 } from "@mcts/game";
+import { activeNames, withDefaultsFilled } from "./family-activation.js";
 
 /** A variant value as this editor manipulates it -- `kind` plus whatever
  * fields that variant's schema entry declares, generically. Each concrete
@@ -72,6 +75,28 @@ function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unk
   return field.default;
 }
 
+/** A freshly-defaulted `SearchSpec` -- each axis seeded from its schema's
+ * first listed variant. Shared by `defaultCustomStrategySpec` (initial
+ * config) and by switching from named-family mode back to free composition
+ * (same reset-to-first-variant behavior either way). */
+function buildDefaultSearchSpec(schema: AxisSchema): SearchSpec {
+  return {
+    select: buildDefaultVariantValue(schema.select.variants[0]!, schema) as unknown as SelectSpec,
+    simulate: buildDefaultVariantValue(
+      schema.simulate.variants[0]!,
+      schema,
+    ) as unknown as SimulateSpec,
+    backprop: buildDefaultVariantValue(
+      schema.backprop.variants[0]!,
+      schema,
+    ) as unknown as BackpropSpec,
+    final_action: buildDefaultVariantValue(
+      schema.final_action.variants[0]!,
+      schema,
+    ) as unknown as FinalActionSpec,
+  };
+}
+
 /** A freshly-defaulted `CustomStrategySpec` -- each axis seeded from its
  * schema's first listed variant (`buildDefaultVariantValue`, the same
  * defaulting this editor uses when a variant is newly selected), budgeted by
@@ -92,21 +117,7 @@ function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unk
  * "Custom…" config, so that shape isn't hand-duplicated per caller. */
 export function defaultCustomStrategySpec(schema: AxisSchema): CustomStrategySpec {
   return {
-    search: {
-      select: buildDefaultVariantValue(schema.select.variants[0]!, schema) as unknown as SelectSpec,
-      simulate: buildDefaultVariantValue(
-        schema.simulate.variants[0]!,
-        schema,
-      ) as unknown as SimulateSpec,
-      backprop: buildDefaultVariantValue(
-        schema.backprop.variants[0]!,
-        schema,
-      ) as unknown as BackpropSpec,
-      final_action: buildDefaultVariantValue(
-        schema.final_action.variants[0]!,
-        schema,
-      ) as unknown as FinalActionSpec,
-    },
+    search: buildDefaultSearchSpec(schema),
     max_time_ms: 1000,
     threads: 0,
   };
@@ -295,6 +306,125 @@ const ScalarField: Component<{
   );
 };
 
+/** One `TunerParameter` rendered by type, generically -- covers every family
+ * and every conditioned field (`q_init`, `mcgs`, `rave_ucb`, `c`, ...) with
+ * one control per wire type rather than per field name, since `TunerInfo`
+ * carries no more structure than name/type/bounds-or-choices/default. */
+const TunerFieldControl: Component<{
+  param: TunerParameter;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}> = (props) => {
+  return (
+    <Show
+      when={props.param.type === "categorical" ? props.param : undefined}
+      fallback={
+        <Show
+          when={props.param.type === "bool" ? props.param : undefined}
+          fallback={
+            <label>
+              {props.param.name}
+              <input
+                type="number"
+                min={(props.param as Extract<TunerParameter, { type: "int" | "float" }>).bounds[0]}
+                max={(props.param as Extract<TunerParameter, { type: "int" | "float" }>).bounds[1]}
+                step={props.param.type === "int" ? 1 : "any"}
+                value={
+                  (props.value as number | undefined) ??
+                  (props.param as Extract<TunerParameter, { type: "int" | "float" }>).default
+                }
+                onInput={(e) => {
+                  const n =
+                    props.param.type === "int"
+                      ? parseInt(e.currentTarget.value)
+                      : parseFloat(e.currentTarget.value);
+                  props.onChange(
+                    Number.isFinite(n)
+                      ? n
+                      : (props.param as Extract<TunerParameter, { type: "int" | "float" }>).default,
+                  );
+                }}
+              />
+            </label>
+          }
+        >
+          {(param) => (
+            <label class="strategy-checkbox-field">
+              <input
+                type="checkbox"
+                checked={(props.value as boolean | undefined) ?? param().default}
+                onChange={(e) => props.onChange(e.currentTarget.checked)}
+              />
+              {param().name}
+            </label>
+          )}
+        </Show>
+      }
+    >
+      {(param) => (
+        <label>
+          {param().name}
+          <select
+            value={(props.value as string | undefined) ?? param().default}
+            onChange={(e) => props.onChange(e.currentTarget.value)}
+          >
+            <For each={param().choices}>{(choice) => <option value={choice}>{choice}</option>}</For>
+          </select>
+        </label>
+      )}
+    </Show>
+  );
+};
+
+/** Named-family mode's own fields: the `family` picker (always first, always
+ * a root) plus every other currently-active parameter, in `info.parameters`
+ * declaration order. Picking a `family` fully replaces `values` (discarding
+ * every other field, same "changing the kind rebuilds the value" precedent
+ * `VariantPicker` sets for axis variants); editing any other field merges the
+ * edit into `values` and fills in defaults for anything it newly reveals. */
+const FamilyFields: Component<{
+  info: TunerInfo;
+  values: Record<string, unknown>;
+  onChange: (values: Record<string, unknown>) => void;
+}> = (props) => {
+  const familyParam = createMemo(() => props.info.parameters.find((p) => p.name === "family")!);
+  const active = createMemo(() =>
+    activeNames(props.info.parameters, props.info.conditions, props.values),
+  );
+
+  function setField(name: string, value: unknown) {
+    props.onChange(
+      withDefaultsFilled(props.info.parameters, props.info.conditions, {
+        ...props.values,
+        [name]: value,
+      }),
+    );
+  }
+
+  return (
+    <div class="strategy-family-fields">
+      <TunerFieldControl
+        param={familyParam()}
+        value={props.values.family}
+        onChange={(value) =>
+          props.onChange(
+            withDefaultsFilled(props.info.parameters, props.info.conditions, { family: value }),
+          )
+        }
+      />
+      <For each={props.info.parameters.filter((p) => p.name !== "family" && active().has(p.name))}>
+        {(param) => (
+          <TunerFieldControl
+            param={param}
+            value={props.values[param.name]}
+            onChange={(value) => setField(param.name, value)}
+          />
+        )}
+      </For>
+    </div>
+  );
+};
+
 /** Which budget field(s) are enabled -- not itself part of `CustomStrategySpec`,
  * since "both boxes unchecked" is a transient invalid UI state this editor
  * must be able to represent (to show the validation error) without ever
@@ -308,8 +438,9 @@ export const StrategyConfigEditor: Component<{
   schema: AxisSchema;
   config: CustomStrategySpec;
   /** The game's named-family catalog (`GET /api/games/{kind}/strategy-
-   * families`), `null` for a game with no tuning support. Not yet consumed
-   * here -- free composition (below) is still this editor's only mode. */
+   * families`), `null` for a game with no tuning support. Drives the mode
+   * toggle below `null` hides it entirely, leaving free composition as the
+   * only mode, exactly today's behavior. */
   tunerInfo: TunerInfo | null;
   onChange: (config: CustomStrategySpec) => void;
 }> = (props) => {
@@ -325,12 +456,36 @@ export const StrategyConfigEditor: Component<{
       : "At least one of time limit or iteration limit must be set.";
   });
 
-  function setAxis<K extends keyof CustomStrategySpec["search"]>(axis: K, value: VariantValue) {
+  // Mirrors `build_custom`'s own mutual-exclusivity contract: `search` and
+  // `params` are never both set, so which one is present *is* the mode --
+  // there is no separate signal to fall out of sync with `config`.
+  const mode = createMemo<"free" | "params">(() =>
+    props.config.search !== undefined ? "free" : "params",
+  );
+
+  function switchToFree() {
+    props.onChange({
+      ...props.config,
+      search: buildDefaultSearchSpec(props.schema),
+      params: undefined,
+    });
+  }
+
+  function switchToNamed(info: TunerInfo) {
+    const family = info.parameters.find((p) => p.name === "family")!;
+    props.onChange({
+      ...props.config,
+      search: undefined,
+      params: withDefaultsFilled(info.parameters, info.conditions, { family: family.default }),
+    });
+  }
+
+  function setAxis<K extends keyof SearchSpec>(axis: K, value: VariantValue) {
     props.onChange({
       ...props.config,
       search: {
-        ...props.config.search,
-        [axis]: value as unknown as CustomStrategySpec["search"][K],
+        ...props.config.search!,
+        [axis]: value as unknown as SearchSpec[K],
       },
     });
   }
@@ -350,34 +505,71 @@ export const StrategyConfigEditor: Component<{
 
   return (
     <div class="strategy-config-editor">
-      <VariantPicker
-        label="Select"
-        variants={props.schema.select.variants}
-        schema={props.schema}
-        value={props.config.search.select as VariantValue}
-        onChange={(v) => setAxis("select", v)}
-      />
-      <VariantPicker
-        label="Simulate"
-        variants={props.schema.simulate.variants}
-        schema={props.schema}
-        value={props.config.search.simulate as VariantValue}
-        onChange={(v) => setAxis("simulate", v)}
-      />
-      <VariantPicker
-        label="Backprop"
-        variants={props.schema.backprop.variants}
-        schema={props.schema}
-        value={props.config.search.backprop as VariantValue}
-        onChange={(v) => setAxis("backprop", v)}
-      />
-      <VariantPicker
-        label="Final action"
-        variants={props.schema.final_action.variants}
-        schema={props.schema}
-        value={props.config.search.final_action as VariantValue}
-        onChange={(v) => setAxis("final_action", v)}
-      />
+      <Show when={props.tunerInfo}>
+        {(info) => (
+          <div class="strategy-mode-toggle" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode() === "free"}
+              classList={{ active: mode() === "free" }}
+              onClick={switchToFree}
+            >
+              Free composition
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode() === "params"}
+              classList={{ active: mode() === "params" }}
+              onClick={() => switchToNamed(info())}
+            >
+              Named family
+            </button>
+          </div>
+        )}
+      </Show>
+
+      <Show when={mode() === "free"}>
+        <VariantPicker
+          label="Select"
+          variants={props.schema.select.variants}
+          schema={props.schema}
+          value={props.config.search!.select as VariantValue}
+          onChange={(v) => setAxis("select", v)}
+        />
+        <VariantPicker
+          label="Simulate"
+          variants={props.schema.simulate.variants}
+          schema={props.schema}
+          value={props.config.search!.simulate as VariantValue}
+          onChange={(v) => setAxis("simulate", v)}
+        />
+        <VariantPicker
+          label="Backprop"
+          variants={props.schema.backprop.variants}
+          schema={props.schema}
+          value={props.config.search!.backprop as VariantValue}
+          onChange={(v) => setAxis("backprop", v)}
+        />
+        <VariantPicker
+          label="Final action"
+          variants={props.schema.final_action.variants}
+          schema={props.schema}
+          value={props.config.search!.final_action as VariantValue}
+          onChange={(v) => setAxis("final_action", v)}
+        />
+      </Show>
+
+      <Show when={mode() === "params" && props.tunerInfo}>
+        {(info) => (
+          <FamilyFields
+            info={info()}
+            values={props.config.params ?? {}}
+            onChange={(params) => props.onChange({ ...props.config, params })}
+          />
+        )}
+      </Show>
 
       <div class="strategy-budget-fields">
         <label class="strategy-checkbox-field">
@@ -470,31 +662,39 @@ export const StrategyConfigEditor: Component<{
           Use transpositions
         </label>
 
-        <label class="strategy-checkbox-field">
-          <input
-            type="checkbox"
-            disabled={!(props.config.use_transpositions ?? false)}
-            checked={props.config.mcgs ?? false}
-            onChange={(e) => props.onChange({ ...props.config, mcgs: e.currentTarget.checked })}
-          />
-          Graph search (MCGS)
-        </label>
+        {/* `q_init`/`mcgs`/`state_only_keying` are ordinary conditioned
+            `TunerParameter`s in named-family mode, rendered generically by
+            `FamilyFields` above -- these hand-written rows write to
+            `CustomStrategySpec`'s top-level fields, which the `params`
+            branch of `build_custom` never reads for these three names, so
+            showing both would be redundant and silently ignored. */}
+        <Show when={mode() === "free"}>
+          <label class="strategy-checkbox-field">
+            <input
+              type="checkbox"
+              disabled={!(props.config.use_transpositions ?? false)}
+              checked={props.config.mcgs ?? false}
+              onChange={(e) => props.onChange({ ...props.config, mcgs: e.currentTarget.checked })}
+            />
+            Graph search (MCGS)
+          </label>
 
-        <label>
-          Q init
-          <select
-            value={props.config.q_init ?? "Parent"}
-            onChange={(e) => props.onChange({ ...props.config, q_init: e.currentTarget.value })}
-          >
-            {/* `QInit`'s wire form -- see `mcts-tune/src/presets.rs`'s
-                `CustomStrategySpec::q_init` doc comment. */}
-            <option value="Parent">Parent</option>
-            <option value="Win">Win</option>
-            <option value="Loss">Loss</option>
-            <option value="Draw">Draw</option>
-            <option value="Infinity">Infinity</option>
-          </select>
-        </label>
+          <label>
+            Q init
+            <select
+              value={props.config.q_init ?? "Parent"}
+              onChange={(e) => props.onChange({ ...props.config, q_init: e.currentTarget.value })}
+            >
+              {/* `QInit`'s wire form -- see `mcts-tune/src/presets.rs`'s
+                  `CustomStrategySpec::q_init` doc comment. */}
+              <option value="Parent">Parent</option>
+              <option value="Win">Win</option>
+              <option value="Loss">Loss</option>
+              <option value="Draw">Draw</option>
+              <option value="Infinity">Infinity</option>
+            </select>
+          </label>
+        </Show>
       </div>
     </div>
   );
