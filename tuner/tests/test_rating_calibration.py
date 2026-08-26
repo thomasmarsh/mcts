@@ -202,9 +202,7 @@ def _apply_production_pair(state: TrialEvaluationState, pair, pair_index: int) -
                     METRICS,
                     METRICS,
                 )
-                for side, outcome in zip(
-                    ("first", "second"), pair.outcomes, strict=True
-                )
+                for side, outcome in zip(("first", "second"), pair.outcomes, strict=True)
             ),
         )
     )

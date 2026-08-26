@@ -44,9 +44,7 @@ def test_strict_v1_serialization_is_portable_and_rejects_unknown_event_type(
 
 
 def test_writer_accepts_trial_reported_events(tmp_path: Path):
-    with LifecycleWriter(
-        tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")
-    ) as writer:
+    with LifecycleWriter(tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")) as writer:
         record = writer.emit(
             "trial_reported",
             {
@@ -108,9 +106,7 @@ def test_pool_revisions_follow_attempt_start_and_duplicate_loaded_snapshot(
 
 def test_pool_revision_cannot_precede_session_start(tmp_path: Path):
     pool = OpponentPool([Anchor("old", {}, 1.0, 1.0)])
-    with LifecycleWriter(
-        tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")
-    ) as writer:
+    with LifecycleWriter(tmp_path / "events.jsonl", SessionId("s"), AttemptId("a")) as writer:
         with pytest.raises(ValueError, match="requires session_started"):
             writer.emit("pool_revised", pool.revision_payload())
 
@@ -119,9 +115,7 @@ def test_inserted_anchor_emits_a_revision_after_durable_pool_save(tmp_path: Path
     path = tmp_path / "events.jsonl"
     pool_path = tmp_path / "pool.json"
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    active_trial = SimpleNamespace(
-        config={"family": "rave"}, trial_id=TrialId("trial-9")
-    )
+    active_trial = SimpleNamespace(config={"family": "rave"}, trial_id=TrialId("trial-9"))
     with LifecycleWriter(path, SessionId("s"), AttemptId("a")) as writer:
         writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
         writer.emit("attempt_started", {})
@@ -205,8 +199,7 @@ def test_manifest_conflict_stops_before_opening_or_recovering_a_study(
             optimizer_id="session-conflict",
             bench_run_id="session-conflict-run",
             attempt_id="attempt-session-conflict-run",
-            artifact_root=Path.cwd()
-            / "bench-runs/session-conflict-run/tuning-artifacts",
+            artifact_root=Path.cwd() / "bench-runs/session-conflict-run/tuning-artifacts",
         )
 
 
@@ -218,13 +211,9 @@ def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
         trial_id_for(SessionId("session-1"), 1),
     )
     with LifecycleWriter(path, session, attempt) as writer:
-        first = writer.emit(
-            "session_started", {"manifest": {}, "manifest_fingerprint": "f"}
-        )
+        first = writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
         writer.emit("attempt_started", {})
-        writer.emit(
-            "trial_created", {"trial_id": trial, "trial_number": 1, "config": {}}
-        )
+        writer.emit("trial_created", {"trial_id": trial, "trial_number": 1, "config": {}})
         writer.emit("trial_started", {"trial_id": trial, "trial_number": 1})
         terminal = writer.emit_trial_terminal("trial_failed", trial, {"error": "boom"})
     with LifecycleWriter(path, session, attempt) as reopened:
@@ -235,9 +224,7 @@ def test_sequence_and_terminal_state_continue_across_reopen(tmp_path: Path):
             reopened.emit_trial_terminal("trial_completed", trial, {})
         next_record = reopened.emit("attempt_failed", {"error": "boom"})
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [record["session_sequence"] for record in records] == list(
-        range(1, len(records) + 1)
-    )
+    assert [record["session_sequence"] for record in records] == list(range(1, len(records) + 1))
     assert first["schema_version"] == 1
     assert next_record["session_sequence"] == len(records)
 
@@ -292,9 +279,7 @@ def _orphaned_trial_journal(path: Path, session: SessionId, trial: TrialId) -> N
     with LifecycleWriter(path, session, AttemptId("prior")) as writer:
         writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "f"})
         writer.emit("attempt_started", {"bench_run_id": "physical-prior"})
-        writer.emit(
-            "trial_created", {"trial_id": trial, "trial_number": 0, "config": {}}
-        )
+        writer.emit("trial_created", {"trial_id": trial, "trial_number": 0, "config": {}})
         writer.emit("trial_started", {"trial_id": trial, "trial_number": 0})
         writer.emit("pair_started", {"trial_id": trial, "pair_id": "pair-0"})
 
@@ -340,14 +325,10 @@ def test_recovery_emits_exact_scope_and_consumes_an_orphaned_optuna_slot(
     assert recovered["prior_attempt_id"] == "prior"
     assert recovered["prior_bench_run_id"] == "physical-prior"
     assert recovered["pair_ids"] == ["pair-0"]
-    assert recovered["trials"] == [
-        {"trial_id": trial_id, "trial_number": 0, "reason": reason}
-    ]
+    assert recovered["trials"] == [{"trial_id": trial_id, "trial_number": 0, "reason": reason}]
     assert len(study.trials) == 1
     assert study.trials[0].state == (
-        TrialState.FAIL
-        if optuna_state == "running"
-        else TrialState[optuna_state.upper()]
+        TrialState.FAIL if optuna_state == "running" else TrialState[optuna_state.upper()]
     )
 
     with LifecycleWriter(path, session, AttemptId("later")) as writer:

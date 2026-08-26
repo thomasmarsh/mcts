@@ -206,8 +206,7 @@ class SearchConfig:
         info = json.loads(result.stdout)
         raw = {
             "parameters": {
-                p["name"]: {k: v for k, v in p.items() if k != "name"}
-                for p in info["parameters"]
+                p["name"]: {k: v for k, v in p.items() if k != "name"} for p in info["parameters"]
             },
             "conditions": info["conditions"],
         }
@@ -237,9 +236,7 @@ class SearchConfig:
         sampler = cls._policy_mapping(opt, "sampler", {"kind", "startup_trials"})
         if "eta" in opt:
             if "reduction_factor" in pruning:
-                raise ValueError(
-                    "optimizer.eta conflicts with optimizer.pruning.reduction_factor"
-                )
+                raise ValueError("optimizer.eta conflicts with optimizer.pruning.reduction_factor")
             pruning["reduction_factor"] = opt["eta"]
 
         params: list[ParamDef] = []
@@ -312,9 +309,7 @@ class SearchConfig:
             raise ValueError(f"optimizer.{name} must be a mapping")
         unknown = set(value) - allowed
         if unknown:
-            raise ValueError(
-                f"optimizer.{name} has unsupported keys: {', '.join(sorted(unknown))}"
-            )
+            raise ValueError(f"optimizer.{name} has unsupported keys: {', '.join(sorted(unknown))}")
         return dict(value)
 
     def validate(self) -> None:
@@ -350,9 +345,7 @@ class SearchConfig:
         )
         if sampler.kind != "tpe":
             raise ValueError("optimizer.sampler.kind must be 'tpe'")
-        self._nonnegative_int(
-            sampler.startup_trials, "optimizer.sampler.startup_trials"
-        )
+        self._nonnegative_int(sampler.startup_trials, "optimizer.sampler.startup_trials")
 
     @staticmethod
     def _positive_int(value: Any, name: str) -> None:

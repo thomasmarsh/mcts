@@ -74,9 +74,7 @@ def parse_scripted_pair(value: str) -> ScriptedPair:
             parsed.append(_OUTCOME_ALIASES[raw_outcome])
         except KeyError as error:
             choices = ", ".join(sorted(_OUTCOME_ALIASES))
-            raise ValueError(
-                f"unknown outcome {raw_outcome!r}; use one of {choices}"
-            ) from error
+            raise ValueError(f"unknown outcome {raw_outcome!r}; use one of {choices}") from error
     return ScriptedPair(*parsed)
 
 
@@ -102,22 +100,14 @@ def resolve_policy(
     """Return a validated resource/rating policy after optional CLI overrides."""
     resource = replace(
         config.optimizer.resource,
-        min_pairs=config.optimizer.resource.min_pairs
-        if min_pairs is None
-        else min_pairs,
-        max_pairs=config.optimizer.resource.max_pairs
-        if max_pairs is None
-        else max_pairs,
+        min_pairs=config.optimizer.resource.min_pairs if min_pairs is None else min_pairs,
+        max_pairs=config.optimizer.resource.max_pairs if max_pairs is None else max_pairs,
     )
     rating = replace(
         config.optimizer.rating,
-        sigma_stop=config.optimizer.rating.sigma_stop
-        if sigma_stop is ...
-        else sigma_stop,
+        sigma_stop=config.optimizer.rating.sigma_stop if sigma_stop is ... else sigma_stop,
         conservative_k=(
-            config.optimizer.rating.conservative_k
-            if conservative_k is None
-            else conservative_k
+            config.optimizer.rating.conservative_k if conservative_k is None else conservative_k
         ),
     )
     resolved = replace(
@@ -180,9 +170,7 @@ def render_calibration(rows: Sequence[CalibrationRow]) -> str:
     )
 
 
-def _pair_task(
-    pair_index: int, opponent: OpponentSnapshot, rating_before: Rating
-) -> PairTask:
+def _pair_task(pair_index: int, opponent: OpponentSnapshot, rating_before: Rating) -> PairTask:
     pair_id = pair_id_for(_CALIBRATION_SESSION, _CALIBRATION_TRIAL, pair_index)
     return PairTask(
         _CALIBRATION_SESSION,

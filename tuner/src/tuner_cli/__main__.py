@@ -73,12 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tuner", description="Optuna hyperparameter optimisation for MCTS."
     )
     parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument(
-        "--override", action="append", default=[], help="Override key=value"
-    )
-    parser.add_argument(
-        "--baseline-config", action="append", default=[], metavar="ID=JSON"
-    )
+    parser.add_argument("--override", action="append", default=[], help="Override key=value")
+    parser.add_argument("--baseline-config", action="append", default=[], metavar="ID=JSON")
     parser.add_argument("--game-config", type=str, default=None, metavar="JSON")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--git-sha", type=str, default=None)

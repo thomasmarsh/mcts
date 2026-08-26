@@ -136,9 +136,7 @@ def pool_snapshot_fingerprint(anchors: Sequence[Any]) -> str:
         }
         for anchor in anchors
     ]
-    return hashlib.sha256(
-        strict_json_dumps(snapshot, sort_keys=True).encode()
-    ).hexdigest()
+    return hashlib.sha256(strict_json_dumps(snapshot, sort_keys=True).encode()).hexdigest()
 
 
 def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
@@ -170,9 +168,7 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
             raise ValueError("lifecycle journal has an invalid event envelope")
         if event_type == "attempt_started":
             if attempt_id in attempts:
-                raise ValueError(
-                    "lifecycle journal contains duplicate attempt_started evidence"
-                )
+                raise ValueError("lifecycle journal contains duplicate attempt_started evidence")
             bench_run_id = payload.get("bench_run_id", payload.get("run_id"))
             if bench_run_id is not None and not isinstance(bench_run_id, str):
                 raise ValueError("lifecycle journal has an invalid bench run identity")
@@ -190,14 +186,10 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
                 or prior not in attempts
                 or attempts[prior]["terminal"]
             ):
-                raise ValueError(
-                    "recovery evidence references an invalid prior attempt"
-                )
+                raise ValueError("recovery evidence references an invalid prior attempt")
             recovered_trials = payload.get("trials")
             recovered_pairs = payload.get("pair_ids")
-            if not isinstance(recovered_trials, list) or not isinstance(
-                recovered_pairs, list
-            ):
+            if not isinstance(recovered_trials, list) or not isinstance(recovered_pairs, list):
                 raise ValueError("recovery evidence has an invalid scope")
             if any(
                 not isinstance(item, dict)
@@ -212,9 +204,7 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
                 for trial_id, trial in trials.items()
                 if trial["attempt_id"] == prior and not trial["terminal"]
             }
-            listed_trials = {
-                (item["trial_id"], item["trial_number"]) for item in recovered_trials
-            }
+            listed_trials = {(item["trial_id"], item["trial_number"]) for item in recovered_trials}
             expected_pairs = {
                 pair_id
                 for pair_id, pair in pairs.items()
@@ -254,13 +244,9 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
             if not isinstance(number, int) or isinstance(number, bool):
                 raise ValueError("trial_created has an invalid trial number")
             if trial_id != trial_id_for(session_id, number):
-                raise ValueError(
-                    "trial id does not match its deterministic trial number"
-                )
+                raise ValueError("trial id does not match its deterministic trial number")
             if trial_id in trials:
-                raise ValueError(
-                    "lifecycle journal contains duplicate trial_created evidence"
-                )
+                raise ValueError("lifecycle journal contains duplicate trial_created evidence")
             trials[trial_id] = {
                 "attempt_id": attempt_id,
                 "number": number,
@@ -275,17 +261,13 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
             raise ValueError("trial evidence has a conflicting trial number")
         if event_type in TRIAL_TERMINAL_EVENTS:
             if trial["terminal"]:
-                raise ValueError(
-                    "lifecycle journal contains duplicate trial terminal evidence"
-                )
+                raise ValueError("lifecycle journal contains duplicate trial terminal evidence")
             trial["terminal"] = True
             continue
         if event_type == "pair_started":
             pair_id = payload.get("pair_id")
             if not isinstance(pair_id, str) or pair_id in pairs:
-                raise ValueError(
-                    "pair_started has an invalid or duplicate pair identity"
-                )
+                raise ValueError("pair_started has an invalid or duplicate pair identity")
             pairs[pair_id] = {
                 "attempt_id": attempt_id,
                 "trial_id": trial_id,
@@ -295,23 +277,15 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
         if event_type in {"game_finished", *PAIR_TERMINAL_EVENTS}:
             pair_id = payload.get("pair_id")
             pair = pairs.get(pair_id) if isinstance(pair_id, str) else None
-            if (
-                pair is None
-                or pair["attempt_id"] != attempt_id
-                or pair["trial_id"] != trial_id
-            ):
+            if pair is None or pair["attempt_id"] != attempt_id or pair["trial_id"] != trial_id:
                 raise ValueError("pair evidence has conflicting ownership")
             if event_type in PAIR_TERMINAL_EVENTS:
                 if pair["terminal"]:
-                    raise ValueError(
-                        "lifecycle journal contains duplicate pair terminal evidence"
-                    )
+                    raise ValueError("lifecycle journal contains duplicate pair terminal evidence")
                 pair["terminal"] = True
 
     open_attempts = [
-        (attempt_id, value)
-        for attempt_id, value in attempts.items()
-        if not value["terminal"]
+        (attempt_id, value) for attempt_id, value in attempts.items() if not value["terminal"]
     ]
     if not open_attempts:
         return JournalSnapshot(None)
@@ -329,9 +303,7 @@ def replay_journal(path: str | Path, session_id: SessionId) -> JournalSnapshot:
         if pair["attempt_id"] == attempt_id and not pair["terminal"]
     )
     return JournalSnapshot(
-        OrphanedAttempt(
-            AttemptId(attempt_id), attempt["bench_run_id"], recovered_trials, pair_ids
-        )
+        OrphanedAttempt(AttemptId(attempt_id), attempt["bench_run_id"], recovered_trials, pair_ids)
     )
 
 
@@ -342,9 +314,7 @@ class LifecycleWriter:
     that coordinator and never open or sequence this file.
     """
 
-    def __init__(
-        self, path: str | Path, session_id: SessionId, attempt_id: AttemptId
-    ) -> None:
+    def __init__(self, path: str | Path, session_id: SessionId, attempt_id: AttemptId) -> None:
         self.path = Path(path).resolve()
         self.lock_path = self.path.with_name(f"{self.path.name}.lock")
         self.session_id = session_id
@@ -355,9 +325,7 @@ class LifecycleWriter:
             fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             self._lock.close()
-            raise RuntimeError(
-                f"lifecycle journal is already locked: {self.path}"
-            ) from None
+            raise RuntimeError(f"lifecycle journal is already locked: {self.path}") from None
         try:
             (
                 self._sequence,
@@ -413,21 +381,15 @@ class LifecycleWriter:
                 payload = record.get("payload")
                 if record.get("event_type") == "session_started":
                     fingerprint = (
-                        payload.get("manifest_fingerprint")
-                        if isinstance(payload, dict)
-                        else None
+                        payload.get("manifest_fingerprint") if isinstance(payload, dict) else None
                     )
                     if session_started:
                         raise ValueError(
                             "lifecycle journal contains multiple session_started events"
                         )
                     session_started = True
-                    manifest_fingerprint = (
-                        fingerprint if isinstance(fingerprint, str) else None
-                    )
-                if record.get("event_type") in TRIAL_TERMINAL_EVENTS and isinstance(
-                    payload, dict
-                ):
+                    manifest_fingerprint = fingerprint if isinstance(fingerprint, str) else None
+                if record.get("event_type") in TRIAL_TERMINAL_EVENTS and isinstance(payload, dict):
                     trial_id = payload.get("trial_id")
                     if isinstance(trial_id, str):
                         terminal_trials.add(TrialId(trial_id))
@@ -451,9 +413,7 @@ class LifecycleWriter:
         if event_type == "session_started":
             self._session_started = True
             fingerprint = payload.get("manifest_fingerprint")
-            self._manifest_fingerprint = (
-                fingerprint if isinstance(fingerprint, str) else None
-            )
+            self._manifest_fingerprint = fingerprint if isinstance(fingerprint, str) else None
         return record
 
     def _build_record(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -485,9 +445,7 @@ class LifecycleWriter:
         if event_type not in TRIAL_TERMINAL_EVENTS:
             raise ValueError(f"{event_type!r} is not a trial terminal event")
         if trial_id in self._terminal_trials:
-            raise ValueError(
-                f"trial {trial_id} already has terminal lifecycle evidence"
-            )
+            raise ValueError(f"trial {trial_id} already has terminal lifecycle evidence")
         record = self.emit(event_type, {"trial_id": trial_id, **payload})
         self._terminal_trials.add(trial_id)
         return record

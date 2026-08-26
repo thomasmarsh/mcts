@@ -38,9 +38,7 @@ def _run_with_heartbeat(
     cmd: list[str], *, timeout: float, seed: int
 ) -> subprocess.CompletedProcess:
     """Run a subprocess while periodically logging liveness until its timeout."""
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     elapsed = 0.0
     while True:
         wait = min(_HEARTBEAT_INTERVAL_S, timeout - elapsed)
@@ -86,9 +84,7 @@ def _build_pair_cmd(cfg: SearchConfig, binary: Path, task: PairTask) -> list[str
 def evaluate_pair(cfg: SearchConfig, binary: Path, task: PairTask) -> PairResult:
     """Execute and strictly decode one configured, seat-swapped pair."""
     if cfg.target.max_iterations is not None and cfg.target.max_time_ms is not None:
-        raise ValueError(
-            "target.max_iterations and target.max_time_ms are mutually exclusive"
-        )
+        raise ValueError("target.max_iterations and target.max_time_ms are mutually exclusive")
     cmd = _build_pair_cmd(cfg, binary, task)
     logger.debug("Running: %s", " ".join(cmd))
     try:
@@ -137,9 +133,7 @@ def _json_records(stdout: str) -> list[dict[str, Any]]:
     return records
 
 
-def _decode_game(
-    record: dict[str, Any], task: PairTask, expected_seed: int
-) -> GameResult:
+def _decode_game(record: dict[str, Any], task: PairTask, expected_seed: int) -> GameResult:
     side = _string(record, "candidate_side")
     outcome = _string(record, "outcome")
     if side not in ("first", "second") or outcome not in (
@@ -154,9 +148,7 @@ def _decode_game(
     if _integer(record, "seq") != expected_seq:
         raise ValueError("game sequence does not match candidate side")
     trace = record.get("trace_game_seq")
-    if trace is not None and (
-        not isinstance(trace, int) or isinstance(trace, bool) or trace < 0
-    ):
+    if trace is not None and (not isinstance(trace, int) or isinstance(trace, bool) or trace < 0):
         raise ValueError("trace_game_seq must be an integer or null")
     if task.trace_game_sequence_start is not None:
         expected_trace = task.trace_game_sequence_start + expected_seq - 1
@@ -215,9 +207,7 @@ def _integer(record: dict[str, Any], key: str) -> int:
     return value
 
 
-def preflight_check(
-    cfg: SearchConfig, default_config: dict, random_config: dict
-) -> None:
+def preflight_check(cfg: SearchConfig, default_config: dict, random_config: dict) -> None:
     """Run one complete configured pair before starting an optimization attempt."""
     from .evaluation import OpponentSnapshot, PairId, Rating
     from .lifecycle import SessionId, TrialId

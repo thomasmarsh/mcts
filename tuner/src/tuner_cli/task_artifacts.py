@@ -105,9 +105,7 @@ class TaskDescriptorAllocator:
         pool_snapshot: list[Any],
     ) -> DescriptorCommit:
         """Allocate and publish one complete task descriptor exactly once."""
-        identity = TaskIdentity.for_pair(
-            self.attempt_id, self._next_task_sequence, task.pair_id
-        )
+        identity = TaskIdentity.for_pair(self.attempt_id, self._next_task_sequence, task.pair_id)
         payload = self.task_payload(identity, task, cfg, binary, pool_snapshot)
         digest = write_immutable_json(self.layout.descriptor(identity), payload)
         self._next_task_sequence += 1
@@ -337,9 +335,7 @@ def replace_heartbeat(path: str | Path, heartbeat: Heartbeat) -> str:
             raise ArtifactIntegrityError("heartbeat identity changed")
         if heartbeat.update_sequence <= existing.update_sequence:
             raise ArtifactIntegrityError("heartbeat update_sequence did not advance")
-    return _replace_heartbeat_bytes(
-        destination, canonical_json_bytes(heartbeat.payload())
-    )
+    return _replace_heartbeat_bytes(destination, canonical_json_bytes(heartbeat.payload()))
 
 
 # A verb which reads naturally at the worker call site while retaining the
@@ -387,9 +383,7 @@ class CompletionMember:
         try:
             return cls(**value)
         except (TypeError, ValueError) as error:
-            raise ArtifactIntegrityError(
-                "completion member has invalid values"
-            ) from error
+            raise ArtifactIntegrityError("completion member has invalid values") from error
 
 
 @dataclass(frozen=True)
@@ -415,9 +409,7 @@ class TaskCompletion:
             raise ValueError("completion outcome must be completed or failed")
         if self.schema_version != TASK_COMPLETION_SCHEMA_VERSION:
             raise ValueError("unsupported completion schema version")
-        expected_terminal = (
-            "result.json" if self.outcome == "completed" else "failure.json"
-        )
+        expected_terminal = "result.json" if self.outcome == "completed" else "failure.json"
         if self.terminal.filename != expected_terminal:
             raise ValueError("completion terminal member does not match its outcome")
         if self.stdout.filename != "stdout.log" or self.stderr.filename != "stderr.log":
@@ -458,11 +450,7 @@ class TaskCompletion:
         ):
             raise ArtifactIntegrityError("completion has an invalid schema")
         try:
-            trace = (
-                CompletionMember.from_payload(value["trace"])
-                if "trace" in value
-                else None
-            )
+            trace = CompletionMember.from_payload(value["trace"]) if "trace" in value else None
             return cls(
                 task_id=value["task_id"],
                 attempt_id=value["attempt_id"],
@@ -543,22 +531,16 @@ def _validate_completion_members(directory: Path, completion: TaskCompletion) ->
             continue
         contents = _read_regular_file(directory / member.filename, directory)
         if len(contents) != member.byte_length:
-            raise ArtifactIntegrityError(
-                f"completion member length differs: {member.filename}"
-            )
+            raise ArtifactIntegrityError(f"completion member length differs: {member.filename}")
         if sha256_digest(contents) != member.digest:
-            raise ArtifactIntegrityError(
-                f"completion member digest differs: {member.filename}"
-            )
+            raise ArtifactIntegrityError(f"completion member digest differs: {member.filename}")
 
 
 def _read_regular_file(path: Path, containing_directory: Path | None = None) -> bytes:
     try:
         info = path.lstat()
     except FileNotFoundError as error:
-        raise ArtifactIntegrityError(
-            f"required artifact is missing: {path.name}"
-        ) from error
+        raise ArtifactIntegrityError(f"required artifact is missing: {path.name}") from error
     if not stat.S_ISREG(info.st_mode):
         raise ArtifactIntegrityError(f"artifact is not a regular file: {path.name}")
     if containing_directory is not None:
@@ -566,13 +548,9 @@ def _read_regular_file(path: Path, containing_directory: Path | None = None) -> 
             directory = containing_directory.resolve(strict=True)
             resolved = path.resolve(strict=True)
         except (FileNotFoundError, RuntimeError) as error:
-            raise ArtifactIntegrityError(
-                f"artifact cannot be resolved: {path.name}"
-            ) from error
+            raise ArtifactIntegrityError(f"artifact cannot be resolved: {path.name}") from error
         if resolved.parent != directory:
-            raise ArtifactIntegrityError(
-                f"artifact escapes task directory: {path.name}"
-            )
+            raise ArtifactIntegrityError(f"artifact escapes task directory: {path.name}")
     return path.read_bytes()
 
 

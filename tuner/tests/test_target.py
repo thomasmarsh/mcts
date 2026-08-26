@@ -82,15 +82,11 @@ def _output() -> str:
 
 
 def _cfg() -> SearchConfig:
-    return SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-fake"))
-    )
+    return SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-fake")))
 
 
 def test_parse_baseline_configs_preserves_id_and_raw_config():
-    parsed = _parse_baseline_configs(
-        ["strong-plus=" + json.dumps({"family": "ucb1", "c": 1.5})]
-    )
+    parsed = _parse_baseline_configs(["strong-plus=" + json.dumps({"family": "ucb1", "c": 1.5})])
     assert parsed == {"strong-plus": {"family": "ucb1", "c": 1.5}}
 
 
@@ -136,9 +132,7 @@ def test_parser_returns_two_ordered_physical_games_with_trace_ids():
 
 def test_parser_requires_descriptor_assigned_trace_game_sequences():
     task = replace(_task(), trace_game_sequence_start=40)
-    assert [
-        game.trace_game_seq for game in parse_pair_output(_output(), task).games
-    ] == [
+    assert [game.trace_game_seq for game in parse_pair_output(_output(), task).games] == [
         40,
         41,
     ]
@@ -154,9 +148,7 @@ def test_parser_requires_descriptor_assigned_trace_game_sequences():
         (lambda records: records.pop(1), "exactly two"),
         (lambda records: records.insert(1, dict(records[0])), "exactly two"),
         (
-            lambda records: records.__setitem__(
-                1, {**records[1], "candidate_side": "first"}
-            ),
+            lambda records: records.__setitem__(1, {**records[1], "candidate_side": "first"}),
             "sequence",
         ),
         (lambda records: records.__setitem__(slice(0, 2), records[1::-1]), "ordered"),
@@ -185,9 +177,7 @@ def test_evaluate_pair_turns_timeout_and_invalid_output_into_pair_errors(monkeyp
 
 def test_evaluate_pair_rejects_nonzero_exit_and_mutually_exclusive_budgets(monkeypatch):
     failed = subprocess.CompletedProcess([], 2, "", "bad config")
-    monkeypatch.setattr(
-        "tuner_cli.target._run_with_heartbeat", lambda *_args, **_kwargs: failed
-    )
+    monkeypatch.setattr("tuner_cli.target._run_with_heartbeat", lambda *_args, **_kwargs: failed)
     with pytest.raises(PairExecutionError, match="code 2"):
         evaluate_pair(_cfg(), Path("game-fake"), _task())
 

@@ -64,19 +64,13 @@ class StartupTrialAllocator:
     @classmethod
     def restore(cls, study: optuna.Study, startup_trials: int) -> StartupTrialAllocator:
         """Validate durable decisions before allocating the next trial on resume."""
-        trials = sorted(
-            study.get_trials(deepcopy=False), key=lambda trial: trial.number
-        )
+        trials = sorted(study.get_trials(deepcopy=False), key=lambda trial: trial.number)
         for ordinal, trial in enumerate(trials):
             pruning_exempt = trial.user_attrs.get(_STARTUP_EXEMPT_ATTR)
             if not isinstance(pruning_exempt, bool):
-                raise ValueError(
-                    f"Optuna trial {trial.number} is missing its startup exemption"
-                )
+                raise ValueError(f"Optuna trial {trial.number} is missing its startup exemption")
             if pruning_exempt != (ordinal < startup_trials):
-                raise ValueError(
-                    f"Optuna trial {trial.number} has an invalid startup exemption"
-                )
+                raise ValueError(f"Optuna trial {trial.number} has an invalid startup exemption")
         return cls(startup_trials, len(trials))
 
     def allocate(self, trial: optuna.Trial) -> bool:
@@ -203,9 +197,7 @@ def create_active_trial(
         else False
     )
     hyperband_trial = (
-        pruning_adapter.create_trial(study, pruning_exempt)
-        if pruning_adapter is not None
-        else None
+        pruning_adapter.create_trial(study, pruning_exempt) if pruning_adapter is not None else None
     )
     trial = hyperband_trial.trial if hyperband_trial is not None else study.ask()
     if startup_allocator is not None:
@@ -213,9 +205,7 @@ def create_active_trial(
         if hyperband_trial is None:
             raise RuntimeError("a startup allocator requires Hyperband pruning")
         if assigned_exemption != pruning_exempt:
-            raise RuntimeError(
-                "startup exemption allocation changed during trial creation"
-            )
+            raise RuntimeError("startup exemption allocation changed during trial creation")
     config = suggest_config(trial, cfg)
     trial.set_user_attr("config", config)
     seed = cfg.optimizer.seed + trial.number
@@ -229,9 +219,7 @@ def create_active_trial(
     )
 
 
-def emit_trial_created_and_started(
-    lifecycle: LifecycleWriter, active_trial: _ActiveTrial
-) -> None:
+def emit_trial_created_and_started(lifecycle: LifecycleWriter, active_trial: _ActiveTrial) -> None:
     """Record the two non-terminal transitions before pair execution."""
     lifecycle.emit(
         "trial_created",
@@ -306,9 +294,7 @@ def drain_scheduled_trials(
                 continue
             else:
                 active.pop(scheduled.active_trial.trial_id, None)
-            remaining = replenish_trial(
-                remaining, executor, futures, active, context, should_stop
-            )
+            remaining = replenish_trial(remaining, executor, futures, active, context, should_stop)
 
 
 def _terminalize_from_pair(lifecycle: LifecycleWriter):
@@ -330,9 +316,7 @@ def continue_trial(
     """Finish a valid pair and report whether its trial received another pair."""
     active_trial = scheduled.active_trial
     finish_pair(context.lifecycle, active_trial, result, scheduled.descriptor)
-    score, decision = report_trial(
-        context.lifecycle, active_trial, context.pruning_adapter
-    )
+    score, decision = report_trial(context.lifecycle, active_trial, context.pruning_adapter)
     if decision.outcome == "complete":
         complete_trial(
             context.study,
@@ -600,9 +584,7 @@ def save_inserted_pool_anchor(
     manifest_fingerprint: str = "legacy",
 ) -> None:
     """Log every terminal candidate before atomically checkpointing its result."""
-    decision = pool.decide_insertion(
-        active_trial.config, mu, sigma, active_trial.trial_id
-    )
+    decision = pool.decide_insertion(active_trial.config, mu, sigma, active_trial.trial_id)
     lifecycle.emit("pool_anchor_decided", decision.payload())
     pool.apply_decision(decision)
     pool.save(pool_path, manifest_fingerprint, decision)

@@ -64,9 +64,7 @@ def suggest_config(trial: optuna.Trial, cfg: SearchConfig) -> dict:
         for name, conds in children_of.items():
             if name in active:
                 continue
-            satisfied = any(
-                cd.parent in active and active[cd.parent] in cd.values for cd in conds
-            )
+            satisfied = any(cd.parent in active and active[cd.parent] in cd.values for cd in conds)
             if satisfied:
                 active[name] = _suggest_one(trial, by_name[name])
                 changed = True
@@ -86,6 +84,7 @@ def default_config(cfg: SearchConfig) -> dict:
 
     def value_for(parameter: ParamDef):
         return parameter.value if parameter.type == "constant" else parameter.default
+
     children_of: dict[str, list[CondDef]] = {}
     for cd in cfg.conditions:
         for child in cd.children:
@@ -104,9 +103,7 @@ def default_config(cfg: SearchConfig) -> dict:
         for name, conds in children_of.items():
             if name in active:
                 continue
-            satisfied = any(
-                cd.parent in active and active[cd.parent] in cd.values for cd in conds
-            )
+            satisfied = any(cd.parent in active and active[cd.parent] in cd.values for cd in conds)
             if satisfied:
                 active[name] = value_for(by_name[name])
                 changed = True

@@ -112,9 +112,7 @@ def execute_task_bundle(
     heartbeat.write()
 
     try:
-        captured = _run_process(
-            _build_pair_cmd_for_execution(execution), popen, heartbeat.write
-        )
+        captured = _run_process(_build_pair_cmd_for_execution(execution), popen, heartbeat.write)
     except _TimedOut as error:
         return _write_failure(
             execution,
@@ -198,9 +196,7 @@ def read_task_bundle(
         raise TaskResultError("completion digest does not match worker reference")
     if completion.outcome != reference.outcome:
         raise TaskResultError("completion outcome does not match worker reference")
-    terminal_contents = (
-        execution.task_directory / completion.terminal.filename
-    ).read_bytes()
+    terminal_contents = (execution.task_directory / completion.terminal.filename).read_bytes()
     if completion.outcome == "failed":
         raise TaskResultError(
             f"committed task failed: {_failure_message(terminal_contents, execution)}"
@@ -246,9 +242,7 @@ def _validate_reference(reference: Any, execution: _Execution) -> None:
         execution.identity.attempt_id,
         execution.descriptor_digest,
     ):
-        raise TaskResultError(
-            "worker reference identity or descriptor digest mismatches"
-        )
+        raise TaskResultError("worker reference identity or descriptor digest mismatches")
     if reference.outcome not in ("completed", "failed"):
         raise TaskResultError("worker reference has an invalid outcome")
     if len(reference.completion_digest) != 64 or any(
@@ -284,15 +278,11 @@ def _failure_message(contents: bytes, execution: _Execution) -> str:
         execution.identity.attempt_id,
         execution.descriptor_digest,
     ):
-        raise TaskResultError(
-            "failure artifact identity or descriptor digest mismatches"
-        )
+        raise TaskResultError("failure artifact identity or descriptor digest mismatches")
     return f"{payload['kind']}: {payload['message']}"
 
 
-def _decode_result(
-    contents: bytes, execution: _Execution
-) -> tuple[GameResult, GameResult]:
+def _decode_result(contents: bytes, execution: _Execution) -> tuple[GameResult, GameResult]:
     try:
         payload = json.loads(contents.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -319,9 +309,7 @@ def _decode_result(
         execution.descriptor_digest,
         execution.identity.pair_id,
     ):
-        raise TaskResultError(
-            "result artifact identity or descriptor digest mismatches"
-        )
+        raise TaskResultError("result artifact identity or descriptor digest mismatches")
     if not isinstance(payload["games"], list) or len(payload["games"]) != 2:
         raise TaskResultError("result artifact must contain exactly two games")
     return (
@@ -414,17 +402,13 @@ def _load_execution(descriptor_path: str | Path, descriptor_digest: str) -> _Exe
     identity, task, binary = _decode_descriptor(payload, sequence, task_id)
     task_directory = artifact_root / "tasks" / identity.task_id
     if payload["task_directory"] != f"tasks/{identity.task_id}":
-        raise TaskDescriptorError(
-            "descriptor task directory does not match task identity"
-        )
+        raise TaskDescriptorError("descriptor task directory does not match task identity")
     tasks_directory = task_directory.parent
     if tasks_directory.exists():
         _require_real_directory(tasks_directory)
     if task_directory.exists():
         _require_real_directory(task_directory)
-    return _Execution(
-        path, task_directory, identity, descriptor_digest, task, binary, payload
-    )
+    return _Execution(path, task_directory, identity, descriptor_digest, task, binary, payload)
 
 
 def _decode_descriptor(
@@ -481,9 +465,7 @@ def _decode_descriptor(
         "candidate_first": sequences.candidate_first,
         "candidate_second": sequences.candidate_second,
     }:
-        raise TaskDescriptorError(
-            "descriptor trace sequences do not match task sequence"
-        )
+        raise TaskDescriptorError("descriptor trace sequences do not match task sequence")
     _validate_descriptor_values(payload)
     opponent = payload["opponent"]
     rating = payload["rating_before"]
@@ -497,10 +479,10 @@ def _decode_descriptor(
         OpponentSnapshot(
             opponent["anchor_id"], opponent["config"], opponent["mu"], opponent["sigma"]
         ),
-            payload["pool_snapshot_fingerprint"],
-            Rating(rating["mu"], rating["sigma"]),
-            sequences.candidate_first,
-        )
+        payload["pool_snapshot_fingerprint"],
+        Rating(rating["mu"], rating["sigma"]),
+        sequences.candidate_first,
+    )
     return identity, task, Path(payload["binary"]["path"])
 
 
@@ -521,9 +503,7 @@ def _validate_descriptor_values(payload: dict[str, Any]) -> None:
     if not isinstance(payload["candidate_config"], dict) or not isinstance(
         payload["pool_snapshot"], list
     ):
-        raise TaskDescriptorError(
-            "descriptor configs and pool snapshot have invalid types"
-        )
+        raise TaskDescriptorError("descriptor configs and pool snapshot have invalid types")
     if not isinstance(payload["binary"], dict) or set(payload["binary"]) != {"path"}:
         raise TaskDescriptorError("descriptor binary has an invalid schema")
     binary = _string(payload["binary"], "path")
@@ -546,9 +526,7 @@ def _validate_descriptor_values(payload: dict[str, Any]) -> None:
         "candidate_second",
     }:
         raise TaskDescriptorError("descriptor game IDs have an invalid schema")
-    if not all(
-        isinstance(value, str) and value for value in payload["game_ids"].values()
-    ):
+    if not all(isinstance(value, str) and value for value in payload["game_ids"].values()):
         raise TaskDescriptorError("descriptor game IDs have invalid values")
     if payload["game_ids"] != {
         "candidate_first": game_id_for(payload["pair_id"], "first"),
@@ -770,9 +748,7 @@ def _write_logs(
     trace_member = None
     if trace_path.exists():
         _require_regular_file(trace_path)
-        trace_member = CompletionMember.for_contents(
-            "trace.jsonl", trace_path.read_bytes()
-        )
+        trace_member = CompletionMember.for_contents("trace.jsonl", trace_path.read_bytes())
     return (
         CompletionMember.for_contents("stdout.log", captured.stdout),
         CompletionMember.for_contents("stderr.log", captured.stderr),
@@ -793,8 +769,6 @@ def _require_real_directory(path: Path) -> None:
     try:
         info = path.lstat()
     except FileNotFoundError as error:
-        raise TaskDescriptorError(
-            f"required directory is missing: {path.name}"
-        ) from error
+        raise TaskDescriptorError(f"required directory is missing: {path.name}") from error
     if not stat.S_ISDIR(info.st_mode):
         raise TaskDescriptorError(f"required directory is not real: {path.name}")

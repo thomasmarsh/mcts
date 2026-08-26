@@ -176,9 +176,9 @@ def test_ask_tell_loop_emits_rating_jsonl(binary: Path, tmp_dir: Path) -> None:
         actual = Counter((entry["opponent"], entry["outcome"]) for entry in opponents)
         assert actual == expected, "legacy opponents must derive from physical games"
     last_incumbent = incumbents[-1]
-    assert (
-        last_incumbent["config"] == study.best_trial.user_attrs["config"]
-    ), "incumbent config mismatch"
+    assert last_incumbent["config"] == study.best_trial.user_attrs["config"], (
+        "incumbent config mismatch"
+    )
     assert last_incumbent["cost"] == pytest_approx(-study.best_value), "incumbent cost mismatch"
 
     print("  [PASS] test_ask_tell_loop_emits_rating_jsonl")
@@ -215,7 +215,9 @@ def test_reusing_run_id_completes_only_new_trials_and_reloads_pool(
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         os.chdir(str(tmp_dir))
         first, first_pool = run_optimization(
-            cfg(1), run_id="resume", bench_run_id="resume-1",
+            cfg(1),
+            run_id="resume",
+            bench_run_id="resume-1",
             attempt_id="attempt-resume-1",
             artifact_root=tmp_dir / "bench-runs" / "resume-1" / "tuning-artifacts",
         )
@@ -225,7 +227,9 @@ def test_reusing_run_id_completes_only_new_trials_and_reloads_pool(
     out = StringIO()
     with redirect_stdout(out), redirect_stderr(sys.stderr):
         second, second_pool = run_optimization(
-            cfg(2), run_id="resume", bench_run_id="resume-2",
+            cfg(2),
+            run_id="resume",
+            bench_run_id="resume-2",
             attempt_id="attempt-resume-2",
             artifact_root=tmp_dir / "bench-runs" / "resume-2" / "tuning-artifacts",
         )
@@ -281,16 +285,21 @@ def main() -> int:
 
         failures = 0
         for name, test_fn in [
-            ("test_parameters_from_binary_reports_search_space_and_baselines",
-             test_parameters_from_binary_reports_search_space_and_baselines),
+            (
+                "test_parameters_from_binary_reports_search_space_and_baselines",
+                test_parameters_from_binary_reports_search_space_and_baselines,
+            ),
             ("test_ask_tell_loop_emits_rating_jsonl", test_ask_tell_loop_emits_rating_jsonl),
-            ("test_reusing_run_id_completes_only_new_trials_and_reloads_pool",
-             test_reusing_run_id_completes_only_new_trials_and_reloads_pool),
+            (
+                "test_reusing_run_id_completes_only_new_trials_and_reloads_pool",
+                test_reusing_run_id_completes_only_new_trials_and_reloads_pool,
+            ),
         ]:
             try:
                 test_fn(binary, tmp_dir)
             except Exception:
                 import traceback
+
                 print(f"  [FAIL] {name}")
                 traceback.print_exc()
                 failures += 1

@@ -31,9 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FIRST,SECOND",
         help="Explicit seats: first:win,second:loss (repeat for each pair)",
     )
-    parser.add_argument(
-        "--config", type=Path, help="Tuner YAML with the resolved policy"
-    )
+    parser.add_argument("--config", type=Path, help="Tuner YAML with the resolved policy")
     parser.add_argument("--min-pairs", type=int)
     parser.add_argument("--max-pairs", type=int)
     parser.add_argument(
@@ -54,9 +52,7 @@ def main() -> None:
     args = build_parser().parse_args()
     try:
         pairs = [parse_scripted_pair(value) for value in args.pair]
-        config = (
-            SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
-        )
+        config = SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
         resource, rating = resolve_policy(
             config,
             min_pairs=args.min_pairs,
@@ -78,9 +74,7 @@ def main() -> None:
         args.opponent_mu,
         args.opponent_sigma,
     )
-    print(
-        render_calibration(calibrate(pairs, resource, rating, opponent, initial_rating))
-    )
+    print(render_calibration(calibrate(pairs, resource, rating, opponent, initial_rating)))
 
 
 if __name__ == "__main__":

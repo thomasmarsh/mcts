@@ -107,9 +107,7 @@ def run_optimization(
     )
     study, storage = _open_study(output_dir, optimizer, cfg, pruning_adapter)
     event_path = (
-        Path(lifecycle_path)
-        if lifecycle_path is not None
-        else output_dir / "lifecycle.jsonl"
+        Path(lifecycle_path) if lifecycle_path is not None else output_dir / "lifecycle.jsonl"
     )
     pool_path = output_dir / "pool.json"
     pool: OpponentPool
@@ -131,9 +129,7 @@ def run_optimization(
                 lifecycle, optimizer, bench_run_id, storage, cfg.optimizer.n_trials
             )
             _recover_orphaned_attempt(lifecycle, study)
-            pool = recover_pool(
-                cfg, pool_path, manifest["fingerprint"], lifecycle, study
-            )
+            pool = recover_pool(cfg, pool_path, manifest["fingerprint"], lifecycle, study)
             _emit_pool_revised(lifecycle, pool)
             _run_attempt(
                 cfg,
@@ -169,9 +165,7 @@ def _validate_artifact_root(
 
 def _resolve_search_space(cfg: SearchConfig, binary: Path) -> None:
     """Populate the configuration from the game binary's authoritative schema."""
-    parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(
-        binary
-    )
+    parameters, conditions, _advertised_baselines = SearchConfig.parameters_from_binary(binary)
     cfg.parameters = parameters
     cfg.conditions = conditions
 
@@ -300,12 +294,8 @@ def _recover_orphaned_attempt(lifecycle: LifecycleWriter, study: optuna.Study) -
             raise ValueError(
                 f"recovery identity conflict: Optuna is missing trial {recovered.trial_number}"
             )
-        if recovered.trial_id != trial_id_for(
-            lifecycle.session_id, recovered.trial_number
-        ):
-            raise ValueError(
-                "recovery identity conflict: trial id is not deterministic"
-            )
+        if recovered.trial_id != trial_id_for(lifecycle.session_id, recovered.trial_number):
+            raise ValueError("recovery identity conflict: trial id is not deterministic")
         reason = "abrupt_attempt_recovery"
         if trial.state == TrialState.RUNNING:
             study.tell(recovered.trial_number, state=TrialState.FAIL)
@@ -413,9 +403,7 @@ def _run_attempt(
 
         _raise_if_stop_requested(should_stop)
 
-        lifecycle.emit(
-            "attempt_completed", {"target_trial_count": cfg.optimizer.n_trials}
-        )
+        lifecycle.emit("attempt_completed", {"target_trial_count": cfg.optimizer.n_trials})
         return True
     except (AttemptStopRequested, KeyboardInterrupt):
         stopped = True

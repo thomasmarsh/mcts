@@ -31,9 +31,7 @@ ArtifactOwner = Literal["coordinator", "evaluation", "worker", "game_child"]
 
 _SAFE_OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _TASK_ID = re.compile(r"^task-[0-9a-f]{32}$")
-_DESCRIPTOR_NAME = re.compile(
-    r"^(?P<sequence>[0-9]{19})-(?P<task>task-[0-9a-f]{32})\.json$"
-)
+_DESCRIPTOR_NAME = re.compile(r"^(?P<sequence>[0-9]{19})-(?P<task>task-[0-9a-f]{32})\.json$")
 
 
 def validate_task_sequence(task_sequence: int) -> int:
@@ -47,9 +45,7 @@ def validate_task_sequence(task_sequence: int) -> int:
         or isinstance(task_sequence, bool)
         or not 1 <= task_sequence <= TASK_SEQUENCE_MAX
     ):
-        raise ValueError(
-            f"task_sequence must be an integer from 1 through {TASK_SEQUENCE_MAX}"
-        )
+        raise ValueError(f"task_sequence must be an integer from 1 through {TASK_SEQUENCE_MAX}")
     return task_sequence
 
 
@@ -58,18 +54,14 @@ def task_id_for(attempt_id: AttemptId, task_sequence: int, pair_id: PairId) -> T
     attempt = _validate_opaque_id(attempt_id, "attempt_id")
     sequence = validate_task_sequence(task_sequence)
     pair = _validate_opaque_id(pair_id, "pair_id")
-    name = json.dumps(
-        [attempt, sequence, pair], separators=(",", ":"), ensure_ascii=True
-    )
+    name = json.dumps([attempt, sequence, pair], separators=(",", ":"), ensure_ascii=True)
     return TaskId(f"task-{uuid5(TASK_ID_NAMESPACE, name).hex}")
 
 
 def validate_task_id(task_id: TaskId | str) -> TaskId:
     """Reject anything that is not a generated task identity, including paths."""
     if not isinstance(task_id, str) or _TASK_ID.fullmatch(task_id) is None:
-        raise ValueError(
-            "task_id must be a canonical task-<32 lowercase hex> identifier"
-        )
+        raise ValueError("task_id must be a canonical task-<32 lowercase hex> identifier")
     return TaskId(task_id)
 
 
@@ -118,9 +110,7 @@ class TaskIdentity:
     task_id: TaskId
 
     @classmethod
-    def for_pair(
-        cls, attempt_id: AttemptId, task_sequence: int, pair_id: PairId
-    ) -> TaskIdentity:
+    def for_pair(cls, attempt_id: AttemptId, task_sequence: int, pair_id: PairId) -> TaskIdentity:
         """Build a task identity whose opaque ID is tied to all causal IDs."""
         return cls(
             AttemptId(_validate_opaque_id(attempt_id, "attempt_id")),
@@ -132,9 +122,7 @@ class TaskIdentity:
     def __post_init__(self) -> None:
         expected = task_id_for(self.attempt_id, self.task_sequence, self.pair_id)
         if validate_task_id(self.task_id) != expected:
-            raise ValueError(
-                "task_id does not match attempt_id, task_sequence, and pair_id"
-            )
+            raise ValueError("task_id does not match attempt_id, task_sequence, and pair_id")
 
 
 @dataclass(frozen=True)
@@ -204,9 +192,7 @@ class ArtifactOwnership:
 
 ARTIFACT_OWNERSHIP: Final = (
     ArtifactOwnership("attempt.json", "coordinator"),
-    ArtifactOwnership(
-        "descriptors/<19-digit-task-sequence>-<task-id>.json", "coordinator"
-    ),
+    ArtifactOwnership("descriptors/<19-digit-task-sequence>-<task-id>.json", "coordinator"),
     ArtifactOwnership("tasks/<task-id>/", "evaluation"),
     ArtifactOwnership("tasks/<task-id>/heartbeat.json", "worker"),
     ArtifactOwnership("tasks/<task-id>/stdout.log", "worker"),

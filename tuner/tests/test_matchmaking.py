@@ -147,9 +147,7 @@ def test_next_pair_selects_against_updated_candidate_rating(tmp_path):
     pool = OpponentPool([Anchor("initial", {"family": "ucb1"}, 25.0, 0.5)])
 
     state.apply_pair(_pair(("candidate_win", "candidate_win")))
-    pool.anchors.append(
-        Anchor("updated", {"family": "rave"}, state.rating.mu, 0.5)
-    )
+    pool.anchors.append(Anchor("updated", {"family": "rave"}, state.rating.mu, 0.5))
     lifecycle = SimpleNamespace(session_id=SessionId("session"))
     task = make_next_pair_task(active, pool, lifecycle)
     assert task.opponent.anchor_id == "updated"

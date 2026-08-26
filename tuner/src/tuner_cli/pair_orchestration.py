@@ -102,9 +102,7 @@ def submit_next_pair(
     )
 
 
-def pair_started_payload(
-    task: PairTask, descriptor: DescriptorCommit | None = None
-) -> dict:
+def pair_started_payload(task: PairTask, descriptor: DescriptorCommit | None = None) -> dict:
     """Build the stable pair-start payload without emitting it."""
     payload = {
         "trial_id": task.trial_id,
@@ -200,9 +198,7 @@ def finish_pair(
     if len(result.games) != 2:
         raise ValueError("an evaluation pair must contain exactly two games")
     for game in result.games:
-        lifecycle.emit(
-            "game_finished", game_finished_payload(result.task, game, descriptor)
-        )
+        lifecycle.emit("game_finished", game_finished_payload(result.task, game, descriptor))
     rating_after = active_trial.evaluation.apply_pair(result)
     lifecycle.emit(
         "pair_finished",

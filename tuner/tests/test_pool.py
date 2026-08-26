@@ -59,9 +59,7 @@ def test_configured_anchor_has_distinct_provenance():
 
 
 def test_closest_picks_nearest_anchor_by_mu():
-    pool = OpponentPool.bootstrap(
-        _cfg()
-    )  # anchors at mu=25.0 ("default"), mu=0.0 ("random")
+    pool = OpponentPool.bootstrap(_cfg())  # anchors at mu=25.0 ("default"), mu=0.0 ("random")
 
     assert pool.closest(24.0).id == "default"
     assert pool.closest(1.0).id == "random"
@@ -117,9 +115,7 @@ def test_anchors_never_mutate_once_inserted():
 
     # A later trial that would otherwise be a new champion over the first
     # inserted anchor must add a fourth anchor, not revise the third.
-    pool.maybe_insert(
-        {"family": "ucb1_pn"}, mu=35.0, sigma=2.0, source_trial_id="trial-7"
-    )
+    pool.maybe_insert({"family": "ucb1_pn"}, mu=35.0, sigma=2.0, source_trial_id="trial-7")
 
     assert len(pool.anchors) == 4
     for before, after in zip(snapshot, pool.anchors[:3], strict=True):
@@ -128,9 +124,7 @@ def test_anchors_never_mutate_once_inserted():
 
 def test_save_load_roundtrip(tmp_path):
     pool = OpponentPool.bootstrap(_cfg())
-    pool.maybe_insert(
-        {"family": "ucb1_pn"}, mu=30.0, sigma=3.0, source_trial_id="trial-8"
-    )
+    pool.maybe_insert({"family": "ucb1_pn"}, mu=30.0, sigma=3.0, source_trial_id="trial-8")
 
     path = tmp_path / "pool.json"
     pool.save(path)
@@ -162,9 +156,7 @@ def test_recovery_records_one_missing_decision_then_becomes_a_no_op(tmp_path):
     pool_path = tmp_path / "pool.json"
 
     with LifecycleWriter(journal, session, AttemptId("prior")) as writer:
-        writer.emit(
-            "session_started", {"manifest": {}, "manifest_fingerprint": "manifest"}
-        )
+        writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "manifest"})
         writer.emit("attempt_started", {})
         writer.emit(
             "trial_created",
@@ -195,9 +187,7 @@ def test_recovery_records_one_missing_decision_then_becomes_a_no_op(tmp_path):
         assert recovered == pool
 
     records = [yaml.safe_load(line) for line in journal.read_text().splitlines()]
-    assert [record["event_type"] for record in records].count(
-        "pool_anchor_decided"
-    ) == 1
+    assert [record["event_type"] for record in records].count("pool_anchor_decided") == 1
     loaded, decision, legacy = load_checkpoint(pool_path, "manifest")
     assert loaded == pool
     assert decision is not None and decision.action == "inserted"
@@ -215,9 +205,7 @@ def test_recovery_applies_a_logged_decision_without_a_checkpoint(tmp_path):
     )
 
     with LifecycleWriter(journal, session, AttemptId("prior")) as writer:
-        writer.emit(
-            "session_started", {"manifest": {}, "manifest_fingerprint": "manifest"}
-        )
+        writer.emit("session_started", {"manifest": {}, "manifest_fingerprint": "manifest"})
         writer.emit("attempt_started", {})
         writer.emit(
             "trial_created",

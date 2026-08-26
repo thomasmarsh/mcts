@@ -162,9 +162,7 @@ class OpponentPool:
         is_new_champion = mu > best_mu
         is_new_band = nearest_delta > _NEW_BAND_DELTA_MU
         if not (is_new_champion or is_new_band):
-            return PoolDecision(
-                source_trial_id, before, "rejected", "covered", None, before
-            )
+            return PoolDecision(source_trial_id, before, "rejected", "covered", None, before)
 
         anchor = Anchor(
             id=f"trial-{len(self.anchors)}",
@@ -187,19 +185,13 @@ class OpponentPool:
 
     def apply_decision(self, decision: PoolDecision) -> None:
         """Apply one validated immutable decision exactly at its fingerprint boundary."""
-        if (
-            pool_snapshot_fingerprint(self.anchors)
-            != decision.before_pool_snapshot_fingerprint
-        ):
+        if pool_snapshot_fingerprint(self.anchors) != decision.before_pool_snapshot_fingerprint:
             raise ValueError("pool decision does not follow the current checkpoint")
         if decision.action == "rejected":
             if decision.reason != "covered" or decision.anchor is not None:
                 raise ValueError("rejected pool decision has invalid evidence")
         elif decision.action == "inserted":
-            if (
-                decision.reason not in {"champion", "skill_band"}
-                or decision.anchor is None
-            ):
+            if decision.reason not in {"champion", "skill_band"} or decision.anchor is None:
                 raise ValueError("inserted pool decision has invalid evidence")
             anchor = Anchor(
                 id=decision.anchor["anchor_id"],
@@ -220,13 +212,8 @@ class OpponentPool:
             self.anchors.append(anchor)
         else:
             raise ValueError("unknown pool decision action")
-        if (
-            pool_snapshot_fingerprint(self.anchors)
-            != decision.after_pool_snapshot_fingerprint
-        ):
-            raise ValueError(
-                "pool decision fingerprint does not match its anchor snapshot"
-            )
+        if pool_snapshot_fingerprint(self.anchors) != decision.after_pool_snapshot_fingerprint:
+            raise ValueError("pool decision fingerprint does not match its anchor snapshot")
 
     def maybe_insert(
         self, config: dict, mu: float, sigma: float, source_trial_id: str
@@ -280,9 +267,7 @@ class OpponentPool:
             "pool_snapshot_fingerprint": pool_snapshot_fingerprint(self.anchors),
             "anchors": [asdict(a) for a in self.anchors],
             "last_applied_decision": (
-                last_applied_decision.payload()
-                if last_applied_decision is not None
-                else None
+                last_applied_decision.payload() if last_applied_decision is not None else None
             ),
         }
         _replace_checkpoint_atomically(
@@ -318,9 +303,7 @@ def load_checkpoint(
     if data.get("pool_snapshot_fingerprint") != fingerprint:
         raise ValueError("pool checkpoint fingerprint does not match its anchors")
     raw_decision = data.get("last_applied_decision")
-    decision = (
-        _decision_from_payload(raw_decision) if raw_decision is not None else None
-    )
+    decision = _decision_from_payload(raw_decision) if raw_decision is not None else None
     if decision is not None and decision.after_pool_snapshot_fingerprint != fingerprint:
         raise ValueError("pool checkpoint decision does not match its anchors")
     return pool, decision, False
@@ -395,18 +378,14 @@ def recover_pool(
     event or replaces the checkpoint.  That makes a malformed historical record
     a startup failure rather than a partly-repaired session.
     """
-    terminals, decisions, revisions = _pool_evidence(
-        lifecycle.path, lifecycle.session_id
-    )
+    terminals, decisions, revisions = _pool_evidence(lifecycle.path, lifecycle.session_id)
     base = _bootstrap_with_configured_anchors(cfg)
     checkpoint_exists = pool_path.exists()
     checkpoint: OpponentPool | None = None
     checkpoint_last: PoolDecision | None = None
     legacy = False
     if checkpoint_exists:
-        checkpoint, checkpoint_last, legacy = load_checkpoint(
-            pool_path, manifest_fingerprint
-        )
+        checkpoint, checkpoint_last, legacy = load_checkpoint(pool_path, manifest_fingerprint)
         _add_missing_configured_anchors(checkpoint, cfg)
 
     _replay_decisions(deepcopy(base), terminals, decisions)
@@ -439,9 +418,7 @@ def recover_pool(
         expected = _replay_decisions(
             deepcopy(base), terminals[:applied_count], decisions[:applied_count]
         )
-        if pool_snapshot_fingerprint(pool.anchors) != pool_snapshot_fingerprint(
-            expected.anchors
-        ):
+        if pool_snapshot_fingerprint(pool.anchors) != pool_snapshot_fingerprint(expected.anchors):
             raise ValueError("pool checkpoint conflicts with lifecycle decisions")
     if checkpoint is None and not terminals and len(study.trials) != 0:
         raise ValueError(
@@ -530,21 +507,15 @@ def _pool_evidence(
                 or not _finite_number(mu)
                 or not _finite_number(sigma)
             ):
-                raise ValueError(
-                    "completed trial has insufficient pool recovery evidence"
-                )
+                raise ValueError("completed trial has insufficient pool recovery evidence")
             terminal_ids.add(trial_id)
-            terminals.append(
-                {"trial_id": trial_id, "config": config, "mu": mu, "sigma": sigma}
-            )
+            terminals.append({"trial_id": trial_id, "config": config, "mu": mu, "sigma": sigma})
         elif event_type == "pool_anchor_decided":
             decision = decision_from_payload(payload)
             if decision.trial_id not in terminal_ids or any(
                 item.trial_id == decision.trial_id for item in decisions
             ):
-                raise ValueError(
-                    "pool decision does not have one completed trial source"
-                )
+                raise ValueError("pool decision does not have one completed trial source")
             decisions.append(decision)
         elif event_type == "pool_revised":
             fingerprint = payload.get("pool_snapshot_fingerprint")
@@ -573,8 +544,4 @@ def _replay_decisions(
 
 
 def _finite_number(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)

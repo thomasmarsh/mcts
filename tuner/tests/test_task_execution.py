@@ -56,12 +56,8 @@ def _descriptor(
         bench_run_id=None,
         manifest_fingerprint="manifest-a",
     )
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("fake-game"))
-    )
-    commit = allocator.commit_task(
-        _task(), cfg=cfg, binary=Path("fake-game"), pool_snapshot=[]
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("fake-game")))
+    commit = allocator.commit_task(_task(), cfg=cfg, binary=Path("fake-game"), pool_snapshot=[])
     return allocator, commit, allocator.layout.descriptor(commit.identity)
 
 
@@ -107,9 +103,7 @@ def _output(sequence: int = 1) -> bytes:
 
 
 class _Process:
-    def __init__(
-        self, stdout: bytes, stderr: bytes = b"", *, timeout_once: bool = False
-    ):
+    def __init__(self, stdout: bytes, stderr: bytes = b"", *, timeout_once: bool = False):
         self.stdout, self.stderr = stdout, stderr
         self.returncode = 0
         self.timeout_once = timeout_once
@@ -163,9 +157,7 @@ def test_success_bundle_has_raw_logs_trace_sequences_heartbeats_and_terminal_mar
             real_immutable(destination, contents),
         )[1],
     )
-    moments = iter(
-        datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=30 * i) for i in range(3)
-    )
+    moments = iter(datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=30 * i) for i in range(3))
 
     reference = execute_task_bundle(
         path,
@@ -187,9 +179,7 @@ def test_success_bundle_has_raw_logs_trace_sequences_heartbeats_and_terminal_mar
 
 def test_reader_reconstructs_only_the_committed_scheduled_pair(tmp_path: Path):
     _allocator, commit, path = _descriptor(tmp_path)
-    reference = execute_task_bundle(
-        path, commit.digest, popen=_popen(_Process(_output()), [])
-    )
+    reference = execute_task_bundle(path, commit.digest, popen=_popen(_Process(_output()), []))
 
     result = read_task_bundle(path, commit.digest, reference, _task())
 
@@ -203,12 +193,8 @@ def test_reader_reconstructs_only_the_committed_scheduled_pair(tmp_path: Path):
 @pytest.mark.parametrize(
     "reference",
     [
-        TaskArtifactReference(
-            "task-" + "0" * 32, "attempt-a", "0" * 64, "completed", "0" * 64
-        ),
-        TaskArtifactReference(
-            "task-" + "0" * 32, "attempt-a", "0" * 64, "failed", "0" * 64
-        ),
+        TaskArtifactReference("task-" + "0" * 32, "attempt-a", "0" * 64, "completed", "0" * 64),
+        TaskArtifactReference("task-" + "0" * 32, "attempt-a", "0" * 64, "failed", "0" * 64),
     ],
 )
 def test_reader_rejects_a_worker_reference_with_wrong_identity_or_digest(
@@ -223,9 +209,7 @@ def test_reader_rejects_a_worker_reference_with_wrong_identity_or_digest(
 
 def test_reader_rejects_a_reference_for_the_wrong_completion_marker(tmp_path: Path):
     _allocator, commit, path = _descriptor(tmp_path)
-    reference = execute_task_bundle(
-        path, commit.digest, popen=_popen(_Process(_output()), [])
-    )
+    reference = execute_task_bundle(path, commit.digest, popen=_popen(_Process(_output()), []))
     wrong_marker = TaskArtifactReference(
         reference.task_id,
         reference.attempt_id,
@@ -296,16 +280,12 @@ def test_descriptor_digest_and_schema_rejected_before_launch_or_task_writes(
     payload["task_directory"] = "tasks/outside"
     path.write_text(json.dumps(payload))
     with pytest.raises(TaskDescriptorError):
-        execute_task_bundle(
-            path, commit.digest, popen=_popen(_Process(_output()), launches)
-        )
+        execute_task_bundle(path, commit.digest, popen=_popen(_Process(_output()), launches))
     assert launches == []
     assert not (allocator.layout.root / "tasks" / commit.identity.task_id).exists()
 
 
-def test_process_death_before_result_or_marker_leaves_task_incomplete(
-    tmp_path: Path, monkeypatch
-):
+def test_process_death_before_result_or_marker_leaves_task_incomplete(tmp_path: Path, monkeypatch):
     allocator, commit, path = _descriptor(tmp_path)
     import tuner_cli.task_execution as execution
 

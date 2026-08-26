@@ -158,9 +158,7 @@ class TrialEvaluationState:
 
 def pair_id_for(session_id: SessionId, trial_id: TrialId, pair_index: int) -> PairId:
     """Return the deterministic identity for one trial evaluation pair."""
-    value = uuid5(
-        NAMESPACE_URL, f"mcts-tuner:{session_id}:{trial_id}:pair:{pair_index}"
-    )
+    value = uuid5(NAMESPACE_URL, f"mcts-tuner:{session_id}:{trial_id}:pair:{pair_index}")
     return PairId(f"pair-{value.hex}")
 
 

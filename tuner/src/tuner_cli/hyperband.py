@@ -47,18 +47,14 @@ class OptunaHyperbandAdapter:
             reduction_factor=pruning.reduction_factor,
         )
 
-    def create_trial(
-        self, study: optuna.Study, pruning_exempt: bool = False
-    ) -> HyperbandTrial:
+    def create_trial(self, study: optuna.Study, pruning_exempt: bool = False) -> HyperbandTrial:
         """Ask for a trial with coordinator-assigned immutable eligibility."""
         return HyperbandTrial(
             trial=study.ask(),
             pruning_exempt=pruning_exempt,
         )
 
-    def observe_after_report(
-        self, hyperband_trial: HyperbandTrial
-    ) -> HyperbandDecision:
+    def observe_after_report(self, hyperband_trial: HyperbandTrial) -> HyperbandDecision:
         """Return Optuna's decision after the caller has reported one pair.
 
         A startup-exempt trial is deliberately not passed to the pruner, so it

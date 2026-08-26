@@ -22,12 +22,8 @@ def _adapter(
     )
 
 
-def _study(
-    adapter: OptunaHyperbandAdapter, name: str = "hyperband-test"
-) -> optuna.Study:
-    return optuna.create_study(
-        direction="maximize", study_name=name, pruner=adapter.pruner
-    )
+def _study(adapter: OptunaHyperbandAdapter, name: str = "hyperband-test") -> optuna.Study:
+    return optuna.create_study(direction="maximize", study_name=name, pruner=adapter.pruner)
 
 
 def test_constructor_passes_explicit_resources_without_bootstrap_count(monkeypatch):
@@ -64,9 +60,7 @@ def test_bracket_identity_is_stable_for_a_fixed_study_name_and_trial_number():
         hyperband_trial = adapter.create_trial(study)
         hyperband_trial.trial.report(1.0, 1)
         decision = adapter.observe_after_report(hyperband_trial)
-        assert decision.bracket_id == adapter.bracket_id_for(
-            study, hyperband_trial.trial
-        )
+        assert decision.bracket_id == adapter.bracket_id_for(study, hyperband_trial.trial)
         return decision.bracket_id
 
     assert bracket_id() == bracket_id()

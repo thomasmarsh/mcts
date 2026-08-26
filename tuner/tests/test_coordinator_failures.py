@@ -115,9 +115,7 @@ class _ScriptedPruningAdapter:
         return next(self.decisions)
 
 
-def test_open_study_configures_tpe_startup_trials_without_a_pruner(
-    monkeypatch, tmp_path: Path
-):
+def test_open_study_configures_tpe_startup_trials_without_a_pruner(monkeypatch, tmp_path: Path):
     sampler_kwargs: dict = {}
     study_kwargs: dict = {}
 
@@ -322,9 +320,7 @@ def _stopped_attempt(
         bench_run_id="attempt",
         manifest_fingerprint="manifest",
     )
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         assert not coordinator._run_attempt(
             cfg,
             binary=Path("game-nim"),
@@ -359,9 +355,7 @@ def test_stop_before_scheduling_emits_only_attempt_stop_and_releases_lock(
 def test_signal_stop_cancels_each_active_pair_without_completion_side_effects(
     monkeypatch, tmp_path: Path, workers: int
 ):
-    study, pool, executor, event_path = _stopped_attempt(
-        monkeypatch, tmp_path, workers=workers
-    )
+    study, pool, executor, event_path = _stopped_attempt(monkeypatch, tmp_path, workers=workers)
 
     records = _event_records(event_path)
     event_types = [record["event_type"] for record in records]
@@ -374,18 +368,14 @@ def test_signal_stop_cancels_each_active_pair_without_completion_side_effects(
     assert event_types.count("pair_failed") == workers
     assert event_types.count("trial_cancelled") == workers
     assert not {"game_finished", "pair_finished", "trial_reported"} & set(event_types)
-    assert [trial.state for trial in study.trials] == [
-        optuna.trial.TrialState.FAIL
-    ] * workers
+    assert [trial.state for trial in study.trials] == [optuna.trial.TrialState.FAIL] * workers
     assert len(pool.anchors) == 1
     assert all(future.result_calls == 0 for future in executor.futures)
     assert all(process.terminated == 1 for process in executor._processes.values())
     assert executor.shutdown_calls == [(False, True)]
 
 
-def test_stop_wins_a_completed_future_race_without_updating_its_rating(
-    monkeypatch, tmp_path: Path
-):
+def test_stop_wins_a_completed_future_race_without_updating_its_rating(monkeypatch, tmp_path: Path):
     study, pool, executor, event_path = _stopped_attempt(
         monkeypatch, tmp_path, workers=1, completed_future=True
     )
@@ -463,20 +453,14 @@ def test_disabled_pruning_reports_then_completes_and_only_completion_updates_poo
         target=TargetConfig(binary=Path("game-nim")),
     )
     active = _active(study)
-    active.evaluation = TrialEvaluationState(
-        cfg.optimizer.resource, cfg.optimizer.rating
-    )
+    active.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     inserted: list[object] = []
-    monkeypatch.setattr(
-        attempt, "save_inserted_pool_anchor", lambda *args: inserted.append(args)
-    )
+    monkeypatch.setattr(attempt, "save_inserted_pool_anchor", lambda *args: inserted.append(args))
     tells = _tell_calls(monkeypatch, study)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = _context(cfg, study, writer, pool, tmp_path / "pool.json")
         scheduled = ScheduledPair(active, _task(active))
         assert attempt.continue_trial(
@@ -506,9 +490,7 @@ def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = attempt._AttemptContext(
             cfg,
             Path("game-nim"),
@@ -546,9 +528,7 @@ def test_below_minimum_precedes_an_adversarial_prune(monkeypatch, tmp_path: Path
     assert len(executor.calls) == 1
 
 
-def test_startup_exempt_trial_is_not_delegated_before_max_completion(
-    monkeypatch, tmp_path: Path
-):
+def test_startup_exempt_trial_is_not_delegated_before_max_completion(monkeypatch, tmp_path: Path):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config(max_pairs=2)
     adapter = _ScriptedPruningAdapter([HyperbandDecision(True, True, None, None)])
@@ -557,9 +537,7 @@ def test_startup_exempt_trial_is_not_delegated_before_max_completion(
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = attempt._AttemptContext(
             cfg,
             Path("game-nim"),
@@ -582,9 +560,7 @@ def test_startup_exempt_trial_is_not_delegated_before_max_completion(
         )
 
     reports = [
-        r["payload"]
-        for r in _event_records(event_path)
-        if r["event_type"] == "trial_reported"
+        r["payload"] for r in _event_records(event_path) if r["event_type"] == "trial_reported"
     ]
     assert [report["reason"] for report in reports] == ["startup_exempt", "max_pairs"]
     assert reports[0]["pruning_exempt"] is True
@@ -610,9 +586,7 @@ def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)
     legacy_or_pool: list[str] = []
-    monkeypatch.setattr(
-        attempt, "emit_legacy_trial", lambda *args: legacy_or_pool.append("trial")
-    )
+    monkeypatch.setattr(attempt, "emit_legacy_trial", lambda *args: legacy_or_pool.append("trial"))
     monkeypatch.setattr(
         attempt,
         "emit_legacy_incumbent",
@@ -624,9 +598,7 @@ def test_delegated_keep_then_prune_has_one_terminal_and_no_pool_or_legacy_output
         lambda *args: legacy_or_pool.append("pool"),
     )
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = attempt._AttemptContext(
             cfg,
             Path("game-nim"),
@@ -678,9 +650,7 @@ def test_completion_precedes_a_pending_prune(
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = attempt._AttemptContext(
             cfg,
             Path("game-nim"),
@@ -712,9 +682,7 @@ def test_completion_precedes_a_pending_prune(
     assert not executor.calls
 
 
-def test_pruned_terminal_replenishes_the_sequential_scheduler(
-    monkeypatch, tmp_path: Path
-):
+def test_pruned_terminal_replenishes_the_sequential_scheduler(monkeypatch, tmp_path: Path):
     study = optuna.create_study(direction="maximize")
     cfg = _pruning_config()
     adapter = _ScriptedPruningAdapter([HyperbandDecision(True, False, "0", 1)])
@@ -722,9 +690,7 @@ def test_pruned_terminal_replenishes_the_sequential_scheduler(
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     tells = _tell_calls(monkeypatch, study)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         context = attempt._AttemptContext(
             cfg,
             Path("game-nim"),
@@ -760,10 +726,7 @@ def test_pruned_terminal_replenishes_the_sequential_scheduler(
     assert len(tells) == 1
     assert adapter.created == 2
     assert len(active) == len(futures) == 1
-    assert (
-        next(iter(futures.values())).active_trial.trial_id
-        != scheduled.active_trial.trial_id
-    )
+    assert next(iter(futures.values())).active_trial.trial_id != scheduled.active_trial.trial_id
 
 
 def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Path):
@@ -771,9 +734,7 @@ def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Pat
     active = _active(study)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     with LifecycleWriter(
         tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
     ) as writer:
@@ -800,10 +761,7 @@ def test_submission_emits_pair_started_and_one_future_for_one_pair(tmp_path: Pat
     assert executor.calls[0][0] is pair_orchestration.execute_task_bundle
     task = next(iter(futures.values())).task
     assert task.pair_index == 0
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert records[-1]["event_type"] == "pair_started"
     assert records[-1]["payload"]["seed"] == configured_game_seed(task.seed)
     assert records[-1]["payload"]["round"] == 1
@@ -813,9 +771,7 @@ def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: P
     study = optuna.create_study(direction="maximize")
     active = _active(study)
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     executor, futures = _Executor(), {}
     physical_root = tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts"
     descriptors = TaskDescriptorAllocator.start(
@@ -836,9 +792,7 @@ def test_descriptor_commit_precedes_pair_event_and_worker_submission(tmp_path: P
 
     descriptors.commit_task = commit_task  # type: ignore[method-assign]
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         original_emit = writer.emit
 
         def emit(event_type, payload):
@@ -923,9 +877,7 @@ def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path
     study = optuna.create_study(direction="maximize")
     active = _active(study)
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
         tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
@@ -979,15 +931,11 @@ def test_descriptor_allocation_is_monotonic_and_freezes_each_submission(tmp_path
     }
 
 
-def test_descriptor_commit_failure_prevents_worker_submission(
-    tmp_path: Path, monkeypatch
-):
+def test_descriptor_commit_failure_prevents_worker_submission(tmp_path: Path, monkeypatch):
     study = optuna.create_study(direction="maximize")
     active = _active(study)
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
         tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
@@ -1003,9 +951,7 @@ def test_descriptor_commit_failure_prevents_worker_submission(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("full disk")),
     )
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         with pytest.raises(OSError, match="full disk"):
             attempt.submit_next_pair(
                 executor,
@@ -1023,18 +969,14 @@ def test_descriptor_commit_failure_prevents_worker_submission(
     assert not executor.calls
     assert not futures
     assert study.trials[0].state == optuna.trial.TrialState.FAIL
-    assert [record["event_type"] for record in _event_records(event_path)] == [
-        "trial_failed"
-    ]
+    assert [record["event_type"] for record in _event_records(event_path)] == ["trial_failed"]
 
 
 def test_exhausted_descriptor_sequence_prevents_worker_submission(tmp_path: Path):
     study = optuna.create_study(direction="maximize")
     active = _active(study)
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     executor, futures = _Executor(), {}
     descriptors = TaskDescriptorAllocator.start(
         tmp_path / "bench-runs" / "physical-attempt" / "tuning-artifacts",
@@ -1161,9 +1103,7 @@ def test_initial_scheduling_keeps_multiple_trials_active_with_one_pair_each(
             ),
         )
     assert len(active) == len(futures) == len(executor.calls) == 2
-    assert all(
-        call[0] is pair_orchestration.execute_task_bundle for call in executor.calls
-    )
+    assert all(call[0] is pair_orchestration.execute_task_bundle for call in executor.calls)
     assert {call[1].parent.name for call in executor.calls} == {"descriptors"}
 
 
@@ -1262,12 +1202,8 @@ def test_ready_batch_reports_in_descriptor_sequence_order(monkeypatch, tmp_path:
         target=TargetConfig(binary=Path("game-nim")),
     )
     first, second = _active(study), _active(study)
-    first.evaluation = TrialEvaluationState(
-        cfg.optimizer.resource, cfg.optimizer.rating
-    )
-    second.evaluation = TrialEvaluationState(
-        cfg.optimizer.resource, cfg.optimizer.rating
-    )
+    first.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
+    second.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
     first_descriptor = SimpleNamespace(
         identity=SimpleNamespace(task_id="task-1", task_sequence=1), digest="one"
     )
@@ -1329,10 +1265,7 @@ def test_worker_failure_emits_pair_failure_before_trial_terminal(tmp_path: Path)
             )
             is None
         )
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [record["event_type"] for record in records] == [
         "pair_failed",
         "trial_failed",
@@ -1351,9 +1284,7 @@ def _artifact_scheduled(
         bench_run_id=None,
         manifest_fingerprint="manifest",
     )
-    cfg = SearchConfig(
-        optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim"))
-    )
+    cfg = SearchConfig(optimizer=OptimizerConfig(), target=TargetConfig(binary=Path("game-nim")))
     task = _task(active)
     descriptor = descriptors.commit_task(
         task, cfg=cfg, binary=Path("/resolved/game-nim"), pool_snapshot=[]
@@ -1390,9 +1321,7 @@ def test_artifact_result_is_read_once_before_lifecycle_and_rating_updates(
 
     monkeypatch.setattr(pair_orchestration, "read_task_bundle", read)
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         result = attempt.worker_result(
             _Future(result=reference),
             study,
@@ -1446,9 +1375,7 @@ def test_artifact_failure_paths_never_apply_a_partial_pair(
             lambda *_args: (_ for _ in ()).throw(reader_error),
         )
     event_path = tmp_path / "events.jsonl"
-    with LifecycleWriter(
-        event_path, SessionId("session"), AttemptId("attempt")
-    ) as writer:
+    with LifecycleWriter(event_path, SessionId("session"), AttemptId("attempt")) as writer:
         assert (
             attempt.worker_result(
                 future,
@@ -1479,10 +1406,7 @@ def test_coordinator_cancellation_fails_running_pair_before_trial(tmp_path: Path
         active_trials = {active.trial_id: active}
         attempt.cancel_active_trials(futures, active_trials, study, writer)
         attempt.cancel_active_trials(futures, active_trials, study, writer)
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [record["event_type"] for record in records] == [
         "pair_failed",
         "trial_cancelled",
@@ -1529,10 +1453,7 @@ def test_pair_completion_emits_ordered_physical_evidence_before_pair_terminal(
         tmp_path / "events.jsonl", SessionId("session"), AttemptId("attempt")
     ) as writer:
         attempt.finish_pair(writer, active, result)
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [record["event_type"] for record in records] == [
         "game_finished",
         "game_finished",
@@ -1598,9 +1519,7 @@ def test_complete_pairs_report_consecutive_resources_before_max_terminal(
         target=TargetConfig(binary=Path("game-nim")),
     )
     active = _active(study)
-    active.evaluation = TrialEvaluationState(
-        cfg.optimizer.resource, cfg.optimizer.rating
-    )
+    active.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     with LifecycleWriter(
@@ -1620,15 +1539,8 @@ def test_complete_pairs_report_consecutive_resources_before_max_terminal(
             executor, futures, scheduled, _result(scheduled.task), context
         )
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
-    reports = [
-        record["payload"]
-        for record in records
-        if record["event_type"] == "trial_reported"
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    reports = [record["payload"] for record in records if record["event_type"] == "trial_reported"]
     assert [report["completed_pairs"] for report in reports] == [1, 2, 3]
     assert [report["reason"] for report in reports] == [
         "below_min_pairs",
@@ -1672,9 +1584,7 @@ def test_complete_pairs_report_consecutive_resources_before_max_terminal(
     }
     assert study.trials[0].intermediate_values.keys() == {1, 2, 3}
     assert study.trials[0].value == reports[-1]["score"]
-    assert reports[-1]["score"] == pytest.approx(
-        reports[-1]["mu"] - 2.5 * reports[-1]["sigma"]
-    )
+    assert reports[-1]["score"] == pytest.approx(reports[-1]["mu"] - 2.5 * reports[-1]["sigma"])
 
 
 def test_confidence_completion_reports_before_its_terminal_evidence(tmp_path: Path):
@@ -1688,9 +1598,7 @@ def test_confidence_completion_reports_before_its_terminal_evidence(tmp_path: Pa
         target=TargetConfig(binary=Path("game-nim")),
     )
     active = _active(study)
-    active.evaluation = TrialEvaluationState(
-        cfg.optimizer.resource, cfg.optimizer.rating
-    )
+    active.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
     executor, futures = _Executor(), {}
     pool = OpponentPool([Anchor("random", {"family": "random"}, 0.0, 0.5)])
     with LifecycleWriter(
@@ -1712,10 +1620,7 @@ def test_confidence_completion_reports_before_its_terminal_evidence(tmp_path: Pa
             "confidence",
         )
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [record["event_type"] for record in records[-3:]] == [
         "trial_reported",
         "trial_completed",
@@ -1742,22 +1647,15 @@ def test_two_active_trials_complete_once_each_with_one_pair_resource(tmp_path: P
     ) as writer:
         context = _context(cfg, study, writer, pool, tmp_path / "pool.json")
         for active in (_active(study), _active(study)):
-            active.evaluation = TrialEvaluationState(
-                cfg.optimizer.resource, cfg.optimizer.rating
-            )
+            active.evaluation = TrialEvaluationState(cfg.optimizer.resource, cfg.optimizer.rating)
             scheduled = ScheduledPair(active, _task(active))
             assert not attempt.continue_trial(
                 executor, futures, scheduled, _result(scheduled.task), context
             )
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [record["event_type"] for record in records].count("trial_reported") == 2
-    terminals = [
-        record for record in records if record["event_type"] == "trial_completed"
-    ]
+    terminals = [record for record in records if record["event_type"] == "trial_completed"]
     assert len(terminals) == 2
     assert {record["payload"]["trial_id"] for record in terminals} == {
         "trial-0",
@@ -1767,9 +1665,7 @@ def test_two_active_trials_complete_once_each_with_one_pair_resource(tmp_path: P
     assert len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,))) == 2
 
 
-def test_success_preserves_legacy_trial_pool_and_incumbent_order(
-    monkeypatch, tmp_path: Path
-):
+def test_success_preserves_legacy_trial_pool_and_incumbent_order(monkeypatch, tmp_path: Path):
     events: list[str] = []
     study = optuna.create_study(direction="maximize")
     active = _active(study)
@@ -1780,9 +1676,7 @@ def test_success_preserves_legacy_trial_pool_and_incumbent_order(
         "record_completed_trial",
         lambda *args: events.append("lifecycle trial_completed"),
     )
-    monkeypatch.setattr(
-        attempt, "emit_legacy_trial", lambda *args: events.append("legacy trial")
-    )
+    monkeypatch.setattr(attempt, "emit_legacy_trial", lambda *args: events.append("legacy trial"))
     monkeypatch.setattr(
         attempt,
         "save_inserted_pool_anchor",

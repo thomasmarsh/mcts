@@ -105,9 +105,7 @@ def test_failed_completion_commits_the_failure_member(tmp_path: Path):
     assert read_completion(task, identity, completion.descriptor_digest) == completion
 
 
-@pytest.mark.parametrize(
-    "member", ["result.json", "stdout.log", "stderr.log", "trace.jsonl"]
-)
+@pytest.mark.parametrize("member", ["result.json", "stdout.log", "stderr.log", "trace.jsonl"])
 def test_completion_rejects_missing_or_swapped_members(tmp_path: Path, member: str):
     identity = _identity()
     task = tmp_path / "task"
@@ -160,9 +158,7 @@ def test_reader_rejects_wrong_completion_identities_and_digest(
 
 
 @pytest.mark.parametrize("field,value", [("digest", "0" * 64), ("byte_length", 0)])
-def test_reader_rejects_wrong_member_digest_or_length(
-    tmp_path: Path, field: str, value: str | int
-):
+def test_reader_rejects_wrong_member_digest_or_length(tmp_path: Path, field: str, value: str | int):
     identity = _identity()
     task = tmp_path / "task"
     completion = _completion(task, identity)
@@ -176,12 +172,8 @@ def test_reader_rejects_wrong_member_digest_or_length(
 def test_heartbeat_replaces_only_with_a_newer_sequence(tmp_path: Path):
     identity = _identity()
     path = tmp_path / "heartbeat.json"
-    first = Heartbeat(
-        identity.task_id, identity.attempt_id, 0, "observed-1", "expiry-1"
-    )
-    second = Heartbeat(
-        identity.task_id, identity.attempt_id, 1, "observed-2", "expiry-2"
-    )
+    first = Heartbeat(identity.task_id, identity.attempt_id, 0, "observed-1", "expiry-1")
+    second = Heartbeat(identity.task_id, identity.attempt_id, 1, "observed-2", "expiry-2")
     write_heartbeat(path, first)
     write_heartbeat(path, second)
     assert json.loads(path.read_text()) == second.payload()
@@ -189,9 +181,7 @@ def test_heartbeat_replaces_only_with_a_newer_sequence(tmp_path: Path):
         write_heartbeat(path, second)
 
 
-def test_directory_fsync_failure_cleans_the_owned_temporary(
-    tmp_path: Path, monkeypatch
-):
+def test_directory_fsync_failure_cleans_the_owned_temporary(tmp_path: Path, monkeypatch):
     path = tmp_path / "result.json"
     actual_fsync = os.fsync
     calls = 0
