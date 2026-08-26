@@ -720,6 +720,7 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
+                "akron",
                 "atarigo",
                 "breakthrough",
                 "congo",

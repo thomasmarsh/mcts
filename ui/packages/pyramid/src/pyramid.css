@@ -1,14 +1,13 @@
-/* margo.css — MargoRenderer's own presentation (board canvas + swap-rule
-   overlay), scoped to this package's own class names, mirroring Druid's
-   druid.css. */
+/* pyramid.css — shared chrome for pyramid-family renderers (board canvas
+   sizing, pie-rule swap panel), scoped to this package's own class names. */
 
-.margo-board {
+.pyramid-board {
   display: block;
   width: 100vw;
   height: 100vh;
 }
 
-.margo-swap-panel {
+.pyramid-swap-panel {
   position: fixed;
   top: calc(var(--topbar-h, 44px) + 12px);
   right: 12px;
@@ -24,7 +23,7 @@
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
 }
 
-.margo-swap-title {
+.pyramid-swap-title {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -32,7 +31,7 @@
   color: #b7b8c2;
 }
 
-.margo-swap-button {
+.pyramid-swap-button {
   font: inherit;
   font-weight: 600;
   padding: 8px 14px;
@@ -43,11 +42,11 @@
   cursor: pointer;
 }
 
-.margo-swap-button:hover {
+.pyramid-swap-button:hover {
   background: #6fd0f5;
 }
 
-.margo-swap-button:disabled {
+.pyramid-swap-button:disabled {
   opacity: 0.5;
   cursor: default;
 }

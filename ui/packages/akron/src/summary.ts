@@ -1,9 +1,7 @@
-// summary.ts — Margo's `GameSummary`/`formatMove`: the per-game half of
-// `GameShell`'s HUD chrome (turn indicator, banner, piece-count lines),
-// following Druid's `summary.ts` shape. Margo has no "modes" (a move is
-// always either a placement or the one-off swap, never a player-chosen
-// piece kind), so unlike Druid this module exports no `modes` array --
-// `GameKindModule.modes` is optional for exactly this case.
+// summary.ts — Akron's `GameSummary`/`formatMove`, mirroring
+// `@mcts/margo`'s `summary.ts` shape. Akron has no "modes" (a move is
+// always an add, a move, or the one-off swap, never a player-chosen piece
+// kind), so `GameKindModule.modes` is omitted here too.
 
 import type { GameSummary } from "@mcts/game";
 import { toCoord } from "@mcts/pyramid";
@@ -26,8 +24,16 @@ function pieceCounts(view: GameView): { black: number; white: number } {
 function countLines(view: GameView): GameSummary["lines"] {
   const { black, white } = pieceCounts(view);
   return [
-    { id: "black", text: `Black — ${black} pieces`, swatch: BLACK_SWATCH },
-    { id: "white", text: `White — ${white} pieces`, swatch: WHITE_SWATCH },
+    {
+      id: "black",
+      text: `Black — ${black} pieces (${view.black_pile} in hand)`,
+      swatch: BLACK_SWATCH,
+    },
+    {
+      id: "white",
+      text: `White — ${white} pieces (${view.white_pile} in hand)`,
+      swatch: WHITE_SWATCH,
+    },
   ];
 }
 
@@ -43,7 +49,7 @@ export function summarize(view: GameView): GameSummary {
         }
       : {
           turnText: "Game over",
-          bannerText: "Equal pieces — draw.",
+          bannerText: "No legal move — draw.",
           bannerColor: "#e8e8ec",
           lines: countLines(view),
           currentPlayer: null,
@@ -64,6 +70,7 @@ function coordText(n: number, index: number): string {
 
 export function formatMove(move: Action, before: GameState): string {
   if (move === "Swap") return `${before.turn} swap`;
-  const [index] = move.Place;
-  return `${before.turn} ${coordText(before.n, index)}`;
+  if ("Add" in move) return `${before.turn} add ${coordText(before.n, move.Add[0])}`;
+  const [src, dst] = move.Move;
+  return `${before.turn} ${coordText(before.n, src)} → ${coordText(before.n, dst)}`;
 }

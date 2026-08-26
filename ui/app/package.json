@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@mcts/akron": "workspace:*",
     "@mcts/atarigo": "workspace:*",
     "@mcts/breakthrough": "workspace:*",
     "@mcts/congo": "workspace:*",

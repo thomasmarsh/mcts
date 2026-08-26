@@ -24,6 +24,7 @@ import type { GameKindModule } from "@mcts/game";
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const GAME_MODULES: Record<string, () => Promise<GameKindModule<any, any, any>>> = {
+  akron: () => import("@mcts/akron").then((m) => m.akronModule),
   atarigo: () => import("@mcts/atarigo").then((m) => m.atarigoModule),
   breakthrough: () => import("@mcts/breakthrough").then((m) => m.breakthroughModule),
   congo: () => import("@mcts/congo").then((m) => m.congoModule),
@@ -45,6 +46,7 @@ export const GAME_MODULES: Record<string, () => Promise<GameKindModule<any, any,
  * new-game dialog to build seat-picker defaults before the module has loaded.
  */
 export const GAME_META: Record<string, { players: string[] }> = {
+  akron: { players: ["Black", "White"] },
   atarigo: { players: ["Black", "White"] },
   breakthrough: { players: ["Black", "White"] },
   congo: { players: ["Black", "White"] },

@@ -1,23 +1,23 @@
-// packages/margo/src/index.ts — Margo's `GameKindModule`: everything
-// `app/src/GameShell.tsx` needs to host Margo, registered under the
-// "margo" key in that file's `Record<string, GameKindModule>`.
+// packages/akron/src/index.ts — Akron's `GameKindModule`: everything
+// `app/src/GameShell.tsx` needs to host Akron, registered under the
+// "akron" key in that file's `Record<string, GameKindModule>`.
 
 import type { GameKindModule } from "@mcts/game";
-import { MargoRenderer } from "./MargoRenderer.js";
+import { AkronRenderer } from "./AkronRenderer.js";
 import { NewGameFields } from "./NewGameFields.js";
 import { formatMove, summarize } from "./summary.js";
 import type { Action, GameState, GameView } from "./types.js";
 
 export * from "./types.js";
 export * from "@mcts/pyramid";
-export { MargoRenderer } from "./MargoRenderer.js";
+export { AkronRenderer } from "./AkronRenderer.js";
 export { NewGameFields } from "./NewGameFields.js";
 export { summarize, formatMove } from "./summary.js";
 
-export const margoModule: GameKindModule<GameState, Action, GameView> = {
-  kind: "margo",
+export const akronModule: GameKindModule<GameState, Action, GameView> = {
+  kind: "akron",
   players: ["Black", "White"],
-  Renderer: MargoRenderer,
+  Renderer: AkronRenderer,
   summarize,
   NewGameFields,
   formatMove,

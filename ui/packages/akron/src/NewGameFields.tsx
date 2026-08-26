@@ -1,7 +1,6 @@
-// NewGameFields.tsx — Margo's new-game config editor: `@mcts/pyramid`'s
-// shared board-size picker, bound to Margo's own `MIN_N`/`MAX_N`/`DEFAULT_N`
-// range (which happens to be every size the server accepts, unlike Druid's
-// curated subset -- there are only seven of them).
+// NewGameFields.tsx — Akron's new-game config editor: `@mcts/pyramid`'s
+// shared board-size picker, bound to Akron's own `MIN_N`/`MAX_N`/`DEFAULT_N`
+// range (identical to Margo's).
 
 import type { Component } from "solid-js";
 import { BoardSizeFields, boardSizes } from "@mcts/pyramid";

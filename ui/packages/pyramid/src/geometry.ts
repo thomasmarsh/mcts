@@ -8,6 +8,12 @@
 // `summary.ts`'s `coordFor` set for Druid, since there's no code-generation
 // pipeline in this repo bridging Rust and TS types.
 //
+// Game-agnostic: every pyramid-family board (Margo, Akron, ...) built on
+// `pyramid::Pyramid` shares this exact index math and physical layout, so
+// this module lives in `@mcts/pyramid` rather than being duplicated per
+// game package -- see `render.ts` for the shared three.js board/marble
+// building that sits on top of it.
+//
 // `positionFor` additionally fixes the *physical* layout a renderer places
 // spheres at: level `k`'s grid is offset by `0.5` in both `x`/`z` from level
 // `k-1` (each ball nests in the pocket formed by the 4 balls below it) and
