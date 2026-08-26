@@ -628,19 +628,21 @@ mod tests {
         assert_eq!(err.code, 404);
     }
 
-    /// `"random"`/`"flat_mc"` are non-composable floor families -- direct
-    /// arms in `make_candidate`, not rows in `config_ir`'s registries (see
-    /// that function's own comment) -- but `PresetTable::build` is just
-    /// `build_search` under a preset id, so a game's `presets.json` can name
-    /// either one directly (e.g. a "baseline"/"random" preset), same as any
-    /// composable family. This is the proof: nothing about the preset layer
-    /// restricts `family` to composable strategies.
+    /// `"random"`/`"flat_mc"` are non-composable families -- `family_catalog`
+    /// rows that resolve to `FamilySpec::Direct`, built by
+    /// `direct_search::build_direct` rather than `config_ir::build_search`
+    /// (see `search.rs`'s `config_ir::build_search` comment) -- but
+    /// `PresetTable::build` is just `build_search` under a preset id, so a
+    /// game's `presets.json` can name either one directly (e.g. a
+    /// "baseline"/"random" preset), same as any composable family. This is
+    /// the proof: nothing about the preset layer restricts `family` to
+    /// composable strategies.
     #[test]
-    fn build_resolves_non_composable_floor_families() {
+    fn build_resolves_non_composable_direct_families() {
         let table = PresetTable::from_json(
             r#"[
                 {"id": "random", "label": "Random", "description": "", "params": {"family": "random", "q_init": "Infinity"}, "max_iterations": 1},
-                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"family": "flat_mc", "q_init": "Infinity"}, "max_iterations": 100}
+                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100}
             ]"#,
         )
         .unwrap();

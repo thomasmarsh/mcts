@@ -53,9 +53,10 @@ pub fn strategy_tuner_info_with_mcgs(
                 .collect();
             conditions.push(condition(json!({"family": compose_families}), &["q_init"]));
             // Gated by another field's own sampled value (`final_action`,
-            // `schedule`, `rave_ucb`, `contempt`), not by `family` directly --
-            // see `register_family!`'s doc comment in `family_catalog.rs` for
-            // why these stay hand-written instead of per-row table entries.
+            // `schedule`, `rave_ucb`, `contempt`, `flat_mc_selection`), not
+            // by `family` directly -- see `register_family!`'s doc comment
+            // in `family_catalog.rs` for why these stay hand-written
+            // instead of per-row table entries.
             conditions.extend([
                 condition(json!({"final_action": "secure_child"}), &["a"]),
                 condition(json!({"schedule": "hand_selected"}), &["k"]),
@@ -63,6 +64,7 @@ pub fn strategy_tuner_info_with_mcgs(
                 condition(json!({"schedule": "threshold"}), &["rave"]),
                 condition(json!({"rave_ucb": ["ucb1", "tuned"]}), &["c"]),
                 condition(json!({"contempt": "on"}), &["contempt_factor"]),
+                condition(json!({"flat_mc_selection": "ucb1"}), &["c"]),
             ]);
             conditions
         },

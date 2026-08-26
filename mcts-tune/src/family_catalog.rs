@@ -160,6 +160,15 @@ register_field! {
     // convention.
     value_lo: f64 => json!({"type": "float", "bounds": [-10.0, 10.0], "default": -1.0}),
     value_hi: f64 => json!({"type": "float", "bounds": [-10.0, 10.0], "default": 1.0}),
+    // `flat_mc::FlatMonteCarloStrategy`'s per-move rollout count and
+    // per-rollout depth cap.
+    samples_per_move: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 100}),
+    max_rollout_depth: u32 => json!({"type": "int", "bounds": [1, 1000], "default": 100}),
+    // Chooses between `flat_mc`'s two move-selection rules: plain win-rate
+    // comparison, or a UCB1 bandit over the same per-move samples (reusing
+    // the `c` field every other UCB1-flavored family already has, rather
+    // than adding a near-duplicate exploration-constant field).
+    flat_mc_selection: String => json!({"type": "categorical", "choices": ["win_rate", "ucb1"], "default": "win_rate"}),
 }
 
 fn missing(field: &str) -> HostError {
@@ -270,6 +279,26 @@ pub(crate) enum FamilySpec {
 /// construct it, already resolved out of `TrialParams`'s `Option` fields.
 pub(crate) enum DirectFamily {
     Random,
+    FlatMc {
+        samples_per_move: u32,
+        max_rollout_depth: u32,
+        /// `Some(exploration_constant)` selects `flat_mc`'s UCB1 move rule;
+        /// `None` is plain win-rate comparison.
+        ucb1: Option<f64>,
+    },
+}
+
+/// Resolves `flat_mc_selection` (plus `c` when it names the UCB1 branch)
+/// into `flat_mc::FlatMonteCarloStrategy`'s own `ucb1: Option<f64>` field.
+fn flat_mc_ucb1(p: &TrialParams) -> Result<Option<f64>, HostError> {
+    match p.flat_mc_selection.as_deref() {
+        Some("win_rate") => Ok(None),
+        Some("ucb1") => Ok(Some(c(p)?)),
+        Some(other) => Err(HostError::bad_request(format!(
+            "unknown flat_mc_selection: {other}"
+        ))),
+        None => Err(missing("flat_mc_selection")),
+    }
 }
 
 /// Generates `dispatch_family`, the single source of per-family
@@ -659,6 +688,15 @@ register_family! {
     // field list is empty and its `TrialParams` reads nothing beyond
     // `family` itself.
     "random" => [] => |_p: &TrialParams| Ok(FamilySpec::Direct(DirectFamily::Random)),
+    // Flat Monte Carlo: one independent batch of uniform rollouts per legal
+    // move, no tree at all -- `flat_mc_selection` picks how those rollouts'
+    // outcomes turn into a move (plain win-rate vs. a UCB1 bandit over the
+    // same samples).
+    "flat_mc" => [samples_per_move, max_rollout_depth, flat_mc_selection] => |p: &TrialParams| Ok(FamilySpec::Direct(DirectFamily::FlatMc {
+        samples_per_move: p.samples_per_move.ok_or_else(|| missing("samples_per_move"))?,
+        max_rollout_depth: p.max_rollout_depth.ok_or_else(|| missing("max_rollout_depth"))?,
+        ucb1: flat_mc_ucb1(p)?,
+    })),
 }
 
 /// Family names whose `register_family!` row resolves to `FamilySpec::Direct`
@@ -670,5 +708,5 @@ register_family! {
 /// `strategy_tuner_info_with_mcgs` to gate `q_init`'s activation on `family`
 /// naming a `Compose` row -- see this module's doc comment.
 pub(crate) fn direct_family_names() -> &'static [&'static str] {
-    &["random"]
+    &["random", "flat_mc"]
 }

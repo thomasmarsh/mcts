@@ -197,9 +197,9 @@ pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// family gets to run for. Defaults to this harness's historical behavior
 /// (`MAX_ITER` iterations, single-threaded, uncapped wall time) -- the
 /// right shape for a `baseline_config`-backed opponent (self-play against a
-/// discovered config, including the `random`/`flat_mc` floor families
-/// below), since both sides of that match are built the same way and so
-/// stay symmetric regardless of budget.
+/// discovered config, including a `random`/`flat_mc` baseline), since both
+/// sides of that match are built the same way and so stay symmetric
+/// regardless of budget.
 ///
 /// A **named-preset** baseline (e.g. Druid's `strong`/`master`, built by
 /// `build_ai` on a wall-clock time budget and every available CPU core, not
@@ -411,19 +411,6 @@ pub(crate) fn make_candidate<G: Game + 'static>(
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    if p.family == "flat_mc" {
-        // Baseline-only floor family -- deliberately *not* in
-        // `strategy_tuner_info`'s searchable `family` choices (a candidate
-        // sampled as `flat_mc` would just hover around a ~0.5 cost forever,
-        // wasting the tuner's trial budget). Reachable only via
-        // `build_search`/`--baseline-config`, e.g. as a ladder's floor rung.
-        // Reads no `TrialParams` field beyond `family` itself. Not yet a
-        // `family_catalog` row (no `register_family!` entry, so
-        // `dispatch_family` doesn't know it), so it stays a direct arm here.
-        return Ok(Box::new(
-            mcts::strategies::flat_mc::FlatMonteCarloStrategy::<G>::new(),
-        ));
-    }
     match dispatch_family(&p.family, p)? {
         FamilySpec::Direct(direct) => Ok(build_direct::<G>(&direct, budget)),
         FamilySpec::Compose(cs) => {

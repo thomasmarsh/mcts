@@ -653,6 +653,25 @@ fn test_family_random_round_trips() {
     assert_family_round_trips(json!({"family": "random"}));
 }
 
+/// Like `random`, `flat_mc` resolves to `FamilySpec::Direct`. This exercises
+/// its default win-rate move rule; `test_family_flat_mc_ucb1_round_trips`
+/// below covers the UCB1 branch `flat_mc_selection` also allows.
+#[test]
+fn test_family_flat_mc_round_trips() {
+    assert_family_round_trips(json!({
+        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+        "flat_mc_selection": "win_rate",
+    }));
+}
+
+#[test]
+fn test_family_flat_mc_ucb1_round_trips() {
+    assert_family_round_trips(json!({
+        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+        "flat_mc_selection": "ucb1", "c": 1.4,
+    }));
+}
+
 #[test]
 fn test_family_ucb1_dm_round_trips() {
     assert_family_round_trips(json!({
@@ -1396,7 +1415,40 @@ fn dispatch_family_resolves_random_to_the_direct_variant() {
     match dispatch_family("random", &trial) {
         Ok(FamilySpec::Direct(DirectFamily::Random)) => {}
         Ok(FamilySpec::Compose(_)) => panic!("random must not resolve to a Compose family"),
+        Ok(FamilySpec::Direct(_)) => panic!("random must resolve to DirectFamily::Random"),
         Err(e) => panic!("random must dispatch: {}", e.message),
+    }
+}
+
+#[test]
+fn dispatch_family_resolves_flat_mc_to_the_direct_variant() {
+    let trial = trial(json!({
+        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+        "flat_mc_selection": "win_rate",
+    }));
+    match dispatch_family("flat_mc", &trial) {
+        Ok(FamilySpec::Direct(DirectFamily::FlatMc {
+            samples_per_move: 20,
+            max_rollout_depth: 50,
+            ucb1: None,
+        })) => {}
+        Ok(_) => panic!("flat_mc must resolve to DirectFamily::FlatMc with the parsed fields"),
+        Err(e) => panic!("flat_mc must dispatch: {}", e.message),
+    }
+}
+
+#[test]
+fn dispatch_family_resolves_flat_mc_ucb1_selection() {
+    let trial = trial(json!({
+        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+        "flat_mc_selection": "ucb1", "c": 1.4,
+    }));
+    match dispatch_family("flat_mc", &trial) {
+        Ok(FamilySpec::Direct(DirectFamily::FlatMc { ucb1: Some(c), .. })) => {
+            assert_eq!(c, 1.4);
+        }
+        Ok(_) => panic!("flat_mc with ucb1 selection must carry the c value"),
+        Err(e) => panic!("flat_mc must dispatch: {}", e.message),
     }
 }
 
@@ -1461,19 +1513,21 @@ fn test_build_search_builds_random_family() {
     .expect("random should build with just family/q_init");
 }
 
-/// `flat_mc` is still a floor family reachable only via `build_search`/
-/// `--baseline-config` (a ladder's floor rung), not yet a `family_catalog`
-/// row, so it stays a direct arm in `make_candidate` rather than showing up
-/// in `strategy_tuner_info().parameters`'s `family` choices.
+/// `flat_mc` is an ordinary `family_catalog` row like `random`, just one
+/// with its own tunable fields (`samples_per_move`/`max_rollout_depth`/
+/// `flat_mc_selection`) rather than none.
 #[test]
-fn test_build_search_builds_flat_mc_floor_family() {
+fn test_build_search_builds_flat_mc_family() {
     build_search::<Nim>(
-        &json!({"family": "flat_mc", "q_init": "Infinity"}),
+        &json!({
+            "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+            "flat_mc_selection": "win_rate",
+        }),
         0,
         false,
         &SearchBudget::default(),
     )
-    .expect("flat_mc should build with just family/q_init");
+    .expect("flat_mc should build from its own required params");
 }
 
 #[test]
@@ -1496,17 +1550,15 @@ fn test_strategy_tuner_info_includes_every_family_choice() {
             "family {name:?} must be a tuner-searchable choice: {choices:?}"
         );
     }
-    // `flat_mc` isn't a `family_catalog` row yet -- see
-    // `test_build_search_builds_flat_mc_floor_family`.
-    assert!(!choices.contains(&"flat_mc"));
 }
 
-/// A `Direct` family (`random`) never reads `q_init`, so Optuna shouldn't
-/// waste trials sampling it across `q_init`'s five otherwise-equivalent
-/// values for that family -- `active_params` (the same fixed-point
-/// evaluation `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
-/// uses) must not mark `q_init` active for `family: random`, but must for
-/// an ordinary `Compose` family.
+/// A `Direct` family (`random`, `flat_mc`) never reads `q_init`, so Optuna
+/// shouldn't waste trials sampling it across `q_init`'s five otherwise-
+/// equivalent values for that family -- `active_params` (the same
+/// fixed-point evaluation
+/// `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
+/// uses) must not mark `q_init` active for either, but must for an ordinary
+/// `Compose` family.
 #[test]
 fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
     let tuner = strategy_tuner_info(&["strong"], 1);
@@ -1514,6 +1566,11 @@ fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
     assert!(
         !random_active.contains("q_init"),
         "q_init must not be active for a Direct family: {random_active:?}"
+    );
+    let flat_mc_active = active_params(&tuner, &json!({"family": "flat_mc"}));
+    assert!(
+        !flat_mc_active.contains("q_init"),
+        "q_init must not be active for a Direct family: {flat_mc_active:?}"
     );
     let ucb1_active = active_params(&tuner, &json!({"family": "ucb1"}));
     assert!(
@@ -1660,6 +1717,13 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
             }),
         ),
         ("random", json!({"family": "random"})),
+        (
+            "flat_mc",
+            json!({
+                "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+                "flat_mc_selection": "win_rate",
+            }),
+        ),
     ]
 }
 
