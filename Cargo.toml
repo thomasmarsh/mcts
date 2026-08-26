@@ -59,6 +59,7 @@ members = [
     "games/druid",
     "games/congo",
     "games/margo",
+    "games/akron",
     "gdl",
     "server",
     "bench",
@@ -100,6 +101,7 @@ default-members = [
     "games/druid",
     "games/congo",
     "games/margo",
+    "games/akron",
     "server",
     "bench",
 ]

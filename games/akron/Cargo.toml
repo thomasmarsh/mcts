@@ -1,0 +1,15 @@
+[package]
+name = "game-akron"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_akron"
+
+[dependencies]
+bitboard = { path = "../../bitboard" }
+pyramid = { path = "../../pyramid" }
+
+[lints]
+workspace = true
