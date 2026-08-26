@@ -12,8 +12,10 @@
 use bitboard::{Board, Dim, Storage};
 
 pub mod adjacency;
+pub mod crossing;
 pub mod symmetry;
 pub use adjacency::{get_adjacency, touching_neighbors, TouchingAdjacency};
+pub use crossing::{crossing_table, get_crossing_table};
 pub use symmetry::PyramidD4;
 
 /// Sum of squares `1^2 + 2^2 + ... + x^2` -- the total cell count of an
