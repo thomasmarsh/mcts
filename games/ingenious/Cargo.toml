@@ -1,0 +1,20 @@
+[package]
+name = "game-ingenious"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_ingenious"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+game-core = { path = "../game-core" }
+serde = { version = "1", features = ["derive"] }
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[dev-dependencies]
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[lints]
+workspace = true

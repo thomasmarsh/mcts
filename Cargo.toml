@@ -60,6 +60,7 @@ members = [
     "games/congo",
     "games/margo",
     "games/akron",
+    "games/ingenious",
     "gdl",
     "server",
     "bench",
@@ -102,6 +103,7 @@ default-members = [
     "games/congo",
     "games/margo",
     "games/akron",
+    "games/ingenious",
     "server",
     "bench",
 ]
