@@ -472,10 +472,16 @@ where
         self.inner.backprop_flags()
     }
 
-    /// See `EpsilonGreedy::requirements`'s doc comment -- same reason: this
-    /// wraps `inner` without changing its storage requirements.
+    /// Unlike `EpsilonGreedy::requirements` (a pure passthrough -- see its
+    /// doc comment), this doesn't just delegate to `inner`: the cutoff-value
+    /// nega-style conversion above assumes a two-player zero-sum game (same
+    /// assumption as its `debug_assert!`), so this unions that bound with
+    /// whatever `inner` itself requires.
     fn requirements(&self) -> config::Requirements {
-        self.inner.requirements()
+        self.inner.requirements().union(config::Requirements {
+            max_players: Some(2),
+            ..config::Requirements::none()
+        })
     }
 }
 

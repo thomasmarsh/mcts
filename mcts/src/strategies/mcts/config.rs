@@ -530,12 +530,30 @@ where
 
     /// Validates this configuration's resolved `Requirements` against `G`,
     /// e.g. rejecting `select::UctPn` (MCTS-Solver's `max_players: Some(2)`)
-    /// paired with a >2-player game. Doesn't (yet) check `use_mcts_solver`
-    /// itself is on -- a component whose `requirements().solver` is `true`
-    /// but the config leaves the solver off just degenerates to a no-op (see
-    /// e.g. `UctPn`'s doc comment), which isn't an error worth rejecting.
+    /// paired with a >2-player game, and (see below) `use_mcts_solver` or
+    /// `prior` paired with a >2-player game.
     pub fn validate(&self) -> Result<(), String> {
         self.requirements().validate(G::num_players())?;
+        // Unlike a component's advisory `requirements().solver` bit (which
+        // degenerates to a no-op with the solver off, e.g. `UctPn`'s doc
+        // comment), `use_mcts_solver` itself directly gates whether
+        // `backprop.rs` derives `node::Proven` values -- a representation
+        // only sound for `num_players() <= 2` (`node::Proven`'s doc
+        // comment). Checked here, not just via the `debug_assert!` at the
+        // derivation site, so a release build rejects this instead of
+        // silently deriving nonsense.
+        if self.use_mcts_solver && G::num_players() > 2 {
+            return Err(format!(
+                "use_mcts_solver requires num_players() <= 2, got {}",
+                G::num_players()
+            ));
+        }
+        // `prior::PriorStrategy` isn't one of `Select`/`Simulate`/
+        // `FinalAction`, so its own `requirements()` doesn't participate in
+        // the union above -- checked separately here instead.
+        if let Some(prior) = &self.prior {
+            prior.requirements().validate(G::num_players())?;
+        }
         if self.transposition_keying == TranspositionKeying::StateOnly {
             // `StateOnly` lets the graph contain real cycles (a shared node
             // reachable from itself via a reversible/capturing move
@@ -791,5 +809,96 @@ mod requirements_tests {
         assert!(reqs.validate(2).is_ok());
         assert!(reqs.validate(1).is_ok());
         assert!(reqs.validate(3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod search_config_validate_tests {
+    use super::*;
+    use crate::game::PlayerIndex;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State;
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "State")
+        }
+    }
+
+    /// A minimal three-player game, existing purely to exercise
+    /// `SearchConfig::validate`'s player-count checks -- every ply is a
+    /// forced pass and the game never actually terminates in these tests,
+    /// since no test here runs a search to completion.
+    #[derive(Clone)]
+    struct ThreePlayerGame;
+
+    impl Game for ThreePlayerGame {
+        type S = State;
+        type A = u8;
+        type P = Player;
+
+        fn apply(state: Self::S, _action: &Self::A) -> Self::S {
+            state
+        }
+
+        fn generate_actions(_state: &Self::S, actions: &mut Vec<Self::A>) {
+            actions.push(0);
+        }
+
+        fn winner(_state: &Self::S) -> Option<Self::P> {
+            None
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Player(0)
+        }
+
+        fn num_players() -> usize {
+            3
+        }
+    }
+
+    #[test]
+    fn validate_rejects_use_mcts_solver_for_more_than_two_players() {
+        let config =
+            SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().use_mcts_solver(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_use_mcts_solver_off_for_more_than_two_players() {
+        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_a_two_player_only_prior_for_more_than_two_players() {
+        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+            .with_prior(prior::EvaluatorPrior::<ThreePlayerGame>::new());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn evaluated_cutoff_reports_a_two_player_max_players_requirement() {
+        use simulate::SimulateStrategy;
+        let inner = simulate::EvaluatedCutoff::<
+            ThreePlayerGame,
+            crate::evaluator::MaterialBlind,
+            simulate::Uniform,
+        >::new();
+        assert_eq!(
+            SimulateStrategy::<ThreePlayerGame>::requirements(&inner).max_players,
+            Some(2)
+        );
     }
 }

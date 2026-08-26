@@ -26,6 +26,7 @@
 //! this crate's monomorphization surface the way the config-algebra work
 //! (`config_ir.rs`) already found expensive at compile time.
 
+use super::config;
 use crate::evaluator::Evaluator;
 use crate::evaluator::EVAL_MAGNITUDE_LIMIT;
 use crate::evaluator::WIN_SCORE;
@@ -69,6 +70,16 @@ pub trait PriorStrategy<G: Game>: Clone + Send + Sync {
     /// returns values (so a strategy can be paired with `pseudo_visits() ==
     /// 0` purely to skip the search-and-seed cost while testing).
     fn pseudo_visits(&self) -> u32;
+
+    /// This component's `config::Requirements` -- see
+    /// `select::SelectStrategy::requirements`'s doc comment for the general
+    /// contract. Defaults to unconstrained, since [`NoPrior`] has no
+    /// requirements of its own; override wherever `evaluate_children`'s
+    /// implementation itself assumes something about the game, the way
+    /// [`EvaluatorPrior`] and [`NegamaxPrior`] do.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements::none()
+    }
 }
 
 /// The universal default: no prior. `evaluate_children` never allocates
@@ -177,6 +188,16 @@ where
 
     fn pseudo_visits(&self) -> u32 {
         self.pseudo_visits
+    }
+
+    /// Same `<= 2`-player scoping as the `debug_assert!` in
+    /// `evaluate_children` above, now enforced in release builds too via
+    /// `SearchConfig::validate`.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements {
+            max_players: Some(2),
+            ..config::Requirements::none()
+        }
     }
 }
 
@@ -289,6 +310,16 @@ where
     fn pseudo_visits(&self) -> u32 {
         self.pseudo_visits
     }
+
+    /// Same `<= 2`-player scoping as the `debug_assert!` in
+    /// `evaluate_children` above, now enforced in release builds too via
+    /// `SearchConfig::validate`.
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements {
+            max_players: Some(2),
+            ..config::Requirements::none()
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -301,6 +332,7 @@ where
 pub trait PriorStrategyDyn<G: Game>: Send + Sync {
     fn evaluate_children(&mut self, state: &G::S, actions: &[G::A]) -> Vec<f64>;
     fn pseudo_visits(&self) -> u32;
+    fn requirements(&self) -> config::Requirements;
     fn clone_box(&self) -> Box<dyn PriorStrategyDyn<G>>;
 }
 
@@ -315,6 +347,10 @@ where
 
     fn pseudo_visits(&self) -> u32 {
         PriorStrategy::pseudo_visits(self)
+    }
+
+    fn requirements(&self) -> config::Requirements {
+        PriorStrategy::requirements(self)
     }
 
     fn clone_box(&self) -> Box<dyn PriorStrategyDyn<G>> {
