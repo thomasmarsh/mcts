@@ -143,7 +143,14 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
     y: number,
   ): THREE.BufferGeometry {
     const v = (p: [number, number]): [number, number, number] => [p[0], y, p[1]];
-    const positions = new Float32Array([...v(p1), ...v(p2), ...v(p3), ...v(p1), ...v(p3), ...v(p4)]);
+    const positions = new Float32Array([
+      ...v(p1),
+      ...v(p2),
+      ...v(p3),
+      ...v(p1),
+      ...v(p3),
+      ...v(p4),
+    ]);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     return geo;
@@ -189,7 +196,10 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
 
     function addTrapezoid(a: [number, number], b: [number, number], color: number): void {
       const geo = flatQuad(innerOf(a), innerOf(b), outerOf(b), outerOf(a), y);
-      const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }),
+      );
       sideMarkersGroup.add(mesh);
     }
 

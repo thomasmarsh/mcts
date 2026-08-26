@@ -9,8 +9,11 @@ name = "game_ingenious"
 
 [dependencies]
 mcts = { path = "../../mcts" }
+mcts-tune = { path = "../../mcts-tune" }
 game-core = { path = "../game-core" }
+game-host = { path = "../../game-host" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 rand = { version = "0.8.5", features = ["small_rng"] }
 
 [dev-dependencies]

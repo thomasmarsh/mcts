@@ -1,0 +1,107 @@
+/* ingenious.css — IngeniousRenderer's own presentation, scoped to this
+   package's own class names, same discipline as hex-gen.css/ttt.css. */
+
+.ingenious-board {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  width: 100vw;
+  height: 100vh;
+  background: #c7c9cf;
+  overflow: auto;
+}
+
+.ingenious-grid {
+  filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.35));
+  max-width: 92vw;
+  max-height: 72vh;
+  width: auto;
+  height: auto;
+}
+
+.ingenious-hex {
+  fill: #eceef2;
+  stroke: #5a5c66;
+  stroke-width: 1.5;
+}
+
+.ingenious-placement {
+  cursor: pointer;
+}
+
+.ingenious-placement-link {
+  stroke: transparent;
+  stroke-width: 6;
+}
+
+.ingenious-placement .ingenious-ghost {
+  opacity: 0.55;
+  stroke: #2a2b32;
+  stroke-width: 1;
+}
+
+.ingenious-placement:hover .ingenious-ghost,
+.ingenious-placement.hovered .ingenious-ghost {
+  opacity: 0.9;
+  stroke-width: 2;
+}
+
+.ingenious-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ingenious-rack {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ingenious-tile {
+  display: flex;
+  width: 44px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid #5a5c66;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.ingenious-tile:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ingenious-tile.active {
+  border-color: #ffe066;
+  box-shadow: 0 0 0 2px #ffe066;
+}
+
+.ingenious-tile-half {
+  flex: 1;
+}
+
+.ingenious-flip,
+.ingenious-swap-decision button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #5a5c66;
+  border-radius: 6px;
+  background: #eceef2;
+  cursor: pointer;
+}
+
+.ingenious-flip:disabled,
+.ingenious-swap-decision button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ingenious-swap-decision {
+  display: flex;
+  gap: 0.5rem;
+}
