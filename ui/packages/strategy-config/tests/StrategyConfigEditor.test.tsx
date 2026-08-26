@@ -22,7 +22,7 @@ function renderEditor(initial: CustomStrategySpec) {
     latest = next;
     setConfig(next);
   };
-  render(() => <StrategyConfigEditor schema={fixtureSchema} config={config()} onChange={onChange} />);
+  render(() => <StrategyConfigEditor schema={fixtureSchema} config={config()} tunerInfo={null} onChange={onChange} />);
   return { getLatest: () => latest };
 }
 

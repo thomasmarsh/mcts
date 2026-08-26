@@ -33,7 +33,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { Effect } from "@mcts/core";
 import type { AiMoveResult, Analysis, Env, LegalMovesResult, SearchReport, StateAndView } from "@mcts/game";
-import { createTestStore, fixtureAxisSchema, mockEnv, mockFetchStrategySchema } from "./helpers.js";
+import { createTestStore, fixtureAxisSchema, mockEnv, mockFetchStrategyFamilies, mockFetchStrategySchema } from "./helpers.js";
 import { type FakeView, mountLog, resetMountLog, TERMINAL_AT, viewFor } from "./fixtures/fake-game.js";
 
 vi.mock("../app/src/games.js", () => import("./fixtures/fake-games-registry.js"));
@@ -148,7 +148,7 @@ beforeEach(() => {
 describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
   it("never remounts the board renderer across autoplay moves or history navigation", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
 
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
     expect(mountLog).toEqual(["mount"]);
@@ -173,7 +173,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
 
   it("undo (ArrowLeft) moves back one ply and holds -- it used to immediately snap forward again", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     makeBothSeatsAi(store);
@@ -190,7 +190,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
 
   it("clicking a move in the history panel jumps there and holds -- it used to go nowhere the user could see", async () => {
     const { store } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     makeBothSeatsAi(store);
@@ -219,7 +219,7 @@ describe("GameShell autoplay: a failing aiMove must not retry forever (fake game
       },
     };
     const { store } = createTestStore("fake", env);
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     makeBothSeatsAi(store);
@@ -239,7 +239,7 @@ describe("GameShell autoplay: a failing aiMove must not retry forever (fake game
 describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real server)", () => {
   it("builds an AiStrategyRef from the schema-driven editor and dispatches it as that seat's control", async () => {
     const { store, captured } = createTestStore("fake", makeFakeEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     fireEvent.click(screen.getByText("New Game"));
@@ -277,7 +277,7 @@ describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real
 describe("GameShell live search inspection (fake game, no real server)", () => {
   it("keeps a completed explicit analysis distinct from the retained AI report", async () => {
     const { store } = createTestStore("fake", makeInspectorEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "AI Move" }));
@@ -298,7 +298,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
 
   it("keeps legacy analysis actions and PV under a reduced-capability label", async () => {
     const { store } = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult() }));
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
@@ -310,7 +310,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
 
   it("shows that a human move has no retained search report", async () => {
     const { store } = createTestStore("fake", makeInspectorEnv());
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     store.dispatch({ tag: "move", action: { tag: "request", move: "inc" } });
@@ -330,7 +330,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       },
     };
     const { store } = createTestStore("fake", env);
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     store.dispatch({ tag: "move", action: { tag: "request", move: "inc" } });
@@ -355,7 +355,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
 
   it("renders unavailable and partial explicit reports without falling back to legacy output", async () => {
     const partial = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult(searchReport(3, "partial")) }));
-    const rendered = render(() => <GameShell store={partial.store} fetchStrategySchema={mockFetchStrategySchema} />);
+    const rendered = render(() => <GameShell store={partial.store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
     await vi.waitFor(() => expect(within(document.getElementById("analysis-panel")!).getByRole("status")).toHaveTextContent("evidence is partial"));
@@ -363,7 +363,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
     rendered.unmount();
 
     const unavailable = createTestStore("fake", makeInspectorEnv({ analysis: analysisResult(searchReport(3, "unavailable")) }));
-    render(() => <GameShell store={unavailable.store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={unavailable.store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
     await vi.waitFor(() => expect(within(document.getElementById("analysis-panel")!).getByRole("status")).toHaveTextContent("evidence unavailable"));
@@ -377,7 +377,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       analyze: <M2>() => Effect.fromPromise(() => new Promise<Analysis<string>>((resolve) => { resolveAnalysis = resolve; })) as unknown as Effect<Analysis<M2>>,
     };
     const { store } = createTestStore("fake", env);
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));

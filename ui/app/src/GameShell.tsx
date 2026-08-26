@@ -16,7 +16,7 @@
 import { type Component, createEffect, createMemo, createResource, createSignal, For, lazy, onCleanup, onMount, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Store } from "@mcts/core";
-import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, AxisSchema, GameTreeNode, MoveStep } from "@mcts/game";
+import type { AiStrategyRef, AnalysisOverlayEntry, AppAction, AppState, AxisSchema, GameTreeNode, MoveStep, TunerInfo } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
 import { defaultCustomStrategySpec, StrategyConfigEditor } from "@mcts/strategy-config";
 import { GAME_META, GAME_MODULES } from "./games.js";
@@ -65,6 +65,7 @@ function historyPath(tree: AppState<S, M, V>["tree"]): MoveStep<S, M>[] {
 export const GameShell: Component<{
   store: Store<AppState<S, M, V>, AppAction<S, M, V>>;
   fetchStrategySchema: () => Promise<AxisSchema>;
+  fetchStrategyFamilies: (kind: string) => Promise<TunerInfo | null>;
 }> = (props) => {
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
@@ -76,6 +77,11 @@ export const GameShell: Component<{
   // read with no job-poll/error-retry semantics worth the `AppState` slice
   // `aiPresets` has; `App.tsx` fetches `GET /api/games` the same way.
   const [schema] = createResource(props.fetchStrategySchema);
+
+  // Unlike `schema`, this is per-game-kind (a game's tuner-exposed family
+  // catalog differs by game), so it's re-fetched on every `gameKind`
+  // switch the same way `modData` below is.
+  const [tunerInfo] = createResource(() => state().gameKind, props.fetchStrategyFamilies);
 
   // Asynchronously load the game-kind module. The resource's source tracks
   // `state().gameKind`, so switching kinds (via the new-game dialog) triggers
@@ -510,6 +516,7 @@ export const GameShell: Component<{
                           <StrategyConfigEditor
                             schema={sch()}
                             config={custom().spec}
+                            tunerInfo={tunerInfo() ?? null}
                             onChange={(spec) => setPendingSeats((s) => ({ ...s, [player]: { kind: "custom", spec } }))}
                           />
                         )}

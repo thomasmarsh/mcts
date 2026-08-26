@@ -28,6 +28,7 @@ import type {
   FinalActionSpec,
   SelectSpec,
   SimulateSpec,
+  TunerInfo,
 } from "@mcts/game";
 
 /** A variant value as this editor manipulates it -- `kind` plus whatever
@@ -288,6 +289,10 @@ interface BudgetEnabled {
 export const StrategyConfigEditor: Component<{
   schema: AxisSchema;
   config: CustomStrategySpec;
+  /** The game's named-family catalog (`GET /api/games/{kind}/strategy-
+   * families`), `null` for a game with no tuning support. Not yet consumed
+   * here -- free composition (below) is still this editor's only mode. */
+  tunerInfo: TunerInfo | null;
   onChange: (config: CustomStrategySpec) => void;
 }> = (props) => {
   const [budgetEnabled, setBudgetEnabled] = createSignal<BudgetEnabled>({

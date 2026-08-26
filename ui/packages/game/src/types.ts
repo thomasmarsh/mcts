@@ -286,3 +286,30 @@ export interface AxisSchema {
   backprop: { variants: AxisVariantSchema[] };
   final_action: { variants: AxisVariantSchema[] };
 }
+
+/** `game_host::TunerParameter`'s `#[serde(flatten)]` wire shape -- one entry
+ * of `TunerInfo.parameters`. */
+export type TunerParameter =
+  | { name: string; type: "categorical"; choices: string[]; default: string }
+  | { name: string; type: "int"; bounds: [number, number]; default: number }
+  | { name: string; type: "float"; bounds: [number, number]; default: number }
+  | { name: string; type: "bool"; default: boolean };
+
+/** `game_host::TunerCondition` -- `if`'s single entry maps a parent
+ * parameter name to the value(s) that activate every name in `then`.
+ * `if_` on the Rust side, renamed `if` over the wire. */
+export interface TunerCondition {
+  if: Record<string, string | boolean | (string | boolean)[]>;
+  then: string[];
+}
+
+/** `GET /api/games/{kind}/strategy-families` response -- `game_host::
+ * TunerInfo`. `null` for a game with no tuning support. */
+export interface TunerInfo {
+  id: string;
+  baselines: string[];
+  eval_rounds: number;
+  parameters: TunerParameter[];
+  conditions: TunerCondition[];
+  game_config: unknown;
+}

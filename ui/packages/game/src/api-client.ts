@@ -20,6 +20,7 @@ import type {
   GameInfo,
   LegalMovesResult,
   StateAndView,
+  TunerInfo,
 } from "./types.js";
 
 /** Flattens an `AiStrategyRef` into `server::main::AiMoveRequest`/
@@ -41,6 +42,7 @@ export interface ApiClient {
   aiMove<S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef): Promise<AiMoveResult<S, M, V>>;
   analyze<S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number): Promise<Analysis<M>>;
   fetchStrategySchema(): Promise<AxisSchema>;
+  fetchStrategyFamilies(kind: string): Promise<TunerInfo | null>;
 }
 
 /** The server (`AdapterError`'s `IntoResponse` impl, `server/adapters/mod.rs`)
@@ -119,6 +121,9 @@ export function createApiClient(baseUrl = ""): ApiClient {
     },
     async fetchStrategySchema(): Promise<AxisSchema> {
       return fetchJson(url("/api/strategy-schema"));
+    },
+    async fetchStrategyFamilies(kind: string): Promise<TunerInfo | null> {
+      return fetchJson(url(`/api/games/${encodeURIComponent(kind)}/strategy-families`));
     },
   };
 }

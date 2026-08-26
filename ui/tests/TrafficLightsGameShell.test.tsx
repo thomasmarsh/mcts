@@ -19,7 +19,7 @@ import {
   type Env,
 } from "@mcts/game";
 import { GameShell } from "../app/src/GameShell.js";
-import { mockFetchStrategySchema } from "./helpers.js";
+import { mockFetchStrategyFamilies, mockFetchStrategySchema } from "./helpers.js";
 
 // Track moves dispatched through env.apply
 let capturedMoves: unknown[] = [];
@@ -89,7 +89,7 @@ describe("TrafficLights GameShell integration", () => {
     const store = createStore(init, appReducer, env);
     capturedMoves = [];
 
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
 
     // Get the 9 board buttons (filter out HUD/nav buttons by class)
     function boardButtons(): HTMLButtonElement[] {
@@ -180,7 +180,7 @@ describe("TrafficLights GameShell integration", () => {
     const store = createStore(init, appReducer, env);
     capturedMoves = [];
 
-    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} />);
+    render(() => <GameShell store={store} fetchStrategySchema={mockFetchStrategySchema} fetchStrategyFamilies={mockFetchStrategyFamilies} />);
 
     const boardButtons = () =>
       screen.getAllByRole("button").filter((b) => b.classList.contains("tl-cell")) as HTMLButtonElement[];

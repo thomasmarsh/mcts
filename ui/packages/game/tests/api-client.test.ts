@@ -154,4 +154,24 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
     expect(calls[0]!.url).toBe("/api/strategy-schema");
     expect(result).toEqual(schema);
   });
+
+  it("fetchStrategyFamilies GETs /api/games/{kind}/strategy-families", async () => {
+    const info = { id: "druid", baselines: [], eval_rounds: 1, parameters: [], conditions: [], game_config: null };
+    const calls = stubFetch(info);
+    const api = createApiClient();
+
+    const result = await api.fetchStrategyFamilies("druid");
+
+    expect(calls[0]!.url).toBe("/api/games/druid/strategy-families");
+    expect(result).toEqual(info);
+  });
+
+  it("fetchStrategyFamilies passes through a null response", async () => {
+    stubFetch(null);
+    const api = createApiClient();
+
+    const result = await api.fetchStrategyFamilies("traffic-lights");
+
+    expect(result).toBeNull();
+  });
 });

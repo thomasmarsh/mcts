@@ -33,6 +33,9 @@ export type {
   AxisFieldSchema,
   AxisVariantSchema,
   AxisSchema,
+  TunerParameter,
+  TunerCondition,
+  TunerInfo,
 } from "./types.js";
 
 export type { ApiClient } from "./api-client.js";

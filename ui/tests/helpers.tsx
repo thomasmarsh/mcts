@@ -11,7 +11,7 @@
 import { cleanup } from "@solidjs/testing-library";
 import { afterEach } from "vitest";
 import { Effect, createStore, type Store } from "@mcts/core";
-import { appReducer, initialAppState, type AppAction, type AppState, type AxisSchema, type Env } from "@mcts/game";
+import { appReducer, initialAppState, type AppAction, type AppState, type AxisSchema, type Env, type TunerInfo } from "@mcts/game";
 
 // A minimal but real-shaped `AxisSchema` fixture -- one variant per axis
 // (`ucb1`/`uniform`/`classic`/`robust_child`), plus an `epsilon_greedy`
@@ -40,6 +40,11 @@ export const fixtureAxisSchema: AxisSchema = {
 };
 
 export const mockFetchStrategySchema = (): Promise<AxisSchema> => Promise.resolve(fixtureAxisSchema);
+
+// No fixture game in these tests exposes a tuner, so the default mock mirrors
+// that: every `GameShell` test drives the free-composition-only path unless a
+// test overrides this itself.
+export const mockFetchStrategyFamilies = (): Promise<TunerInfo | null> => Promise.resolve(null);
 
 // Every `Env` method stubbed to a no-op effect -- individual tests override
 // just the methods their scenario needs (same shape as pb's `mockEnv`).
