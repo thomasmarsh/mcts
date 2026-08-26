@@ -20,8 +20,9 @@
 use std::fmt;
 
 use bitboard::{Adjacency, Dyn};
-use mcts::game::{Game, PlayerIndex};
-use pyramid::{get_adjacency, Pyramid};
+use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
+use mcts::zobrist::LazyZobristTable;
+use pyramid::{get_adjacency, Pyramid, PyramidD4};
 use serde::{Deserialize, Serialize};
 
 pub mod connectivity;
@@ -50,6 +51,138 @@ type Cells = Pyramid<[u64; 7], Dyn>;
 /// directly).
 pub const fn pile_size(n: usize) -> u32 {
     (n * n / 2) as u32
+}
+
+// ── Symmetry / Zobrist hashing ──────────────────────────────────────────
+//
+// Whole-pyramid D4 (`pyramid::PyramidD4`), array-of-hashes per symmetry
+// element -- the same shape `games/margo`/`games/gonnect`/`games/atarigo`
+// use, adapted to `PyramidD4`'s own API (a flat `index_symmetries`/
+// `invert_symmetry` pair, no separate rows/cols).
+//
+// Unlike `games/margo` (which tracks `zombie`/`previous` as extra geometric
+// fields alongside `occupied`/`black`), Akron's `State` has no such fields:
+// `occupied`/`black` alone are the entire board position, and `white_pile`/
+// `black_pile` are non-geometric (`pile_size(n) - <that colour's board
+// count>` always, an invariant every `Game::apply` arm preserves --
+// including `Action::Swap`, which shifts one piece's colour but keeps its
+// pile-plus-count sum fixed per colour -- so a symmetric image never needs
+// to recompute them, only carry them along unchanged). `Groups` (see
+// `connectivity.rs`) is likewise not stored on `State` at all, always
+// recomputed on demand, so `canonical_representation` has nothing keyed on
+// pre-transform indices to rebuild -- simpler than Margo's `groups` field.
+
+/// A cell can only belong to `occupied`/`black` -- see the module docs above
+/// for why there's no `Zombie`/`Previous`-style third or fourth channel the
+/// way `games/margo` needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Channel {
+    Occupied = 0,
+    Black = 1,
+}
+
+const HASH_CHANNELS: usize = 2;
+
+/// Largest board this game serves is `MAX_N`'s `total_cells(MAX_N) == 385`
+/// cells, `HASH_CHANNELS` channels per cell, plus one slot each for `turn`
+/// and `can_swap`.
+const MAX_CELLS: usize = pyramid::total_cells(MAX_N);
+pub const ZOBRIST_ENTRIES: usize = MAX_CELLS * HASH_CHANNELS + 2;
+pub const ZOBRIST_TURN: usize = MAX_CELLS * HASH_CHANNELS;
+pub const ZOBRIST_CAN_SWAP: usize = MAX_CELLS * HASH_CHANNELS + 1;
+
+/// Random Zobrist table, lazily initialised.
+pub static HASHES: LazyZobristTable<ZOBRIST_ENTRIES> = LazyZobristTable::new(0x41CE05F1D2B7E39A);
+
+#[inline]
+fn zobrist_cell(pos: usize, channel: Channel) -> usize {
+    pos * HASH_CHANNELS + channel as usize
+}
+
+/// XOR the hash contribution for a single cell into all 8 symmetry hashes.
+#[inline]
+fn xor_cell(hashes: &mut [u64; 8], pos: usize, channel: Channel, sym: &PyramidD4) {
+    for (s, &sym_pos) in sym.index_symmetries(pos).iter().enumerate() {
+        hashes[s] ^= HASHES.hash(zobrist_cell(sym_pos, channel));
+    }
+}
+
+/// XOR the hash contribution for every set bit of `cells` on `channel`.
+fn xor_cells(hashes: &mut [u64; 8], cells: &Cells, channel: Channel, sym: &PyramidD4) {
+    for pos in cells.iter_set() {
+        xor_cell(hashes, pos, channel, sym);
+    }
+}
+
+/// XOR a position-independent constant (turn, can_swap) into all 8 hashes.
+#[inline]
+fn xor_const(hashes: &mut [u64; 8], table_idx: usize) {
+    let v = HASHES.hash(table_idx);
+    for h in hashes.iter_mut() {
+        *h ^= v;
+    }
+}
+
+/// Rebuilds all 8 symmetry hashes from scratch -- see this section's own
+/// doc comment for why there's nothing incrementally maintained on `State`
+/// to rebuild from here.
+fn rebuild_hashes(occupied: &Cells, black: &Cells, turn: Player, can_swap: bool) -> [u64; 8] {
+    let sym = PyramidD4::new(occupied.n());
+    let mut hashes = [0u64; 8];
+    xor_cells(&mut hashes, occupied, Channel::Occupied, &sym);
+    xor_cells(&mut hashes, black, Channel::Black, &sym);
+    if turn == Player::Black {
+        xor_const(&mut hashes, ZOBRIST_TURN);
+    }
+    if can_swap {
+        xor_const(&mut hashes, ZOBRIST_CAN_SWAP);
+    }
+    hashes
+}
+
+/// The symmetric image of `cells` under symmetry element `sym_idx`.
+fn transform_cells(cells: &Cells, sym: &PyramidD4, sym_idx: usize) -> Cells {
+    let mut out = Cells::new(Dyn(cells.n()));
+    for pos in cells.iter_set() {
+        out.set_index(sym.index_symmetries(pos)[sym_idx]);
+    }
+    out
+}
+
+/// A comparable key for a board's set-cell pattern, for picking the
+/// lexicographically minimal symmetric image -- `Cells` has no `Ord` impl of
+/// its own. Copies the raw backing words into a fixed-size array (mirrors
+/// `games/margo`'s identically-named helper) rather than collecting
+/// `iter_set` into a `Vec<usize>`, since this runs on every candidate
+/// symmetry, for every geometric channel, on every node of the MCTS
+/// selection path whenever transpositions are enabled.
+fn cells_key(cells: &Cells) -> [u64; 7] {
+    let mut out = [0u64; 7];
+    for (i, w) in cells.words().enumerate() {
+        out[i] = w;
+    }
+    out
+}
+
+/// Index of the symmetry whose image of the entire geometric state
+/// (`occupied`, `black`) is lexicographically minimal -- the canonical
+/// orientation for the position. Unlike `games/margo` (whose `zombie`/
+/// `previous` fields can be invariant under a different subgroup than
+/// `(occupied, black)` alone, forcing every geometric field into the
+/// tie-break -- see that module's own doc comment on the lesson), Akron's
+/// `State` has only these two geometric fields, so tying the break to both
+/// of them together is already exhaustive: no other field could disagree
+/// with whichever symmetry they jointly pick out.
+fn canonical_symmetry(occupied: &Cells, black: &Cells) -> usize {
+    let sym = PyramidD4::new(occupied.n());
+    (0..8)
+        .min_by_key(|&sym_idx| {
+            (
+                cells_key(&transform_cells(occupied, &sym, sym_idx)),
+                cells_key(&transform_cells(black, &sym, sym_idx)),
+            )
+        })
+        .unwrap()
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Default, Hash, PartialEq, Eq)]
@@ -83,10 +216,14 @@ impl PlayerIndex for Player {
 /// `State::generate_actions` filters candidates to level 0 specifically for
 /// this action, since `can_place` has no notion of "placed from pile" vs.
 /// "relocated". A moved piece is the only way a piece ever reaches a
-/// higher level.
+/// higher level. `.1` is the board's base width `n`, carried along because
+/// `Game::apply_to_action`/`invert_action` need it to build a `PyramidD4`
+/// symmetry and their trait signature carries only the action and a
+/// `Transform` index, no state -- mirrors `games/margo`'s identically-
+/// shaped `Action::Place(u16, u8)`.
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Hash, PartialEq, Eq)]
 pub enum Action {
-    Add(u16),
+    Add(u16, u8),
     /// Relocate the mover's own piece from `.0` to `.1` (both flat pyramid
     /// indices), per the published rules' movement clause: the destination
     /// must be empty, supported, and touch some other cell already in the
@@ -95,12 +232,15 @@ pub enum Action {
     /// anything the resulting cascade itself relocates this turn -- see
     /// `State::move_destinations`). A piece that supports exactly one other
     /// piece drags that piece down to fill the vacated gap
-    /// (`pyramid::Pyramid::relocate`'s cascade), possibly recursively.
-    Move(u16, u16),
+    /// (`pyramid::Pyramid::relocate`'s cascade), possibly recursively. `.2`
+    /// is the board's base width `n`, for the same reason `Add`'s `.1`
+    /// carries it.
+    Move(u16, u16, u8),
     /// Pie-rule reply to White's opening placement: recolour the single
     /// piece on the board instead of adding one of Black's own, mirroring
     /// `games/margo`'s identically-named `Action::Swap`/`State::can_swap`
-    /// shape. Legal only when [`State::can_swap`] holds.
+    /// shape. Legal only when [`State::can_swap`] holds. A fixed point of
+    /// every symmetry element, like `games/margo`'s `Action::Swap`.
     Swap,
 }
 
@@ -326,6 +466,17 @@ impl State {
             groups.color_of(a) == Some(black) && side_b.iter().any(|&b| groups.same_group(a, b))
         })
     }
+
+    /// This state's Zobrist hash, symmetry-invariant: two states that are
+    /// symmetric images of each other under `PyramidD4` hash identically,
+    /// since both pick out the same slot of `rebuild_hashes`'s per-symmetry
+    /// array via [`canonical_symmetry`] (see `games/margo`/`games/gonnect`'s
+    /// identical `State::zobrist_hash`/`State::hash` for why this is the
+    /// trick that makes the array-of-hashes design work).
+    fn zobrist_hash(&self) -> u64 {
+        let hashes = rebuild_hashes(&self.occupied, &self.black, self.turn, self.can_swap);
+        hashes[canonical_symmetry(&self.occupied, &self.black)]
+    }
 }
 
 #[derive(Clone)]
@@ -338,7 +489,7 @@ impl Game for Akron {
 
     fn apply(mut state: State, action: &Action) -> State {
         match *action {
-            Action::Add(index) => {
+            Action::Add(index, _n) => {
                 let index = index as usize;
                 debug_assert!(
                     state.occupied.to_coord(index).2 == 0,
@@ -359,7 +510,7 @@ impl Game for Akron {
                     }
                 }
             }
-            Action::Move(from, to) => {
+            Action::Move(from, to, _n) => {
                 let (from, to) = (from as usize, to as usize);
                 let color_from = state.is_black(from);
                 debug_assert!(
@@ -427,15 +578,15 @@ impl Game for Akron {
     }
 
     fn generate_actions(state: &State, actions: &mut Vec<Action>) {
+        let n = state.occupied.n();
         if state.can_swap() {
             actions.push(Action::Swap);
         }
 
         if state.pile(state.turn) > 0 {
-            let n = state.occupied.n();
             for index in 0..(n * n) {
                 if !state.is_occupied(index) {
-                    actions.push(Action::Add(index as u16));
+                    actions.push(Action::Add(index as u16, n as u8));
                 }
             }
         }
@@ -452,7 +603,7 @@ impl Game for Akron {
                 continue;
             }
             for to in state.move_destinations(from, &chain) {
-                actions.push(Action::Move(from as u16, to as u16));
+                actions.push(Action::Move(from as u16, to as u16, n as u8));
             }
         }
     }
@@ -503,16 +654,76 @@ impl Game for Akron {
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
         match *action {
-            Action::Add(index) => {
+            Action::Add(index, _n) => {
                 let (col, row, _level) = state.occupied.to_coord(index as usize);
                 format!("({col},{row})")
             }
-            Action::Move(from, to) => {
+            Action::Move(from, to, _n) => {
                 let (fc, fr, fl) = state.occupied.to_coord(from as usize);
                 let (tc, tr, tl) = state.occupied.to_coord(to as usize);
                 format!("({fc},{fr},{fl})->({tc},{tr},{tl})")
             }
             Action::Swap => "swap".to_string(),
+        }
+    }
+
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        state.zobrist_hash()
+    }
+
+    fn canonical_representation(state: Real<Self::S>) -> (Canonical<Self::S>, Transform) {
+        let state = state.0;
+        let sym_idx = canonical_symmetry(&state.occupied, &state.black);
+        let sym = PyramidD4::new(state.occupied.n());
+        let occupied = transform_cells(&state.occupied, &sym, sym_idx);
+        let black = transform_cells(&state.black, &sym, sym_idx);
+        (
+            Canonical(State {
+                occupied,
+                black,
+                white_pile: state.white_pile,
+                black_pile: state.black_pile,
+                turn: state.turn,
+                can_swap: state.can_swap,
+            }),
+            Transform::new(sym_idx),
+        )
+    }
+
+    /// `Action::Swap` is a fixed point of every symmetry (see the variant's
+    /// own doc comment); `Add`/`Move` transform their cell indices through
+    /// the `PyramidD4` group for the board size they each carry.
+    fn apply_to_action(action: Real<Self::A>, sym: Transform) -> Canonical<Self::A> {
+        match action.0 {
+            Action::Swap => Canonical(Action::Swap),
+            Action::Add(index, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let image = pyramid_sym.index_symmetries(index as usize)[sym.index()];
+                Canonical(Action::Add(image as u16, n))
+            }
+            Action::Move(from, to, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let from_image = pyramid_sym.index_symmetries(from as usize)[sym.index()];
+                let to_image = pyramid_sym.index_symmetries(to as usize)[sym.index()];
+                Canonical(Action::Move(from_image as u16, to_image as u16, n))
+            }
+        }
+    }
+
+    fn invert_action(action: Canonical<Self::A>, sym: Transform) -> Real<Self::A> {
+        match action.0 {
+            Action::Swap => Real(Action::Swap),
+            Action::Add(index, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let original = pyramid_sym.invert_symmetry(index as usize, sym.index());
+                Real(Action::Add(original as u16, n))
+            }
+            Action::Move(from, to, n) => {
+                let pyramid_sym = PyramidD4::new(n as usize);
+                let from_original = pyramid_sym.invert_symmetry(from as usize, sym.index());
+                let to_original = pyramid_sym.invert_symmetry(to as usize, sym.index());
+                Real(Action::Move(from_original as u16, to_original as u16, n))
+            }
         }
     }
 }
@@ -546,6 +757,7 @@ mod tests {
     use super::*;
     use mcts::util::random_play;
     use pyramid::crossing::get_crossing_table;
+    use rand::{rngs::SmallRng, Rng, SeedableRng};
 
     #[test]
     fn random_play_smoke_test() {
@@ -560,7 +772,7 @@ mod tests {
         let n = state.n();
         assert_eq!(actions.len(), n * n);
         for action in actions {
-            let Action::Add(index) = action else {
+            let Action::Add(index, _n) = action else {
                 panic!("empty board must only offer Add actions");
             };
             let (_, _, level) = state.occupied.to_coord(index as usize);
@@ -578,11 +790,11 @@ mod tests {
 
         actions.clear();
         Akron::generate_actions(&state, &mut actions);
-        let Action::Add(placed) = first else {
+        let Action::Add(placed, placed_n) = first else {
             panic!("first move on an empty board must be an Add");
         };
         assert!(
-            !actions.contains(&Action::Add(placed)),
+            !actions.contains(&Action::Add(placed, placed_n)),
             "a just-occupied cell must not be offered again"
         );
         // One fewer Add (the just-occupied cell), plus the pie-rule Swap
@@ -614,7 +826,7 @@ mod tests {
         let mut actions = Vec::new();
         Akron::generate_actions(&state, &mut actions);
         assert!(
-            actions.iter().all(|a| matches!(a, Action::Move(_, _))),
+            actions.iter().all(|a| matches!(a, Action::Move(_, _, _))),
             "an emptied pile must offer no Add actions"
         );
         assert!(!actions.is_empty(), "the lone piece has legal relocations");
@@ -650,10 +862,10 @@ mod tests {
         let state = State::new(4);
         let mut actions = Vec::new();
         Akron::generate_actions(&state, &mut actions);
-        let Action::Add(opening) = actions[0] else {
+        let Action::Add(opening, opening_n) = actions[0] else {
             panic!("the empty board's first offered action must be an Add");
         };
-        let state = Akron::apply(state, &Action::Add(opening));
+        let state = Akron::apply(state, &Action::Add(opening, opening_n));
         assert!(state.can_swap());
 
         let mut actions = Vec::new();
@@ -770,14 +982,15 @@ mod tests {
         let from = place(&mut state, 2, 0, 0, false);
         let to = state.occupied.index(1, 1, 0);
 
+        let n = state.n() as u8;
         let mut actions = Vec::new();
         Akron::generate_actions(&state, &mut actions);
         assert!(
-            actions.contains(&Action::Move(from as u16, to as u16)),
+            actions.contains(&Action::Move(from as u16, to as u16, n)),
             "an endpoint piece must be able to relocate to a cell touching the rest of its group"
         );
 
-        let state = Akron::apply(state, &Action::Move(from as u16, to as u16));
+        let state = Akron::apply(state, &Action::Move(from as u16, to as u16, n));
         assert!(!state.is_occupied(from), "the source cell is now empty");
         assert!(state.is_occupied(to) && !state.is_black(to));
         assert_eq!(state.turn(), Player::Black);
@@ -804,7 +1017,7 @@ mod tests {
         assert!(
             !actions
                 .iter()
-                .any(|a| matches!(a, Action::Move(from, _) if *from as usize == middle)),
+                .any(|a| matches!(a, Action::Move(from, _, _) if *from as usize == middle)),
             "a non-freedom piece must never be offered as a Move source"
         );
     }
@@ -829,7 +1042,8 @@ mod tests {
 
         assert_eq!(state.vacated_chain(from), Some(vec![from, dependent]));
 
-        let state = Akron::apply(state, &Action::Move(from as u16, to as u16));
+        let n = state.n() as u8;
+        let state = Akron::apply(state, &Action::Move(from as u16, to as u16, n));
 
         assert!(
             state.is_occupied(from) && state.is_black(from),
@@ -1038,6 +1252,192 @@ mod tests {
         assert!(
             state.has_span(Player::Black),
             "cutting White's cutter restores Black's original span"
+        );
+    }
+
+    /////////////////////////////////////////////////////////////////////////
+    // Symmetry: `apply_to_action`/`invert_action` round-trip,
+    // `canonical_representation` invariance across every symmetric image of
+    // a state, `invert_action` always producing a legal real action along
+    // random play, and hash consistency -- mirroring `games/margo`'s own
+    // symmetry test suite.
+
+    /// Both geometric fields (`occupied`/`black`) transformed through each
+    /// of the 8 `PyramidD4` elements -- the full set of states that must all
+    /// canonicalize identically, since they're the same position viewed
+    /// from 8 different orientations. `white_pile`/`black_pile`/`turn`/
+    /// `can_swap` aren't geometric, so they ride along unchanged.
+    fn state_symmetries(state: &State) -> [State; 8] {
+        let n = state.occupied.n();
+        let sym = PyramidD4::new(n);
+        std::array::from_fn(|i| State {
+            occupied: transform_cells(&state.occupied, &sym, i),
+            black: transform_cells(&state.black, &sym, i),
+            white_pile: state.white_pile,
+            black_pile: state.black_pile,
+            turn: state.turn,
+            can_swap: state.can_swap,
+        })
+    }
+
+    #[test]
+    fn action_transform_round_trip() {
+        let n = DEFAULT_N as u8;
+        let total = pyramid::total_cells(DEFAULT_N);
+        for index in 0..total {
+            for sym in 0..8usize {
+                let sym = Transform::new(sym);
+                let add = Action::Add(index as u16, n);
+                let back = Akron::invert_action(Akron::apply_to_action(Real(add), sym), sym);
+                assert_eq!(back.into_inner(), add);
+
+                let to = (index + 1) % total;
+                let mv = Action::Move(index as u16, to as u16, n);
+                let back = Akron::invert_action(Akron::apply_to_action(Real(mv), sym), sym);
+                assert_eq!(back.into_inner(), mv);
+            }
+        }
+        for sym in 0..8usize {
+            let sym = Transform::new(sym);
+            assert_eq!(
+                Akron::apply_to_action(Real(Action::Swap), sym).into_inner(),
+                Action::Swap
+            );
+            assert_eq!(
+                Akron::invert_action(Canonical(Action::Swap), sym).into_inner(),
+                Action::Swap
+            );
+        }
+    }
+
+    /// Plays a short random game (adds/moves/swap all in scope), and at
+    /// every reached state, checks that `canonical_representation` agrees
+    /// across all 8 of that state's own symmetric images.
+    fn check_canonical_representation_invariant(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let mut reachable = vec![state.clone()];
+        let max_plies = state.occupied.total_cells() / 2;
+        for _ in 0..max_plies {
+            if Akron::is_terminal(&state) {
+                break;
+            }
+            let mut actions = Vec::new();
+            Akron::generate_actions(&state, &mut actions);
+            let action = actions[rng.gen_range(0..actions.len())];
+            state = Akron::apply(state, &action);
+            reachable.push(state.clone());
+        }
+
+        for state in reachable {
+            let (canon, _sym) = Akron::canonical_representation(Real(state.clone()));
+            let canon_state = canon.into_inner();
+
+            for variant in state_symmetries(&state) {
+                let (canon2, _) = Akron::canonical_representation(Real(variant));
+                assert_eq!(
+                    canon2.into_inner(),
+                    canon_state,
+                    "canonical_representation disagreed across symmetric images \
+                     (n={n}, seed={seed})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_representation_invariant_under_symmetry() {
+        for seed in 0..20 {
+            check_canonical_representation_invariant(MIN_N, seed);
+        }
+        for seed in 0..10 {
+            check_canonical_representation_invariant(DEFAULT_N, seed);
+        }
+    }
+
+    /// Along random play, every action `generate_actions` offers on the
+    /// canonicalized state, translated back via `invert_action`, must be
+    /// present in the real state's own `generate_actions` output.
+    fn check_invert_action_legal_along_random_game(n: usize, seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::new(n);
+        let max_plies = state.occupied.total_cells() + 2;
+
+        for _ in 0..max_plies {
+            if Akron::is_terminal(&state) {
+                return;
+            }
+            let mut real_actions = Vec::new();
+            Akron::generate_actions(&state, &mut real_actions);
+
+            let (canon, sym) = Akron::canonical_representation(Real(state.clone()));
+            let canon = canon.into_inner();
+            let mut canon_actions = Vec::new();
+            Akron::generate_actions(&canon, &mut canon_actions);
+
+            for &canon_action in &canon_actions {
+                let translated = Akron::invert_action(Canonical(canon_action), sym).into_inner();
+                assert!(
+                    real_actions.contains(&translated),
+                    "seed {seed}, n={n}: invert_action produced {translated:?} (from \
+                     canonical {canon_action:?}, sym {sym:?}), not present in real \
+                     generate_actions {real_actions:?}"
+                );
+            }
+
+            let action = real_actions[rng.gen_range(0..real_actions.len())];
+            state = Akron::apply(state, &action);
+        }
+    }
+
+    #[test]
+    fn invert_action_produces_legal_real_actions() {
+        for seed in 0..30 {
+            check_invert_action_legal_along_random_game(MIN_N, seed);
+        }
+        for seed in 0..15 {
+            check_invert_action_legal_along_random_game(DEFAULT_N, seed);
+        }
+    }
+
+    /// Random-sampled hash-consistency check: any two states sharing a
+    /// `zobrist_hash` must have the same `canonical_representation` output.
+    #[test]
+    fn random_games_hash_consistency() {
+        use std::collections::HashMap;
+
+        let mut rng = SmallRng::seed_from_u64(9);
+        let mut by_hash: HashMap<u64, State> = HashMap::new();
+        let mut mismatches = 0;
+        for _game in 0..200 {
+            let mut state = State::new(MIN_N);
+            for _ in 0..40 {
+                if Akron::is_terminal(&state) {
+                    break;
+                }
+                let mut actions = Vec::new();
+                Akron::generate_actions(&state, &mut actions);
+                let action = actions[rng.gen_range(0..actions.len())];
+                state = Akron::apply(state, &action);
+
+                let h = state.zobrist_hash();
+                let (canon, _sym) = Akron::canonical_representation(Real(state.clone()));
+                let canon_state = canon.into_inner();
+                match by_hash.get(&h) {
+                    Some(prev) if *prev != canon_state => {
+                        mismatches += 1;
+                        println!("MISMATCH at hash {h}");
+                    }
+                    Some(_) => {}
+                    None => {
+                        by_hash.insert(h, canon_state);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            mismatches, 0,
+            "hash collided across different equivalence classes"
         );
     }
 }
