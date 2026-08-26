@@ -8,8 +8,13 @@ publish = false
 name = "game_akron"
 
 [dependencies]
+mcts = { path = "../../mcts" }
 bitboard = { path = "../../bitboard" }
 pyramid = { path = "../../pyramid" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+rand = { version = "0.8.5", features = ["small_rng"] }
 
 [lints]
 workspace = true
