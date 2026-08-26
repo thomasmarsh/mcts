@@ -16,10 +16,13 @@ use std::sync::RwLock;
 /// winning player by index rather than by `Game::P`, matching `player_idx`'s
 /// own convention (see `Node::player_idx`) so `Node<A>` doesn't need a second
 /// generic bound just to name a player. "Loss for player p" is deliberately
-/// not represented -- with `num_players() <= 2` (this is scoped to that, see
-/// `debug_assert!`s where the solver is wired in), "not a win for me" among
-/// resolved options collapses unambiguously to "the other player wins", so
-/// it's derived at read time instead of stored twice.
+/// not represented at all, at any player count: `Win(w)` for `w != p`, or
+/// `Draw`, already unambiguously mean "not a win for p" wherever that's what
+/// a reader (e.g. `Node::pn`/`Node::dpn`) needs, without naming *which*
+/// other player wins -- see `backprop::derive_proven`'s doc comment for how
+/// a node with more than one possible opponent decides whether it can name
+/// one at all (its "Standard" update rule only does so when every resolved
+/// child agrees).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Proven {
     Unproven,

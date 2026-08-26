@@ -282,7 +282,6 @@ pub fn expand<'a, G: Game>(
             NodeState::Expanded(children)
         } else {
             if use_mcts_solver {
-                debug_assert!(G::num_players() <= 2);
                 let proven = match status {
                     TerminalStatus::NotTerminal => unreachable!(),
                     TerminalStatus::Draw => Proven::Draw,

@@ -356,8 +356,12 @@ where
     /// short-circuits onto a proven-winning child and avoids proven-losing
     /// ones, and `choose_action` stops early once the root itself is
     /// resolved. `false` (the default) keeps the untouched plain-UCT
-    /// behavior. Scoped to `G::num_players() <= 2` -- see
-    /// `debug_assert!`s at the call sites that derive `Proven` values.
+    /// behavior. Sound at any player count: `backprop::derive_proven`'s
+    /// "Standard" update rule (Nijssen & Winands, CG 2010) only ever
+    /// propagates a win when every fully-resolved child agrees on the same
+    /// winner, and falls back to a proven draw rather than mis-attributing
+    /// a win when a node's children disagree on which opponent wins -- see
+    /// `derive_proven`'s doc comment.
     pub use_mcts_solver: bool,
 
     /// Final-move-selection "contempt factor" (Kowalski et al. 2023, Section
@@ -529,25 +533,13 @@ where
     }
 
     /// Validates this configuration's resolved `Requirements` against `G`,
-    /// e.g. rejecting `select::UctPn` (MCTS-Solver's `max_players: Some(2)`)
-    /// paired with a >2-player game, and (see below) `use_mcts_solver` or
-    /// `prior` paired with a >2-player game.
+    /// e.g. rejecting `prior` strategies scoped to `max_players: Some(2)`
+    /// (see below) paired with a >2-player game. `use_mcts_solver` and
+    /// `select::UctPn` have no player-count ceiling -- both are sound at any
+    /// `N` (see `use_mcts_solver`'s and `UctPn::requirements`'s doc
+    /// comments).
     pub fn validate(&self) -> Result<(), String> {
         self.requirements().validate(G::num_players())?;
-        // Unlike a component's advisory `requirements().solver` bit (which
-        // degenerates to a no-op with the solver off, e.g. `UctPn`'s doc
-        // comment), `use_mcts_solver` itself directly gates whether
-        // `backprop.rs` derives `node::Proven` values -- a representation
-        // only sound for `num_players() <= 2` (`node::Proven`'s doc
-        // comment). Checked here, not just via the `debug_assert!` at the
-        // derivation site, so a release build rejects this instead of
-        // silently deriving nonsense.
-        if self.use_mcts_solver && G::num_players() > 2 {
-            return Err(format!(
-                "use_mcts_solver requires num_players() <= 2, got {}",
-                G::num_players()
-            ));
-        }
         // `prior::PriorStrategy` isn't one of `Select`/`Simulate`/
         // `FinalAction`, so its own `requirements()` doesn't participate in
         // the union above -- checked separately here instead.
@@ -869,10 +861,10 @@ mod search_config_validate_tests {
     }
 
     #[test]
-    fn validate_rejects_use_mcts_solver_for_more_than_two_players() {
+    fn validate_accepts_use_mcts_solver_for_more_than_two_players() {
         let config =
             SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().use_mcts_solver(true);
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
     }
 
     #[test]

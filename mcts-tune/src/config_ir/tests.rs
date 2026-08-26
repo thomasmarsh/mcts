@@ -202,12 +202,14 @@ fn requirements_of_matches_the_real_components_own_answer() {
     // `UctPn` is the one hand-picked case in mcts/src that overrides
     // `requirements()` beyond `backprop_flags()` -- proving this table's
     // `requirements_of` reports the same thing the concrete component
-    // does, with no second copy of "UctPn needs the solver / <=2
-    // players" written here.
+    // does, with no second copy of "UctPn needs the solver" written here.
     let spec = SelectSpec::UctPn { c: 1.4, c_pn: 1.0 };
     let reqs = requirements_of::<Nim>(&spec);
     assert!(reqs.solver);
-    assert_eq!(reqs.max_players, Some(2));
+    assert_eq!(
+        reqs.max_players, None,
+        "UctPn's rank bonus is sound at any player count -- see its requirements() doc comment"
+    );
 
     // `mcts_select::Rave` reads its own ancestor-keyed GRAVE table
     // (`SelectContext::grave`), not the per-child AMAF field

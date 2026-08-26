@@ -1323,6 +1323,116 @@ fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
     assert_eq!(root.dpn2(), 2);
 }
 
+// MCTS-Solver generalized to N-player games (Nijssen & Winands, CG 2010):
+// `derive_proven`'s "Standard" update rule for a node with more than one
+// possible opponent. At `num_players() == 2` there's only ever one possible
+// `win_q`, so the multi-opponent branches below were never reachable before
+// `use_mcts_solver`'s `num_players() <= 2` gate was lifted -- these are the
+// first tests to actually exercise them, hand-built the same way as
+// `test_derive_pn_dpn_negamax_recurrence_hand_verified` above rather than
+// through a real 3-player search.
+#[test]
+fn test_derive_proven_standard_rule_proves_win_when_all_children_agree_on_same_opponent() {
+    use crate::strategies::mcts::backprop::derive_proven;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child_a = Node::new(1, 0);
+    child_a.try_prove(Proven::Win(1));
+    let child_a_id = index.insert(child_a);
+
+    let child_b = Node::new(2, 0);
+    child_b.try_prove(Proven::Win(1));
+    let child_b_id = index.insert(child_b);
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 3, false);
+    children.get_or_create_child(0, || child_a_id);
+    children.get_or_create_child(1, || child_b_id);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_proven(&root, &index);
+
+    assert_eq!(
+        root.proven(),
+        Proven::Win(1),
+        "both children agree opponent 1 wins, so the Standard rule should propagate it"
+    );
+}
+
+#[test]
+fn test_derive_proven_standard_rule_leaves_ambiguous_multi_opponent_win_unproven() {
+    use crate::strategies::mcts::backprop::derive_proven;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child_a = Node::new(1, 0);
+    child_a.try_prove(Proven::Win(1));
+    let child_a_id = index.insert(child_a);
+
+    let child_b = Node::new(2, 0);
+    child_b.try_prove(Proven::Win(2));
+    let child_b_id = index.insert(child_b);
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 3, false);
+    children.get_or_create_child(0, || child_a_id);
+    children.get_or_create_child(1, || child_b_id);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_proven(&root, &index);
+
+    assert_eq!(
+        root.proven(),
+        Proven::Unproven,
+        "children disagree on which opponent wins, so the Standard rule must not guess"
+    );
+}
+
+#[test]
+fn test_derive_proven_draw_takes_priority_over_an_ambiguous_win_q() {
+    use crate::strategies::mcts::backprop::derive_proven;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child_a = Node::new(1, 0);
+    child_a.try_prove(Proven::Win(1));
+    let child_a_id = index.insert(child_a);
+
+    let child_b = Node::new(2, 0);
+    child_b.try_prove(Proven::Win(2));
+    let child_b_id = index.insert(child_b);
+
+    let child_c = Node::new(0, 0);
+    child_c.try_prove(Proven::Draw);
+    let child_c_id = index.insert(child_c);
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 3, false);
+    children.get_or_create_child(0, || child_a_id);
+    children.get_or_create_child(1, || child_b_id);
+    children.get_or_create_child(2, || child_c_id);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_proven(&root, &index);
+
+    assert_eq!(
+        root.proven(),
+        Proven::Draw,
+        "mover can secure the drawn child, so it's a proven draw even though \
+         its other children disagree on which opponent would otherwise win"
+    );
+}
+
 // MCTS-MB-n (Baier & Winands): `derive_minimax_value`'s backward-induction
 // backup, hand-verified on a tiny 3-child root -- small enough to compute
 // the expected overwrite by hand, which a purely behavioral test wouldn't

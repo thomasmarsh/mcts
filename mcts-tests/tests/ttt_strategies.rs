@@ -2318,10 +2318,9 @@ fn test_requirements_union_composes_and_survives_wrapping() {
     // that resolves a composed strategy's storage needs/constraints without
     // a per-pair-of-features match arm. `select::UctPn` is the one
     // `SelectStrategy` that overrides `requirements()` beyond what
-    // `backprop_flags()` alone can express (`solver`/`max_players`); wrap it
-    // in `select::EpsilonGreedy` to prove that override survives
-    // composition instead of silently reverting to the
-    // `from_backprop_flags` default.
+    // `backprop_flags()` alone can express (`solver`); wrap it in
+    // `select::EpsilonGreedy` to prove that override survives composition
+    // instead of silently reverting to the `from_backprop_flags` default.
     use game_ttt::*;
     use mcts::select::{EpsilonGreedy, UctPn};
     type G = TicTacToe;
@@ -2332,9 +2331,8 @@ fn test_requirements_union_composes_and_survives_wrapping() {
         "UctPn requires the solver's proof bookkeeping"
     );
     assert_eq!(
-        plain.max_players,
-        Some(2),
-        "UctPn's Proven representation is only sound for <= 2 players"
+        plain.max_players, None,
+        "UctPn's proof/disproof-number ranking is sound at any player count"
     );
 
     let wrapped = <EpsilonGreedy<G, UctPn> as mcts::select::SelectStrategy<G>>::requirements(
@@ -2352,17 +2350,14 @@ fn test_requirements_union_composes_and_survives_wrapping() {
         ..mcts::Requirements::none()
     };
     let combined = plain.union(amaf);
-    assert!(combined.solver && combined.amaf && combined.max_players == Some(2));
+    assert!(combined.solver && combined.amaf && combined.max_players.is_none());
 
     // And the whole thing is exactly what `SearchConfig::requirements()`
     // reports for a real composed strategy, wired end to end.
     type Strat = mcts::strategies::mcts::strategy::Compose<UctPn, mcts::simulate::Uniform>;
     let cfg = mcts::SearchConfig::<G, Strat>::default();
     assert_eq!(cfg.requirements(), plain);
-    assert!(
-        cfg.validate().is_ok(),
-        "tic-tac-toe is a 2-player game, so UctPn's max_players constraint is satisfied"
-    );
+    assert!(cfg.validate().is_ok());
 }
 
 // `TreeSearch::reuse_or_reset_graph` (`mcts/src/strategies/mcts/search/

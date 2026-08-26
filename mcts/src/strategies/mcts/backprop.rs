@@ -28,6 +28,18 @@ fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Pr
 /// that isn't `Expanded` (a `Terminal` node's `Proven` was already set once
 /// at `expand()`-time and isn't re-derived here).
 ///
+/// Implements the "Standard" update rule (Nijssen & Winands, *Enhancements
+/// for Multi-Player Monte-Carlo Tree Search*, CG 2010) for backing up a
+/// proof through a node with more than one possible opponent: a win only
+/// propagates when *every* fully-resolved child agrees on the same winner
+/// (see the `win_q`/`win_q_consistent` tracking below); if children disagree
+/// on which opponent wins, the node is left `Unproven` rather than guessing.
+/// This is also exactly right at `num_players() == 2`, where "the other
+/// player" is the only possible `win_q` and the ambiguous case can't arise.
+/// The paper found this the only one of its three proposed rules (the
+/// others being Paranoid and First-Winner) that actually improved over no
+/// solver at all for a sudden-death game like Focus.
+///
 /// Deliberately stricter than a literal reading of the Draw
 /// clause: `Draw` is only written once *every* explored child is itself
 /// already proven (`Proven != Unproven`), not merely explored. Concluding
@@ -39,8 +51,19 @@ fn proven_from_terminal<P: PlayerIndex>(status: &TerminalStatus<P>) -> Option<Pr
 /// first costs nothing this rule needs: it can only delay a proof, never
 /// weaken one, so it wouldn't observably narrow what the plan asks for
 /// (every child *is* fully resolved once search actually finishes proving
-/// this subtree).
-fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
+/// this subtree). It's also why a Draw takes priority over a `win_q`
+/// resolution when both are present among the mover's children: the mover
+/// (an OR node, choosing its own best available outcome) always prefers a
+/// proven draw over letting any opponent win, so a drawn escape being
+/// available proves this node a draw regardless of what its other,
+/// worse-for-the-mover children individually prove.
+///
+/// `pub(crate)` and generic over the action type `A` directly, matching
+/// `derive_pn_dpn` below -- it never actually calls a `Game` method either,
+/// and this is what lets `tests` (below) exercise the `win_q`/`any_draw`
+/// recurrence directly against a hand-built arena instead of only through a
+/// full game-playing search.
+pub(crate) fn derive_proven<A: crate::game::Action>(node: &node::Node<A>, index: &TreeIndex<A>) {
     let Some(NodeState::Expanded(children)) = node.status() else {
         return;
     };
@@ -68,9 +91,14 @@ fn derive_proven<G: Game>(node: &node::Node<G::A>, index: &TreeIndex<G::A>) {
             Proven::Win(w) => match win_q {
                 None => win_q = Some(w),
                 Some(q) if q == w => {}
-                // Only reachable if `num_players() > 2`, which the solver is
-                // not scoped to (see the `debug_assert!`s at its call
-                // sites) -- guarded rather than assumed away.
+                // Only reachable if `num_players() > 2`: two children prove
+                // wins for two different opponents. The Standard rule
+                // (see this function's doc comment) deliberately doesn't
+                // guess which one actually wins from the parent's
+                // perspective -- `win_q_consistent` going `false` here
+                // suppresses the `Win(q)` branch below, leaving the node
+                // `Unproven` (unless `any_draw` already resolves it to
+                // `Draw`).
                 Some(_) => win_q_consistent = false,
             },
             Proven::Draw => any_draw = true,
@@ -783,7 +811,6 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             // already visits every ancestor every time regardless of trial
             // outcome, so no extra triggering logic is needed.
             if use_mcts_solver {
-                debug_assert!(G::num_players() <= 2);
                 let node = index.get(*node_id);
                 // Zero-length trial: `playout`'s very first terminal check
                 // already found this exact leaf state terminal, which is
@@ -798,7 +825,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                         node.try_prove(proven);
                     }
                 }
-                derive_proven::<G>(node, index);
+                derive_proven(node, index);
                 derive_pn_dpn(node, index);
                 derive_pn_dpn2(node, index);
             }

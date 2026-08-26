@@ -56,6 +56,8 @@ use mcts::zobrist::LazyZobristTable;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod adapter;
+
 /// Maximum stack height (a merge exceeding this immediately overflows).
 const MAX_HEIGHT: u32 = 5;
 
@@ -986,5 +988,95 @@ mod tests {
         b.apply(&m2);
         assert_eq!(a.hash, b.hash);
         assert_eq!(a, b);
+    }
+
+    // MCTS-Solver on a real 3-player game (Nijssen & Winands, CG 2010's own
+    // benchmark game): direct regression coverage that
+    // `use_mcts_solver(true)` is actually usable for `Focus3` now that
+    // `SearchConfig::validate()` no longer rejects `num_players() > 2`, and
+    // that the search integrates end to end (finds the forced win, stops
+    // early) rather than just type-checking. Mirrors `games/ttt`'s
+    // `test_mcts_solver_finds_forced_block_and_terminates_early`.
+    //
+    // Hand-built position, player 0 to move: sliding the piece at (3,2)
+    // one square east onto (3,3) buries player 1's only piece (0 reserve,
+    // no other cell) -- player 1 becomes immobile, player 2 was already
+    // immobile (no pieces, no reserve, rigged that way from the start), and
+    // player 0 keeps (3,3) itself mobile (a slide always leaves the mover
+    // on top of its destination -- see `backprop::derive_proven`'s doc
+    // comment), so this one move is an immediate win for player 0. Player
+    // 0's *other* piece at (0,3) has three harmless alternative slides that
+    // don't end the game, so the solver actually has to distinguish the
+    // winning move from real alternatives, not just play the only legal one.
+    #[test]
+    fn mcts_solver_finds_forced_win_on_three_players_and_terminates_early() {
+        use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::strategies::Search;
+
+        let mut state = State::<3>::default();
+        for i in 0..64 {
+            state.set_cell(i, 0);
+        }
+        for p in 0..3 {
+            state.set_reserve(p, 0);
+        }
+        state.set_cell(3 * 8 + 2, make_cell(0, 1)); // player 0, about to slide east
+        state.set_cell(3, make_cell(0, 1)); // player 0, harmless alternative piece (row0, col3)
+        state.set_cell(3 * 8 + 3, make_cell(1, 1)); // player 1's only piece -- about to be buried
+        state.set_turn(0);
+        // Player 2 has zero pieces and zero reserve: already permanently
+        // immobile, exactly as if eliminated earlier in a real game.
+        assert_eq!(state.terminal_status(), TerminalStatus::NotTerminal);
+
+        let winning_move = Move::slide(3 * 8 + 2, 1, 1); // dir 1 = east, per `DIRS`
+        let mut actions = Vec::new();
+        state.moves(&mut actions);
+        assert!(
+            actions.contains(&winning_move),
+            "the rigged position must actually offer the intended winning move"
+        );
+        assert_eq!(actions.len(), 7, "4 slides from (3,2) + 3 from (0,3)");
+
+        type TS = TreeSearch<Focus3, strategy::Ucb1>;
+
+        let mut solved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(2000)
+                .q_init(QInit::Loss)
+                .use_mcts_solver(true)
+                .seed(42),
+        );
+        let action = solved.choose_action(&state);
+        assert_eq!(action, winning_move);
+        let mut after = state;
+        after.apply(&action);
+        assert_eq!(after.terminal_status(), TerminalStatus::Winner(Player(0)));
+        let solved_iters = solved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            solved_iters < 2000,
+            "solver should stop once the root is proven, used {solved_iters} iterations"
+        );
+
+        let mut unsolved = TS::default().config(
+            SearchConfig::default()
+                .expand_threshold(0)
+                .max_iterations(2000)
+                .q_init(QInit::Loss)
+                .seed(42),
+        );
+        let action = unsolved.choose_action(&state);
+        assert_eq!(action, winning_move);
+        let unsolved_iters = unsolved
+            .stats
+            .iter_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            unsolved_iters, 2000,
+            "without the solver, the full iteration budget should still run"
+        );
     }
 }

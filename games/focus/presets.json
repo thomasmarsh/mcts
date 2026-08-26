@@ -1,0 +1,26 @@
+[
+    {
+        "id": "easy",
+        "label": "Easy",
+        "description": "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Infinity",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 300
+    },
+    {
+        "id": "strong",
+        "label": "Strong",
+        "description": "UCB1 with a deeper iteration budget -- meaningfully stronger than Easy. Also enables MCTS-Solver's Standard update rule (Nijssen & Winands, CG 2010), which this repo's tests confirm is sound at any player count, not just 2p.",
+        "params": {
+            "family": "ucb1",
+            "c": 1.4142135623730951,
+            "q_init": "Loss",
+            "final_action": "robust_child"
+        },
+        "max_iterations": 4000
+    }
+]
