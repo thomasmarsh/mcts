@@ -210,3 +210,23 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("createApiClient / resolveKind", () => {
+  it("sends the resolved kind in the URL, not the id it was called with", async () => {
+    const calls = stubFetch({ state: {}, view: {} });
+    const api = createApiClient(undefined, (kind) => (kind === "focus:3p" ? "focus-3p" : kind));
+
+    await api.newGame("focus:3p");
+
+    expect(calls[0]!.url).toBe("/api/games/focus-3p/new");
+  });
+
+  it("defaults to the identity function when omitted", async () => {
+    const calls = stubFetch([]);
+    const api = createApiClient();
+
+    await api.aiPresets("druid");
+
+    expect(calls[0]!.url).toBe("/api/games/druid/ai_presets");
+  });
+});

@@ -39,7 +39,7 @@ import type {
 } from "@mcts/game";
 import { isFrontier, moveEquals } from "@mcts/game";
 import { defaultCustomStrategySpec, StrategyConfigEditor } from "@mcts/strategy-config";
-import { GAME_META, GAME_MODULES } from "./games.js";
+import { GAME_META, GAME_MODULES, groupIdOf, wireKindOf } from "./games.js";
 
 // Panels are lazy-loaded so they only pull in their own dependencies when
 // the user actually starts a game (`state().epoch >= 1`).
@@ -299,6 +299,33 @@ export const GameShell: Component<{
     return control.kind === "preset" ? control.id : "custom";
   }
 
+  // Group ids for the New Game dialog's top-level game picker -- one entry
+  // per distinct `groupIdOf` value among `GAME_MODULES`' keys, so Focus's
+  // three player-count ids ("focus"/"focus:3p"/"focus:4p") collapse to one
+  // "Focus" row instead of three. Order follows `Object.keys` insertion
+  // order (`games.ts`'s own declaration order), same as the flat list this
+  // replaced.
+  const groupIds = createMemo(() => Array.from(new Set(Object.keys(GAME_MODULES).map(groupIdOf))));
+
+  // Every id sharing the *current* group, for the secondary variant
+  // selector -- empty/singleton for a game with no variants, which is why
+  // that selector is gated on `.length > 1` below.
+  const variantIds = createMemo(() =>
+    Object.keys(GAME_MODULES).filter((id) => groupIdOf(id) === groupIdOf(state().gameKind)),
+  );
+
+  /** A group's row label in the top-level picker: `GAME_META`'s explicit
+   * `groupLabel` (needed for any multi-variant group, since `gamesInfo` only
+   * knows the server's per-variant wire kinds), else the same
+   * `gamesInfo`-by-wire-kind lookup every single-variant game already used. */
+  function groupLabel(id: string): string {
+    return (
+      GAME_META[id]?.groupLabel ??
+      state().gamesInfo.find((g) => g.kind === wireKindOf(id))?.label ??
+      id
+    );
+  }
+
   function openDialog(): void {
     setPendingConfig(undefined);
     const seats: Record<string, "human" | AiStrategyRef> = {};
@@ -514,18 +541,28 @@ export const GameShell: Component<{
             }}
           >
             <h2>New Game</h2>
-            <Show when={Object.keys(GAME_MODULES).length > 1}>
+            <Show when={groupIds().length > 1}>
               <label>
                 Game
+                <select
+                  value={groupIdOf(state().gameKind)}
+                  onChange={(e) => onGameKindChange(e.currentTarget.value)}
+                >
+                  <For each={groupIds()}>
+                    {(id) => <option value={id}>{groupLabel(id)}</option>}
+                  </For>
+                </select>
+              </label>
+            </Show>
+            <Show when={variantIds().length > 1}>
+              <label>
+                Variant
                 <select
                   value={state().gameKind}
                   onChange={(e) => onGameKindChange(e.currentTarget.value)}
                 >
-                  <For each={Object.keys(GAME_MODULES)}>
-                    {(kind) => {
-                      const label = state().gamesInfo.find((g) => g.kind === kind)?.label ?? kind;
-                      return <option value={kind}>{label}</option>;
-                    }}
+                  <For each={variantIds()}>
+                    {(id) => <option value={id}>{GAME_META[id]?.variantLabel ?? id}</option>}
                   </For>
                 </select>
               </label>

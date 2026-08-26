@@ -1,0 +1,120 @@
+/* focus.css — FocusRenderer's own presentation, scoped to this package's
+   own class names (not ids). */
+
+.focus-board {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background: #2b2118;
+}
+
+.focus-grid {
+  --cell: 56px;
+  display: grid;
+  grid-template-columns: repeat(8, var(--cell));
+  grid-template-rows: repeat(8, var(--cell));
+  gap: 3px;
+  background: #4a3624;
+  padding: 8px;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.focus-cell {
+  --heat: 0;
+  position: relative;
+  width: var(--cell);
+  height: var(--cell);
+  padding: 0;
+  margin: 0;
+  border: 1px solid #3a2a1c;
+  border-radius: 3px;
+  background: #caa873;
+  font: inherit;
+  cursor: default;
+}
+
+.focus-gap {
+  width: var(--cell);
+  height: var(--cell);
+  visibility: hidden;
+}
+
+.focus-cell.selectable {
+  cursor: pointer;
+  box-shadow: inset 0 0 0 3px #52c2ee;
+}
+
+.focus-cell.selected {
+  cursor: pointer;
+  box-shadow: inset 0 0 0 3px #ffd166;
+}
+
+.focus-cell.destination {
+  cursor: pointer;
+  background: #e0c99a;
+}
+
+.focus-cell.destination::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--cell) * 0.28);
+  border-radius: 50%;
+  background: rgba(82, 194, 238, 0.55);
+  pointer-events: none;
+}
+
+.focus-cell.placeable {
+  cursor: pointer;
+}
+
+.focus-cell.placeable::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--cell) * 0.32);
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.65);
+  pointer-events: none;
+}
+
+.focus-cell.hovered {
+  background: #e6d3ab;
+}
+
+.focus-stack {
+  position: absolute;
+  inset: 4px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  pointer-events: none;
+}
+
+.focus-piece {
+  flex: 0 0 auto;
+  height: 8px;
+  border-radius: 2px;
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+
+.focus-cell.heat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 200, calc(0.08 + var(--heat) * 0.5));
+  pointer-events: none;
+}
+
+.focus-cell.proven::before {
+  background: rgba(76, 175, 122, calc(0.12 + var(--heat) * 0.55));
+}
+
+.focus-cell.suggested {
+  box-shadow: inset 0 0 0 3px #ffe066;
+}

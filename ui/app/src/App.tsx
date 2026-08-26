@@ -25,7 +25,7 @@ import {
   type AppState,
   type Env,
 } from "@mcts/game";
-import { DEFAULT_GAME_KIND } from "./games.js";
+import { DEFAULT_GAME_KIND, wireKindOf } from "./games.js";
 import { SpectatorPanel } from "./SpectatorPanel.js";
 import "./app.css";
 import "./bench.css";
@@ -34,7 +34,7 @@ const GameShell = lazy(() => import("./GameShell.js").then((m) => ({ default: m.
 const BenchApp = lazy(() => import("@mcts/bench").then((m) => ({ default: m.BenchApp })));
 
 const App = () => {
-  const api = createApiClient();
+  const api = createApiClient(undefined, wireKindOf);
   const env = createEnv(api);
   const store = createStore<
     AppState<unknown, unknown, unknown>,

@@ -102,34 +102,47 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
  * `ServeDir` in production). A non-empty override exists only so
  * `tests/integration.test.ts` can point this at a `cargo run` server
  * directly from vitest's node/happy-dom environment, which has no page
- * origin for a relative URL to resolve against. */
-export function createApiClient(baseUrl = ""): ApiClient {
+ * origin for a relative URL to resolve against.
+ *
+ * `resolveKind` translates the id every other layer of the UI uses (the
+ * `gameKind` string GameShell/reducers pass around) into the actual
+ * server-side adapter kind for the one HTTP call that needs it. Defaults to
+ * the identity function, true for every game with exactly one variant. It
+ * exists for `app/src/games.ts`'s colon-namespaced variant ids (e.g. Focus's
+ * `focus`/`focus:3p`/`focus:4p`, which the server only knows as `focus-2p`/
+ * `focus-3p`/`focus-4p`) -- this package stays game-agnostic, so it never
+ * imports `games.ts` itself; `App.tsx` supplies the real resolver. */
+export function createApiClient(
+  baseUrl = "",
+  resolveKind: (kind: string) => string = (kind) => kind,
+): ApiClient {
   const url = (path: string): string => baseUrl + path;
+  const kindPath = (kind: string): string => encodeURIComponent(resolveKind(kind));
   return {
     async getGames(): Promise<GameInfo[]> {
       return fetchJson(url("/api/games"));
     },
     async newGame<S, V = unknown>(kind: string, config?: unknown): Promise<StateAndView<S, V>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/new`), { config });
+      return postJson(url(`/api/games/${kindPath(kind)}/new`), { config });
     },
     async legalMoves<S, M>(kind: string, state: S): Promise<LegalMovesResult<M>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/legal_moves`), { state });
+      return postJson(url(`/api/games/${kindPath(kind)}/legal_moves`), { state });
     },
     async view<S, V = unknown>(kind: string, state: S): Promise<V> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/view`), { state });
+      return postJson(url(`/api/games/${kindPath(kind)}/view`), { state });
     },
     async apply<S, M, V = unknown>(kind: string, state: S, move: M): Promise<StateAndView<S, V>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/apply`), { state, move });
+      return postJson(url(`/api/games/${kindPath(kind)}/apply`), { state, move });
     },
     async aiPresets(kind: string): Promise<AiPresetInfo[]> {
-      return fetchJson(url(`/api/games/${encodeURIComponent(kind)}/ai_presets`));
+      return fetchJson(url(`/api/games/${kindPath(kind)}/ai_presets`));
     },
     async aiMove<S, M, V = unknown>(
       kind: string,
       state: S,
       strategy: AiStrategyRef,
     ): Promise<AiMoveResult<S, M, V>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/ai_move`), {
+      return postJson(url(`/api/games/${kindPath(kind)}/ai_move`), {
         state,
         ...strategyBody(strategy),
       });
@@ -140,7 +153,7 @@ export function createApiClient(baseUrl = ""): ApiClient {
       strategy: AiStrategyRef,
       budgetMs?: number,
     ): Promise<Analysis<M>> {
-      return postJson(url(`/api/games/${encodeURIComponent(kind)}/analyze`), {
+      return postJson(url(`/api/games/${kindPath(kind)}/analyze`), {
         state,
         ...strategyBody(strategy),
         budget_ms: budgetMs,
@@ -150,7 +163,7 @@ export function createApiClient(baseUrl = ""): ApiClient {
       return fetchJson(url("/api/strategy-schema"));
     },
     async fetchStrategyFamilies(kind: string): Promise<TunerInfo | null> {
-      return fetchJson(url(`/api/games/${encodeURIComponent(kind)}/strategy-families`));
+      return fetchJson(url(`/api/games/${kindPath(kind)}/strategy-families`));
     },
   };
 }
