@@ -13,6 +13,7 @@ use bitboard::{Board, Dim, Storage};
 
 pub mod adjacency;
 pub mod crossing;
+pub mod cut_groups;
 pub mod symmetry;
 pub use adjacency::{get_adjacency, touching_neighbors, TouchingAdjacency};
 pub use crossing::{crossing_table, get_crossing_table};

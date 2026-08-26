@@ -5,7 +5,7 @@
 //! pieces already on the board ([`Action::Move`]), or -- Black's reply to
 //! White's opening move only -- swaps colours instead ([`Action::Swap`],
 //! [`State::can_swap`]). `Action::Move` legality and the win condition
-//! ([`State::has_span`]) both use [`connectivity::Groups`]' cut-aware
+//! ([`State::has_span`]) both use [`pyramid::cut_groups::Groups`]' cut-aware
 //! connectivity (not raw touching adjacency): a piece may only relocate to a
 //! cell touching its own *unbroken* group, and a span only counts as a win
 //! if it isn't cut partway by an opponent's overpass. [`Game::winner`] checks
@@ -27,8 +27,7 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-pub mod connectivity;
-use connectivity::Groups;
+use pyramid::cut_groups::Groups;
 
 /// Smallest supported base width -- same range as `games/margo`, since both
 /// sit on the same `pyramid::Pyramid` foundation.
@@ -70,7 +69,7 @@ pub const fn pile_size(n: usize) -> u32 {
 // including `Action::Swap`, which shifts one piece's colour but keeps its
 // pile-plus-count sum fixed per colour -- so a symmetric image never needs
 // to recompute them, only carry them along unchanged). `Groups` (see
-// `connectivity.rs`) is likewise not stored on `State` at all, always
+// `pyramid::cut_groups`) is likewise not stored on `State` at all, always
 // recomputed on demand, so `canonical_representation` has nothing keyed on
 // pre-transform indices to rebuild -- simpler than Margo's `groups` field.
 
@@ -229,7 +228,7 @@ pub enum Action {
     /// Relocate the mover's own piece from `.0` to `.1` (both flat pyramid
     /// indices), per the published rules' movement clause: the destination
     /// must be empty, supported, and touch some other cell already in the
-    /// mover's own connected group (using [`connectivity::Groups`]'
+    /// mover's own connected group (using [`pyramid::cut_groups::Groups`]'
     /// cut-aware connectivity, excluding the mover's own vacated cell and
     /// anything the resulting cascade itself relocates this turn -- see
     /// `State::move_destinations`). A piece that supports exactly one other
@@ -429,16 +428,16 @@ impl State {
     /// one piece (a singleton, or already-disconnected, piece is trivially a
     /// freedom). Purely a derived property of the current board -- see the
     /// published rules' "Freedoms" clause -- computed by actually trying the
-    /// removal against [`connectivity::Groups`]' cut-aware connectivity.
+    /// removal against [`pyramid::cut_groups::Groups`]' cut-aware connectivity.
     ///
     /// `before` is the caller's already-computed connectivity for the
     /// current (unmodified) board -- shared across every candidate `from` a
     /// caller like `generate_actions` checks in the same pass, since it's
     /// identical for all of them and gives `O(1)` access (via
-    /// [`connectivity::Groups::group_members`]) to exactly the cells that
+    /// [`pyramid::cut_groups::Groups::group_members`]) to exactly the cells that
     /// need to stay connected, without a per-candidate board scan.
     ///
-    /// The actual removal check ([`connectivity::survives_removal`]) is a
+    /// The actual removal check ([`pyramid::cut_groups::survives_removal`]) is a
     /// flood fill seeded from those members, not a whole-board rebuild --
     /// see its own doc comment for why that's both cheaper and still exactly
     /// correct (removing `from` can newly cut a shielded connection just as
@@ -456,7 +455,7 @@ impl State {
         }
         let mut after_occupied = self.occupied;
         after_occupied.clear_index(from);
-        connectivity::survives_removal(self.n(), &after_occupied, &self.black, &members)
+        pyramid::cut_groups::survives_removal(self.n(), &after_occupied, &self.black, &members)
     }
 
     /// Legal destinations for relocating the piece at `from`, per the
@@ -470,7 +469,7 @@ impl State {
     /// `groups` is the caller's connectivity for the current board, shared
     /// the same way [`State::is_freedom`]'s `before` is -- see that method's
     /// doc comment. Candidate anchors come from
-    /// [`connectivity::Groups::group_members`] rather than a full board
+    /// [`pyramid::cut_groups::Groups::group_members`] rather than a full board
     /// scan, since that's already exactly "every occupied, same-coloured
     /// cell in `from`'s group".
     ///
@@ -513,7 +512,7 @@ impl State {
     }
 
     /// Whether `player` has completed a *span*: an unbroken, cut-aware
-    /// (see [`connectivity::Groups`]) chain of their own pieces connecting
+    /// (see [`pyramid::cut_groups::Groups`]) chain of their own pieces connecting
     /// their two assigned board sides. Black spans rows (row 0 to row
     /// `n-1`); White spans columns (col 0 to col `n-1`) -- a fixed
     /// assignment, arbitrary but consistent, since the published rules say
@@ -524,10 +523,29 @@ impl State {
     /// `pyramid::level_side`) -- so only level-0 cells are checked as
     /// endpoints, though the connecting chain itself may pass through any
     /// level.
+    /// Standalone convenience wrapper around
+    /// [`has_span_with`](Self::has_span_with), for tests that only need one
+    /// player's span checked in isolation -- production code always has both
+    /// players' spans (plus `has_legal_action`) to check on the same board,
+    /// so it shares one [`pyramid::cut_groups::Groups`] via `has_span_with`
+    /// directly instead of paying for a fresh one here per call.
+    #[cfg(test)]
     fn has_span(&self, player: Player) -> bool {
+        let mut groups = Groups::compute(self.n(), &self.occupied, &self.black);
+        self.has_span_with(player, &mut groups)
+    }
+
+    /// [`has_span`](Self::has_span), against a connectivity already computed
+    /// by the caller -- see [`terminal_status`](Game::terminal_status)/
+    /// [`winner`](Game::winner), which each need this checked for *both*
+    /// players plus [`has_legal_action`](Self::has_legal_action) against the
+    /// same, unchanged board: [`pyramid::cut_groups::Groups`] doesn't depend on
+    /// which player is asking, so recomputing it per check (as
+    /// [`has_span`](Self::has_span) does for a standalone caller) would
+    /// needlessly rebuild the identical structure two or three times over.
+    fn has_span_with(&self, player: Player, groups: &mut Groups) -> bool {
         let n = self.n();
         let black = player == Player::Black;
-        let mut groups = Groups::compute(n, &self.occupied, &self.black);
         let (side_a, side_b): (Vec<usize>, Vec<usize>) = if black {
             (
                 (0..n).map(|col| self.occupied.index(col, 0, 0)).collect(),
@@ -556,13 +574,17 @@ impl State {
     /// An `Add` is checked first and is cheap to confirm (any empty
     /// level-0 cell while the pile is non-empty) -- the overwhelmingly
     /// common case, since most reachable states have plenty of empty board
-    /// left. The `Move` scan (one [`connectivity::Groups::compute`] plus a
-    /// per-piece freedom/destination check, mirroring `generate_actions`'
-    /// own move loop) only runs once that's ruled out, i.e. once a pile is
-    /// empty and the board is full -- the same "pay for it only when it can
-    /// actually apply" shape as `games/druid`'s analogous
-    /// `Game::terminal_status` fallback check.
-    fn has_legal_action(&self) -> bool {
+    /// left. The `Move` scan (a per-piece freedom/destination check against
+    /// `groups`, mirroring `generate_actions`' own move loop) only runs once
+    /// that's ruled out, i.e. once a pile is empty and the board is full --
+    /// the same "pay for it only when it can actually apply" shape as
+    /// `games/druid`'s analogous `Game::terminal_status` fallback check.
+    /// `groups` is the caller's already-computed connectivity (see
+    /// [`has_span_with`](Self::has_span_with)'s doc comment) -- shared
+    /// rather than a fresh [`pyramid::cut_groups::Groups::compute`] here, since
+    /// [`winner`](Game::winner)/[`terminal_status`](Game::terminal_status)
+    /// need this checked on the same, unchanged board as both span checks.
+    fn has_legal_action(&self, groups: &mut Groups) -> bool {
         if self.can_swap() {
             return true;
         }
@@ -571,7 +593,6 @@ impl State {
             return true;
         }
         let color = self.turn == Player::Black;
-        let mut groups = Groups::compute(n, &self.occupied, &self.black);
         for from in 0..self.total_cells() {
             if !self.is_occupied(from) || self.is_black(from) != color {
                 continue;
@@ -579,10 +600,10 @@ impl State {
             let Some(chain) = self.vacated_chain(from) else {
                 continue;
             };
-            if !self.is_freedom(from, &mut groups) {
+            if !self.is_freedom(from, groups) {
                 continue;
             }
-            if !self.move_destinations(from, &chain, &mut groups).is_empty() {
+            if !self.move_destinations(from, &chain, groups).is_empty() {
                 return true;
             }
         }
@@ -740,7 +761,7 @@ impl Game for Akron {
     /// `games/atarigo`'s `random_action` overrides: an `Add` candidate is
     /// `O(1)` to confirm (any empty level-0 cell while the pile is
     /// non-empty, no connectivity involved), unlike a `Move`, whose
-    /// legality is inseparable from a full [`connectivity::Groups::compute`]
+    /// legality is inseparable from a full [`pyramid::cut_groups::Groups::compute`]
     /// -- unlike `games/margo`'s own per-candidate legality check, there's
     /// no way to cheaply spot-check "is *this one* relocation legal" here,
     /// since [`State::is_freedom`]/[`State::move_destinations`] both need
@@ -822,13 +843,14 @@ impl Game for Akron {
     fn winner(state: &State) -> Option<Player> {
         let opponent = state.turn;
         let mover = state.turn.next();
-        if state.has_span(opponent) {
+        let mut groups = Groups::compute(state.n(), &state.occupied, &state.black);
+        if state.has_span_with(opponent, &mut groups) {
             return Some(opponent);
         }
-        if state.has_span(mover) {
+        if state.has_span_with(mover, &mut groups) {
             return Some(mover);
         }
-        if !state.has_legal_action() {
+        if !state.has_legal_action(&mut groups) {
             return Some(mover);
         }
         None
@@ -846,13 +868,14 @@ impl Game for Akron {
     fn terminal_status(state: &State) -> TerminalStatus<Player> {
         let opponent = state.turn;
         let mover = state.turn.next();
-        if state.has_span(opponent) {
+        let mut groups = Groups::compute(state.n(), &state.occupied, &state.black);
+        if state.has_span_with(opponent, &mut groups) {
             return TerminalStatus::Winner(opponent);
         }
-        if state.has_span(mover) {
+        if state.has_span_with(mover, &mut groups) {
             return TerminalStatus::Winner(mover);
         }
-        if !state.has_legal_action() {
+        if !state.has_legal_action(&mut groups) {
             return TerminalStatus::Winner(mover);
         }
         TerminalStatus::NotTerminal
@@ -1231,9 +1254,9 @@ mod tests {
 
     /// Brute-force oracle for `State::is_freedom`: rebuilds `before`'s
     /// members via a full board scan (rather than
-    /// `connectivity::Groups::group_members`'s cache) and the "after"
+    /// `pyramid::cut_groups::Groups::group_members`'s cache) and the "after"
     /// connectivity via a whole-board `Groups::compute` (rather than
-    /// `connectivity::survives_removal`'s scoped flood fill) -- an
+    /// `pyramid::cut_groups::survives_removal`'s scoped flood fill) -- an
     /// independent-in-implementation, identical-in-definition derivation of
     /// the same property, to cross-check the faster path against.
     fn is_freedom_oracle(state: &State, from: usize) -> bool {
@@ -1250,12 +1273,12 @@ mod tests {
         members.windows(2).all(|w| after.same_group(w[0], w[1]))
     }
 
-    /// `State::is_freedom` (backed by `connectivity::Groups::group_members`
-    /// and `connectivity::survives_removal`'s scoped flood fill) must agree
+    /// `State::is_freedom` (backed by `pyramid::cut_groups::Groups::group_members`
+    /// and `pyramid::cut_groups::survives_removal`'s scoped flood fill) must agree
     /// with the whole-board brute-force oracle above for every candidate it
     /// checks, across random play at board sizes large enough to have real
     /// over/under crossing pillars -- not just the plain-touching case, but
-    /// specifically the case `connectivity::survives_removal`'s doc comment
+    /// specifically the case `pyramid::cut_groups::survives_removal`'s doc comment
     /// calls out: removing a piece can newly *cut* a connection it had been
     /// shielding, not just newly restore one it had been blocking. A random
     /// sample of occupied cells (rather than every occupied cell) is checked
@@ -1477,11 +1500,11 @@ mod tests {
 
     /// A straight, physically-touching row-to-row chain does *not* count as
     /// a span once an opposing overpass cuts one of its edges -- the win
-    /// condition uses [`connectivity::Groups`]' cut-aware connectivity, not
+    /// condition uses [`pyramid::cut_groups::Groups`]' cut-aware connectivity, not
     /// raw touching adjacency. The cutting position is derived from
     /// `pyramid::crossing::get_crossing_table` itself (the same oracle
-    /// `connectivity`'s own tests trust), rather than hand-derived, per
-    /// this repo's "don't hand-derive capture/crossing geometry" lesson.
+    /// `pyramid::cut_groups`'s own tests trust), rather than hand-derived,
+    /// per this repo's "don't hand-derive capture/crossing geometry" lesson.
     #[test]
     fn cut_connection_does_not_count_as_a_span() {
         let n = 10;
@@ -1537,8 +1560,8 @@ mod tests {
         assert_eq!(Akron::winner(&state), Some(Player::Black));
     }
 
-    /// Re-cutting the cutter (mirroring `connectivity`'s own Figure 5/6
-    /// narrative test) restores a previously-cut span: the direct chain
+    /// Re-cutting the cutter (mirroring `pyramid::cut_groups`'s own Figure
+    /// 5/6 narrative test) restores a previously-cut span: the direct chain
     /// from `cut_connection_does_not_count_as_a_span` above is not a win
     /// while White's overpass cuts it, but becomes one again once Black
     /// places an even-higher overpass that cuts White's cutter.

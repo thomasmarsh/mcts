@@ -1,7 +1,16 @@
-//! Over/under-cut-aware group connectivity: given a board's occupancy and
-//! colouring, which same-coloured pieces count as *connected* under Akron's
-//! rule that a lower connection is cut wherever a strictly-higher opposing
-//! connection shares its projected footprint (`pyramid::crossing`).
+//! Over/under-cut-aware group connectivity: given a base-`n` pyramid's
+//! occupancy and a two-colour split, which same-coloured pieces count as
+//! *connected* under the over/under rule ("if a connection crosses over an
+//! opponent's connection at any point, the uppermost connection prevails;
+//! the lower connection is cut until the upper one is removed") used by
+//! Shibumi-family connection games such as Akron.
+//!
+//! Board-generic (`Pyramid<S, N>`, any storage/dimension) and independent of
+//! any single game's `State` -- any future game in the same 4x4 Shibumi
+//! family that adopts this rule can reuse this module directly instead of
+//! reimplementing union-find/flood-fill/pillar-walking from scratch per
+//! game, the way `games/akron`'s own `connectivity.rs` originally did (now a
+//! thin re-export of this module).
 //!
 //! # Rebuild, not incremental
 //!
@@ -10,21 +19,21 @@
 //! makes for its own (much rarer) capture-driven rebuilds. Margo mostly
 //! avoids that cost by maintaining an incremental union-find that only a
 //! capture or the swap rule invalidates; that split doesn't help here,
-//! because *every* Akron move -- an add or a relocate -- can change which
-//! connections are cut (a piece landing on, or leaving, some pillar changes
-//! that pillar's whole over/under ordering, not just the moved piece's own
-//! immediate neighbours), so there is no common case left for an incremental
-//! update to be cheaper than. A full rebuild is proportional to board size,
-//! which stays small at every supported `n` (`pyramid::MAX_N` = 10, at most
-//! `pyramid::total_cells(10)` = 385 cells) -- the same reasoning that let
-//! Margo choose whole-board rebuilds for its rarer case applies unconditionally
-//! here.
+//! because *every* move that changes a pillar's occupancy can change which
+//! connections in that same pillar are cut (a piece landing on, or leaving,
+//! a pillar changes that pillar's whole over/under ordering, not just the
+//! moved piece's own immediate neighbours), and a union-find has no cheap
+//! way to un-union a group once an edge it depended on is invalidated. A
+//! full rebuild is proportional to board size, which stays small at every
+//! supported `n` (`crate::MAX_N` = 10, at most `crate::total_cells(10)` =
+//! 385 cells) -- the same reasoning that lets Margo choose whole-board
+//! rebuilds for its rarer case applies unconditionally here.
 //!
 //! # Determining whether an edge is cut
 //!
 //! A touching edge only matters for connectivity when both endpoints are
 //! occupied by the same colour -- that's what makes it a "connection" at
-//! all. For such an edge, [`pyramid::crossing::get_crossing_table`] gives
+//! all. For such an edge, [`crate::crossing::get_crossing_table`] gives
 //! every strictly-higher, footprint-sharing partner in its *pillar*, already
 //! sorted ascending by height. Walking that chain top-down, the edge is cut
 //! exactly when the nearest active (occupied, same-coloured-at-its-own-two-
@@ -38,16 +47,19 @@
 //! the original White connection underneath -- the restored connection is
 //! precisely "nearest uncut ancestor" skipping over the now-cut Black edge.
 
-use bitboard::{Adjacency, Dyn};
-use pyramid::crossing::{get_crossing_table, CrossingTable, Edge};
-use pyramid::{get_adjacency, Pyramid};
+use bitboard::{Adjacency, Dim, Storage};
 
-type Cells = Pyramid<[u64; 7], Dyn>;
+use crate::crossing::{get_crossing_table, CrossingTable, Edge};
+use crate::{get_adjacency, Pyramid};
 
 /// A same-coloured, both-endpoints-occupied touching edge's colour, or
 /// `None` if the edge doesn't currently connect anything (either endpoint
 /// empty, or the two endpoints hold opposite colours).
-fn edge_color(occupied: &Cells, black: &Cells, (a, b): Edge) -> Option<bool> {
+fn edge_color<S: Storage, N: Dim>(
+    occupied: &Pyramid<S, N>,
+    black: &Pyramid<S, N>,
+    (a, b): Edge,
+) -> Option<bool> {
     let color = |index: usize| -> Option<bool> {
         occupied.get_index(index).then(|| black.get_index(index))
     };
@@ -59,7 +71,13 @@ fn edge_color(occupied: &Cells, black: &Cells, (a, b): Edge) -> Option<bool> {
 /// Whether `edge` (already known to be active, of colour `color`) is cut by
 /// the over/under rule -- see the module docs for the "nearest uncut
 /// ancestor" derivation.
-fn is_cut(occupied: &Cells, black: &Cells, table: &CrossingTable, edge: Edge, color: bool) -> bool {
+fn is_cut<S: Storage, N: Dim>(
+    occupied: &Pyramid<S, N>,
+    black: &Pyramid<S, N>,
+    table: &CrossingTable,
+    edge: Edge,
+    color: bool,
+) -> bool {
     let empty: Vec<Edge> = Vec::new();
     let chain = table.get(&edge).unwrap_or(&empty);
     // `chain` is `edge`'s own pillar, strictly above it, ascending by
@@ -81,10 +99,11 @@ fn is_cut(occupied: &Cells, black: &Cells, table: &CrossingTable, edge: Edge, co
 }
 
 /// Whether every cell in `seeds` (all occupied, all the same colour -- e.g.
-/// `from`'s own pre-removal group, minus `from` itself) is still mutually
-/// reachable via same-coloured, non-cut touching edges on `occupied`/`black`
-/// -- a flood fill seeded only from `seeds`, rather than a whole-board
-/// [`Groups::compute`] followed by a pairwise `same_group` check.
+/// a piece's own pre-removal group, minus that piece itself) is still
+/// mutually reachable via same-coloured, non-cut touching edges on
+/// `occupied`/`black` -- a flood fill seeded only from `seeds`, rather than
+/// a whole-board [`Groups::compute`] followed by a pairwise `same_group`
+/// check.
 ///
 /// This computes exactly the same thing `Groups::compute` plus pairwise
 /// `same_group` checks would (both apply the identical per-edge [`is_cut`]
@@ -96,13 +115,19 @@ fn is_cut(occupied: &Cells, black: &Cells, table: &CrossingTable, edge: Edge, co
 /// `seeds`' pre-removal grouping: the flood fill re-derives reachability
 /// from scratch against the post-removal board, so it correctly follows any
 /// edge the removal itself newly uncut (a same-coloured piece elsewhere that
-/// was cut off before `from` was removed can rejoin here), and correctly
-/// fails to follow any edge the removal newly cut (removing `from` can just
-/// as well *expose* a lower opposing connection it had been shielding -- see
-/// [`is_cut`]'s "topmost active ancestor" rule: a same-coloured piece
-/// directly beneath `from` in a pillar, only live because `from` was the
-/// nearer blocker, can lose that shielding the moment `from` is gone).
-pub fn survives_removal(n: usize, occupied: &Cells, black: &Cells, seeds: &[usize]) -> bool {
+/// was cut off before the removed piece was gone can rejoin here), and
+/// correctly fails to follow any edge the removal newly cut (removing a
+/// piece can just as well *expose* a lower opposing connection it had been
+/// shielding -- see [`is_cut`]'s "topmost active ancestor" rule: a
+/// same-coloured piece directly beneath the removed one in a pillar, only
+/// live because the removed piece was the nearer blocker, can lose that
+/// shielding the moment it's gone).
+pub fn survives_removal<S: Storage, N: Dim>(
+    n: usize,
+    occupied: &Pyramid<S, N>,
+    black: &Pyramid<S, N>,
+    seeds: &[usize],
+) -> bool {
     if seeds.len() <= 1 {
         return true;
     }
@@ -110,7 +135,7 @@ pub fn survives_removal(n: usize, occupied: &Cells, black: &Cells, seeds: &[usiz
     let adjacency = get_adjacency(n);
     let color = black.get_index(seeds[0]);
 
-    let mut visited = vec![false; pyramid::total_cells(n)];
+    let mut visited = vec![false; crate::total_cells(n)];
     let mut stack = vec![seeds[0]];
     visited[seeds[0]] = true;
     while let Some(u) = stack.pop() {
@@ -137,10 +162,11 @@ pub fn survives_removal(n: usize, occupied: &Cells, black: &Cells, seeds: &[usiz
 ///
 /// Besides the union-find itself, [`compute`](Self::compute) also records
 /// each group's member list, so a caller that already has a `Groups` for the
-/// current board (e.g. `State::is_freedom`/`State::move_destinations`, both
-/// called once per candidate piece from `Game::generate_actions`) can answer
-/// "which cells are in this piece's group" in `O(1)` plus a `find`, instead
-/// of scanning every cell on the board per candidate.
+/// current board (e.g. `games/akron`'s `State::is_freedom`/
+/// `State::move_destinations`, both called once per candidate piece from
+/// `Game::generate_actions`) can answer "which cells are in this piece's
+/// group" in `O(1)` plus a `find`, instead of scanning every cell on the
+/// board per candidate.
 #[derive(Clone, Debug)]
 pub struct Groups {
     parent: Vec<u32>,
@@ -159,8 +185,12 @@ pub struct Groups {
 impl Groups {
     /// Computes cut-aware connectivity for a base-`n` board's `occupied`/
     /// `black` pair.
-    pub fn compute(n: usize, occupied: &Cells, black: &Cells) -> Self {
-        let total = pyramid::total_cells(n);
+    pub fn compute<S: Storage, N: Dim>(
+        n: usize,
+        occupied: &Pyramid<S, N>,
+        black: &Pyramid<S, N>,
+    ) -> Self {
+        let total = crate::total_cells(n);
         let mut groups = Groups {
             parent: (0..total as u32).collect(),
             size: vec![1; total],
@@ -256,7 +286,10 @@ impl Groups {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyramid::to_coord;
+    use crate::to_coord;
+    use bitboard::Dyn;
+
+    type Cells = Pyramid<[u64; 7], Dyn>;
 
     fn cells(n: usize) -> Cells {
         Pyramid::new(Dyn(n))
