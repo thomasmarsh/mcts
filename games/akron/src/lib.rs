@@ -2,15 +2,15 @@
 //!
 //! A player either adds a piece from their pile ([`Action::Add`], always
 //! level 0 -- see its doc comment for why) or relocates one of their own
-//! pieces already on the board ([`Action::Move`]). There is no over/under
-//! cut rule and no real win condition yet (`Game::winner` always returns
-//! `None`, and `Game::is_terminal` is just "the player to move has no pile
-//! left and the board's level-0 surface is full") -- those land in later
-//! phases on top of this scaffold. `Action::Move` legality already uses
+//! pieces already on the board ([`Action::Move`]). `Action::Move` legality
+//! and the win condition ([`State::has_span`]) both use
 //! [`connectivity::Groups`]' cut-aware connectivity (not raw touching
-//! adjacency) for the "destination must touch the mover's own group" check,
-//! since that module already exists; it isn't yet used for the win
-//! condition itself.
+//! adjacency): a piece may only relocate to a cell touching its own
+//! *unbroken* group, and a span only counts as a win if it isn't cut
+//! partway by an opponent's overpass. `Game::is_terminal` still doesn't
+//! account for the no-legal-move loss or the pie-rule swap -- those, plus
+//! the "opponent's exposed win takes priority over the mover's own"
+//! ordering, land in a later phase on top of this scaffold.
 
 use std::fmt;
 
@@ -264,6 +264,42 @@ impl State {
         }
         candidates
     }
+
+    /// Whether `player` has completed a *span*: an unbroken, cut-aware
+    /// (see [`connectivity::Groups`]) chain of their own pieces connecting
+    /// their two assigned board sides. Black spans rows (row 0 to row
+    /// `n-1`); White spans columns (col 0 to col `n-1`) -- a fixed
+    /// assignment, arbitrary but consistent, since the published rules say
+    /// only that each player owns "their edges of the board" without
+    /// specifying which axis is whose. Only level-0 cells lie on the
+    /// board's physical perimeter -- every higher level is strictly
+    /// interior, sitting over a smaller inset square (see
+    /// `pyramid::level_side`) -- so only level-0 cells are checked as
+    /// endpoints, though the connecting chain itself may pass through any
+    /// level.
+    fn has_span(&self, player: Player) -> bool {
+        let n = self.n();
+        let black = player == Player::Black;
+        let mut groups = Groups::compute(n, &self.occupied, &self.black);
+        let (side_a, side_b): (Vec<usize>, Vec<usize>) = if black {
+            (
+                (0..n).map(|col| self.occupied.index(col, 0, 0)).collect(),
+                (0..n)
+                    .map(|col| self.occupied.index(col, n - 1, 0))
+                    .collect(),
+            )
+        } else {
+            (
+                (0..n).map(|row| self.occupied.index(0, row, 0)).collect(),
+                (0..n)
+                    .map(|row| self.occupied.index(n - 1, row, 0))
+                    .collect(),
+            )
+        };
+        side_a.iter().any(|&a| {
+            groups.color_of(a) == Some(black) && side_b.iter().any(|&b| groups.same_group(a, b))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -366,18 +402,22 @@ impl Game for Akron {
         }
     }
 
-    /// The player to move has no pile left, or -- ignoring `Action::Move`
-    /// entirely -- every level-0 cell is occupied. This deliberately does
-    /// not account for `Action::Move`'s availability: with movement in
-    /// play but no win condition or repetition rule wired in yet (both
-    /// land in a later phase), treating "no legal move at all" as the real
-    /// terminal condition here would let a game with an emptied pile but
-    /// ongoing relocation freedom run for a very long time (or, without a
+    /// Terminal as soon as either player has completed a span (see
+    /// [`State::has_span`]), or -- placement-only fallback, unchanged from
+    /// the earlier phase -- the player to move has no pile left, or,
+    /// ignoring `Action::Move` entirely, every level-0 cell is occupied.
+    /// This deliberately does not yet account for `Action::Move`'s
+    /// availability as its own terminal condition, nor for the no-legal-
+    /// move loss or repetition-draw rule: treating "no legal move at all"
+    /// as terminal here would let a game with an emptied pile but ongoing
+    /// relocation freedom run for a very long time (or, without a
     /// repetition rule, not terminate by this criterion at all) -- exactly
     /// what this crate's `#[test]`s must not do (see this repo's rule on
-    /// keeping `cargo test --lib` fast). A player whose pile is empty
-    /// simply loses their turn's options here for now.
+    /// keeping `cargo test --lib` fast). Those land in a later phase.
     fn is_terminal(state: &State) -> bool {
+        if Self::winner(state).is_some() {
+            return true;
+        }
         if state.pile(state.turn) == 0 {
             return true;
         }
@@ -389,9 +429,23 @@ impl Game for Akron {
         state.turn
     }
 
-    /// No win condition is implemented yet -- placement alone never wins.
-    fn winner(_state: &State) -> Option<Player> {
-        None
+    /// A player wins by completing a span: an unbroken, cut-aware chain of
+    /// their own pieces connecting their two assigned board sides (see
+    /// [`State::has_span`]). Checks White first, then Black -- both players
+    /// winning simultaneously off the same move is a real possibility the
+    /// published rules address explicitly (the mover's move can expose an
+    /// opponent's pre-existing win, which takes priority even over the
+    /// mover's own newly-completed one), but that priority ordering needs
+    /// move-history context this state-only check doesn't have; it's left
+    /// for a later phase.
+    fn winner(state: &State) -> Option<Player> {
+        if state.has_span(Player::White) {
+            Some(Player::White)
+        } else if state.has_span(Player::Black) {
+            Some(Player::Black)
+        } else {
+            None
+        }
     }
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
@@ -437,6 +491,7 @@ impl fmt::Display for State {
 mod tests {
     use super::*;
     use mcts::util::random_play;
+    use pyramid::crossing::get_crossing_table;
     use rand::{rngs::SmallRng, Rng, SeedableRng};
 
     #[test]
@@ -667,6 +722,151 @@ mod tests {
         assert!(
             destinations.is_empty(),
             "with the dropping piece excluded, this isolated mover has no anchor left at all"
+        );
+    }
+
+    /// A straight, unbroken row-to-row chain is a Black win, and a
+    /// column-to-column chain is a White win -- the two axes are checked
+    /// independently and don't cross-credit the other player.
+    #[test]
+    fn straight_unbroken_chain_completes_a_span() {
+        let n = 5;
+        let mut black_state = state_with(n, Player::White);
+        for row in 0..n {
+            place(&mut black_state, 2, row, 0, true);
+        }
+        assert!(black_state.has_span(Player::Black));
+        assert!(!black_state.has_span(Player::White));
+        assert_eq!(Akron::winner(&black_state), Some(Player::Black));
+        assert!(Akron::is_terminal(&black_state));
+
+        let mut white_state = state_with(n, Player::White);
+        for col in 0..n {
+            place(&mut white_state, col, 2, 0, false);
+        }
+        assert!(white_state.has_span(Player::White));
+        assert!(!white_state.has_span(Player::Black));
+        assert_eq!(Akron::winner(&white_state), Some(Player::White));
+    }
+
+    /// A board with pieces from both players but no completed span for
+    /// either is not terminal and has no winner.
+    #[test]
+    fn incomplete_chain_is_not_a_win() {
+        let n = 5;
+        let mut state = state_with(n, Player::White);
+        for row in 0..(n - 1) {
+            place(&mut state, 2, row, 0, true);
+        }
+        assert!(!state.has_span(Player::Black));
+        assert_eq!(Akron::winner(&state), None);
+        assert!(!Akron::is_terminal(&state));
+    }
+
+    /// A straight, physically-touching row-to-row chain does *not* count as
+    /// a span once an opposing overpass cuts one of its edges -- the win
+    /// condition uses [`connectivity::Groups`]' cut-aware connectivity, not
+    /// raw touching adjacency. The cutting position is derived from
+    /// `pyramid::crossing::get_crossing_table` itself (the same oracle
+    /// `connectivity`'s own tests trust), rather than hand-derived, per
+    /// this repo's "don't hand-derive capture/crossing geometry" lesson.
+    #[test]
+    fn cut_connection_does_not_count_as_a_span() {
+        let n = 10;
+        let mut state = state_with(n, Player::White);
+        for row in 0..n {
+            place(&mut state, 4, row, 0, true);
+        }
+        let a = state.occupied.index(4, 4, 0);
+        let b = state.occupied.index(4, 5, 0);
+        let edge = (a.min(b), a.max(b));
+        let partner = get_crossing_table(n)[&edge][0];
+        let (pc, pr, pl) = state.occupied.to_coord(partner.0);
+        place(&mut state, pc, pr, pl, false);
+        let (qc, qr, ql) = state.occupied.to_coord(partner.1);
+        place(&mut state, qc, qr, ql, false);
+
+        assert!(
+            !state.has_span(Player::Black),
+            "the straight chain is cut partway by White's overpass"
+        );
+        assert_eq!(Akron::winner(&state), None);
+        assert!(!Akron::is_terminal(&state));
+    }
+
+    /// The same cut position as above, but with an uncut detour around the
+    /// cut edge -- the span is completed through the detour, since the win
+    /// condition only requires *some* unbroken path between the two sides,
+    /// not that the most direct one survives.
+    #[test]
+    fn detour_around_a_cut_edge_still_completes_the_span() {
+        let n = 10;
+        let mut state = state_with(n, Player::White);
+        for row in 0..n {
+            place(&mut state, 4, row, 0, true);
+        }
+        let a = state.occupied.index(4, 4, 0);
+        let b = state.occupied.index(4, 5, 0);
+        let edge = (a.min(b), a.max(b));
+        let partner = get_crossing_table(n)[&edge][0];
+        let (pc, pr, pl) = state.occupied.to_coord(partner.0);
+        place(&mut state, pc, pr, pl, false);
+        let (qc, qr, ql) = state.occupied.to_coord(partner.1);
+        place(&mut state, qc, qr, ql, false);
+        // Detour: (4,4,0) - (3,4,0) - (3,5,0) - (4,5,0), none of whose
+        // edges are cut, bypassing the direct edge cut above.
+        place(&mut state, 3, 4, 0, true);
+        place(&mut state, 3, 5, 0, true);
+
+        assert!(
+            state.has_span(Player::Black),
+            "an uncut detour around the cut edge still completes the span"
+        );
+        assert_eq!(Akron::winner(&state), Some(Player::Black));
+    }
+
+    /// Re-cutting the cutter (mirroring `connectivity`'s own Figure 5/6
+    /// narrative test) restores a previously-cut span: the direct chain
+    /// from `cut_connection_does_not_count_as_a_span` above is not a win
+    /// while White's overpass cuts it, but becomes one again once Black
+    /// places an even-higher overpass that cuts White's cutter.
+    #[test]
+    fn recutting_the_cutter_restores_a_previously_cut_span() {
+        let n = 10;
+        let mut state = state_with(n, Player::White);
+        for row in 0..n {
+            place(&mut state, 4, row, 0, true);
+        }
+        let a = state.occupied.index(4, 4, 0);
+        let b = state.occupied.index(4, 5, 0);
+        let edge = (a.min(b), a.max(b));
+        let chain = &get_crossing_table(n)[&edge];
+        let cutter = chain[0];
+        let (pc, pr, pl) = state.occupied.to_coord(cutter.0);
+        place(&mut state, pc, pr, pl, false);
+        let (qc, qr, ql) = state.occupied.to_coord(cutter.1);
+        place(&mut state, qc, qr, ql, false);
+        assert!(
+            !state.has_span(Player::Black),
+            "precondition: White's overpass cuts the direct chain"
+        );
+
+        // The cutter's own pillar (from the crossing table keyed on the
+        // cutter edge itself) gives a still-higher partner to re-cut it
+        // with -- Black, restoring the original span underneath.
+        let cutter_key = (cutter.0.min(cutter.1), cutter.0.max(cutter.1));
+        let recutter = get_crossing_table(n)[&cutter_key]
+            .first()
+            .copied()
+            .expect("the cutter edge used here has a further crossing partner");
+        let (rc, rr, rl) = state.occupied.to_coord(recutter.0);
+        place(&mut state, rc, rr, rl, true);
+        let (sc, sr, sl) = state.occupied.to_coord(recutter.1);
+        place(&mut state, sc, sr, sl, true);
+
+        assert!(
+            state.has_span(Player::Black),
+            "cutting White's cutter restores Black's original span"
         );
     }
 }
