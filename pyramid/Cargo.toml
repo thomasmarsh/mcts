@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 bitboard = { path = "../bitboard" }
+rustc-hash = "1.1.0"
 
 [dev-dependencies]
 proptest = "1.4.0"

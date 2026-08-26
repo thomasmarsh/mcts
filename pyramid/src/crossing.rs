@@ -61,8 +61,9 @@
 //! cut of White) is exactly a third pillar member landing above a pair that
 //! already crossed.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
+
+use rustc_hash::FxHashMap;
 
 use crate::{in_bounds, index, to_coord};
 
@@ -71,8 +72,15 @@ pub type Edge = (usize, usize);
 
 /// The result type of [`crossing_table`]/[`get_crossing_table`]: each edge
 /// mapped to its list of higher, endpoint-disjoint, footprint-sharing
-/// partners (see module docs).
-pub type CrossingTable = HashMap<Edge, Vec<Edge>>;
+/// partners (see module docs). `FxHashMap` (not `std::collections::HashMap`)
+/// because `games/akron`'s `Groups::compute` looks this table up once per
+/// touching edge on every connectivity rebuild -- a hot enough path that
+/// `HashMap`'s default SipHash (DoS-resistant, but overkill for a small
+/// internal `usize`-pair key with no adversarial input) shows up as real
+/// self time under profiling; Fx's non-cryptographic multiply-xor hash is
+/// materially cheaper per lookup and `Edge` has no untrusted input to
+/// protect against.
+pub type CrossingTable = FxHashMap<Edge, Vec<Edge>>;
 
 /// Shifts `(col, row, level)` by the crossing invariant `(-1, -1, +2)`: the
 /// unique translation that reproduces the same projected `(x, y)` footprint
@@ -226,7 +234,7 @@ pub fn crossing_table(n: usize) -> CrossingTable {
         }
     }
 
-    let mut table = HashMap::new();
+    let mut table = FxHashMap::default();
     for &(a, b) in &edges {
         let pillar = pillar_of(n, a, b);
         let here = pillar
@@ -260,6 +268,7 @@ pub fn get_crossing_table(n: usize) -> &'static CrossingTable {
 mod tests {
     use super::*;
     use crate::adjacency::touching_neighbors;
+    use std::collections::HashMap;
     use crate::total_cells;
 
     /// Independent from-scratch derivation: real 3-D center coordinates
@@ -336,7 +345,7 @@ mod tests {
     #[test]
     fn crossing_table_matches_geometric_oracle_every_n_in_range() {
         for n in 2..=8usize {
-            let derived = crossing_table(n);
+            let derived: HashMap<Edge, Vec<Edge>> = crossing_table(n).into_iter().collect();
             let oracle = oracle_crossing_table(n);
             assert_eq!(derived, oracle, "n = {n}: crossing table mismatch");
         }

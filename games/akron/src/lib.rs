@@ -20,7 +20,7 @@
 use std::fmt;
 
 use bitboard::{Adjacency, Dyn};
-use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
+use mcts::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus, Transform};
 use mcts::zobrist::LazyZobristTable;
 use pyramid::{get_adjacency, Pyramid, PyramidD4};
 use serde::{Deserialize, Serialize};
@@ -428,14 +428,25 @@ impl State {
     /// freedom). Purely a derived property of the current board -- see the
     /// published rules' "Freedoms" clause -- computed by actually trying the
     /// removal against [`connectivity::Groups`]' cut-aware connectivity.
-    fn is_freedom(&self, from: usize) -> bool {
-        let mut before = Groups::compute(self.n(), &self.occupied, &self.black);
-        let mut after_occupied = self.occupied;
-        after_occupied.clear_index(from);
-        let mut after = Groups::compute(self.n(), &after_occupied, &self.black);
+    ///
+    /// `before` is the caller's already-computed connectivity for the
+    /// current (unmodified) board -- shared across every candidate `from` a
+    /// caller like `generate_actions` checks in the same pass, since it's
+    /// identical for all of them and a fresh `Groups::compute` is the most
+    /// expensive part of this check. Only the "after removing `from`"
+    /// connectivity genuinely needs a per-candidate rebuild, and even that
+    /// is skipped when `from` has at most one other group member to
+    /// disconnect (nothing to break).
+    fn is_freedom(&self, from: usize, before: &mut Groups) -> bool {
         let members: Vec<usize> = (0..self.total_cells())
             .filter(|&i| i != from && before.same_group(from, i))
             .collect();
+        if members.len() <= 1 {
+            return true;
+        }
+        let mut after_occupied = self.occupied;
+        after_occupied.clear_index(from);
+        let mut after = Groups::compute(self.n(), &after_occupied, &self.black);
         members.windows(2).all(|w| after.same_group(w[0], w[1]))
     }
 
@@ -446,10 +457,13 @@ impl State {
     /// group -- then confirmed physically placeable (support, and a
     /// successful cascade with no pinning further up) via
     /// `pyramid::Pyramid::relocate` itself against a scratch copy.
-    fn move_destinations(&self, from: usize, chain: &[usize]) -> Vec<usize> {
+    ///
+    /// `groups` is the caller's connectivity for the current board, shared
+    /// the same way [`State::is_freedom`]'s `before` is -- see that method's
+    /// doc comment.
+    fn move_destinations(&self, from: usize, chain: &[usize], groups: &mut Groups) -> Vec<usize> {
         let n = self.n();
         let adjacency = get_adjacency(n);
-        let mut groups = Groups::compute(n, &self.occupied, &self.black);
         let color = self.is_black(from);
 
         let mut candidates: Vec<usize> = Vec::new();
@@ -509,6 +523,47 @@ impl State {
         side_a.iter().any(|&a| {
             groups.color_of(a) == Some(black) && side_b.iter().any(|&b| groups.same_group(a, b))
         })
+    }
+
+    /// Whether the player to move has at least one legal action -- `Swap`,
+    /// `Add`, or `Move` -- without materializing the full list the way
+    /// [`Game::generate_actions`] does. Early-exits at the first legal
+    /// action found: [`Game::winner`]'s no-legal-move forfeit check is the
+    /// only caller, and it only needs a yes/no answer, not the list itself.
+    /// An `Add` is checked first and is cheap to confirm (any empty
+    /// level-0 cell while the pile is non-empty) -- the overwhelmingly
+    /// common case, since most reachable states have plenty of empty board
+    /// left. The `Move` scan (one [`connectivity::Groups::compute`] plus a
+    /// per-piece freedom/destination check, mirroring `generate_actions`'
+    /// own move loop) only runs once that's ruled out, i.e. once a pile is
+    /// empty and the board is full -- the same "pay for it only when it can
+    /// actually apply" shape as `games/druid`'s analogous
+    /// `Game::terminal_status` fallback check.
+    fn has_legal_action(&self) -> bool {
+        if self.can_swap() {
+            return true;
+        }
+        let n = self.n();
+        if self.pile(self.turn) > 0 && (0..(n * n)).any(|index| !self.is_occupied(index)) {
+            return true;
+        }
+        let color = self.turn == Player::Black;
+        let mut groups = Groups::compute(n, &self.occupied, &self.black);
+        for from in 0..self.total_cells() {
+            if !self.is_occupied(from) || self.is_black(from) != color {
+                continue;
+            }
+            let Some(chain) = self.vacated_chain(from) else {
+                continue;
+            };
+            if !self.is_freedom(from, &mut groups) {
+                continue;
+            }
+            if !self.move_destinations(from, &chain, &mut groups).is_empty() {
+                return true;
+            }
+        }
+        false
     }
 
     /// This state's Zobrist hash, symmetry-invariant: two states that are
@@ -635,7 +690,12 @@ impl Game for Akron {
             }
         }
 
+        // Shared across every candidate `from` below -- see `is_freedom`/
+        // `move_destinations`' doc comments for why a single
+        // `Groups::compute` here (instead of one per candidate) is the
+        // difference that matters as board size grows.
         let color = state.turn == Player::Black;
+        let mut groups = Groups::compute(n, &state.occupied, &state.black);
         for from in 0..state.total_cells() {
             if !state.is_occupied(from) || state.is_black(from) != color {
                 continue;
@@ -643,10 +703,10 @@ impl Game for Akron {
             let Some(chain) = state.vacated_chain(from) else {
                 continue;
             };
-            if !state.is_freedom(from) {
+            if !state.is_freedom(from, &mut groups) {
                 continue;
             }
-            for to in state.move_destinations(from, &chain) {
+            for to in state.move_destinations(from, &chain, &mut groups) {
                 actions.push(Action::Move(from as u16, to as u16, n as u8));
             }
         }
@@ -657,8 +717,12 @@ impl Game for Akron {
     /// doc comment) -- there is no other way for the game to end, since a
     /// pile running out still leaves `Action::Move` available as long as any
     /// of the player's pieces are a freedom with a legal destination.
+    ///
+    /// Delegates to [`Game::terminal_status`] (see its own doc comment for
+    /// why) rather than repeating the span/forfeit logic here -- calling
+    /// `is_terminal` alone still pays for one full check, same as before.
     fn is_terminal(state: &State) -> bool {
-        Self::winner(state).is_some()
+        !matches!(Self::terminal_status(state), TerminalStatus::NotTerminal)
     }
 
     fn player_to_move(state: &State) -> Player {
@@ -688,12 +752,34 @@ impl Game for Akron {
         if state.has_span(mover) {
             return Some(mover);
         }
-        let mut actions = Vec::new();
-        Self::generate_actions(state, &mut actions);
-        if actions.is_empty() {
+        if !state.has_legal_action() {
             return Some(mover);
         }
         None
+    }
+
+    /// Single source of truth for both `is_terminal` and `winner`, mirroring
+    /// `games/druid`'s identically-motivated override: without this, the
+    /// default `Game::terminal_status` answers `is_terminal` and `winner`
+    /// as two independent calls, each of which redoes the same
+    /// `has_span`/`has_legal_action` work above from scratch -- doubling the
+    /// cost of every terminal check along an MCTS rollout, which calls
+    /// `terminal_status` once per ply (see `mcts::strategies::mcts::simulate`).
+    /// `is_terminal`/`winner` above still each do their own read when called
+    /// standalone, same as before this override existed.
+    fn terminal_status(state: &State) -> TerminalStatus<Player> {
+        let opponent = state.turn;
+        let mover = state.turn.next();
+        if state.has_span(opponent) {
+            return TerminalStatus::Winner(opponent);
+        }
+        if state.has_span(mover) {
+            return TerminalStatus::Winner(mover);
+        }
+        if !state.has_legal_action() {
+            return TerminalStatus::Winner(mover);
+        }
+        TerminalStatus::NotTerminal
     }
 
     fn notation(state: &Self::S, action: &Self::A) -> String {
@@ -1051,8 +1137,9 @@ mod tests {
         let middle = place(&mut state, 1, 0, 0, false);
         place(&mut state, 2, 0, 0, false);
 
+        let mut groups = Groups::compute(state.n(), &state.occupied, &state.black);
         assert!(
-            !state.is_freedom(middle),
+            !state.is_freedom(middle, &mut groups),
             "removing the middle piece disconnects the two endpoints"
         );
 
@@ -1139,11 +1226,12 @@ mod tests {
         let chain = state
             .vacated_chain(from)
             .expect("a single dependent cascades cleanly");
+        let mut groups = Groups::compute(state.n(), &state.occupied, &state.black);
         assert!(
-            state.is_freedom(from),
+            state.is_freedom(from, &mut groups),
             "the sole White piece is trivially a freedom"
         );
-        let destinations = state.move_destinations(from, &chain);
+        let destinations = state.move_destinations(from, &chain, &mut groups);
         assert!(
             !destinations.contains(&would_be_destination),
             "a cell reachable only through this turn's own dropping piece must not be offered"

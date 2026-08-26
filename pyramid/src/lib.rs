@@ -79,17 +79,92 @@ pub fn to_coord(n: usize, index: usize) -> (usize, usize, usize) {
     (offset % side, offset / side, level)
 }
 
+/// A small, non-allocating list of up to 4 `(col, row)` coordinates --
+/// returned by [`dependent_positions`]/`Pyramid::supporters`/
+/// `Pyramid::dependents`, whose geometry (a 2x2 block of candidates, one
+/// level apart) never yields more than 4 entries. Mirrors
+/// `bitboard::NeighborList`'s shape: a `Vec` here would put a heap
+/// allocation on every call along `Pyramid::relocate`'s cascade-drop path,
+/// which `games/akron`'s move generation -- the only caller that relocates
+/// pieces at all -- trials once per candidate destination.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoordList4 {
+    buf: [(usize, usize); 4],
+    len: u8,
+}
+
+impl CoordList4 {
+    #[inline]
+    fn push(&mut self, c: (usize, usize)) {
+        debug_assert!((self.len as usize) < 4, "CoordList4 overflow");
+        self.buf[self.len as usize] = c;
+        self.len += 1;
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[(usize, usize)] {
+        &self.buf[..self.len as usize]
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Iterator over a [`CoordList4`]'s entries -- see `bitboard::NeighborListIter`
+/// for the identically-shaped precedent.
+pub struct CoordList4Iter {
+    buf: [(usize, usize); 4],
+    len: u8,
+    pos: u8,
+}
+
+impl Iterator for CoordList4Iter {
+    type Item = (usize, usize);
+
+    #[inline]
+    fn next(&mut self) -> Option<(usize, usize)> {
+        if self.pos < self.len {
+            let v = self.buf[self.pos as usize];
+            self.pos += 1;
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl IntoIterator for CoordList4 {
+    type Item = (usize, usize);
+    type IntoIter = CoordList4Iter;
+
+    #[inline]
+    fn into_iter(self) -> CoordList4Iter {
+        CoordList4Iter {
+            buf: self.buf,
+            len: self.len,
+            pos: 0,
+        }
+    }
+}
+
 /// The (up to four) level-`(level + 1)` candidate positions that would rest
 /// on `(col, row, level)` if occupied -- the inverse of `Pyramid::supporters`,
 /// bounds-checked but (unlike `Pyramid::dependents`) not filtered by
 /// occupancy, since the geometric relation it describes doesn't depend on
 /// any particular board's state.
-pub fn dependent_positions(n: usize, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
+pub fn dependent_positions(n: usize, col: usize, row: usize, level: usize) -> CoordList4 {
+    let mut out = CoordList4::default();
     if level + 1 >= n {
-        return Vec::new();
+        return out;
     }
     let above_side = level_side(n, level + 1);
-    let mut out = Vec::new();
     for c in col.saturating_sub(1)..=col {
         for r in row.saturating_sub(1)..=row {
             if c < above_side && r < above_side {
@@ -292,17 +367,15 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
     /// `(col + 1, row)`, `(col, row + 1)`, `(col + 1, row + 1)` in range at
     /// level `k - 1`. Empty for `level == 0` (the base, which always rests
     /// on the table).
-    pub fn supporters(&self, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
-        if level == 0 {
-            Vec::new()
-        } else {
-            vec![
-                (col, row),
-                (col + 1, row),
-                (col, row + 1),
-                (col + 1, row + 1),
-            ]
+    pub fn supporters(&self, col: usize, row: usize, level: usize) -> CoordList4 {
+        let mut out = CoordList4::default();
+        if level != 0 {
+            out.push((col, row));
+            out.push((col + 1, row));
+            out.push((col, row + 1));
+            out.push((col + 1, row + 1));
         }
+        out
     }
 
     /// Whether `(col, row, level)` rests on a fully occupied 2x2 block
@@ -327,11 +400,14 @@ impl<S: Storage, N: Dim> Pyramid<S, N> {
     /// The occupied level-`(level + 1)` cells resting directly on `(col,
     /// row, level)` -- the inverse of `supporters`: `(col, row, level)` is
     /// one of their four support cells. Empty above the apex.
-    pub fn dependents(&self, col: usize, row: usize, level: usize) -> Vec<(usize, usize)> {
-        dependent_positions(self.n(), col, row, level)
-            .into_iter()
-            .filter(|&(c, r)| self.get(c, r, level + 1))
-            .collect()
+    pub fn dependents(&self, col: usize, row: usize, level: usize) -> CoordList4 {
+        let mut out = CoordList4::default();
+        for (c, r) in dependent_positions(self.n(), col, row, level) {
+            if self.get(c, r, level + 1) {
+                out.push((c, r));
+            }
+        }
+        out
     }
 
     /// Whether anything rests directly on `(col, row, level)` at all --
@@ -664,8 +740,8 @@ mod tests {
     fn higher_level_needs_all_four_supporters() {
         let mut pyramid: Pyramid<u64, Const<4>> = Pyramid::new(Const);
         assert_eq!(
-            pyramid.supporters(0, 0, 1),
-            vec![(0, 0), (1, 0), (0, 1), (1, 1)]
+            pyramid.supporters(0, 0, 1).as_slice(),
+            &[(0, 0), (1, 0), (0, 1), (1, 1)]
         );
         assert!(!pyramid.is_supported(0, 0, 1));
         assert!(!pyramid.can_place(0, 0, 1));
@@ -698,12 +774,12 @@ mod tests {
         }
         pyramid.set(0, 0, 1);
 
-        assert_eq!(pyramid.dependents(0, 0, 0), vec![(0, 0)]);
+        assert_eq!(pyramid.dependents(0, 0, 0).as_slice(), &[(0, 0)]);
         // (1, 0, 0) is a supporter of both level-1 (0, 0) and (1, 0), but
         // only (0, 0) is occupied.
-        assert_eq!(pyramid.dependents(1, 0, 0), vec![(0, 0)]);
-        assert_eq!(pyramid.dependents(0, 1, 0), vec![(0, 0)]);
-        assert_eq!(pyramid.dependents(1, 1, 0), vec![(0, 0)]);
+        assert_eq!(pyramid.dependents(1, 0, 0).as_slice(), &[(0, 0)]);
+        assert_eq!(pyramid.dependents(0, 1, 0).as_slice(), &[(0, 0)]);
+        assert_eq!(pyramid.dependents(1, 1, 0).as_slice(), &[(0, 0)]);
         // A corner far from the placed level-1 piece has no dependents.
         assert!(pyramid.dependents(2, 2, 0).is_empty());
         // The apex has no level above it.
@@ -730,7 +806,7 @@ mod tests {
         pyramid.set(0, 0, 1);
 
         for &(c, r) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
-            assert_eq!(pyramid.dependents(c, r, 0), vec![(0, 0)]);
+            assert_eq!(pyramid.dependents(c, r, 0).as_slice(), &[(0, 0)]);
             assert!(
                 !pyramid.is_removable(c, r, 0),
                 "the apex rests on every base cell"
@@ -886,7 +962,7 @@ mod tests {
             pyramid.set(c, r, 0);
         }
         pyramid.set(0, 0, 1);
-        assert_eq!(pyramid.dependents(1, 1, 0), vec![(0, 0)]);
+        assert_eq!(pyramid.dependents(1, 1, 0).as_slice(), &[(0, 0)]);
 
         assert!(pyramid.relocate((1, 1, 0), (2, 2, 0)));
 
@@ -966,7 +1042,7 @@ mod tests {
         pyramid.set(1, 1, 1);
         pyramid.set(0, 0, 2);
         pyramid.set(1, 1, 2);
-        assert_eq!(pyramid.dependents(1, 1, 0), vec![(1, 1)]);
+        assert_eq!(pyramid.dependents(1, 1, 0).as_slice(), &[(1, 1)]);
         assert_eq!(pyramid.dependents(1, 1, 1).len(), 2);
         let before = pyramid;
 

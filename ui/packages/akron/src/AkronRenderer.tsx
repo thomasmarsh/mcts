@@ -42,6 +42,15 @@ import { isAdd, isMove, type Action, type GameState, type GameView } from "./typ
 
 const BLACK_COLOR = 0x2c2e35;
 const WHITE_COLOR = 0xf4ecdd;
+// Board-edge rim colors marking each player's two target sides (see
+// `buildSideMarkers`) -- matching `summary.ts`'s `BLACK_SWATCH`/
+// `WHITE_SWATCH` HUD dots, not `BLACK_COLOR`/`WHITE_COLOR` (the marble
+// materials): a flat `MeshBasicMaterial` rim in the exact marble color
+// would be easy to misread as a row of pieces sitting off the board, and a
+// lighter, HUD-matching slate reads clearly against the dark scene
+// background even unlit.
+const BLACK_SIDE_COLOR = 0x3a3d46;
+const WHITE_SIDE_COLOR = 0xf2e9d8;
 const ADD_HILITE = 0x52c2ee;
 const MOVABLE_HILITE = 0x3ddc97;
 const SELECTED_HILITE = 0xffe066;
@@ -96,6 +105,7 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
   let ghostGroup: THREE.Group;
   let analysisGroup: THREE.Group;
   let animGroup: THREE.Group;
+  let sideMarkersGroup: THREE.Group;
   let pickables: THREE.Mesh[] = [];
   const mouse = new THREE.Vector2();
   let animationHandle = 0;
@@ -118,6 +128,75 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
   function buildBoard(n: number): void {
     const center = buildPyramidBoard(boardGroup, n);
     frameBoard(camera, controls, center, n);
+    buildSideMarkers(n);
+  }
+
+  /** A flat quad in the XZ plane at height `y`, wound for a from-above
+   * camera but rendered `DoubleSide` regardless (see the ring highlights
+   * elsewhere in this file, which do the same) -- corners in order around
+   * the quad's perimeter, not diagonal pairs. */
+  function flatQuad(
+    p1: [number, number],
+    p2: [number, number],
+    p3: [number, number],
+    p4: [number, number],
+    y: number,
+  ): THREE.BufferGeometry {
+    const v = (p: [number, number]): [number, number, number] => [p[0], y, p[1]];
+    const positions = new Float32Array([...v(p1), ...v(p2), ...v(p3), ...v(p1), ...v(p3), ...v(p4)]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    return geo;
+  }
+
+  /** Colored trapezoid markers along the board's four edges, marking which
+   * two (opposite) sides each player is trying to connect -- per
+   * `game_akron::State::has_span`'s fixed assignment, Black spans row 0 to
+   * row `n-1` (the near/far edges here) and White spans column 0 to column
+   * `n-1` (the left/right edges), a board-level fact the `winner`/legal-move
+   * data alone gives no visual cue for.
+   *
+   * The board's base is a circular slab (`buildPyramidBoard`), not a
+   * square, so a plain rectangular bar along a socket row/column overhangs
+   * the round edge at the corners. Each marker is instead a trapezoid whose
+   * inner edge runs along its own side's pair of corner sockets and whose
+   * outer edge is pulled radially out from the board's center to near the
+   * slab's rim -- since two adjacent sides share a corner socket, they also
+   * share that corner's radial projection, so adjacent trapezoids meet
+   * exactly along a seam with no gap or overlap, and nothing crosses the
+   * circular rim. */
+  function buildSideMarkers(n: number): void {
+    clearGroup(sideMarkersGroup);
+    const y = -RADIUS + 0.02;
+    const center: [number, number] = [(n - 1) / 2, (n - 1) / 2];
+    const outerRadius = n * 0.74;
+    const innerPad = 0.55;
+
+    const project = (corner: [number, number], radius: number): [number, number] => {
+      const dx = corner[0] - center[0];
+      const dz = corner[1] - center[1];
+      const dist = Math.hypot(dx, dz) || 1;
+      return [center[0] + (dx / dist) * radius, center[1] + (dz / dist) * radius];
+    };
+    const innerOf = (corner: [number, number]): [number, number] =>
+      project(corner, Math.hypot(corner[0] - center[0], corner[1] - center[1]) + innerPad);
+    const outerOf = (corner: [number, number]): [number, number] => project(corner, outerRadius);
+
+    const nearA: [number, number] = [0, 0];
+    const nearB: [number, number] = [n - 1, 0];
+    const farA: [number, number] = [0, n - 1];
+    const farB: [number, number] = [n - 1, n - 1];
+
+    function addTrapezoid(a: [number, number], b: [number, number], color: number): void {
+      const geo = flatQuad(innerOf(a), innerOf(b), outerOf(b), outerOf(a), y);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
+      sideMarkersGroup.add(mesh);
+    }
+
+    addTrapezoid(nearA, nearB, BLACK_SIDE_COLOR);
+    addTrapezoid(farA, farB, BLACK_SIDE_COLOR);
+    addTrapezoid(nearA, farA, WHITE_SIDE_COLOR);
+    addTrapezoid(nearB, farB, WHITE_SIDE_COLOR);
   }
 
   function buildPieces(view: GameView, skip?: ReadonlySet<number>): void {
@@ -414,7 +493,16 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
     ghostGroup = new THREE.Group();
     analysisGroup = new THREE.Group();
     animGroup = new THREE.Group();
-    scene.add(boardGroup, piecesGroup, highlightGroup, ghostGroup, analysisGroup, animGroup);
+    sideMarkersGroup = new THREE.Group();
+    scene.add(
+      boardGroup,
+      piecesGroup,
+      highlightGroup,
+      ghostGroup,
+      analysisGroup,
+      animGroup,
+      sideMarkersGroup,
+    );
 
     raycaster = new THREE.Raycaster();
 
@@ -440,6 +528,7 @@ export const AkronRenderer: Component<GameRendererProps<GameState, Action, GameV
     clearGroup(ghostGroup);
     clearGroup(analysisGroup);
     clearGroup(animGroup);
+    clearGroup(sideMarkersGroup);
     sphereGeo.dispose();
     ringGeo.dispose();
     outlineGeo.dispose();
