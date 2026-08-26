@@ -1,18 +1,21 @@
 //! Ingenious (Einfach Genial), Reiner Knizia, 2004.
 //!
-//! Two-player only for now -- see `plan/ingenious/rules.md` for the full
-//! consolidated rules this implementation follows, including the physical
-//! board's player-count-dependent sizing and the simplifications made here
-//! (fully-observable racks; tile draws modeled as a state-embedded PRNG
-//! stream rather than true hidden chance nodes).
+//! Supports 2- and 3-player games via `Ingenious<const P: usize>` (aliased as
+//! [`Ingenious2`]/[`Ingenious3`]). Racks are modeled fully observable (every
+//! player's rack visible in `State`, a strictly-easier variant for search
+//! than the real hidden-rack game) and tile draws are a state-embedded PRNG
+//! stream rather than true hidden chance nodes.
 //!
 //! The board is a hexagon-of-hexagons embedded in an `SIDE x SIDE` square
 //! grid, using an offset coordinate system where the six hex-adjacency
 //! directions are (in `(row, col)` deltas): N=(+1,0), S=(-1,0), E=(0,+1),
 //! W=(0,-1), NE=(+1,+1), SW=(-1,-1). A cell's hex distance from the board
 //! center is `max(|dc|, |dr|, |dr - dc|)` for `dr = row - CENTER`,
-//! `dc = col - CENTER`; a cell is on the board iff that distance is at most
-//! `RADIUS`.
+//! `dc = col - CENTER`. Every player count shares the same underlying grid
+//! and center cell; a `P`-player board is playable out to `playable_radius(P)`
+//! hexes from center, so a smaller player count simply leaves the grid's
+//! outer ring(s) unused -- the same way the physical board reserves its
+//! outer rings for higher player counts.
 
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
@@ -22,20 +25,26 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::OnceLock;
 
-// TODO(3p/4p): RADIUS/SIDE/NUM_PLAYERS are fixed at the 2-player board size.
-// Generalizing to 3/4 players means parameterizing the board radius (6/7)
-// and player count, gating the outer one/two rings as playable only once
-// enough players are seated, and adding the 3rd/4th rack.
 pub const NUM_COLORS: usize = 6;
-pub const RADIUS: usize = 5;
-pub const SIDE: usize = 2 * RADIUS + 1;
-pub const NUM_CELLS: usize = SIDE * SIDE;
 pub const RACK_SIZE: usize = 6;
-pub const NUM_PLAYERS: usize = 2;
 pub const TARGET_SCORE: u8 = 18;
 
-const CENTER: i32 = RADIUS as i32;
+// Board storage is sized for the largest player count this crate currently
+// supports (3). Bump `BOARD_RADIUS` (and `playable_radius`'s mapping) to add
+// a 4-player board.
+const BOARD_RADIUS: usize = 6;
+pub const SIDE: usize = 2 * BOARD_RADIUS + 1;
+pub const NUM_CELLS: usize = SIDE * SIDE;
+
+const CENTER: i32 = BOARD_RADIUS as i32;
 const DEFAULT_SEED: u64 = 0x1CE0_1DEA_C0FF_EE42;
+
+/// How far from center a `players`-player board's playable disc extends --
+/// each added player unlocks one more ring, matching the real board's
+/// radius-per-player-count table.
+pub const fn playable_radius(players: usize) -> usize {
+    players + 3
+}
 
 // Six hex-adjacency directions as (row, col) deltas. Opposite directions are
 // adjacent pairs: (N, S) = (0, 1), (E, W) = (2, 3), (NE, SW) = (4, 5) -- so
@@ -129,8 +138,9 @@ fn normalize(a: Color, b: Color) -> (Color, Color) {
 ////////////////////////////////////////////////////////////////////////////////////////
 
 /// Precomputed board geometry -- neighbor table, valid-cell mask, and the six
-/// pre-printed starting symbol cells. Computed once and shared process-wide;
-/// `NUM_CELLS` is tiny (121) so this costs nothing to keep around.
+/// pre-printed starting symbol cells -- for one player count `P`. Computed
+/// once per `P` and shared process-wide; `NUM_CELLS` is tiny (169) so this
+/// costs nothing to keep around.
 struct Geometry {
     valid: Vec<u8>,
     valid_mask: [bool; NUM_CELLS],
@@ -143,14 +153,26 @@ struct Geometry {
     symbol_of: [Option<u8>; NUM_CELLS],
 }
 
-fn geometry() -> &'static Geometry {
-    static GEOMETRY: OnceLock<Geometry> = OnceLock::new();
-    GEOMETRY.get_or_init(|| {
+fn geometry<const P: usize>() -> &'static Geometry {
+    // Board storage (`NUM_CELLS`) below is only sized for these two arities.
+    const { assert!(P == 2 || P == 3, "Ingenious only supports 2 or 3 players") };
+
+    // A `static` declared inside a generic function is a single shared item,
+    // not one instance per monomorphization -- so the cache is keyed
+    // explicitly by player count instead of relying on `P` to separate it.
+    static CACHE: [OnceLock<Geometry>; 4] = [
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+    ];
+    CACHE[P].get_or_init(|| {
+        let radius = playable_radius(P) as i32;
         let mut valid = Vec::new();
         let mut valid_mask = [false; NUM_CELLS];
         for row in 0..SIDE {
             for col in 0..SIDE {
-                if hex_distance(row as i32, col as i32) <= RADIUS as i32 {
+                if hex_distance(row as i32, col as i32) <= radius {
                     let idx = row * SIDE + col;
                     valid_mask[idx] = true;
                     valid.push(idx as u8);
@@ -180,12 +202,12 @@ fn geometry() -> &'static Geometry {
         }
 
         // The six starting symbols sit at radius 3 from center, one per hex
-        // direction -- a 6-fold-symmetric placement. The real board's exact
-        // printed layout isn't available in any text-searchable source (see
-        // plan/ingenious/rules.md); this is a symmetric stand-in that
-        // preserves the rule it exists to support (each opening move is
-        // equally good, up to rotation) without claiming to reproduce the
-        // physical artwork.
+        // direction -- a 6-fold-symmetric placement, the same for every
+        // player count. The real board's exact printed layout isn't
+        // available in any text-searchable source; this is a symmetric
+        // stand-in that preserves the rule it exists to support (each
+        // opening move is equally good, up to rotation) without claiming to
+        // reproduce the physical artwork.
         let mut symbol_cell = [0u8; NUM_COLORS];
         let mut symbol_of = [None; NUM_CELLS];
         for (i, &(dr, dc)) in DELTAS.iter().enumerate() {
@@ -209,27 +231,17 @@ fn geometry() -> &'static Geometry {
 ////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum Player {
-    P0,
-    P1,
-}
+pub struct Player(pub u8);
 
 impl PlayerIndex for Player {
     fn to_index(&self) -> usize {
-        match self {
-            Player::P0 => 0,
-            Player::P1 => 1,
-        }
+        self.0 as usize
     }
 }
 
 impl Player {
     fn from_index(index: usize) -> Self {
-        match index {
-            0 => Player::P0,
-            1 => Player::P1,
-            _ => unreachable!(),
-        }
+        Player(index as u8)
     }
 }
 
@@ -266,18 +278,18 @@ pub enum Action {
 ////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct State {
+pub struct State<const P: usize> {
     pub board: [Option<Color>; NUM_CELLS],
     /// `board_tile_counts[i][j]` (i <= j only) is how many physical tiles of
     /// that color-pair type have been placed on the board so far.
     pub board_tile_counts: [[u8; NUM_COLORS]; NUM_COLORS],
-    pub racks: [[Option<(Color, Color)>; RACK_SIZE]; NUM_PLAYERS],
-    pub score: [[u8; NUM_COLORS]; NUM_PLAYERS],
+    pub racks: [[Option<(Color, Color)>; RACK_SIZE]; P],
+    pub score: [[u8; NUM_COLORS]; P],
     /// Once true, this color is frozen at `TARGET_SCORE` for this player:
     /// the bonus play for it has already been granted and used, and it can
     /// never score (or grant another bonus) again.
-    pub bonus_used: [[bool; NUM_COLORS]; NUM_PLAYERS],
-    pub has_moved: [bool; NUM_PLAYERS],
+    pub bonus_used: [[bool; NUM_COLORS]; P],
+    pub has_moved: [bool; P],
     pub claimed_symbols: [bool; NUM_COLORS],
     pub current_player: usize,
     pub phase: Phase,
@@ -292,21 +304,21 @@ pub struct State {
     pub rng: u64,
 }
 
-impl Default for State {
+impl<const P: usize> Default for State<P> {
     fn default() -> Self {
         Self::new(DEFAULT_SEED)
     }
 }
 
-impl State {
+impl<const P: usize> State<P> {
     pub fn new(seed: u64) -> Self {
         let mut state = State {
             board: [None; NUM_CELLS],
             board_tile_counts: [[0; NUM_COLORS]; NUM_COLORS],
-            racks: [[None; RACK_SIZE]; NUM_PLAYERS],
-            score: [[0; NUM_COLORS]; NUM_PLAYERS],
-            bonus_used: [[false; NUM_COLORS]; NUM_PLAYERS],
-            has_moved: [false; NUM_PLAYERS],
+            racks: [[None; RACK_SIZE]; P],
+            score: [[0; NUM_COLORS]; P],
+            bonus_used: [[false; NUM_COLORS]; P],
+            has_moved: [false; P],
             claimed_symbols: [false; NUM_COLORS],
             current_player: 0,
             phase: Phase::Place,
@@ -315,12 +327,12 @@ impl State {
             rng: seed,
         };
 
-        let g = geometry();
+        let g = geometry::<P>();
         for (color_idx, &cell) in g.symbol_cell.iter().enumerate() {
             state.board[cell as usize] = Some(Color::ALL[color_idx]);
         }
 
-        for p in 0..NUM_PLAYERS {
+        for p in 0..P {
             for slot in 0..RACK_SIZE {
                 state.racks[p][slot] = state.draw_one();
             }
@@ -408,7 +420,7 @@ impl State {
     /// The color index of an unclaimed pre-printed symbol adjacent to
     /// `cell`, if any -- used to legalize/resolve a player's first move.
     fn adjacent_unclaimed_symbol(&self, cell: u8) -> Option<usize> {
-        let g = geometry();
+        let g = geometry::<P>();
         for dir in 0..6 {
             let nb = g.neighbors[cell as usize][dir];
             if nb == NO_NEIGHBOR {
@@ -427,7 +439,7 @@ impl State {
     /// given `color`) looking outward along every direction except
     /// `exclude_dir` (the direction toward this tile's other half).
     fn run_score(&self, cell: u8, exclude_dir: usize, color: Color) -> u32 {
-        let g = geometry();
+        let g = geometry::<P>();
         let mut pts = 0u32;
         for dir in 0..6 {
             if dir == exclude_dir {
@@ -472,7 +484,7 @@ impl State {
     }
 
     fn board_has_legal_placement(&self) -> bool {
-        let g = geometry();
+        let g = geometry::<P>();
         for &cell in &g.valid {
             if self.occupied(cell) {
                 continue;
@@ -488,7 +500,7 @@ impl State {
     }
 
     fn generate_place_actions(&self, actions: &mut Vec<Action>) {
-        let g = geometry();
+        let g = geometry::<P>();
         let player = self.current_player;
 
         let mut types: Vec<(Color, Color)> = Vec::with_capacity(RACK_SIZE);
@@ -558,7 +570,7 @@ impl State {
     }
 
     fn apply_place(&mut self, mv: &PlaceMove) {
-        let g = geometry();
+        let g = geometry::<P>();
         let nb = g.neighbors[mv.cell as usize][mv.dir as usize];
         debug_assert_ne!(nb, NO_NEIGHBOR);
         let player = self.current_player;
@@ -615,7 +627,7 @@ impl State {
     }
 
     fn end_turn(&mut self) {
-        self.current_player = (self.current_player + 1) % NUM_PLAYERS;
+        self.current_player = (self.current_player + 1) % P;
         self.phase = Phase::Place;
         self.pending_bonus = 0;
     }
@@ -636,21 +648,28 @@ impl State {
         }
     }
 
-    /// Lowest-color-first winner comparison: highest minimum color score
-    /// wins, ties broken by the next-lowest color, and so on.
+    /// Compares every player's score vector sorted ascending (lowest color
+    /// first); the highest such vector wins outright, and a tie for the
+    /// highest is a draw.
     fn compute_winner(&self) -> Option<Player> {
         if let Some(p) = self.winner_immediate {
             return Some(Player::from_index(p));
         }
-        let mut a = self.score[0];
-        let mut b = self.score[1];
-        a.sort_unstable();
-        b.sort_unstable();
-        match a.cmp(&b) {
-            std::cmp::Ordering::Greater => Some(Player::P0),
-            std::cmp::Ordering::Less => Some(Player::P1),
-            std::cmp::Ordering::Equal => None,
+        let mut sorted = self.score;
+        for s in &mut sorted {
+            s.sort_unstable();
         }
+        let best = *sorted.iter().max().unwrap();
+        let mut winner = None;
+        for (i, s) in sorted.iter().enumerate() {
+            if *s == best {
+                if winner.is_some() {
+                    return None;
+                }
+                winner = Some(i);
+            }
+        }
+        winner.map(Player::from_index)
     }
 
     fn compute_hash(&self) -> u64 {
@@ -694,13 +713,13 @@ fn sort_rack(rack: &mut [Option<(Color, Color)>; RACK_SIZE]) {
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
-impl RectangularBoard for State {
+impl<const P: usize> RectangularBoard for State<P> {
     const NUM_DISPLAY_ROWS: usize = SIDE;
     const NUM_DISPLAY_COLS: usize = SIDE;
 
     fn display_char_at(&self, row: usize, col: usize) -> char {
         let idx = row * SIDE + col;
-        if !geometry().valid_mask[idx] {
+        if !geometry::<P>().valid_mask[idx] {
             ' '
         } else {
             match self.board[idx] {
@@ -711,7 +730,7 @@ impl RectangularBoard for State {
     }
 }
 
-impl fmt::Display for State {
+impl<const P: usize> fmt::Display for State<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         RectangularBoardDisplay(self).fmt(f)?;
         writeln!(
@@ -719,7 +738,7 @@ impl fmt::Display for State {
             "player {} to move, phase {:?}, pending_bonus {}",
             self.current_player, self.phase, self.pending_bonus
         )?;
-        for p in 0..NUM_PLAYERS {
+        for p in 0..P {
             writeln!(f, "P{} score: {:?}", p, self.score[p])?;
         }
         Ok(())
@@ -729,10 +748,16 @@ impl fmt::Display for State {
 ////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone)]
-pub struct Ingenious;
+pub struct Ingenious<const P: usize>;
 
-impl Game for Ingenious {
-    type S = State;
+/// The 2-player game as it ships today: radius-5 board (91 cells).
+pub type Ingenious2 = Ingenious<2>;
+/// The 3-player game: radius-6 board (127 cells), one more rack and one more
+/// opening symbol claimed than the 2-player game.
+pub type Ingenious3 = Ingenious<3>;
+
+impl<const P: usize> Game for Ingenious<P> {
+    type S = State<P>;
     type A = Action;
     type P = Player;
 
@@ -761,7 +786,7 @@ impl Game for Ingenious {
     }
 
     fn num_players() -> usize {
-        NUM_PLAYERS
+        P
     }
 
     fn is_stochastic() -> bool {
@@ -804,55 +829,71 @@ impl Game for Ingenious {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mcts::strategies::{
+        mcts::{strategy, SearchConfig, TreeSearch},
+        Search,
+    };
     use mcts::util::random_play;
     use rand::SeedableRng;
 
     #[test]
-    fn geometry_has_91_valid_cells() {
-        assert_eq!(geometry().valid.len(), 91);
+    fn geometry_has_91_valid_cells_for_2p_and_127_for_3p() {
+        assert_eq!(geometry::<2>().valid.len(), 91);
+        assert_eq!(geometry::<3>().valid.len(), 127);
     }
 
     #[test]
-    fn symbol_cells_are_distinct_and_at_radius_3() {
-        let g = geometry();
-        let mut seen = std::collections::HashSet::new();
-        for &cell in &g.symbol_cell {
-            assert!(seen.insert(cell), "duplicate symbol cell {cell}");
-            let row = (cell as usize) / SIDE;
-            let col = (cell as usize) % SIDE;
-            assert_eq!(hex_distance(row as i32, col as i32), 3);
+    fn symbol_cells_are_distinct_and_at_radius_3_for_every_player_count() {
+        for &cells in &[geometry::<2>(), geometry::<3>()] {
+            let mut seen = std::collections::HashSet::new();
+            for &cell in &cells.symbol_cell {
+                assert!(seen.insert(cell), "duplicate symbol cell {cell}");
+                let row = (cell as usize) / SIDE;
+                let col = (cell as usize) % SIDE;
+                assert_eq!(hex_distance(row as i32, col as i32), 3);
+            }
         }
+        // Player count only changes which outer ring is unlocked -- the
+        // opening symbols themselves sit well inside every supported board.
+        assert_eq!(geometry::<2>().symbol_cell, geometry::<3>().symbol_cell);
     }
 
     #[test]
     fn each_valid_cell_has_at_least_two_neighbors() {
-        let g = geometry();
-        for &cell in &g.valid {
-            let n = g.neighbors[cell as usize]
-                .iter()
-                .filter(|&&n| n != NO_NEIGHBOR)
-                .count();
-            assert!(n >= 2, "cell {cell} has only {n} neighbors");
+        for g in [geometry::<2>(), geometry::<3>()] {
+            for &cell in &g.valid {
+                let n = g.neighbors[cell as usize]
+                    .iter()
+                    .filter(|&&n| n != NO_NEIGHBOR)
+                    .count();
+                assert!(n >= 2, "cell {cell} has only {n} neighbors");
+            }
         }
     }
 
     #[test]
     fn initial_state_deals_full_racks_and_seeds_symbols() {
-        let state = State::new(1);
-        for p in 0..NUM_PLAYERS {
-            assert_eq!(state.racks[p].iter().flatten().count(), RACK_SIZE);
+        let two = State::<2>::new(1);
+        for p in 0..2 {
+            assert_eq!(two.racks[p].iter().flatten().count(), RACK_SIZE);
         }
-        let g = geometry();
+
+        let three = State::<3>::new(1);
+        for p in 0..3 {
+            assert_eq!(three.racks[p].iter().flatten().count(), RACK_SIZE);
+        }
+
+        let g = geometry::<3>();
         for (i, &cell) in g.symbol_cell.iter().enumerate() {
-            assert_eq!(state.board[cell as usize], Some(Color::ALL[i]));
+            assert_eq!(three.board[cell as usize], Some(Color::ALL[i]));
         }
     }
 
-    #[test]
-    fn tile_supply_is_conserved() {
-        // Every tile is always accounted for exactly once: on the board, in
-        // a rack, or in the (implicit) bag -- total 120 across every type.
-        let state = State::new(2);
+    // Every tile is always accounted for exactly once: on the board, in a
+    // rack, or in the (implicit) bag -- total 120 across every type,
+    // regardless of player count.
+    fn check_tile_supply_is_conserved<const P: usize>(seed: u64) {
+        let state = State::<P>::new(seed);
         let mut total = 0u32;
         for i in 0..NUM_COLORS {
             for j in i..NUM_COLORS {
@@ -867,15 +908,22 @@ mod tests {
     }
 
     #[test]
+    fn tile_supply_is_conserved() {
+        check_tile_supply_is_conserved::<2>(2);
+        check_tile_supply_is_conserved::<3>(2);
+    }
+
+    #[test]
     fn straight_line_run_scores_one_point_per_matching_hex() {
         // Hand-built board (bypassing move legality/turn order, per this
         // repo's guidance for isolating scoring math): three red hexes laid
         // out east of the board's center, then scored as if `center` were a
         // freshly-placed red tile-half whose sibling sits to the west (so
-        // the run is scored purely eastward).
-        let mut state = State::new(3);
-        let g = geometry();
-        let center = (RADIUS * SIDE + RADIUS) as u8;
+        // the run is scored purely eastward). The board's shared coordinate
+        // system means this is identical for every player count.
+        let mut state = State::<2>::new(3);
+        let g = geometry::<2>();
+        let center = (CENTER as usize * SIDE + CENTER as usize) as u8;
         let mut cell = center;
         for _ in 0..3 {
             let nb = g.neighbors[cell as usize][DIR_E];
@@ -890,7 +938,7 @@ mod tests {
 
     #[test]
     fn scoring_freezes_at_target_and_grants_one_bonus_on_crossing() {
-        let mut state = State::new(4);
+        let mut state = State::<2>::new(4);
         state.score[0] = [10, 0, 0, 0, 0, 0];
         let bonus = state.apply_scoring(0, [20, 0, 0, 0, 0, 0]);
         assert_eq!(bonus, 1);
@@ -905,54 +953,101 @@ mod tests {
 
     #[test]
     fn winner_compares_sorted_score_vectors_lowest_first() {
-        let mut state = State::new(5);
+        let mut state = State::<2>::new(5);
         state.score[0] = [5, 5, 5, 5, 5, 5];
         state.score[1] = [1, 9, 9, 9, 9, 9];
-        assert_eq!(state.compute_winner(), Some(Player::P0));
+        assert_eq!(state.compute_winner(), Some(Player(0)));
 
         state.score[1] = [5, 5, 5, 5, 5, 6];
-        assert_eq!(state.compute_winner(), Some(Player::P1));
+        assert_eq!(state.compute_winner(), Some(Player(1)));
 
         state.score[1] = [5, 5, 5, 5, 5, 5];
         assert_eq!(state.compute_winner(), None);
     }
 
     #[test]
-    fn random_playouts_terminate() {
-        random_play::<Ingenious>();
+    fn winner_is_n_way_among_three_players() {
+        let mut state = State::<3>::new(5);
+        state.score[0] = [5, 5, 5, 5, 5, 5];
+        state.score[1] = [4, 9, 9, 9, 9, 9];
+        state.score[2] = [3, 9, 9, 9, 9, 9];
+        assert_eq!(state.compute_winner(), Some(Player(0)));
+
+        // A tie between two of the three players, with the third strictly
+        // behind both, is still a draw -- it isn't decided by the third
+        // player's worse score.
+        state.score[1] = [5, 5, 5, 5, 5, 5];
+        assert_eq!(state.compute_winner(), None);
     }
 
     #[test]
-    fn random_playouts_never_exceed_target_score_and_conserve_tiles() {
-        let mut rng = SmallRng::seed_from_u64(6);
-        for _ in 0..20 {
-            let mut state = State::new(rng.gen());
-            let mut actions = Vec::new();
-            for _ in 0..500 {
-                if Ingenious::is_terminal(&state) {
-                    break;
-                }
-                actions.clear();
-                Ingenious::generate_actions(&state, &mut actions);
-                assert!(!actions.is_empty());
-                let m = &actions[rng.gen_range(0..actions.len())];
-                state = Ingenious::apply(state, m);
+    fn random_playouts_terminate() {
+        random_play::<Ingenious2>();
+        random_play::<Ingenious3>();
+    }
 
-                for p in 0..NUM_PLAYERS {
-                    for &s in &state.score[p] {
-                        assert!(s <= TARGET_SCORE);
-                    }
-                }
-                let mut total = 0u32;
-                for i in 0..NUM_COLORS {
-                    for j in i..NUM_COLORS {
-                        let a = Color::ALL[i];
-                        let b = Color::ALL[j];
-                        total += state.in_play_count(a, b) as u32;
-                    }
-                }
-                assert!(total <= 120);
+    fn check_random_playout_invariants<const P: usize>(seed: u64) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut state = State::<P>::new(rng.gen());
+        let mut actions = Vec::new();
+        for _ in 0..500 {
+            if Ingenious::<P>::is_terminal(&state) {
+                break;
             }
+            actions.clear();
+            Ingenious::<P>::generate_actions(&state, &mut actions);
+            assert!(!actions.is_empty());
+            let m = &actions[rng.gen_range(0..actions.len())];
+            state = Ingenious::<P>::apply(state, m);
+
+            for p in 0..P {
+                for &s in &state.score[p] {
+                    assert!(s <= TARGET_SCORE);
+                }
+            }
+            let mut total = 0u32;
+            for i in 0..NUM_COLORS {
+                for j in i..NUM_COLORS {
+                    let a = Color::ALL[i];
+                    let b = Color::ALL[j];
+                    total += state.in_play_count(a, b) as u32;
+                }
+            }
+            assert!(total <= 120);
+        }
+    }
+
+    #[test]
+    fn random_playouts_never_exceed_target_score_and_conserve_tiles_2p() {
+        for seed in 0..20 {
+            check_random_playout_invariants::<2>(seed);
+        }
+    }
+
+    #[test]
+    fn random_playouts_never_exceed_target_score_and_conserve_tiles_3p() {
+        for seed in 0..20 {
+            check_random_playout_invariants::<3>(seed);
+        }
+    }
+
+    // A short plain-UCT (no solver, no prior, no cutoff-evaluator) self-play
+    // run against the 3-player board -- the search core takes the same
+    // per-player-vector backprop path for any player count, so this is
+    // mainly a smoke test that a 3-player `Ingenious` wires into that path
+    // correctly end to end, not a strength benchmark.
+    #[test]
+    fn three_player_self_play_smoke() {
+        let mut search: TreeSearch<Ingenious3, strategy::Ucb1> =
+            TreeSearch::new().config(SearchConfig::new().max_iterations(64).seed(7));
+
+        let mut state = State::<3>::new(7);
+        for _ in 0..12 {
+            if Ingenious3::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+            state = Ingenious3::apply(state, &action);
         }
     }
 }
