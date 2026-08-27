@@ -797,32 +797,39 @@ where
                 // edge alone would say, rather than trusting every merge
                 // outright.
                 //
-                // `MultiTree` (MO-ISMCTS) has no DAG-merging counterpart at
-                // all yet: `choose_action_multi_tree` builds its own
-                // per-player trees directly, never consulting `graph_search`/
-                // `table`/`mcgs_correction`, so accepting this combination
-                // there would silently ignore the caller's own config rather
-                // than doing anything with it.
-                let ismcts_dag_ok = self.ismcts_mode == IsmctsMode::SingleTree
-                    && !self.use_transpositions
-                    && matches!(self.graph_search, GraphSearch::Dag(GraphStats::Both))
-                    && matches!(
-                        self.mcgs_correction,
-                        McgsCorrection::Residual { .. } | McgsCorrection::RaveBlend { .. }
-                    );
+                // `MultiTree` (MO-ISMCTS) merges each player's own tree
+                // independently, keyed by `Game::info_set_hash` -- but only
+                // with `McgsCorrection::Disabled` (merging alone, no
+                // correction), the first cut whose soundness is still being
+                // measured. `SingleTree`'s two corrections aren't offered for
+                // `MultiTree` yet: neither has been validated against a
+                // per-player tree's own convergence.
+                let common_dag_shape = !self.use_transpositions
+                    && matches!(self.graph_search, GraphSearch::Dag(GraphStats::Both));
+                let ismcts_dag_ok = common_dag_shape
+                    && match self.ismcts_mode {
+                        IsmctsMode::SingleTree => matches!(
+                            self.mcgs_correction,
+                            McgsCorrection::Residual { .. } | McgsCorrection::RaveBlend { .. }
+                        ),
+                        IsmctsMode::MultiTree => {
+                            matches!(self.mcgs_correction, McgsCorrection::Disabled)
+                        }
+                        IsmctsMode::Off => false,
+                    };
                 if !ismcts_dag_ok {
                     return Err(
-                        "ismcts_mode's only supported pairing with transpositions/DAG \
-                         search is IsmctsMode::SingleTree with graph_search: \
-                         GraphSearch::Dag(GraphStats::Both) and mcgs_correction: either \
-                         McgsCorrection::Residual { .. } or McgsCorrection::RaveBlend { .. } \
-                         (never IsmctsMode::MultiTree, never the legacy use_transpositions \
-                         flag, and never GraphStats::Edges/Nodes alone) -- merging by \
-                         Game::info_set_hash instead of the literal full-state hash is what \
-                         makes a shared tree correct for ISMCTS in the first place, and \
-                         GraphStats::Both plus one of these two corrections is what keeps a \
-                         merge's pooled value from silently overriding what the traversing \
-                         edge alone would say"
+                        "ismcts_mode's only supported pairings with transpositions/DAG \
+                         search are: IsmctsMode::SingleTree with graph_search: \
+                         GraphSearch::Dag(GraphStats::Both) and mcgs_correction either \
+                         McgsCorrection::Residual { .. } or McgsCorrection::RaveBlend { .. }; \
+                         or IsmctsMode::MultiTree with the same GraphSearch::Dag(GraphStats::\
+                         Both) and mcgs_correction: McgsCorrection::Disabled (never the legacy \
+                         use_transpositions flag, and never GraphStats::Edges/Nodes alone) -- \
+                         merging by Game::info_set_hash instead of the literal full-state hash \
+                         is what makes a shared tree correct for ISMCTS in the first place, \
+                         and GraphStats::Both is what keeps both an edge-local and a \
+                         node-pooled estimate for a merged node"
                             .to_string(),
                     );
                 }
@@ -1382,14 +1389,30 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_multi_tree_ismcts_mode_with_dag_both_and_residual_correction() {
-        // MO-ISMCTS (`IsmctsMode::MultiTree`) has no DAG-merging counterpart
-        // yet -- `choose_action_multi_tree` builds its own per-player trees
-        // without ever consulting `graph_search`/`mcgs_correction` -- so this
-        // combination stays rejected even though `SingleTree` now accepts it.
+        // `MultiTree` + DAG is accepted only with `McgsCorrection::Disabled`
+        // (merging alone). `SingleTree`'s corrections have not been validated
+        // against a per-player tree's own convergence, so pairing `MultiTree`
+        // with `Residual` stays rejected.
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_multi_tree_ismcts_mode_with_dag_both_and_disabled_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_multi_tree_ismcts_mode_with_dag_nodes_and_disabled_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Nodes));
         assert!(config.validate().is_err());
     }
 

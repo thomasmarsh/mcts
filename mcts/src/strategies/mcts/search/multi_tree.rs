@@ -1,6 +1,7 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::Transform;
+use crate::strategies::mcts::config::GraphStats;
 use crate::strategies::mcts::config::McgsCorrection;
 use crate::strategies::mcts::config::TranspositionKeying;
 use crate::strategies::mcts::index::Id;
@@ -21,6 +22,7 @@ use crate::strategies::mcts::select::SelectContext;
 use crate::strategies::mcts::select::SelectStrategy;
 use crate::strategies::mcts::simulate::SimulateStrategy;
 use crate::strategies::mcts::stack::NodeStack;
+use crate::strategies::mcts::table::TranspositionKey;
 use crate::strategies::mcts::table::TranspositionTable;
 
 use rand::rngs::SmallRng;
@@ -83,12 +85,28 @@ impl<G: Game> PlayerTree<G> {
 /// shares; it's mutated in place, ending at the leaf's own state. Each
 /// tree's `stack` is left holding its own root->leaf path, ready for
 /// `backprop_step`.
+///
+/// When `graph_stats` is `Some` (`IsmctsMode::MultiTree` +
+/// `GraphSearch::Dag(GraphStats::Both)`), each `PlayerTree` additionally
+/// merges its own nodes through its own entry in `tables`, keyed by
+/// `Game::info_set_hash` -- so two action orders that reach the same
+/// information set inside one player's tree share a node, pooling both an
+/// edge-local and a node-level estimate (`GraphStats::Both`). No correction
+/// is applied (`validate` only accepts this pairing with
+/// `McgsCorrection::Disabled`): the open question this wiring exists to
+/// measure is whether a mover-relative merge key converges soundly inside a
+/// player-relative tree at all. The "same ordered legal-action list" note
+/// above still holds under merging as long as a game's legal actions depend
+/// only on public state, not on the determinized hidden information -- true
+/// for `MoConvergeGame` and every hidden-info game in this workspace so far.
 #[allow(clippy::too_many_arguments)]
 fn select_multi_tree<G: Game>(
     trees: &mut [PlayerTree<G>],
     ctx_state: &mut G::S,
     root_state: &G::S,
-    table: &TranspositionTable,
+    tables: &[TranspositionTable],
+    graph_stats: Option<GraphStats>,
+    keying: TranspositionKeying,
     expand_threshold: u32,
     q_init: QInit,
     has_amaf: bool,
@@ -96,6 +114,7 @@ fn select_multi_tree<G: Game>(
     select_strategy: &mut impl SelectStrategy<G>,
     rng: &mut SmallRng,
 ) {
+    let dag = graph_stats.is_some();
     let mut current_ids: Vec<Id> = trees.iter().map(|t| t.root_id).collect();
     let mut incoming_idx = 0usize;
     loop {
@@ -117,7 +136,7 @@ fn select_multi_tree<G: Game>(
         let num_visits = {
             let node_stack = NodeStack::new(trees[mover].stack.clone());
             node_stack
-                .current_stats(&trees[mover].index, &trees[mover].root_stats, None)
+                .current_stats(&trees[mover].index, &trees[mover].root_stats, graph_stats)
                 .num_visits()
         };
 
@@ -182,15 +201,16 @@ fn select_multi_tree<G: Game>(
                 state: ctx_state,
                 player: mover,
                 index: &trees[mover].index,
-                table,
+                table: &tables[mover],
                 grave: &grave,
                 global: &trees[mover].stats,
                 use_transpositions: false,
-                graph_stats: None,
-                // `MultiTree` (MO-ISMCTS) has no DAG-merging counterpart --
-                // `validate()` rejects it paired with `GraphSearch::Dag` --
-                // so no node reached here is ever a merge target and this
-                // is never actually read by `Ucb1::score_child`.
+                graph_stats,
+                // `validate()` only accepts `MultiTree` + DAG with
+                // `McgsCorrection::Disabled`, so `Ucb1::score_child` never
+                // consults a merged node's pooled estimate here -- under
+                // `GraphStats::Both` it still scores on the edge-local
+                // snapshot, exactly as the no-DAG path does.
                 mcgs_correction: McgsCorrection::Disabled,
                 solver_loss_threshold: 0,
                 incoming_sym: Transform::IDENTITY,
@@ -210,9 +230,18 @@ fn select_multi_tree<G: Game>(
         };
 
         let new_state = G::apply(ctx_state.clone(), &action);
-        let new_hash = G::zobrist_hash(&new_state);
+        // Under DAG merging every tree keys its own nodes by
+        // `Game::info_set_hash` (the mover-relative information-set hash),
+        // stored as `Node::hash`; without it the literal full-state hash, as
+        // before.
+        let new_hash = if dag {
+            G::info_set_hash(&new_state)
+        } else {
+            G::zobrist_hash(&new_state)
+        };
         let new_mover = G::player_to_move(&new_state).to_index();
         let num_players = trees.len();
+        let uses_nodes = graph_stats.is_some_and(GraphStats::uses_nodes);
 
         for p in 0..num_players {
             let id = current_ids[p];
@@ -225,18 +254,49 @@ fn select_multi_tree<G: Game>(
             // parallelism elsewhere, but still a paired invariant that must
             // hold even in this single-threaded loop.
             children.add_virtual_loss(best_idx);
-            let child_id = children.get_or_create_child(best_idx, || {
-                let child_id = trees[p].index.insert(Node::new_at_ply(
+            let insert_node = || {
+                trees[p].index.insert(Node::new_at_ply(
                     new_mover,
                     new_hash,
                     ply + 1,
                     num_players,
                     has_amaf,
                     false,
-                ));
+                ))
+            };
+            let child_id = children.get_or_create_child(best_idx, || {
+                let child_id = if dag {
+                    // A different action order inside this same tree may have
+                    // already reached this information set -- reuse that node
+                    // rather than creating a parallel one. Every arrival adds
+                    // one incoming edge below, so a node reached twice
+                    // becomes a transposition (`Node::is_transposition`).
+                    //
+                    // Known gap (as in E4's SingleTree DAG): only a *newly
+                    // filled* slot consults the table. Once this slot caches
+                    // an id, a later iteration whose determinization hashes
+                    // `new_state` to a different information set still reuses
+                    // the cached node -- `select_step` re-checks via
+                    // `verified_child_id`; this path does not yet. Harmless
+                    // for a game like `MoConvergeGame` whose per-mask
+                    // structure keeps every order reaching one info set.
+                    tables[p].get_or_insert_graph(
+                        TranspositionKey::new(keying, new_hash, ply + 1),
+                        insert_node,
+                    )
+                } else {
+                    insert_node()
+                };
                 trees[p].index.get(child_id).add_incoming_edge();
                 child_id
             });
+            // `GraphStats::Both` backprop removes a node-level virtual loss
+            // from every non-root node on the stack, so each traversed child
+            // needs a matching add here (mirrors `select_step`'s own
+            // `stats.add_virtual_loss()` under `GraphStats::uses_nodes`).
+            if uses_nodes {
+                trees[p].index.get(child_id).stats.add_virtual_loss();
+            }
             current_ids[p] = child_id;
         }
         *ctx_state = new_state;
@@ -314,7 +374,16 @@ where
             );
         }
 
-        let table = TranspositionTable::default();
+        // One transposition table per player's tree: under
+        // `GraphSearch::Dag(GraphStats::Both)` each tree merges its own nodes
+        // independently, keyed by that tree's own `Game::info_set_hash`
+        // lookups (`select_multi_tree`). `None` graph_stats leaves every
+        // table permanently empty -- the no-DAG `MultiTree` path, unchanged.
+        let graph_stats = self.config.graph_stats();
+        let keying = self.config.transposition_keying;
+        let tables: Vec<TranspositionTable> = (0..num_players)
+            .map(|_| TranspositionTable::default())
+            .collect();
 
         self.timer.start(self.config.max_time);
         for _ in 0..self.config.max_iterations {
@@ -335,7 +404,9 @@ where
                 &mut trees,
                 &mut ctx_state,
                 state,
-                &table,
+                &tables,
+                graph_stats,
+                keying,
                 self.config.expand_threshold,
                 self.config.q_init,
                 has_amaf,
@@ -360,21 +431,21 @@ where
                     prev_action.clone(),
                     &mut self.config.rng,
                 );
-                for tree in &trees {
+                for (p, tree) in trees.iter().enumerate() {
                     backprop_step(
                         &Shared {
                             index: &tree.index,
                             root_state: state,
                             root_stats: &tree.root_stats,
-                            table: &table,
+                            table: &tables[p],
                             global: &tree.stats,
                             expand_threshold: self.config.expand_threshold,
                             q_init: self.config.q_init,
                             use_transpositions: false,
                             canonicalizes: false,
-                            graph_stats: None,
-                            explicit_dag: false,
-                            keying: TranspositionKeying::default(),
+                            graph_stats,
+                            explicit_dag: graph_stats.is_some(),
+                            keying,
                             use_mcts_solver: false,
                             max_playout_depth: self.config.max_playout_depth,
                             solver_loss_threshold: 0,

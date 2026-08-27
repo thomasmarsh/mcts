@@ -1249,28 +1249,51 @@ mod mo_converge_game_tests {
     /// non-mover's bit at every node during descent, so by the time any
     /// non-root node is reached both bits have been randomized and the
     /// backed-up value is the fully-marginal one, not one conditioned on
-    /// the root's own `priv_bits[0]`. (A `MultiTree` + DAG merge keyed by a
-    /// *player*-relative hash would instead be expected to converge to the
-    /// `priv_bits[0]`-conditioned value inside player 0's tree, but no such
-    /// merge exists yet, so only the marginal value is checked here.)
+    /// the root's own `priv_bits[0]`.
     fn marginal_value_p0(mask: u8) -> f64 {
+        value_p0(mask, None)
+    }
+
+    /// Exact player-0 value at info-set `mask` with `priv_bits[0]` fixed to
+    /// `priv0` and only `priv_bits[1]` (which player 0 can never observe)
+    /// marginalized uniformly. This is the value a *player*-relative DAG
+    /// merge inside player 0's tree would be expected to converge to --
+    /// arguably more correct than plain `MultiTree`'s marginal one, since at
+    /// the root player 0 does know its own bit -- so a `MultiTree` + DAG run
+    /// converging here rather than to `marginal_value_p0` would be a *better*
+    /// outcome, not a bug.
+    fn conditioned_value_p0(mask: u8, priv0: bool) -> f64 {
+        value_p0(mask, Some(priv0))
+    }
+
+    /// Backward induction over the mask-only reduced game (player 0 maximizes
+    /// at even-count nodes, player 1 minimizes at odd-count ones). Leaf
+    /// payoff is `winner`'s outcome averaged over `priv_bits[1]` always, and
+    /// over `priv_bits[0]` iff `priv0` is `None`.
+    fn value_p0(mask: u8, priv0: Option<bool>) -> f64 {
         if mask.count_ones() >= PICKS {
+            let p0s: &[bool] = match priv0 {
+                Some(ref b) => std::slice::from_ref(b),
+                None => &[false, true],
+            };
             let mut total = 0.0;
-            for p0 in [false, true] {
+            let mut count = 0.0;
+            for &p0 in p0s {
                 for p1 in [false, true] {
                     let s = State {
                         mask,
                         priv_bits: [p0, p1],
                     };
                     total += MoConvergeGame::compute_utilities(&s)[0];
+                    count += 1.0;
                 }
             }
-            return total / 4.0;
+            return total / count;
         }
         let maximizer = mask.count_ones().is_multiple_of(2);
         (0..NUM_ACTIONS)
             .filter(|&i| mask & (1 << i) == 0)
-            .map(|i| marginal_value_p0(mask | (1 << i)))
+            .map(|i| value_p0(mask | (1 << i), priv0))
             .fold(None, |acc: Option<f64>, v| {
                 Some(match acc {
                     None => v,
@@ -1322,6 +1345,34 @@ mod mo_converge_game_tests {
     // which branch UCB1 abandoned first.
     const EXPLORATION_CONSTANT: f64 = 5.0;
 
+    /// Runs one `MultiTree` search and returns player 0's pooled-edge score
+    /// at `target_mask` (`None` if no iteration sampled it). `dag` adds
+    /// `GraphSearch::Dag(GraphStats::Both)` -- per-player-tree information-set
+    /// merging keyed by the mover-relative `Game::info_set_hash`, with
+    /// `McgsCorrection::Disabled` (merging alone, the only pairing
+    /// `validate()` accepts for `MultiTree` today).
+    fn multi_tree_pooled_score(
+        iterations: usize,
+        seed: u64,
+        redeterminize: bool,
+        dag: bool,
+        target_mask: u8,
+    ) -> Option<f64> {
+        let mut config = SearchConfig::default()
+            .max_iterations(iterations)
+            .expand_threshold(0)
+            .seed(seed)
+            .select(select::Ucb1::with_c(EXPLORATION_CONSTANT))
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .ismcts_redeterminize(redeterminize);
+        if dag {
+            config = config.graph_search(crate::GraphSearch::Dag(crate::GraphStats::Both));
+        }
+        let mut search = TS::default().config(config);
+        search.choose_action(&State::default());
+        pooled_score_for_mask(&search, target_mask, 0)
+    }
+
     fn plain_multi_tree_error(
         iterations: usize,
         seed: u64,
@@ -1329,16 +1380,8 @@ mod mo_converge_game_tests {
         target_mask: u8,
         target_value: f64,
     ) -> Option<f64> {
-        let config = SearchConfig::default()
-            .max_iterations(iterations)
-            .expand_threshold(0)
-            .seed(seed)
-            .select(select::Ucb1::with_c(EXPLORATION_CONSTANT))
-            .ismcts_mode(IsmctsMode::MultiTree)
-            .ismcts_redeterminize(redeterminize);
-        let mut search = TS::default().config(config);
-        search.choose_action(&State::default());
-        pooled_score_for_mask(&search, target_mask, 0).map(|score| (score - target_value).abs())
+        multi_tree_pooled_score(iterations, seed, redeterminize, false, target_mask)
+            .map(|score| (score - target_value).abs())
     }
 
     #[test]
@@ -1406,6 +1449,97 @@ mod mo_converge_game_tests {
             errors[2] < 0.35,
             "plain MultiTree's error at the top budget should be small -- a large \
              residual points at a fixture/harness bug: {errors:?}"
+        );
+    }
+
+    // `IsmctsMode::MultiTree` + `GraphSearch::Dag(GraphStats::Both)` +
+    // `McgsCorrection::Disabled` -- per-player-tree information-set merging
+    // keyed by the mover-relative `Game::info_set_hash`, no correction. The
+    // soundness question: does merging *alone* converge player 0's estimate
+    // at a transposing non-root node the way plain `MultiTree` does, or does
+    // the mover-relative key bias it? The target node has player 1 to move,
+    // so a mover-relative key drops player 0's own private bit there --
+    // exactly the merge suspected of conflating states player 0 can tell
+    // apart.
+    //
+    // Result: DAG merging converges to the same fully-marginal value plain
+    // `MultiTree` does, at a comparable rate -- it is *not* biased by the
+    // mover-relative key, and it is also not an improvement (it does not
+    // reach the player-0-conditioned value that a genuinely player-relative
+    // merge might). Sound with no correction, unlike `SingleTree` + DAG
+    // which needs `RaveBlend` to converge.
+    #[test]
+    fn dag_multi_tree_converges_like_plain_multi_tree_does() {
+        let target_mask: u8 = (1 << 1) | (1 << 2) | (1 << 3);
+        let marginal = marginal_value_p0(target_mask);
+        // Root default is `priv_bits[0] == false`.
+        let conditioned = conditioned_value_p0(target_mask, false);
+
+        let budgets = [200usize, 1_000, 5_000];
+        let seeds: Vec<u64> = (1..=6).collect();
+
+        let mean_err = |dag: bool, reference: f64, iterations: usize| -> f64 {
+            let errs: Vec<f64> = seeds
+                .iter()
+                .filter_map(|&seed| {
+                    multi_tree_pooled_score(iterations, seed, true, dag, target_mask)
+                        .map(|s| (s - reference).abs())
+                })
+                .collect();
+            assert!(
+                !errs.is_empty(),
+                "dag={dag} iterations={iterations}: target never sampled"
+            );
+            errs.iter().sum::<f64>() / errs.len() as f64
+        };
+
+        let plain_vs_marginal: Vec<f64> = budgets
+            .iter()
+            .map(|&it| mean_err(false, marginal, it))
+            .collect();
+        let dag_vs_marginal: Vec<f64> = budgets
+            .iter()
+            .map(|&it| mean_err(true, marginal, it))
+            .collect();
+        let dag_vs_conditioned: Vec<f64> = budgets
+            .iter()
+            .map(|&it| mean_err(true, conditioned, it))
+            .collect();
+
+        eprintln!("marginal = {marginal}, conditioned(priv0=false) = {conditioned}");
+        eprintln!("plain_vs_marginal  (200/1000/5000) = {plain_vs_marginal:?}");
+        eprintln!("dag_vs_marginal    (200/1000/5000) = {dag_vs_marginal:?}");
+        eprintln!("dag_vs_conditioned (200/1000/5000) = {dag_vs_conditioned:?}");
+
+        // DAG merging alone converges player 0's pooled estimate toward the
+        // marginal value as the budget grows 25x -- a mover-relative key
+        // that biased the estimate would leave this flat or growing.
+        assert!(
+            dag_vs_marginal[2] < dag_vs_marginal[0] * 0.8,
+            "MultiTree + DAG should converge toward the marginal value as budget grows: \
+             {dag_vs_marginal:?}"
+        );
+        assert!(
+            dag_vs_marginal[2] < 0.35,
+            "MultiTree + DAG's marginal-value error at the top budget should be small -- \
+             a large residual points at a merge-key bias: {dag_vs_marginal:?}"
+        );
+        // ...and it converges to the *same* value plain `MultiTree` does, not
+        // to something the merge shifted it to. Comparable top-budget error
+        // (within 1.5x of plain's) is the soundness claim: merging changed
+        // sample density, not the fixed point.
+        assert!(
+            dag_vs_marginal[2] < plain_vs_marginal[2] * 1.5,
+            "MultiTree + DAG's top-budget error should be comparable to plain MultiTree's, \
+             not materially worse: dag={dag_vs_marginal:?} plain={plain_vs_marginal:?}"
+        );
+        // The merge is not player-relative, so it does not reach the
+        // player-0-conditioned value -- recorded as a negative result, not
+        // asserted as a goal.
+        assert!(
+            dag_vs_conditioned[2] > dag_vs_marginal[2],
+            "sanity: DAG is closer to the marginal than the conditioned value: \
+             vs_marginal={dag_vs_marginal:?} vs_conditioned={dag_vs_conditioned:?}"
         );
     }
 }
