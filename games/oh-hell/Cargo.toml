@@ -1,0 +1,16 @@
+[package]
+name = "game-oh-hell"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "game_oh_hell"
+
+[dependencies]
+mcts = { path = "../../mcts" }
+serde = { version = "1", features = ["derive"] }
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[lints]
+workspace = true
