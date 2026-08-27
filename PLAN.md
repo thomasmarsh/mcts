@@ -89,7 +89,7 @@ things implemented (perhaps only partially) are checked off on the list.
 - [ ] Iterative widening
 - [x] Meta-MCTS / Nested MCTS
 - [ ] Infrastructure to easily expose game to MuZero
-- [ ] N-players (n > 2)
+- [x] N-players (n > 2)
 - [x] Tree reuse across moves (re-rooting)
 
 ### DAG
