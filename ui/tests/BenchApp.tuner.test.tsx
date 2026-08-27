@@ -20,10 +20,8 @@ describe("tuner launch and physical-run diagnostics", () => {
       benchReducer,
       createMockBenchEnv(),
     );
-    store.dispatch({ tag: "kinds", action: { tag: "request" } });
     store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
     render(() => <LaunchForm store={store} />);
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "tuner" } });
     expect(screen.getByLabelText("Target trials")).toBeInTheDocument();
     expect(screen.getByLabelText(/Minimum pairs/)).toBeInTheDocument();
     expect(screen.queryByText(/Starting baseline panel/)).not.toBeInTheDocument();

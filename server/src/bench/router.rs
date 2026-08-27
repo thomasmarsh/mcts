@@ -22,18 +22,13 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
-use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
-use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
 use mcts_bench::supervised_launch::LaunchDescriptor;
-use mcts_bench::tournament::wilson_interval;
-use mcts_bench::StrategyInfo;
 
 use super::{
     commands::*,
-    projects::*,
     runs::*,
     traces::*,
     tuning::{
@@ -73,7 +68,6 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     Router::new()
-        .route("/api/bench/kinds", get(list_kinds))
         .route("/api/bench/tuner/kinds", get(list_tuner_kinds))
         .route("/api/bench/tuner/sessions", get(get_tuning_sessions))
         .route(
@@ -104,39 +98,17 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             "/api/bench/tuner/sessions/{session_id}/trials/{trial_id}",
             get(get_tuning_trial_detail),
         )
-        .route(
-            "/api/bench/projects",
-            get(list_projects).post(create_project),
-        )
-        .route(
-            "/api/bench/projects/{project_id}",
-            get(get_project).patch(update_project),
-        )
-        .route(
-            "/api/bench/projects/{project_id}/experiments",
-            get(list_experiments).post(create_experiment),
-        )
-        .route(
-            "/api/bench/experiments/{experiment_id}",
-            get(get_experiment).put(update_experiment),
-        )
-        .route(
-            "/api/bench/experiments/{experiment_id}/runs",
-            post(launch_experiment).layer(launch_timeout),
-        )
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
         .route("/api/bench/runs/{run_id}/stdout", get(get_run_stdout))
         .route("/api/bench/runs/{run_id}/trials", get(get_run_trials))
-        .route("/api/bench/runs/{run_id}/cells", get(get_run_cells))
         .route("/api/bench/runs/{run_id}/games", get(get_run_games))
         .route(
             "/api/bench/runs/{run_id}/games/{game_seq}/moves",
             get(get_run_game_moves),
         )
         .route("/api/bench/runs/{run_id}/live", get(live_run_moves))
-        .route("/api/bench/leaderboard", get(get_leaderboard))
         .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
         .route("/api/bench/runs/{run_id}", delete(delete_run))
@@ -145,38 +117,6 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 }
 
 // ---------------------------------------------------------------------------
-pub(crate) async fn list_kinds() -> Json<Vec<BenchKindInfo>> {
-    let game_registry = mcts_bench::registry();
-
-    let mut games: Vec<BenchGameInfo> = game_registry
-        .iter()
-        .map(|(game_kind, bg)| BenchGameInfo {
-            game: game_kind.to_string(),
-            strategies: bg.strategies(),
-        })
-        .collect();
-    games.sort_by(|a, b| a.game.cmp(&b.game));
-
-    let kinds = vec![
-        BenchKindInfo {
-            kind: "round_robin".to_string(),
-            label: "Round Robin".to_string(),
-            description: "Every strategy plays every other strategy an equal number of times, both as first and second player.  Results are streamed as match_result JSONL lines, aggregated into a win-rate leaderboard with Wilson confidence intervals."
-                .to_string(),
-            games,
-        },
-        BenchKindInfo {
-            kind: "tuner".to_string(),
-            label: "Tuner Tuning".to_string(),
-            description: "Runs a tuner hyperparameter-optimization sweep over a game's tunable strategy search space, playing rounds of a params-built candidate against one or more baseline instances per trial.  Results are streamed as trial JSONL lines.  See GET /api/bench/tuner/kinds for per-game tuner metadata (search space, baselines, eval rounds) instead of a strategies list."
-                .to_string(),
-            games: vec![],
-        },
-    ];
-
-    Json(kinds)
-}
-
 /// `GET /api/bench/tuner/kinds`
 ///
 /// Per-game tuner metadata (search space, baselines, eval rounds), queried

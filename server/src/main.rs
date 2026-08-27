@@ -339,17 +339,9 @@ async fn main() {
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
-    let bench_runtime = Arc::new(bench::lifecycle::BenchRuntime::new(
-        bench_adapters.projects_repository.clone(),
-        Arc::new(bench::supervisor_runtime::SupervisorRuntime::new(
-            std::path::Path::new(mcts_bench::launch::BENCH_RUNS_DIR).join("registry.log"),
-        )),
-        Arc::new(bench::lifecycle::SystemClock),
-    ));
     let bench_state = Arc::new(bench::BenchState {
         #[cfg(test)]
         db: bench::TestDatabase::unavailable(),
-        project_repository: bench_adapters.project_repository,
         projects_repository: bench_adapters.projects_repository,
         run_repository: bench_adapters.run_repository,
         run_command_repository: bench_adapters.run_command_repository,
@@ -358,7 +350,6 @@ async fn main() {
         tuning_session_repository: bench_adapters.tuning_session_repository,
         tuning_trial_repository: bench_adapters.tuning_trial_repository,
         bench_runs_dir,
-        experiment_validator: Arc::new(bench::validate_experiment_spec),
         run_launcher: Arc::new(|run_id, command, kind, game, label| {
             mcts_bench::launch::launch_with_run_id(
                 run_id,
@@ -370,7 +361,6 @@ async fn main() {
             )
         }),
         process_group_signaller: Arc::new(bench::signal_process_group),
-        runtime: bench_runtime,
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

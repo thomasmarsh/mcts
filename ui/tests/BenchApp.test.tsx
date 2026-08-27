@@ -27,8 +27,8 @@ import type { BenchEnv, RunSummary } from "@mcts/bench";
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
   const env = createMockBenchEnv(envOverrides);
   const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, env);
-  // Pre-fetch kinds and runs so the UI shows data immediately.
-  store.dispatch({ tag: "kinds", action: { tag: "request" } });
+  // Pre-fetch tuner kinds and runs so the UI shows data immediately.
+  store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
   store.dispatch({ tag: "runs", action: { tag: "request" } });
   return { store, env };
 }
@@ -38,50 +38,17 @@ afterEach(() => {
 });
 
 describe("LaunchForm", () => {
-  it("renders the form and selects a kind", async () => {
+  it("renders the tuning launch form", async () => {
     const { store } = createTestStore();
     render(() => <LaunchForm store={store} />);
 
     // Should show "Launch New Run" heading
     expect(screen.getByText("Launch New Run")).toBeInTheDocument();
 
-    // Should show the kind selector with "Round Robin" option
-    const kindSelect = screen.getByLabelText("Run Kind") as HTMLSelectElement;
-    expect(kindSelect).toBeInTheDocument();
-    expect(kindSelect.value).toBe("");
-
-    // Select "Round Robin"
-    fireEvent.change(kindSelect, { target: { value: "round_robin" } });
-    expect(kindSelect.value).toBe("round_robin");
-
-    // Should now show the game selector with "druid"
+    // Should show the tuner game picker, auto-selecting the first tunable game.
     const gameSelect = screen.getByLabelText("Game") as HTMLSelectElement;
     expect(gameSelect).toBeInTheDocument();
-    expect(gameSelect.value).toBe("druid");
-  });
-
-  it("shows strategy checkboxes when a game is selected", async () => {
-    const { store } = createTestStore();
-    render(() => <LaunchForm store={store} />);
-
-    // Select kind (game auto-selects)
-    fireEvent.change(screen.getByLabelText("Run Kind"), { target: { value: "round_robin" } });
-
-    // Strategies should be visible
-    expect(screen.getByText("Strong")).toBeInTheDocument();
-    expect(screen.getByText("Master")).toBeInTheDocument();
-    expect(screen.getByText("1s UCB1")).toBeInTheDocument();
-
-    // Launch button should be disabled (no strategies selected yet)
-    const launchBtn = screen.getByText("Launch") as HTMLButtonElement;
-    expect(launchBtn.disabled).toBe(true);
-
-    // Select two strategies
-    fireEvent.click(screen.getByText("Strong"));
-    fireEvent.click(screen.getByText("Master"));
-
-    // Launch button should now be enabled
-    expect(launchBtn.disabled).toBe(false);
+    expect(gameSelect.value).toBe("traffic-lights");
   });
 });
 

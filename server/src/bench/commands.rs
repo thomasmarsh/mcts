@@ -22,7 +22,6 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
-use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, StartRequest};
@@ -574,12 +573,11 @@ pub(crate) fn project_legacy_stop(
 
 /// Build the command vector from the launch request's kind/game/config.
 ///
-/// Supported kinds:
-/// - `"round_robin"` — runs `bench round-robin --game ... --strategies ... --rounds ...`
-/// - `"tuner"` — runs `bench tuner --game ... [--config ...] [--override k=v ...]`
-///   in the foreground; the server's own `launch::launch` (not `bench tuner`'s
-///   own `--background` flag) is what detaches and captures its JSONL output,
-///   same as every other launch kind.
+/// The only supported kind is `"tuner"` — runs
+/// `bench tuner --game ... [--config ...] [--override k=v ...]` in the
+/// foreground; the server's own `launch::launch` (not `bench tuner`'s own
+/// `--background` flag) is what detaches and captures its JSONL output,
+/// same as every other launch kind.
 ///
 /// Unknown kinds produce an error.
 pub(crate) fn build_command(
@@ -588,8 +586,6 @@ pub(crate) fn build_command(
     config: &Option<Value>,
     run_id: &str,
 ) -> Result<Vec<String>, BenchError> {
-    let bench_binary = find_bench_binary();
-
     match kind {
         "tuner" => Ok(build_tuner_attempt(&TunerAttemptLaunch::from_config(
             game,
@@ -598,76 +594,11 @@ pub(crate) fn build_command(
             canonical_tuner_artifact_root(run_id),
         ))?
         .command),
-        "round_robin" => {
-            let mut cmd = vec![
-                bench_binary.to_string_lossy().to_string(),
-                "round-robin".into(),
-                "--game".into(),
-                game.to_owned(),
-            ];
-
-            if let Some(ref config) = config {
-                if let Some(strategies) = config.get("strategies").and_then(|v| v.as_array()) {
-                    for s in strategies {
-                        if let Some(name) = s.as_str() {
-                            cmd.push("--strategies".into());
-                            cmd.push(name.to_owned());
-                        }
-                    }
-                }
-
-                if let Some(rounds) = config.get("rounds").and_then(|v| v.as_u64()) {
-                    cmd.push("--rounds".into());
-                    cmd.push(rounds.to_string());
-                }
-            }
-
-            // Always include --verbose so progress bars appear on stderr
-            // (the launcher redirects stderr to stdout.log).
-            cmd.push("--verbose".into());
-
-            // Move-trace lines go to a dedicated `moves.jsonl` in the run's
-            // own directory, not `log.jsonl` -- see `LogRecord::Move`'s doc
-            // comment for why a full move trace is kept out of the main
-            // log. The path is derivable from `run_id` alone (matches
-            // `launch::launch_with_run_id`'s own `bench-runs/<run_id>/`
-            // layout), so no round-trip through the launcher is needed.
-            cmd.push("--trace-path".into());
-            cmd.push(
-                std::path::Path::new(launch::BENCH_RUNS_DIR)
-                    .join(run_id)
-                    .join("moves.jsonl")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-
-            Ok(cmd)
-        }
         unknown => Err(BenchError {
             status: StatusCode::BAD_REQUEST,
-            message: format!("unknown run kind '{unknown}'; expected one of: round_robin, tuner"),
+            message: format!("unknown run kind '{unknown}'; expected: tuner"),
         }),
     }
-}
-
-pub(crate) fn build_experiment_command(
-    spec: &ExperimentSpecV1,
-    run_id: &str,
-) -> Result<Vec<String>, String> {
-    spec.expand().map_err(|error| error.to_string())?;
-    let spec_json = serde_json::to_string(spec).map_err(|error| error.to_string())?;
-    Ok(vec![
-        find_bench_binary().to_string_lossy().into_owned(),
-        "experiment".into(),
-        "--spec-json".into(),
-        spec_json,
-        "--trace-path".into(),
-        Path::new(launch::BENCH_RUNS_DIR)
-            .join(run_id)
-            .join("moves.jsonl")
-            .to_string_lossy()
-            .into_owned(),
-    ])
 }
 
 fn prepare_tuner_config(config: Option<Value>, run_id: &str) -> Option<Value> {

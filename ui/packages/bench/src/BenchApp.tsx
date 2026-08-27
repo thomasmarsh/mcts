@@ -1,10 +1,8 @@
-// BenchApp.tsx — Top-level bench UI with tab navigation across:
-//   - Runs: run list (sidebar), plus launch form or run detail in the main pane
-//   - Leaderboard: win-rate table with Wilson CI, filters, commit trends chart, and two-commit comparison
-//   - Projects
+// BenchApp.tsx — Top-level bench UI: run list (sidebar), plus launch form or
+// run detail in the main pane.
 //
 // Creates its own `createStore(benchReducer, benchEnv)` independent of the
-// game store. Fetches available kinds and the runs list on mount.
+// game store. Fetches available tuner kinds and the runs list on mount.
 
 import { createEffect, onMount, Show, type Component } from "solid-js";
 import { createStore, type Store } from "@mcts/core";
@@ -19,11 +17,6 @@ import {
 import { RunList } from "./RunList.js";
 import { RunDetailPanel } from "./RunDetailPanel.js";
 import { LaunchForm } from "./LaunchForm.js";
-import { LeaderboardTable } from "./LeaderboardTable.js";
-import { WinRateChart } from "./WinRateChart.js";
-import { CommitComparison } from "./CommitComparison.js";
-import { ProjectsApp } from "./ProjectsApp.js";
-import { ExperimentRunDetail } from "./ExperimentRunDetail.js";
 import { TuningSessionWorkbench } from "./tuning/TuningSessionWorkbench.js";
 import type { BenchSpectatorProps } from "./types.js";
 
@@ -34,7 +27,6 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
   const state = store.getState();
   const dispatch = store.dispatch;
 
-  const activeTab = () => state().activeTab;
   const openRun = () => state().openRun;
   const showLaunchForm = () => state().showLaunchForm;
   const launchStatus = () => state().launch.status;
@@ -54,13 +46,10 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
     }
   });
 
-  // Fetch kinds metadata and the run list on mount.
+  // Fetch tuner kinds metadata and the run list on mount.
   onMount(() => {
-    store.dispatch({ tag: "kinds", action: { tag: "request" } });
     store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
     store.dispatch({ tag: "runs", action: { tag: "request" } });
-    store.dispatch({ tag: "leaderboard", action: { tag: "request" } });
-    store.dispatch({ tag: "projectsRequest" });
   });
 
   function onNewRun(): void {
@@ -71,75 +60,28 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
 
   return (
     <div id="bench-app">
-      <div id="bench-sub-tabs">
-        <button
-          class="sub-tab-btn"
-          classList={{ active: activeTab() === "runs" }}
-          onClick={() => dispatch({ tag: "setTab", tab: "runs" })}
-        >
-          Runs
-        </button>
-        <button
-          class="sub-tab-btn"
-          classList={{ active: activeTab() === "leaderboard" }}
-          onClick={() => dispatch({ tag: "setTab", tab: "leaderboard" })}
-        >
-          Leaderboard
-        </button>
-        <button
-          class="sub-tab-btn"
-          classList={{ active: activeTab() === "projects" }}
-          onClick={() => dispatch({ tag: "setTab", tab: "projects" })}
-        >
-          Projects
-        </button>
+      <div id="bench-runs-layout">
+        <div id="bench-sidebar">
+          <RunList store={store} onNewRun={onNewRun} />
+        </div>
+        <div id="bench-main-pane">
+          <Show
+            when={selectedTuningSession() !== null}
+            fallback={
+              <>
+                <Show when={openRun() !== null}>
+                  <RunDetailPanel store={store} Spectator={props.Spectator} />
+                </Show>
+                <Show when={openRun() === null && showLaunchForm()}>
+                  <LaunchForm store={store} />
+                </Show>
+              </>
+            }
+          >
+            <TuningSessionWorkbench store={store} Spectator={props.Spectator} />
+          </Show>
+        </div>
       </div>
-
-      <Show when={activeTab() === "projects"}>
-        <ProjectsApp store={store} />
-      </Show>
-
-      <Show when={activeTab() === "runs"}>
-        <div id="bench-runs-layout">
-          <div id="bench-sidebar">
-            <RunList store={store} onNewRun={onNewRun} />
-          </div>
-          <div id="bench-main-pane">
-            <Show
-              when={selectedTuningSession() !== null}
-              fallback={
-                <>
-                  <Show when={openRun() !== null}>
-                    <Show
-                      when={openRun()?.detail?.kind === "experiment"}
-                      fallback={<RunDetailPanel store={store} Spectator={props.Spectator} />}
-                    >
-                      <ExperimentRunDetail store={store} Spectator={props.Spectator} />
-                    </Show>
-                  </Show>
-                  <Show when={openRun() === null && showLaunchForm()}>
-                    <LaunchForm store={store} />
-                  </Show>
-                </>
-              }
-            >
-              <TuningSessionWorkbench store={store} Spectator={props.Spectator} />
-            </Show>
-          </div>
-        </div>
-      </Show>
-
-      <Show when={activeTab() === "leaderboard"}>
-        <div id="bench-leaderboard-layout">
-          <div id="leaderboard-left">
-            <LeaderboardTable store={store} />
-          </div>
-          <div id="leaderboard-right">
-            <WinRateChart store={store} />
-            <CommitComparison store={store} />
-          </div>
-        </div>
-      </Show>
     </div>
   );
 };

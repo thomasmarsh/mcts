@@ -5,19 +5,22 @@
 import { Effect } from "@mcts/core";
 import type { BenchEnv } from "@mcts/bench";
 import type {
-  BenchKindInfo,
   RunDetail,
   RunLogResponse,
   RunSummary,
   LaunchResponse,
   StopResponse,
-  LeaderboardEntry,
   TunerGameInfo,
   TrialRow,
   GameTraceSummary,
   GameMove,
 } from "@mcts/bench";
 
+// This run predates tuner-only launches (the web UI could still launch
+// round_robin runs when it was recorded) -- kept as "round_robin" so the
+// run-detail/spectator paths are exercised against a historical run kind
+// that may still exist on disk, not just the tuner kind the launch form
+// produces today.
 export const FAKE_RUN_ID = "rr-druid-20260101T000000-abc1234";
 
 export const fakeRunSummaries: RunSummary[] = [
@@ -318,104 +321,8 @@ export const fakeTrialRowsMultiInstance: TrialRow[] = [
   },
 ];
 
-export const fakeKinds: BenchKindInfo[] = [
-  {
-    kind: "round_robin",
-    label: "Round Robin",
-    description: "Every strategy plays every other strategy.",
-    games: [
-      {
-        game: "druid",
-        strategies: [
-          { id: "strong", label: "Strong", description: "3s per move" },
-          { id: "master", label: "Master", description: "8s per move" },
-          { id: "1s-ucb1", label: "1s UCB1", description: "Plain UCB1" },
-        ],
-      },
-    ],
-  },
-  {
-    kind: "tuner",
-    label: "Tuner Tuning",
-    description: "Runs a tuner hyperparameter-optimization sweep.",
-    // Mirrors the real server: tuner's per-game info comes from
-    // GET /api/bench/tuner/kinds (fakeTunerKinds), not this list.
-    games: [],
-  },
-];
-
 export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
   const base: BenchEnv = {
-    listProjects: () => Effect.send([]),
-    createProject: () =>
-      Effect.send({
-        project_id: "project-1",
-        name: "Test",
-        description: "",
-        archived: false,
-        created_at: "",
-        updated_at: "",
-      }),
-    getProject: () =>
-      Effect.send({
-        project_id: "project-1",
-        name: "Test",
-        description: "",
-        archived: false,
-        created_at: "",
-        updated_at: "",
-      }),
-    updateProject: () =>
-      Effect.send({
-        project_id: "project-1",
-        name: "Test",
-        description: "",
-        archived: false,
-        created_at: "",
-        updated_at: "",
-      }),
-    listExperiments: () => Effect.send([]),
-    createExperiment: (_projectId, body) =>
-      Effect.send({
-        experiment_id: "experiment-1",
-        project_id: "project-1",
-        name: body.name,
-        description: body.description,
-        spec: body.spec,
-        created_at: "",
-        updated_at: "",
-      }),
-    getExperiment: () =>
-      Effect.send({
-        experiment_id: "experiment-1",
-        project_id: "project-1",
-        name: "Experiment",
-        description: "",
-        spec: {
-          version: 1,
-          games: [{ game: "nim", game_config: null }],
-          baseline: { id: "base", label: "Base", config: {} },
-          variants: [{ id: "variant", label: "Variant", config: {} }],
-          budgets: [{ kind: "iterations", value: 25 }],
-          rounds_per_cell: 1,
-          base_seed: 42,
-          max_parallel_cells: 1,
-        },
-        created_at: "",
-        updated_at: "",
-      }),
-    updateExperiment: (_id, body) =>
-      Effect.send({
-        experiment_id: "experiment-1",
-        project_id: "project-1",
-        name: body.name,
-        description: body.description,
-        spec: body.spec,
-        created_at: "",
-        updated_at: "",
-      }),
-    launchExperiment: () => Effect.send({ run_id: FAKE_RUN_ID, pid: 1, log_path: "" }),
-    getRunCells: () => Effect.send([]),
     listRuns: () => Effect.send(fakeRunSummaries),
     getRun: (runId: string) =>
       Effect.send(
@@ -427,12 +334,10 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       ),
     getRunLog: (_runId: string, _since: number): Effect<RunLogResponse> =>
       Effect.send({ lines: ['{"type":"match_result","seq":1}'], next_offset: 42 }),
-    getLeaderboard: (): Effect<LeaderboardEntry[]> => Effect.send([]),
     launchRun: (_kind: string, _game: string, _config?: unknown): Effect<LaunchResponse> =>
       Effect.send({ run_id: "new-run-123", pid: 99999, log_path: "/tmp/new/log.jsonl" }),
     stopRun: (_runId: string): Effect<StopResponse> =>
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
-    getBenchKinds: () => Effect.send(fakeKinds),
     getTunerKinds: () => Effect.send(fakeTunerKinds),
     listTuningSessions: () => Effect.send({ schema_version: 1, sessions: [] }),
     getTuningSession: () => Effect.none(),
@@ -444,7 +349,6 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),
     getRunGameMoves: (): Effect<GameMove[]> => Effect.send(fakeGameMoves),
     deleteRun: (): Effect<void> => Effect.send(undefined),
-    downloadFile: (): Effect<void> => Effect.send(undefined),
   };
   return { ...base, ...overrides };
 }

@@ -336,7 +336,6 @@ fn test_reserved_tuner_launch_records_once_and_reuses_the_physical_identity() {
             )
             .unwrap();
         },
-        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(move |run_id, _command, _kind, _game, _label| {
             *observed.lock().unwrap() += 1;
             Ok(LaunchedRun {
@@ -420,7 +419,6 @@ fn test_reserved_tuner_spawn_failure_releases_its_reservation() {
             )
             .unwrap();
         },
-        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(|_, _, _, _, _| Err(std::io::Error::other("injected spawn failure"))),
     );
     let error = match launch_reserved_tuner_attempt(
@@ -465,174 +463,6 @@ fn test_build_command_unknown_kind_lists_tuner_as_supported() {
     assert!(err.message.contains("tuner"));
 }
 
-#[test]
-fn test_build_command_round_robin_includes_trace_path_derived_from_run_id() {
-    let cmd = build_command(
-        "round_robin",
-        "druid",
-        &None,
-        "rr-druid-20260101T000000-abcdef",
-    )
-    .unwrap();
-
-    let idx = cmd
-        .iter()
-        .position(|a| a == "--trace-path")
-        .expect("--trace-path flag present");
-    assert_eq!(
-        cmd[idx + 1],
-        "bench-runs/rr-druid-20260101T000000-abcdef/moves.jsonl"
-    );
-}
-
-#[test]
-fn test_build_experiment_command_detaches_foreground_coordinator() {
-    let spec = ExperimentSpecV1 {
-        version: 1,
-        games: vec![mcts_bench::experiment::ExperimentGame {
-            game: "nim".into(),
-            game_config: Value::Null,
-        }],
-        baseline: mcts_bench::experiment::NamedStrategyConfig {
-            id: "baseline".into(),
-            label: "Baseline".into(),
-            config: json!({"family": "ucb1"}),
-        },
-        variants: vec![mcts_bench::experiment::NamedStrategyConfig {
-            id: "variant".into(),
-            label: "Variant".into(),
-            config: json!({"family": "rave"}),
-        }],
-        budgets: vec![mcts_bench::experiment::Budget::Iterations { value: 1 }],
-        rounds_per_cell: 1,
-        base_seed: 42,
-        max_parallel_cells: 1,
-    };
-    let cmd = build_experiment_command(&spec, "experiment-run").unwrap();
-    assert_eq!(cmd[0], find_bench_binary().to_string_lossy());
-    assert_eq!(
-        &cmd[1..],
-        &[
-            "experiment".to_string(),
-            "--spec-json".to_string(),
-            serde_json::to_string(&spec).unwrap(),
-            "--trace-path".to_string(),
-            "bench-runs/experiment-run/moves.jsonl".to_string(),
-        ]
-    );
-    assert_ne!(cmd[1], "game-nim");
-    assert!(serde_json::from_str::<ExperimentSpecV1>(&cmd[3]).is_ok());
-}
-
-#[tokio::test]
-async fn test_launch_experiment_materializes_full_grid_and_uses_coordinator() {
-    let spec = ExperimentSpecV1 {
-        version: 1,
-        games: vec![
-            mcts_bench::experiment::ExperimentGame {
-                game: "game-a".into(),
-                game_config: json!({"a": 1}),
-            },
-            mcts_bench::experiment::ExperimentGame {
-                game: "game-b".into(),
-                game_config: json!({"b": 2}),
-            },
-        ],
-        baseline: mcts_bench::experiment::NamedStrategyConfig {
-            id: "base".into(),
-            label: "Base".into(),
-            config: json!({"family": "ucb1"}),
-        },
-        variants: vec![
-            mcts_bench::experiment::NamedStrategyConfig {
-                id: "v1".into(),
-                label: "V1".into(),
-                config: json!({"family": "rave"}),
-            },
-            mcts_bench::experiment::NamedStrategyConfig {
-                id: "v2".into(),
-                label: "V2".into(),
-                config: json!({"family": "flat_mc"}),
-            },
-            mcts_bench::experiment::NamedStrategyConfig {
-                id: "v3".into(),
-                label: "V3".into(),
-                config: json!({"family": "random"}),
-            },
-        ],
-        budgets: vec![
-            mcts_bench::experiment::Budget::Iterations { value: 10 },
-            mcts_bench::experiment::Budget::TimePerMoveMs { value: 20 },
-        ],
-        rounds_per_cell: 2,
-        base_seed: 42,
-        max_parallel_cells: 2,
-    };
-    let commands = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
-    let captured = commands.clone();
-    let (app, _, state) = seeded_app_with_state(
-        |conn, _| {
-            conn.execute("INSERT INTO projects (project_id, name, description, created_at, updated_at) VALUES ('p-grid', 'Grid', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", []).unwrap();
-            conn.execute("INSERT INTO experiments (experiment_id, project_id, name, description, spec, created_at, updated_at) VALUES ('e-grid', 'p-grid', 'Grid experiment', '', ?1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", duckdb::params![serde_json::to_string(&spec).unwrap()]).unwrap();
-        },
-        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
-        Arc::new(move |run_id, command, _kind, _game, _label| {
-            captured.lock().unwrap().push(command);
-            Ok(LaunchedRun {
-                run_id,
-                pid: 123,
-                log_path: PathBuf::from("bench-runs/fake/log.jsonl"),
-                log_dir: PathBuf::from("bench-runs/fake"),
-            })
-        }),
-    );
-    let (status, body) =
-        http_post_json(app.clone(), "/api/bench/experiments/e-grid/runs", json!({})).await;
-    assert_eq!(
-        status,
-        HttpStatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
-    let run_id = body_json(&body)["run_id"].as_str().unwrap().to_string();
-    let identity: (String, Option<String>, u64, String) = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = ?1",
-            duckdb::params![&run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap();
-    assert_eq!(identity, (run_id.clone(), None, 1, run_id.clone()));
-    let typed: (String, u64, i64) = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT attempt_phase, attempt_version, (SELECT COUNT(*) FROM attempt_events WHERE attempt_id = ?1) FROM runs WHERE run_id = ?1",
-            duckdb::params![&run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(typed, ("running".into(), 2, 2));
-    let (status, cells_body) = http_get(app, &format!("/api/bench/runs/{run_id}/cells")).await;
-    assert_eq!(status, HttpStatusCode::OK);
-    let cells = body_json(&cells_body).as_array().unwrap().to_vec();
-    assert_eq!(cells.len(), 12);
-    assert_eq!(cells[0]["cell_id"], "cell-000001");
-    assert_eq!(cells[11]["cell_id"], "cell-000012");
-    assert!(cells
-        .iter()
-        .all(|cell| cell["planned_games"] == 4 && cell["cell_seed"].is_number()));
-    let captured = commands.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0][1], "experiment");
-    assert!(!captured[0]
-        .iter()
-        .any(|arg| arg == "game-game-a" || arg == "game-game-b"));
-}
 // -------------------------------------------------------------------
 // POST /api/bench/launch
 // -------------------------------------------------------------------
@@ -654,54 +484,6 @@ async fn test_launch_rejects_unknown_kind() {
     let body = body_json(&body);
     assert_eq!(body["code"], 400);
     assert!(body["error"].as_str().unwrap().contains("unknown_kind"));
-}
-
-#[tokio::test]
-async fn test_launch_spawns_bench_and_returns_run_id() {
-    // Launch a quick `true` command to verify the plumbing works end-to-end.
-    // We simulate what the server would do by launching `true` (exits
-    // immediately) as a "round_robin" run and checking the registry.
-    let app = seeded_app(|_conn, dir| {
-        // We need the registry to exist in the bench_runs_dir for the
-        // launcher to write to.
-        std::fs::create_dir_all(dir).ok();
-    })
-    .0;
-
-    // We can't easily test the actual bench binary path from tests
-    // (the server binary path during `cargo test` is in the build
-    // target dir).  Instead, test that a valid request shape hits
-    // the launcher and produces an error about a missing binary
-    // (expected since `bench` isn't compiled during tests) or
-    // succeeds if `true` is used.
-
-    // Use `true` as the command to verify the launcher path works.
-    let (status, body) = http_post_json(
-        app,
-        "/api/bench/launch",
-        json!({
-            "kind": "round_robin",
-            "game": "druid",
-            "config": {
-                "strategies": ["strong", "master"],
-                "rounds": 1
-            }
-        }),
-    )
-    .await;
-
-    // The request reaches the handler and tries to find `bench`.
-    // Since we're running tests (not the compiled server), the
-    // `bench` binary doesn't exist next to the test binary.
-    // We expect either a 500 (bench not found) or a success if
-    // by coincidence something called `bench` is on PATH.
-    // What we *don't* expect is a 400 (which would mean the
-    // request body was rejected before reaching the launcher).
-    assert!(
-        status == HttpStatusCode::OK || status == HttpStatusCode::INTERNAL_SERVER_ERROR,
-        "launch returned unexpected status {status}: body={}",
-        String::from_utf8_lossy(&body),
-    );
 }
 
 #[tokio::test]
@@ -738,55 +520,44 @@ async fn test_launch_tuner_reaches_the_launcher() {
 }
 
 #[tokio::test]
-async fn test_fresh_round_robin_and_tuner_launches_create_identity_roots() {
-    let (app, _, state) = seeded_app_with_state(
-        |_, _| {},
-        Arc::new(|saved| saved.expand().map(|_| ()).map_err(|error| error.fields)),
-        injected_general_launcher(),
-    );
+async fn test_fresh_tuner_launch_creates_an_identity_root() {
+    let (app, _, state) = seeded_app_with_state(|_, _| {}, injected_general_launcher());
 
-    for (kind, game, config) in [
-        ("round_robin", "druid", json!({"rounds": 1})),
-        ("tuner", "traffic-lights", json!({"overrides": []})),
-    ] {
-        let (status, body) = http_post_json(
-            app.clone(),
-            "/api/bench/launch",
-            json!({"kind": kind, "game": game, "config": config}),
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/launch",
+        json!({"kind": "tuner", "game": "traffic-lights", "config": {"overrides": []}}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        HttpStatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let run_id = body_json(&body)["run_id"].as_str().unwrap().to_owned();
+    let identity: (String, Option<String>, u64, String) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = ?1",
+            duckdb::params![&run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .await;
-        assert_eq!(
-            status,
-            HttpStatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&body)
-        );
-        let run_id = body_json(&body)["run_id"].as_str().unwrap().to_owned();
-        let identity: (String, Option<String>, u64, String) = state
-            .db
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT r.logical_run_id, r.parent_attempt_id, r.attempt_ordinal, l.current_attempt_id FROM runs r JOIN logical_runs l ON l.logical_run_id = r.logical_run_id WHERE r.run_id = ?1",
-                duckdb::params![&run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(identity, (run_id.clone(), None, 1, run_id));
-        if kind == "tuner" {
-            let source: (String, String) = state
-                .db
-                .lock()
-                .unwrap()
-                .query_row(
-                    "SELECT source_path, bench_run_id FROM tuning_lifecycle_sources WHERE bench_run_id = ?1",
-                    duckdb::params![body_json(&body)["run_id"].as_str().unwrap()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            assert_eq!(source.1, body_json(&body)["run_id"].as_str().unwrap());
-            assert!(source.0.contains("/optuna_output/tuning-session-"));
-            assert!(source.0.ends_with("/lifecycle.jsonl"));
-        }
-    }
+        .unwrap();
+    assert_eq!(identity, (run_id.clone(), None, 1, run_id.clone()));
+    let source: (String, String) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT source_path, bench_run_id FROM tuning_lifecycle_sources WHERE bench_run_id = ?1",
+            duckdb::params![&run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(source.1, run_id);
+    assert!(source.0.contains("/optuna_output/tuning-session-"));
+    assert!(source.0.ends_with("/lifecycle.jsonl"));
 }

@@ -21,7 +21,6 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer};
 
 use game_host::TunerInfo;
-use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::identity;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
@@ -53,7 +52,6 @@ pub(super) static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
 pub(super) fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
     seeded_app_with(
         seed_fn,
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(|run_id, command, kind, game, label| {
             launch::launch_with_run_id(
                 run_id,
@@ -114,21 +112,18 @@ fn adapter_fixture_ingests_and_reads_a_registry_run() {
 
 pub(super) fn seeded_app_with(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    experiment_validator: ExperimentValidator,
     run_launcher: RunLauncher,
 ) -> (Router, PathBuf) {
-    let (app, path, _) = seeded_app_with_state(seed_fn, experiment_validator, run_launcher);
+    let (app, path, _) = seeded_app_with_state(seed_fn, run_launcher);
     (app, path)
 }
 
 pub(super) fn seeded_app_with_state(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    experiment_validator: ExperimentValidator,
     run_launcher: RunLauncher,
 ) -> (Router, PathBuf, Arc<BenchState>) {
     seeded_app_with_state_and_signaller(
         seed_fn,
-        experiment_validator,
         run_launcher,
         Arc::new(|_| {
             Err(std::io::Error::new(
@@ -141,7 +136,6 @@ pub(super) fn seeded_app_with_state(
 
 pub(super) fn seeded_app_with_state_and_signaller(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    experiment_validator: ExperimentValidator,
     run_launcher: RunLauncher,
     process_group_signaller: ProcessGroupSignaller,
 ) -> (Router, PathBuf, Arc<BenchState>) {
@@ -159,37 +153,13 @@ pub(super) fn seeded_app_with_state_and_signaller(
     seed_fn(&conn, &bench_runs_dir);
 
     let db = Arc::new(Mutex::new(conn));
-    let test_launcher = run_launcher.clone();
-    let supervisor = Arc::new(move |descriptor: &LaunchDescriptor| {
-        match test_launcher(
-            descriptor.logical_run_id.clone(),
-            descriptor.workload_argv.clone(),
-            "experiment".into(),
-            "experiment-grid".into(),
-            None,
-        ) {
-            Ok(run) => mcts_bench::projects_attempt::LaunchResult::Ready(WrapperIdentity {
-                pid: run.pid as u64,
-                process_group_id: run.pid as u64,
-            }),
-            Err(error) => {
-                mcts_bench::projects_attempt::LaunchResult::SpawnFailed(error.to_string())
-            }
-        }
-    });
     let adapters =
         mcts_bench::duckdb_composition::BenchAdapters::from_initialized_shared_connection(
             db.clone(),
         )
         .unwrap();
-    let runtime = Arc::new(lifecycle::BenchRuntime::new(
-        adapters.projects_repository.clone(),
-        supervisor,
-        Arc::new(lifecycle::SystemClock),
-    ));
     let state = Arc::new(BenchState {
         db: TestDatabase::shared(db.clone()),
-        project_repository: adapters.project_repository,
         projects_repository: adapters.projects_repository,
         run_repository: adapters.run_repository,
         run_command_repository: adapters.run_command_repository,
@@ -198,10 +168,8 @@ pub(super) fn seeded_app_with_state_and_signaller(
         tuning_session_repository: adapters.tuning_session_repository,
         tuning_trial_repository: adapters.tuning_trial_repository,
         bench_runs_dir,
-        experiment_validator,
         run_launcher,
         process_group_signaller,
-        runtime,
     });
 
     (bench_router(state.clone()), tmp_dir, state)
@@ -244,47 +212,6 @@ pub(super) fn default_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
         duckdb::params![DEFAULT_RUN_ID],
     )
     .unwrap();
-}
-
-pub(super) fn route_test_spec() -> ExperimentSpecV1 {
-    ExperimentSpecV1 {
-        version: 1,
-        games: vec![mcts_bench::experiment::ExperimentGame {
-            game: "route-game".into(),
-            game_config: json!({"board": 5}),
-        }],
-        baseline: mcts_bench::experiment::NamedStrategyConfig {
-            id: "baseline".into(),
-            label: "Baseline".into(),
-            config: json!({"family": "base"}),
-        },
-        variants: vec![mcts_bench::experiment::NamedStrategyConfig {
-            id: "candidate".into(),
-            label: "Candidate".into(),
-            config: json!({"family": "candidate"}),
-        }],
-        budgets: vec![mcts_bench::experiment::Budget::Iterations { value: 1 }],
-        rounds_per_cell: 1,
-        base_seed: 7,
-        max_parallel_cells: 1,
-    }
-}
-
-pub(super) fn route_validation_fields() -> Vec<mcts_bench::experiment::ValidationField> {
-    vec![
-        mcts_bench::experiment::ValidationField {
-            path: "spec.games[0].game_config".into(),
-            message: "invalid game configuration".into(),
-        },
-        mcts_bench::experiment::ValidationField {
-            path: "spec.variants[0].config".into(),
-            message: "invalid candidate configuration".into(),
-        },
-        mcts_bench::experiment::ValidationField {
-            path: "spec.baseline.config".into(),
-            message: "invalid baseline configuration".into(),
-        },
-    ]
 }
 
 /// Seed a run that is still `running` (no ended_at, no stop event).
@@ -355,27 +282,6 @@ pub(super) async fn http_post_json(
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&json).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = resp.status();
-    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    (status, body)
-}
-
-pub(super) async fn http_put_json(
-    app: Router,
-    uri: &str,
-    json: Value,
-) -> (HttpStatusCode, axum::body::Bytes) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
                 .uri(uri)
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&json).unwrap()))

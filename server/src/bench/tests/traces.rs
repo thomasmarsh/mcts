@@ -161,7 +161,6 @@ async fn test_modern_tuning_attempt_links_to_its_session_and_cannot_be_deleted()
             )
             .unwrap();
         },
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
     );
 
@@ -179,11 +178,7 @@ async fn test_modern_tuning_attempt_links_to_its_session_and_cannot_be_deleted()
 
 #[tokio::test]
 async fn test_delete_run_removes_all_rows_and_files() {
-    let (app, tmp_dir, state) = seeded_app_with_state(
-        game_moves_seed,
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
-        injected_general_launcher(),
-    );
+    let (app, tmp_dir, state) = seeded_app_with_state(game_moves_seed, injected_general_launcher());
     state
         .db
         .lock()

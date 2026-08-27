@@ -27,7 +27,6 @@ use game_host::TunerInfo;
 use mcts_bench::experiment::ExperimentSpecV1;
 use mcts_bench::launch::{self, LaunchedRun};
 use mcts_bench::log::RegistryEvent;
-use mcts_bench::project_repository::ProjectRepository;
 use mcts_bench::projects_attempt::{CellRequest, ProjectsError, ProjectsRepository, StartRequest};
 use mcts_bench::run_command_repository::RunCommandRepository;
 use mcts_bench::run_repository::RunRepository;
@@ -37,7 +36,6 @@ use mcts_bench::tuning_analysis_repository::TuningAnalysisRepository;
 use mcts_bench::tuning_command_repository::TuningCommandRepository;
 use mcts_bench::tuning_session_repository::TuningSessionRepository;
 use mcts_bench::tuning_trial_repository::TuningTrialRepository;
-use mcts_bench::StrategyInfo;
 
 use super::lifecycle;
 use super::process;
@@ -49,7 +47,6 @@ use super::process;
 pub struct BenchState {
     #[cfg(test)]
     pub(crate) db: TestDatabase,
-    pub project_repository: Arc<dyn ProjectRepository + Send + Sync>,
     pub projects_repository: Arc<dyn ProjectsRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
@@ -58,10 +55,8 @@ pub struct BenchState {
     pub tuning_session_repository: Arc<dyn TuningSessionRepository + Send + Sync>,
     pub tuning_trial_repository: Arc<dyn TuningTrialRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
-    pub experiment_validator: ExperimentValidator,
     pub run_launcher: RunLauncher,
     pub process_group_signaller: ProcessGroupSignaller,
-    pub runtime: Arc<lifecycle::BenchRuntime>,
 }
 
 #[cfg(test)]
@@ -82,11 +77,6 @@ impl TestDatabase {
     }
 }
 
-pub type ExperimentValidator = Arc<
-    dyn Fn(&ExperimentSpecV1) -> Result<(), Vec<mcts_bench::experiment::ValidationField>>
-        + Send
-        + Sync,
->;
 pub type RunLauncher = Arc<
     dyn Fn(String, Vec<String>, String, String, Option<String>) -> std::io::Result<LaunchedRun>
         + Send
@@ -120,13 +110,6 @@ pub struct RunLogParams {
 #[derive(Deserialize, Default)]
 pub struct TrialsParams {
     pub limit: Option<i64>,
-}
-
-#[derive(Deserialize, Default)]
-pub struct LeaderboardParams {
-    pub game: Option<String>,
-    pub git_sha: Option<String>,
-    pub since: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -212,18 +195,6 @@ pub struct RunLogResponse {
 }
 
 #[derive(Serialize)]
-pub struct LeaderboardEntry {
-    pub strategy: String,
-    pub total: usize,
-    pub wins: usize,
-    pub losses: usize,
-    pub draws: usize,
-    pub win_rate: f64,
-    pub ci_lower: f64,
-    pub ci_upper: f64,
-}
-
-#[derive(Serialize)]
 pub struct LaunchResponse {
     pub run_id: String,
     pub pid: u32,
@@ -233,22 +204,6 @@ pub struct LaunchResponse {
     /// still alive after the check window — the launch succeeded normally.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_error: Option<String>,
-}
-
-/// Metadata for a run kind exposed via `GET /api/bench/kinds`.
-#[derive(Serialize)]
-pub struct BenchKindInfo {
-    pub kind: String,
-    pub label: String,
-    pub description: String,
-    pub games: Vec<BenchGameInfo>,
-}
-
-/// Per-game information within a run kind.
-#[derive(Serialize)]
-pub struct BenchGameInfo {
-    pub game: String,
-    pub strategies: Vec<StrategyInfo>,
 }
 
 /// A game's tunable strategy search-space metadata, as reported by
@@ -278,98 +233,6 @@ pub struct TrialRow {
 pub struct BenchError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
-}
-
-#[derive(Debug)]
-pub(crate) struct ValidationError {
-    pub(crate) fields: Vec<mcts_bench::experiment::ValidationField>,
-}
-
-impl IntoResponse for ValidationError {
-    fn into_response(self) -> axum::response::Response {
-        let status = if self
-            .fields
-            .iter()
-            .any(|field| field.message.contains("duplicate"))
-        {
-            StatusCode::CONFLICT
-        } else if self.fields.iter().any(|field| field.message == "not found") {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        (
-            status,
-            Json(json!({"error": "validation failed", "fields": self.fields})),
-        )
-            .into_response()
-    }
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ProjectCreateBody {
-    pub(crate) name: String,
-    pub(crate) description: String,
-}
-#[derive(Deserialize)]
-pub(crate) struct ProjectPatchBody {
-    pub(crate) name: Option<String>,
-    pub(crate) description: Option<String>,
-    pub(crate) archived: Option<bool>,
-}
-#[derive(Deserialize)]
-pub(crate) struct ExperimentBody {
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) spec: ExperimentSpecV1,
-}
-
-#[derive(Serialize)]
-pub(crate) struct ProjectResponse {
-    pub(crate) project_id: String,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) archived: bool,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-}
-#[derive(Serialize)]
-pub(crate) struct ExperimentResponse {
-    pub(crate) experiment_id: String,
-    pub(crate) project_id: String,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) spec: ExperimentSpecV1,
-    pub(crate) created_at: String,
-    pub(crate) updated_at: String,
-}
-
-#[derive(Serialize)]
-pub(crate) struct CellResponse {
-    pub(crate) cell_id: String,
-    pub(crate) cell_seed: Option<u64>,
-    pub(crate) game: String,
-    pub(crate) game_config: Value,
-    pub(crate) variant_id: String,
-    pub(crate) variant_label: String,
-    pub(crate) candidate_config: Value,
-    pub(crate) baseline_id: String,
-    pub(crate) baseline_label: String,
-    pub(crate) baseline_config: Value,
-    pub(crate) budget: Value,
-    pub(crate) rounds: i64,
-    pub(crate) planned_games: u64,
-    pub(crate) completed_games: u64,
-    pub(crate) status: String,
-    pub(crate) started_at: Option<String>,
-    pub(crate) ended_at: Option<String>,
-    pub(crate) error: Option<String>,
-    pub(crate) wins: u64,
-    pub(crate) losses: u64,
-    pub(crate) draws: u64,
-    pub(crate) win_rate: f64,
-    pub(crate) ci_lower: f64,
-    pub(crate) ci_upper: f64,
 }
 
 impl IntoResponse for BenchError {
@@ -433,44 +296,6 @@ pub(crate) fn attempt_bench_error(error: ProjectsError) -> BenchError {
     BenchError {
         status,
         message: error.to_string(),
-    }
-}
-
-pub(crate) enum ExperimentRouteError {
-    Bench(BenchError),
-    Validation(ValidationError),
-}
-
-impl From<BenchError> for ExperimentRouteError {
-    fn from(error: BenchError) -> Self {
-        Self::Bench(error)
-    }
-}
-
-impl From<ProjectsError> for ExperimentRouteError {
-    fn from(error: ProjectsError) -> Self {
-        Self::Bench(attempt_bench_error(error))
-    }
-}
-
-impl From<std::io::Error> for ExperimentRouteError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Bench(error.into())
-    }
-}
-
-impl From<serde_json::Error> for ExperimentRouteError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Bench(error.into())
-    }
-}
-
-impl IntoResponse for ExperimentRouteError {
-    fn into_response(self) -> axum::response::Response {
-        match self {
-            Self::Bench(error) => error.into_response(),
-            Self::Validation(error) => error.into_response(),
-        }
     }
 }
 

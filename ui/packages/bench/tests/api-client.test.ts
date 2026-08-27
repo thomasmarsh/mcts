@@ -57,25 +57,17 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.url).toBe("/api/bench/runs/rr-1/log");
   });
 
-  it("getLeaderboard maps gitSha to the wire's git_sha", async () => {
-    const calls = stubFetch([]);
-    const client = createBenchApiClient();
-
-    await client.getLeaderboard({ game: "druid", gitSha: "abc1234", since: null });
-    expect(calls[0]!.url).toBe("/api/bench/leaderboard?game=druid&git_sha=abc1234");
-  });
-
   it("launchRun POSTs {kind, game, config}", async () => {
     const calls = stubFetch({ run_id: "r", pid: 1, log_path: "/x" });
     const client = createBenchApiClient();
 
-    await client.launchRun("round_robin", "druid", { rounds: 2 });
+    await client.launchRun("tuner", "druid", { overrides: {} });
     expect(calls[0]!.url).toBe("/api/bench/launch");
     expect(calls[0]!.init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
-      kind: "round_robin",
+      kind: "tuner",
       game: "druid",
-      config: { rounds: 2 },
+      config: { overrides: {} },
     });
   });
 

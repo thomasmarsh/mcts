@@ -13,11 +13,7 @@
 import { Effect } from "@mcts/core";
 import type { BenchEnv } from "./reducer.js";
 import type {
-  BenchKindInfo,
-  CommitTrendData,
   LaunchResponse,
-  LeaderboardEntry,
-  LeaderboardFilters,
   RunDetail,
   RunFilters,
   RunLogResponse,
@@ -27,10 +23,6 @@ import type {
   TrialRow,
   GameTraceSummary,
   GameMove,
-  Project,
-  Experiment,
-  ExperimentSpecV1,
-  ExperimentCell,
   TuningSessionDetail,
   TuningSessionsResponse,
   TuningAnalysisOverview,
@@ -50,37 +42,13 @@ export interface BenchApiClient {
     project_id?: string | null;
     experiment_id?: string | null;
   }): Promise<RunSummary[]>;
-  listProjects(): Promise<Project[]>;
-  createProject(name: string, description: string): Promise<Project>;
-  getProject(projectId: string): Promise<Project>;
-  updateProject(
-    projectId: string,
-    body: { name?: string; description?: string; archived?: boolean },
-  ): Promise<Project>;
-  listExperiments(projectId: string): Promise<Experiment[]>;
-  createExperiment(
-    projectId: string,
-    body: { name: string; description: string; spec: ExperimentSpecV1 },
-  ): Promise<Experiment>;
-  getExperiment(experimentId: string): Promise<Experiment>;
-  updateExperiment(
-    experimentId: string,
-    body: { name: string; description: string; spec: ExperimentSpecV1 },
-  ): Promise<Experiment>;
-  launchExperiment(experimentId: string): Promise<LaunchResponse>;
-  getRunCells(runId: string): Promise<ExperimentCell[]>;
   getRun(runId: string): Promise<RunDetail>;
   getRunLog(runId: string, since?: number): Promise<RunLogResponse>;
   /** Fetch the full raw content of the run's stdout.log file (stderr
    * output redirected by the launcher). */
   getRunStdout(runId: string): Promise<string>;
-  getLeaderboard(filters?: Partial<LeaderboardFilters>): Promise<LeaderboardEntry[]>;
-  /** Fetch the leaderboard for each distinct git SHA that has run data
-   * for the given game. Returns a map of SHA -> entries. */
-  fetchCommitTrends(game: string | null): Promise<CommitTrendData>;
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
-  getBenchKinds(): Promise<BenchKindInfo[]>;
   /** Per-game tuner metadata for every game that supports tuner tuning. */
   getTunerKinds(): Promise<TunerGameInfo[]>;
   /** Logical tuning-session navigator rows, newest activity first. */
@@ -199,51 +167,6 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
         ),
       );
     },
-    async listProjects(): Promise<Project[]> {
-      return fetchJson(url("/api/bench/projects"));
-    },
-    async createProject(name: string, description: string): Promise<Project> {
-      return postJson(url("/api/bench/projects"), { name, description });
-    },
-    async getProject(projectId: string): Promise<Project> {
-      return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}`));
-    },
-    async updateProject(projectId: string, body): Promise<Project> {
-      const r = await fetch(url(`/api/bench/projects/${encodeURIComponent(projectId)}`), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) throw new Error(await errorMessage(r));
-      return r.json() as Promise<Project>;
-    },
-    async listExperiments(projectId: string): Promise<Experiment[]> {
-      return fetchJson(url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`));
-    },
-    async createExperiment(projectId: string, body): Promise<Experiment> {
-      return postJson(
-        url(`/api/bench/projects/${encodeURIComponent(projectId)}/experiments`),
-        body,
-      );
-    },
-    async getExperiment(experimentId: string): Promise<Experiment> {
-      return fetchJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`));
-    },
-    async updateExperiment(experimentId: string, body): Promise<Experiment> {
-      const r = await fetch(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}`), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) throw new Error(await errorMessage(r));
-      return r.json() as Promise<Experiment>;
-    },
-    async launchExperiment(experimentId: string): Promise<LaunchResponse> {
-      return postJson(url(`/api/bench/experiments/${encodeURIComponent(experimentId)}/runs`), {});
-    },
-    async getRunCells(runId: string): Promise<ExperimentCell[]> {
-      return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/cells`));
-    },
     async getRun(runId: string): Promise<RunDetail> {
       return fetchJson(url(`/api/bench/runs/${encodeURIComponent(runId)}`));
     },
@@ -257,39 +180,11 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
       if (!r.ok) throw new Error(await errorMessage(r));
       return r.text();
     },
-    async getLeaderboard(filters: Partial<LeaderboardFilters> = {}): Promise<LeaderboardEntry[]> {
-      return fetchJson(
-        url(
-          `/api/bench/leaderboard${queryString({ game: filters.game, git_sha: filters.gitSha, since: filters.since })}`,
-        ),
-      );
-    },
-    async fetchCommitTrends(game: string | null): Promise<CommitTrendData> {
-      // First fetch runs to discover distinct git SHAs.
-      const runs = await this.listRuns({ game, limit: 1000 });
-      const shaSet = new Set<string>();
-      for (const r of runs) {
-        if (!r.git_dirty) shaSet.add(r.git_sha);
-      }
-      const shas = Array.from(shaSet).sort();
-      // Fetch leaderboard for each SHA in parallel.
-      const results = await Promise.all(
-        shas.map((sha) => this.getLeaderboard({ game, gitSha: sha, since: null })),
-      );
-      const data: CommitTrendData = {};
-      for (let i = 0; i < shas.length; i++) {
-        data[shas[i]!] = results[i]!;
-      }
-      return data;
-    },
     async launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse> {
       return postJson(url("/api/bench/launch"), { kind, game, config });
     },
     async stopRun(runId: string): Promise<StopResponse> {
       return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/stop`));
-    },
-    async getBenchKinds(): Promise<BenchKindInfo[]> {
-      return fetchJson(url("/api/bench/kinds"));
     },
     async getTunerKinds(): Promise<TunerGameInfo[]> {
       return fetchJson(url("/api/bench/tuner/kinds"));
@@ -373,28 +268,12 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
   const lift = <T>(thunk: () => Promise<T>): Effect<T> => Effect.fromPromise(thunk);
   return {
     listRuns: (filters: RunFilters) => lift(() => api.listRuns(filters)),
-    listProjects: () => lift(() => api.listProjects()),
-    createProject: (name: string, description: string) =>
-      lift(() => api.createProject(name, description)),
-    getProject: (projectId: string) => lift(() => api.getProject(projectId)),
-    updateProject: (projectId: string, body) => lift(() => api.updateProject(projectId, body)),
-    listExperiments: (projectId: string) => lift(() => api.listExperiments(projectId)),
-    createExperiment: (projectId: string, body) =>
-      lift(() => api.createExperiment(projectId, body)),
-    getExperiment: (experimentId: string) => lift(() => api.getExperiment(experimentId)),
-    updateExperiment: (experimentId: string, body) =>
-      lift(() => api.updateExperiment(experimentId, body)),
-    launchExperiment: (experimentId: string) => lift(() => api.launchExperiment(experimentId)),
-    getRunCells: (runId: string) => lift(() => api.getRunCells(runId)),
     getRun: (runId: string) => lift(() => api.getRun(runId)),
     getRunLog: (runId: string, since: number) => lift(() => api.getRunLog(runId, since)),
     getRunStdout: (runId: string) => lift(() => api.getRunStdout(runId)),
-    getLeaderboard: (filters: LeaderboardFilters) => lift(() => api.getLeaderboard(filters)),
-    fetchCommitTrends: (game: string | null) => lift(() => api.fetchCommitTrends(game)),
     launchRun: (kind: string, game: string, config?: unknown) =>
       lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
-    getBenchKinds: () => lift(() => api.getBenchKinds()),
     getTunerKinds: () => lift(() => api.getTunerKinds()),
     listTuningSessions: () => lift(() => api.listTuningSessions()),
     getTuningSession: (sessionId: string) => lift(() => api.getTuningSession(sessionId)),
@@ -416,18 +295,5 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     getRunGameMoves: (runId: string, gameSeq: number) =>
       lift(() => api.getRunGameMoves(runId, gameSeq)),
     deleteRun: (runId: string) => lift(() => api.deleteRun(runId)),
-    downloadFile: (filename: string, mimeType: string, contents: string) =>
-      Effect.fromPromise(async () => {
-        const blob = new Blob([contents], { type: mimeType });
-        const objectUrl = URL.createObjectURL(blob);
-        try {
-          const anchor = document.createElement("a");
-          anchor.href = objectUrl;
-          anchor.download = filename;
-          anchor.click();
-        } finally {
-          URL.revokeObjectURL(objectUrl);
-        }
-      }),
   };
 }

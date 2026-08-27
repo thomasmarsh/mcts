@@ -12,76 +12,6 @@
 export type RunStatus =
   "running" | "completed" | "completed_with_errors" | "crashed" | "stopped" | (string & {});
 
-export type Budget =
-  { kind: "iterations"; value: number } | { kind: "time_per_move_ms"; value: number };
-
-export interface NamedStrategyConfig {
-  id: string;
-  label: string;
-  config: Record<string, unknown>;
-}
-export interface ExperimentGame {
-  game: string;
-  game_config: unknown;
-}
-export interface ExperimentSpecV1 {
-  version: 1;
-  games: ExperimentGame[];
-  baseline: NamedStrategyConfig;
-  variants: NamedStrategyConfig[];
-  budgets: Budget[];
-  rounds_per_cell: number;
-  base_seed: number;
-  max_parallel_cells: number;
-}
-export interface ValidationField {
-  path: string;
-  message: string;
-}
-export interface Project {
-  project_id: string;
-  name: string;
-  description: string;
-  archived: boolean;
-  created_at: string;
-  updated_at: string;
-}
-export interface Experiment {
-  experiment_id: string;
-  project_id: string;
-  name: string;
-  description: string;
-  spec: ExperimentSpecV1;
-  created_at: string;
-  updated_at: string;
-}
-export interface ExperimentCell {
-  cell_id: string;
-  cell_seed: number | null;
-  game: string;
-  game_config: unknown;
-  variant_id: string;
-  variant_label: string;
-  candidate_config: Record<string, unknown>;
-  baseline_id: string;
-  baseline_label: string;
-  baseline_config: Record<string, unknown>;
-  budget: Budget;
-  rounds: number;
-  planned_games: number;
-  completed_games: number;
-  status: string;
-  started_at: string | null;
-  ended_at: string | null;
-  error: string | null;
-  wins: number;
-  losses: number;
-  draws: number;
-  win_rate: number;
-  ci_lower: number;
-  ci_upper: number;
-}
-
 export interface BenchSpectatorProps {
   runId: string;
   game: string;
@@ -573,7 +503,9 @@ export interface RunDetail {
   game: string | null;
   project_id: string | null;
   experiment_id: string | null;
-  experiment_spec: ExperimentSpecV1 | null;
+  /** Present only on legacy experiment runs (the web UI no longer launches
+   * these); kept as opaque JSON since the experiment spec type is gone. */
+  experiment_spec: unknown | null;
   label: string | null;
   config: unknown;
   git_sha: string;
@@ -643,32 +575,6 @@ export interface LiveGameMove extends GameMove {
   game_seq: number;
 }
 
-/** `GET /api/bench/leaderboard` element. `win_rate` counts draws as
- * half a win; `ci_lower`/`ci_upper` are the Wilson interval. */
-export interface LeaderboardEntry {
-  strategy: string;
-  total: number;
-  wins: number;
-  losses: number;
-  draws: number;
-  win_rate: number;
-  ci_lower: number;
-  ci_upper: number;
-}
-
-/** Map of git SHA to its leaderboard entries — the shape returned by a
- * commit-trends fetch that queries the leaderboard for every SHA that has
- * run data. */
-export type CommitTrendData = Record<string, LeaderboardEntry[]>;
-
-/** Sorted list of (sha, entries) pairs, pre-computed so the chart doesn't
- * re-derive it from the map on every render. */
-export interface CommitTrendRow {
-  sha: string;
-  shortSha: string;
-  entries: LeaderboardEntry[];
-}
-
 /** `POST /api/bench/launch` response. */
 export interface LaunchResponse {
   run_id: string;
@@ -692,42 +598,14 @@ export interface StopResponse {
   signal?: string | null;
 }
 
-/** Client-side filter shapes for the list/leaderboard queries. `null`
- * means "no filter" (the param is omitted from the query string). These
- * live in state (the reducer owns the current values); the API client maps
- * `gitSha` onto the wire's `git_sha`. */
+/** Client-side filter shape for the run-list query. `null` means "no
+ * filter" (the param is omitted from the query string). Lives in state —
+ * the reducer owns the current values. */
 export interface RunFilters {
   status: string | null;
   game: string | null;
   project_id?: string | null;
   experiment_id?: string | null;
-}
-
-export interface LeaderboardFilters {
-  game: string | null;
-  gitSha: string | null;
-  since: string | null;
-}
-
-/** `GET /api/bench/kinds` element — metadata for one run kind. */
-export interface BenchKindInfo {
-  kind: string;
-  label: string;
-  description: string;
-  games: BenchGameInfo[];
-}
-
-/** Per-game info within a run kind. */
-export interface BenchGameInfo {
-  game: string;
-  strategies: StrategyInfo[];
-}
-
-/** A playable strategy for a game kind. */
-export interface StrategyInfo {
-  id: string;
-  label: string;
-  description: string;
 }
 
 /** One entry in a tuner's parameter space (`game_host::TunerParameter`).

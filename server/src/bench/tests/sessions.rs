@@ -20,7 +20,6 @@ async fn tuning_session_stop_is_pending_until_lifecycle_and_replays_without_a_se
     let signals_for_app = signals.clone();
     let (app, _, state) = seeded_app_with_state_and_signaller(
         |conn, _| control_session_seed(conn, "running", "running"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
         Arc::new(move |_| {
             signals_for_app.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -68,7 +67,6 @@ async fn tuning_session_stop_is_pending_until_lifecycle_and_replays_without_a_se
 async fn tuning_session_stop_surfaces_signal_failures_after_recording_the_stop_intent() {
     let (app, _, state) = seeded_app_with_state_and_signaller(
         |conn, _| control_session_seed(conn, "running", "running"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
         Arc::new(|_| Err(std::io::Error::other("permission denied"))),
     );
@@ -97,7 +95,6 @@ async fn tuning_session_stop_surfaces_signal_failures_after_recording_the_stop_i
 async fn tuning_session_stop_reports_a_sent_signal() {
     let app = seeded_app_with_state_and_signaller(
         |conn, _| control_session_seed(conn, "running", "running"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
         Arc::new(|_| Ok(())),
     )
@@ -116,7 +113,6 @@ async fn tuning_session_stop_reports_a_sent_signal() {
 async fn tuning_session_resume_reserves_one_physical_attempt_and_replays_it() {
     let (app, _, state) = seeded_app_with_state(
         |conn, _| control_session_seed(conn, "completed", "completed"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
     );
     let request = serde_json::json!({"command_id":"resume-one", "expected_version":0});
@@ -187,7 +183,6 @@ async fn tuning_session_resume_reserves_one_physical_attempt_and_replays_it() {
 async fn tuning_session_resume_allows_a_conclusively_dead_recovery_attempt() {
     let app = seeded_app_with(
         |conn, _| control_session_seed(conn, "crashed", "running"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
     )
     .0;
@@ -217,7 +212,6 @@ async fn tuning_session_resume_allows_a_conclusively_dead_recovery_attempt() {
 async fn tuning_session_resume_releases_a_failed_spawn_reservation() {
     let (app, _, state) = seeded_app_with_state(
         |conn, _| control_session_seed(conn, "completed", "completed"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(|_, _, _, _, _| Err(std::io::Error::other("injected spawn failure"))),
     );
     let (status, body) = http_post_json(
@@ -263,7 +257,6 @@ async fn tuning_session_budget_extends_an_active_attempt_once_without_relaunchin
     let observed = launches.clone();
     let (app, _, state) = seeded_app_with_state(
         |conn, _| control_session_seed(conn, "running", "running"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(move |_, _, _, _, _| {
             observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(mcts_bench::launch::LaunchedRun {
@@ -346,7 +339,6 @@ async fn tuning_session_budget_starts_one_attempt_at_the_new_absolute_target() {
     let observed_commands = commands.clone();
     let (app, _, _) = seeded_app_with_state(
         |conn, _| control_session_seed(conn, "completed", "completed"),
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(move |run_id, command, _, _, _| {
             observed_launches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             observed_commands.lock().unwrap().push(command);
@@ -457,7 +449,6 @@ async fn tuning_session_budget_validates_workers_and_releases_failed_starts_for_
             )
             .unwrap();
         },
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         Arc::new(move |run_id, _, _, _, _| {
             let call = observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if call == 0 {
@@ -685,7 +676,6 @@ async fn tuning_sessions_list_returns_a_structured_storage_error() {
                 [],
             ).unwrap();
         },
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
     );
     state
@@ -788,7 +778,6 @@ async fn tuning_session_detail_returns_a_storage_error_when_reports_are_unavaila
         |conn, _| {
             conn.execute("INSERT INTO tuning_sessions (session_id, status, manifest, created_at, last_sequence) VALUES ('session-1', 'idle', '{}', CURRENT_TIMESTAMP, 1)", []).unwrap();
         },
-        Arc::new(|spec| spec.expand().map(|_| ()).map_err(|error| error.fields)),
         injected_general_launcher(),
     );
     state
