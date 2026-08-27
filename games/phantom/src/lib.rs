@@ -34,13 +34,15 @@
 //! This board is small enough (16 cells) and has few enough symmetries
 //! worth the bookkeeping that this first implementation skips symmetry
 //! canonicalization entirely and leaves `Game::zobrist_hash` at its no-op
-//! default, matching e.g. `games/nim`/`games/breakthrough` -- `Position`'s
-//! own [`Position::info_set_hash`]/[`Position::ground_truth_hash`] exist for
-//! comparing states outside of tree search (see
-//! `examples/transposition_density.rs`), not for enabling `Game`'s DAG
-//! machinery. Adding symmetry canonicalization later would need the
-//! per-player known-occupied masks transformed consistently with the board
-//! under whatever symmetry element is applied, not just the board itself.
+//! default, matching e.g. `games/nim`/`games/breakthrough`. [`Game::
+//! info_set_hash`] is overridden to [`Position::info_set_hash`] regardless
+//! (`SearchConfig::ismcts_mode`'s DAG-merging key, and directly usable for
+//! comparing states outside of tree search -- see
+//! `examples/transposition_density.rs`); [`Position::ground_truth_hash`]
+//! stays a comparison-only tool with no `Game` trait counterpart. Adding
+//! symmetry canonicalization later would need the per-player known-occupied
+//! masks transformed consistently with the board under whatever symmetry
+//! element is applied, not just the board itself.
 
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
@@ -284,6 +286,10 @@ impl Game for Phantom {
 
     fn has_hidden_information() -> bool {
         true
+    }
+
+    fn info_set_hash(state: &Self::S) -> u64 {
+        state.info_set_hash()
     }
 
     fn alternating_moves() -> bool {

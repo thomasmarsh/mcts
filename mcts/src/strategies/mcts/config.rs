@@ -545,11 +545,15 @@ where
     /// anchor a root-parallel worker's root against the literal `G::S` it's
     /// called with; combining them would replace that literal state with a
     /// single `determinize_root` sample and lock the worker's root actions
-    /// to that one guess for its whole search), no DAG/transpositions (this
-    /// repo's transposition/DAG machinery keys node identity by full-state
-    /// hash, which is exactly wrong for ISMCTS -- a shared tree must be
-    /// keyed by *information set*, not full state, or two determinizations
-    /// of "the same" information set would wrongly share a node),
+    /// to that one guess for its whole search), no legacy `use_transpositions`
+    /// and no `GraphSearch::Dag` variant other than `GraphStats::Both` with
+    /// `McgsCorrection::Residual` on (this repo's transposition/DAG
+    /// machinery otherwise keys node identity by full-state hash, which is
+    /// exactly wrong for ISMCTS -- a shared tree must be keyed by
+    /// `Game::info_set_hash`, not full state, or two determinizations of
+    /// "the same" information set would wrongly share a node; see
+    /// `validate`'s `ismcts_dag_ok` check for exactly which `graph_search`/
+    /// `mcgs_correction` pairing is allowed and why),
     /// `use_mcts_solver == false` (a position "proven" under one
     /// determinization isn't proven under another), no prior (seeds a
     /// not-yet-created child before any iteration has established it's even
@@ -646,6 +650,24 @@ where
         self.graph_stats().is_some()
     }
 
+    /// Whether node identity/actions should be canonicalized under this
+    /// game's symmetry group -- `uses_transpositions()`, except forced off
+    /// whenever `ismcts_mode` is active. `ismcts_mode` + `GraphSearch::Dag`
+    /// merges nodes keyed by `Game::info_set_hash` instead of the literal
+    /// `zobrist_hash`-keyed merge every other `uses_transpositions()` search
+    /// does (see `validate`'s `ismcts_dag_ok` check), but never attempts
+    /// symmetry reduction on top of that: ISMCTS's growable `ChildArray`s
+    /// are only ever populated with actions in their own node's literal
+    /// (real-board) orientation (`search/shared.rs::expand`'s `canonicalize`
+    /// parameter), and combining a growable array with symmetry-translated
+    /// actions is a combination this engine has never exercised. Every
+    /// caller that decides whether to canonicalize (`incoming_sym`,
+    /// `expand`, `SelectContext::canonicalizes`) reads this instead of
+    /// `uses_transpositions()` directly.
+    pub(crate) fn canonicalizes(&self) -> bool {
+        self.uses_transpositions() && self.ismcts_mode == IsmctsMode::Off
+    }
+
     /// This configuration's resolved `Requirements`: the union of every
     /// component's own `requirements()`. `select`/`simulate` carry the
     /// interesting cases today (`final_action`/`backprop` are `SelectStrategy`/
@@ -738,14 +760,47 @@ where
                 );
             }
             if self.uses_transpositions() {
-                return Err(
-                    "ismcts_mode is incompatible with transpositions/DAG search -- that \
-                     machinery keys node identity by full-state hash, which is exactly \
-                     wrong for ISMCTS: a shared tree must be keyed by information set, not \
-                     full state, or two determinizations of \"the same\" information set \
-                     would wrongly share a node"
-                        .to_string(),
-                );
+                // The only supported combination: explicit `GraphSearch::Dag`
+                // (never the legacy `use_transpositions` flag, which has no
+                // information-set-hash counterpart), pooling both edge and
+                // node statistics (`GraphStats::Both`, never `Edges`/`Nodes`
+                // alone), with the residual correction on. Merging by
+                // `Game::info_set_hash` pools statistics across genuinely
+                // different real histories that only happen to share an
+                // information set -- a sharper version of exactly the
+                // strategy-fusion risk that already makes plain SO-ISMCTS
+                // lose to PIMC in Cowling, Powley & Whitehouse's Phantom
+                // (4,4,4) strategy-fusion benchmark. `GraphStats::Both` +
+                // `McgsCorrection::Residual` is the one configuration this
+                // engine trusts to catch a merged node whose pooled value
+                // has drifted from what the traversing edge alone would
+                // say, rather than silently trusting every merge outright.
+                //
+                // `MultiTree` (MO-ISMCTS) has no DAG-merging counterpart at
+                // all yet: `choose_action_multi_tree` builds its own
+                // per-player trees directly, never consulting `graph_search`/
+                // `table`/`mcgs_correction`, so accepting this combination
+                // there would silently ignore the caller's own config rather
+                // than doing anything with it.
+                let ismcts_dag_ok = self.ismcts_mode == IsmctsMode::SingleTree
+                    && !self.use_transpositions
+                    && matches!(self.graph_search, GraphSearch::Dag(GraphStats::Both))
+                    && matches!(self.mcgs_correction, McgsCorrection::Residual { .. });
+                if !ismcts_dag_ok {
+                    return Err(
+                        "ismcts_mode's only supported pairing with transpositions/DAG \
+                         search is IsmctsMode::SingleTree with graph_search: \
+                         GraphSearch::Dag(GraphStats::Both) and mcgs_correction: \
+                         McgsCorrection::Residual { .. } (never IsmctsMode::MultiTree, never \
+                         the legacy use_transpositions flag, and never GraphStats::Edges/Nodes \
+                         alone) -- merging by Game::info_set_hash instead of the literal \
+                         full-state hash is what makes a shared tree correct for ISMCTS in the \
+                         first place, and GraphStats::Both plus a residual check is the only \
+                         configuration this engine trusts to catch a merge whose pooled value \
+                         has drifted from what the traversing edge alone would say"
+                            .to_string(),
+                    );
+                }
             }
             if self.use_mcts_solver {
                 return Err(
@@ -1229,6 +1284,54 @@ mod search_config_validate_tests {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .use_transpositions(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_ismcts_mode_with_dag_both_and_residual_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_dag_both_but_no_residual_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both));
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_dag_edges_even_with_residual_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Edges))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_dag_nodes_even_with_residual_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Nodes))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_multi_tree_ismcts_mode_with_dag_both_and_residual_correction() {
+        // MO-ISMCTS (`IsmctsMode::MultiTree`) has no DAG-merging counterpart
+        // yet -- `choose_action_multi_tree` builds its own per-player trees
+        // without ever consulting `graph_search`/`mcgs_correction` -- so this
+        // combination stays rejected even though `SingleTree` now accepts it.
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
         assert!(config.validate().is_err());
     }
 

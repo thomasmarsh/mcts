@@ -9,7 +9,7 @@ pub fn render<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>)
 where
     G::S: NodeRender,
 {
-    let canonicalizes = search.config.uses_transpositions();
+    let canonicalizes = search.config.canonicalizes();
     print::<G>(&search.index, search.root_id, canonicalizes);
 }
 
@@ -17,7 +17,7 @@ pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &
 where
     G::S: NodeRender,
 {
-    let canonicalizes = search.config.uses_transpositions();
+    let canonicalizes = search.config.canonicalizes();
     print_trans::<G>(
         &search.index,
         &search.table,

@@ -88,7 +88,7 @@ where
         if root_state == target {
             return Some((None, self.root_id));
         }
-        let canonicalizes = self.config.uses_transpositions();
+        let canonicalizes = self.config.canonicalizes();
         let mut frontier: Vec<(Id, G::S)> = vec![(self.root_id, root_state.clone())];
         for _ in 0..MAX_REROOT_DEPTH {
             let mut next = Vec::new();
@@ -137,7 +137,7 @@ where
         // translating at all -- otherwise the very first descent through it
         // after promotion applies a still-canonical action straight to the
         // real board and corrupts play.
-        let canonicalizes = self.config.uses_transpositions();
+        let canonicalizes = self.config.canonicalizes();
         let sym = incoming_sym::<G>(canonicalizes, false, Real(state));
         if let Some(children) = self.index.get_mut(matched_id).children_mut() {
             children

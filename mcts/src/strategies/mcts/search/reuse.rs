@@ -50,7 +50,7 @@ where
         if self.index.get(start).hash == target_hash {
             return Some((None, start, start_state.clone()));
         }
-        let canonicalizes = self.config.uses_transpositions();
+        let canonicalizes = self.config.canonicalizes();
         let mut frontier: Vec<(Id, G::S)> = vec![(start, start_state.clone())];
         for _ in 0..MAX_REROOT_DEPTH {
             let mut next = Vec::new();
@@ -138,7 +138,7 @@ where
             // future `real_action` call for this node stop translating at
             // all -- otherwise the first descent through it after promotion
             // applies a still-canonical action straight to the real board.
-            let canonicalizes = self.config.uses_transpositions();
+            let canonicalizes = self.config.canonicalizes();
             let sym = incoming_sym::<G>(canonicalizes, false, Real(state));
             if let Some(children) = self.index.get_mut(matched_id).children_mut() {
                 children.retranslate_actions(|a| {

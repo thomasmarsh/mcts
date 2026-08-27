@@ -124,6 +124,7 @@ where
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
                 use_transpositions: self.config.uses_transpositions(),
+                canonicalizes: self.config.canonicalizes(),
                 graph_stats: self.config.graph_stats(),
                 explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 keying: self.config.transposition_keying,
@@ -204,7 +205,7 @@ where
                 stack: &stack,
                 root_stats: &self.root_stats,
                 root_state: state,
-                canonicalizes: self.config.uses_transpositions(),
+                canonicalizes: self.config.canonicalizes(),
                 player,
                 state,
                 index: &self.index,
@@ -300,6 +301,7 @@ where
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
                 use_transpositions: self.config.uses_transpositions(),
+                canonicalizes: self.config.canonicalizes(),
                 graph_stats: self.config.graph_stats(),
                 explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 keying: self.config.transposition_keying,
@@ -333,6 +335,7 @@ where
                 expand_threshold: self.config.expand_threshold,
                 q_init: self.config.q_init,
                 use_transpositions: self.config.uses_transpositions(),
+                canonicalizes: self.config.canonicalizes(),
                 graph_stats: self.config.graph_stats(),
                 explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                 keying: self.config.transposition_keying,
@@ -507,7 +510,7 @@ where
         let mut state = init_state.clone();
         let mut stack = NodeStack::new(vec![(node_id, 0)]);
         let grave = self.stats.grave.read().unwrap();
-        let canonicalizes = self.config.uses_transpositions();
+        let canonicalizes = self.config.canonicalizes();
         // Same cycle hazard `select_step`'s descent guard exists for (see
         // its comment in `search/shared.rs`): under
         // `TranspositionKeying::StateOnly` this replay can walk a real graph
@@ -585,6 +588,7 @@ where
                     explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
                     keying: self.config.transposition_keying,
                     use_transpositions: self.config.uses_transpositions(),
+                    use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
                     has_amaf: self.config.requirements().amaf,
                     use_mcts_solver: self.config.use_mcts_solver,
                 },

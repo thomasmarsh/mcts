@@ -890,6 +890,10 @@ impl<const P: usize> Game for Ingenious<P> {
         state.compute_hash()
     }
 
+    fn info_set_hash(state: &Self::S) -> u64 {
+        state.public_hash()
+    }
+
     fn notation(_state: &Self::S, action: &Self::A) -> String {
         match action {
             Action::Place(mv) => format!(

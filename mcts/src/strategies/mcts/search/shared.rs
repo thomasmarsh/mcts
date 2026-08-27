@@ -195,6 +195,15 @@ pub struct Shared<'a, G: Game> {
     pub expand_threshold: u32,
     pub q_init: node::QInit,
     pub use_transpositions: bool,
+    /// `SearchConfig::canonicalizes()` -- `use_transpositions`, except forced
+    /// off under `ismcts_mode` (see that method's doc comment). Gates every
+    /// symmetry-translation decision here (`incoming_sym`, `expand`'s
+    /// `canonicalize` param, `SelectContext::canonicalizes`,
+    /// `BackpropStrategy::update`'s `canonicalizes` param) -- distinct from
+    /// `use_transpositions`, which still gates DAG-merge/graph-stats
+    /// participation and stays `true` under `ismcts_mode` + `GraphSearch::
+    /// Dag`.
+    pub canonicalizes: bool,
     /// `Some` for every statistics-owning graph mode, including the legacy
     /// edge-only compatibility path.
     pub graph_stats: Option<GraphStats>,
@@ -326,6 +335,17 @@ pub(crate) struct TranspositionCtx<'a, G: Game> {
     pub explicit_dag: bool,
     pub keying: TranspositionKeying,
     pub use_transpositions: bool,
+    /// `SearchConfig::ismcts_mode == IsmctsMode::SingleTree` -- only ever
+    /// `true` alongside `explicit_dag` (`validate`'s `ismcts_dag_ok` check is
+    /// the sole way to reach that combination). Switches `resolve_child_id`/
+    /// `verified_child_id`'s explicit-DAG branch from hashing a canonicalized
+    /// full state (`Game::zobrist_hash`) to hashing the literal state's own
+    /// information set (`Game::info_set_hash`) -- ISMCTS's growable
+    /// `ChildArray`s are never canonicalized (see `SearchConfig::
+    /// canonicalizes`'s doc comment), so merging by a hash computed against a
+    /// canonicalized copy would key the graph table by a state no ISMCTS
+    /// node's actions actually correspond to.
+    pub use_ismcts: bool,
     pub has_amaf: bool,
     pub use_mcts_solver: bool,
 }
@@ -338,9 +358,27 @@ impl<'a, G: Game> Shared<'a, G> {
             explicit_dag: self.explicit_dag,
             keying: self.keying,
             use_transpositions: self.use_transpositions,
+            use_ismcts: self.use_ismcts,
             has_amaf: self.has_amaf,
             use_mcts_solver: self.use_mcts_solver,
         }
+    }
+}
+
+/// The hash `resolve_child_id`/`verified_child_id` key an explicit-DAG merge
+/// by: the canonicalized full state under ordinary DAG search, or the
+/// literal state's own information set under `ismcts_mode` -- see
+/// `TranspositionCtx::use_ismcts`'s doc comment for why the two can't share
+/// one code path.
+#[inline]
+fn explicit_dag_hash<G: Game>(use_ismcts: bool, state: &G::S) -> u64 {
+    if use_ismcts {
+        G::info_set_hash(state)
+    } else {
+        let canon_state = G::canonical_representation(Real(state.clone()))
+            .0
+            .into_inner();
+        G::zobrist_hash(&canon_state)
     }
 }
 
@@ -353,23 +391,18 @@ impl<'a, G: Game> Shared<'a, G> {
 /// `TranspositionKey::PerPly`'s `ply`.
 fn resolve_child_id<G: Game>(ctx: &TranspositionCtx<'_, G>, state: &G::S, child_ply: u32) -> Id {
     if ctx.explicit_dag {
-        let canon_state = G::canonical_representation(Real(state.clone()))
-            .0
-            .into_inner();
-        let canon_hash = G::zobrist_hash(&canon_state);
-        ctx.table.get_or_insert_graph(
-            TranspositionKey::new(ctx.keying, canon_hash, child_ply),
-            || {
+        let hash = explicit_dag_hash::<G>(ctx.use_ismcts, state);
+        ctx.table
+            .get_or_insert_graph(TranspositionKey::new(ctx.keying, hash, child_ply), || {
                 ctx.index.insert(Node::new_at_ply(
                     G::player_to_move(state).to_index(),
-                    canon_hash,
+                    hash,
                     child_ply,
                     G::num_players(),
                     ctx.has_amaf,
                     ctx.use_mcts_solver,
                 ))
-            },
-        )
+            })
     } else {
         debug_assert!(ctx.use_transpositions);
         let hash = G::zobrist_hash(state);
@@ -415,11 +448,7 @@ pub(crate) fn verified_child_id<G: Game>(
         return cached_id;
     }
     let expect_hash = if ctx.explicit_dag {
-        G::zobrist_hash(
-            &G::canonical_representation(Real(state.clone()))
-                .0
-                .into_inner(),
-        )
+        explicit_dag_hash::<G>(ctx.use_ismcts, state)
     } else {
         G::zobrist_hash(state)
     };
@@ -636,7 +665,7 @@ pub fn select_step<G: Game>(
         // node's own parent is itself a transposition (reached via more
         // than one real orientation across different iterations).
         let incoming_sym =
-            incoming_sym::<G>(shared.use_transpositions, node.is_root(), Real(&ctx.state));
+            incoming_sym::<G>(shared.canonicalizes, node.is_root(), Real(&ctx.state));
 
         // A single snapshot of this node's status -- see `Node::status`'s
         // doc comment for why this can't be two separate `is_terminal()`/
@@ -661,7 +690,7 @@ pub fn select_step<G: Game>(
                     &ctx.state,
                     shared.use_mcts_solver,
                     shared.has_amaf,
-                    shared.use_transpositions,
+                    shared.canonicalizes,
                     shared.use_ismcts,
                     reborrow_prior(&mut prior),
                 );
@@ -718,7 +747,7 @@ pub fn select_step<G: Game>(
                         stack: &node_stack,
                         root_stats: shared.root_stats,
                         root_state: shared.root_state,
-                        canonicalizes: shared.use_transpositions,
+                        canonicalizes: shared.canonicalizes,
                         player,
                         state: &ctx.state,
                         index: shared.index,
@@ -907,7 +936,7 @@ pub fn backprop_step<G: Game>(
         shared.index,
         shared.root_stats,
         shared.root_state,
-        shared.use_transpositions,
+        shared.canonicalizes,
         trial,
         flags,
         shared.use_mcts_solver,

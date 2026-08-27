@@ -297,7 +297,7 @@ where
         // real state in hand).
         let mut actions = vec![];
         let stack = NodeStack::<G::A>::new(self.stack.clone());
-        let canonicalizes = self.config.uses_transpositions();
+        let canonicalizes = self.config.canonicalizes();
         let mut replay_state = state.clone();
         for ((parent_id, _), (_, idx)) in stack.pairs() {
             let idx = *idx;

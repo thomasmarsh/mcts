@@ -366,6 +366,7 @@ where
                             expand_threshold: self.config.expand_threshold,
                             q_init: self.config.q_init,
                             use_transpositions: false,
+                            canonicalizes: false,
                             graph_stats: None,
                             explicit_dag: false,
                             keying: TranspositionKeying::default(),

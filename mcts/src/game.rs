@@ -403,6 +403,37 @@ pub trait Game: Sized + Clone + Sync + Send {
         false
     }
 
+    /// A hash of the *information set* `state` belongs to from its own
+    /// mover's point of view -- everything `zobrist_hash` hashes, minus
+    /// whatever hidden information (an opponent's rack/hand, an unplaced
+    /// tile) that mover can't actually see. Two determinizations of "the
+    /// same" information set -- states that disagree only on hidden facts
+    /// neither player at `state` could distinguish -- must hash equal here,
+    /// unlike `zobrist_hash`, which is free (and, for a hidden-information
+    /// game, required) to treat them as different states.
+    ///
+    /// This is `SearchConfig::ismcts_mode`'s DAG-merging key: merging two
+    /// nodes into one shared `Node` is only correct if they're truly one
+    /// decision, not two different histories a hash collision happened to
+    /// conflate -- the same Graph History Interaction contract
+    /// `zobrist_hash`'s own doc comment describes for `GraphSearch::Dag`,
+    /// just applied to information sets instead of full states.
+    ///
+    /// Defaults to `Self::zobrist_hash` -- correct unchanged for any
+    /// perfect-information game (`has_hidden_information() == false`),
+    /// where the full state already *is* the information set. A game
+    /// reporting `has_hidden_information() == true` must override this with
+    /// its own hash that omits whatever hidden information `zobrist_hash`
+    /// folds in (see e.g. `Ingenious`/`OhHell`'s own `public_hash`,
+    /// `Phantom`'s own `info_set_hash`) -- the inherited default would
+    /// otherwise silently hash every state to the same value whenever a
+    /// game (like `Phantom`) also leaves `zobrist_hash` at its own `0`
+    /// no-op default.
+    #[allow(unused_variables)]
+    fn info_set_hash(state: &Self::S) -> u64 {
+        Self::zobrist_hash(state)
+    }
+
     /// Whether players strictly alternate single moves, with no
     /// simultaneous-move or multi-action-per-turn phases. Defaults to
     /// `true`, matching every game in this repo today.

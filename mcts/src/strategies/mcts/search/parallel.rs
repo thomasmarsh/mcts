@@ -328,6 +328,7 @@ where
             expand_threshold: self.config.expand_threshold,
             q_init: self.config.q_init,
             use_transpositions: self.config.uses_transpositions(),
+            canonicalizes: self.config.canonicalizes(),
             graph_stats: self.config.graph_stats(),
             explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
             keying: self.config.transposition_keying,
