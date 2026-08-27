@@ -651,6 +651,8 @@ fn nim_search_settings() -> SearchSettings {
         use_mcts_solver: false,
         reuse_tree: false,
         num_tree_threads: 1,
+        num_threads: 1,
+        determinize_root: false,
         seed: 1,
         max_time: None,
         graph_search: None,

@@ -34,6 +34,8 @@ pub struct SearchSettings {
     pub use_mcts_solver: bool,
     pub reuse_tree: bool,
     pub num_tree_threads: usize,
+    pub num_threads: usize,
+    pub determinize_root: bool,
     pub seed: u64,
     pub max_time: Option<std::time::Duration>,
     pub graph_search: Option<GraphSearch>,
@@ -87,6 +89,8 @@ where
             .reuse_tree(self.settings.reuse_tree)
             .transposition_keying(self.settings.transposition_keying)
             .num_tree_threads(self.settings.num_tree_threads)
+            .num_threads(self.settings.num_threads)
+            .determinize_root(self.settings.determinize_root)
             .seed(self.settings.seed)
             .select(self.select)
             .simulate(self.simulate)

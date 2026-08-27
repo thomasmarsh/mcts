@@ -540,6 +540,8 @@ mod tests {
             use_mcts_solver: false,
             reuse_tree: true,
             num_tree_threads: 1,
+            num_threads: 1,
+            determinize_root: false,
             seed: 1,
             max_time: None,
             graph_search: None,

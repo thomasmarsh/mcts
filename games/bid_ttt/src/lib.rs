@@ -307,3 +307,34 @@ impl Game for BiddingTicTacToe {
         state.player_to_move()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mcts::strategies::{
+        mcts::{strategy, SearchConfig, TreeSearch},
+        Search,
+    };
+
+    #[test]
+    fn root_parallel_search_with_determinize_root_picks_a_legal_bid() {
+        // `BidO`, so `determinize` actually resplits X's committed bid
+        // between `chips`/`bid` on every root-parallel worker, rather than
+        // being a no-op because no bid has happened yet.
+        let mut state = BiddingTicTacToe::new();
+        state.x.bid(40);
+        state.phase = Phase::BidO;
+
+        let mut search = TreeSearch::<BiddingTicTacToe, strategy::Ucb1>::new().config(
+            SearchConfig::new()
+                .max_iterations(16)
+                .num_threads(4)
+                .determinize_root(true)
+                .seed(7),
+        );
+        let action = search.choose_action(&state);
+        let mut legal = Vec::new();
+        BiddingTicTacToe::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&action));
+    }
+}

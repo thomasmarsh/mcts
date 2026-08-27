@@ -159,22 +159,46 @@ where
         let seeds: Vec<u64> = (0..num_threads).map(|_| self.config.rng.gen()).collect();
         let mut workers: Vec<Self> = (0..num_threads - 1).map(|_| self.clone()).collect();
 
+        // PIMC: every worker (including the coordinator) gets its own
+        // independent determinization of the root, sampled from its own
+        // seeded rng, rather than all workers sharing the one literal
+        // `state`.
+        let determinize_root = self.config.determinize_root;
+
+        let worker_states: Vec<G::S> = workers
+            .iter_mut()
+            .zip(&seeds)
+            .map(|(worker, &seed)| {
+                worker.config.num_threads = 1;
+                worker.config.rng = SmallRng::seed_from_u64(seed);
+                if determinize_root {
+                    G::determinize(state.clone(), &mut worker.config.rng)
+                } else {
+                    state.clone()
+                }
+            })
+            .collect();
+
+        self.config.num_threads = 1;
+        self.config.rng = SmallRng::seed_from_u64(seeds[num_threads - 1]);
+        let own_state = if determinize_root {
+            G::determinize(state.clone(), &mut self.config.rng)
+        } else {
+            state.clone()
+        };
+
         std::thread::scope(|scope| {
             let handles: Vec<_> = workers
                 .iter_mut()
-                .zip(&seeds)
-                .map(|(worker, &seed)| {
-                    worker.config.num_threads = 1;
-                    worker.config.rng = SmallRng::seed_from_u64(seed);
+                .zip(&worker_states)
+                .map(|(worker, worker_state)| {
                     scope.spawn(move || {
-                        worker.choose_action(state);
+                        worker.choose_action(worker_state);
                     })
                 })
                 .collect();
 
-            self.config.num_threads = 1;
-            self.config.rng = SmallRng::seed_from_u64(seeds[num_threads - 1]);
-            self.choose_action(state);
+            self.choose_action(&own_state);
 
             for handle in handles {
                 handle.join().unwrap();
@@ -389,6 +413,112 @@ where
 #[cfg(test)]
 mod tests {
     use super::{merge_root_parallel_workers, RootParallelWorker};
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{SearchConfig, TreeSearch};
+    use rand::rngs::SmallRng;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    // A single-ply, one-action game: exists only to prove
+    // `choose_action_root_parallel` calls `Game::determinize` once per
+    // root-parallel worker (including the coordinator) when
+    // `determinize_root` is on, and not at all when it's off -- `winner`
+    // doesn't depend on anything `determinize` could change, so it's
+    // deliberately not a test of search strength or of any particular
+    // game's own hidden-information semantics.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Seat(usize);
+
+    impl PlayerIndex for Seat {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct CoinState {
+        resolved: bool,
+    }
+
+    impl std::fmt::Display for CoinState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "resolved={}", self.resolved)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Flip;
+
+    #[derive(Clone)]
+    struct Coin;
+
+    static DETERMINIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Game for Coin {
+        type S = CoinState;
+        type A = Flip;
+        type P = Seat;
+
+        fn apply(_state: Self::S, _action: &Self::A) -> Self::S {
+            CoinState { resolved: true }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            if !state.resolved {
+                actions.push(Flip);
+            }
+        }
+
+        fn winner(state: &Self::S) -> Option<Self::P> {
+            state.resolved.then_some(Seat(0))
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Seat(0)
+        }
+
+        fn determinize(state: Self::S, _rng: &mut SmallRng) -> Self::S {
+            DETERMINIZE_CALLS.fetch_add(1, Relaxed);
+            state
+        }
+    }
+
+    // Runs the root-parallel search and returns how many times
+    // `Coin::determinize` fired. `simulate_step` (`search/shared.rs`) also
+    // calls `Game::determinize` once per rollout regardless of
+    // `determinize_root`, so this count is never purely the root-level
+    // calls this test cares about -- `num_threads` workers each running
+    // exactly `max_iterations` single-threaded searches means that rollout
+    // noise is the same fixed number on every call with the same
+    // `max_iterations`, so comparing two runs' totals isolates the
+    // root-level share.
+    fn run_and_count_determinize_calls(num_threads: usize, determinize_root: bool) -> usize {
+        DETERMINIZE_CALLS.store(0, Relaxed);
+        let mut search = TreeSearch::<Coin, Ucb1>::new().config(
+            SearchConfig::new()
+                .max_iterations(4)
+                .num_threads(num_threads)
+                .determinize_root(determinize_root)
+                .seed(1),
+        );
+        search.choose_action(&CoinState::default());
+        DETERMINIZE_CALLS.load(Relaxed)
+    }
+
+    #[test]
+    fn determinize_root_calls_game_determinize_once_per_worker() {
+        let num_threads = 4;
+        let without = run_and_count_determinize_calls(num_threads, false);
+        let with = run_and_count_determinize_calls(num_threads, true);
+        assert_eq!(
+            with,
+            without + num_threads,
+            "determinize_root should add exactly one extra Game::determinize call per \
+             root-parallel worker (including the coordinator) on top of whatever \
+             rollout-triggered calls already happen regardless of the flag"
+        );
+    }
 
     #[test]
     fn merge_root_parallel_workers_sums_work_and_keeps_largest_depth() {

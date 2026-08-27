@@ -299,6 +299,8 @@ fn compose_settings(
         use_mcts_solver: true,
         reuse_tree,
         num_tree_threads: budget.threads,
+        num_threads: 1,
+        determinize_root: false,
         seed,
         max_time: budget.max_time,
         graph_search,

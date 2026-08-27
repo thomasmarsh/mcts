@@ -409,6 +409,21 @@ where
     /// balance shared-tree lock contention against duplicated search effort.
     pub num_threads: usize,
 
+    /// PIMC (Perfect Information Monte Carlo): when `true`, each
+    /// root-parallel worker (including the coordinator) searches its own
+    /// `G::determinize`d sample of the root state instead of the literal
+    /// state every worker searches otherwise, turning `num_threads`'s
+    /// ordinary root-parallel voting into a vote across independent
+    /// determinizations rather than a vote across independent seeds of the
+    /// same state. `false` (the default) leaves every worker searching the
+    /// literal state, unchanged. Only meaningful alongside `num_threads > 1`
+    /// -- `validate()` rejects pairing this with `num_threads <= 1`, since a
+    /// single determinization with no vote to average over just replaces the
+    /// true state with an arbitrary sample of it. A no-op for any `G` whose
+    /// `determinize` is the default identity function (every game that
+    /// hasn't opted in by overriding it).
+    pub determinize_root: bool,
+
     /// Number of rollouts to run per selected leaf ("leaf parallelism"):
     /// after `select` walks the tree single-threaded and picks one leaf, up
     /// to `num_rollouts_per_leaf` playouts are fired from that leaf's state
@@ -493,6 +508,7 @@ where
             verbose: false,
             name: format!("mcts[{}]", S::friendly_name()),
             num_threads: 1,
+            determinize_root: false,
             num_rollouts_per_leaf: 1,
             num_tree_threads: 1,
             reuse_tree: false,
@@ -559,6 +575,14 @@ where
                         .to_string(),
                 );
             }
+        }
+        if self.determinize_root && self.num_threads <= 1 {
+            return Err(
+                "determinize_root requires num_threads > 1 -- a single determinized \
+                 worker has no vote to average over, so it would just replace the true \
+                 root state with an arbitrary sample of it"
+                    .to_string(),
+            );
         }
         if self.requirements().needs_posterior && !self.backprop.provides_posterior() {
             return Err(
@@ -714,6 +738,11 @@ where
 
     pub fn num_threads(mut self, num_threads: usize) -> Self {
         self.num_threads = num_threads.max(1);
+        self
+    }
+
+    pub fn determinize_root(mut self, determinize_root: bool) -> Self {
+        self.determinize_root = determinize_root;
         self
     }
 

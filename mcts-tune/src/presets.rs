@@ -282,6 +282,16 @@ pub struct CustomStrategySpec {
     /// `mcts::TranspositionKeying`'s doc comment for the per-game GHI
     /// precondition this asserts.
     pub state_only_keying: bool,
+    /// Number of independent root-parallel trees (`SearchConfig::num_threads`)
+    /// -- distinct from `threads`, which only ever sets `num_tree_threads`
+    /// (workers sharing one tree). `1` (the default) keeps every search
+    /// single-tree, unchanged.
+    pub root_threads: usize,
+    /// Same wire name and semantics as `SearchConfig::determinize_root`:
+    /// each root-parallel tree searches its own `Game::determinize`d sample
+    /// of the root state instead of all of them sharing the literal state.
+    /// Only meaningful alongside `root_threads > 1`.
+    pub determinize_root: bool,
 }
 
 fn default_q_init() -> String {
@@ -303,6 +313,8 @@ impl Serialize for CustomStrategySpec {
         map.serialize_entry("q_init", &self.q_init)?;
         map.serialize_entry("mcgs", &self.mcgs)?;
         map.serialize_entry("state_only_keying", &self.state_only_keying)?;
+        map.serialize_entry("root_threads", &self.root_threads)?;
+        map.serialize_entry("determinize_root", &self.determinize_root)?;
         map.end()
     }
 }
@@ -331,6 +343,12 @@ impl<'de> Deserialize<'de> for CustomStrategySpec {
                 .map_err(D::Error::custom)?
                 .unwrap_or_default(),
             state_only_keying: field_opt(&v, "state_only_keying")
+                .map_err(D::Error::custom)?
+                .unwrap_or_default(),
+            root_threads: field_opt(&v, "root_threads")
+                .map_err(D::Error::custom)?
+                .unwrap_or_else(one),
+            determinize_root: field_opt(&v, "determinize_root")
                 .map_err(D::Error::custom)?
                 .unwrap_or_default(),
         };
@@ -408,6 +426,8 @@ fn build_custom_search<G: Game + 'static>(
         use_mcts_solver: true,
         reuse_tree,
         num_tree_threads: budget.threads,
+        num_threads: spec.root_threads.max(1),
+        determinize_root: spec.determinize_root,
         seed,
         max_time: budget.max_time,
         graph_search,
@@ -464,6 +484,8 @@ mod tests {
             q_init: "Infinity".to_string(),
             mcgs: false,
             state_only_keying: false,
+            root_threads: 1,
+            determinize_root: false,
         }
     }
 
@@ -478,6 +500,8 @@ mod tests {
             q_init: "Infinity".to_string(),
             mcgs: false,
             state_only_keying: false,
+            root_threads: 1,
+            determinize_root: false,
         }
     }
 
