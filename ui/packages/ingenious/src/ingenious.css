@@ -14,7 +14,9 @@
 }
 
 .ingenious-grid {
-  filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.35));
+  background: #0a0a0c;
+  border-radius: 8px;
+  filter: drop-shadow(0 10px 40px rgba(0, 0, 0, 0.5));
   max-width: 92vw;
   max-height: 72vh;
   width: auto;
@@ -22,30 +24,74 @@
 }
 
 .ingenious-hex {
-  fill: #eceef2;
-  stroke: #5a5c66;
+  fill: #0a0a0c;
+  stroke: #4a4a52;
   stroke-width: 1.5;
 }
 
+.ingenious-icon {
+  pointer-events: none;
+}
+
 .ingenious-placement {
+  pointer-events: none;
+}
+
+/* Ghost hexes are decorative previews by default -- see IngeniousRenderer.tsx's
+   `contestedCounts`/`cellLive`/`nbLive` comment: a hex two rotations share
+   would otherwise let whichever rotation paints last claim every click that
+   lands on it, silently hiding its sibling. Only a hex a rotation isn't
+   sharing (or that rotation once it's already hovered) gets `-hit` and
+   becomes clickable. */
+.ingenious-ghost-hit {
+  pointer-events: all;
   cursor: pointer;
 }
 
+/* Visible (not just on-hover) so every valid rotation for the selected tile
+   reads as a distinct "domino" link across the board at a glance -- this is
+   the main placement/rotation-picking affordance, not a decorative extra. */
 .ingenious-placement-link {
-  stroke: transparent;
-  stroke-width: 6;
+  stroke: #f5f0d8;
+  stroke-opacity: 0.35;
+  stroke-width: 4;
+}
+
+.ingenious-ghost-hex {
+  fill: #0a0a0c;
+  stroke: #f5f0d8;
+  stroke-opacity: 0.5;
+  stroke-width: 1.5;
 }
 
 .ingenious-placement .ingenious-ghost {
-  opacity: 0.55;
-  stroke: #2a2b32;
-  stroke-width: 1;
+  opacity: 0.7;
 }
 
-.ingenious-placement:hover .ingenious-ghost,
+/* Driven by IngeniousRenderer.tsx's `isHovered()` -- the group itself is
+   `pointer-events: none` (see above), so a raw CSS `:hover` here would never
+   fire; the `.hovered` class is how JS-tracked `hoveredMove` state reaches
+   this element instead. */
 .ingenious-placement.hovered .ingenious-ghost {
-  opacity: 0.9;
-  stroke-width: 2;
+  opacity: 1;
+}
+
+.ingenious-placement.hovered .ingenious-ghost-hex {
+  stroke: #ffe066;
+  stroke-opacity: 1;
+  stroke-width: 2.5;
+}
+
+.ingenious-placement.hovered .ingenious-placement-link {
+  stroke: #ffe066;
+  stroke-opacity: 0.9;
+}
+
+/* When some other placement overlay is hovered, fade this one so hovering
+   around a shared anchor cell reads as cycling between rotation options
+   rather than a solid smear of overlapping color. */
+.ingenious-placement.dimmed {
+  opacity: 0.25;
 }
 
 .ingenious-panel {
@@ -61,10 +107,18 @@
   gap: 0.4rem;
 }
 
+.ingenious-hint {
+  max-width: 32rem;
+  margin: 0;
+  color: #3a3b42;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
 .ingenious-tile {
   display: flex;
-  width: 44px;
-  height: 28px;
+  width: 52px;
+  height: 34px;
   padding: 0;
   border: 2px solid #5a5c66;
   border-radius: 6px;
@@ -84,6 +138,16 @@
 
 .ingenious-tile-half {
   flex: 1;
+  display: flex;
+}
+
+.ingenious-tile-icon {
+  width: 100%;
+  height: 100%;
+}
+
+.ingenious-tile-icon-bg {
+  fill: #0a0a0c;
 }
 
 .ingenious-flip,

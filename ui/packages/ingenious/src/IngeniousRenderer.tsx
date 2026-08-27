@@ -13,7 +13,7 @@
 import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import type { GameRendererProps } from "@mcts/game";
 import { centerOf, neighborOf, VALID_CELLS } from "./geometry.js";
-import { COLOR_HEX } from "./summary.js";
+import { hexPoints, PieceIcon } from "./pieces.js";
 import {
   isPlaceMove,
   type Color,
@@ -25,15 +25,6 @@ import {
 import "./ingenious.css";
 
 const HEX_SIZE = 22;
-
-function hexPoints(cx: number, cy: number, size: number): string {
-  const pts: string[] = [];
-  for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 180) * (60 * i - 30);
-    pts.push(`${cx + size * Math.cos(angle)},${cy + size * Math.sin(angle)}`);
-  }
-  return pts.join(" ");
-}
 
 interface CellLayout {
   index: number;
@@ -114,6 +105,36 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
   const canKeep = createMemo(() => props.legalMoves.includes("KeepRack"));
   const canSwap = createMemo(() => props.legalMoves.includes("Swap"));
 
+  // Ingenious tiles have no rotation control of their own: every legal
+  // (cell, direction) pair for the selected type/flip is offered at once as
+  // a clickable overlay directly on the board, so picking a location *is*
+  // picking the rotation. When several overlays share an anchor cell (the
+  // tile can go in more than one direction from the same empty hex), dim
+  // every overlay except the one under the pointer so hovering around that
+  // anchor reads as "cycling rotations" instead of a solid smear of color.
+  const anyGhostHovered = createMemo(
+    () => props.hoveredMove !== null && isPlaceMove(props.hoveredMove),
+  );
+
+  // How many currently-offered rotations touch each cell. A rotation whose
+  // hex appears here more than once is sharing that hex with a sibling
+  // rotation -- if both siblings' full domino shapes were independently
+  // clickable there, whichever painted last would silently win every click
+  // in that spot, making the other rotation unreachable no matter where you
+  // aim near it. Used to withhold a contested hex's hit-region from a
+  // rotation until it's already the hovered one (see the per-hex handlers
+  // below), so disambiguation always has to go through each rotation's own
+  // unshared hex first.
+  const contestedCounts = createMemo(() => {
+    const counts = new Map<number, number>();
+    for (const mv of placementMoves()) {
+      const nb = neighborOf(mv.cell, mv.dir);
+      counts.set(mv.cell, (counts.get(mv.cell) ?? 0) + 1);
+      if (nb !== null) counts.set(nb, (counts.get(nb) ?? 0) + 1);
+    }
+    return counts;
+  });
+
   function selectType(t: [Color, Color]): void {
     if (props.busy || !canPlace()) return;
     const current = selectedType();
@@ -138,11 +159,12 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
           {(cell) => {
             const color = () => props.state.board[cell.index] ?? null;
             return (
-              <polygon
-                class="ingenious-hex"
-                points={hexPoints(cell.cx, cell.cy, HEX_SIZE)}
-                style={{ fill: color() ? COLOR_HEX[color() as Color] : undefined }}
-              />
+              <>
+                <polygon class="ingenious-hex" points={hexPoints(cell.cx, cell.cy, HEX_SIZE)} />
+                <Show when={color()}>
+                  <PieceIcon color={color() as Color} cx={cell.cx} cy={cell.cy} r={HEX_SIZE} />
+                </Show>
+              </>
             );
           }}
         </For>
@@ -157,14 +179,25 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
               props.hoveredMove !== null &&
               isPlaceMove(props.hoveredMove) &&
               placeMoveEquals(props.hoveredMove.Place, mv);
+            const dimmed = () => anyGhostHovered() && !isHovered();
+
+            // A hex only accepts pointer interaction on this rotation's
+            // behalf while it isn't contested, or once this exact rotation
+            // is already hovered (so the second click, or a click anywhere
+            // else on an already-previewed domino, still works normally).
+            const counts = contestedCounts();
+            const cellLive = () => (counts.get(mv.cell) ?? 0) <= 1 || isHovered();
+            const nbLive = () => nbIndex === null || (counts.get(nbIndex) ?? 0) <= 1 || isHovered();
+
+            function pick(live: () => boolean): void {
+              if (!props.busy && live()) props.onMove(move);
+            }
+            function hover(live: () => boolean): void {
+              if (live()) props.onHover(move);
+            }
+
             return (
-              <g
-                class="ingenious-placement"
-                classList={{ hovered: isHovered() }}
-                onClick={() => !props.busy && props.onMove(move)}
-                onMouseEnter={() => props.onHover(move)}
-                onMouseLeave={() => props.onHover(null)}
-              >
+              <g class="ingenious-placement" classList={{ hovered: isHovered(), dimmed: dimmed() }}>
                 <line
                   class="ingenious-placement-link"
                   x1={cellPos.cx}
@@ -172,20 +205,37 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
                   x2={nbPos.cx}
                   y2={nbPos.cy}
                 />
-                <circle
+                <g
                   class="ingenious-ghost"
-                  cx={cellPos.cx}
-                  cy={cellPos.cy}
-                  r={HEX_SIZE * 0.55}
-                  style={{ fill: COLOR_HEX[mv.color_a] }}
-                />
-                <circle
+                  classList={{ "ingenious-ghost-hit": cellLive() }}
+                  onClick={() => pick(cellLive)}
+                  onMouseEnter={() => hover(cellLive)}
+                  onMouseLeave={() => props.onHover(null)}
+                >
+                  <polygon
+                    class="ingenious-ghost-hex"
+                    points={hexPoints(cellPos.cx, cellPos.cy, HEX_SIZE * 0.82)}
+                  />
+                  <PieceIcon
+                    color={mv.color_a}
+                    cx={cellPos.cx}
+                    cy={cellPos.cy}
+                    r={HEX_SIZE * 0.82}
+                  />
+                </g>
+                <g
                   class="ingenious-ghost"
-                  cx={nbPos.cx}
-                  cy={nbPos.cy}
-                  r={HEX_SIZE * 0.55}
-                  style={{ fill: COLOR_HEX[mv.color_b] }}
-                />
+                  classList={{ "ingenious-ghost-hit": nbLive() }}
+                  onClick={() => pick(nbLive)}
+                  onMouseEnter={() => hover(nbLive)}
+                  onMouseLeave={() => props.onHover(null)}
+                >
+                  <polygon
+                    class="ingenious-ghost-hex"
+                    points={hexPoints(nbPos.cx, nbPos.cy, HEX_SIZE * 0.82)}
+                  />
+                  <PieceIcon color={mv.color_b} cx={nbPos.cx} cy={nbPos.cy} r={HEX_SIZE * 0.82} />
+                </g>
               </g>
             );
           }}
@@ -194,6 +244,11 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
 
       <div class="ingenious-panel">
         <Show when={currentRack().some((slot) => slot !== null)}>
+          <p class="ingenious-hint">
+            Pick a tile below, flip it if it has two colors, then click a highlighted hex pair on
+            the board -- each highlighted pair is a different valid rotation for that tile. When
+            rotations overlap at one hex, hover the hex that's unique to the one you want first.
+          </p>
           <div class="ingenious-rack">
             <For each={rackTypes()}>
               {(t) => {
@@ -209,8 +264,18 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
                     disabled={props.busy || !canPlace()}
                     onClick={() => selectType(t)}
                   >
-                    <span class="ingenious-tile-half" style={{ background: COLOR_HEX[t[0]] }} />
-                    <span class="ingenious-tile-half" style={{ background: COLOR_HEX[t[1]] }} />
+                    <span class="ingenious-tile-half">
+                      <svg viewBox="0 0 40 40" class="ingenious-tile-icon">
+                        <rect class="ingenious-tile-icon-bg" width={40} height={40} />
+                        <PieceIcon color={t[0]} cx={20} cy={20} r={16} />
+                      </svg>
+                    </span>
+                    <span class="ingenious-tile-half">
+                      <svg viewBox="0 0 40 40" class="ingenious-tile-icon">
+                        <rect class="ingenious-tile-icon-bg" width={40} height={40} />
+                        <PieceIcon color={t[1]} cx={20} cy={20} r={16} />
+                      </svg>
+                    </span>
                   </button>
                 );
               }}
