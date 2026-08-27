@@ -1,10 +1,12 @@
 //! Ingenious (Einfach Genial), Reiner Knizia, 2004.
 //!
 //! Supports 2- and 3-player games via `Ingenious<const P: usize>` (aliased as
-//! [`Ingenious2`]/[`Ingenious3`]). Racks are modeled fully observable (every
-//! player's rack visible in `State`, a strictly-easier variant for search
-//! than the real hidden-rack game) and tile draws are a state-embedded PRNG
-//! stream rather than true hidden chance nodes.
+//! [`Ingenious2`]/[`Ingenious3`]). `State` stores every player's rack in
+//! full, but only the mover's own rack is real information to a search over
+//! this game: `Ingenious::determinize` resamples every other rack from the
+//! pool of tiles the mover can't see, and `Ingenious::has_hidden_information`
+//! reports this so search strategies can use that. Tile draws are a
+//! state-embedded PRNG stream rather than true hidden chance nodes.
 //!
 //! The board is a hexagon-of-hexagons embedded in an `SIDE x SIDE` square
 //! grid, using an offset coordinate system where the six hex-adjacency
@@ -20,6 +22,7 @@
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
 use rand::rngs::SmallRng;
+use rand::seq::SliceRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -698,6 +701,78 @@ impl<const P: usize> State<P> {
         h = mix(h, 0x5000 | self.pending_bonus as u64);
         h
     }
+
+    /// Hash of everything every player can see: the board, all scores,
+    /// claimed symbols, whose turn it is, and the turn phase -- but not any
+    /// rack. Two states that differ only in who holds which tiles are the
+    /// same information set from an onlooker's perspective and hash equal
+    /// here, unlike `compute_hash`, which folds racks in and so treats them
+    /// as different states.
+    pub fn public_hash(&self) -> u64 {
+        let mut h: u64 = 0xD1B5_4A32_D192_ED03;
+        let mix = |h: u64, v: u64| -> u64 { (h ^ v).wrapping_mul(0x0100_0000_01B3) };
+        for (i, cell) in self.board.iter().enumerate() {
+            if let Some(c) = cell {
+                h = mix(h, (i as u64) << 8 | c.index() as u64);
+            }
+        }
+        for (p, scores) in self.score.iter().enumerate() {
+            for (c, &s) in scores.iter().enumerate() {
+                h = mix(h, 0x2000 | (p as u64) << 8 | (c as u64) << 4 | s as u64);
+            }
+        }
+        for (c, &claimed) in self.claimed_symbols.iter().enumerate() {
+            h = mix(h, 0x6000 | (c as u64) << 4 | claimed as u64);
+        }
+        h = mix(h, 0x3000 | self.current_player as u64);
+        h = mix(h, 0x4000 | matches!(self.phase, Phase::SwapDecision) as u64);
+        h = mix(h, 0x5000 | self.pending_bonus as u64);
+        h
+    }
+
+    /// Resamples every rack except `current_player`'s from the pool of
+    /// tiles that player can't already see: every tile not on the board and
+    /// not in their own rack, which mixes together the bag and every other
+    /// player's rack contents (indistinguishable to the mover, since tiles
+    /// are anonymous by color pair rather than individually tracked). Each
+    /// opponent keeps their current rack size -- hand size is public even
+    /// though contents aren't -- and only which tiles fill those slots
+    /// changes.
+    fn redeal_hidden_racks(&mut self, rng: &mut SmallRng) {
+        let observer = self.current_player;
+
+        let mut pool: Vec<(Color, Color)> = Vec::new();
+        for i in 0..NUM_COLORS {
+            for j in i..NUM_COLORS {
+                let a = Color::ALL[i];
+                let b = Color::ALL[j];
+                let mut remaining = tile_type_total(a, b) - self.board_tile_counts[i][j];
+                for slot in self.racks[observer].iter().flatten() {
+                    if *slot == (a, b) {
+                        remaining -= 1;
+                    }
+                }
+                for _ in 0..remaining {
+                    pool.push((a, b));
+                }
+            }
+        }
+        pool.shuffle(rng);
+
+        let mut drawn = 0;
+        for p in 0..P {
+            if p == observer {
+                continue;
+            }
+            let rack_len = self.racks[p].iter().flatten().count();
+            self.racks[p] = [None; RACK_SIZE];
+            for slot in self.racks[p].iter_mut().take(rack_len) {
+                *slot = pool.get(drawn).copied();
+                drawn += 1;
+            }
+            sort_rack(&mut self.racks[p]);
+        }
+    }
 }
 
 /// Sorts a rack so identical tile types cluster (`None`s last), independent
@@ -794,15 +869,20 @@ impl<const P: usize> Game for Ingenious<P> {
     }
 
     fn has_hidden_information() -> bool {
-        false
+        true
     }
 
     fn alternating_moves() -> bool {
         false
     }
 
+    /// Resamples the tile-draw stream and every rack but `current_player`'s
+    /// own, so a search rooted at their move only ever sees information they
+    /// actually have: their own tiles for certain, everyone else's as one
+    /// consistent guess.
     fn determinize(mut state: Self::S, rng: &mut SmallRng) -> Self::S {
         state.rng = rng.gen();
+        state.redeal_hidden_racks(rng);
         state
     }
 
@@ -911,6 +991,73 @@ mod tests {
     fn tile_supply_is_conserved() {
         check_tile_supply_is_conserved::<2>(2);
         check_tile_supply_is_conserved::<3>(2);
+    }
+
+    #[test]
+    fn determinize_keeps_mover_rack_and_own_tile_supply_fixed() {
+        let mut state = State::<3>::new(9);
+        // Take a few turns off the initial deal so racks aren't full.
+        state.racks[1][0] = None;
+        state.racks[1][1] = None;
+        state.racks[2][0] = None;
+
+        let mover_rack_before = state.racks[0];
+        let opponent_rack_lens: Vec<usize> = (1..3)
+            .map(|p| state.racks[p].iter().flatten().count())
+            .collect();
+
+        let mut rng = SmallRng::seed_from_u64(1);
+        let determinized = Ingenious::<3>::determinize(state, &mut rng);
+
+        assert_eq!(determinized.racks[0], mover_rack_before);
+        for (i, p) in (1..3).enumerate() {
+            assert_eq!(
+                determinized.racks[p].iter().flatten().count(),
+                opponent_rack_lens[i]
+            );
+        }
+
+        // Every tile is still accounted for exactly once, same as any other
+        // reachable state.
+        let mut total = 0u32;
+        for i in 0..NUM_COLORS {
+            for j in i..NUM_COLORS {
+                let a = Color::ALL[i];
+                let b = Color::ALL[j];
+                let cap = tile_type_total(a, b) as u32;
+                assert!(determinized.in_play_count(a, b) as u32 <= cap);
+                total += cap;
+            }
+        }
+        assert_eq!(total, 120);
+    }
+
+    #[test]
+    fn determinize_resamples_opponent_racks_across_repeated_calls() {
+        let state = State::<2>::new(9);
+        let mut rng = SmallRng::seed_from_u64(1);
+        let mut saw_a_change = false;
+        for _ in 0..20 {
+            let determinized = Ingenious::<2>::determinize(state, &mut rng);
+            if determinized.racks[1] != state.racks[1] {
+                saw_a_change = true;
+                break;
+            }
+        }
+        assert!(saw_a_change, "determinize never changed the hidden rack");
+    }
+
+    #[test]
+    fn public_hash_ignores_racks_but_distinguishes_public_state() {
+        let mut state = State::<2>::new(9);
+        let with_original_racks = state.public_hash();
+
+        let mut rng = SmallRng::seed_from_u64(1);
+        let redealt = Ingenious::<2>::determinize(state, &mut rng);
+        assert_eq!(with_original_racks, redealt.public_hash());
+
+        state.current_player = 1;
+        assert_ne!(with_original_racks, state.public_hash());
     }
 
     #[test]
