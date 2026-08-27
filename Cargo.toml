@@ -64,6 +64,7 @@ members = [
     "games/akron",
     "games/ingenious",
     "games/focus",
+    "games/phantom",
     "gdl",
     "server",
     "bench",
@@ -108,6 +109,7 @@ default-members = [
     "games/akron",
     "games/ingenious",
     "games/focus",
+    "games/phantom",
     "server",
     "bench",
 ]
