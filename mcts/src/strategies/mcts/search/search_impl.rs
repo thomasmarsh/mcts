@@ -190,8 +190,13 @@ where
             // rather than the one literal `state` every ordinary search
             // (and PIMC's `determinize_root`, which determinizes once per
             // *worker tree* rather than once per *iteration*) uses for
-            // every iteration of a given `choose_action` call.
-            let iter_state = if self.config.use_ismcts {
+            // every iteration of a given `choose_action` call. When
+            // `ismcts_redeterminize` is also set, `select_step` redraws this
+            // sample itself at every node it visits during descent
+            // (including the root, on its first visit this iteration), so
+            // the literal state is handed to it unchanged here rather than
+            // determinizing the root twice.
+            let iter_state = if self.config.use_ismcts && !self.config.ismcts_redeterminize {
                 G::determinize(state.clone(), &mut self.config.rng)
             } else {
                 state.clone()

@@ -2156,6 +2156,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         has_amaf: false,
         mcgs_correction: mcts::McgsCorrection::Disabled,
         use_ismcts: false,
+        ismcts_redeterminize: false,
     };
 
     // Children 0 and 1: identical local visit/score stats -- a tie on raw
@@ -2274,6 +2275,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         has_amaf: false,
         mcgs_correction: mcts::McgsCorrection::Disabled,
         use_ismcts: false,
+        ismcts_redeterminize: false,
     };
 
     // Child 0: heavily visited, mediocre average score.

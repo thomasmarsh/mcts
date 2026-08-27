@@ -304,6 +304,7 @@ where
             has_amaf: self.config.requirements().amaf,
             mcgs_correction: self.config.mcgs_correction,
             use_ismcts: self.config.use_ismcts,
+            ismcts_redeterminize: self.config.ismcts_redeterminize,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
         let k = self.config.num_rollouts_per_leaf.max(1);

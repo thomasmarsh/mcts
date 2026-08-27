@@ -526,4 +526,39 @@ mod tests {
             "ISMCTS never recorded availability for a chosen root action"
         );
     }
+
+    #[test]
+    fn ismcts_redeterminize_self_play_retries_rejections_and_tracks_availability() {
+        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .use_ismcts(true)
+                .ismcts_redeterminize(true)
+                .max_iterations(40)
+                .seed(17),
+        );
+
+        let mut state = Position::new();
+        let mut saw_availability = false;
+        for _ in 0..8 {
+            if Phantom::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == action) {
+                if children.availability(idx) > 0 {
+                    saw_availability = true;
+                }
+            }
+
+            state.apply(action);
+        }
+        assert!(
+            saw_availability,
+            "re-determinizing ISMCTS never recorded availability for a chosen root action"
+        );
+    }
 }

@@ -226,6 +226,10 @@ pub struct Shared<'a, G: Game> {
     /// reuse-free tree -- see its doc comment for why each of those is
     /// required.
     pub use_ismcts: bool,
+    /// `SearchConfig::ismcts_redeterminize` -- only consulted when
+    /// `use_ismcts` is also set. See `select_step`'s own re-determinization
+    /// step for what this changes.
+    pub ismcts_redeterminize: bool,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
@@ -603,6 +607,17 @@ pub fn select_step<G: Game>(
     let mut incoming_idx = 0usize;
     loop {
         stack.push((ctx.current_id, incoming_idx));
+
+        // RIS-MCTS-style re-determinization (Goodman 2019): redraw this
+        // node's hidden information fresh, from its own mover's point of
+        // view, rather than trusting whatever this iteration's descent
+        // carried down from an ancestor via `G::apply`. Every other
+        // `ctx.state` read below -- `expand`'s action generation, the
+        // widening/legality check just past it, and the eventual `G::apply`
+        // -- runs against this fresh sample, not the root's.
+        if shared.use_ismcts && shared.ismcts_redeterminize {
+            ctx.state = G::determinize(ctx.state.clone(), rng);
+        }
 
         let node_stack = NodeStack::new(stack.clone());
         let num_visits = node_stack

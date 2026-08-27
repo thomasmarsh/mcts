@@ -868,4 +868,40 @@ mod tests {
             state = OhHell3x3::apply(state, &action);
         }
     }
+
+    #[test]
+    fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
+        let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .use_ismcts(true)
+                .ismcts_redeterminize(true)
+                .max_iterations(40)
+                .seed(17),
+        );
+
+        let mut state = State::<3, 3>::new(23);
+        for _ in 0..6 {
+            if OhHell3x3::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let mut legal = Vec::new();
+            OhHell3x3::generate_actions(&state, &mut legal);
+            assert!(
+                legal.contains(&action),
+                "re-determinizing ISMCTS chose an action illegal against the real state"
+            );
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            let root_idx = (0..children.len())
+                .find(|&i| children.action(i) == action)
+                .unwrap();
+            assert!(children.availability(root_idx) > 0);
+
+            state = OhHell3x3::apply(state, &action);
+        }
+    }
 }

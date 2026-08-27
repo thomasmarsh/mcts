@@ -515,6 +515,21 @@ where
     /// side list was never designed to survive -- see `ChildArray::
     /// remap_child_ids`/`extract_stats`'s debug assertions).
     pub use_ismcts: bool,
+
+    /// RIS-MCTS-style re-determinization (Goodman, *Re-determinizing MCTS in
+    /// Hanabi*, IEEE CIG 2019): with `use_ismcts` alone, one iteration's
+    /// `G::determinize`d sample is drawn once at the root and then only ever
+    /// advanced by `G::apply` for the rest of that iteration's descent, so a
+    /// node several plies down still sees the exact hidden information the
+    /// root happened to guess. When this is also `true`, every node visited
+    /// during descent -- not just the root -- gets its own fresh
+    /// `G::determinize` call before its legal actions are read, redrawing
+    /// everything hidden from that node's own mover's point of view. `false`
+    /// (the default) keeps the root-only redraw described above.
+    ///
+    /// `validate()` requires `use_ismcts` also be `true` -- there's no
+    /// per-iteration determinized descent to redraw otherwise.
+    pub ismcts_redeterminize: bool,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -551,6 +566,7 @@ where
             max_arena_len: None,
             prior: None,
             use_ismcts: false,
+            ismcts_redeterminize: false,
         }
     }
 }
@@ -682,6 +698,12 @@ where
                         .to_string(),
                 );
             }
+        } else if self.ismcts_redeterminize {
+            return Err(
+                "ismcts_redeterminize requires use_ismcts -- there's no per-iteration \
+                 determinized descent for it to redraw"
+                    .to_string(),
+            );
         }
         if self.requirements().needs_posterior && !self.backprop.provides_posterior() {
             return Err(
@@ -867,6 +889,11 @@ where
 
     pub fn use_ismcts(mut self, use_ismcts: bool) -> Self {
         self.use_ismcts = use_ismcts;
+        self
+    }
+
+    pub fn ismcts_redeterminize(mut self, ismcts_redeterminize: bool) -> Self {
+        self.ismcts_redeterminize = ismcts_redeterminize;
         self
     }
 }
@@ -1079,6 +1106,21 @@ mod search_config_validate_tests {
             .use_ismcts(true)
             .reuse_tree(true);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_redeterminize_without_use_ismcts() {
+        let config =
+            SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default().ismcts_redeterminize(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_ismcts_redeterminize_with_use_ismcts() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .use_ismcts(true)
+            .ismcts_redeterminize(true);
+        assert!(config.validate().is_ok());
     }
 
     #[test]

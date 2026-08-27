@@ -1248,4 +1248,41 @@ mod tests {
             state = Ingenious2::apply(state, &action);
         }
     }
+
+    #[test]
+    fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
+        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .use_ismcts(true)
+                .ismcts_redeterminize(true)
+                .max_iterations(40)
+                .seed(17),
+        );
+
+        let mut state = State::<2>::new(23);
+        for _ in 0..4 {
+            if Ingenious2::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let mut legal = Vec::new();
+            Ingenious2::generate_actions(&state, &mut legal);
+            assert!(
+                legal.contains(&action),
+                "re-determinizing ISMCTS chose an action illegal against the real state"
+            );
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            assert!(children.len() >= legal.len());
+            let root_idx = (0..children.len())
+                .find(|&i| children.action(i) == action)
+                .unwrap();
+            assert!(children.availability(root_idx) > 0);
+
+            state = Ingenious2::apply(state, &action);
+        }
+    }
 }
