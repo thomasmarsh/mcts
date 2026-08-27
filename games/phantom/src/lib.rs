@@ -33,11 +33,14 @@
 //!
 //! This board is small enough (16 cells) and has few enough symmetries
 //! worth the bookkeeping that this first implementation skips symmetry
-//! canonicalization and Zobrist hashing entirely (both default to no-ops on
-//! `Game`), matching e.g. `games/nim`/`games/breakthrough`. Adding either
-//! later would need the per-player known-occupied masks transformed
-//! consistently with the board under whatever symmetry element is applied,
-//! not just the board itself.
+//! canonicalization entirely and leaves `Game::zobrist_hash` at its no-op
+//! default, matching e.g. `games/nim`/`games/breakthrough` -- `Position`'s
+//! own [`Position::info_set_hash`]/[`Position::ground_truth_hash`] exist for
+//! comparing states outside of tree search (see
+//! `examples/transposition_density.rs`), not for enabling `Game`'s DAG
+//! machinery. Adding symmetry canonicalization later would need the
+//! per-player known-occupied masks transformed consistently with the board
+//! under whatever symmetry element is applied, not just the board itself.
 
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Game, PlayerIndex};
@@ -169,6 +172,52 @@ impl Position {
             self.turn = mover.next();
             true
         }
+    }
+
+    /// Hash of what the mover (`self.turn`) actually knows about the board:
+    /// their own marks, the cells they've personally discovered are
+    /// occupied, and how many opponent marks exist in total (recoverable
+    /// from parity, not hidden) -- but not which of the remaining
+    /// ambiguous cells hold them, since that's exactly what's still
+    /// unknown to the mover. Two states that differ only in that
+    /// undetermined placement -- the same sufficient statistic
+    /// `Phantom::determinize` samples from -- are the same information set
+    /// to the mover and hash equal here, unlike `ground_truth_hash`.
+    pub fn info_set_hash(&self) -> u64 {
+        let mover = self.turn;
+        let mover_idx = mover.to_index();
+        let opponent = mover.next();
+        let known = self.known_occupied[mover_idx];
+        let opponent_total = (0..NUM_CELLS)
+            .filter(|&i| self.get(i) == Some(opponent))
+            .count();
+
+        let mut h: u64 = 0xA5A5_1234_9E37_79B1;
+        let mix = |h: u64, v: u64| -> u64 { (h ^ v).wrapping_mul(0x0100_0000_01B3) };
+        h = mix(h, 0x1000 | mover_idx as u64);
+        for i in 0..NUM_CELLS {
+            if self.get(i) == Some(mover) {
+                h = mix(h, 0x2000 | i as u64);
+            }
+        }
+        h = mix(h, 0x3000 | known as u64);
+        h = mix(h, 0x4000 | opponent_total as u64);
+        h
+    }
+
+    /// Hash of the literal ground-truth state: the real board, whose turn
+    /// it is, and both players' known-occupied masks. Two states differing
+    /// only in which ambiguous cells hold the opponent's marks -- the same
+    /// states `info_set_hash` treats as one information set -- hash
+    /// differently here.
+    pub fn ground_truth_hash(&self) -> u64 {
+        let mut h: u64 = 0xD3AD_BEEF_1122_3344;
+        let mix = |h: u64, v: u64| -> u64 { (h ^ v).wrapping_mul(0x0100_0000_01B3) };
+        h = mix(h, 0x1000 | self.turn.to_index() as u64);
+        h = mix(h, 0x2000 | self.board as u64);
+        h = mix(h, 0x3000 | self.known_occupied[0] as u64);
+        h = mix(h, 0x4000 | self.known_occupied[1] as u64);
+        h
     }
 }
 
@@ -481,6 +530,48 @@ mod tests {
             saw_a_different_layout,
             "determinize never guessed a different opponent layout across 20 resamples"
         );
+    }
+
+    #[test]
+    fn info_set_hash_ignores_ambiguous_placement_but_distinguishes_known_cells() {
+        let mut state = Position::new();
+        state.apply(super::Move(0)); // X
+        state.apply(super::Move(1)); // O
+        state.apply(super::Move(2)); // X
+        state.apply(super::Move(6)); // O
+        assert_eq!(state.turn, Piece::X);
+
+        let info_before = state.info_set_hash();
+        let ground_truth_before = state.ground_truth_hash();
+
+        let mut rng = SmallRng::seed_from_u64(3);
+        let mut saw_a_different_ground_truth_hash = false;
+        for _ in 0..20 {
+            let determinized = Phantom::determinize(state, &mut rng);
+            assert_eq!(determinized.info_set_hash(), info_before);
+            if determinized.ground_truth_hash() != ground_truth_before {
+                saw_a_different_ground_truth_hash = true;
+            }
+        }
+        assert!(
+            saw_a_different_ground_truth_hash,
+            "determinize never guessed a different opponent layout across 20 resamples"
+        );
+    }
+
+    #[test]
+    fn ground_truth_hash_distinguishes_states_with_the_same_board_but_different_knowledge() {
+        let mut a = Position::new();
+        a.apply(super::Move(0)); // X
+        assert!(!a.apply(super::Move(0))); // O rejected at 0, learns it's occupied
+
+        let mut b = Position::new();
+        b.apply(super::Move(0)); // X
+                                 // Board identical to `a`, but O hasn't discovered cell 0 is occupied.
+        assert_eq!(a.board, b.board);
+        assert_ne!(a.known_occupied, b.known_occupied);
+
+        assert_ne!(a.ground_truth_hash(), b.ground_truth_hash());
     }
 
     impl render::NodeRender for Position {}
