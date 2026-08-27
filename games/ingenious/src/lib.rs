@@ -1197,4 +1197,55 @@ mod tests {
             state = Ingenious3::apply(state, &action);
         }
     }
+
+    // ISMCTS (`SearchConfig::use_ismcts`) self-play against 2-player
+    // Ingenious's real hidden racks: every iteration searches its own
+    // `Ingenious::determinize`d guess at the opponent's rack, widening and
+    // scoring the root's `ChildArray` against that per-iteration sample
+    // instead of the one sample its first expansion happened to see. Checks
+    // the plumbing actually runs end to end (growable root, real
+    // availability counts accumulating, still-legal final choice) --
+    // not a claim that any specific inner node's action set diverges across
+    // iterations, which is `games/ingenious`'s own rack-legality logic to
+    // exercise, not this search-engine wiring test's job.
+    #[test]
+    fn ismcts_self_play_stays_legal_and_tracks_availability() {
+        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .use_ismcts(true)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = State::<2>::new(13);
+        for _ in 0..4 {
+            if Ingenious2::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let mut legal = Vec::new();
+            Ingenious2::generate_actions(&state, &mut legal);
+            assert!(
+                legal.contains(&action),
+                "ISMCTS chose an action illegal against the real state"
+            );
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            assert!(children.len() >= legal.len());
+            // The root is visited by every iteration, so every one of its
+            // legal children's availability should reflect that -- the
+            // count `Ucb1::score_child` uses in place of a shared parent
+            // visit count under ISMCTS is actually being written, not left
+            // at its zero default.
+            let root_idx = (0..children.len())
+                .find(|&i| children.action(i) == action)
+                .unwrap();
+            assert!(children.availability(root_idx) > 0);
+
+            state = Ingenious2::apply(state, &action);
+        }
+    }
 }

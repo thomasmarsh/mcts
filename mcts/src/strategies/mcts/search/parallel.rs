@@ -303,6 +303,7 @@ where
             solver_loss_threshold: self.config.solver_loss_threshold,
             has_amaf: self.config.requirements().amaf,
             mcgs_correction: self.config.mcgs_correction,
+            use_ismcts: self.config.use_ismcts,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
         let k = self.config.num_rollouts_per_leaf.max(1);

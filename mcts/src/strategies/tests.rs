@@ -36,7 +36,7 @@ fn test_child_array_child_index_matches_creation_order() {
     let index = TreeIndex::<u32>::new();
     let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
 
-    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false);
+    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false, false);
     for &idx in [3usize, 0, 4, 1, 2].iter() {
         let resolved = children.get_or_create_child(idx, || ids[idx]);
         assert_eq!(resolved, ids[idx]);
@@ -66,7 +66,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     for _ in 0..500 {
         let index: Arc<TreeIndex<u32>> = Arc::new(TreeIndex::new());
         let created_id = index.insert(Node::new(0, 0));
-        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false));
+        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false, false));
 
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -87,7 +87,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     use crate::strategies::mcts::node::ChildArray;
     use crate::strategies::mcts::node::PlayerStats;
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, true);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, true, false);
     assert_eq!(children.explored_len(), 0, "nothing resolved yet");
 
     children.get_or_create_child(1, Id::invalid_id);
@@ -126,7 +126,7 @@ fn test_child_array_amaf_side_table_empty_when_has_amaf_false() {
 
     let n = 4usize;
     let num_players = 2usize;
-    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], num_players, false);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], num_players, false, false);
 
     let default_amaf = children.amaf(0, 0);
     assert_eq!(
@@ -318,7 +318,7 @@ mod mcgs_correction_at_edge_tests {
     // stats are set to given (score, visits) pairs so a residual can be
     // driven above or below `epsilon` directly, without a real playout.
     fn edge_and_target(edge: (f64, u32), node: (f64, u32)) -> (ChildArray<u32>, Node<u32>) {
-        let children = ChildArray::new(vec![0u32], 2, false);
+        let children = ChildArray::new(vec![0u32], 2, false, false);
         children.get_or_create_child(0, dummy_id);
         for _ in 0..edge.1 {
             children.update(0, &[edge.0 / edge.1 as f64, 0.0]);
@@ -349,7 +349,7 @@ mod mcgs_correction_at_edge_tests {
         // but only one `add_incoming_edge()` -- `is_transposition()` is
         // false, so nothing shared by another parent exists yet to trust
         // over this edge.
-        let children = ChildArray::new(vec![0u32], 2, false);
+        let children = ChildArray::new(vec![0u32], 2, false, false);
         children.get_or_create_child(0, dummy_id);
         for _ in 0..10 {
             children.update(0, &[1.0, 0.0]);
@@ -474,7 +474,7 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     let new_index = TreeIndex::<u32>::new();
     let new_ids: Vec<Id> = (0..3).map(|i| new_index.insert(Node::new(0, i))).collect();
 
-    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false);
+    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false, false);
     children.get_or_create_child(0, || old_ids[0]);
     children.get_or_create_child(2, || old_ids[2]);
 
@@ -1236,7 +1236,7 @@ fn test_derive_pn_dpn_negamax_recurrence_hand_verified() {
     let unvisited_child = Node::new(1, 0);
     let unvisited_id = index.insert(unvisited_child);
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
     children.get_or_create_child(1, || proven_win_id);
     children.get_or_create_child(2, || unvisited_id);
     // idx 0 deliberately left unresolved (no `get_or_create_child` call).
@@ -1293,7 +1293,7 @@ fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
     let unvisited_child = Node::new(1, 0);
     let unvisited_id = index.insert(unvisited_child);
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
     children.get_or_create_child(1, || proven_draw_id);
     children.get_or_create_child(2, || unvisited_id);
     // idx 0 deliberately left unresolved (no `get_or_create_child` call).
@@ -1347,7 +1347,7 @@ fn test_derive_proven_standard_rule_proves_win_when_all_children_agree_on_same_o
     child_b.try_prove(Proven::Win(1));
     let child_b_id = index.insert(child_b);
 
-    let children = ChildArray::<u32>::new(vec![10, 11], 3, false);
+    let children = ChildArray::<u32>::new(vec![10, 11], 3, false, false);
     children.get_or_create_child(0, || child_a_id);
     children.get_or_create_child(1, || child_b_id);
 
@@ -1379,7 +1379,7 @@ fn test_derive_proven_standard_rule_leaves_ambiguous_multi_opponent_win_unproven
     child_b.try_prove(Proven::Win(2));
     let child_b_id = index.insert(child_b);
 
-    let children = ChildArray::<u32>::new(vec![10, 11], 3, false);
+    let children = ChildArray::<u32>::new(vec![10, 11], 3, false, false);
     children.get_or_create_child(0, || child_a_id);
     children.get_or_create_child(1, || child_b_id);
 
@@ -1415,7 +1415,7 @@ fn test_derive_proven_draw_takes_priority_over_an_ambiguous_win_q() {
     child_c.try_prove(Proven::Draw);
     let child_c_id = index.insert(child_c);
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 3, false);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 3, false, false);
     children.get_or_create_child(0, || child_a_id);
     children.get_or_create_child(1, || child_b_id);
     children.get_or_create_child(2, || child_c_id);
@@ -1464,7 +1464,7 @@ fn test_derive_minimax_value_backup_hand_verified() {
     let child0_id = index.insert(Node::new(1, 0));
     let child1_id = index.insert(Node::new(1, 0));
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
     children.get_or_create_child(0, || child0_id);
     children.update(0, &[0.2, -0.2]);
     children.get_or_create_child(1, || child1_id);

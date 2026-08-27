@@ -397,6 +397,12 @@ struct ChildArrayData {
     // for it -- this is the actually-multiplied structure (num_children *
     // num_players), so this is the real payoff of gating on `has_amaf`.
     amaf: Vec<ActionStats>,
+    // ISMCTS's per-child availability count (Cowling, Powley & Whitehouse
+    // 2012): how many iterations' determinized sample made this action
+    // legal at this node, as opposed to `num_visits`'s "how many iterations
+    // actually chose it". Only populated (same length as `num_visits`) when
+    // `growable` is set on the owning `ChildArray`, same gating as `amaf`.
+    availability: Vec<u32>,
 }
 
 /// A node's children, stored struct-of-arrays instead of as a
@@ -425,12 +431,29 @@ pub struct ChildArray<A: Action> {
     // Set once at construction from `Requirements.amaf`; gates whether
     // `data.amaf` is populated and whether the accessors below read it.
     has_amaf: bool,
+    // Set once at construction from `SearchConfig::use_ismcts`. `false` for
+    // every ordinary search: `extra` then stays permanently empty and every
+    // accessor below resolves entirely within the fixed-size fields above,
+    // unchanged from before this type supported growth at all. Only an
+    // ISMCTS search (one shared tree walked under a fresh `Game::determinize`
+    // sample every iteration, see `search/shared.rs::select_step`) ever calls
+    // `grow`, since only there can a later iteration's legal-move set contain
+    // an action no earlier iteration reaching this node ever saw.
+    growable: bool,
+    // Children discovered by `grow` after construction, appended here
+    // instead of into `actions`/`child_ids`/`num_visits_virtual`/`data` so
+    // every pre-existing slot keeps its lock-free access path -- growth pays
+    // for one `RwLock` acquisition per access to a *new* slot, not to the
+    // whole array. Indices `>= actions.len()` resolve here, offset by
+    // `actions.len()`.
+    extra: RwLock<Vec<ExtraChild<A>>>,
 }
 
 impl<A: Action> Clone for ChildArray<A> {
     fn clone(&self) -> Self {
         let data = self.data.read().unwrap();
         let id_index = self.id_index.read().unwrap();
+        let extra = self.extra.read().unwrap();
         Self {
             actions: self.actions.clone(),
             child_ids: self.child_ids.clone(),
@@ -443,12 +466,58 @@ impl<A: Action> Clone for ChildArray<A> {
             data: RwLock::new(data.clone()),
             num_players: self.num_players,
             has_amaf: self.has_amaf,
+            growable: self.growable,
+            extra: RwLock::new(extra.iter().map(ExtraChild::clone_from).collect()),
+        }
+    }
+}
+
+/// One child slot appended after construction by `ChildArray::grow` -- see
+/// `ChildArray::extra`'s doc comment. Its own `RwLock` per mutable field
+/// (rather than one lock for the whole slot) so that scoring one appended
+/// child doesn't block a concurrent visit/score update to a sibling appended
+/// child, matching the granularity `ChildArrayData` gives the fixed range.
+#[derive(Debug)]
+struct ExtraChild<A: Action> {
+    action: A,
+    child_id: OnceLock<index::Id>,
+    num_visits_virtual: AtomicU32,
+    data: RwLock<ExtraChildData>,
+}
+
+#[derive(Debug, Clone)]
+struct ExtraChildData {
+    num_visits: u32,
+    availability: u32,
+    player: Vec<PlayerStats>,
+}
+
+impl<A: Action> ExtraChild<A> {
+    fn new(action: A, num_players: usize) -> Self {
+        Self {
+            action,
+            child_id: OnceLock::new(),
+            num_visits_virtual: AtomicU32::new(0),
+            data: RwLock::new(ExtraChildData {
+                num_visits: 0,
+                availability: 0,
+                player: vec![PlayerStats::default(); num_players],
+            }),
+        }
+    }
+
+    fn clone_from(this: &Self) -> Self {
+        Self {
+            action: this.action.clone(),
+            child_id: this.child_id.clone(),
+            num_visits_virtual: AtomicU32::new(this.num_visits_virtual.load(Relaxed)),
+            data: RwLock::new(this.data.read().unwrap().clone()),
         }
     }
 }
 
 impl<A: Action> ChildArray<A> {
-    pub fn new(actions: Vec<A>, num_players: usize, has_amaf: bool) -> Self {
+    pub fn new(actions: Vec<A>, num_players: usize, has_amaf: bool, growable: bool) -> Self {
         let n = actions.len();
         Self {
             child_ids: (0..n).map(|_| OnceLock::new()).collect(),
@@ -462,10 +531,13 @@ impl<A: Action> ChildArray<A> {
                 } else {
                     Vec::new()
                 },
+                availability: if growable { vec![0; n] } else { Vec::new() },
             }),
             actions,
             num_players,
             has_amaf,
+            growable,
+            extra: RwLock::new(Vec::new()),
         }
     }
 
@@ -474,16 +546,89 @@ impl<A: Action> ChildArray<A> {
         idx * self.num_players + player_index
     }
 
-    pub fn len(&self) -> usize {
+    /// Number of slots present in the fixed-size fields -- the range every
+    /// accessor below resolves lock-free, before falling back to `extra`.
+    #[inline]
+    fn base_len(&self) -> usize {
         self.actions.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.actions.is_empty()
+    pub fn is_growable(&self) -> bool {
+        self.growable
     }
 
-    pub fn action(&self, idx: usize) -> &A {
-        &self.actions[idx]
+    pub fn len(&self) -> usize {
+        self.base_len() + self.extra.read().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn action(&self, idx: usize) -> A {
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.actions[idx].clone()
+        } else {
+            self.extra.read().unwrap()[idx - base_len].action.clone()
+        }
+    }
+
+    /// Widens this array to include every action in `new_actions`, appending
+    /// whichever of them (by `Eq`) aren't already present -- base or
+    /// previously-appended -- as a fresh `extra` slot, and returns each
+    /// input action's resulting index (existing or newly created) in the
+    /// same order. Only ever called on a `growable` array (ISMCTS's
+    /// per-iteration "restrict to compatible children" step, `search/
+    /// shared.rs::select_step`): a non-growable array's action set is fixed
+    /// at construction, exactly as every search other than ISMCTS assumes.
+    pub fn grow(&self, new_actions: &[A]) -> Vec<usize> {
+        debug_assert!(
+            self.growable,
+            "grow() called on a non-growable ChildArray -- only an ISMCTS search should ever \
+             widen a node's action set after construction"
+        );
+        let base_len = self.base_len();
+        let mut extra = self.extra.write().unwrap();
+        new_actions
+            .iter()
+            .map(|action| {
+                if let Some(i) = self.actions.iter().position(|a| a == action) {
+                    return i;
+                }
+                if let Some(i) = extra.iter().position(|c| &c.action == action) {
+                    return base_len + i;
+                }
+                extra.push(ExtraChild::new(action.clone(), self.num_players));
+                base_len + extra.len() - 1
+            })
+            .collect()
+    }
+
+    pub fn availability(&self, idx: usize) -> u32 {
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.data.read().unwrap().availability[idx]
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .data
+                .read()
+                .unwrap()
+                .availability
+        }
+    }
+
+    pub fn add_availability(&self, idx: usize) {
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.data.write().unwrap().availability[idx] += 1;
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .data
+                .write()
+                .unwrap()
+                .availability += 1;
+        }
     }
 
     /// Rewrites every action in place via `f` -- used only when a graph
@@ -505,11 +650,27 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn is_explored(&self, idx: usize) -> bool {
-        self.child_ids[idx].get().is_some()
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.child_ids[idx].get().is_some()
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .child_id
+                .get()
+                .is_some()
+        }
     }
 
     pub fn node_id(&self, idx: usize) -> Option<index::Id> {
-        self.child_ids[idx].get().copied()
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.child_ids[idx].get().copied()
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .child_id
+                .get()
+                .copied()
+        }
     }
 
     /// Resolves the edge-creation race: if two threads land on this
@@ -532,11 +693,22 @@ impl<A: Action> ChildArray<A> {
         // own lock-free fast path for the already-resolved case, so this
         // isn't giving up meaningful performance, just the (incorrect)
         // extra one.
-        *self.child_ids[idx].get_or_init(|| {
-            let id = create();
-            self.id_index.write().unwrap().insert(id, idx);
-            id
-        })
+        let base_len = self.base_len();
+        if idx < base_len {
+            *self.child_ids[idx].get_or_init(|| {
+                let id = create();
+                self.id_index.write().unwrap().insert(id, idx);
+                id
+            })
+        } else {
+            *self.extra.read().unwrap()[idx - base_len]
+                .child_id
+                .get_or_init(|| {
+                    let id = create();
+                    self.id_index.write().unwrap().insert(id, idx);
+                    id
+                })
+        }
     }
 
     /// O(1) reverse lookup of `child_ids` -- see `id_index`'s doc comment.
@@ -548,22 +720,52 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn virtual_loss(&self, idx: usize) -> u32 {
-        self.num_visits_virtual[idx].load(Relaxed)
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.num_visits_virtual[idx].load(Relaxed)
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .num_visits_virtual
+                .load(Relaxed)
+        }
     }
 
     /// See `NodeStats::add_virtual_loss`'s doc comment -- same mechanism,
     /// keyed by array index instead of by an owning struct.
     pub fn add_virtual_loss(&self, idx: usize) {
-        self.num_visits_virtual[idx].fetch_add(1, Relaxed);
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.num_visits_virtual[idx].fetch_add(1, Relaxed);
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .num_visits_virtual
+                .fetch_add(1, Relaxed);
+        }
     }
 
     pub fn remove_virtual_loss(&self, idx: usize) {
-        let prev = self.num_visits_virtual[idx].fetch_sub(1, Relaxed);
+        let base_len = self.base_len();
+        let prev = if idx < base_len {
+            self.num_visits_virtual[idx].fetch_sub(1, Relaxed)
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .num_visits_virtual
+                .fetch_sub(1, Relaxed)
+        };
         debug_assert!(prev >= 1, "virtual loss removed without a matching add");
     }
 
     pub fn num_visits(&self, idx: usize) -> u32 {
-        self.data.read().unwrap().num_visits[idx]
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.data.read().unwrap().num_visits[idx]
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .data
+                .read()
+                .unwrap()
+                .num_visits
+        }
     }
 
     pub fn total_visits(&self, idx: usize) -> u32 {
@@ -571,11 +773,29 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn score(&self, idx: usize, player_index: usize) -> f64 {
-        self.data.read().unwrap().player[self.player_index(idx, player_index)].score
+        self.player_stats(idx, player_index).score
     }
 
     pub fn sum_squared_score(&self, idx: usize, player_index: usize) -> f64 {
-        self.data.read().unwrap().player[self.player_index(idx, player_index)].sum_squared_score
+        self.player_stats(idx, player_index).sum_squared_score
+    }
+
+    /// Reads child `idx`'s `player_index`'th `PlayerStats` row, from the
+    /// fixed row-major `data.player` array or, past `base_len`, from an
+    /// appended `ExtraChild`'s own small per-child `Vec` -- see `extra`'s
+    /// doc comment for why the two ranges are indexed differently.
+    fn player_stats(&self, idx: usize, player_index: usize) -> PlayerStats {
+        let base_len = self.base_len();
+        if idx < base_len {
+            self.data.read().unwrap().player[self.player_index(idx, player_index)].clone()
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .data
+                .read()
+                .unwrap()
+                .player[player_index]
+                .clone()
+        }
     }
 
     /// See `NodeStats::posterior`'s doc comment -- same fields, edge-indexed.
@@ -623,22 +843,29 @@ impl<A: Action> ChildArray<A> {
     }
 
     pub fn expected_score(&self, idx: usize, player_index: usize) -> f64 {
-        let data = self.data.read().unwrap();
-        let virtual_loss = self.virtual_loss(idx);
         expected_score_from(
-            data.num_visits[idx],
-            virtual_loss,
-            data.player[self.player_index(idx, player_index)].score,
+            self.num_visits(idx),
+            self.virtual_loss(idx),
+            self.player_stats(idx, player_index).score,
         )
     }
 
     /// Edge-indexed counterpart to `NodeStats::overwrite_score` -- see its
     /// doc comment.
     pub fn overwrite_score(&self, idx: usize, player_index: usize, mean: f64) {
-        let mut data = self.data.write().unwrap();
-        let n = data.num_visits[idx].max(1) as f64;
-        let i = self.player_index(idx, player_index);
-        data.player[i].score = mean * n;
+        let n = self.num_visits(idx).max(1) as f64;
+        let base_len = self.base_len();
+        if idx < base_len {
+            let i = self.player_index(idx, player_index);
+            self.data.write().unwrap().player[i].score = mean * n;
+        } else {
+            self.extra.read().unwrap()[idx - base_len]
+                .data
+                .write()
+                .unwrap()
+                .player[player_index]
+                .score = mean * n;
+        }
     }
 
     pub fn exploitation_score(&self, idx: usize, player_index: usize) -> f64 {
@@ -655,32 +882,43 @@ impl<A: Action> ChildArray<A> {
     /// needs for one (child, player) pair, instead of the separate lock per
     /// field that reading through `Edge<A>`'s owned `NodeStats` required.
     pub fn snapshot(&self, idx: usize, player_index: usize) -> ChildSnapshot {
-        let data = self.data.read().unwrap();
-        let i = self.player_index(idx, player_index);
-        let p = &data.player[i];
+        let base_len = self.base_len();
+        let p = self.player_stats(idx, player_index);
+        let amaf = if idx < base_len && self.has_amaf {
+            self.data.read().unwrap().amaf[self.player_index(idx, player_index)]
+        } else {
+            ActionStats::default()
+        };
         ChildSnapshot {
-            num_visits: data.num_visits[idx],
+            num_visits: self.num_visits(idx),
             num_visits_virtual: self.virtual_loss(idx),
             score: p.score,
             sum_squared_score: p.sum_squared_score,
             posterior_mean: p.posterior_mean,
             posterior_variance: p.posterior_variance,
-            amaf: if self.has_amaf {
-                data.amaf[i]
-            } else {
-                ActionStats::default()
-            },
+            amaf,
         }
     }
 
     pub fn update(&self, idx: usize, utilities: &[f64]) {
-        let mut data = self.data.write().unwrap();
-        data.num_visits[idx] += 1;
-        let base = idx * self.num_players;
-        utilities.iter().enumerate().for_each(|(p, reward)| {
-            data.player[base + p].score += reward;
-            data.player[base + p].sum_squared_score += reward * reward;
-        });
+        let base_len = self.base_len();
+        if idx < base_len {
+            let mut data = self.data.write().unwrap();
+            data.num_visits[idx] += 1;
+            let base = idx * self.num_players;
+            utilities.iter().enumerate().for_each(|(p, reward)| {
+                data.player[base + p].score += reward;
+                data.player[base + p].sum_squared_score += reward * reward;
+            });
+        } else {
+            let extra = self.extra.read().unwrap();
+            let mut data = extra[idx - base_len].data.write().unwrap();
+            data.num_visits += 1;
+            utilities.iter().enumerate().for_each(|(p, reward)| {
+                data.player[p].score += reward;
+                data.player[p].sum_squared_score += reward * reward;
+            });
+        }
     }
 
     /// Seeds child `idx` with `pseudo_visits` fictitious visits at `value`
@@ -762,6 +1000,11 @@ impl<A: Action> ChildArray<A> {
     /// explored child of every node it visits, so no id resolved here can be
     /// missing from the map.
     pub fn remap_child_ids(&mut self, old_to_new: &FxHashMap<index::Id, index::Id>) {
+        debug_assert!(
+            self.extra.get_mut().unwrap().is_empty(),
+            "compaction is incompatible with ISMCTS's growable arrays -- SearchConfig::validate \
+             already rejects use_ismcts paired with reuse_tree, so this should be unreachable"
+        );
         let mut new_id_index = FxHashMap::default();
         for (idx, slot) in self.child_ids.iter_mut().enumerate() {
             if let Some(old_id) = slot.get().copied() {
@@ -782,6 +1025,11 @@ impl<A: Action> ChildArray<A> {
     /// so promoting a child means copying its row out rather than just
     /// re-pointing a reference.
     pub fn extract_stats(&self, idx: usize) -> NodeStats {
+        debug_assert!(
+            idx < self.base_len(),
+            "tree reuse is incompatible with ISMCTS's growable arrays -- SearchConfig::validate \
+             already rejects use_ismcts paired with reuse_tree, so this should be unreachable"
+        );
         let data = self.data.read().unwrap();
         let base = idx * self.num_players;
         let player = data.player[base..base + self.num_players].to_vec();
@@ -1239,7 +1487,7 @@ mod prior_tests {
     // `expected_score` averages, so the seeded value itself, not `4 * 0.5`.
     #[test]
     fn test_seed_prior_writes_two_player_zero_sum_stats() {
-        let children: ChildArray<u32> = ChildArray::new(vec![10, 20], 2, false);
+        let children: ChildArray<u32> = ChildArray::new(vec![10, 20], 2, false, false);
 
         children.seed_prior(0, 0, 0.5, 4);
 
@@ -1256,7 +1504,7 @@ mod prior_tests {
 
     #[test]
     fn test_seed_prior_zero_pseudo_visits_is_a_no_op() {
-        let children: ChildArray<u32> = ChildArray::new(vec![10], 2, false);
+        let children: ChildArray<u32> = ChildArray::new(vec![10], 2, false, false);
         children.seed_prior(0, 0, 0.9, 0);
         assert_eq!(children.num_visits(0), 0);
     }

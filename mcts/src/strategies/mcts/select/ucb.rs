@@ -30,6 +30,10 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
     type Score = f64;
     type Aux = f64;
 
+    fn supports_ismcts() -> bool {
+        true
+    }
+
     #[inline(always)]
     fn setup(&mut self, ctx: &SelectContext<'_, G>) -> f64 {
         let stats = ctx.current_stats();
@@ -47,7 +51,23 @@ impl<G: Game> SelectStrategy<G> for Ucb1 {
     ) -> f64 {
         let snap = ctx.child_snapshot(_child_id, children, idx);
         let exploit = snap.exploitation_score();
-        let explore = (parent_log / snap.total_visits() as f64).sqrt();
+        // ISMCTS (Cowling, Powley & Whitehouse 2012): a `growable` array's
+        // children aren't all legal on every iteration (see `search/
+        // shared.rs::select_step`'s `ismcts_legal`), so the ordinary UCB
+        // denominator -- every child sharing the *node's* total visit count
+        // in its `ln` term -- overstates how much exploration a
+        // rarely-legal action still needs relative to one that's legal
+        // every time. Cowling et al.'s fix: track each child's own
+        // "availability" (how many iterations it was legal at all,
+        // `ChildArray::availability`) and use that in place of the shared
+        // parent count. A non-growable array's availability is never
+        // written, so this only ever takes the ordinary branch.
+        let log_n = if children.is_growable() {
+            ((children.availability(idx) as f64).max(1.)).ln()
+        } else {
+            parent_log
+        };
+        let explore = (log_n / snap.total_visits() as f64).sqrt();
         exploit + self.exploration_constant * explore
     }
 

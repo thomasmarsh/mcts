@@ -479,6 +479,42 @@ where
     /// this is a boxed trait object rather than a third generic parameter on
     /// `Strategy<G>`/`TreeSearch<G, S>`.
     pub prior: Option<Box<dyn prior::PriorStrategyDyn<G>>>,
+
+    /// ISMCTS (Cowling, Powley & Whitehouse, IEEE ToCIAIG 2012): one shared
+    /// tree grown across a fresh `G::determinize`d sample of the root state
+    /// every iteration, instead of `determinize_root`'s independent
+    /// per-worker trees averaged by a vote. Each iteration's descent widens
+    /// every node it visits to include that sample's own legal moves
+    /// (`ChildArray::grow`) and restricts selection to only those
+    /// (`select::ismcts_best_child`), scored by `Ucb1` with each child's own
+    /// availability count in place of the node's shared visit count
+    /// (`ChildArray::availability`) -- see `Ucb1::score_child`'s doc comment.
+    /// `false` (the default) keeps every existing search's fixed-action-set
+    /// tree untouched.
+    ///
+    /// `validate()` requires `G::has_hidden_information()` (this exists to
+    /// search hidden information -- a perfect-information game has nothing
+    /// for a later iteration's determinization to legally reveal, so
+    /// `ChildArray::grow` would only ever confirm the same action set the
+    /// first expansion already found), `Select == Ucb1` (`supports_ismcts`;
+    /// every other strategy's `score_child` would silently compute a biased
+    /// exploration term against a node whose children aren't all
+    /// legal on every iteration, rather than error), `num_threads <= 1` and
+    /// `num_tree_threads <= 1` (a growable `ChildArray` trades lock-freedom
+    /// for a single coarser lock per newly-discovered action, only proven
+    /// correct here for the single-descent-at-a-time case), no DAG/
+    /// transpositions (this repo's transposition/DAG machinery keys node
+    /// identity by full-state hash, which is exactly wrong for ISMCTS -- a
+    /// shared tree must be keyed by *information set*, not full state, or
+    /// two determinizations of "the same" information set would wrongly
+    /// share a node), `use_mcts_solver == false` (a position "proven" under
+    /// one determinization isn't proven under another), no prior (seeds a
+    /// not-yet-created child before any iteration has established it's even
+    /// legal), and `reuse_tree == false` (re-rooting/compaction rewrite
+    /// `ChildArray`'s fixed-size fields in place, which `grow`'s `extra`
+    /// side list was never designed to survive -- see `ChildArray::
+    /// remap_child_ids`/`extract_stats`'s debug assertions).
+    pub use_ismcts: bool,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -514,6 +550,7 @@ where
             reuse_tree: false,
             max_arena_len: None,
             prior: None,
+            use_ismcts: false,
         }
     }
 }
@@ -583,6 +620,68 @@ where
                  root state with an arbitrary sample of it"
                     .to_string(),
             );
+        }
+        if self.use_ismcts {
+            if !G::has_hidden_information() {
+                return Err(
+                    "use_ismcts requires G::has_hidden_information() -- a perfect-information \
+                     game has nothing for a later iteration's determinization to legally \
+                     reveal that the first expansion didn't already find"
+                        .to_string(),
+                );
+            }
+            if !<S::Select as select::SelectStrategy<G>>::supports_ismcts() {
+                return Err(
+                    "use_ismcts requires a select strategy that accounts for ChildArray's \
+                     per-child availability count (see SelectStrategy::supports_ismcts) -- \
+                     Ucb1 is the only one so far; every other strategy's score_child would \
+                     silently compute a biased exploration term against a node whose \
+                     children aren't all legal on every iteration"
+                        .to_string(),
+                );
+            }
+            if self.num_threads > 1 || self.num_tree_threads > 1 {
+                return Err(
+                    "use_ismcts requires num_threads <= 1 and num_tree_threads <= 1 -- a \
+                     growable ChildArray trades per-slot lock-freedom for one coarser lock \
+                     per newly-discovered action, only proven correct here for a single \
+                     descent at a time"
+                        .to_string(),
+                );
+            }
+            if self.uses_transpositions() {
+                return Err(
+                    "use_ismcts is incompatible with transpositions/DAG search -- that \
+                     machinery keys node identity by full-state hash, which is exactly \
+                     wrong for ISMCTS: a shared tree must be keyed by information set, not \
+                     full state, or two determinizations of \"the same\" information set \
+                     would wrongly share a node"
+                        .to_string(),
+                );
+            }
+            if self.use_mcts_solver {
+                return Err(
+                    "use_ismcts is incompatible with use_mcts_solver -- a position proven \
+                     under one determinization isn't proven under another"
+                        .to_string(),
+                );
+            }
+            if self.prior.is_some() {
+                return Err(
+                    "use_ismcts is incompatible with a prior strategy -- it seeds a \
+                     not-yet-created child before any iteration has established that the \
+                     action is even legal"
+                        .to_string(),
+                );
+            }
+            if self.reuse_tree {
+                return Err(
+                    "use_ismcts is incompatible with reuse_tree -- re-rooting/compaction \
+                     rewrite ChildArray's fixed-size fields in place, which growth's side \
+                     list of appended actions was never designed to survive"
+                        .to_string(),
+                );
+            }
         }
         if self.requirements().needs_posterior && !self.backprop.provides_posterior() {
             return Err(
@@ -765,6 +864,11 @@ where
         self.max_arena_len = max_arena_len;
         self
     }
+
+    pub fn use_ismcts(mut self, use_ismcts: bool) -> Self {
+        self.use_ismcts = use_ismcts;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -906,6 +1010,74 @@ mod search_config_validate_tests {
     fn validate_rejects_a_two_player_only_prior_for_more_than_two_players() {
         let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
             .with_prior(prior::EvaluatorPrior::<ThreePlayerGame>::new());
+        assert!(config.validate().is_err());
+    }
+
+    /// A minimal two-player hidden-information game, existing purely to
+    /// exercise `SearchConfig::validate`'s `use_ismcts` checks -- same
+    /// forced-pass, never-terminates shape as `ThreePlayerGame`.
+    #[derive(Clone)]
+    struct HiddenInfoGame;
+
+    impl Game for HiddenInfoGame {
+        type S = State;
+        type A = u8;
+        type P = Player;
+
+        fn apply(state: Self::S, _action: &Self::A) -> Self::S {
+            state
+        }
+
+        fn generate_actions(_state: &Self::S, actions: &mut Vec<Self::A>) {
+            actions.push(0);
+        }
+
+        fn winner(_state: &Self::S) -> Option<Self::P> {
+            None
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Player(0)
+        }
+
+        fn has_hidden_information() -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn validate_rejects_use_ismcts_without_hidden_information() {
+        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().use_ismcts(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_use_ismcts_with_ucb1_and_hidden_information() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default().use_ismcts(true);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_use_ismcts_with_root_parallelism() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .use_ismcts(true)
+            .num_threads(2);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_use_ismcts_with_transpositions() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .use_ismcts(true)
+            .use_transpositions(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_use_ismcts_with_reuse_tree() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .use_ismcts(true)
+            .reuse_tree(true);
         assert!(config.validate().is_err());
     }
 

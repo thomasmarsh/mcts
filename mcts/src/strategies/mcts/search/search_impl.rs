@@ -185,7 +185,18 @@ where
                 break;
             }
             self.reset_iter();
-            let mut ctx = SearchContext::new(root_id, state.clone());
+            // ISMCTS (`SearchConfig::use_ismcts`): every iteration descends
+            // its own fresh `G::determinize`d sample of the root state,
+            // rather than the one literal `state` every ordinary search
+            // (and PIMC's `determinize_root`, which determinizes once per
+            // *worker tree* rather than once per *iteration*) uses for
+            // every iteration of a given `choose_action` call.
+            let iter_state = if self.config.use_ismcts {
+                G::determinize(state.clone(), &mut self.config.rng)
+            } else {
+                state.clone()
+            };
+            let mut ctx = SearchContext::new(root_id, iter_state);
 
             if let Some(utilities) = self.select(&mut ctx) {
                 self.backprop_correction(&utilities);

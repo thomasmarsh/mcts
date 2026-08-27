@@ -691,7 +691,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // of root, irrelevant to the match itself beyond not being root.
     let processed_id = index.insert(Node::new(0, 6));
 
-    let children = ChildArray::new(vec![Move(6), Move(7)], 2, true);
+    let children = ChildArray::new(vec![Move(6), Move(7)], 2, true, false);
     children.get_or_create_child(0, || processed_id);
     children.get_or_create_child(1, || sibling_id);
     root.expand(|| NodeState::Expanded(children));
@@ -754,7 +754,7 @@ fn test_child_array_child_index_matches_creation_order() {
     let index = TreeIndex::<u32>::new();
     let ids: Vec<_> = (0..5).map(|i| index.insert(Node::new(0, i))).collect();
 
-    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false);
+    let children = ChildArray::new(vec![10, 11, 12, 13, 14], 1, false, false);
     // Resolve out of creation order to make sure `child_index` isn't
     // secretly relying on id/idx happening to already agree.
     for &idx in &[3usize, 0, 4, 1, 2] {
@@ -800,7 +800,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     for _ in 0..500 {
         let index: Arc<TreeIndex<u32>> = Arc::new(TreeIndex::new());
         let created_id = index.insert(Node::new(0, 0));
-        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false));
+        let children = Arc::new(ChildArray::<u32>::new(vec![42], 1, false, false));
 
         std::thread::scope(|scope| {
             for _ in 0..8 {
@@ -825,7 +825,7 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
 fn test_child_array_explored_len_and_heap_bytes_estimate() {
     use mcts::node::ChildArray;
 
-    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, true);
+    let children = ChildArray::<u32>::new(vec![10, 11, 12, 13], 2, true, false);
     assert_eq!(children.explored_len(), 0, "nothing resolved yet");
 
     children.get_or_create_child(1, mcts::index::Id::invalid_id);
@@ -1224,6 +1224,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
         false,
         false,
         false,
+        false,
         Some(&mut prior),
     );
 
@@ -1236,7 +1237,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
     );
 
     let winning_idx = (0..children.len())
-        .find(|&i| *children.action(i) == Move(2))
+        .find(|&i| children.action(i) == Move(2))
         .expect("Move(2) should be a legal action here");
 
     // No `new_child` calls at all -- both children are still unvisited as
@@ -1400,7 +1401,7 @@ fn test_reuse_tree_promotes_matching_child_with_inherited_stats() {
         let root = ts.index.get(ts.root_id);
         let children = root.children();
         let idx = (0..children.len())
-            .find(|&i| *children.action(i) == action)
+            .find(|&i| children.action(i) == action)
             .unwrap();
         children
             .node_id(idx)
@@ -1412,7 +1413,7 @@ fn test_reuse_tree_promotes_matching_child_with_inherited_stats() {
         let idx = (0..children.len())
             .find(|&i| children.is_explored(i))
             .expect("some reply should have been explored at 200 iterations");
-        (*children.action(idx), children.node_id(idx).unwrap())
+        (children.action(idx), children.node_id(idx).unwrap())
     };
     let next_state = G::apply(after_own_move, &reply);
 
@@ -1469,7 +1470,7 @@ fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
         let root = ts.index.get(ts.root_id);
         let children = root.children();
         let idx = (0..children.len())
-            .find(|&i| *children.action(i) == action)
+            .find(|&i| children.action(i) == action)
             .unwrap();
         children
             .node_id(idx)
@@ -1480,7 +1481,7 @@ fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
         let children = x_child.children();
         (0..children.len())
             .find(|&i| children.is_explored(i))
-            .map(|i| *children.action(i))
+            .map(|i| children.action(i))
             .expect("some reply should have been explored at 200 iterations")
     };
     let next_state = G::apply(after_own_move, &reply);
@@ -1863,7 +1864,7 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
     let new_index = TreeIndex::<u32>::new();
     let new_ids: Vec<Id> = (0..3).map(|i| new_index.insert(Node::new(0, i))).collect();
 
-    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false);
+    let mut children = ChildArray::<u32>::new(vec![10, 11, 12], 1, false, false);
     children.get_or_create_child(0, || old_ids[0]);
     // Slot 1 deliberately left unresolved (never explored).
     children.get_or_create_child(2, || old_ids[2]);
@@ -2123,7 +2124,16 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false, false, None);
+    expand::<G>(
+        &ts.index,
+        root_id,
+        &init_state,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -2145,6 +2155,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         solver_loss_threshold: 0,
         has_amaf: false,
         mcgs_correction: mcts::McgsCorrection::Disabled,
+        use_ismcts: false,
     };
 
     // Children 0 and 1: identical local visit/score stats -- a tie on raw
@@ -2152,7 +2163,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     for idx in [0usize, 1usize] {
         new_child(
             &shared,
-            &G::apply(init_state, children.action(idx)),
+            &G::apply(init_state, &children.action(idx)),
             idx,
             root_id,
         );
@@ -2163,14 +2174,14 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     {
         let mut player_actions = ts.stats.player_actions[player].write().unwrap();
         player_actions.insert(
-            *children.action(0),
+            children.action(0),
             node::ActionStats {
                 num_visits: 10,
                 score: 9.,
             },
         );
         player_actions.insert(
-            *children.action(1),
+            children.action(1),
             node::ActionStats {
                 num_visits: 10,
                 score: 1.,
@@ -2227,7 +2238,16 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
-    expand::<G>(&ts.index, root_id, &init_state, false, false, false, None);
+    expand::<G>(
+        &ts.index,
+        root_id,
+        &init_state,
+        false,
+        false,
+        false,
+        false,
+        None,
+    );
 
     let root = ts.index.get(root_id);
     let children = root.children();
@@ -2253,12 +2273,13 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         solver_loss_threshold: 0,
         has_amaf: false,
         mcgs_correction: mcts::McgsCorrection::Disabled,
+        use_ismcts: false,
     };
 
     // Child 0: heavily visited, mediocre average score.
     new_child(
         &shared,
-        &G::apply(init_state, children.action(0)),
+        &G::apply(init_state, &children.action(0)),
         0,
         root_id,
     );
@@ -2269,7 +2290,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     // Child 1: barely visited, but a much higher average score.
     new_child(
         &shared,
-        &G::apply(init_state, children.action(1)),
+        &G::apply(init_state, &children.action(1)),
         1,
         root_id,
     );
@@ -2396,7 +2417,7 @@ fn test_graph_reroot_promotes_matching_node_and_rebases_ply() {
         let root = ts.index.get(ts.root_id);
         let children = root.children();
         let idx = (0..children.len())
-            .find(|&i| *children.action(i) == action)
+            .find(|&i| children.action(i) == action)
             .unwrap();
         children
             .node_id(idx)

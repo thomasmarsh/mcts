@@ -214,6 +214,18 @@ pub struct Shared<'a, G: Game> {
     /// See `McgsCorrection`'s doc comment -- only ever consulted in
     /// `select_step` when `graph_stats` is `Some(GraphStats::Both)`.
     pub mcgs_correction: McgsCorrection,
+    /// `SearchConfig::use_ismcts` -- see its doc comment. Gates three things
+    /// in `select_step`, all together: every freshly-created `ChildArray`
+    /// (via `expand`) is `growable`; every node visit widens its action set
+    /// to the current iteration's own `G::determinize`d sample instead of
+    /// trusting whichever sample first expanded it; and selection is
+    /// restricted to that iteration's legal children, scored with
+    /// availability counts instead of a shared parent-visit count.
+    /// `SearchConfig::validate` requires this to be paired only with
+    /// `strategy::Ucb1` and a single-threaded, DAG-free, solver-free,
+    /// reuse-free tree -- see its doc comment for why each of those is
+    /// required.
+    pub use_ismcts: bool,
 }
 
 /// Resolves a node's Leaf -> {Terminal, Expanded} transition exactly once,
@@ -231,6 +243,7 @@ pub fn expand<'a, G: Game>(
     use_mcts_solver: bool,
     has_amaf: bool,
     canonicalize: bool,
+    use_ismcts: bool,
     prior: Option<&mut (dyn crate::strategies::mcts::prior::PriorStrategyDyn<G> + 'static)>,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
@@ -270,7 +283,7 @@ pub fn expand<'a, G: Game>(
                 (pseudo_visits > 0)
                     .then(|| (pseudo_visits, p.evaluate_children(&gen_state, &actions)))
             });
-            let children = ChildArray::new(actions, G::num_players(), has_amaf);
+            let children = ChildArray::new(actions, G::num_players(), has_amaf, use_ismcts);
             if let Some((pseudo_visits, values)) = seed {
                 debug_assert_eq!(values.len(), children.len());
                 if values.len() == children.len() {
@@ -630,6 +643,7 @@ pub fn select_step<G: Game>(
                     shared.use_mcts_solver,
                     shared.has_amaf,
                     shared.use_transpositions,
+                    shared.use_ismcts,
                     reborrow_prior(&mut prior),
                 );
                 if matches!(node_state, NodeState::Terminal) {
@@ -637,6 +651,31 @@ pub fn select_step<G: Game>(
                 }
             }
         }
+
+        // ISMCTS (Cowling, Powley & Whitehouse 2012): `ctx.state` is this
+        // iteration's own `G::determinize`d sample, which can legally offer
+        // actions no earlier iteration reaching this node ever saw (a
+        // different guess at an opponent's hidden information can make a
+        // different set of their own moves legal). Widen the node's
+        // `ChildArray` to include every such action -- a no-op once the
+        // action is already present, whether from this node's first
+        // expansion or an earlier iteration's own widening -- and count this
+        // iteration against every action currently legal, not just whichever
+        // one selection ends up choosing. `Ucb1::score_child` divides by this
+        // per-child availability count instead of the node's total visit
+        // count whenever `children.is_growable()`, exactly compensating for
+        // an action that isn't legal on every iteration seeing fewer
+        // opportunities to be visited at all.
+        let ismcts_legal = shared.use_ismcts.then(|| {
+            let children = shared.index.get(ctx.current_id).children();
+            let mut legal_actions = Vec::new();
+            G::generate_actions(&ctx.state, &mut legal_actions);
+            let legal_idxs = children.grow(&legal_actions);
+            for &idx in &legal_idxs {
+                children.add_availability(idx);
+            }
+            legal_idxs
+        });
 
         // Under `TranspositionKeying::StateOnly`, node ply no longer strictly
         // increases along a descent path (see `TranspositionKeying`'s doc
@@ -673,7 +712,16 @@ pub fn select_step<G: Game>(
                         incoming_sym,
                     };
 
-                    select_strategy.best_child(&select_ctx, rng)
+                    match &ismcts_legal {
+                        Some(legal_idxs) => crate::strategies::mcts::select::ismcts_best_child(
+                            &select_ctx,
+                            node.children(),
+                            legal_idxs,
+                            select_strategy,
+                            rng,
+                        ),
+                        None => select_strategy.best_child(&select_ctx, rng),
+                    }
                 }
             };
         incoming_idx = best_idx;

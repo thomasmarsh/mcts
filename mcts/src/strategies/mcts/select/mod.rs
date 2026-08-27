@@ -133,6 +133,20 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
         BackpropFlags(0)
     }
 
+    /// Whether this strategy's `score_child` accounts for `ChildArray::
+    /// is_growable`'s per-child availability count (Cowling, Powley &
+    /// Whitehouse 2012) instead of assuming every child shares the node's
+    /// own total visit count -- i.e. whether it gives a correct answer under
+    /// ISMCTS (`SearchConfig::use_ismcts`), as opposed to a plain, silently
+    /// biased UCB computed against a node whose children aren't all legal on
+    /// every iteration. `false` by default, matching every strategy that
+    /// predates ISMCTS; `Ucb1` is the only override so far. `SearchConfig::
+    /// validate` rejects `use_ismcts` paired with any strategy that answers
+    /// `false` here, rather than silently producing a biased search.
+    fn supports_ismcts() -> bool {
+        false
+    }
+
     /// This component's `config::Requirements` -- storage it needs and any
     /// hard constraints it places on the game. Defaults to whatever
     /// `backprop_flags` already reports, so every existing `SelectStrategy`
@@ -290,6 +304,50 @@ where
     random_best_index_by(children, ctx, rng, |i| {
         score_child_or_prior(ctx, strategy, children, i, aux, unvisited_value)
     })
+}
+
+/// `random_best_index`'s ISMCTS counterpart: the same tie-broken argmax over
+/// `score_child`/`unvisited_value`, but restricted to `legal_idxs` -- this
+/// iteration's own `G::determinize`d sample only makes those children
+/// reachable, and Cowling et al.'s "restrict to compatible children" step
+/// means selection must never even consider one that isn't (`search/
+/// shared.rs::select_step` is `ismcts_legal`'s only caller). MCTS-Solver's
+/// proven-loss skip has no counterpart here: `SearchConfig::validate`
+/// requires `use_mcts_solver` off wherever `use_ismcts` is on, so no child
+/// reachable through `legal_idxs` is ever proven.
+pub(crate) fn ismcts_best_child<S, G>(
+    ctx: &SelectContext<'_, G>,
+    children: &ChildArray<G::A>,
+    legal_idxs: &[usize],
+    strategy: &mut S,
+    rng: &mut SmallRng,
+) -> usize
+where
+    S: SelectStrategy<G>,
+    G: Game,
+{
+    debug_assert!(!legal_idxs.is_empty());
+    let aux = strategy.setup(ctx);
+    let unvisited_value = strategy.unvisited_value(ctx, aux);
+
+    let n = legal_idxs.len();
+    let r = rng.gen_range(0..n * PRIMES.len());
+    let mut i = r / PRIMES.len();
+    let stride = PRIMES[r % PRIMES.len()];
+
+    let mut best_score = None;
+    let mut best_index = legal_idxs[i];
+    for _ in 0..n {
+        let idx = legal_idxs[i];
+        let score = score_child_or_prior(ctx, strategy, children, idx, aux, unvisited_value);
+        if best_score.is_none_or(|best| score > best) {
+            best_score = Some(score);
+            best_index = idx;
+        }
+        i = (i + stride) % n;
+    }
+
+    best_index
 }
 
 /// `random_best_index`'s per-child scoring, factored out so `ThompsonSampling`/

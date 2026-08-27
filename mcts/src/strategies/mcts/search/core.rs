@@ -132,6 +132,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
+                use_ismcts: self.config.use_ismcts,
             },
             ctx,
             &mut self.stack,
@@ -155,6 +156,7 @@ where
                 self.config.use_mcts_solver,
                 self.config.requirements().amaf,
                 self.config.uses_transpositions(),
+                self.config.use_ismcts,
                 self.config.prior.as_deref_mut(),
             );
         }
@@ -305,6 +307,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
+                use_ismcts: self.config.use_ismcts,
             },
             &self.stack,
             &self.config.backprop,
@@ -336,6 +339,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
+                use_ismcts: self.config.use_ismcts,
             },
             &self.stack,
             utilities,
@@ -537,7 +541,7 @@ where
                 selected_root_action
                     .and_then(|selected| {
                         (0..node.children().len())
-                            .find(|&idx| node.children().action(idx) == selected)
+                            .find(|&idx| node.children().action(idx) == *selected)
                     })
                     .unwrap_or_else(|| {
                         proven_win_child::<G>(
