@@ -825,7 +825,7 @@ fn test_family_ucb1_adm_nst_round_trips() {
     }));
 }
 
-// `meta_mcts`'s round trip is proven in `tests/stress.rs` instead of here:
+// `meta_mcts`'s round trip is proven in `examples/tune-stress.rs` instead of here:
 // its inner nested search makes even one candidate-vs-baseline game
 // noticeably slower than every other family's (multi-second, not the
 // sub-second every sibling test above runs in), so it belongs in the
@@ -1697,7 +1697,7 @@ fn test_build_search_rejects_unknown_family() {
 /// The parameter set each family's `make_candidate` arm actually
 /// requires -- mirrors the literals already passed to
 /// `assert_family_round_trips` above, plus `meta_mcts` (whose own
-/// round-trip lives in `tests/stress.rs` for cost reasons, but this
+/// round-trip lives in `examples/tune-stress.rs` for cost reasons, but this
 /// check is pure metadata with no MCTS search, so it's cheap to include
 /// here too).
 ///

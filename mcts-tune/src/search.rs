@@ -188,8 +188,8 @@ fn wire_search_report<A>(
 /// META_MCTS_INNER_ITERATIONS` -- a few dozen iterations is enough for the
 /// inner search to be more informed than a uniform rollout without making
 /// every `meta_mcts` trial two orders of magnitude more expensive than every
-/// other family's. Still real work, though -- see `tests/stress.rs` for why
-/// its round-trip test doesn't live in this file's fast suite.
+/// other family's. Still real work, though -- see `examples/tune-stress.rs`
+/// for why its round-trip check doesn't live in this file's fast suite.
 pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 
 /// A candidate's search-effort ceiling -- orthogonal to `TrialParams`

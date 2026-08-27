@@ -1,24 +1,91 @@
-//! Stress tests: correct but slow (multi-second, real-time-budgeted, or
+//! Stress checks: correct but slow (multi-second, real-time-budgeted, or
 //! many-games) checks that don't belong in `cargo test --lib`'s fast path.
-//! Living in `tests/` (a separate integration-test binary) keeps them out of
-//! that command automatically -- `cargo test --lib` never compiles or runs
-//! this file. Run explicitly with `cargo test --test stress`.
 //!
-//! Each test here should still run alone comfortably; the guard below only
-//! protects against *this binary's own* tests overlapping under cargo's
-//! default per-binary test concurrency, the same problem
-//! `crate::strategies::parallel_test_guard` solves for the unit-test binary.
+//! This is an `examples/` binary, not a test target, on purpose: a
+//! `tests/stress.rs` integration binary is silently pulled in by a bare
+//! `cargo test -p mcts-tests`, so a slow suite ends up running when someone
+//! only meant to run the fast tests. An example is only ever run when named
+//! explicitly:
+//!
+//!   cargo run --release --example stress -p mcts-tests
+//!   cargo run --release --example stress -p mcts-tests -- othello druid
+//!
+//! With no arguments every case runs; any arguments are treated as
+//! substring filters against the case names. Exit status is non-zero if any
+//! case fails. Cases run sequentially, so no cross-case thread-pool guard is
+//! needed (the fast unit suite still needs `parallel_test_guard`).
 
-use std::sync::{Mutex, OnceLock};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::time::Instant;
 
-fn stress_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap()
+fn main() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "tree_parallel_transpositions_survive_many_real_time_games",
+            tree_parallel_transpositions_survive_many_real_time_games,
+        ),
+        (
+            "atarigo_transposition_symmetry_sweep_no_corruption",
+            atarigo_transposition_symmetry_sweep_no_corruption,
+        ),
+        (
+            "druid_hash_no_collision_across_many_random_games",
+            druid_hash_no_collision_across_many_random_games,
+        ),
+        (
+            "othello_many_random_games_complete",
+            othello_many_random_games_complete,
+        ),
+        (
+            "othello_oracle_symmetry_stress",
+            othello_oracle_symmetry_stress,
+        ),
+        (
+            "breakthrough_oracle_stress_5000",
+            breakthrough_oracle_stress_5000,
+        ),
+        (
+            "knightthrough_oracle_stress_5000",
+            knightthrough_oracle_stress_5000,
+        ),
+    ];
+
+    let filters: Vec<String> = std::env::args().skip(1).collect();
+    let selected: Vec<&(&str, fn())> = cases
+        .iter()
+        .filter(|(name, _)| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str())))
+        .collect();
+
+    if selected.is_empty() {
+        eprintln!("no stress cases match {filters:?}");
+        eprintln!("available:");
+        for (name, _) in cases {
+            eprintln!("  {name}");
+        }
+        std::process::exit(2);
+    }
+
+    let mut failed: Vec<&str> = Vec::new();
+    for (name, f) in &selected {
+        eprintln!("=== running {name} ===");
+        let start = Instant::now();
+        match catch_unwind(AssertUnwindSafe(*f)) {
+            Ok(()) => eprintln!("--- ok  {name}  ({:.1}s)", start.elapsed().as_secs_f64()),
+            Err(_) => {
+                eprintln!("--- FAILED  {name}");
+                failed.push(name);
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} stress case(s) FAILED: {failed:?}", failed.len());
+        std::process::exit(1);
+    }
+    eprintln!("\nall {} stress case(s) passed", selected.len());
 }
 
-#[test]
-fn test_tree_parallel_transpositions_survive_many_real_time_games() {
-    let _guard = stress_test_guard();
+fn tree_parallel_transpositions_survive_many_real_time_games() {
     // Regression guard for a race between `Node::is_terminal()` and
     // `Node::is_leaf()` in `select_step` (search.rs): those used to be
     // two separate `OnceLock::get()` reads with a decision gap between
@@ -75,9 +142,7 @@ fn test_tree_parallel_transpositions_survive_many_real_time_games() {
 /// board sizes, iteration counts, and seeds) is what actually exercised the
 /// bug reliably, so this sweep is the real coverage for the fix
 /// (`mcts::strategies::mcts::search::shared::verified_child_id`).
-#[test]
-fn test_atarigo_transposition_symmetry_sweep_no_corruption() {
-    let _guard = stress_test_guard();
+fn atarigo_transposition_symmetry_sweep_no_corruption() {
     use game_atarigo::AtariGo;
     use game_atarigo::State;
     use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
@@ -102,9 +167,7 @@ fn test_atarigo_transposition_symmetry_sweep_no_corruption() {
     }
 }
 
-#[test]
-fn test_druid_hash_no_collision_across_many_random_games() {
-    let _guard = stress_test_guard();
+fn druid_hash_no_collision_across_many_random_games() {
     // `Druid::zobrist_hash` used to cover only board cells + the pending
     // sub-move, on the assumption that player-to-move and hand counts are
     // always recoverable from the board. That's false once lintels are in
@@ -157,9 +220,7 @@ fn test_druid_hash_no_collision_across_many_random_games() {
     }
 }
 
-#[test]
-fn test_othello_many_random_games_complete() {
-    let _guard = stress_test_guard();
+fn othello_many_random_games_complete() {
     // Verifies that many random Othello games always terminate without
     // panicking, and collects basic statistics (winner distribution, move
     // counts) as a sanity check on the game implementation.
@@ -246,9 +307,7 @@ fn test_othello_many_random_games_complete() {
 /// Runs 10 000 random games (~400 000 positions), each checked against 8
 /// symmetries = ~3.2 million oracle comparisons.  Every mismatch is reported
 /// with the game seed and ply.
-#[test]
-fn test_othello_oracle_symmetry_stress() {
-    let _guard = stress_test_guard();
+fn othello_oracle_symmetry_stress() {
     type BB = bitboard::Board<u64, bitboard::Const<8>, bitboard::Const<8>>;
     use game_core::symmetry::D4Symmetry;
     use game_othello::{
@@ -633,9 +692,7 @@ fn coord_str(index: usize) -> String {
 
 macro_rules! stress_oracle_test {
     ($test_name:ident, $game_mod:ident, $Game:ident, $naive_moves_fn:ident, $label:expr, $num_games:expr, $games_label:expr) => {
-        #[test]
         fn $test_name() {
-            let _guard = stress_test_guard();
             let label = $label;
             let games_label = $games_label;
             let num_games = $num_games;
@@ -798,7 +855,7 @@ macro_rules! stress_oracle_test {
 }
 
 stress_oracle_test!(
-    test_breakthrough_oracle_stress_5000,
+    breakthrough_oracle_stress_5000,
     breakthrough,
     Breakthrough,
     naive_breakthrough_moves,
@@ -808,7 +865,7 @@ stress_oracle_test!(
 );
 
 stress_oracle_test!(
-    test_knightthrough_oracle_stress_5000,
+    knightthrough_oracle_stress_5000,
     knightthrough,
     Knightthrough,
     naive_knightthrough_moves,

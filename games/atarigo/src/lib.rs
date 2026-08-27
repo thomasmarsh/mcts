@@ -1224,7 +1224,7 @@ mod tests {
 
     // A broader sweep of this same regression across board sizes/iteration
     // counts/seeds (the original bug-hunt found this crashed 92/150 such
-    // combinations) lives in `mcts-tests/tests/stress.rs` -- too slow for
+    // combinations) lives in `mcts-tests/examples/stress.rs` -- too slow for
     // `cargo test --lib`, see AGENTS.md's "Rust tests" section.
 }
 

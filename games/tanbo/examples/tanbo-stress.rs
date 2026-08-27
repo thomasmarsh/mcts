@@ -1,15 +1,67 @@
-//! Many-game random-playout stress tests for Tanbo.
+//! Many-game random-playout stress checks for Tanbo.
 //!
 //! These drive thousands of seeded random games to end-to-end termination,
 //! which is both slow and (being effectively exhaustive over move choices)
-//! liable to hit rare states that a handful of unit tests would miss. That
-//! combination belongs in a separate `tests/stress.rs` integration binary,
-//! not `cargo test --lib` -- see AGENTS.md.
+//! liable to hit rare states that a handful of unit tests would miss.
 //!
-//! Run explicitly with `cargo test -p game-tanbo --test stress --release`.
+//! This is an `examples/` binary, not a test target, on purpose: a
+//! `tests/stress.rs` integration binary is silently pulled in by a bare
+//! `cargo test -p game-tanbo`, so a slow suite ends up running when someone
+//! only meant the fast tests. An example only runs when named:
+//!
+//!   cargo run --release --example tanbo-stress -p game-tanbo
+//!   cargo run --release --example tanbo-stress -p game-tanbo -- tanbo_9
+//!
+//! With no arguments every case runs; arguments are substring filters
+//! against the case names. Exit status is non-zero if any case fails.
+
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::time::Instant;
 
 use game_tanbo::{State, Tanbo};
 use mcts::game::Game;
+
+fn main() {
+    let cases: &[(&str, fn())] = &[
+        ("tanbo_9_dense", tanbo_9_dense),
+        ("tanbo_11_sparse", tanbo_11_sparse),
+        ("tanbo_13_dense", tanbo_13_dense),
+        ("tanbo_19_dense", tanbo_19_dense),
+    ];
+
+    let filters: Vec<String> = std::env::args().skip(1).collect();
+    let selected: Vec<&(&str, fn())> = cases
+        .iter()
+        .filter(|(name, _)| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str())))
+        .collect();
+
+    if selected.is_empty() {
+        eprintln!("no stress cases match {filters:?}");
+        for (name, _) in cases {
+            eprintln!("  {name}");
+        }
+        std::process::exit(2);
+    }
+
+    let mut failed: Vec<&str> = Vec::new();
+    for (name, f) in &selected {
+        eprintln!("=== running {name} ===");
+        let start = Instant::now();
+        match catch_unwind(AssertUnwindSafe(*f)) {
+            Ok(()) => eprintln!("--- ok  {name}  ({:.1}s)", start.elapsed().as_secs_f64()),
+            Err(_) => {
+                eprintln!("--- FAILED  {name}");
+                failed.push(name);
+            }
+        }
+    }
+
+    if !failed.is_empty() {
+        eprintln!("\n{} stress case(s) FAILED: {failed:?}", failed.len());
+        std::process::exit(1);
+    }
+    eprintln!("\nall {} stress case(s) passed", selected.len());
+}
 
 /// A tiny deterministic xorshift RNG, so failures reproduce from just the
 /// seed printed in the panic message.
@@ -68,32 +120,28 @@ fn play_random_game<const N: usize, const WORDS: usize>(
     panic!("seed {seed}: did not terminate within {max_steps} random-play steps");
 }
 
-#[test]
-fn stress_tanbo_9_dense() {
+fn tanbo_9_dense() {
     for seed in 0u64..2000 {
         let mut state = State::<9, 2>::new_dense();
         play_random_game(&mut state, seed, 20_000);
     }
 }
 
-#[test]
-fn stress_tanbo_11_sparse() {
+fn tanbo_11_sparse() {
     for seed in 0u64..2000 {
         let mut state = State::<11, 2>::new_sparse();
         play_random_game(&mut state, seed, 20_000);
     }
 }
 
-#[test]
-fn stress_tanbo_13_dense() {
+fn tanbo_13_dense() {
     for seed in 0u64..500 {
         let mut state = State::<13, 3>::new_dense();
         play_random_game(&mut state, seed, 40_000);
     }
 }
 
-#[test]
-fn stress_tanbo_19_dense() {
+fn tanbo_19_dense() {
     for seed in 0u64..50 {
         let mut state = State::<19, 6>::new_dense();
         play_random_game(&mut state, seed, 100_000);

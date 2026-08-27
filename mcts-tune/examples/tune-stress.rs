@@ -1,8 +1,14 @@
-//! Stress tests: correct but slow checks that don't belong in `cargo test
-//! --lib`'s fast path. Living in `tests/` (a separate integration-test
-//! binary) keeps them out of that command automatically -- `cargo test
-//! --lib` never compiles or runs this file. Run explicitly with `cargo test
-//! -p mcts-tune --test stress`.
+//! Stress checks: correct but slow checks that don't belong in `cargo test
+//! --lib`'s fast path.
+//!
+//! This is an `examples/` binary, not a test target, on purpose: a
+//! `tests/stress.rs` integration binary is silently pulled in by a bare
+//! `cargo test -p mcts-tune`, so a slow suite ends up running when someone
+//! only meant the fast tests. An example only runs when named:
+//!
+//!   cargo run --release --example tune-stress -p mcts-tune
+//!
+//! Exit status is non-zero if any case fails.
 
 use game_nim::Nim;
 use mcts::game::Game;
@@ -24,8 +30,12 @@ fn baseline() -> Box<dyn Search<G = Nim>> {
 /// slower than every other catalog family -- several real seconds, versus
 /// the sub-second every other family's round-trip test in `src/lib.rs` runs
 /// in. Correct (proven here), just not fast enough for the unit-test suite.
-#[test]
-fn test_family_meta_mcts_round_trips() {
+fn main() {
+    family_meta_mcts_round_trips();
+    eprintln!("mcts-tune stress: all cases passed");
+}
+
+fn family_meta_mcts_round_trips() {
     let params = json!({
         "family": "meta_mcts", "c": 1.4, "q_init": "Infinity",
     });

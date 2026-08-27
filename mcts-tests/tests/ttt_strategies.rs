@@ -786,8 +786,8 @@ fn test_child_array_child_index_survives_concurrent_resolution() {
     use std::sync::Arc;
 
     // Regression test for a race introduced (and caught by
-    // `test_tree_parallel_transpositions_survive_many_real_time_games` in
-    // tests/stress.rs) while adding `ChildArray`'s `id_index`: a naive
+    // `tree_parallel_transpositions_survive_many_real_time_games` in
+    // examples/stress.rs) while adding `ChildArray`'s `id_index`: a naive
     // "check `child_ids`, fall back to `get_or_init`, then update
     // `id_index`" implementation
     // lets one thread observe another thread's freshly-resolved child id
