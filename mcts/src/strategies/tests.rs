@@ -1079,6 +1079,337 @@ mod converge_game_tests {
     }
 }
 
+// MO-ISMCTS (`IsmctsMode::MultiTree`) soundness-benchmark fixture -- the
+// `MultiTree` analogue of `converge_game_tests`'s `ConvergeGame`. The
+// difference that matters: `ConvergeGame`'s hidden `coin` is
+// *unowned* (both players equally blind, `Game::determinize` resamples it
+// unconditionally), so it cannot exercise the failure mode MO-ISMCTS + DAG
+// merging is suspected of -- a player's *own* private information being
+// incorrectly merged away inside *their own* per-player tree `T_p` when the
+// merge key is mover-relative and the node's mover is someone else. Here
+// each player owns a private bit and `determinize` keeps the current
+// mover's own bit while resampling only the other player's, matching how a
+// real card game's determinization keeps the acting player's hand fixed and
+// guesses the opponent's.
+//
+// This module currently only establishes the plain-`MultiTree` convergence
+// baseline (no DAG merging exists for `MultiTree` yet -- `validate()`
+// rejects the pairing). It is the harness-validation step a `MultiTree` +
+// DAG soundness comparison would build on.
+mod mo_converge_game_tests {
+    use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::config::IsmctsMode;
+    use crate::strategies::mcts::node::NodeState;
+    use crate::strategies::mcts::select;
+    use crate::strategies::mcts::strategy::Ucb1;
+    use crate::strategies::Search;
+    use crate::{SearchConfig, TreeSearch};
+    use rand::rngs::SmallRng;
+    use rand::Rng;
+
+    // Same order-independent "pick 4 of 6" diamond as `ConvergeGame` (see
+    // its comment for why `C(6, 4)` transpositions at a hand-enumerable
+    // scale is the right shape), plus one private bit per player.
+    const NUM_ACTIONS: u8 = 6;
+    const PICKS: u32 = 4;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+    struct Player(usize);
+
+    impl PlayerIndex for Player {
+        fn to_index(&self) -> usize {
+            self.0
+        }
+    }
+
+    // `priv_bits[p]` is player `p`'s own private bit: `Game::determinize`
+    // keeps the current mover's and resamples the other's, and
+    // `Game::info_set_hash` (mover-relative) folds in only the mover's own.
+    // Both default to `false`; `winner` depends on both in a way where the
+    // Bayes-average utility genuinely varies with `priv_bits[0]` (unlike
+    // `ConvergeGame`'s symmetric single coin), which a `MultiTree` + DAG
+    // merge keyed mover-relative would be unable to keep distinct inside
+    // player 0's own tree at a node where player 1 is the mover.
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct State {
+        mask: u8,
+        priv_bits: [bool; 2],
+    }
+
+    impl std::fmt::Display for State {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:06b}", self.mask)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct Action(u8);
+
+    #[derive(Clone)]
+    struct MoConvergeGame;
+
+    impl Game for MoConvergeGame {
+        type S = State;
+        type A = Action;
+        type P = Player;
+
+        fn apply(state: Self::S, action: &Self::A) -> Self::S {
+            State {
+                mask: state.mask | (1 << action.0),
+                priv_bits: state.priv_bits,
+            }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            if state.mask.count_ones() >= PICKS {
+                return;
+            }
+            for i in 0..NUM_ACTIONS {
+                if state.mask & (1 << i) == 0 {
+                    actions.push(Action(i));
+                }
+            }
+        }
+
+        fn winner(state: &Self::S) -> Option<Self::P> {
+            if state.mask.count_ones() < PICKS {
+                return None;
+            }
+            let sum: u32 = (0..NUM_ACTIONS)
+                .filter(|&i| state.mask & (1 << i) != 0)
+                .map(u32::from)
+                .sum();
+            let a = (sum & 1) as usize;
+            let b = ((sum >> 1) & 1) as usize;
+            // Chosen so player 0's Bayes value (marginalizing player 1's
+            // bit uniformly) is *not* symmetric in player 0's own bit: with
+            // `priv_bits[0] == true` the winner is `a` regardless of player
+            // 1, so player 0 knows the outcome exactly; with
+            // `priv_bits[0] == false` it is `b` or `a ^ 1` depending on a
+            // bit player 0 can't see, so the value is a genuine average.
+            let idx = match (state.priv_bits[0], state.priv_bits[1]) {
+                (true, _) => a,
+                (false, false) => b,
+                (false, true) => a ^ 1,
+            };
+            Some(Player(idx))
+        }
+
+        fn player_to_move(state: &Self::S) -> Self::P {
+            Player((state.mask.count_ones() % 2) as usize)
+        }
+
+        fn zobrist_hash(state: &Self::S) -> u64 {
+            state.mask as u64
+                | ((state.priv_bits[0] as u64) << 8)
+                | ((state.priv_bits[1] as u64) << 9)
+        }
+
+        fn has_hidden_information() -> bool {
+            true
+        }
+
+        // Mover-relative: the picked mask plus the *mover's own* private
+        // bit, never the opponent's -- the key `Game::info_set_hash`'s own
+        // doc comment describes, and the one `SingleTree` + DAG merges on.
+        // `MultiTree` has no DAG counterpart, so nothing merges on this key
+        // today; the fixture carries it so a future `MultiTree` + DAG
+        // comparison has something mover-relative to measure against.
+        fn info_set_hash(state: &Self::S) -> u64 {
+            let mover = Self::player_to_move(state).to_index();
+            state.mask as u64 | ((state.priv_bits[mover] as u64) << 8)
+        }
+
+        // Keeps the current mover's own bit, resamples the other player's
+        // uniformly -- the determinization a player performs from their own
+        // point of view, guessing only what they cannot see.
+        fn determinize(mut state: Self::S, rng: &mut SmallRng) -> Self::S {
+            let mover = Self::player_to_move(&state).to_index();
+            state.priv_bits[(mover + 1) % 2] = rng.gen();
+            state
+        }
+    }
+
+    type TS = TreeSearch<MoConvergeGame, Ucb1>;
+
+    fn legal(state: &State) -> Vec<Action> {
+        let mut actions = Vec::new();
+        MoConvergeGame::generate_actions(state, &mut actions);
+        actions
+    }
+
+    /// Exact player-0 value at info-set `mask` with *both* private bits
+    /// marginalized uniformly -- backward induction (player 0 maximizes at
+    /// even-count nodes, player 1 minimizes at odd-count ones) over the
+    /// mask-only reduced game whose leaf payoff is `winner`'s outcome
+    /// averaged over all four `(priv_bits[0], priv_bits[1])` combinations.
+    ///
+    /// This is the quantity plain `MultiTree` with per-node
+    /// re-determinization converges to: re-determinization resamples the
+    /// non-mover's bit at every node during descent, so by the time any
+    /// non-root node is reached both bits have been randomized and the
+    /// backed-up value is the fully-marginal one, not one conditioned on
+    /// the root's own `priv_bits[0]`. (A `MultiTree` + DAG merge keyed by a
+    /// *player*-relative hash would instead be expected to converge to the
+    /// `priv_bits[0]`-conditioned value inside player 0's tree, but no such
+    /// merge exists yet, so only the marginal value is checked here.)
+    fn marginal_value_p0(mask: u8) -> f64 {
+        if mask.count_ones() >= PICKS {
+            let mut total = 0.0;
+            for p0 in [false, true] {
+                for p1 in [false, true] {
+                    let s = State {
+                        mask,
+                        priv_bits: [p0, p1],
+                    };
+                    total += MoConvergeGame::compute_utilities(&s)[0];
+                }
+            }
+            return total / 4.0;
+        }
+        let maximizer = mask.count_ones().is_multiple_of(2);
+        (0..NUM_ACTIONS)
+            .filter(|&i| mask & (1 << i) == 0)
+            .map(|i| marginal_value_p0(mask | (1 << i)))
+            .fold(None, |acc: Option<f64>, v| {
+                Some(match acc {
+                    None => v,
+                    Some(a) if maximizer => a.max(v),
+                    Some(a) => a.min(v),
+                })
+            })
+            .expect("a non-terminal mask always has a legal action")
+    }
+
+    /// Pools every incoming edge leading to a node whose picked mask is
+    /// `target_mask`, across the whole (single kept) tree, into one score
+    /// for `player`. Mirrors `converge_game_tests::pooled_score_for_mask`:
+    /// reads `ChildArray`'s own raw `score`/`num_visits` on each qualifying
+    /// parent rather than an arrived-at node's `stats` (which plain
+    /// `MultiTree`, with no graph-stats bookkeeping, never writes). A parent
+    /// qualifies structurally: for each set bit of `target_mask`, clearing
+    /// it names one parent mask plus the completing action.
+    fn pooled_score_for_mask(search: &TS, target_mask: u8, player: usize) -> Option<f64> {
+        let parent_actions: Vec<(u8, u8)> = (0..NUM_ACTIONS)
+            .filter(|&bit| target_mask & (1 << bit) != 0)
+            .map(|bit| (target_mask & !(1 << bit), bit))
+            .collect();
+
+        let mut total_score = 0.0;
+        let mut total_visits = 0u32;
+        search.index.for_each(|node| {
+            let Some(NodeState::Expanded(children)) = node.status() else {
+                return;
+            };
+            let node_mask = (node.hash & 0xFF) as u8;
+            for &(parent_mask, bit) in &parent_actions {
+                if node_mask != parent_mask {
+                    continue;
+                }
+                if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == Action(bit))
+                {
+                    total_visits += children.num_visits(idx);
+                    total_score += children.score(idx, player);
+                }
+            }
+        });
+        (total_visits > 0).then_some(total_score / total_visits as f64)
+    }
+
+    // See `converge_game_tests::EXPLORATION_CONSTANT` for why this is well
+    // above `sqrt(2)`: keeps every branch sampled enough at every budget for
+    // the convergence *trend* to be what's under test, not an artifact of
+    // which branch UCB1 abandoned first.
+    const EXPLORATION_CONSTANT: f64 = 5.0;
+
+    fn plain_multi_tree_error(
+        iterations: usize,
+        seed: u64,
+        redeterminize: bool,
+        target_mask: u8,
+        target_value: f64,
+    ) -> Option<f64> {
+        let config = SearchConfig::default()
+            .max_iterations(iterations)
+            .expand_threshold(0)
+            .seed(seed)
+            .select(select::Ucb1::with_c(EXPLORATION_CONSTANT))
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .ismcts_redeterminize(redeterminize);
+        let mut search = TS::default().config(config);
+        search.choose_action(&State::default());
+        pooled_score_for_mask(&search, target_mask, 0).map(|score| (score - target_value).abs())
+    }
+
+    #[test]
+    fn plain_multi_tree_chooses_a_legal_action() {
+        let state = State::default();
+        for redeterminize in [false, true] {
+            let mut search = TS::default().config(
+                SearchConfig::default()
+                    .max_iterations(300)
+                    .expand_threshold(0)
+                    .seed(7)
+                    .ismcts_mode(IsmctsMode::MultiTree)
+                    .ismcts_redeterminize(redeterminize),
+            );
+            let action = search.choose_action(&state);
+            assert!(
+                legal(&state).contains(&action),
+                "redeterminize={redeterminize}"
+            );
+        }
+    }
+
+    // Plain `IsmctsMode::MultiTree` (with per-node re-determinization, no
+    // DAG merging -- none exists for `MultiTree`) must converge toward the
+    // brute-forced fully-marginal player-0 value at a transposing non-root
+    // info-set node as the iteration budget grows. Validates the fixture
+    // and the pooled-edge reader against a known quantity, so a later
+    // `MultiTree` + DAG comparison built on them has a trusted baseline.
+    #[test]
+    fn plain_multi_tree_converges_to_the_marginal_value_as_budget_grows() {
+        // `mask == Action(1) | Action(2) | Action(3)`, count 3 -> player 1
+        // to move, reachable by all six orderings of {1, 2, 3} -- a
+        // non-root info-set node with real transposition structure.
+        let target_mask: u8 = (1 << 1) | (1 << 2) | (1 << 3);
+        let target_value = marginal_value_p0(target_mask);
+
+        let budgets = [200usize, 1_000, 5_000];
+        let seeds: Vec<u64> = (1..=6).collect();
+
+        let mean_error = |iterations: usize| -> f64 {
+            let errors: Vec<f64> = seeds
+                .iter()
+                .filter_map(|&seed| {
+                    plain_multi_tree_error(iterations, seed, true, target_mask, target_value)
+                })
+                .collect();
+            assert!(
+                !errors.is_empty(),
+                "iterations={iterations}: no seed ever sampled the target info-set"
+            );
+            errors.iter().sum::<f64>() / errors.len() as f64
+        };
+
+        let errors: Vec<f64> = budgets.iter().map(|&it| mean_error(it)).collect();
+
+        eprintln!("target_value = {target_value}");
+        eprintln!("plain_multi_tree_errors (200/1000/5000) = {errors:?}");
+
+        assert!(
+            errors[2] < errors[0] * 0.75,
+            "plain MultiTree should converge substantially toward the marginal value \
+             as budget grows: {errors:?}"
+        );
+        assert!(
+            errors[2] < 0.35,
+            "plain MultiTree's error at the top budget should be small -- a large \
+             residual points at a fixture/harness bug: {errors:?}"
+        );
+    }
+}
+
 mod cycle_game_tests {
     use crate::game::{Game, PlayerIndex};
     use crate::strategies::mcts::strategy::Ucb1;
