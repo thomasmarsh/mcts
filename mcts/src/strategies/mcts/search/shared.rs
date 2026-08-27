@@ -756,6 +756,7 @@ pub fn select_step<G: Game>(
                         global: shared.global,
                         use_transpositions: shared.use_transpositions,
                         graph_stats: shared.graph_stats,
+                        mcgs_correction: shared.mcgs_correction,
                         solver_loss_threshold: shared.solver_loss_threshold,
                         incoming_sym,
                     };

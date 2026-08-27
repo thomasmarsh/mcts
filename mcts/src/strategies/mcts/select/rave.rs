@@ -58,7 +58,7 @@ impl Default for RaveSchedule {
 }
 
 impl RaveSchedule {
-    fn beta(&self, n: u32, amaf_n: u32) -> f64 {
+    pub(crate) fn beta(&self, n: u32, amaf_n: u32) -> f64 {
         let n = n as f64;
         let amaf_n = amaf_n as f64;
         match self {

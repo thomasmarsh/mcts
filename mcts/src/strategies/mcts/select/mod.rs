@@ -25,6 +25,7 @@ pub use ucb::Ucb1;
 pub use ucb::Ucb1Tuned;
 
 use super::config::GraphStats;
+use super::config::McgsCorrection;
 use super::index::Id;
 use super::node::{self, ChildArray, NodeStats, Proven, StatsRef};
 use super::search::shared::TreeStats;
@@ -63,6 +64,14 @@ pub struct SelectContext<'a, G: Game> {
     pub global: &'a TreeStats<G>,
     pub use_transpositions: bool,
     pub graph_stats: Option<GraphStats>,
+    /// `McgsCorrection::RaveBlend` needs to read this during `Ucb1::
+    /// score_child` (blending a DAG-merged target's pooled estimate into
+    /// the edge's own selection score); every other correction/strategy
+    /// ignores this field entirely. `McgsCorrection::Residual`'s own
+    /// correction check stays outside `SelectContext` -- it fires from
+    /// `search/shared.rs::select_step` after selection has already chosen
+    /// `best_idx`, not during `score_child` itself.
+    pub mcgs_correction: McgsCorrection,
     /// MCTS-Solver's proven-loss selection threshold `T` -- see
     /// `SearchConfig::solver_loss_threshold`'s doc comment. `0` when the
     /// solver is off, same as everywhere else `Proven` never leaves

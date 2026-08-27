@@ -918,10 +918,13 @@ mod converge_game_tests {
     // than an artifact of which branch UCB1 happened to abandon first.
     const EXPLORATION_CONSTANT: f64 = 5.0;
 
+    /// `None` runs plain `ismcts_mode` with no DAG merging at all; `Some`
+    /// runs `ismcts_mode` + `GraphSearch::Dag(GraphStats::Both)` with
+    /// whichever `McgsCorrection` is given (`Residual` or `RaveBlend`).
     fn ismcts_error(
         iterations: usize,
         seed: u64,
-        dag: bool,
+        correction: Option<McgsCorrection>,
         target_mask: u8,
         target_true_value: f64,
         player: usize,
@@ -932,10 +935,10 @@ mod converge_game_tests {
             .seed(seed)
             .select(select::Ucb1::with_c(EXPLORATION_CONSTANT))
             .ismcts_mode(IsmctsMode::SingleTree);
-        if dag {
+        if let Some(mcgs_correction) = correction {
             config = config
                 .graph_search(GraphSearch::Dag(GraphStats::Both))
-                .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+                .mcgs_correction(mcgs_correction);
         }
         let mut search = TS::default().config(config);
         search.choose_action(&State::default());
@@ -973,14 +976,14 @@ mod converge_game_tests {
         // average rather than counted as infinite error.
         let seeds: Vec<u64> = (1..=5).collect();
 
-        let mean_error = |dag: bool, iterations: usize| -> f64 {
+        let mean_error = |correction: Option<McgsCorrection>, iterations: usize| -> f64 {
             let errors: Vec<f64> = seeds
                 .iter()
                 .filter_map(|&seed| {
                     ismcts_error(
                         iterations,
                         seed,
-                        dag,
+                        correction,
                         target_mask,
                         target_true_value,
                         target_player,
@@ -989,13 +992,28 @@ mod converge_game_tests {
                 .collect();
             assert!(
                 !errors.is_empty(),
-                "dag={dag} iterations={iterations}: no seed ever sampled the target info-set"
+                "correction={correction:?} iterations={iterations}: no seed ever sampled the \
+                 target info-set"
             );
             errors.iter().sum::<f64>() / errors.len() as f64
         };
 
-        let plain_errors: Vec<f64> = budgets.iter().map(|&it| mean_error(false, it)).collect();
-        let dag_errors: Vec<f64> = budgets.iter().map(|&it| mean_error(true, it)).collect();
+        let plain_errors: Vec<f64> = budgets.iter().map(|&it| mean_error(None, it)).collect();
+        let dag_errors: Vec<f64> = budgets
+            .iter()
+            .map(|&it| mean_error(Some(McgsCorrection::Residual { epsilon: 0.1 }), it))
+            .collect();
+        let rave_blend_errors: Vec<f64> = budgets
+            .iter()
+            .map(|&it| {
+                mean_error(
+                    Some(McgsCorrection::RaveBlend {
+                        schedule: select::RaveSchedule::default(),
+                    }),
+                    it,
+                )
+            })
+            .collect();
 
         // Baseline soundness check: plain `ismcts_mode` alone must converge
         // toward the true Bayes-optimal value as the budget grows -- this
@@ -1033,9 +1051,31 @@ mod converge_game_tests {
              update this assertion to match: {dag_errors:?}"
         );
 
+        // `ismcts_mode` + `GraphSearch::Dag(GraphStats::Both)` +
+        // `McgsCorrection::RaveBlend` -- the hypothesized fix -- does
+        // converge here, unlike `Residual` above: `rave_blend_errors` shrinks
+        // substantially as the budget grows 25x, at roughly the same rate as
+        // `plain_errors`, and lands *below* `plain_errors` at every budget
+        // tested. `rave_blend_correction` (`correction.rs`) never gates
+        // descent or backprop the way `residual_correction` does -- it only
+        // ever adjusts the score `Ucb1::score_child` uses to pick a child,
+        // decaying its influence as the edge's own visit count grows -- so
+        // the merged node's edge keeps accumulating real samples every
+        // iteration regardless of how the blend leans. This is a genuine
+        // soundness result for the hypothesis, not just an absence of the
+        // freeze: an unsound-but-unfrozen correction could still fail to
+        // converge (see the flat `dag_errors` above, from the same fixture,
+        // for what "doesn't converge" looks like here).
+        assert!(
+            rave_blend_errors[2] < rave_blend_errors[0] * 0.75,
+            "ismcts_mode + DAG + RaveBlend should converge substantially as budget grows, \
+             like plain ismcts_mode does: {rave_blend_errors:?}"
+        );
+
         eprintln!("target_true_value = {target_true_value}");
-        eprintln!("plain_errors (200/1000/5000) = {plain_errors:?}");
-        eprintln!("dag_errors   (200/1000/5000) = {dag_errors:?}");
+        eprintln!("plain_errors      (200/1000/5000) = {plain_errors:?}");
+        eprintln!("dag_errors        (200/1000/5000) = {dag_errors:?}");
+        eprintln!("rave_blend_errors (200/1000/5000) = {rave_blend_errors:?}");
     }
 }
 

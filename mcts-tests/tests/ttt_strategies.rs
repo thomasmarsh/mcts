@@ -1271,6 +1271,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
         global: &ts.stats,
         use_transpositions: false,
         graph_stats: None,
+        mcgs_correction: mcts::McgsCorrection::Disabled,
         solver_loss_threshold: 0,
         incoming_sym: Transform::IDENTITY,
     };
@@ -2207,6 +2208,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         global: &ts.stats,
         use_transpositions: false,
         graph_stats: None,
+        mcgs_correction: mcts::McgsCorrection::Disabled,
         solver_loss_threshold: 0,
         incoming_sym: Transform::IDENTITY,
     };
@@ -2316,6 +2318,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         global: &ts.stats,
         use_transpositions: false,
         graph_stats: None,
+        mcgs_correction: mcts::McgsCorrection::Disabled,
         solver_loss_threshold: 0,
         incoming_sym: Transform::IDENTITY,
     };

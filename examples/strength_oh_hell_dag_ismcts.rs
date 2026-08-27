@@ -15,31 +15,33 @@
 //   from the root, one shared tree, no node sharing across different
 //   histories that reach the same information set.
 // - "dag_ismcts" additionally sets `GraphSearch::Dag(GraphStats::Both)` and
-//   `McgsCorrection::Residual` -- the only `SearchConfig` pairing
-//   `validate()` accepts alongside `ismcts_mode`. Nodes are keyed by
-//   `Game::info_set_hash` (`OhHell::public_hash`) instead of the literal
-//   `zobrist_hash`, so different real histories/determinizations that reach
-//   the same information set now share one node's visit/score/availability
-//   statistics, pooled via `GraphStats::Both` and checked against the
-//   residual correction at each merged edge.
+//   `McgsCorrection::RaveBlend` -- the RAVE-blended alternative to
+//   `McgsCorrection::Residual` (see `config::McgsCorrection`'s doc comment).
+//   Nodes are keyed by `Game::info_set_hash` (`OhHell::public_hash`) instead
+//   of the literal `zobrist_hash`, so different real histories/
+//   determinizations that reach the same information set now share one
+//   node's visit/score/availability statistics, pooled via `GraphStats::
+//   Both` and blended into each merged edge's own selection score via a
+//   `select::RaveSchedule`-style decay.
 //
-// This is *not* a clean test of whether DAG merging helps ISMCTS in
-// isolation. `McgsCorrection::Residual` (`correction::residual_correction`)
-// is borrowed from a perfect-information Monte-Carlo graph search paper
-// (arXiv:2012.11045, chess/crazyhouse): when a merged node's pooled Q
-// diverges from the traversing edge's own local Q by more than `epsilon`,
-// it always corrects toward the pooled node estimate. That's sound when a
-// merge is exact (perfect information, so divergence is just undersampled
-// noise), but under hidden information a divergence can instead reflect a
-// real, persistent difference in correct play depending on which hidden
-// cards an opponent holds -- forcing every such edge to trust the
-// pooled/averaged value is strategy fusion's own definition, applied
-// automatically whenever the check fires. A "dag_ismcts" win here could
-// come from DAG merging's larger effective sample density outweighing that
-// cost at this budget, not from the correction mechanism working as
-// intended; a loss could come from the correction making fusion worse, not
-// from "DAG merging doesn't help ISMCTS" in general. Keep this in mind
-// before drawing conclusions from the numbers below.
+// An earlier version of this benchmark ran `McgsCorrection::Residual` here
+// instead and landed at noise-level parity with plain "ismcts" (36.7% vs.
+// 35.8%) -- but a dedicated soundness test (`dag_ismcts_error_shrinks_with_
+// budget_like_plain_ismcts_does`, `mcts/src/strategies/tests.rs`) later confirmed
+// `Residual` is genuinely biased under `ismcts_mode`, not just unmeasured:
+// it always corrects a diverging edge toward the merged node's pooled
+// estimate (sound for the perfect-information paper it's borrowed from,
+// arXiv:2012.11045, but strategy fusion's own definition under hidden
+// information) and, because the check gates descent itself, permanently
+// freezes the corrected edge out of further direct sampling once it starts
+// firing. `RaveBlend` was designed to fix both problems at once -- see
+// `config::McgsCorrection::RaveBlend`'s doc comment -- and the same
+// soundness test confirms it actually converges to the true value as the
+// iteration budget grows, unlike `Residual`. This run is the natural
+// follow-up the soundness test's own design called for: does removing the
+// confirmed bias also produce a measurable strength win over plain "ismcts",
+// the question the original Residual-based run's noise-parity result left
+// open.
 //
 // Total node budget is matched across all three (`ITERATIONS` each, all
 // single-threaded). Sequential execution (no rayon fan-out across games) so
@@ -49,7 +51,7 @@
 // Usage: cargo run --release --example strength_oh_hell_dag_ismcts
 use game_oh_hell::OhHell;
 use mcts::strategies::mcts::{
-    strategy, GraphSearch, GraphStats, IsmctsMode, McgsCorrection, SearchConfig, TreeSearch,
+    select, strategy, GraphSearch, GraphStats, IsmctsMode, McgsCorrection, SearchConfig, TreeSearch,
 };
 use mcts::strategies::Search;
 use mcts::util::{AnySearch, Verbosity};
@@ -86,7 +88,9 @@ fn dag_ismcts_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
             .max_iterations(ITERATIONS)
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
-            .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 })
+            .mcgs_correction(McgsCorrection::RaveBlend {
+                schedule: select::RaveSchedule::default(),
+            })
             .seed(3),
     )
 }
@@ -138,12 +142,11 @@ fn main() {
         "Interpretation: \"cheating\" isolates what hiding the hand costs at matched node \
          budget, same as `strength_oh_hell_redeterminize.rs` -- not a claim \"ismcts\"/\
          \"dag_ismcts\" should beat it. \"dag_ismcts\" vs \"ismcts\" asks whether explicit-DAG \
-         information-set merging helps single-tree ISMCTS, but the `McgsCorrection::Residual` \
-         gate this pairing requires is borrowed from a perfect-information MCGS paper and \
-         always corrects a diverging edge toward the merged node's pooled estimate -- sound \
-         when a merge is exact, but pushing toward strategy fusion when the divergence instead \
-         reflects a real difference in correct play under different hidden information. So a \
-         win or loss here doesn't cleanly isolate whether DAG merging itself helps ISMCTS \
-         versus whether this correction's polarity is helping or hurting."
+         information-set merging helps single-tree ISMCTS, now gated behind \
+         `McgsCorrection::RaveBlend` instead of the earlier `Residual` run -- a dedicated \
+         soundness test (mcts/src/strategies/tests.rs's dag_ismcts_error_shrinks_with_budget_\
+         like_plain_ismcts_does) already confirmed RaveBlend converges to the true info-set \
+         value as the budget grows, unlike Residual, so a win/loss here is a cleaner read on \
+         whether DAG merging itself helps ISMCTS than the earlier Residual-based run was."
     );
 }

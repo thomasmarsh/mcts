@@ -187,6 +187,11 @@ fn select_multi_tree<G: Game>(
                 global: &trees[mover].stats,
                 use_transpositions: false,
                 graph_stats: None,
+                // `MultiTree` (MO-ISMCTS) has no DAG-merging counterpart --
+                // `validate()` rejects it paired with `GraphSearch::Dag` --
+                // so no node reached here is ever a merge target and this
+                // is never actually read by `Ucb1::score_child`.
+                mcgs_correction: McgsCorrection::Disabled,
                 solver_loss_threshold: 0,
                 incoming_sym: Transform::IDENTITY,
             };

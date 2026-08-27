@@ -214,6 +214,7 @@ where
                 global: &self.stats,
                 use_transpositions: self.config.uses_transpositions(),
                 graph_stats: self.config.graph_stats(),
+                mcgs_correction: self.config.mcgs_correction,
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 incoming_sym: Transform::IDENTITY,
             },
@@ -539,6 +540,7 @@ where
                 global: &self.stats,
                 use_transpositions: self.config.uses_transpositions(),
                 graph_stats: self.config.graph_stats(),
+                mcgs_correction: self.config.mcgs_correction,
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 incoming_sym,
             };

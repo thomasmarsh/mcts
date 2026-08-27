@@ -107,12 +107,32 @@ impl GraphStats {
 /// backpropagated only through the saved path whenever the two estimates
 /// diverge by more than `epsilon`. See `correction::residual_correction` for
 /// the pure algebra this drives.
+///
+/// `RaveBlend { schedule }` is a different answer to the same divergence,
+/// for `ismcts_mode` specifically: instead of `Residual`'s all-or-nothing
+/// override (which stops that iteration's descent at the edge's parent --
+/// see `search/shared.rs::mcgs_correction_at_edge`'s doc comment -- freezing
+/// the corrected edge and its merged target out of any further direct
+/// sampling), it blends the merged target's pooled estimate into the edge's
+/// *selection score* using a `select::RaveSchedule`-style decay on the
+/// edge's own visit count, the same shape RAVE/GRAVE already use to blend a
+/// fast-converging pooled estimate with a slower-converging direct one
+/// (`select::Rave::score_child`). The blend never gates or reroutes
+/// backprop, so the edge keeps being traversed and keeps accumulating real
+/// samples regardless of how far it diverges from the pooled value -- see
+/// `correction::rave_blend_correction`. This is this codebase's own
+/// hypothesis (no cited source combines RAVE-style blending with DAG
+/// merging under hidden information), not a technique carried over from
+/// `Residual`'s or GRAVE's own literature.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum McgsCorrection {
     #[default]
     Disabled,
     Residual {
         epsilon: f64,
+    },
+    RaveBlend {
+        schedule: select::RaveSchedule,
     },
 }
 
@@ -760,21 +780,22 @@ where
                 );
             }
             if self.uses_transpositions() {
-                // The only supported combination: explicit `GraphSearch::Dag`
+                // The only supported combinations: explicit `GraphSearch::Dag`
                 // (never the legacy `use_transpositions` flag, which has no
                 // information-set-hash counterpart), pooling both edge and
                 // node statistics (`GraphStats::Both`, never `Edges`/`Nodes`
-                // alone), with the residual correction on. Merging by
+                // alone), with either of two corrections on. Merging by
                 // `Game::info_set_hash` pools statistics across genuinely
                 // different real histories that only happen to share an
                 // information set -- a sharper version of exactly the
                 // strategy-fusion risk that already makes plain SO-ISMCTS
                 // lose to PIMC in Cowling, Powley & Whitehouse's Phantom
-                // (4,4,4) strategy-fusion benchmark. `GraphStats::Both` +
-                // `McgsCorrection::Residual` is the one configuration this
-                // engine trusts to catch a merged node whose pooled value
-                // has drifted from what the traversing edge alone would
-                // say, rather than silently trusting every merge outright.
+                // (4,4,4) strategy-fusion benchmark. `McgsCorrection::
+                // Residual` and `McgsCorrection::RaveBlend` are the two
+                // configurations this engine trusts to keep a merged node's
+                // pooled value from silently overriding what the traversing
+                // edge alone would say, rather than trusting every merge
+                // outright.
                 //
                 // `MultiTree` (MO-ISMCTS) has no DAG-merging counterpart at
                 // all yet: `choose_action_multi_tree` builds its own
@@ -785,19 +806,23 @@ where
                 let ismcts_dag_ok = self.ismcts_mode == IsmctsMode::SingleTree
                     && !self.use_transpositions
                     && matches!(self.graph_search, GraphSearch::Dag(GraphStats::Both))
-                    && matches!(self.mcgs_correction, McgsCorrection::Residual { .. });
+                    && matches!(
+                        self.mcgs_correction,
+                        McgsCorrection::Residual { .. } | McgsCorrection::RaveBlend { .. }
+                    );
                 if !ismcts_dag_ok {
                     return Err(
                         "ismcts_mode's only supported pairing with transpositions/DAG \
                          search is IsmctsMode::SingleTree with graph_search: \
-                         GraphSearch::Dag(GraphStats::Both) and mcgs_correction: \
-                         McgsCorrection::Residual { .. } (never IsmctsMode::MultiTree, never \
-                         the legacy use_transpositions flag, and never GraphStats::Edges/Nodes \
-                         alone) -- merging by Game::info_set_hash instead of the literal \
-                         full-state hash is what makes a shared tree correct for ISMCTS in the \
-                         first place, and GraphStats::Both plus a residual check is the only \
-                         configuration this engine trusts to catch a merge whose pooled value \
-                         has drifted from what the traversing edge alone would say"
+                         GraphSearch::Dag(GraphStats::Both) and mcgs_correction: either \
+                         McgsCorrection::Residual { .. } or McgsCorrection::RaveBlend { .. } \
+                         (never IsmctsMode::MultiTree, never the legacy use_transpositions \
+                         flag, and never GraphStats::Edges/Nodes alone) -- merging by \
+                         Game::info_set_hash instead of the literal full-state hash is what \
+                         makes a shared tree correct for ISMCTS in the first place, and \
+                         GraphStats::Both plus one of these two corrections is what keeps a \
+                         merge's pooled value from silently overriding what the traversing \
+                         edge alone would say"
                             .to_string(),
                     );
                 }
@@ -1294,6 +1319,39 @@ mod search_config_validate_tests {
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_ismcts_mode_with_dag_both_and_rave_blend_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::RaveBlend {
+                schedule: select::RaveSchedule::default(),
+            });
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_dag_edges_even_with_rave_blend_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Edges))
+            .mcgs_correction(McgsCorrection::RaveBlend {
+                schedule: select::RaveSchedule::default(),
+            });
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_multi_tree_ismcts_mode_with_dag_both_and_rave_blend_correction() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .graph_search(GraphSearch::Dag(GraphStats::Both))
+            .mcgs_correction(McgsCorrection::RaveBlend {
+                schedule: select::RaveSchedule::default(),
+            });
+        assert!(config.validate().is_err());
     }
 
     #[test]
