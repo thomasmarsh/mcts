@@ -306,7 +306,7 @@ mod tests {
         game::{Game, PlayerIndex},
         strategies::{
             mcts::{node::NodeState, render, strategy, IsmctsMode, SearchConfig, TreeSearch},
-            Search,
+            parallel_test_guard, Search,
         },
         util::random_play,
     };
@@ -601,6 +601,88 @@ mod tests {
         assert!(
             saw_availability,
             "MO-ISMCTS never recorded availability for a chosen root action"
+        );
+    }
+
+    // Root parallelism (`SearchConfig::num_threads > 1`) composed with
+    // ISMCTS: each worker runs its own independent single-tree ISMCTS
+    // search and the final action is picked by summing visit counts across
+    // workers' roots, same as an ordinary root-parallel search -- see
+    // `TreeSearch::choose_action_root_parallel`. Same self-play shape as
+    // the single-threaded ISMCTS test above; the coordinator's own root
+    // (read back through `search.index`/`search.root_id` after the call)
+    // is what should show the merged availability counts.
+    #[test]
+    fn root_parallel_ismcts_self_play_retries_rejections_and_tracks_availability() {
+        let _guard = parallel_test_guard();
+        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .ismcts_mode(IsmctsMode::SingleTree)
+                .num_threads(4)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = Position::new();
+        let mut saw_availability = false;
+        for _ in 0..8 {
+            if Phantom::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == action) {
+                if children.availability(idx) > 0 {
+                    saw_availability = true;
+                }
+            }
+
+            state.apply(action);
+        }
+        assert!(
+            saw_availability,
+            "root-parallel ISMCTS never recorded availability for a chosen root action"
+        );
+    }
+
+    // Same as above, for MO-ISMCTS (`IsmctsMode::MultiTree`): each
+    // root-parallel worker runs its own independent set of per-player trees.
+    #[test]
+    fn root_parallel_multi_tree_ismcts_self_play_retries_rejections_and_tracks_availability() {
+        let _guard = parallel_test_guard();
+        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .ismcts_mode(IsmctsMode::MultiTree)
+                .num_threads(4)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = Position::new();
+        let mut saw_availability = false;
+        for _ in 0..8 {
+            if Phantom::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == action) {
+                if children.availability(idx) > 0 {
+                    saw_availability = true;
+                }
+            }
+
+            state.apply(action);
+        }
+        assert!(
+            saw_availability,
+            "root-parallel MO-ISMCTS never recorded availability for a chosen root action"
         );
     }
 

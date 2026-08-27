@@ -407,6 +407,15 @@ where
     /// tree-parallel across `num_tree_threads` threads -- a hybrid split
     /// (e.g. 4 trees x 2 threads each on 8 cores), the standard way to
     /// balance shared-tree lock contention against duplicated search effort.
+    ///
+    /// Also composes with `ismcts_mode`: each worker runs its own
+    /// independent `SingleTree`/`MultiTree` search (own tree(s), own
+    /// per-iteration determinizations) and the merge step sums visit counts
+    /// across workers exactly as it does for an ordinary search, recovering
+    /// the parallelism `ismcts_mode` alone gives up (`validate()` still
+    /// rejects `num_tree_threads > 1` with `ismcts_mode`, since that's
+    /// concurrent descent into *one* growable tree, a different and still-
+    /// unsupported case).
     pub num_threads: usize,
 
     /// PIMC (Perfect Information Monte Carlo): when `true`, each
@@ -422,6 +431,10 @@ where
     /// true state with an arbitrary sample of it. A no-op for any `G` whose
     /// `determinize` is the default identity function (every game that
     /// hasn't opted in by overriding it).
+    ///
+    /// `validate()` also rejects pairing this with `ismcts_mode` -- see the
+    /// latter's doc comment for why a root-parallel ISMCTS worker needs its
+    /// root anchored to the literal state instead.
     pub determinize_root: bool,
 
     /// Number of rollouts to run per selected leaf ("leaf parallelism"):
@@ -445,6 +458,9 @@ where
     /// the untouched single-threaded path.
     ///
     /// Composes with `num_threads` for a hybrid split -- see its doc comment.
+    /// `validate()` rejects this with `ismcts_mode` regardless of value --
+    /// unlike `num_threads`, this means concurrent descent into *one*
+    /// growable tree, not independent per-worker trees.
     pub num_tree_threads: usize,
 
     /// Tree reuse across moves ("re-rooting"): instead of discarding the
@@ -518,16 +534,24 @@ where
     /// first expansion already found), `Select == Ucb1` (`supports_ismcts`;
     /// every other strategy's `score_child` would silently compute a biased
     /// exploration term against a node whose children aren't all
-    /// legal on every iteration, rather than error), `num_threads <= 1` and
-    /// `num_tree_threads <= 1` (a growable `ChildArray` trades lock-freedom
-    /// for a single coarser lock per newly-discovered action, only proven
-    /// correct here for the single-descent-at-a-time case), no DAG/
-    /// transpositions (this repo's transposition/DAG machinery keys node
-    /// identity by full-state hash, which is exactly wrong for ISMCTS -- a
-    /// shared tree must be keyed by *information set*, not full state, or
-    /// two determinizations of "the same" information set would wrongly
-    /// share a node), `use_mcts_solver == false` (a position "proven" under
-    /// one determinization isn't proven under another), no prior (seeds a
+    /// legal on every iteration, rather than error), `num_tree_threads <= 1`
+    /// (a growable `ChildArray` trades lock-freedom for a single coarser
+    /// lock per newly-discovered action, only proven correct here for the
+    /// single-descent-at-a-time case -- `num_threads` has no such ceiling:
+    /// each root-parallel worker grows its own independent tree, so
+    /// `choose_action_root_parallel` runs `ismcts_mode` unmodified in every
+    /// worker and merges the resulting trees' root visit counts exactly as
+    /// it would for any other mode), no `determinize_root` (both features
+    /// anchor a root-parallel worker's root against the literal `G::S` it's
+    /// called with; combining them would replace that literal state with a
+    /// single `determinize_root` sample and lock the worker's root actions
+    /// to that one guess for its whole search), no DAG/transpositions (this
+    /// repo's transposition/DAG machinery keys node identity by full-state
+    /// hash, which is exactly wrong for ISMCTS -- a shared tree must be
+    /// keyed by *information set*, not full state, or two determinizations
+    /// of "the same" information set would wrongly share a node),
+    /// `use_mcts_solver == false` (a position "proven" under one
+    /// determinization isn't proven under another), no prior (seeds a
     /// not-yet-created child before any iteration has established it's even
     /// legal), and `reuse_tree == false` (re-rooting/compaction rewrite
     /// `ChildArray`'s fixed-size fields in place, which `grow`'s `extra`
@@ -690,12 +714,26 @@ where
                         .to_string(),
                 );
             }
-            if self.num_threads > 1 || self.num_tree_threads > 1 {
+            if self.num_tree_threads > 1 {
                 return Err(
-                    "ismcts_mode requires num_threads <= 1 and num_tree_threads <= 1 -- a \
-                     growable ChildArray trades per-slot lock-freedom for one coarser lock \
-                     per newly-discovered action, only proven correct here for a single \
-                     descent at a time"
+                    "ismcts_mode requires num_tree_threads <= 1 -- a growable ChildArray \
+                     trades per-slot lock-freedom for one coarser lock per newly-discovered \
+                     action, only proven correct here for a single descent at a time; \
+                     root parallelism (num_threads > 1) doesn't share this problem, since \
+                     each worker grows its own independent tree"
+                        .to_string(),
+                );
+            }
+            if self.determinize_root {
+                return Err(
+                    "ismcts_mode is incompatible with determinize_root -- both anchor a \
+                     root-parallel worker's root node against whatever G::S it's handed \
+                     before any iteration runs (never a per-iteration determinized guess), \
+                     so pairing them would replace that literal state with one \
+                     determinize_root sample and lock every worker's root actions to that \
+                     single guess for its entire search, rather than letting ismcts_mode's \
+                     own per-iteration determinization explore the actions a differently- \
+                     guessed hidden state would legally offer"
                         .to_string(),
                 );
             }
@@ -1128,18 +1166,61 @@ mod search_config_validate_tests {
     }
 
     #[test]
-    fn validate_rejects_multi_tree_ismcts_mode_with_root_parallelism() {
+    fn validate_accepts_multi_tree_ismcts_mode_with_root_parallelism() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .num_threads(2);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_ismcts_mode_with_root_parallelism() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .num_threads(2);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_tree_parallelism() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .num_tree_threads(2);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_rejects_ismcts_mode_with_root_parallelism() {
+    fn validate_rejects_multi_tree_ismcts_mode_with_tree_parallelism() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .num_tree_threads(2);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_hybrid_root_and_tree_parallelism() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
-            .num_threads(2);
+            .num_threads(2)
+            .num_tree_threads(2);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_determinize_root() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .num_threads(2)
+            .determinize_root(true);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_multi_tree_ismcts_mode_with_determinize_root() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
+            .num_threads(2)
+            .determinize_root(true);
         assert!(config.validate().is_err());
     }
 
