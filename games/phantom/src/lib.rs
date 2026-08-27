@@ -305,7 +305,7 @@ mod tests {
     use mcts::{
         game::{Game, PlayerIndex},
         strategies::{
-            mcts::{render, strategy, SearchConfig, TreeSearch},
+            mcts::{node::NodeState, render, strategy, IsmctsMode, SearchConfig, TreeSearch},
             Search,
         },
         util::random_play,
@@ -497,7 +497,7 @@ mod tests {
     fn ismcts_self_play_retries_rejections_and_tracks_availability() {
         let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
                 .seed(11),
         );
@@ -531,7 +531,7 @@ mod tests {
     fn ismcts_redeterminize_self_play_retries_rejections_and_tracks_availability() {
         let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
                 .max_iterations(40)
                 .seed(17),
@@ -560,5 +560,87 @@ mod tests {
             saw_availability,
             "re-determinizing ISMCTS never recorded availability for a chosen root action"
         );
+    }
+
+    // MO-ISMCTS (`IsmctsMode::MultiTree`): one tree per player descended
+    // together every iteration (see `SearchConfig::ismcts_mode`'s doc
+    // comment) -- checks the same plumbing the `SingleTree` tests above do
+    // (growable root, real availability accumulating, self-play runs to
+    // completion without panicking), against Phantom specifically since
+    // it's this workspace's correctness gate for the algorithm (its own
+    // published Phantom (4, 4, 4) ranking is what MO-ISMCTS is meant to
+    // reproduce).
+    #[test]
+    fn multi_tree_ismcts_self_play_retries_rejections_and_tracks_availability() {
+        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .ismcts_mode(IsmctsMode::MultiTree)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = Position::new();
+        let mut saw_availability = false;
+        for _ in 0..8 {
+            if Phantom::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == action) {
+                if children.availability(idx) > 0 {
+                    saw_availability = true;
+                }
+            }
+
+            state.apply(action);
+        }
+        assert!(
+            saw_availability,
+            "MO-ISMCTS never recorded availability for a chosen root action"
+        );
+    }
+
+    // Regression test for a real crash found while running strength
+    // comparisons: `Node::expand`'s `OnceLock` only ever resolves once, so
+    // if the very first call to touch the root happened to run against a
+    // `Phantom::determinize`d guess rather than the literal board, an
+    // unlucky guess (the opponent's guessed marks already forming a win,
+    // even though the real board doesn't) could permanently mark an
+    // ongoing, non-terminal root position `Terminal` -- `select_final_action`
+    // has no fallback for a `Terminal` root and panics trying to read its
+    // (nonexistent) children. Fixed by eagerly expanding the root against
+    // the literal state before any iteration runs (the root's own position
+    // is never hidden from any player, unlike every other node). Setting
+    // `max_iterations(0)` isolates exactly that eager expansion -- no
+    // iteration ever runs, so this can only pass if the root was expanded
+    // up front from the real board.
+    #[test]
+    fn ismcts_root_expands_from_the_literal_state_before_any_iteration() {
+        for mode in [IsmctsMode::SingleTree, IsmctsMode::MultiTree] {
+            let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+                SearchConfig::new()
+                    .ismcts_mode(mode)
+                    .max_iterations(0)
+                    .seed(1),
+            );
+            let state = Position::new();
+            let _ = search.choose_action(&state);
+
+            let root = search.index.get(search.root_id);
+            let Some(NodeState::Expanded(children)) = root.status() else {
+                panic!(
+                    "root should be Expanded from the literal state with zero iterations run, \
+                     found {:?} instead",
+                    root.status()
+                );
+            };
+            let mut legal = Vec::new();
+            Phantom::generate_actions(&state, &mut legal);
+            assert_eq!(children.len(), legal.len());
+        }
     }
 }

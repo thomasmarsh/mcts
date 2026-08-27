@@ -431,14 +431,17 @@ pub struct ChildArray<A: Action> {
     // Set once at construction from `Requirements.amaf`; gates whether
     // `data.amaf` is populated and whether the accessors below read it.
     has_amaf: bool,
-    // Set once at construction from `SearchConfig::use_ismcts`. `false` for
-    // every ordinary search: `extra` then stays permanently empty and every
-    // accessor below resolves entirely within the fixed-size fields above,
-    // unchanged from before this type supported growth at all. Only an
-    // ISMCTS search (one shared tree walked under a fresh `Game::determinize`
-    // sample every iteration, see `search/shared.rs::select_step`) ever calls
-    // `grow`, since only there can a later iteration's legal-move set contain
-    // an action no earlier iteration reaching this node ever saw.
+    // Set once at construction from `SearchConfig::ismcts_mode != IsmctsMode::
+    // Off`. `false` for every ordinary search: `extra` then stays
+    // permanently empty and every accessor below resolves entirely within
+    // the fixed-size fields above, unchanged from before this type
+    // supported growth at all. Only an ISMCTS search -- one shared tree
+    // (`IsmctsMode::SingleTree`, `search/shared.rs::select_step`) or one
+    // tree per player (`IsmctsMode::MultiTree`, `search/multi_tree.rs`),
+    // either way walked under a fresh `Game::determinize` sample every
+    // iteration -- ever calls `grow`, since only there can a later
+    // iteration's legal-move set contain an action no earlier iteration
+    // reaching this node ever saw.
     growable: bool,
     // Children discovered by `grow` after construction, appended here
     // instead of into `actions`/`child_ids`/`num_visits_virtual`/`data` so
@@ -1003,7 +1006,7 @@ impl<A: Action> ChildArray<A> {
         debug_assert!(
             self.extra.get_mut().unwrap().is_empty(),
             "compaction is incompatible with ISMCTS's growable arrays -- SearchConfig::validate \
-             already rejects use_ismcts paired with reuse_tree, so this should be unreachable"
+             already rejects ismcts_mode paired with reuse_tree, so this should be unreachable"
         );
         let mut new_id_index = FxHashMap::default();
         for (idx, slot) in self.child_ids.iter_mut().enumerate() {
@@ -1028,7 +1031,7 @@ impl<A: Action> ChildArray<A> {
         debug_assert!(
             idx < self.base_len(),
             "tree reuse is incompatible with ISMCTS's growable arrays -- SearchConfig::validate \
-             already rejects use_ismcts paired with reuse_tree, so this should be unreachable"
+             already rejects ismcts_mode paired with reuse_tree, so this should be unreachable"
         );
         let data = self.data.read().unwrap();
         let base = idx * self.num_players;

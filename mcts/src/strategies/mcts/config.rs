@@ -480,17 +480,36 @@ where
     /// `Strategy<G>`/`TreeSearch<G, S>`.
     pub prior: Option<Box<dyn prior::PriorStrategyDyn<G>>>,
 
-    /// ISMCTS (Cowling, Powley & Whitehouse, IEEE ToCIAIG 2012): one shared
-    /// tree grown across a fresh `G::determinize`d sample of the root state
-    /// every iteration, instead of `determinize_root`'s independent
-    /// per-worker trees averaged by a vote. Each iteration's descent widens
+    /// ISMCTS (Cowling, Powley & Whitehouse, IEEE ToCIAIG 2012): every
+    /// iteration descends a fresh `G::determinize`d sample of the root
+    /// state, instead of `determinize_root`'s independent per-worker trees
+    /// averaged by a vote. `Off` (the default) keeps every existing
+    /// search's fixed-action-set tree untouched.
+    ///
+    /// `SingleTree` grows one shared tree: each iteration's descent widens
     /// every node it visits to include that sample's own legal moves
     /// (`ChildArray::grow`) and restricts selection to only those
     /// (`select::ismcts_best_child`), scored by `Ucb1` with each child's own
     /// availability count in place of the node's shared visit count
-    /// (`ChildArray::availability`) -- see `Ucb1::score_child`'s doc comment.
-    /// `false` (the default) keeps every existing search's fixed-action-set
-    /// tree untouched.
+    /// (`ChildArray::availability`) -- see `Ucb1::score_child`'s doc
+    /// comment. A decision node reached at a different player's turn is
+    /// still just one shared set of statistics under this mode, so
+    /// selecting that player's simulated response draws on exactly the
+    /// values this search's own decisions do (Cowling et al.'s "strategy
+    /// fusion").
+    ///
+    /// `MultiTree` (`search/multi_tree.rs`) grows one full tree per player
+    /// instead (MO-ISMCTS): every iteration descends all of them together
+    /// along the same real sequence of actions, widening each tree's
+    /// corresponding node identically, but a node is only ever *selected*
+    /// (via its own availability-scored `Ucb1`) using the tree belonging to
+    /// whichever player is about to move there -- every other player's
+    /// corresponding node is still grown for that same action, just never
+    /// consulted for the choice. Backpropagation updates every player's own
+    /// tree along its own path from the one shared trial outcome, so each
+    /// player's decisions are scored against their own statistics rather
+    /// than a set shared with everyone else, at the cost of `num_players`
+    /// times `SingleTree`'s memory.
     ///
     /// `validate()` requires `G::has_hidden_information()` (this exists to
     /// search hidden information -- a perfect-information game has nothing
@@ -513,11 +532,12 @@ where
     /// legal), and `reuse_tree == false` (re-rooting/compaction rewrite
     /// `ChildArray`'s fixed-size fields in place, which `grow`'s `extra`
     /// side list was never designed to survive -- see `ChildArray::
-    /// remap_child_ids`/`extract_stats`'s debug assertions).
-    pub use_ismcts: bool,
+    /// remap_child_ids`/`extract_stats`'s debug assertions). Both variants
+    /// are held to the same requirements.
+    pub ismcts_mode: IsmctsMode,
 
     /// RIS-MCTS-style re-determinization (Goodman, *Re-determinizing MCTS in
-    /// Hanabi*, IEEE CIG 2019): with `use_ismcts` alone, one iteration's
+    /// Hanabi*, IEEE CIG 2019): with `ismcts_mode` alone, one iteration's
     /// `G::determinize`d sample is drawn once at the root and then only ever
     /// advanced by `G::apply` for the rest of that iteration's descent, so a
     /// node several plies down still sees the exact hidden information the
@@ -525,11 +545,25 @@ where
     /// during descent -- not just the root -- gets its own fresh
     /// `G::determinize` call before its legal actions are read, redrawing
     /// everything hidden from that node's own mover's point of view. `false`
-    /// (the default) keeps the root-only redraw described above.
+    /// (the default) keeps the root-only redraw described above. Unaffected
+    /// by which `IsmctsMode` variant is active: `MultiTree`'s per-iteration
+    /// state is still just one real determinized sample walked by every
+    /// tree together, redrawn the same way regardless of how many trees are
+    /// recording it.
     ///
-    /// `validate()` requires `use_ismcts` also be `true` -- there's no
+    /// `validate()` requires `ismcts_mode != IsmctsMode::Off` -- there's no
     /// per-iteration determinized descent to redraw otherwise.
     pub ismcts_redeterminize: bool,
+}
+
+/// `SearchConfig::ismcts_mode` -- see its doc comment for what each variant
+/// does and what `validate()` requires of both non-`Off` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsmctsMode {
+    #[default]
+    Off,
+    SingleTree,
+    MultiTree,
 }
 
 impl<G, S> Default for SearchConfig<G, S>
@@ -565,7 +599,7 @@ where
             reuse_tree: false,
             max_arena_len: None,
             prior: None,
-            use_ismcts: false,
+            ismcts_mode: IsmctsMode::Off,
             ismcts_redeterminize: false,
         }
     }
@@ -637,10 +671,10 @@ where
                     .to_string(),
             );
         }
-        if self.use_ismcts {
+        if self.ismcts_mode != IsmctsMode::Off {
             if !G::has_hidden_information() {
                 return Err(
-                    "use_ismcts requires G::has_hidden_information() -- a perfect-information \
+                    "ismcts_mode requires G::has_hidden_information() -- a perfect-information \
                      game has nothing for a later iteration's determinization to legally \
                      reveal that the first expansion didn't already find"
                         .to_string(),
@@ -648,7 +682,7 @@ where
             }
             if !<S::Select as select::SelectStrategy<G>>::supports_ismcts() {
                 return Err(
-                    "use_ismcts requires a select strategy that accounts for ChildArray's \
+                    "ismcts_mode requires a select strategy that accounts for ChildArray's \
                      per-child availability count (see SelectStrategy::supports_ismcts) -- \
                      Ucb1 is the only one so far; every other strategy's score_child would \
                      silently compute a biased exploration term against a node whose \
@@ -658,7 +692,7 @@ where
             }
             if self.num_threads > 1 || self.num_tree_threads > 1 {
                 return Err(
-                    "use_ismcts requires num_threads <= 1 and num_tree_threads <= 1 -- a \
+                    "ismcts_mode requires num_threads <= 1 and num_tree_threads <= 1 -- a \
                      growable ChildArray trades per-slot lock-freedom for one coarser lock \
                      per newly-discovered action, only proven correct here for a single \
                      descent at a time"
@@ -667,7 +701,7 @@ where
             }
             if self.uses_transpositions() {
                 return Err(
-                    "use_ismcts is incompatible with transpositions/DAG search -- that \
+                    "ismcts_mode is incompatible with transpositions/DAG search -- that \
                      machinery keys node identity by full-state hash, which is exactly \
                      wrong for ISMCTS: a shared tree must be keyed by information set, not \
                      full state, or two determinizations of \"the same\" information set \
@@ -677,14 +711,14 @@ where
             }
             if self.use_mcts_solver {
                 return Err(
-                    "use_ismcts is incompatible with use_mcts_solver -- a position proven \
+                    "ismcts_mode is incompatible with use_mcts_solver -- a position proven \
                      under one determinization isn't proven under another"
                         .to_string(),
                 );
             }
             if self.prior.is_some() {
                 return Err(
-                    "use_ismcts is incompatible with a prior strategy -- it seeds a \
+                    "ismcts_mode is incompatible with a prior strategy -- it seeds a \
                      not-yet-created child before any iteration has established that the \
                      action is even legal"
                         .to_string(),
@@ -692,7 +726,7 @@ where
             }
             if self.reuse_tree {
                 return Err(
-                    "use_ismcts is incompatible with reuse_tree -- re-rooting/compaction \
+                    "ismcts_mode is incompatible with reuse_tree -- re-rooting/compaction \
                      rewrite ChildArray's fixed-size fields in place, which growth's side \
                      list of appended actions was never designed to survive"
                         .to_string(),
@@ -700,8 +734,8 @@ where
             }
         } else if self.ismcts_redeterminize {
             return Err(
-                "ismcts_redeterminize requires use_ismcts -- there's no per-iteration \
-                 determinized descent for it to redraw"
+                "ismcts_redeterminize requires ismcts_mode != IsmctsMode::Off -- there's no \
+                 per-iteration determinized descent for it to redraw"
                     .to_string(),
             );
         }
@@ -887,8 +921,8 @@ where
         self
     }
 
-    pub fn use_ismcts(mut self, use_ismcts: bool) -> Self {
-        self.use_ismcts = use_ismcts;
+    pub fn ismcts_mode(mut self, ismcts_mode: IsmctsMode) -> Self {
+        self.ismcts_mode = ismcts_mode;
         self
     }
 
@@ -1073,52 +1107,69 @@ mod search_config_validate_tests {
     }
 
     #[test]
-    fn validate_rejects_use_ismcts_without_hidden_information() {
-        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().use_ismcts(true);
+    fn validate_rejects_ismcts_mode_without_hidden_information() {
+        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_accepts_use_ismcts_with_ucb1_and_hidden_information() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default().use_ismcts(true);
+    fn validate_accepts_ismcts_mode_with_ucb1_and_hidden_information() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree);
         assert!(config.validate().is_ok());
     }
 
     #[test]
-    fn validate_rejects_use_ismcts_with_root_parallelism() {
+    fn validate_accepts_multi_tree_ismcts_mode_with_ucb1_and_hidden_information() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
-            .use_ismcts(true)
+            .ismcts_mode(IsmctsMode::MultiTree);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_multi_tree_ismcts_mode_with_root_parallelism() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::MultiTree)
             .num_threads(2);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_rejects_use_ismcts_with_transpositions() {
+    fn validate_rejects_ismcts_mode_with_root_parallelism() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
-            .use_ismcts(true)
+            .ismcts_mode(IsmctsMode::SingleTree)
+            .num_threads(2);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ismcts_mode_with_transpositions() {
+        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+            .ismcts_mode(IsmctsMode::SingleTree)
             .use_transpositions(true);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_rejects_use_ismcts_with_reuse_tree() {
+    fn validate_rejects_ismcts_mode_with_reuse_tree() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
-            .use_ismcts(true)
+            .ismcts_mode(IsmctsMode::SingleTree)
             .reuse_tree(true);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_rejects_ismcts_redeterminize_without_use_ismcts() {
+    fn validate_rejects_ismcts_redeterminize_without_ismcts_mode() {
         let config =
             SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default().ismcts_redeterminize(true);
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn validate_accepts_ismcts_redeterminize_with_use_ismcts() {
+    fn validate_accepts_ismcts_redeterminize_with_ismcts_mode() {
         let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
-            .use_ismcts(true)
+            .ismcts_mode(IsmctsMode::SingleTree)
             .ismcts_redeterminize(true);
         assert!(config.validate().is_ok());
     }

@@ -910,7 +910,7 @@ impl<const P: usize> Game for Ingenious<P> {
 mod tests {
     use super::*;
     use mcts::strategies::{
-        mcts::{strategy, SearchConfig, TreeSearch},
+        mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };
     use mcts::util::random_play;
@@ -1198,7 +1198,7 @@ mod tests {
         }
     }
 
-    // ISMCTS (`SearchConfig::use_ismcts`) self-play against 2-player
+    // ISMCTS (`SearchConfig::ismcts_mode`) self-play against 2-player
     // Ingenious's real hidden racks: every iteration searches its own
     // `Ingenious::determinize`d guess at the opponent's rack, widening and
     // scoring the root's `ChildArray` against that per-iteration sample
@@ -1212,7 +1212,7 @@ mod tests {
     fn ismcts_self_play_stays_legal_and_tracks_availability() {
         let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
                 .seed(11),
         );
@@ -1253,7 +1253,7 @@ mod tests {
     fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
         let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
                 .max_iterations(40)
                 .seed(17),
@@ -1271,6 +1271,46 @@ mod tests {
             assert!(
                 legal.contains(&action),
                 "re-determinizing ISMCTS chose an action illegal against the real state"
+            );
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            assert!(children.len() >= legal.len());
+            let root_idx = (0..children.len())
+                .find(|&i| children.action(i) == action)
+                .unwrap();
+            assert!(children.availability(root_idx) > 0);
+
+            state = Ingenious2::apply(state, &action);
+        }
+    }
+
+    // MO-ISMCTS (`IsmctsMode::MultiTree`): one tree per player descended
+    // together every iteration (see `SearchConfig::ismcts_mode`'s doc
+    // comment) -- same plumbing check as the `SingleTree` tests above, on
+    // Ingenious's own rack mechanic.
+    #[test]
+    fn multi_tree_ismcts_self_play_stays_legal_and_tracks_availability() {
+        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .ismcts_mode(IsmctsMode::MultiTree)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = State::<2>::new(13);
+        for _ in 0..4 {
+            if Ingenious2::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let mut legal = Vec::new();
+            Ingenious2::generate_actions(&state, &mut legal);
+            assert!(
+                legal.contains(&action),
+                "MO-ISMCTS chose an action illegal against the real state"
             );
 
             let root = search.index.get(search.root_id);

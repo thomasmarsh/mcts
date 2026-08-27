@@ -584,7 +584,7 @@ impl<const P: usize, const K: usize> Game for OhHell<P, K> {
 mod tests {
     use super::*;
     use mcts::strategies::{
-        mcts::{render, strategy, SearchConfig, TreeSearch},
+        mcts::{render, strategy, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };
     use mcts::util::random_play;
@@ -838,7 +838,7 @@ mod tests {
     fn ismcts_self_play_stays_legal_and_tracks_availability() {
         let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
                 .seed(11),
         );
@@ -873,7 +873,7 @@ mod tests {
     fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
         let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
             SearchConfig::new()
-                .use_ismcts(true)
+                .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
                 .max_iterations(40)
                 .seed(17),
@@ -891,6 +891,46 @@ mod tests {
             assert!(
                 legal.contains(&action),
                 "re-determinizing ISMCTS chose an action illegal against the real state"
+            );
+
+            let root = search.index.get(search.root_id);
+            let children = root.children();
+            assert!(children.is_growable());
+            let root_idx = (0..children.len())
+                .find(|&i| children.action(i) == action)
+                .unwrap();
+            assert!(children.availability(root_idx) > 0);
+
+            state = OhHell3x3::apply(state, &action);
+        }
+    }
+
+    // MO-ISMCTS (`IsmctsMode::MultiTree`): one tree per player descended
+    // together every iteration (see `SearchConfig::ismcts_mode`'s doc
+    // comment) -- checks the same plumbing the `SingleTree` test above does
+    // against a many-decision-point-per-hidden-holder hand of cards, the
+    // domain E1/E2 are meant to matter most for.
+    #[test]
+    fn multi_tree_ismcts_self_play_stays_legal_and_tracks_availability() {
+        let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
+            SearchConfig::new()
+                .ismcts_mode(IsmctsMode::MultiTree)
+                .max_iterations(40)
+                .seed(11),
+        );
+
+        let mut state = State::<3, 3>::new(13);
+        for _ in 0..6 {
+            if OhHell3x3::is_terminal(&state) {
+                break;
+            }
+            let action = search.choose_action(&state);
+
+            let mut legal = Vec::new();
+            OhHell3x3::generate_actions(&state, &mut legal);
+            assert!(
+                legal.contains(&action),
+                "MO-ISMCTS chose an action illegal against the real state"
             );
 
             let root = search.index.get(search.root_id);

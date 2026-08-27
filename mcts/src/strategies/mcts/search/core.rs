@@ -2,7 +2,7 @@ use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::Real;
 use crate::game::Transform;
-use crate::strategies::mcts::config::{GraphSearch, GraphStats, TranspositionKeying};
+use crate::strategies::mcts::config::{GraphSearch, GraphStats, IsmctsMode, TranspositionKeying};
 use crate::strategies::mcts::index::Id;
 use crate::strategies::mcts::node::{real_action, Node, NodeState, NodeStats};
 use crate::strategies::mcts::search::shared::Shared;
@@ -132,7 +132,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
-                use_ismcts: self.config.use_ismcts,
+                use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
                 ismcts_redeterminize: self.config.ismcts_redeterminize,
             },
             ctx,
@@ -157,7 +157,7 @@ where
                 self.config.use_mcts_solver,
                 self.config.requirements().amaf,
                 self.config.uses_transpositions(),
-                self.config.use_ismcts,
+                self.config.ismcts_mode != IsmctsMode::Off,
                 self.config.prior.as_deref_mut(),
             );
         }
@@ -308,7 +308,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
-                use_ismcts: self.config.use_ismcts,
+                use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
                 ismcts_redeterminize: self.config.ismcts_redeterminize,
             },
             &self.stack,
@@ -341,7 +341,7 @@ where
                 solver_loss_threshold: self.config.solver_loss_threshold,
                 has_amaf: self.config.requirements().amaf,
                 mcgs_correction: self.config.mcgs_correction,
-                use_ismcts: self.config.use_ismcts,
+                use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
                 ismcts_redeterminize: self.config.ismcts_redeterminize,
             },
             &self.stack,

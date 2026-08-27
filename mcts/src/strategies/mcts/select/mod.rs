@@ -137,12 +137,13 @@ pub trait SelectStrategy<G: Game>: Sized + Clone + Sync + Send + Default {
     /// is_growable`'s per-child availability count (Cowling, Powley &
     /// Whitehouse 2012) instead of assuming every child shares the node's
     /// own total visit count -- i.e. whether it gives a correct answer under
-    /// ISMCTS (`SearchConfig::use_ismcts`), as opposed to a plain, silently
-    /// biased UCB computed against a node whose children aren't all legal on
-    /// every iteration. `false` by default, matching every strategy that
-    /// predates ISMCTS; `Ucb1` is the only override so far. `SearchConfig::
-    /// validate` rejects `use_ismcts` paired with any strategy that answers
-    /// `false` here, rather than silently producing a biased search.
+    /// ISMCTS (`SearchConfig::ismcts_mode`, either variant), as opposed to a
+    /// plain, silently biased UCB computed against a node whose children
+    /// aren't all legal on every iteration. `false` by default, matching
+    /// every strategy that predates ISMCTS; `Ucb1` is the only override so
+    /// far. `SearchConfig::validate` rejects `ismcts_mode` paired with any
+    /// strategy that answers `false` here, rather than silently producing a
+    /// biased search.
     fn supports_ismcts() -> bool {
         false
     }
@@ -310,11 +311,14 @@ where
 /// `score_child`/`unvisited_value`, but restricted to `legal_idxs` -- this
 /// iteration's own `G::determinize`d sample only makes those children
 /// reachable, and Cowling et al.'s "restrict to compatible children" step
-/// means selection must never even consider one that isn't (`search/
-/// shared.rs::select_step` is `ismcts_legal`'s only caller). MCTS-Solver's
-/// proven-loss skip has no counterpart here: `SearchConfig::validate`
-/// requires `use_mcts_solver` off wherever `use_ismcts` is on, so no child
-/// reachable through `legal_idxs` is ever proven.
+/// means selection must never even consider one that isn't. Called from
+/// `search/shared.rs::select_step` (`IsmctsMode::SingleTree`'s one shared
+/// tree) and `search/multi_tree.rs::select_multi_tree` (`IsmctsMode::
+/// MultiTree`'s one tree per player, called only for whichever tree belongs
+/// to the player about to move). MCTS-Solver's proven-loss skip has no
+/// counterpart here: `SearchConfig::validate` requires `use_mcts_solver` off
+/// wherever `ismcts_mode` isn't `Off`, so no child reachable through
+/// `legal_idxs` is ever proven.
 pub(crate) fn ismcts_best_child<S, G>(
     ctx: &SelectContext<'_, G>,
     children: &ChildArray<G::A>,

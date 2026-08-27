@@ -214,14 +214,18 @@ pub struct Shared<'a, G: Game> {
     /// See `McgsCorrection`'s doc comment -- only ever consulted in
     /// `select_step` when `graph_stats` is `Some(GraphStats::Both)`.
     pub mcgs_correction: McgsCorrection,
-    /// `SearchConfig::use_ismcts` -- see its doc comment. Gates three things
-    /// in `select_step`, all together: every freshly-created `ChildArray`
-    /// (via `expand`) is `growable`; every node visit widens its action set
-    /// to the current iteration's own `G::determinize`d sample instead of
-    /// trusting whichever sample first expanded it; and selection is
-    /// restricted to that iteration's legal children, scored with
-    /// availability counts instead of a shared parent-visit count.
-    /// `SearchConfig::validate` requires this to be paired only with
+    /// `SearchConfig::ismcts_mode == IsmctsMode::SingleTree` -- see that
+    /// enum's doc comment (`IsmctsMode::MultiTree`, one tree per player, is
+    /// a separate code path entirely -- `search/multi_tree.rs`, which builds
+    /// its own per-tree equivalent of the pieces below rather than using
+    /// `Shared`/`select_step`). Gates three things in `select_step`, all
+    /// together: every freshly-created `ChildArray` (via `expand`) is
+    /// `growable`; every node visit widens its action set to the current
+    /// iteration's own `G::determinize`d sample instead of trusting
+    /// whichever sample first expanded it; and selection is restricted to
+    /// that iteration's legal children, scored with availability counts
+    /// instead of a shared parent-visit count. `SearchConfig::validate`
+    /// requires either `IsmctsMode` variant to be paired only with
     /// `strategy::Ucb1` and a single-threaded, DAG-free, solver-free,
     /// reuse-free tree -- see its doc comment for why each of those is
     /// required.

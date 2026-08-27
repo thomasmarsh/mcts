@@ -1,6 +1,7 @@
 use crate::game::Game;
 use crate::game::PlayerIndex;
-use crate::strategies::mcts::config::{GraphSearch, GraphStats};
+use crate::game::TerminalStatus;
+use crate::strategies::mcts::config::{GraphSearch, GraphStats, IsmctsMode};
 use crate::strategies::mcts::node::Proven;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::shared::{
@@ -99,6 +100,38 @@ where
     totals
 }
 
+/// How many independent redraws `determinize_non_terminal` allows itself
+/// before giving up and falling back to the literal state -- generous enough
+/// that a game whose hidden information only rarely resolves an already-
+/// decided position never realistically exhausts it, while still bounding
+/// the loop for a pathological `Game::determinize` that always does.
+const MAX_DETERMINIZE_ATTEMPTS: usize = 100;
+
+/// `G::determinize(state, rng)`, redrawn until the result isn't already
+/// terminal (or `MAX_DETERMINIZE_ATTEMPTS` is exhausted, in which case the
+/// literal `state` itself is used instead -- always non-terminal, since
+/// every caller of `choose_action` already guarantees that of its own
+/// literal state). PIMC's whole ensemble-of-independent-searches design
+/// depends on each worker treating its own sampled state as if it *were*
+/// the real position for the rest of that worker's ordinary, self-contained
+/// `TreeSearch::choose_action` call -- a worker has no way to tell "this
+/// looks like a won position" apart from "this genuinely is one", and
+/// `choose_action` has no defined answer for "what move should I make from
+/// a position that's already over". A `Game::determinize` sample can
+/// disagree with the literal state on exactly that fact (Phantom's own
+/// `determinize`, for one, can guess an opponent mark pattern that already
+/// wins even though the real board doesn't), so this is what keeps a lucky-
+/// but-wrong guess from being handed to a worker as its starting position.
+fn determinize_non_terminal<G: Game>(state: &G::S, rng: &mut SmallRng) -> G::S {
+    for _ in 0..MAX_DETERMINIZE_ATTEMPTS {
+        let sample = G::determinize(state.clone(), rng);
+        if matches!(G::terminal_status(&sample), TerminalStatus::NotTerminal) {
+            return sample;
+        }
+    }
+    state.clone()
+}
+
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
@@ -172,7 +205,7 @@ where
                 worker.config.num_threads = 1;
                 worker.config.rng = SmallRng::seed_from_u64(seed);
                 if determinize_root {
-                    G::determinize(state.clone(), &mut worker.config.rng)
+                    determinize_non_terminal::<G>(state, &mut worker.config.rng)
                 } else {
                     state.clone()
                 }
@@ -182,7 +215,7 @@ where
         self.config.num_threads = 1;
         self.config.rng = SmallRng::seed_from_u64(seeds[num_threads - 1]);
         let own_state = if determinize_root {
-            G::determinize(state.clone(), &mut self.config.rng)
+            determinize_non_terminal::<G>(state, &mut self.config.rng)
         } else {
             state.clone()
         };
@@ -303,7 +336,7 @@ where
             solver_loss_threshold: self.config.solver_loss_threshold,
             has_amaf: self.config.requirements().amaf,
             mcgs_correction: self.config.mcgs_correction,
-            use_ismcts: self.config.use_ismcts,
+            use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
             ismcts_redeterminize: self.config.ismcts_redeterminize,
         };
         let iterations_remaining = AtomicUsize::new(self.config.max_iterations);
@@ -420,6 +453,7 @@ mod tests {
     use crate::strategies::Search;
     use crate::{SearchConfig, TreeSearch};
     use rand::rngs::SmallRng;
+    use rand_core::SeedableRng;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     // A single-ply, one-action game: exists only to prove
@@ -561,5 +595,105 @@ mod tests {
             (merged.tt_reads, merged.tt_writes, merged.tt_hits),
             (24, 8, 9)
         );
+    }
+
+    // A game whose `determinize` can guess its way into an already-decided
+    // position even from a non-terminal literal state -- the real failure
+    // mode `determinize_non_terminal` exists for (Phantom's own
+    // `determinize` can guess an opponent mark pattern that already wins,
+    // even though the real board doesn't). `FLAKY_FAILURES_REMAINING` counts
+    // down across calls so a test can force either a redraw that eventually
+    // succeeds or one that never does.
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+    struct FlakyState {
+        guessed_terminal: bool,
+    }
+
+    impl std::fmt::Display for FlakyState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "guessed_terminal={}", self.guessed_terminal)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize)]
+    struct FlakyAction;
+
+    #[derive(Clone)]
+    struct Flaky;
+
+    static FLAKY_FAILURES_REMAINING: AtomicUsize = AtomicUsize::new(0);
+
+    impl Game for Flaky {
+        type S = FlakyState;
+        type A = FlakyAction;
+        type P = Seat;
+
+        fn apply(_state: Self::S, _action: &Self::A) -> Self::S {
+            FlakyState {
+                guessed_terminal: false,
+            }
+        }
+
+        fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+            if !state.guessed_terminal {
+                actions.push(FlakyAction);
+            }
+        }
+
+        fn winner(state: &Self::S) -> Option<Self::P> {
+            state.guessed_terminal.then_some(Seat(0))
+        }
+
+        fn player_to_move(_state: &Self::S) -> Self::P {
+            Seat(0)
+        }
+
+        fn has_hidden_information() -> bool {
+            true
+        }
+
+        // Every call decrements the shared counter; a guess only comes back
+        // "already terminal" while the counter is still positive, so a test
+        // can dial in exactly how many bad guesses `determinize_non_terminal`
+        // has to redraw past before either succeeding or exhausting its
+        // budget.
+        fn determinize(_state: Self::S, _rng: &mut SmallRng) -> Self::S {
+            let remaining = FLAKY_FAILURES_REMAINING.load(Relaxed);
+            if remaining > 0 {
+                FLAKY_FAILURES_REMAINING.fetch_sub(1, Relaxed);
+                FlakyState {
+                    guessed_terminal: true,
+                }
+            } else {
+                FlakyState {
+                    guessed_terminal: false,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn determinize_non_terminal_redraws_past_a_bounded_run_of_bad_guesses() {
+        FLAKY_FAILURES_REMAINING.store(3, Relaxed);
+        let mut rng = SmallRng::seed_from_u64(1);
+        let sample = super::determinize_non_terminal::<Flaky>(&FlakyState::default(), &mut rng);
+        assert!(
+            !sample.guessed_terminal,
+            "should have redrawn past the first three bad guesses to a real, non-terminal sample"
+        );
+    }
+
+    #[test]
+    fn determinize_non_terminal_falls_back_to_the_literal_state_when_every_guess_is_terminal() {
+        FLAKY_FAILURES_REMAINING.store(usize::MAX, Relaxed);
+        let mut rng = SmallRng::seed_from_u64(1);
+        let literal = FlakyState::default();
+        let sample = super::determinize_non_terminal::<Flaky>(&literal, &mut rng);
+        assert_eq!(
+            sample, literal,
+            "should give up after MAX_DETERMINIZE_ATTEMPTS and fall back to the literal state \
+             rather than handing a worker an already-decided position"
+        );
+        FLAKY_FAILURES_REMAINING.store(0, Relaxed);
     }
 }

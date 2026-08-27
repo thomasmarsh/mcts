@@ -3,8 +3,10 @@ use crate::game::PlayerIndex;
 use crate::game::Real;
 use crate::strategies::mcts::config::GraphSearch;
 use crate::strategies::mcts::config::GraphStats;
+use crate::strategies::mcts::config::IsmctsMode;
 use crate::strategies::mcts::node::real_action;
 use crate::strategies::mcts::node::Proven;
+use crate::strategies::mcts::search::shared::expand;
 use crate::strategies::mcts::search::shared::SearchContext;
 use crate::strategies::mcts::search::TreeSearch;
 use crate::strategies::mcts::stack::NodeStack;
@@ -149,6 +151,14 @@ where
         if self.config.num_tree_threads > 1 {
             return self.choose_action_tree_parallel(state, report_start);
         }
+        if self.config.ismcts_mode == IsmctsMode::MultiTree {
+            let selected = self.choose_action_multi_tree(state);
+            let time_expired = self.timer.done();
+            self.compute_pv(state, Some(&selected));
+            self.verbose_summary(state, 1);
+            self.finish_search_report(report_start, time_expired, false, false);
+            return selected;
+        }
 
         let hash = G::zobrist_hash(state);
         let root_id = if explicit_dag {
@@ -163,6 +173,30 @@ where
             );
         } else if self.config.use_transpositions {
             self.table.insert(hash, root_id);
+        }
+        if self.config.ismcts_mode == IsmctsMode::SingleTree {
+            // The root's own position is never hidden from its mover --
+            // unlike every other node, whose first expansion legitimately
+            // reads whichever iteration happens to reach it first, the
+            // root's legal-action list and terminal status must be resolved
+            // against the literal caller-supplied `state`, not a
+            // per-iteration `G::determinize`d guess. Without this, a game
+            // whose terminal check can read hidden information (e.g.
+            // Phantom's win check against a guessed board) could have its
+            // very first iteration's guess permanently -- `expand`'s
+            // `OnceLock` only ever resolves once -- and wrongly mark a real,
+            // ongoing root position `Terminal`, which `select_final_action`
+            // has no fallback for.
+            let _ = expand::<G>(
+                &self.index,
+                root_id,
+                state,
+                false,
+                self.config.requirements().amaf,
+                false,
+                true,
+                None,
+            );
         }
 
         self.timer.start(self.config.max_time);
@@ -185,18 +219,20 @@ where
                 break;
             }
             self.reset_iter();
-            // ISMCTS (`SearchConfig::use_ismcts`): every iteration descends
-            // its own fresh `G::determinize`d sample of the root state,
-            // rather than the one literal `state` every ordinary search
-            // (and PIMC's `determinize_root`, which determinizes once per
-            // *worker tree* rather than once per *iteration*) uses for
-            // every iteration of a given `choose_action` call. When
-            // `ismcts_redeterminize` is also set, `select_step` redraws this
-            // sample itself at every node it visits during descent
-            // (including the root, on its first visit this iteration), so
-            // the literal state is handed to it unchanged here rather than
-            // determinizing the root twice.
-            let iter_state = if self.config.use_ismcts && !self.config.ismcts_redeterminize {
+            // SO-ISMCTS (`SearchConfig::ismcts_mode == IsmctsMode::SingleTree`):
+            // every iteration descends its own fresh `G::determinize`d
+            // sample of the root state, rather than the one literal `state`
+            // every ordinary search (and PIMC's `determinize_root`, which
+            // determinizes once per *worker tree* rather than once per
+            // *iteration*) uses for every iteration of a given
+            // `choose_action` call. When `ismcts_redeterminize` is also set,
+            // `select_step` redraws this sample itself at every node it
+            // visits during descent (including the root, on its first visit
+            // this iteration), so the literal state is handed to it
+            // unchanged here rather than determinizing the root twice.
+            let iter_state = if self.config.ismcts_mode == IsmctsMode::SingleTree
+                && !self.config.ismcts_redeterminize
+            {
                 G::determinize(state.clone(), &mut self.config.rng)
             } else {
                 state.clone()

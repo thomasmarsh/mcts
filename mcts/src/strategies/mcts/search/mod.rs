@@ -1,5 +1,6 @@
 pub mod compact;
 pub mod core;
+pub mod multi_tree;
 pub mod parallel;
 pub(crate) mod report;
 pub mod reroot;
