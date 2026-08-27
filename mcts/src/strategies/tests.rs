@@ -497,10 +497,16 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
 // of relying on random discovery in a full game like tic-tac-toe.
 mod converge_game_tests {
     use crate::game::{Game, PlayerIndex};
+    use crate::strategies::mcts::config::IsmctsMode;
     use crate::strategies::mcts::node::NodeState;
+    use crate::strategies::mcts::select;
     use crate::strategies::mcts::strategy::Ucb1;
     use crate::strategies::Search;
-    use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
+    use crate::{
+        GraphSearch, GraphStats, McgsCorrection, SearchConfig, TranspositionKeying, TreeSearch,
+    };
+    use rand::rngs::SmallRng;
+    use rand::Rng;
 
     // 6 distinct "pick" actions; a state is the order-independent set of 4
     // already picked, so two orders that pick the same 4-of-6 subset
@@ -524,9 +530,19 @@ mod converge_game_tests {
         }
     }
 
+    // `coin` is a single hidden bit, independent of `mask`, that neither
+    // player ever observes: `Game::determinize` resamples it uniformly every
+    // iteration and `Game::info_set_hash` omits it, so two states agreeing
+    // on `mask` but disagreeing on `coin` are one information set. It
+    // defaults to (and, outside `ismcts_mode`, always stays) `false`, and
+    // `winner` reduces to its original mask-only formula whenever `coin` is
+    // `false`, so every test above this that doesn't opt into `ismcts_mode`
+    // is unaffected -- only `dag_ismcts_error_shrinks_with_budget_like_
+    // plain_ismcts_does` below ever varies it.
     #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
     struct State {
         mask: u8,
+        coin: bool,
     }
 
     impl std::fmt::Display for State {
@@ -549,6 +565,7 @@ mod converge_game_tests {
         fn apply(state: Self::S, action: &Self::A) -> Self::S {
             State {
                 mask: state.mask | (1 << action.0),
+                coin: state.coin,
             }
         }
 
@@ -571,7 +588,18 @@ mod converge_game_tests {
                 .filter(|&i| state.mask & (1 << i) != 0)
                 .map(u32::from)
                 .sum();
-            Some(Player((sum % 2) as usize))
+            // Two different, deliberately non-complementary parity
+            // functions of `sum`, selected by the hidden `coin`: when they
+            // agree (`coin` doesn't change the winner) the outcome is a
+            // real, coin-independent fact about `mask` alone; when they
+            // disagree, the winner is a 50/50 coin flip and the Bayes-
+            // average utility for either player is exactly 0. A single
+            // `coin`-linear formula (e.g. XORing `coin` into the parity)
+            // would make every mask's Bayes-average exactly 0 by
+            // construction -- degenerate for testing convergence to a
+            // known non-trivial value.
+            let idx = if state.coin { (sum / 2) % 2 } else { sum % 2 };
+            Some(Player(idx as usize))
         }
 
         fn player_to_move(state: &Self::S) -> Self::P {
@@ -579,7 +607,30 @@ mod converge_game_tests {
         }
 
         fn zobrist_hash(state: &Self::S) -> u64 {
+            state.mask as u64 | ((state.coin as u64) << 8)
+        }
+
+        fn has_hidden_information() -> bool {
+            true
+        }
+
+        // Only the picked-mask stays observable -- `coin` is excluded, so
+        // two states agreeing on `mask` but disagreeing on `coin` share one
+        // information set. This intentionally matches the pre-`coin`
+        // `zobrist_hash`, keeping `graph_mode_creates_fewer_arena_nodes_
+        // than_plain_tree` and friends (which never touch `ismcts_mode`,
+        // so `info_set_hash` is never actually consulted for them) reading
+        // the same node-merge key they always have.
+        fn info_set_hash(state: &Self::S) -> u64 {
             state.mask as u64
+        }
+
+        // Resamples the hidden coin uniformly every iteration, leaving
+        // `mask` untouched -- the standard SO-ISMCTS one-determinization-
+        // per-iteration pattern (see `Ingenious::determinize`).
+        fn determinize(mut state: Self::S, rng: &mut SmallRng) -> Self::S {
+            state.coin = rng.gen();
+            state
         }
     }
 
@@ -761,6 +812,230 @@ mod converge_game_tests {
                 .is_ok(),
             "PerPly keeps today's behavior: neither new restriction applies to it"
         );
+    }
+
+    /// Exact Bayes-optimal value for player 0 at info-set `mask`: backward
+    /// induction over the mask-only reduced game whose leaf payoff is
+    /// `winner`'s exact outcome averaged uniformly over the hidden `coin`.
+    /// This is valid (not just a convenient approximation) because `coin`
+    /// never affects legality or transitions and is never revealed
+    /// mid-game -- every info-set's belief about `coin` stays the uniform
+    /// prior regardless of history, so no player ever has a reason to act
+    /// differently based on it, and the game-theoretic value is exactly
+    /// the minimax value of the expected-terminal-payoff game.
+    fn true_value_p0(mask: u8) -> f64 {
+        if mask.count_ones() >= PICKS {
+            let u = |coin| ConvergeGame::compute_utilities(&State { mask, coin })[0];
+            return 0.5 * (u(false) + u(true));
+        }
+        let maximizer = mask.count_ones().is_multiple_of(2);
+        (0..NUM_ACTIONS)
+            .filter(|&i| mask & (1 << i) == 0)
+            .map(|i| true_value_p0(mask | (1 << i)))
+            .fold(None, |acc: Option<f64>, v| {
+                Some(match acc {
+                    None => v,
+                    Some(a) if maximizer => a.max(v),
+                    Some(a) => a.min(v),
+                })
+            })
+            .expect("a non-terminal mask always has a legal action")
+    }
+
+    fn true_value(mask: u8, player: usize) -> f64 {
+        let v0 = true_value_p0(mask);
+        if player == 0 {
+            v0
+        } else {
+            -v0
+        }
+    }
+
+    /// `Node::hash` is always `mask | (coin << 8)` for a plain-tree node
+    /// (`new_child`'s `G::zobrist_hash` branch) and always just `mask` for
+    /// an explicit-DAG one (`resolve_child_id`'s `G::info_set_hash` branch,
+    /// which this fixture's own `info_set_hash` returns unchanged from
+    /// `mask`) -- so masking off the coin bit recovers `mask` from either
+    /// kind of node without needing to re-walk the path that reached it.
+    fn mask_of(hash: u64) -> u8 {
+        (hash & 0xFF) as u8
+    }
+
+    /// Pools every incoming *edge* leading to `target_mask` into one score
+    /// for `player`, across the whole arena. Reads `ChildArray`'s own raw
+    /// `score`/`num_visits` on each qualifying parent -- not the arrived-at
+    /// node's own `stats`, which under a plain tree (no `GraphStats`
+    /// tracking node-level stats at all) never gets written to in the
+    /// first place, staying at 0 visits forever regardless of how many
+    /// times the node was actually reached.
+    ///
+    /// A parent qualifies by construction, not by hash lookup: for every
+    /// set bit of `target_mask`, clearing that bit gives one parent mask +
+    /// the action that completes it (a 2-bit `target_mask` has exactly two
+    /// such parents, matching its two action orders). Every arena node
+    /// matching a parent mask contributes whatever its own edge for that
+    /// action recorded -- for a plain tree, that's the edge itself; under
+    /// `GraphSearch::Dag`, at most one node ever exists per mask, but this
+    /// still finds it and pools both parents' incoming edges into the same
+    /// shared child, which is exactly what `target.stats` would already
+    /// equal there (DAG's node-level stats are the sum of every edge that
+    /// feeds the merged node) -- so this one function reads the right
+    /// quantity for both configurations without special-casing either.
+    fn pooled_score_for_mask(search: &TS, target_mask: u8, player: usize) -> Option<f64> {
+        let parent_actions: Vec<(u8, u8)> = (0..NUM_ACTIONS)
+            .filter(|&bit| target_mask & (1 << bit) != 0)
+            .map(|bit| (target_mask & !(1 << bit), bit))
+            .collect();
+
+        let mut total_score = 0.0;
+        let mut total_visits = 0u32;
+        search.index.for_each(|node| {
+            let Some(NodeState::Expanded(children)) = node.status() else {
+                return;
+            };
+            let node_mask = mask_of(node.hash);
+            for &(parent_mask, bit) in &parent_actions {
+                if node_mask != parent_mask {
+                    continue;
+                }
+                if let Some(idx) = (0..children.len()).find(|&i| children.action(i) == Action(bit))
+                {
+                    total_visits += children.num_visits(idx);
+                    total_score += children.score(idx, player);
+                }
+            }
+        });
+        (total_visits > 0).then_some(total_score / total_visits as f64)
+    }
+
+    // Well above `select::Ucb1::default()`'s `sqrt(2)` -- this fixture's
+    // target info-set sits under a root action UCB1 can otherwise judge
+    // (correctly) as dominated and all but stop revisiting once a stronger
+    // sibling is found, which would starve the target info-set of samples
+    // at low budgets regardless of whether DAG merging is unbiased. A
+    // higher constant keeps every branch sampled enough, at every budget,
+    // for the convergence *trend* itself to be the thing under test rather
+    // than an artifact of which branch UCB1 happened to abandon first.
+    const EXPLORATION_CONSTANT: f64 = 5.0;
+
+    fn ismcts_error(
+        iterations: usize,
+        seed: u64,
+        dag: bool,
+        target_mask: u8,
+        target_true_value: f64,
+        player: usize,
+    ) -> Option<f64> {
+        let mut config = SearchConfig::default()
+            .max_iterations(iterations)
+            .expand_threshold(0)
+            .seed(seed)
+            .select(select::Ucb1::with_c(EXPLORATION_CONSTANT))
+            .ismcts_mode(IsmctsMode::SingleTree);
+        if dag {
+            config = config
+                .graph_search(GraphSearch::Dag(GraphStats::Both))
+                .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
+        }
+        let mut search = TS::default().config(config);
+        search.choose_action(&State::default());
+        pooled_score_for_mask(&search, target_mask, player)
+            .map(|score| (score - target_true_value).abs())
+    }
+
+    // Soundness test: does `ismcts_mode` + `GraphSearch::Dag(GraphStats::
+    // Both)` + `McgsCorrection::Residual` converge to the true Bayes-optimal
+    // value at an info-set node as the iteration budget grows, the same way
+    // plain `ismcts_mode` does? A strength benchmark (win rate) can only
+    // show "helps"/"hurts", never distinguish "unbiased but no measurable
+    // benefit" from "biased in a way that happens to cancel out" -- this
+    // fixture is small enough to brute-force the exact answer instead.
+    #[test]
+    fn dag_ismcts_error_shrinks_with_budget_like_plain_ismcts_does() {
+        // `mask == Action(1) | Action(2)`, reachable via both action orders
+        // (`[1, 2]` and `[2, 1]`) -- a non-root info-set node DAG merging
+        // actually has something to merge.
+        let target_mask: u8 = (1 << 1) | (1 << 2);
+        let target_player = ConvergeGame::player_to_move(&State {
+            mask: target_mask,
+            coin: false,
+        })
+        .to_index();
+        let target_true_value = true_value(target_mask, target_player);
+
+        let budgets = [200usize, 1_000, 5_000];
+        // Averaged over several seeds per budget to smooth UCB1's own
+        // sampling variance -- otherwise a single unlucky seed could make
+        // the "does error shrink with budget" trend noisy in either
+        // direction regardless of whether DAG merging is actually biased.
+        // A seed that never samples the target info-set at a given budget
+        // (possible at the smallest budget) is dropped from that budget's
+        // average rather than counted as infinite error.
+        let seeds: Vec<u64> = (1..=5).collect();
+
+        let mean_error = |dag: bool, iterations: usize| -> f64 {
+            let errors: Vec<f64> = seeds
+                .iter()
+                .filter_map(|&seed| {
+                    ismcts_error(
+                        iterations,
+                        seed,
+                        dag,
+                        target_mask,
+                        target_true_value,
+                        target_player,
+                    )
+                })
+                .collect();
+            assert!(
+                !errors.is_empty(),
+                "dag={dag} iterations={iterations}: no seed ever sampled the target info-set"
+            );
+            errors.iter().sum::<f64>() / errors.len() as f64
+        };
+
+        let plain_errors: Vec<f64> = budgets.iter().map(|&it| mean_error(false, it)).collect();
+        let dag_errors: Vec<f64> = budgets.iter().map(|&it| mean_error(true, it)).collect();
+
+        // Baseline soundness check: plain `ismcts_mode` alone must converge
+        // toward the true Bayes-optimal value as the budget grows -- this
+        // also confirms the fixture and harness themselves work,
+        // independent of DAG merging.
+        assert!(
+            plain_errors[2] < plain_errors[0] * 0.75,
+            "plain ismcts_mode should converge substantially as budget grows: {plain_errors:?}"
+        );
+
+        // `ismcts_mode` + `GraphSearch::Dag(GraphStats::Both)` +
+        // `McgsCorrection::Residual` does *not* converge here -- `dag_errors`
+        // stays flat (doesn't shrink anywhere near plain's rate) as the
+        // budget grows 25x, unlike `plain_errors` above. `residual_
+        // correction` (`correction.rs`) always corrects a diverging edge
+        // toward the merged node's own pooled estimate, which is the right
+        // call when a merge is always exact (perfect information: a
+        // divergent edge is just undersampled noise) but not when two
+        // histories sharing an information set can genuinely differ in
+        // value depending on which hidden information a player holds --
+        // pooling them is strategy fusion, not variance reduction, and
+        // once it fires on an edge into a merged node, that edge stops
+        // accumulating its own direct samples (`backprop_correction_step`
+        // updates every ancestor up to the edge's parent, never the edge or
+        // the merged node itself), so its estimate never gets the chance to
+        // refine. This assertion is deliberate, not just logged output: a
+        // trip wire that should start failing if this correction's polarity
+        // is ever fixed for `ismcts_mode`, at which point this test's
+        // expectations need updating to match the new (converging)
+        // behavior.
+        assert!(
+            dag_errors[2] >= dag_errors[0] * 0.85,
+            "ismcts_mode + DAG's error unexpectedly shrank with budget -- if \
+             McgsCorrection::Residual's polarity was just fixed for ismcts_mode, \
+             update this assertion to match: {dag_errors:?}"
+        );
+
+        eprintln!("target_true_value = {target_true_value}");
+        eprintln!("plain_errors (200/1000/5000) = {plain_errors:?}");
+        eprintln!("dag_errors   (200/1000/5000) = {dag_errors:?}");
     }
 }
 
