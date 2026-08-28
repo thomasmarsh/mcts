@@ -1,30 +1,32 @@
 // Background strength comparison: MCTS-Solver (Standard update rule,
-// Nijssen & Winands, CG 2010) vs no solver, on 3- and 4-player Focus --
-// the paper's own benchmark game. Sequential execution so each
-// single-threaded search gets the whole machine, same rationale as this
-// repo's other strength_* scripts.
+// Nijssen & Winands, CG 2010) vs no solver, on 3-player Ingenious -- the
+// race-to-completion counterpart to `strength_focus_solver.rs`'s
+// sudden-death game. Nijssen & Winands predict the multi-player solver
+// pays off in sudden-death games (Focus) but not race-to-completion ones
+// (Chinese Checkers, and by structural analogy Ingenious, whose board is
+// monotonic and whose games always run to a full rack-exhaustion / board
+// -fill terminal). This script is the direct test of that prediction on a
+// game this repo actually has a UI/preset for.
 //
-// Unlike `strength_solver.rs`/`strength_pn_mcts.rs`, this can't reuse
-// `mcts_bench::tournament::round_robin`/`round_robin_multiple` -- both are
-// hardwired to exactly two seats (`let mut strat = [si, sj]`). Instead this
-// reproduces the paper's own Table 4 methodology directly: one seat runs
-// the solver, every other seat runs the same strategy without it, and
+// Methodology mirrors `strength_focus_solver.rs` exactly: one seat runs
+// the solver, every other seat runs the identical strategy without it, and
 // which seat holds the solver rotates across games to cancel positional
-// bias. A win is scored for "solver" or "no solver" depending on which side
-// the winning seat was playing that game, folded into the same
-// `mcts_bench::tournament::Result`/Wilson-CI machinery the other strength_*
-// scripts use.
+// bias. A win is scored for "solver" or "no solver" depending on which
+// side the winning seat played, folded into the same
+// `mcts_bench::tournament::Result` / Wilson-CI machinery.
 //
-// This is intentionally a long-running job -- tens of minutes to hours
-// depending on the round counts below. Run as a background process, not
-// synchronously (see `strength_solver.rs`'s doc comment for why a
-// synchronous attempt at a real budget is useless for CI). Tune
-// `ROUNDS_PER_SEAT`/`MOVE_BUDGET` for the machine/time available.
+// Like the Focus script, this searches the literal `State` (so every seat
+// sees every rack -- "cheating"). That is deliberate: the question here is
+// whether the *solver* changes strength at a fixed information level, not
+// what hiding the racks costs (that is `strength_ingenious_pimc.rs`).
 //
-// Usage: cargo run --release --example strength_focus_solver
+// Intentionally long-running -- run as a background process, not
+// synchronously. Tune `ROUNDS_PER_SEAT` / `MOVE_BUDGET` for the machine.
+//
+// Usage: cargo run --release --example strength_ingenious_solver
 use std::time::Duration;
 
-use game_focus::{Focus, State};
+use game_ingenious::{Ingenious, State};
 use mcts::game::{Game, PlayerIndex};
 use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
 use mcts::strategies::Search;
@@ -33,13 +35,12 @@ use mcts_bench::tournament::Result as GameResult;
 
 const MOVE_BUDGET: Duration = Duration::from_millis(200);
 const ROUNDS_PER_SEAT: usize = 10;
-/// Safety cap: Focus lines can run very long (a game ends only once <=1
-/// seat has any legal move) and random-ish lines can effectively stall. A
-/// game hitting this is scored as a draw and flagged, rather than hanging
-/// the batch.
-const MAX_PLIES: usize = 4000;
+/// Safety cap. Ingenious is naturally bounded (board fills / racks
+/// exhaust), so this only guards against an unforeseen non-terminating
+/// line; a game hitting it is scored a draw and flagged.
+const MAX_PLIES: usize = 2000;
 
-fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Focus<P>, strategy::Ucb1> {
+fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Ingenious<P>, strategy::Ucb1> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
@@ -51,29 +52,33 @@ fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Focus<P>, s
     )
 }
 
-/// Plays one game of `Focus<P>` with `solver_seat` running the solver and
-/// every other seat running the identical strategy without it. Returns the
-/// winning seat, or `None` for a draw.
+/// Plays one game of `Ingenious<P>` with `solver_seat` running the solver
+/// and every other seat running the identical strategy without it. Returns
+/// the winning seat, or `None` for a draw.
 fn play_one_game<const P: usize>(solver_seat: usize, seed: u64) -> (Option<usize>, usize, bool) {
-    let mut strategies: Vec<AnySearch<Focus<P>>> = (0..P)
+    let mut strategies: Vec<AnySearch<Ingenious<P>>> = (0..P)
         .map(|seat| AnySearch::new(config::<P>(seat == solver_seat, seed * 100 + seat as u64)))
         .collect();
 
-    let mut state = State::<P>::default();
+    let mut state = State::<P>::new(seed);
     for ply in 0..MAX_PLIES {
-        if Focus::<P>::is_terminal(&state) {
-            return (Focus::<P>::winner(&state).map(|w| w.to_index()), ply, false);
+        if Ingenious::<P>::is_terminal(&state) {
+            return (
+                Ingenious::<P>::winner(&state).map(|w| w.to_index()),
+                ply,
+                false,
+            );
         }
-        let mover = Focus::<P>::player_to_move(&state).to_index();
+        let mover = Ingenious::<P>::player_to_move(&state).to_index();
         let action = strategies[mover].choose_action(&state);
-        state = Focus::<P>::apply(state, &action);
+        state = Ingenious::<P>::apply(state, &action);
     }
     (None, MAX_PLIES, true)
 }
 
-/// Runs `ROUNDS_PER_SEAT` games with the solver in each of `P` seats (so
-/// `P * ROUNDS_PER_SEAT` games total), rotating which seat holds it, and
-/// folds every game's outcome into a single solver-vs-no-solver `Result`.
+/// Runs `ROUNDS_PER_SEAT` games with the solver in each of `P` seats,
+/// rotating which seat holds it, and folds every game's outcome into a
+/// single solver-vs-no-solver `Result`.
 fn solver_vs_no_solver<const P: usize>() -> GameResult {
     let mut result = GameResult::default();
     for round in 0..ROUNDS_PER_SEAT {
@@ -123,19 +128,14 @@ fn fmt_result(r: &GameResult) -> String {
 }
 
 fn main() {
-    println!("=== Focus MCTS-Solver strength comparison (background job) ===");
+    println!("=== Ingenious MCTS-Solver strength comparison (background job) ===");
     println!(
         "Move budget: {:?}, {} rounds per seat -- see this file's doc comment to tune.",
         MOVE_BUDGET, ROUNDS_PER_SEAT
     );
     println!();
 
-    println!("--- 3-player Focus ({} games) ---", ROUNDS_PER_SEAT * 3);
+    println!("--- 3-player Ingenious ({} games) ---", ROUNDS_PER_SEAT * 3);
     let result_3p = solver_vs_no_solver::<3>();
     println!("[3p] {}", fmt_result(&result_3p));
-    println!();
-
-    println!("--- 4-player Focus ({} games) ---", ROUNDS_PER_SEAT * 4);
-    let result_4p = solver_vs_no_solver::<4>();
-    println!("[4p] {}", fmt_result(&result_4p));
 }
