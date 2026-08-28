@@ -126,6 +126,12 @@ fn decisive_move_mode_enum() -> Value {
     )
 }
 
+/// `GpnUct`'s proof-number bias formula (`mcts::select::GpnBias`) -- a
+/// fieldless enum serde writes as a bare string, like `DecisiveMoveMode`.
+fn gpn_bias_enum() -> Value {
+    bare_en("max", &["max", "sum", "rank"])
+}
+
 /// `BaseSelectSpec`'s variants -- every `select` family except
 /// `EpsilonGreedy`, which wraps one of these (see `config_ir.rs`'s own doc
 /// comment on why the wrapped inner spec is this narrower, non-recursive
@@ -141,6 +147,23 @@ fn select_base_variants() -> Vec<Value> {
             vec![
                 field("tau", float([0.05, 5.0], 1.0)),
                 field("epsilon", float([0.0, 1.0], 0.1)),
+            ],
+        ),
+        variant("grill_act", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
+        variant(
+            "score_bounded_uct",
+            vec![
+                field("c", float(C_BOUNDS, C_DEFAULT)),
+                field("gamma", float([0.0, 1.0], 0.1)),
+                field("delta", float([0.0, 1.0], 0.1)),
+            ],
+        ),
+        variant(
+            "gpn",
+            vec![
+                field("c", float(C_BOUNDS, C_DEFAULT)),
+                field("c_pn", float(C_BOUNDS, 1.0)),
+                field("bias", gpn_bias_enum()),
             ],
         ),
         variant(
@@ -339,6 +362,9 @@ mod tests {
             SelectSpec::UcbV { .. } => "ucb_v",
             SelectSpec::KlUcb { .. } => "kl_ucb",
             SelectSpec::Ments { .. } => "ments",
+            SelectSpec::GrillAct { .. } => "grill_act",
+            SelectSpec::ScoreBoundedUct { .. } => "score_bounded_uct",
+            SelectSpec::Gpn { .. } => "gpn",
             SelectSpec::Amaf { .. } => "amaf",
             SelectSpec::Rave { .. } => "rave",
             SelectSpec::UctPn { .. } => "uct_pn",
@@ -356,6 +382,9 @@ mod tests {
                 "ucb_v",
                 "kl_ucb",
                 "ments",
+                "grill_act",
+                "score_bounded_uct",
+                "gpn",
                 "amaf",
                 "rave",
                 "uct_pn",
@@ -372,6 +401,9 @@ mod tests {
             BaseSelectSpec::UcbV { .. } => "ucb_v",
             BaseSelectSpec::KlUcb { .. } => "kl_ucb",
             BaseSelectSpec::Ments { .. } => "ments",
+            BaseSelectSpec::GrillAct { .. } => "grill_act",
+            BaseSelectSpec::ScoreBoundedUct { .. } => "score_bounded_uct",
+            BaseSelectSpec::Gpn { .. } => "gpn",
             BaseSelectSpec::Amaf { .. } => "amaf",
             BaseSelectSpec::Rave { .. } => "rave",
             BaseSelectSpec::UctPn { .. } => "uct_pn",
@@ -388,6 +420,9 @@ mod tests {
                 "ucb_v",
                 "kl_ucb",
                 "ments",
+                "grill_act",
+                "score_bounded_uct",
+                "gpn",
                 "amaf",
                 "rave",
                 "uct_pn",

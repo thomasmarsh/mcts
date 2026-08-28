@@ -1847,6 +1847,28 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
                 "final_action": "robust_child",
             }),
         ),
+        (
+            "grill_act",
+            json!({
+                "family": "grill_act", "c": 1.4, "final_action": "robust_child",
+            }),
+        ),
+        (
+            "score_bounded_uct",
+            json!({
+                "family": "score_bounded_uct", "c": 1.4, "gamma": 0.1, "delta": 0.1,
+                "final_action": "robust_child", "solver_loss_threshold": 5,
+                "contempt": "off",
+            }),
+        ),
+        (
+            "gpn",
+            json!({
+                "family": "gpn", "c": 1.4, "c_pn": 1.0, "gpn_bias": "max",
+                "final_action": "robust_child", "solver_loss_threshold": 5,
+                "contempt": "off",
+            }),
+        ),
         ("random", json!({"family": "random"})),
         (
             "flat_mc",

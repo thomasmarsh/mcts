@@ -19,7 +19,7 @@ use crate::config_ir::codec::{field, field_opt};
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
 use game_host::{HostError, TunerCondition, TunerParameter};
 use mcts::evaluator::Score;
-use mcts::select::{RaveSchedule, RaveUcb};
+use mcts::select::{GpnBias, RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
 use mcts::strategies::negamax;
 use serde::de::Error as _;
@@ -188,6 +188,17 @@ register_field! {
     // 1 bootstraps from max over children instead of the on-path child. Named
     // `td_max_child` (not `max_child`) to match how this table disambiguates.
     td_max_child: u32 => json!({"type": "int", "bounds": [0, 1], "default": 0}),
+    // `select::ScoreBoundedUct`'s §3.4 bound-induced value-bias weights
+    // (Cazenave & Saffidine, CG 2010): `gamma` on the pessimistic bound,
+    // `delta` on the optimistic one. Cazenave found the useful values
+    // game-dependent; `0.1` is a starting guess, sweep per game.
+    gamma: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 0.1}),
+    delta: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 0.1}),
+    // `select::GpnUct`'s proof-number bias formula (Kowalski et al.,
+    // arXiv:2506.13249): `max`/`sum` are Eq. 4/5, `rank` the 2023 rank bonus.
+    // `max` is strongest at two players; `sum` is the safer choice in wider
+    // fields, where it damps the per-player AND-branch blow-up.
+    gpn_bias: String => json!({"type": "categorical", "choices": ["max", "sum", "rank"], "default": "max"}),
     // `flat_mc::FlatMonteCarloStrategy`'s per-move rollout count and
     // per-rollout depth cap.
     samples_per_move: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 100}),
@@ -661,6 +672,56 @@ register_family! {
         backprop: BackpropSpec::Classic {},
         solver_loss_threshold: None,
         contempt_factor: None,
+    })),
+    // Grill et al. ICML 2020 closed-form regularised-policy selector. Pure
+    // selection (Classic backup); `c` scales lambda_N = c*sqrt(N)/(N+|A|).
+    // Uniform pi_prior this session -- an explicit prior term is deferred
+    // (shared with `ments`).
+    "grill_act" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::GrillAct { c: c(p)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    })),
+    // Cazenave & Saffidine, *Score Bounded Monte-Carlo Tree Search* (CG
+    // 2010): UCB1 + alpha-beta pruning and value bias from each node's
+    // graded-score interval. Only meaningful with the solver on and a
+    // two-player game that overrides `Game::score_bounds()` (Focus, Ingenious
+    // at P=2); a no-op elsewhere, not an error.
+    "score_bounded_uct" => [c, gamma, delta, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::ScoreBoundedUct {
+            c: c(p)?,
+            gamma: p.gamma.ok_or_else(|| missing("gamma"))?,
+            delta: p.delta.ok_or_else(|| missing("delta"))?,
+        },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: Some(solver_loss_threshold(p)?),
+        contempt_factor: contempt_factor(p)?,
+    })),
+    // Kowalski, Soemers, Kosakowski & Winands, *Generalized Proof-Number
+    // MCTS* (arXiv:2506.13249): UCB1 + a per-player proof-number bias, so
+    // unlike `ucb1_pn` it works at any player count. `bias` picks the
+    // PNMax/PNSum/PNRank formula. Needs the solver on to be meaningful.
+    "gpn" => [c, c_pn, gpn_bias, solver_loss_threshold, contempt, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::Gpn {
+            c: c(p)?,
+            c_pn: c_pn(p)?,
+            bias: match p.gpn_bias.as_deref().ok_or_else(|| missing("gpn_bias"))? {
+                "max" => GpnBias::Max,
+                "sum" => GpnBias::Sum,
+                "rank" => GpnBias::Rank,
+                other => return Err(HostError::bad_request(format!("unknown gpn_bias: {other}"))),
+            },
+        },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: Some(solver_loss_threshold(p)?),
+        contempt_factor: contempt_factor(p)?,
     })),
     "ucb1_tuned_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },

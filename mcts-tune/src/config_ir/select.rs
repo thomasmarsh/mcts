@@ -230,6 +230,11 @@ register_select! {
     UcbV { c: f64 } => select::UcbV::with_c(c),
     KlUcb { c: f64 } => select::KlUcb::with_c(c),
     Ments { tau: f64, epsilon: f64 } => select::Ments::new(tau, epsilon),
+    GrillAct { c: f64 } => select::GrillAct::with_c(c),
+    ScoreBoundedUct { c: f64, gamma: f64, delta: f64 } =>
+        select::ScoreBoundedUct::with_c(c, gamma, delta),
+    Gpn { c: f64, c_pn: f64, bias: select::GpnBias } =>
+        select::GpnUct::with_c(c, c_pn).bias(bias),
     Amaf { alpha: f64, c: f64 } => select::Amaf::new().alpha(alpha).exploration_constant(c),
     Rave { threshold: u32, schedule: select::RaveSchedule, ucb: select::RaveUcb } =>
         select::Rave::new(threshold, schedule, ucb),

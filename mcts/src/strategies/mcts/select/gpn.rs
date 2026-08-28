@@ -15,7 +15,8 @@ use rand::rngs::SmallRng;
 /// child and its sibling set and return a value in `[0, 1]` -- larger means
 /// a stronger pull toward that child -- and all three return `0` for a
 /// child whose proof number is infinite (provably not a win for the mover).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GpnBias {
     /// PNMax (paper Eq. 4): scale by the range of finite sibling proof
     /// numbers, `1 - (pn(i) - minf) / (1 + maxf - minf)`. Satisfies all four

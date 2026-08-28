@@ -2,6 +2,7 @@ use super::super::index::Id;
 use super::super::node::ChildArray;
 use super::is_proven_loss;
 use super::proven_exact_value;
+use super::random_best_index_by;
 use super::SelectContext;
 use super::SelectStrategy;
 use crate::game::Game;
@@ -153,6 +154,197 @@ impl<G: Game> SelectStrategy<G> for Ments {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Grill, Valko, Munos et al., "Monte-Carlo Tree Search as Regularized Policy
+// Optimization", ICML 2020 (arXiv 2007.12509).
+
+const GRILL_LAMBDA_FLOOR: f64 = 1e-9;
+const GRILL_ALPHA_EPS: f64 = 1e-12;
+const GRILL_BISECTION_ITERS: usize = 48;
+
+/// `λ_N = c · √N / (N + |A|)` (Grill et al. Eq. 4 constant). `n_total` is
+/// `Σ_b n_b` (the parent visit count), `k` is `|A|`.
+#[inline]
+pub(crate) fn grill_lambda(c: f64, n_total: f64, k: usize) -> f64 {
+    c * n_total.sqrt() / (n_total + k as f64)
+}
+
+/// The unique `α > max_a q` with `Σ_a λ·π_prior(a) / (α − q_a) = 1`, by
+/// bracketed bisection. `priors` must be non-negative and sum to 1 (uniform
+/// `1/k` this session). `lambda` must be `> 0` -- the caller shortcuts to
+/// argmax-q when `lambda ≤ GRILL_LAMBDA_FLOOR`.
+///
+/// `g(α) = Σ λ·π_a / (α − q_a)` is strictly decreasing on `(max q, ∞)`,
+/// `g(max q⁺) = +∞`, and `g(max q + λ) ≤ Σ π_a = 1` (each term ≤ `π_a`,
+/// which is why the upper bracket needs `Σ π_a = 1`). So the root lies in
+/// `(max q + ε, max q + λ]`; fixed-iteration bisection, no doubling.
+#[inline]
+pub(crate) fn grill_alpha(qs: &[f64], priors: &[f64], lambda: f64) -> f64 {
+    debug_assert!(qs.len() == priors.len() && !qs.is_empty() && lambda > 0.0);
+    debug_assert!((priors.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+    let max_q = qs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let g = |alpha: f64| -> f64 {
+        qs.iter()
+            .zip(priors)
+            .map(|(&q, &p)| lambda * p / (alpha - q))
+            .sum::<f64>()
+    };
+    let mut lo = max_q + GRILL_ALPHA_EPS;
+    let mut hi = max_q + lambda + GRILL_ALPHA_EPS;
+    for _ in 0..GRILL_BISECTION_ITERS {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) > 1.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// `π̄(a) = λ·π_prior(a) / (α − q_a)`, renormalised so `Σ = 1` is exact for
+/// the discrepancy rule (the bisection leaves a small residual).
+#[inline]
+pub(crate) fn grill_pi_bar(qs: &[f64], priors: &[f64], lambda: f64) -> Vec<f64> {
+    let alpha = grill_alpha(qs, priors, lambda);
+    let raw: Vec<f64> = qs
+        .iter()
+        .zip(priors)
+        .map(|(&q, &p)| lambda * p / (alpha - q))
+        .collect();
+    let z: f64 = raw.iter().sum();
+    raw.into_iter().map(|x| x / z).collect()
+}
+
+/// The paper's in-tree selection score `π̄(a) − n(a) / (1 + N)` per child --
+/// the discrepancy between each child's `π̄` target and its current visit
+/// fraction. Descent picks the argmax. Factored out for a pure unit test.
+#[inline]
+pub(crate) fn grill_discrepancy(pi_bar: &[f64], ns: &[f64]) -> Vec<f64> {
+    let denom = 1.0 + ns.iter().sum::<f64>();
+    pi_bar
+        .iter()
+        .zip(ns)
+        .map(|(&p, &n)| p - n / denom)
+        .collect()
+}
+
+/// Grill et al. ("MCTS as Regularized Policy Optimization", ICML 2020)
+/// closed-form acting policy `π̄` used as the tree-descent selector.
+/// `π̄(a) = λ_N · π_prior(a) / (α − Q(a))`, `λ_N = c·√N / (N + |A|)`, `α` the
+/// unique scalar with `Σ_a π̄(a) = 1`. Descent picks
+/// `argmax_a [π̄(a) − n(a)/(1+N)]` -- the child whose visit fraction most
+/// undershoots its `π̄` target, so it explores even under the uniform
+/// `π_prior` used here (see below).
+///
+/// A pure selection strategy: no backup change, no `Requirements`. Reads
+/// `exploitation_score()` (Phase A's backup output if active, else the MC
+/// mean), like every other selector -- so it inherits any active
+/// `PowerMeanBackprop` / `TdBackprop` / `SoftmaxBackprop` for free, and
+/// (unlike MENTS's backup half) has no MCGS caveat, since it writes nothing.
+///
+/// Deferred (noted so the limits are explicit):
+/// - an explicit per-action `π_prior(a)` term -- `prior::PriorStrategy` seeds
+///   pseudo-visits, not a readable probability, so this needs the `node.rs`
+///   storage change `select::Ments` also waits on. `π_prior` is uniform
+///   `1/|A|` here; the seeded prior still acts indirectly via `Q(a)`.
+/// - a `GrillAct`-aware final action -- `strategy::GrillAct` keeps
+///   `RobustChild`; the discrepancy rule already drives visit counts toward
+///   `π̄`. Measure a `π̄`-argmax final action first.
+/// - "act" (sample `π̄`) vs "search" (this argmax-discrepancy rule) -- the
+///   paper uses `π̄` for both; sampling `π̄` under a uniform prior collapses
+///   to near-greedy at low `λ_N`, so descent uses the discrepancy argmax.
+/// - the paper's richer `λ_N` form (`c_visit`/`c_scale` split with a
+///   `log((N + c_base + 1)/c_base)` growth) -- one scalar `c ∈ [0, 3]` here,
+///   matching every other selection family.
+#[derive(Clone)]
+pub struct GrillAct {
+    pub exploration_constant: f64,
+}
+
+impl Default for GrillAct {
+    fn default() -> Self {
+        Self {
+            exploration_constant: 2f64.sqrt(),
+        }
+    }
+}
+
+impl GrillAct {
+    pub fn with_c(exploration_constant: f64) -> Self {
+        Self {
+            exploration_constant,
+        }
+    }
+}
+
+impl<G: Game> SelectStrategy<G> for GrillAct {
+    type Score = f64;
+    type Aux = ();
+
+    #[inline(always)]
+    fn setup(&mut self, _: &SelectContext<'_, G>) -> Self::Aux {}
+
+    /// Only reached if some future caller bypasses `best_child`; kept total
+    /// (the raw `Q`) rather than `unreachable!`, same posture as `Ments`.
+    #[inline(always)]
+    fn score_child(
+        &self,
+        ctx: &SelectContext<'_, G>,
+        child_id: Id,
+        children: &ChildArray<G::A>,
+        idx: usize,
+        _: Self::Aux,
+    ) -> f64 {
+        ctx.child_snapshot(child_id, children, idx)
+            .exploitation_score()
+    }
+
+    #[inline(always)]
+    fn unvisited_value(&self, ctx: &SelectContext<'_, G>, _: Self::Aux) -> f64 {
+        ctx.current_stats()
+            .value_estimate_unvisited(ctx.player, ctx.q_init)
+    }
+
+    fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
+        let current = ctx.index.get(ctx.stack.current_id());
+        let children = current.children();
+        let k = children.len();
+
+        let unvisited = <Self as SelectStrategy<G>>::unvisited_value(self, ctx, ());
+        let mut qs = Vec::with_capacity(k);
+        let mut ns = Vec::with_capacity(k);
+        for idx in 0..k {
+            let q = match proven_exact_value(ctx, children, idx) {
+                Some(v) => v,
+                None => match children.node_id(idx) {
+                    Some(cid) => ctx.child_snapshot(cid, children, idx).exploitation_score(),
+                    None if children.num_visits(idx) > 0 => ctx
+                        .child_snapshot(ctx.stack.current_id(), children, idx)
+                        .exploitation_score(),
+                    None => unvisited,
+                },
+            };
+            qs.push(q);
+            ns.push(children.num_visits(idx) as f64);
+        }
+
+        let n_total: f64 = ns.iter().sum();
+        let lambda = grill_lambda(self.exploration_constant, n_total, k);
+
+        // λ_N → 0 (large N, or c = 0): π̄ degenerates to a point mass on
+        // argmax Q -- skip the solve, argmax Q directly (tie-broken).
+        if lambda <= GRILL_LAMBDA_FLOOR {
+            return random_best_index_by(children, ctx, rng, |i| qs[i]);
+        }
+
+        let priors = vec![1.0 / k as f64; k];
+        let pi_bar = grill_pi_bar(&qs, &priors, lambda);
+        let discrepancy = grill_discrepancy(&pi_bar, &ns);
+        random_best_index_by(children, ctx, rng, |i| discrepancy[i])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +390,61 @@ mod tests {
             let freq = *c as f64 / n as f64;
             assert!((freq - w).abs() < 0.02, "freq {freq} vs weight {w}");
         }
+    }
+
+    #[test]
+    fn grill_lambda_matches_hand_computed() {
+        // 2 * sqrt(100) / (100 + 4) = 20 / 104
+        assert!((grill_lambda(2.0, 100.0, 4) - 20.0 / 104.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn grill_alpha_two_child_closed_form() {
+        // qs = [0, 0.5], priors = [0.5, 0.5], lambda = 0.4.
+        // 0.2/alpha + 0.2/(alpha - 0.5) = 1
+        //   => alpha^2 - 0.9 alpha + 0.1 = 0
+        //   => alpha = (0.9 + sqrt(0.81 - 0.4)) / 2 = (0.9 + sqrt(0.41)) / 2
+        let expected = (0.9 + 0.41f64.sqrt()) / 2.0;
+        let got = grill_alpha(&[0.0, 0.5], &[0.5, 0.5], 0.4);
+        assert!((got - expected).abs() < 1e-9, "got {got} vs {expected}");
+    }
+
+    #[test]
+    fn grill_alpha_stays_above_max_q() {
+        let qs = [-0.3, 0.2, 1.0, 0.7];
+        let priors = [0.25; 4];
+        let max_q = qs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        for lambda in [0.1, 1.0, 3.0] {
+            assert!(grill_alpha(&qs, &priors, lambda) > max_q);
+        }
+    }
+
+    #[test]
+    fn grill_pi_bar_sums_to_one() {
+        let qs = [-0.2, 0.5, 0.1];
+        let priors = [1.0 / 3.0; 3];
+        for lambda in [0.05, 0.5, 2.0] {
+            let pi = grill_pi_bar(&qs, &priors, lambda);
+            assert!((pi.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+            assert!(pi.iter().all(|&p| p > 0.0));
+        }
+    }
+
+    #[test]
+    fn grill_pi_bar_concentrates_on_argmax_q_as_lambda_shrinks() {
+        let pi = grill_pi_bar(&[0.1, 0.9, 0.3], &[1.0 / 3.0; 3], 1e-6);
+        assert!(pi[1] > 0.99, "{pi:?}");
+    }
+
+    #[test]
+    fn grill_discrepancy_rule_explores_low_visit_child() {
+        // pi_bar = [0.5, 0.3, 0.2], n = [10, 1, 1], N = 12.
+        // index 0's visit share (10/13) already exceeds its target, so the
+        // argmax discrepancy must land on an undershooting child.
+        let d = grill_discrepancy(&[0.5, 0.3, 0.2], &[10.0, 1.0, 1.0]);
+        let argmax = (0..3)
+            .max_by(|&a, &b| d[a].partial_cmp(&d[b]).unwrap())
+            .unwrap();
+        assert_ne!(argmax, 0, "{d:?}");
     }
 }

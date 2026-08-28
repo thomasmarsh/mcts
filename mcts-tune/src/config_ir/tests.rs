@@ -200,6 +200,103 @@ fn ments_select_spec_round_trips_through_json() {
 }
 
 #[test]
+fn grill_act_select_spec_round_trips_through_json() {
+    let json = r#"{"kind":"grill_act","c":1.4}"#;
+    let spec: SelectSpec = serde_json::from_str(json).unwrap();
+    assert_eq!(spec, SelectSpec::GrillAct { c: 1.4 });
+    assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+}
+
+#[test]
+fn build_search_runs_grill_act() {
+    let spec = SearchSpec {
+        select: SelectSpec::GrillAct { c: 1.0 },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Classic {},
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    validate_search_spec::<Nim>(&spec).unwrap();
+    let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+    let state = <Nim as Game>::S::default();
+    let action = search.choose_action(&state);
+    let mut legal = Vec::new();
+    Nim::generate_actions(&state, &mut legal);
+    assert!(legal.contains(&action));
+}
+
+#[test]
+fn score_bounded_uct_select_spec_round_trips_through_json() {
+    let json = r#"{"kind":"score_bounded_uct","c":1.4,"gamma":0.1,"delta":0.2}"#;
+    let spec: SelectSpec = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        spec,
+        SelectSpec::ScoreBoundedUct {
+            c: 1.4,
+            gamma: 0.1,
+            delta: 0.2
+        }
+    );
+    assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+}
+
+#[test]
+fn gpn_select_spec_round_trips_through_json() {
+    let json = r#"{"kind":"gpn","c":1.4,"c_pn":2.0,"bias":"sum"}"#;
+    let spec: SelectSpec = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        spec,
+        SelectSpec::Gpn {
+            c: 1.4,
+            c_pn: 2.0,
+            bias: mcts::select::GpnBias::Sum
+        }
+    );
+    assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+}
+
+#[test]
+fn build_search_runs_score_bounded_uct() {
+    let spec = SearchSpec {
+        select: SelectSpec::ScoreBoundedUct {
+            c: 1.0,
+            gamma: 0.1,
+            delta: 0.1,
+        },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Classic {},
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    validate_search_spec::<Nim>(&spec).unwrap();
+    let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+    let state = <Nim as Game>::S::default();
+    let action = search.choose_action(&state);
+    let mut legal = Vec::new();
+    Nim::generate_actions(&state, &mut legal);
+    assert!(legal.contains(&action));
+}
+
+#[test]
+fn build_search_runs_gpn() {
+    let spec = SearchSpec {
+        select: SelectSpec::Gpn {
+            c: 1.0,
+            c_pn: 1.0,
+            bias: mcts::select::GpnBias::Max,
+        },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Classic {},
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    validate_search_spec::<Nim>(&spec).unwrap();
+    let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+    let state = <Nim as Game>::S::default();
+    let action = search.choose_action(&state);
+    let mut legal = Vec::new();
+    Nim::generate_actions(&state, &mut legal);
+    assert!(legal.contains(&action));
+}
+
+#[test]
 fn softmax_backprop_spec_round_trips_through_json() {
     let json = r#"{"kind":"softmax","tau":1.0}"#;
     let spec: BackpropSpec = serde_json::from_str(json).unwrap();

@@ -285,6 +285,23 @@ impl<G: Game> Strategy<G> for Ments {
     }
 }
 
+/// Grill et al. ICML 2020 closed-form regularised-policy selector
+/// (`select::GrillAct`). A pure selection strategy -- plain `Classic` backup,
+/// `RobustChild` final action (a `π̄`-aware final action is deferred).
+#[derive(Clone, Default)]
+pub struct GrillAct;
+
+impl<G: Game> Strategy<G> for GrillAct {
+    type Select = select::GrillAct;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "grill_act".into()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Ucb1Tuned;
 

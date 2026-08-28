@@ -1276,6 +1276,64 @@ fn ments_prefers_the_winning_move() {
 }
 
 #[test]
+fn grill_act_prefers_the_winning_move() {
+    // Same near-terminal position as the MENTS / Power-UCT tests (playing 2
+    // wins immediately, playing 8 forces a draw). End-to-end check that
+    // `GrillAct::best_child` reads the right slot and the alpha solve never
+    // panics on a real tree. Small `c` => small lambda_N => near-greedy on Q.
+    use game_ttt::*;
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type M = Compose<select::GrillAct, simulate::Uniform, mcts::backprop::Classic>;
+    type TS = mcts::TreeSearch<G, M>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .select(select::GrillAct::with_c(0.3))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        assert_eq!(
+            ts.choose_action(&state),
+            Move(2),
+            "seed {seed}: should play the immediate winning move"
+        );
+    }
+
+    // c = 0 drives lambda_N below the floor -- the argmax-Q shortcut path.
+    for seed in 0..5 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(50)
+                .select(select::GrillAct::with_c(0.0))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        let action = ts.choose_action(&state);
+        let mut legal = Vec::new();
+        <TicTacToe as mcts::game::Game>::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&action), "seed {seed}: legal move");
+    }
+}
+
+#[test]
 fn test_td_backprop_lambda1_matches_classic() {
     // `TdBackprop { lambda: 1.0 }` returns `None` from `td_lambda`, so the
     // backprop walk threads the raw terminal return exactly as `Classic`

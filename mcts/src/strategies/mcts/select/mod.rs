@@ -27,6 +27,7 @@ pub use quasi::QuasiBestFirst;
 pub use rave::Rave;
 pub use rave::RaveSchedule;
 pub use rave::RaveUcb;
+pub use regularized::GrillAct;
 pub use regularized::Ments;
 pub use score_bounded::ScoreBoundedUct;
 pub use ucb::Ucb1;
