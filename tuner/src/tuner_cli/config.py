@@ -259,8 +259,12 @@ class SearchConfig:
         conds: list[CondDef] = []
         for c in raw.get("conditions", []):
             for parent, vals in c["if"].items():
-                if isinstance(vals, str):
+                if isinstance(vals, bool):
+                    vals = [str(vals).lower()]
+                elif isinstance(vals, str):
                     vals = [vals]
+                elif not isinstance(vals, list):
+                    vals = [str(vals)]
                 conds.append(CondDef(parent=parent, values=vals, children=c["then"]))
 
         cfg = SearchConfig(
