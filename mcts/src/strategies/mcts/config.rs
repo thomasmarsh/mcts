@@ -227,6 +227,12 @@ pub struct Requirements {
     /// no-op the way an unused `solver` bit does, it would silently run a
     /// select strategy that always sees `(0.0, 0.0)`.
     pub needs_posterior: bool,
+    /// This component (`select::Ments`) selects on the soft-Bellman
+    /// (mellowmax) value estimate that only `backprop::SoftmaxBackprop`
+    /// writes back into each node. Enforced by `SearchConfig::validate`
+    /// exactly like `needs_posterior` -- without the paired backup, MENTS
+    /// would silently run its E2W policy against plain Monte-Carlo means.
+    pub needs_softmax_value: bool,
 }
 
 impl Requirements {
@@ -241,6 +247,7 @@ impl Requirements {
             solver: false,
             max_players: None,
             needs_posterior: false,
+            needs_softmax_value: false,
         }
     }
 
@@ -262,6 +269,7 @@ impl Requirements {
                 (Some(a), Some(b)) => Some(if a < b { a } else { b }),
             },
             needs_posterior: self.needs_posterior || other.needs_posterior,
+            needs_softmax_value: self.needs_softmax_value || other.needs_softmax_value,
         }
     }
 
@@ -871,6 +879,13 @@ where
                     .to_string(),
             );
         }
+        if self.requirements().needs_softmax_value && !self.backprop.provides_softmax_value() {
+            return Err(
+                "select strategy requires a softmax value backup (backprop::SoftmaxBackprop) \
+                 that provides the soft-Bellman value estimate MENTS/E2W selects on"
+                    .to_string(),
+            );
+        }
         if self.prior.is_some() {
             // `prior::PriorStrategy` seeds a not-yet-created child's stats
             // directly into `ChildArray`'s edge-owned rows and relies on
@@ -1229,6 +1244,25 @@ mod search_config_validate_tests {
         fn has_hidden_information() -> bool {
             true
         }
+    }
+
+    #[test]
+    fn validate_rejects_ments_select_with_classic_backprop() {
+        let config = SearchConfig::<
+            ThreePlayerGame,
+            strategy::Compose<select::Ments, simulate::Uniform, backprop::Classic>,
+        >::default();
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("softmax"), "{err}");
+    }
+
+    #[test]
+    fn validate_accepts_ments_select_with_softmax_backprop() {
+        let config = SearchConfig::<
+            ThreePlayerGame,
+            strategy::Compose<select::Ments, simulate::Uniform, backprop::SoftmaxBackprop>,
+        >::default();
+        assert!(config.validate().is_ok());
     }
 
     #[test]

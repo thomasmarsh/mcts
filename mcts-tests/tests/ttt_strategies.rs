@@ -1228,6 +1228,54 @@ fn test_power_mean_backprop_prefers_the_winning_move_to_a_forced_draw() {
 }
 
 #[test]
+fn ments_prefers_the_winning_move() {
+    // Same near-terminal position as the Power-UCT / MB-n tests (playing 2
+    // wins immediately, playing 8 forces a draw). End-to-end check that the
+    // mellowmax soft backup (`SoftmaxBackprop`) writes the slot the E2W
+    // policy (`select::Ments`) then reads: low `tau` + low `epsilon` makes
+    // the draw near-greedy on the soft value.
+    use game_ttt::*;
+    use mcts::backprop::SoftmaxBackprop;
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type M = Compose<select::Ments, simulate::Uniform, SoftmaxBackprop>;
+    type TS = mcts::TreeSearch<G, M>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .select(select::Ments::new(0.2, 0.02))
+                .backprop(SoftmaxBackprop::new(0.2))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        let action = ts.choose_action(&state);
+        assert_eq!(
+            action,
+            Move(2),
+            "seed {seed}: should play the immediate winning move, not the drawing one"
+        );
+    }
+}
+
+#[test]
 fn test_td_backprop_lambda1_matches_classic() {
     // `TdBackprop { lambda: 1.0 }` returns `None` from `td_lambda`, so the
     // backprop walk threads the raw terminal return exactly as `Classic`

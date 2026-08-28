@@ -145,4 +145,9 @@ register_backprop! {
     // no bool type (same as `depth` above).
     Td { lambda: f64, max_child: u32 } =>
         backprop::TdBackprop::new(lambda, max_child != 0),
+    // MENTS soft value backup (Xiao et al., NeurIPS 2019), mellowmax form
+    // (Asadi & Littman 2017 -- bounded, unlike literal log-sum-exp).
+    // `tau -> 0` is the max backup, `tau -> inf` is `Classic`. Pairs with
+    // `select::Ments` (`Requirements::needs_softmax_value`).
+    Softmax { tau: f64 } => backprop::SoftmaxBackprop::new(tau),
 }

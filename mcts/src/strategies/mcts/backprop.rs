@@ -587,6 +587,90 @@ pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
     }
 }
 
+/// Below this temperature `(q - m) / tau` overflows to `±inf` for every
+/// non-max entry, so `mellowmax` is exactly the plain max there anyway.
+pub(crate) const MELLOW_TAU_FLOOR: f64 = 1e-6;
+
+/// τ-mellowmax of `qs` (Asadi & Littman, "An Alternative Softmax Operator
+/// for Reinforcement Learning", ICML 2017):
+/// `V = τ · ln( (1/K) · Σ exp(q_k / τ) )`. Unlike the literal log-sum-exp
+/// `τ · ln Σ exp(q/τ)` MENTS's paper writes (Xiao et al., NeurIPS 2019),
+/// this subtracts the `τ·ln K` constant, so `min qs ≤ V ≤ max qs` at every
+/// node instead of `V ≥ max qs` compounding `τ·ln K` per ply up the tree
+/// and diverging outside this codebase's `[-1, 1]` utility range. `V → max`
+/// as `τ → 0`, `V → mean` as `τ → ∞` (the `Classic` arithmetic backup).
+/// Max-shifted for numerical stability; `qs` must be non-empty, `tau > 0`.
+#[inline]
+pub(crate) fn mellowmax(qs: &[f64], tau: f64) -> f64 {
+    debug_assert!(!qs.is_empty() && tau > 0.0);
+    let k = qs.len() as f64;
+    let m = qs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if tau <= MELLOW_TAU_FLOOR {
+        return m;
+    }
+    let sum_exp: f64 = qs.iter().map(|&q| ((q - m) / tau).exp()).sum();
+    m + tau * (sum_exp / k).ln()
+}
+
+/// MENTS's soft value backup (Xiao et al., NeurIPS 2019): recomputes
+/// `node`'s own per-player value as the τ-`mellowmax` of its
+/// already-searched children instead of their arithmetic mean, and
+/// overwrites it in place via `slot` -- structurally identical to
+/// `derive_power_mean_value`, only the aggregation differs. Per-player
+/// independent (same 2-player over-optimism caveat, and the same deferral
+/// of a mellowmin-for-non-movers refinement). A `Proven` child contributes
+/// its exact `±1`/`0` value, never a smoothed one; a child proven a loss
+/// for the mover (`Proven::Win(w != node.player_idx)`) is dead and
+/// contributes to no player's aggregate; a child with no tree node yet or
+/// zero visits is skipped. No-op when no child qualifies or `node` isn't
+/// `Expanded`. `tau` is floored at `MELLOW_TAU_FLOOR` (defence in depth --
+/// the tuner floor is higher, but a hand-written config could pass 0).
+pub(crate) fn derive_softmax_value<A: crate::game::Action>(
+    node: &node::Node<A>,
+    slot: &PosteriorSlot<A>,
+    index: &TreeIndex<A>,
+    num_players: usize,
+    tau: f64,
+) {
+    let tau = tau.max(MELLOW_TAU_FLOOR);
+
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+
+    let mover = node.player_idx;
+
+    for player in 0..num_players {
+        let mut qs = Vec::with_capacity(children.len());
+
+        for i in 0..children.len() {
+            let Some(child_id) = children.node_id(i) else {
+                continue;
+            };
+            if children.num_visits(i) == 0 {
+                continue;
+            }
+            if matches!(index.get(child_id).proven(), Proven::Win(w) if w != mover) {
+                continue;
+            }
+            let q = match index.get(child_id).proven() {
+                Proven::Win(w) if w == player => 1.0,
+                Proven::Win(_) => -1.0,
+                Proven::Draw => 0.0,
+                Proven::Unproven => children.expected_score(i, player),
+            }
+            .clamp(-1.0, 1.0);
+            qs.push(q);
+        }
+
+        if qs.is_empty() {
+            continue;
+        }
+
+        slot.overwrite_score(player, mellowmax(&qs, tau).clamp(-1.0, 1.0));
+    }
+}
+
 /// Normal-normal conjugate update of a node's *own* observations (its
 /// accumulated `score`/`num_visits`, ignoring any children) into a
 /// posterior `(mean, variance)` -- Tesauro/Rajan/Segal 2010's leaf-node
@@ -839,6 +923,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     /// against this at `SearchConfig::validate()`-time so that pairing is
     /// caught as a config error rather than silently reading zeroed fields.
     fn provides_posterior(&self) -> bool {
+        false
+    }
+
+    /// Whether this strategy replaces each ancestor's arithmetic-mean value
+    /// with a soft-Bellman (mellowmax) aggregate via `recompute_value`.
+    /// `select::Ments` sets `Requirements::needs_softmax_value`, checked
+    /// against this at `SearchConfig::validate()`-time so the E2W / soft-
+    /// backup pairing is a config error rather than MENTS silently selecting
+    /// on plain Monte-Carlo means. Overridden only by `SoftmaxBackprop`.
+    fn provides_softmax_value(&self) -> bool {
         false
     }
 
@@ -1537,6 +1631,70 @@ impl BackpropStrategy for PowerMeanBackprop {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// MENTS's soft value backup (Xiao, Huang, Weinman, Müller, "Maximum
+/// Entropy Monte-Carlo Planning", NeurIPS 2019): after the ordinary
+/// Monte-Carlo `update`, recomputes every ancestor's own value as the
+/// τ-mellowmax of its children (Asadi & Littman, ICML 2017 -- bounded,
+/// unlike the paper's literal log-sum-exp; see `mellowmax` /
+/// `derive_softmax_value`). `tau → 0` recovers the max backup, `tau → ∞`
+/// approaches the `Classic` arithmetic mean. Pairs with `select::Ments`
+/// (the E2W stochastic tree policy), which sets
+/// `Requirements::needs_softmax_value` -- `SearchConfig::validate` rejects
+/// `Ments` without this backprop. RENTS / TENTS (Dam et al., ICML 2021 --
+/// Tsallis / Rényi regularisers) are a deferred follow-up; there is no
+/// `mode` enum.
+#[derive(Debug, Clone, Copy)]
+pub struct SoftmaxBackprop {
+    /// Entropy-regularisation temperature. `→ 0` recovers the max backup,
+    /// `→ ∞` recovers the `Classic` arithmetic mean. Tuner bounds
+    /// `[0.05, 5.0]`, default `1.0`.
+    pub tau: f64,
+    /// Plies of ancestors above the leaf that get the soft backup. `None` =
+    /// every ancestor (the useful default); parity with
+    /// `PowerMeanBackprop::depth`.
+    pub depth: Option<u32>,
+}
+
+impl Default for SoftmaxBackprop {
+    fn default() -> Self {
+        Self {
+            tau: 1.0,
+            depth: None,
+        }
+    }
+}
+
+impl SoftmaxBackprop {
+    pub fn new(tau: f64) -> Self {
+        Self { tau, depth: None }
+    }
+}
+
+impl BackpropStrategy for SoftmaxBackprop {
+    fn provides_softmax_value(&self) -> bool {
+        true
+    }
+
+    fn recompute_depth(&self) -> u32 {
+        // No `tau` makes the recompute a literal no-op (the `τ → ∞` limit
+        // only *approaches* the mean), so -- unlike `PowerMeanBackprop` --
+        // there is no bit-identical-`Classic` shortcut.
+        self.depth.unwrap_or(u32::MAX)
+    }
+
+    fn recompute_value<A: crate::game::Action>(
+        &self,
+        node: &node::Node<A>,
+        slot: &PosteriorSlot<A>,
+        index: &TreeIndex<A>,
+        num_players: usize,
+    ) {
+        derive_softmax_value(node, slot, index, num_players, self.tau);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /// Sarsa-UCT(λ) / TD(λ) bootstrapped backup (Vodopivec, Samothrakis, Šter,
 /// "On Monte Carlo Tree Search and Reinforcement Learning", JAIR 2017): after
 /// a playout, each ancestor accumulates a truncated λ-return
@@ -1875,5 +2033,119 @@ mod bayes_tests {
             variance > min_input_variance * 0.1,
             "variance {variance:e} collapsed far below the smallest input variance {min_input_variance:e}"
         );
+    }
+}
+
+#[cfg(test)]
+mod softmax_tests {
+    use super::*;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    #[test]
+    fn mellowmax_matches_hand_computed() {
+        // m = 1; sum_exp = e^-1 + 1 = 1.3678794; 1 + ln(1.3678794 / 2).
+        let got = mellowmax(&[0.0, 1.0], 1.0);
+        let expected = 1.0 + ((1.0f64.exp().recip() + 1.0) / 2.0).ln();
+        assert!((got - expected).abs() < 1e-9, "got {got}");
+        assert!((got - 0.620_114).abs() < 1e-5, "got {got}");
+    }
+
+    #[test]
+    fn mellowmax_tau_to_zero_is_max() {
+        assert!((mellowmax(&[-0.3, 0.7, 0.1], 1e-9) - 0.7).abs() < 1e-9);
+        // The `tau <= MELLOW_TAU_FLOOR` early-return path.
+        assert_eq!(mellowmax(&[-0.3, 0.7, 0.1], MELLOW_TAU_FLOOR / 2.0), 0.7);
+    }
+
+    #[test]
+    fn mellowmax_tau_large_is_mean() {
+        let got = mellowmax(&[-0.5, 0.0, 0.5, 1.0], 1e6);
+        assert!((got - 0.25).abs() < 1e-3, "got {got}");
+    }
+
+    #[test]
+    fn mellowmax_shift_invariant() {
+        for c in [-0.4, 0.0, 0.3, 1.7] {
+            let base = mellowmax(&[0.2, -0.1], 0.7);
+            let shifted = mellowmax(&[0.2 + c, -0.1 + c], 0.7);
+            assert!((shifted - (base + c)).abs() < 1e-9, "c = {c}");
+        }
+    }
+
+    #[test]
+    fn mellowmax_bracketed_by_min_and_max() {
+        let qs = [-0.8, -0.2, 0.1, 0.55, 0.9];
+        let lo = qs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = qs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        for tau in [0.1, 1.0, 3.0] {
+            let v = mellowmax(&qs, tau);
+            assert!(lo - 1e-12 <= v && v <= hi + 1e-12, "tau = {tau}, v = {v}");
+        }
+    }
+
+    // Arena check for `derive_softmax_value`, mirroring the
+    // `derive_power_mean_value` arena tests in `strategies/tests.rs`.
+    #[test]
+    fn derive_softmax_value_hand_verified_and_proven_handling() {
+        let build = |prove_idx0: Option<Proven>, visit_idx2: bool| {
+            let index = TreeIndex::<u32>::new();
+            let c0 = index.insert(Node::new(1, 0));
+            let c1 = index.insert(Node::new(1, 0));
+            let c2 = index.insert(Node::new(1, 0));
+            if let Some(p) = prove_idx0 {
+                index.get(c0).try_prove(p);
+            }
+
+            let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
+            children.get_or_create_child(0, || c0);
+            children.update(0, &[0.2, -0.2]);
+            children.get_or_create_child(1, || c1);
+            children.update(1, &[0.6, -0.6]);
+            children.get_or_create_child(2, || c2);
+            if visit_idx2 {
+                children.update(2, &[-0.4, 0.4]);
+            }
+
+            let root = Node::<u32>::new(0, 0);
+            root.expand(|| NodeState::Expanded(children));
+            root.stats.update(&[0.0, 0.0]);
+
+            let slot = PosteriorSlot::Root(&root.stats);
+            derive_softmax_value(&root, &slot, &index, 2, 0.5);
+            let n = root.stats.num_visits().max(1) as f64;
+            (root.stats.score(0) / n, root.stats.score(1) / n)
+        };
+
+        // Unproven, idx2 unvisited -> mellowmax over the two visited children.
+        let (p0, _) = build(None, false);
+        assert!((p0 - mellowmax(&[0.2, 0.6], 0.5)).abs() < 1e-9, "p0 = {p0}");
+
+        // idx0 proven Draw contributes exact 0.0, not its MC 0.2.
+        let (p0, _) = build(Some(Proven::Draw), false);
+        assert!((p0 - mellowmax(&[0.0, 0.6], 0.5)).abs() < 1e-9, "p0 = {p0}");
+
+        // idx0 proven a loss for the mover (player 1 wins) is dead: excluded
+        // from every player's aggregate.
+        let (p0, p1) = build(Some(Proven::Win(1)), true);
+        assert!(
+            (p0 - mellowmax(&[0.6, -0.4], 0.5)).abs() < 1e-9,
+            "p0 = {p0}"
+        );
+        assert!(
+            (p1 - mellowmax(&[-0.6, 0.4], 0.5)).abs() < 1e-9,
+            "p1 = {p1}"
+        );
+    }
+
+    #[test]
+    fn derive_softmax_value_noop_on_bare_leaf() {
+        let index = TreeIndex::<u32>::new();
+        let leaf = Node::<u32>::new(0, 0);
+        leaf.stats.update(&[0.3, -0.3]);
+        let slot = PosteriorSlot::Root(&leaf.stats);
+        derive_softmax_value(&leaf, &slot, &index, 2, 1.0);
+        let n = leaf.stats.num_visits().max(1) as f64;
+        assert!((leaf.stats.score(0) / n - 0.3).abs() < 1e-12);
     }
 }

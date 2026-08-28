@@ -229,6 +229,7 @@ register_select! {
     Ucb1Tuned { c: f64 } => select::Ucb1Tuned::with_c(c),
     UcbV { c: f64 } => select::UcbV::with_c(c),
     KlUcb { c: f64 } => select::KlUcb::with_c(c),
+    Ments { tau: f64, epsilon: f64 } => select::Ments::new(tau, epsilon),
     Amaf { alpha: f64, c: f64 } => select::Amaf::new().alpha(alpha).exploration_constant(c),
     Rave { threshold: u32, schedule: select::RaveSchedule, ucb: select::RaveUcb } =>
         select::Rave::new(threshold, schedule, ucb),

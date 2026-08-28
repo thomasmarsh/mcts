@@ -133,6 +133,20 @@ pub fn provides_posterior(spec: &BackpropSpec) -> bool {
     with_backprop(spec, ProvidesPosteriorCont)
 }
 
+/// Whether `spec` resolves to a `BackpropStrategy` that writes the
+/// mellowmax soft-Bellman value (`SoftmaxBackprop`) `select::Ments` selects
+/// on -- dispatched through `with_backprop`, same as `provides_posterior`.
+pub fn provides_softmax_value(spec: &BackpropSpec) -> bool {
+    struct ProvidesSoftmaxValueCont;
+    impl BackpropCont for ProvidesSoftmaxValueCont {
+        type Output = bool;
+        fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> bool {
+            backprop.provides_softmax_value()
+        }
+    }
+    with_backprop(spec, ProvidesSoftmaxValueCont)
+}
+
 /// Validates a `SearchSpec`'s cross-axis coupling that `register_select!`/
 /// `register_backprop!`'s dispatch alone can't catch: `BayesUct1`/
 /// `BayesUct2` (`select`/`final_action`) set `Requirements::needs_posterior`,
@@ -152,6 +166,9 @@ pub fn validate_search_spec<G: Game + 'static>(spec: &SearchSpec) -> Result<(), 
              (bayes_gaussian/bayes_numeric) that provides posterior mean/variance estimates"
                 .to_string(),
         );
+    }
+    if reqs.needs_softmax_value && !provides_softmax_value(&spec.backprop) {
+        return Err("select strategy 'ments' requires backprop 'softmax'".to_string());
     }
     Ok(())
 }

@@ -178,6 +178,12 @@ register_field! {
     // bootstraps each node from its children's current estimates. Adversarial-
     // game guidance: the useful band is [0.8, 1.0], so sweep the top densely.
     lambda: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 1.0}),
+    // MENTS/E2W softmax temperature (Xiao et al., NeurIPS 2019) -- shared by
+    // `select::Ments` (E2W policy) and `backprop::SoftmaxBackprop` (soft
+    // backup). `-> 0` is a max backup, `-> inf` the arithmetic mean. Sweep
+    // log-scale in the search-space YAML (distribution: loguniform); the
+    // schema itself has no log flag.
+    tau: f64 => json!({"type": "float", "bounds": [0.05, 5.0], "default": 1.0}),
     // `backprop::TdBackprop`'s MaxMCTS(λ) toggle (Khandelwal et al. ICML 2016):
     // 1 bootstraps from max over children instead of the on-path child. Named
     // `td_max_child` (not `max_child`) to match how this table disambiguates.
@@ -819,6 +825,22 @@ register_family! {
             lambda: t.lambda.ok_or_else(|| missing("lambda"))?,
             max_child: t.td_max_child.ok_or_else(|| missing("td_max_child"))?,
         },
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    })),
+    // MENTS: E2W stochastic selection + mellowmax soft backup, paired. Both
+    // axes take the same tau (the select half for the E2W policy, the
+    // backprop half for the value backup) -- one tuner `tau` field feeds
+    // both, the way `bayes_uct1_gaussian` pins its select/backprop pair. `ε`
+    // is the E2W exploration floor.
+    "ments" => [tau, epsilon, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::Ments {
+            tau: p.tau.ok_or_else(|| missing("tau"))?,
+            epsilon: p.epsilon.ok_or_else(|| missing("epsilon"))?,
+        },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Softmax { tau: p.tau.ok_or_else(|| missing("tau"))? },
         solver_loss_threshold: None,
         contempt_factor: None,
     })),

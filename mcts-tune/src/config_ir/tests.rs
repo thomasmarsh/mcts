@@ -186,6 +186,79 @@ fn build_search_runs_bayes_uct_paired_with_bayes_backprop() {
 }
 
 #[test]
+fn ments_select_spec_round_trips_through_json() {
+    let json = r#"{"kind":"ments","tau":1.0,"epsilon":0.1}"#;
+    let spec: SelectSpec = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        spec,
+        SelectSpec::Ments {
+            tau: 1.0,
+            epsilon: 0.1
+        }
+    );
+    assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+}
+
+#[test]
+fn softmax_backprop_spec_round_trips_through_json() {
+    let json = r#"{"kind":"softmax","tau":1.0}"#;
+    let spec: BackpropSpec = serde_json::from_str(json).unwrap();
+    assert_eq!(spec, BackpropSpec::Softmax { tau: 1.0 });
+    assert_eq!(serde_json::to_string(&spec).unwrap(), json);
+}
+
+/// `select::Ments` sets `Requirements::needs_softmax_value`, which only
+/// `backprop::SoftmaxBackprop` satisfies -- `Classic` must be rejected.
+#[test]
+fn validate_search_spec_rejects_ments_select_paired_with_classic_backprop() {
+    let spec = SearchSpec {
+        select: SelectSpec::Ments {
+            tau: 1.0,
+            epsilon: 0.1,
+        },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Classic {},
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    let err = validate_search_spec::<Nim>(&spec).unwrap_err();
+    assert!(err.contains("softmax"), "{err}");
+}
+
+#[test]
+fn validate_search_spec_accepts_ments_select_paired_with_softmax_backprop() {
+    let spec = SearchSpec {
+        select: SelectSpec::Ments {
+            tau: 1.0,
+            epsilon: 0.1,
+        },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Softmax { tau: 1.0 },
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    assert!(validate_search_spec::<Nim>(&spec).is_ok());
+}
+
+#[test]
+fn build_search_runs_ments_paired_with_softmax_backprop() {
+    let spec = SearchSpec {
+        select: SelectSpec::Ments {
+            tau: 0.5,
+            epsilon: 0.1,
+        },
+        simulate: SimulateSpec::Uniform {},
+        backprop: BackpropSpec::Softmax { tau: 0.5 },
+        final_action: FinalActionSpec::RobustChild {},
+    };
+    validate_search_spec::<Nim>(&spec).unwrap();
+    let mut search = build_search::<Nim>(&spec, &nim_search_settings());
+    let state = <Nim as Game>::S::default();
+    let action = search.choose_action(&state);
+    let mut legal = Vec::new();
+    Nim::generate_actions(&state, &mut legal);
+    assert!(legal.contains(&action));
+}
+
+#[test]
 fn epsilon_greedy_wraps_an_arbitrary_inner_spec() {
     let json =
         r#"{"kind":"epsilon_greedy","epsilon":0.2,"inner":{"kind":"uct_pn","c":1.4,"c_pn":1.0}}"#;

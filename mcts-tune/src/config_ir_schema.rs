@@ -137,6 +137,13 @@ fn select_base_variants() -> Vec<Value> {
         variant("ucb_v", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
         variant("kl_ucb", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
         variant(
+            "ments",
+            vec![
+                field("tau", float([0.05, 5.0], 1.0)),
+                field("epsilon", float([0.0, 1.0], 0.1)),
+            ],
+        ),
+        variant(
             "amaf",
             vec![
                 field("alpha", float([0.0, 1.0], 1.0)),
@@ -205,6 +212,7 @@ fn backprop_variants() -> Vec<Value> {
                 field("max_child", int([0, 1], 0)),
             ],
         ),
+        variant("softmax", vec![field("tau", float([0.05, 5.0], 1.0))]),
     ]
 }
 
@@ -330,6 +338,7 @@ mod tests {
             SelectSpec::Ucb1Tuned { .. } => "ucb1_tuned",
             SelectSpec::UcbV { .. } => "ucb_v",
             SelectSpec::KlUcb { .. } => "kl_ucb",
+            SelectSpec::Ments { .. } => "ments",
             SelectSpec::Amaf { .. } => "amaf",
             SelectSpec::Rave { .. } => "rave",
             SelectSpec::UctPn { .. } => "uct_pn",
@@ -346,6 +355,7 @@ mod tests {
                 "ucb1_tuned",
                 "ucb_v",
                 "kl_ucb",
+                "ments",
                 "amaf",
                 "rave",
                 "uct_pn",
@@ -361,6 +371,7 @@ mod tests {
             BaseSelectSpec::Ucb1Tuned { .. } => "ucb1_tuned",
             BaseSelectSpec::UcbV { .. } => "ucb_v",
             BaseSelectSpec::KlUcb { .. } => "kl_ucb",
+            BaseSelectSpec::Ments { .. } => "ments",
             BaseSelectSpec::Amaf { .. } => "amaf",
             BaseSelectSpec::Rave { .. } => "rave",
             BaseSelectSpec::UctPn { .. } => "uct_pn",
@@ -376,6 +387,7 @@ mod tests {
                 "ucb1_tuned",
                 "ucb_v",
                 "kl_ucb",
+                "ments",
                 "amaf",
                 "rave",
                 "uct_pn",
@@ -436,6 +448,7 @@ mod tests {
             BackpropSpec::BayesNumeric { .. } => "bayes_numeric",
             BackpropSpec::PowerMean { .. } => "power_mean",
             BackpropSpec::Td { .. } => "td",
+            BackpropSpec::Softmax { .. } => "softmax",
         };
         let _ = assert_backprop_variant_named;
         cover(
@@ -446,6 +459,7 @@ mod tests {
                 "bayes_numeric",
                 "power_mean",
                 "td",
+                "softmax",
             ],
         );
 

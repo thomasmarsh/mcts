@@ -267,6 +267,24 @@ impl<G: Game> Strategy<G> for AmafMast {
     }
 }
 
+/// MENTS: E2W stochastic selection (`select::Ments`) paired with the
+/// mellowmax soft value backup (`backprop::SoftmaxBackprop`). Both halves
+/// must travel together (`Requirements::needs_softmax_value`). `final_action`
+/// stays `RobustChild` -- a MENTS-aware final action is deferred.
+#[derive(Clone, Default)]
+pub struct Ments;
+
+impl<G: Game> Strategy<G> for Ments {
+    type Select = select::Ments;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::SoftmaxBackprop;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ments".into()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Ucb1Tuned;
 
