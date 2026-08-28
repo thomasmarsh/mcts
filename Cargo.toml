@@ -30,6 +30,7 @@ game-oh-hell = { path = "games/oh-hell" }
 game-phantom = { path = "games/phantom" }
 rand = { version = "0.8.5", features = ["small_rng"] }
 rustc-hash = "1.1.0"
+rayon = "1.8.1"
 
 [lints]
 workspace = true
