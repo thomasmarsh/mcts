@@ -1149,6 +1149,21 @@ struct SolverState {
     dpn: AtomicU32,
     pn2: AtomicU32,
     dpn2: AtomicU32,
+    // Generalized Proof-Number MCTS (Kowalski, Soemers, Kosakowski &
+    // Winands, arXiv:2506.13249, 2025): one proof number *per player*,
+    // instead of `pn`/`dpn`'s single per-mover negamax pair. `player_pn[p]`
+    // is the minimum number of leaf nodes still to resolve to prove a win
+    // for player `p`, under the paranoid assumption that every other player
+    // cooperates against `p` (§3.1). Because a win for `p` is proven the
+    // moment any one of `p`'s own moves forces it but disproven only when
+    // every opponent reply fails, the node is an OR node in the layer where
+    // `p` moves and an AND node everywhere else -- so no disproof numbers
+    // are needed, and the scheme generalizes to any player count. Length
+    // `num_players`, maintained by `backprop::derive_player_pn`, seeded at
+    // `1` (PNS's "unknown leaf"). Read by `select::GpnUct`; inert (never
+    // read) when `use_mcts_solver` is off or no GPN select strategy is
+    // active, same as `pn`/`dpn`.
+    player_pn: Box<[AtomicU32]>,
     // Score-Bounded MCTS (Cazenave & Saffidine, CG 2010): the pessimistic
     // and optimistic bounds on this node's graded score, always from
     // player 0's ("Max's") perspective, maintained by
@@ -1166,13 +1181,14 @@ struct SolverState {
 }
 
 impl SolverState {
-    fn unproven() -> Self {
+    fn unproven(num_players: usize) -> Self {
         Self {
             proven: AtomicU8::new(Proven::UNPROVEN_U8),
             pn: AtomicU32::new(1),
             dpn: AtomicU32::new(1),
             pn2: AtomicU32::new(1),
             dpn2: AtomicU32::new(1),
+            player_pn: (0..num_players.max(1)).map(|_| AtomicU32::new(1)).collect(),
             pess: AtomicI32::new(i32::MIN),
             opti: AtomicI32::new(i32::MAX),
         }
@@ -1188,6 +1204,11 @@ impl Clone for SolverState {
             dpn: AtomicU32::new(self.dpn.load(Relaxed)),
             pn2: AtomicU32::new(self.pn2.load(Relaxed)),
             dpn2: AtomicU32::new(self.dpn2.load(Relaxed)),
+            player_pn: self
+                .player_pn
+                .iter()
+                .map(|a| AtomicU32::new(a.load(Relaxed)))
+                .collect(),
             pess: AtomicI32::new(self.pess.load(Relaxed)),
             opti: AtomicI32::new(self.opti.load(Relaxed)),
         }
@@ -1254,7 +1275,7 @@ where
             stats: NodeStats::new(num_players, has_amaf),
             incoming_edges: AtomicU32::new(0),
             state: OnceLock::new(),
-            solver: has_solver.then(|| Box::new(SolverState::unproven())),
+            solver: has_solver.then(|| Box::new(SolverState::unproven(num_players))),
         }
     }
 
@@ -1388,6 +1409,40 @@ where
         };
         solver.pn2.store(pn2, Relaxed);
         solver.dpn2.store(dpn2, Relaxed);
+    }
+
+    /// Generalized Proof-Number MCTS's per-player proof number (Kowalski et
+    /// al., arXiv:2506.13249, §3.1): the minimum number of leaf nodes still
+    /// to resolve to prove a paranoid forced win for player `p`. `0` once
+    /// `proven()` is `Win(p)`; saturated (`u32::MAX`) once `proven()` is
+    /// anything else -- another player's win *or* a draw, since only `p`'s
+    /// own win counts as a proof for `p` under the paranoid assumption
+    /// (§3.1). Otherwise the live count `backprop::derive_player_pn`
+    /// maintains, seeded at `1` for an unvisited leaf. Only meaningful with
+    /// `use_mcts_solver` on; `u32::MAX` (via the `None` arm) with the solver
+    /// off or `p` out of range.
+    #[inline]
+    pub fn player_pn(&self, p: usize) -> u32 {
+        match self.proven() {
+            Proven::Win(w) if w == p => 0,
+            Proven::Win(_) | Proven::Draw => u32::MAX,
+            Proven::Unproven => self
+                .solver
+                .as_ref()
+                .and_then(|s| s.player_pn.get(p))
+                .map_or(u32::MAX, |a| a.load(Relaxed)),
+        }
+    }
+
+    /// Overwrites player `p`'s live proof number. Called only from
+    /// `backprop::derive_player_pn`; not write-once (it tightens over
+    /// successive backprops until `proven()` resolves). No-ops with the
+    /// solver off or `p` out of range.
+    #[inline]
+    pub fn set_player_pn(&self, p: usize, pn: u32) {
+        if let Some(a) = self.solver.as_ref().and_then(|s| s.player_pn.get(p)) {
+            a.store(pn, Relaxed);
+        }
     }
 
     /// Score-Bounded MCTS's pessimistic bound: a lower bound on this
@@ -1537,10 +1592,12 @@ where
     /// `TreeSearch::memory_stats` to size the storage win from gating
     /// `Node`'s solver fields on `SearchConfig::use_mcts_solver`.
     pub(crate) fn solver_heap_bytes(&self) -> usize {
-        if self.solver.is_some() {
-            std::mem::size_of::<SolverState>()
-        } else {
-            0
+        match self.solver.as_ref() {
+            Some(s) => {
+                std::mem::size_of::<SolverState>()
+                    + s.player_pn.len() * std::mem::size_of::<AtomicU32>()
+            }
+            None => 0,
         }
     }
 }

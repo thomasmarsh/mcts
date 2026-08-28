@@ -194,6 +194,50 @@ pub(crate) fn derive_pn_dpn2<A: crate::game::Action>(node: &node::Node<A>, index
     node.set_pn_dpn2(pn2, dpn2);
 }
 
+/// Re-derives every player's per-player proof number on `node` from its
+/// children's already-updated numbers -- Generalized Proof-Number MCTS
+/// (Kowalski, Soemers, Kosakowski & Winands, arXiv:2506.13249, §3.1,
+/// Alg. 1 `UPDATEPROOFNUMBER`). For each player `p`: the node is an OR node
+/// in `p`'s proof tree when `p` is the node's own mover (`min` over
+/// children -- one forcing move suffices) and an AND node otherwise (`sum`
+/// -- every opponent reply must fail). An unexpanded child slot counts as
+/// PNS's unknown leaf, `1`, matching `derive_pn_dpn`'s treatment of the
+/// same case. A proven child contributes `0`/`u32::MAX` directly via
+/// `Node::player_pn`. Saturates rather than overflowing.
+///
+/// Unlike `derive_pn_dpn`'s single per-mover pair, this keeps `P` numbers
+/// per node, which is what makes the technique sound for more than two
+/// players and removes the need for a separate disproof-number recurrence.
+/// `A`-generic and `pub(crate)` for the same reason as `derive_pn_dpn`: a
+/// hand-built-arena test shouldn't need a real `Game`.
+pub(crate) fn derive_player_pn<A: crate::game::Action>(
+    node: &node::Node<A>,
+    index: &TreeIndex<A>,
+    num_players: usize,
+) {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+    let mover = node.player_idx;
+
+    for p in 0..num_players {
+        let is_or = p == mover;
+        let mut acc: u32 = if is_or { u32::MAX } else { 0 };
+        for i in 0..children.len() {
+            let child_pn = match children.node_id(i) {
+                Some(child_id) => index.get(child_id).player_pn(p),
+                None => 1,
+            };
+            if is_or {
+                acc = acc.min(child_pn);
+            } else {
+                acc = acc.saturating_add(child_pn);
+            }
+        }
+        node.set_player_pn(p, acc);
+    }
+}
+
 /// Re-derives `node`'s Score-Bounded MCTS interval `[pess, opti]` (Cazenave
 /// & Saffidine, *Score Bounded Monte-Carlo Tree Search*, CG 2010, §3.1-3.2)
 /// from its children's already-updated intervals -- the graded-score
@@ -887,6 +931,10 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 derive_proven(node, index);
                 derive_pn_dpn(node, index);
                 derive_pn_dpn2(node, index);
+                // GPN-MCTS: per-player proof numbers alongside the per-mover
+                // pair above. A no-op in cost only for a search whose select
+                // strategy never reads them (same posture as `derive_pn_dpn2`).
+                derive_player_pn(node, index, G::num_players());
                 // Score-Bounded MCTS: propagate the graded-score interval
                 // alongside the win/draw/loss proof. Two-player only, and a
                 // no-op unless the game overrides `Game::score_bounds()`.

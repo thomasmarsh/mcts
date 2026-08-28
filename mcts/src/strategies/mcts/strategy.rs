@@ -80,6 +80,25 @@ impl<G: Game> Strategy<G> for Ucb1Pn {
     }
 }
 
+// Vanilla UCT + Generalized Proof-Number MCTS selection (Kowalski, Soemers,
+// Kosakowski & Winands, arXiv:2506.13249): UCB1 plus a per-player
+// proof-number bias (PNMax by default). Only meaningful with
+// `use_mcts_solver` on -- see `select::GpnUct`'s doc comment. Unlike
+// `Ucb1Pn`, works at any player count.
+#[derive(Clone, Default)]
+pub struct Ucb1Gpn;
+
+impl<G: Game> Strategy<G> for Ucb1Gpn {
+    type Select = select::GpnUct;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_gpn".into()
+    }
+}
+
 // Vanilla UCT + Score-Bounded MCTS selection (Cazenave & Saffidine, CG
 // 2010): alpha-beta-style pruning + bound-induced value bias from each
 // node's graded-score interval. Only meaningful with `use_mcts_solver` on

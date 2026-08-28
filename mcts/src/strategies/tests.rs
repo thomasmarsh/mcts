@@ -2090,6 +2090,71 @@ fn test_derive_pn_dpn2_not_lost_goal_diverges_from_first_layer_on_a_draw() {
     assert_eq!(root.dpn2(), 2);
 }
 
+// GPN-MCTS per-player proof numbers (Kowalski et al., arXiv:2506.13249,
+// §3.1): `derive_player_pn` keeps one proof number per player. In a 3-player
+// node whose own mover is player 0, with one child proven Win(0), one
+// unexplored slot, and one unvisited leaf:
+//   - player 0 is an OR node: min(0, 1, 1) = 0 -- the forced win.
+//   - players 1 and 2 are AND nodes: the Win(0) child is player_pn = MAX for
+//     them (only their own win proves anything), so sum saturates to MAX.
+#[test]
+fn test_derive_player_pn_or_min_for_mover_and_saturating_sum_for_opponents() {
+    use crate::strategies::mcts::backprop::derive_player_pn;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let win0 = Node::<u32>::new_at_ply(1, 0, 1, 3, false, true);
+    win0.try_prove(Proven::Win(0));
+    let win0_id = index.insert(win0);
+
+    let leaf = Node::<u32>::new_at_ply(1, 0, 1, 3, false, true);
+    let leaf_id = index.insert(leaf);
+
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 3, false, false);
+    children.get_or_create_child(1, || win0_id);
+    children.get_or_create_child(2, || leaf_id);
+    // idx 0 left unresolved -- PNS's unknown leaf, counts as 1.
+
+    let root = Node::<u32>::new_at_ply(0, 0, 0, 3, false, true);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_player_pn(&root, &index, 3);
+
+    assert_eq!(root.player_pn(0), 0, "mover (OR): min over children");
+    assert_eq!(root.player_pn(1), u32::MAX, "opponent (AND): sum saturates");
+    assert_eq!(root.player_pn(2), u32::MAX);
+}
+
+// The AND/sum side without any infinity: a 3-player node whose mover is
+// player 1, two unvisited-leaf children (each player_pn = 1 for everyone).
+//   - player 1 (OR): min(1, 1) = 1.
+//   - players 0 and 2 (AND): 1 + 1 = 2.
+#[test]
+fn test_derive_player_pn_finite_sum() {
+    use crate::strategies::mcts::backprop::derive_player_pn;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let a = index.insert(Node::<u32>::new_at_ply(2, 0, 1, 3, false, true));
+    let b = index.insert(Node::<u32>::new_at_ply(2, 0, 1, 3, false, true));
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 3, false, false);
+    children.get_or_create_child(0, || a);
+    children.get_or_create_child(1, || b);
+
+    let root = Node::<u32>::new_at_ply(1, 0, 0, 3, false, true);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_player_pn(&root, &index, 3);
+
+    assert_eq!(root.player_pn(1), 1, "mover (OR)");
+    assert_eq!(root.player_pn(0), 2, "opponent (AND): finite sum");
+    assert_eq!(root.player_pn(2), 2);
+}
+
 // MCTS-Solver generalized to N-player games (Nijssen & Winands, CG 2010):
 // `derive_proven`'s "Standard" update rule for a node with more than one
 // possible opponent. At `num_players() == 2` there's only ever one possible
