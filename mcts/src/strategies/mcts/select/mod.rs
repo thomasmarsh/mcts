@@ -5,6 +5,7 @@ pub mod history;
 pub mod pn;
 pub mod quasi;
 pub mod rave;
+pub mod score_bounded;
 pub mod ucb;
 
 pub use amaf::Amaf;
@@ -21,6 +22,7 @@ pub use quasi::QuasiBestFirst;
 pub use rave::Rave;
 pub use rave::RaveSchedule;
 pub use rave::RaveUcb;
+pub use score_bounded::ScoreBoundedUct;
 pub use ucb::Ucb1;
 pub use ucb::Ucb1Tuned;
 

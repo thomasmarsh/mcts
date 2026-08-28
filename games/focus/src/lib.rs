@@ -837,6 +837,25 @@ impl<const P: usize> Game for Focus<P> {
         P
     }
 
+    /// Two-player only. The graded score is player 0's net capture margin,
+    /// `captured[0][1] - captured[1][0]`; each player starts with 18
+    /// pieces, so it can't leave `[-18, 18]`. Score-Bounded MCTS
+    /// (`select::ScoreBoundedUct`) uses this to prove and prune on the
+    /// margin, which plain win/loss proving throws away -- the "shortened"
+    /// capture-quota rule (Nijssen & Winands, CG 2010) makes many
+    /// terminals reachable within a search horizon, so the interval
+    /// actually tightens during play.
+    fn score_bounds() -> Option<(i32, i32)> {
+        (P == 2).then_some((-18, 18))
+    }
+
+    fn terminal_score(state: &State<P>) -> Option<i32> {
+        if P != 2 || matches!(state.terminal_status(), TerminalStatus::NotTerminal) {
+            return None;
+        }
+        Some(state.captured[0][1] as i32 - state.captured[1][0] as i32)
+    }
+
     fn notation(_state: &State<P>, m: &Move) -> String {
         let cell = m.cell();
         let (row, col) = (cell / 8, cell % 8);

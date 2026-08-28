@@ -6,6 +6,7 @@ use crate::game::Transform;
 
 use rustc_hash::FxHashMap;
 use std::str::FromStr;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::*;
@@ -1148,6 +1149,20 @@ struct SolverState {
     dpn: AtomicU32,
     pn2: AtomicU32,
     dpn2: AtomicU32,
+    // Score-Bounded MCTS (Cazenave & Saffidine, CG 2010): the pessimistic
+    // and optimistic bounds on this node's graded score, always from
+    // player 0's ("Max's") perspective, maintained by
+    // `backprop::derive_score_bounds`. Seeded at `i32::MIN`/`i32::MAX` --
+    // wider than any real game score, so an ancestor's first
+    // min/max-over-children combination that includes a still-unseeded
+    // child slot degrades gracefully (the seed acts as the "no information
+    // yet" bound and is clamped back into the game's real
+    // `Game::score_bounds()` range at the end of the recurrence). Only
+    // moved off the seed when `use_mcts_solver` is on *and* the game
+    // overrides `Game::score_bounds()`; inert (and never read) otherwise,
+    // same as `pn`/`dpn` with the solver off.
+    pess: AtomicI32,
+    opti: AtomicI32,
 }
 
 impl SolverState {
@@ -1158,11 +1173,13 @@ impl SolverState {
             dpn: AtomicU32::new(1),
             pn2: AtomicU32::new(1),
             dpn2: AtomicU32::new(1),
+            pess: AtomicI32::new(i32::MIN),
+            opti: AtomicI32::new(i32::MAX),
         }
     }
 }
 
-// Manual impl: `AtomicU8`/`AtomicU32` aren't `Clone`.
+// Manual impl: `AtomicU8`/`AtomicU32`/`AtomicI32` aren't `Clone`.
 impl Clone for SolverState {
     fn clone(&self) -> Self {
         Self {
@@ -1171,6 +1188,8 @@ impl Clone for SolverState {
             dpn: AtomicU32::new(self.dpn.load(Relaxed)),
             pn2: AtomicU32::new(self.pn2.load(Relaxed)),
             dpn2: AtomicU32::new(self.dpn2.load(Relaxed)),
+            pess: AtomicI32::new(self.pess.load(Relaxed)),
+            opti: AtomicI32::new(self.opti.load(Relaxed)),
         }
     }
 }
@@ -1369,6 +1388,52 @@ where
         };
         solver.pn2.store(pn2, Relaxed);
         solver.dpn2.store(dpn2, Relaxed);
+    }
+
+    /// Score-Bounded MCTS's pessimistic bound: a lower bound on this
+    /// node's graded score under optimal play, from player 0's ("Max's")
+    /// perspective. `i32::MIN` when nothing has been derived yet (the seed
+    /// -- see `SolverState::pess`) or the solver is off. Maintained by
+    /// `backprop::derive_score_bounds`; `pess() == opti()` means the
+    /// node's score is solved exactly.
+    #[inline]
+    pub fn pess(&self) -> i32 {
+        self.solver
+            .as_ref()
+            .map_or(i32::MIN, |s| s.pess.load(Relaxed))
+    }
+
+    /// Score-Bounded MCTS's optimistic bound -- the mirror of `pess()`: an
+    /// upper bound on this node's graded score, from player 0's
+    /// perspective. `i32::MAX` when unset / solver off.
+    #[inline]
+    pub fn opti(&self) -> i32 {
+        self.solver
+            .as_ref()
+            .map_or(i32::MAX, |s| s.opti.load(Relaxed))
+    }
+
+    /// Overwrites the live score bounds. Called only from
+    /// `backprop::derive_score_bounds`; not write-once (the interval
+    /// tightens over successive backprops until `pess == opti`). No-ops
+    /// when the solver is off, same as `set_pn_dpn`.
+    #[inline]
+    pub fn set_score_bounds(&self, pess: i32, opti: i32) {
+        let Some(solver) = self.solver.as_ref() else {
+            return;
+        };
+        solver.pess.store(pess, Relaxed);
+        solver.opti.store(opti, Relaxed);
+    }
+
+    /// Pins this node's score interval to an exact `score` -- for a
+    /// `NodeState::Terminal` node, whose real value `Game::terminal_score`
+    /// reports directly. Idempotent: a terminal node's score never
+    /// changes, so a redundant call from a racing thread writes the same
+    /// value. No-op with the solver off.
+    #[inline]
+    pub fn set_terminal_score(&self, score: i32) {
+        self.set_score_bounds(score, score);
     }
 
     #[inline]

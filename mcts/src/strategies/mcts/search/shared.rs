@@ -318,6 +318,15 @@ pub fn expand<'a, G: Game>(
                     TerminalStatus::Winner(w) => Proven::Win(w.to_index()),
                 };
                 node.try_prove(proven);
+                // Score-Bounded MCTS: pin this terminal node's interval to
+                // its exact graded score, the one place `Game::terminal_score`
+                // is consulted. Inert unless the game overrides
+                // `Game::score_bounds()`.
+                if G::score_bounds().is_some() {
+                    if let Some(score) = G::terminal_score(state) {
+                        node.set_terminal_score(score);
+                    }
+                }
             }
             NodeState::Terminal
         }

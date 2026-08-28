@@ -80,6 +80,25 @@ impl<G: Game> Strategy<G> for Ucb1Pn {
     }
 }
 
+// Vanilla UCT + Score-Bounded MCTS selection (Cazenave & Saffidine, CG
+// 2010): alpha-beta-style pruning + bound-induced value bias from each
+// node's graded-score interval. Only meaningful with `use_mcts_solver` on
+// and a two-player game that overrides `Game::score_bounds()` -- see
+// `select::ScoreBoundedUct`'s doc comment.
+#[derive(Clone, Default)]
+pub struct Ucb1ScoreBounded;
+
+impl<G: Game> Strategy<G> for Ucb1ScoreBounded {
+    type Select = select::ScoreBoundedUct;
+    type Simulate = simulate::Uniform;
+    type Backprop = backprop::Classic;
+    type FinalAction = select::RobustChild;
+
+    fn friendly_name() -> String {
+        "ucb1_score_bounded".into()
+    }
+}
+
 // UCT-PN + Mast
 #[derive(Clone, Default)]
 pub struct Ucb1PnMast;

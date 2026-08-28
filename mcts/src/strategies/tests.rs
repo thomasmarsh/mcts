@@ -2200,6 +2200,103 @@ fn test_derive_proven_draw_takes_priority_over_an_ambiguous_win_q() {
     );
 }
 
+// Score-Bounded MCTS (Cazenave & Saffidine, CG 2010): `derive_score_bounds`'s
+// min/max/clamp recurrence, hand-built the same way as the `derive_proven`
+// tests above. The integer combination is the error-prone part (which side
+// takes `max` vs `min`, whether an unexpanded slot widens the interval), so
+// it gets a direct test rather than only running inside a full search.
+#[test]
+fn test_derive_score_bounds_max_node_takes_max_over_children_and_dummy() {
+    use crate::strategies::mcts::backprop::derive_score_bounds;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child_a = Node::<u32>::new(1, 0);
+    child_a.set_score_bounds(2, 5);
+    let child_a_id = index.insert(child_a);
+
+    let child_b = Node::<u32>::new(1, 0);
+    child_b.set_score_bounds(-3, 10);
+    let child_b_id = index.insert(child_b);
+
+    // Three slots, only two resolved -- the third is the paper's dummy
+    // child `[score_min, score_max]`.
+    let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
+    children.get_or_create_child(0, || child_a_id);
+    children.get_or_create_child(1, || child_b_id);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_score_bounds(&root, &index, -18, 18, true);
+
+    assert_eq!(
+        root.pess(),
+        2,
+        "max node: pess = max child pess (dummy is -18)"
+    );
+    assert_eq!(
+        root.opti(),
+        18,
+        "max node: opti = max child opti (dummy is +18)"
+    );
+}
+
+#[test]
+fn test_derive_score_bounds_min_node_takes_min_over_children() {
+    use crate::strategies::mcts::backprop::derive_score_bounds;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child_a = Node::<u32>::new(0, 0);
+    child_a.set_score_bounds(2, 5);
+    let child_a_id = index.insert(child_a);
+
+    let child_b = Node::<u32>::new(0, 0);
+    child_b.set_score_bounds(-3, 10);
+    let child_b_id = index.insert(child_b);
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || child_a_id);
+    children.get_or_create_child(1, || child_b_id);
+
+    let root = Node::<u32>::new(1, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_score_bounds(&root, &index, -18, 18, false);
+
+    assert_eq!(root.pess(), -3, "min node: pess = min child pess");
+    assert_eq!(root.opti(), 5, "min node: opti = min child opti");
+}
+
+#[test]
+fn test_derive_score_bounds_clamps_into_game_range() {
+    use crate::strategies::mcts::backprop::derive_score_bounds;
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+
+    let child = Node::<u32>::new(1, 0);
+    child.set_score_bounds(-50, 50);
+    let child_id = index.insert(child);
+
+    let children = ChildArray::<u32>::new(vec![10], 2, false, false);
+    children.get_or_create_child(0, || child_id);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+
+    derive_score_bounds(&root, &index, -18, 18, true);
+
+    assert_eq!(root.pess(), -18);
+    assert_eq!(root.opti(), 18);
+}
+
 // MCTS-MB-n (Baier & Winands): `derive_minimax_value`'s backward-induction
 // backup, hand-verified on a tiny 3-child root -- small enough to compute
 // the expected overwrite by hand, which a purely behavioral test wouldn't

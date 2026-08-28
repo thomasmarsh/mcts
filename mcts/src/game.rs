@@ -247,6 +247,32 @@ pub trait Game: Sized + Clone + Sync + Send {
         2
     }
 
+    /// A-priori `(min, max)` bounds on the graded terminal score, from
+    /// player 0's ("Max's") perspective -- the score range Score-Bounded
+    /// MCTS (Cazenave & Saffidine, CG 2010) uses to seed a node's
+    /// pessimistic/optimistic interval before anything is proven about it.
+    /// `None` (the default) means the game exposes no graded score and
+    /// score-bounded search has nothing to do -- it stays on plain
+    /// win/draw/loss proving. Two-player only: the bound interval is a
+    /// single Max-vs-Min scalar, so a game returning `Some` here must have
+    /// `num_players() == 2`.
+    fn score_bounds() -> Option<(i32, i32)> {
+        None
+    }
+
+    /// The graded terminal score of `state` from player 0's ("Max's")
+    /// perspective, or `None` if `state` isn't terminal (or the game
+    /// exposes no graded score -- the default). Only consulted when
+    /// `score_bounds()` is `Some`; the value must lie within that range.
+    /// For a plain win/loss game this would be e.g. `+1`/`-1`/`0`, but the
+    /// point of overriding it is a game whose terminals differ in
+    /// *magnitude* (Focus's capture-count margin), which binary proving
+    /// can't distinguish.
+    #[allow(unused_variables)]
+    fn terminal_score(state: &Self::S) -> Option<i32> {
+        None
+    }
+
     /// Move notation for a given move relative to a given state.
     #[allow(unused)]
     fn notation(state: &Self::S, action: &Self::A) -> String {

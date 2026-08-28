@@ -194,6 +194,60 @@ pub(crate) fn derive_pn_dpn2<A: crate::game::Action>(node: &node::Node<A>, index
     node.set_pn_dpn2(pn2, dpn2);
 }
 
+/// Re-derives `node`'s Score-Bounded MCTS interval `[pess, opti]` (Cazenave
+/// & Saffidine, *Score Bounded Monte-Carlo Tree Search*, CG 2010, §3.1-3.2)
+/// from its children's already-updated intervals -- the graded-score
+/// counterpart to `derive_proven`. Bounds are always from player 0's
+/// ("Max's") perspective, so a node combines its children by `max` when its
+/// own mover is player 0 (`maximizing`) and by `min` otherwise, matching the
+/// paper's Max-node/Min-node rules. An unexpanded child slot counts as the
+/// paper's dummy child `[score_min, score_max]` (no information yet); a
+/// resolved child that no `derive_score_bounds` pass has reached is still on
+/// its `i32::MIN`/`i32::MAX` seed, which is the identity element for both
+/// `max` and `min` and lands on the same clamped result, so the two cases
+/// need no distinction here.
+///
+/// Two-player only -- the interval is a single Max-vs-Min scalar. Gated by
+/// the caller on `Game::score_bounds()` being `Some` and
+/// `Game::num_players() == 2`. `A`-generic and `pub(crate)` for the same
+/// reason as `derive_pn_dpn`: an integer min/max/clamp recurrence is easy to
+/// get subtly wrong, and a hand-built-arena test shouldn't need a real
+/// `Game`.
+pub(crate) fn derive_score_bounds<A: crate::game::Action>(
+    node: &node::Node<A>,
+    index: &TreeIndex<A>,
+    score_min: i32,
+    score_max: i32,
+    maximizing: bool,
+) {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+
+    let mut pess = if maximizing { i32::MIN } else { i32::MAX };
+    let mut opti = if maximizing { i32::MIN } else { i32::MAX };
+    for i in 0..children.len() {
+        let (child_pess, child_opti) = match children.node_id(i) {
+            Some(child_id) => {
+                let child = index.get(child_id);
+                (child.pess(), child.opti())
+            }
+            None => (score_min, score_max),
+        };
+        if maximizing {
+            pess = pess.max(child_pess);
+            opti = opti.max(child_opti);
+        } else {
+            pess = pess.min(child_pess);
+            opti = opti.min(child_opti);
+        }
+    }
+    node.set_score_bounds(
+        pess.clamp(score_min, score_max),
+        opti.clamp(score_min, score_max),
+    );
+}
+
 /// Where a node's Bayesian posterior is read from and written to during
 /// `BackpropStrategy::update_posterior` -- mirrors the root/edge split
 /// `BackpropStrategy::update`'s score accumulation already has (`NodeStats`
@@ -824,10 +878,29 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     if let Some(proven) = proven_from_terminal(&trial.terminal) {
                         node.try_prove(proven);
                     }
+                    if G::score_bounds().is_some() {
+                        if let Some(score) = G::terminal_score(&trial.state) {
+                            node.set_terminal_score(score);
+                        }
+                    }
                 }
                 derive_proven(node, index);
                 derive_pn_dpn(node, index);
                 derive_pn_dpn2(node, index);
+                // Score-Bounded MCTS: propagate the graded-score interval
+                // alongside the win/draw/loss proof. Two-player only, and a
+                // no-op unless the game overrides `Game::score_bounds()`.
+                if G::num_players() == 2 {
+                    if let Some((score_min, score_max)) = G::score_bounds() {
+                        derive_score_bounds(
+                            node,
+                            index,
+                            score_min,
+                            score_max,
+                            node.player_idx == 0,
+                        );
+                    }
+                }
             }
             is_leaf = false;
 
