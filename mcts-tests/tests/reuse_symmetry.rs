@@ -29,6 +29,7 @@ fn test_reuse_tree_self_play_traffic_lights_many_seeds_no_panic() {
             mcts::SearchConfig::default()
                 .max_iterations(500)
                 .reuse_tree(true)
+                .use_transpositions(true)
                 .seed(seed),
         );
 

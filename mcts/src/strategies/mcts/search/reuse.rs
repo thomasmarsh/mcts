@@ -99,6 +99,18 @@ where
     /// -- a `TableEntry` or `Node` doesn't stop meaning what it means just
     /// because the tree walk that would find it again got shorter).
     pub fn reuse_or_reset(&mut self, player_idx: usize, state: &G::S) -> Id {
+        // A canonicalized node can be shared by several literal orientations
+        // through the transposition table. Promoting it changes the root's
+        // action-orientation convention, but the same node may still be
+        // reached later through a different orientation. Until the arena
+        // records the orientation each ChildArray was created in, retaining
+        // that shared subtree is unsound: its actions can be applied to an
+        // occupied cell. Start a fresh literal root instead.
+        if self.config.canonicalizes() {
+            let root_id = self.reset(player_idx, G::zobrist_hash(state));
+            self.root_state = Some(state.clone());
+            return root_id;
+        }
         let hash = G::zobrist_hash(state);
         if self.config.reuse_tree && self.try_promote(state, hash).is_some() {
             self.root_state = Some(state.clone());
