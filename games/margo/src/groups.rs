@@ -51,6 +51,7 @@
 
 use bitboard::Adjacency;
 use pyramid::TouchingAdjacency;
+use std::fmt::Write as _;
 
 use crate::{go_board, ground_mask, Cells, GoBoard};
 
@@ -174,6 +175,38 @@ impl Groups {
         debug_assert!(self.color[index].is_some());
         let root = self.find_readonly(index);
         self.liberties[root]
+    }
+
+    /// A compact snapshot of the cached groups directly touching a candidate
+    /// placement. Used only when a supposedly generated action fails the
+    /// authoritative resolver, so it can favour diagnostic detail over the
+    /// normal hot path's allocation-free behaviour.
+    pub(crate) fn candidate_diagnostics(
+        &self,
+        index: usize,
+        adjacency: &TouchingAdjacency,
+    ) -> String {
+        let mut out = String::new();
+        for neighbor in adjacency.neighbors(index) {
+            match self.color[neighbor] {
+                None => {
+                    writeln!(out, "  neighbor {neighbor}: empty").unwrap();
+                }
+                Some(color) => {
+                    let root = self.find_readonly(neighbor);
+                    let liberties = self.liberties[root];
+                    writeln!(
+                        out,
+                        "  neighbor {neighbor}: color={}, root={root}, size={}, liberties={:?}",
+                        if color { "black" } else { "white" },
+                        self.size[root],
+                        liberties.iter_set().collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        out
     }
 
     /// Places a stone of colour `black` at `index` (must not already be
