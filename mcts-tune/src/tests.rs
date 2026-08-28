@@ -1818,6 +1818,13 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
                 "final_action": "robust_child",
             }),
         ),
+        (
+            "power_uct",
+            json!({
+                "family": "power_uct", "c": 1.4, "p": 4.0,
+                "final_action": "robust_child",
+            }),
+        ),
         ("random", json!({"family": "random"})),
         (
             "flat_mc",

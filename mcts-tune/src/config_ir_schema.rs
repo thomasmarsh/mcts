@@ -188,6 +188,13 @@ fn backprop_variants() -> Vec<Value> {
                 field("value_hi", float([-10.0, 10.0], 1.0)),
             ],
         ),
+        variant(
+            "power_mean",
+            vec![
+                field("p", float([1.0, 50.0], 1.0)),
+                field("depth", int([0, 64], 0)),
+            ],
+        ),
     ]
 }
 
@@ -409,9 +416,13 @@ mod tests {
             BackpropSpec::Classic {} => "classic",
             BackpropSpec::BayesGaussian { .. } => "bayes_gaussian",
             BackpropSpec::BayesNumeric { .. } => "bayes_numeric",
+            BackpropSpec::PowerMean { .. } => "power_mean",
         };
         let _ = assert_backprop_variant_named;
-        cover("backprop", &["classic", "bayes_gaussian", "bayes_numeric"]);
+        cover(
+            "backprop",
+            &["classic", "bayes_gaussian", "bayes_numeric", "power_mean"],
+        );
 
         let assert_final_action_variant_named = |s: &FinalActionSpec| match s {
             FinalActionSpec::RobustChild {} => "robust_child",

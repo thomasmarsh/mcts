@@ -128,4 +128,10 @@ register_backprop! {
         backprop::BayesGaussian::new(prior_variance, obs_variance),
     BayesNumeric { prior_variance: f64, obs_variance: f64, value_lo: f64, value_hi: f64 } =>
         backprop::BayesNumeric::new(prior_variance, obs_variance, value_lo, value_hi),
+    // Power-UCT (Dam et al., IJCAI 2020). `depth == 0` means "every ancestor"
+    // (the useful default); `depth > 0` limits the power-mean backup to the
+    // nearest N plies above the leaf. `p == 1.0` is `Classic` (the strategy
+    // disables its own recompute pass).
+    PowerMean { p: f64, depth: u32 } =>
+        backprop::PowerMeanBackprop::new(p, if depth == 0 { None } else { Some(depth) }),
 }

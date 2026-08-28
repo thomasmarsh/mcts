@@ -1180,6 +1180,54 @@ fn test_minimax_backprop_prefers_the_winning_move_to_a_forced_draw() {
 }
 
 #[test]
+fn test_power_mean_backprop_prefers_the_winning_move_to_a_forced_draw() {
+    // Same near-terminal position as the MB-n test above (playing 2 wins
+    // immediately, playing 8 forces a draw), exercising Power-UCT's
+    // per-ancestor power-mean backup. `PowerMeanBackprop::default()` has
+    // `p = 1.0` (the recompute pass is disabled -- identical to `Classic`),
+    // so the strategy is constructed with a large `p` to bias each
+    // ancestor's value toward its best child once both are visited.
+    use game_ttt::*;
+    use mcts::backprop::PowerMeanBackprop;
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type S = Compose<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
+    type TS = mcts::TreeSearch<G, S>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(30)
+                .backprop(PowerMeanBackprop::new(8.0, None))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        let action = ts.choose_action(&state);
+        assert_eq!(
+            action,
+            Move(2),
+            "seed {seed}: should play the immediate winning move, not the drawing one"
+        );
+    }
+}
+
+#[test]
 fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() {
     // Same near-terminal position as `test_minimax_rollout_prefers_the_
     // winning_move_to_a_forced_draw` above (two empty cells, X to move --

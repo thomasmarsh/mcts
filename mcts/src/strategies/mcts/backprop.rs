@@ -395,6 +395,100 @@ pub(crate) fn derive_minimax_value<A: crate::game::Action>(
     }
 }
 
+/// Power-UCT's per-ancestor value backup (Dam et al., "Generalized Mean
+/// Estimation in Monte-Carlo Tree Search", IJCAI 2020): recomputes `node`'s
+/// own per-player value as the visit-weighted Hölder power mean
+/// `V_p = (Σ_i (n_i / N) · q_i^p)^{1/p}` over its already-searched children,
+/// and overwrites it in place via `slot` (the same "recompute from children,
+/// overwrite the score sum" mechanism `derive_minimax_value` uses for
+/// MCTS-MB-n). `p = 1` is the plain visit-weighted mean; `p -> inf` is the
+/// max over children. The convergence proof for explicitly non-stationary
+/// tree nodes is Stochastic-Power-UCT (Dam et al., arXiv 2406.02235).
+///
+/// UNLIKE `derive_minimax_value`, this is per-player *independent*: player
+/// `p`'s row is the power mean of the children's `expected_score(_, p)`, not
+/// the mover-selected child's whole utility vector. Consequence: at `p > 1`
+/// every player's row is biased toward that player's own best child, so in a
+/// 2-player zero-sum game both sides read slightly winning -- the same
+/// over-optimism `derive_minimax_value`'s doc comment notes, and the reason
+/// `BayesGaussian` combines MAX for the mover but MIN for everyone else.
+/// Resolving that adversarial direction for a tunable `p` is deferred to the
+/// max/mixed backup work.
+///
+/// Numerics: utilities live in `[-1, 1]`; `q^p` for non-integer `p` is
+/// undefined on negatives, so `q` is shifted to `[0, 1]` before
+/// exponentiating and shifted back after. `p == 1` skips `powf` entirely
+/// (exact), and `p >= MAX_P` falls back to the plain max to dodge `qs^p`
+/// underflowing to `0` (then `0^{1/p} = 0`).
+///
+/// A child that is `Proven` contributes its exact value (`+1` / `0` / `-1`
+/// for this player), never a `powf`-smoothed one, regardless of `p`. A child
+/// with no tree node yet (`ChildArray::node_id(i).is_none()`) or zero visits
+/// is skipped -- PNS's "unknown leaf" treatment, same as `derive_pn_dpn` and
+/// `derive_minimax_value`. No-op (leaving the node's Monte-Carlo average
+/// untouched) when no child qualifies or `node` isn't `Expanded`.
+pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
+    node: &node::Node<A>,
+    slot: &PosteriorSlot<A>,
+    index: &TreeIndex<A>,
+    num_players: usize,
+    p: f64,
+) {
+    const POWF_FLOOR: f64 = 1e-12;
+    const MAX_P: f64 = 30.0;
+
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return;
+    };
+
+    for player in 0..num_players {
+        let mut n_sum = 0.0_f64;
+        let mut acc = 0.0_f64;
+        let mut max_q = f64::NEG_INFINITY;
+        let mut any = false;
+
+        for i in 0..children.len() {
+            let Some(child_id) = children.node_id(i) else {
+                continue;
+            };
+            let n = children.num_visits(i) as f64;
+            if n <= 0.0 {
+                continue;
+            }
+            let q = match index.get(child_id).proven() {
+                Proven::Win(w) if w == player => 1.0,
+                Proven::Win(_) => -1.0,
+                Proven::Draw => 0.0,
+                Proven::Unproven => children.expected_score(i, player),
+            }
+            .clamp(-1.0, 1.0);
+
+            any = true;
+            n_sum += n;
+            max_q = max_q.max(q);
+            let qs = (q + 1.0) / 2.0;
+            if p == 1.0 {
+                acc += n * qs;
+            } else {
+                acc += n * qs.max(POWF_FLOOR).powf(p);
+            }
+        }
+
+        if !any {
+            continue;
+        }
+
+        let value = if p == 1.0 {
+            (acc / n_sum) * 2.0 - 1.0
+        } else if p >= MAX_P {
+            max_q
+        } else {
+            (acc / n_sum).powf(1.0 / p) * 2.0 - 1.0
+        };
+        slot.overwrite_score(player, value);
+    }
+}
+
 /// Normal-normal conjugate update of a node's *own* observations (its
 /// accumulated `score`/`num_visits`, ignoring any children) into a
 /// posterior `(mean, variance)` -- Tesauro/Rajan/Segal 2010's leaf-node
@@ -676,15 +770,32 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) {
     }
 
-    /// MCTS-MB-n (Baier & Winands): how many plies of ancestors, counting
-    /// from (but not including) the just-backpropagated leaf, get their own
-    /// value overwritten with `derive_minimax_value`'s backup instead of
-    /// left as the ordinary Monte-Carlo average `update`'s per-node block
-    /// already wrote earlier this same call. `0` (the default) disables
-    /// this -- every ancestor keeps the untouched averaging behavior.
-    /// Overridden only by `MinimaxBackprop`.
-    fn mb_depth(&self) -> u32 {
+    /// How many plies of ancestors, counting from (but not including) the
+    /// just-backpropagated leaf, get their own per-player value *recomputed
+    /// from their children and overwritten in place* by `recompute_value`
+    /// below, instead of being left as the ordinary Monte-Carlo average
+    /// `update`'s per-node block already wrote earlier this same call. `0`
+    /// (the default) disables the pass entirely -- every ancestor keeps the
+    /// plain averaging behavior. `u32::MAX` means "every ancestor".
+    /// Overridden by `MinimaxBackprop` (MCTS-MB-n) and `PowerMeanBackprop`
+    /// (Power-UCT).
+    fn recompute_depth(&self) -> u32 {
         0
+    }
+
+    /// Recompute `node`'s own per-player value from its (already-updated-
+    /// this-call) children and overwrite it in place via `slot`. Called once
+    /// per ancestor within `recompute_depth()` plies of the leaf, leaf-to-
+    /// root, from `update` below. Default no-op. `index` is passed for
+    /// operators that need a child's proven status (`PowerMeanBackprop`);
+    /// operators that don't (`MinimaxBackprop`) ignore it.
+    fn recompute_value<A: crate::game::Action>(
+        &self,
+        _node: &node::Node<A>,
+        _slot: &PosteriorSlot<A>,
+        _index: &TreeIndex<A>,
+        _num_players: usize,
+    ) {
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -815,10 +926,10 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             .or_else(|| trial.cutoff_utilities.clone())
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
         let mut is_leaf = true;
-        let mb_depth = self.mb_depth();
+        let recompute_depth = self.recompute_depth();
         // Ply distance of the entry currently being processed from the
         // backpropagated leaf, `0` for the leaf's own entry. Only
-        // meaningful (and only read) when `mb_depth > 0`.
+        // meaningful (and only read) when `recompute_depth > 0`.
         for (ply_from_leaf, (parent_entry_opt, (node_id, node_idx))) in
             (0u32..).zip(stack.reverse_pairs2())
         {
@@ -882,15 +993,16 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 }
             }
 
-            // MCTS-MB-n: overwrite this node's own per-player value with
-            // the minimax backup from its own children, for ancestors
-            // strictly within `mb_depth` plies of the backpropagated leaf.
-            // `ply_from_leaf == 0` (the leaf's own entry) is deliberately
-            // excluded -- its value *is* this trial's rollout/evaluator
-            // result, not something to re-derive from children. No-op (the
-            // default `mb_depth() == 0`) for every non-`MinimaxBackprop`
-            // strategy, so this costs nothing when unused.
-            if mb_depth > 0 && (1..=mb_depth).contains(&ply_from_leaf) {
+            // Configured backup operator: recompute this node's own per-
+            // player value from its own children and overwrite it in place,
+            // for ancestors strictly within `recompute_depth` plies of the
+            // backpropagated leaf. `ply_from_leaf == 0` (the leaf's own
+            // entry) is deliberately excluded -- its value *is* this trial's
+            // rollout/evaluator result, not something to re-derive from
+            // children. No-op (the default `recompute_depth() == 0`) for
+            // `Classic` and every other strategy that doesn't override the
+            // pair, so this costs nothing when unused.
+            if recompute_depth > 0 && ply_from_leaf >= 1 && ply_from_leaf <= recompute_depth {
                 let node = index.get(*node_id);
                 let slot = if node.is_root() {
                     PosteriorSlot::Root(root_stats)
@@ -898,7 +1010,7 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                     let parent_id = parent_id_opt.unwrap();
                     PosteriorSlot::Edge(index.get(parent_id).children(), *node_idx)
                 };
-                derive_minimax_value(node, &slot, G::num_players());
+                self.recompute_value(node, &slot, index, G::num_players());
             }
 
             // MCTS-Solver: derive/propagate proven status for this node.
@@ -1155,8 +1267,79 @@ impl MinimaxBackprop {
 }
 
 impl BackpropStrategy for MinimaxBackprop {
-    fn mb_depth(&self) -> u32 {
+    fn recompute_depth(&self) -> u32 {
         self.depth
+    }
+
+    fn recompute_value<A: crate::game::Action>(
+        &self,
+        node: &node::Node<A>,
+        slot: &PosteriorSlot<A>,
+        _index: &TreeIndex<A>,
+        num_players: usize,
+    ) {
+        derive_minimax_value(node, slot, num_players);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// Power-UCT (Dam et al., IJCAI 2020): a backpropagation strategy that, after
+/// the ordinary Monte-Carlo `update`, recomputes every ancestor's own value
+/// as the visit-weighted power mean of its children -- see
+/// `derive_power_mean_value`. One scalar `p`: `p = 1` recovers plain UCT (the
+/// recompute pass is disabled outright, so the behavior is bit-identical to
+/// `Classic`), `p -> inf` approaches a max / Full-Bellman backup. The value
+/// sits between the negatively-biased mean and the positively-biased max;
+/// convergence over the whole range (including for explicitly non-stationary
+/// tree nodes) is Stochastic-Power-UCT (arXiv 2406.02235).
+#[derive(Debug, Clone, Copy)]
+pub struct PowerMeanBackprop {
+    /// Power-mean exponent. `1.0` = plain visit-weighted mean (== `Classic`,
+    /// recompute pass disabled); larger = closer to max. Tuner bounds
+    /// `[1.0, 50.0]`.
+    pub p: f64,
+    /// How many plies of ancestors above the leaf get the power-mean backup.
+    /// `None` = every ancestor; `Some(d)` = only the nearest `d` (parity with
+    /// `MinimaxBackprop::depth`, for a future depth sweep).
+    pub depth: Option<u32>,
+}
+
+impl Default for PowerMeanBackprop {
+    fn default() -> Self {
+        Self {
+            p: 1.0,
+            depth: None,
+        }
+    }
+}
+
+impl PowerMeanBackprop {
+    pub fn new(p: f64, depth: Option<u32>) -> Self {
+        Self { p, depth }
+    }
+}
+
+impl BackpropStrategy for PowerMeanBackprop {
+    fn recompute_depth(&self) -> u32 {
+        // p == 1 is exactly the arithmetic mean; skip the pass entirely so
+        // the strategy is bit-identical to `Classic` there (and so the
+        // per-call overwrite-then-reaccumulate churn is avoided).
+        if self.p == 1.0 {
+            0
+        } else {
+            self.depth.unwrap_or(u32::MAX)
+        }
+    }
+
+    fn recompute_value<A: crate::game::Action>(
+        &self,
+        node: &node::Node<A>,
+        slot: &PosteriorSlot<A>,
+        index: &TreeIndex<A>,
+        num_players: usize,
+    ) {
+        derive_power_mean_value(node, slot, index, num_players, self.p);
     }
 }
 
