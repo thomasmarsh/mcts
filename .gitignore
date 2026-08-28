@@ -19,6 +19,8 @@ AGENTS.md
 CLAUDE.md
 .claude
 bench-runs/
+# Transient background-job logs and working files
+scratchpad/
 # Generated opening-book files (examples/build_book.rs and friends) --
 # regenerate with the relevant game's `build_book` example rather than
 # committing what's essentially large, easily-reproducible binary data.

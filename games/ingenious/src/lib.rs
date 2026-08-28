@@ -651,6 +651,32 @@ impl<const P: usize> State<P> {
         }
     }
 
+    /// Radix for `lex_key`: one more than the max per-colour score.
+    const LEX_KEY_RADIX: i32 = TARGET_SCORE as i32 + 1;
+
+    /// Largest value `lex_key` can return (`radix^NUM_COLORS - 1`), i.e. a
+    /// player at `TARGET_SCORE` in every colour.
+    pub const LEX_KEY_MAX: i32 = {
+        let mut v = 1i32;
+        let mut i = 0;
+        while i < NUM_COLORS {
+            v *= TARGET_SCORE as i32 + 1;
+            i += 1;
+        }
+        v - 1
+    };
+
+    /// This player's ascending-sorted colour vector read as a
+    /// base-`LEX_KEY_RADIX` numeral, lowest colour most significant. Numeric
+    /// order matches `compute_winner`'s lexicographic sorted-vector order.
+    fn lex_key(&self, player: usize) -> i32 {
+        let mut sorted = self.score[player];
+        sorted.sort_unstable();
+        sorted
+            .iter()
+            .fold(0i32, |acc, &s| acc * Self::LEX_KEY_RADIX + s as i32)
+    }
+
     /// Compares every player's score vector sorted ascending (lowest color
     /// first); the highest such vector wins outright, and a tie for the
     /// highest is a draw.
@@ -894,6 +920,28 @@ impl<const P: usize> Game for Ingenious<P> {
         state.public_hash()
     }
 
+    /// Two-player only. The lexicographic sorted-score comparison
+    /// (`compute_winner`) collapsed to a single Max-relative scalar:
+    /// `lex_key(player 0) - lex_key(player 1)`, where `lex_key` reads each
+    /// player's ascending-sorted colour vector as a base-`(TARGET_SCORE+1)`
+    /// numeral with the lowest colour as the most significant digit -- so
+    /// numeric order matches "maximise your worst colour, break ties on the
+    /// next-worst". `None` for `P != 2` (score bounds are a scalar
+    /// Max-vs-Min interval).
+    fn score_bounds() -> Option<(i32, i32)> {
+        (P == 2).then(|| {
+            let span = State::<P>::LEX_KEY_MAX;
+            (-span, span)
+        })
+    }
+
+    fn terminal_score(state: &Self::S) -> Option<i32> {
+        if P != 2 || !Self::is_terminal(state) {
+            return None;
+        }
+        Some(state.lex_key(0) - state.lex_key(1))
+    }
+
     fn notation(_state: &Self::S, action: &Self::A) -> String {
         match action {
             Action::Place(mv) => format!(
@@ -1114,6 +1162,31 @@ mod tests {
 
         state.score[1] = [5, 5, 5, 5, 5, 5];
         assert_eq!(state.compute_winner(), None);
+    }
+
+    #[test]
+    fn lex_key_orders_like_compute_winner() {
+        let mut state = State::<2>::new(5);
+        state.score[0] = [5, 5, 5, 5, 5, 5];
+        state.score[1] = [1, 9, 9, 9, 9, 9];
+        // Player 0's worst colour (5) beats player 1's worst (1).
+        assert!(state.lex_key(0) > state.lex_key(1));
+
+        state.score[1] = [5, 5, 5, 5, 5, 6];
+        assert!(state.lex_key(1) > state.lex_key(0));
+
+        state.score[1] = [5, 5, 5, 5, 5, 5];
+        assert_eq!(state.lex_key(0), state.lex_key(1));
+
+        // terminal_score is the signed key difference, but only once the
+        // game is actually over.
+        assert_eq!(Ingenious::<2>::terminal_score(&state), None);
+
+        // Bounds contain every reachable key difference.
+        let (lo, hi) = Ingenious::<2>::score_bounds().unwrap();
+        assert_eq!(lo, -hi);
+        assert!(hi >= State::<2>::LEX_KEY_MAX);
+        assert_eq!(Ingenious::<3>::score_bounds(), None);
     }
 
     #[test]
