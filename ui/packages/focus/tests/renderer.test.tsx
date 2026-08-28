@@ -18,13 +18,27 @@ function emptyBoard(): number[][] {
 }
 
 function makeState(overrides: Partial<GameState> = {}): GameState {
-  return { cells: new Array(64).fill(0), reserves: [4, 4], turn: 0, hash: 0, ...overrides };
+  return {
+    cells: new Array(64).fill(0),
+    reserves: [4, 4],
+    captured: [
+      [0, 0],
+      [0, 0],
+    ],
+    turn: 0,
+    hash: 0,
+    ...overrides,
+  };
 }
 
 function makeView(overrides: Partial<GameView> = {}): GameView {
   return {
     board: emptyBoard(),
     reserves: [4, 4],
+    captured: [
+      [0, 0],
+      [0, 0],
+    ],
     current_player: 0,
     winner: null,
     terminal: false,

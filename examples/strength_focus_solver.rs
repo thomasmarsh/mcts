@@ -33,11 +33,11 @@ use mcts_bench::tournament::Result as GameResult;
 
 const MOVE_BUDGET: Duration = Duration::from_millis(200);
 const ROUNDS_PER_SEAT: usize = 10;
-/// Safety cap: Focus lines can run very long (a game ends only once <=1
-/// seat has any legal move) and random-ish lines can effectively stall. A
-/// game hitting this is scored as a draw and flagged, rather than hanging
-/// the batch.
-const MAX_PLIES: usize = 4000;
+/// Safety cap. With the capture-quota victory rule a searched Focus game
+/// ends in well under this many plies; a game that hits the cap is scored
+/// as a draw and flagged as an anomaly (players hoarding / avoiding
+/// captures -- the signal to add a capture-count-scored move limit).
+const MAX_PLIES: usize = 600;
 
 fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Focus<P>, strategy::Ucb1> {
     TreeSearch::new().config(

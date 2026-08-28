@@ -22,8 +22,15 @@
 //! A player with no reserve and no cell where their color is on top has no
 //! legal move; they are simply skipped in turn rotation rather than
 //! eliminated (merges only ever bury a piece deeper, never expose it, so
-//! this is a de facto permanent lockout). The game ends when at most one
-//! player still has a legal move; that player, if any, wins.
+//! this is a de facto permanent lockout).
+//!
+//! Victory (the "shortened" rule of Nijssen & Winands, CG 2010, used so
+//! games terminate within a search horizon): a player wins the instant they
+//! have captured a per-opponent quota from *every* opponent -- 6 in the
+//! 2-player game, 3 each in the 3-player game, 2 each in the 4-player game --
+//! or, with 3+ players, 10 captured pieces in total. As a fallback terminal,
+//! if the board somehow reaches a state where at most one player still has a
+//! legal move, that player (if any) wins.
 //!
 //! Full board symmetry (D4) exists but isn't implemented here --
 //! `canonical_representation`/`apply_to_action`/`invert_action` are left at
@@ -156,20 +163,31 @@ fn stack_into(w: u16, buf: &mut [u8; 10]) -> usize {
     h
 }
 
+/// Result of a [`merge`]: the resulting cell word plus the count, per
+/// colour, of opponent pieces the overflow captured (the mover's own
+/// overflowed pieces are returned to hand instead and are not counted here).
+struct Merged {
+    word: u16,
+    captured: [u8; 4],
+}
+
 /// Stacks `moving` (bottom to top) onto `dest`, mover's pieces on top, then
 /// resolves any overflow past `MAX_HEIGHT`: bottom pieces matching `mover`
-/// go back to `*mover_reserve`, any other color is captured (dropped).
-/// Returns the resulting (<= `MAX_HEIGHT`-tall) cell word.
-fn merge(dest: u16, moving: &[u8], mover: u8, mover_reserve: &mut u8) -> u16 {
+/// go back to `*mover_reserve`, any other color is captured (removed from
+/// play and tallied in the returned `captured` array, indexed by colour).
+fn merge(dest: u16, moving: &[u8], mover: u8, mover_reserve: &mut u8) -> Merged {
     let mut buf = [0u8; 10];
     let dest_h = stack_into(dest, &mut buf);
     let n = moving.len();
     buf[dest_h..dest_h + n].copy_from_slice(moving);
     let total = dest_h + n;
     let overflow = total.saturating_sub(MAX_HEIGHT as usize);
+    let mut captured = [0u8; 4];
     for &c in &buf[..overflow] {
         if c == mover {
             *mover_reserve += 1;
+        } else {
+            captured[c as usize] += 1;
         }
     }
     let new_h = total - overflow;
@@ -177,7 +195,10 @@ fn merge(dest: u16, moving: &[u8], mover: u8, mover_reserve: &mut u8) -> u16 {
     for (j, &c) in buf[overflow..overflow + new_h].iter().enumerate() {
         w |= (c as u16) << (2 * j);
     }
-    w | (1u16 << (2 * new_h))
+    Merged {
+        word: w | (1u16 << (2 * new_h)),
+        captured,
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -186,7 +207,8 @@ fn merge(dest: u16, moving: &[u8], mover: u8, mover_reserve: &mut u8) -> u16 {
 
 const HASH_RESERVE: usize = 64; // .. + player index (reserves up to 4 players)
 const HASH_TURN: usize = 68; // .. + player index
-const HASHES_LEN: usize = 72;
+const HASH_CAPTURED: usize = 72; // .. + captor * 4 + victim (4x4 block, up to 4 players)
+const HASHES_LEN: usize = 88;
 
 static HASHES: LazyZobristTable<HASHES_LEN> = LazyZobristTable::new(0xF0C5);
 
@@ -216,6 +238,15 @@ fn reserve_hash(p: usize, count: u8) -> u64 {
 #[inline(always)]
 fn turn_hash(p: usize) -> u64 {
     HASHES.hash(HASH_TURN + p)
+}
+
+#[inline(always)]
+fn captured_hash(captor: usize, victim: usize, count: u8) -> u64 {
+    if count == 0 {
+        0
+    } else {
+        mix((count as u64) ^ HASHES.hash(HASH_CAPTURED + captor * 4 + victim))
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -412,6 +443,11 @@ pub struct State<const P: usize> {
     pub cells: [u16; 64],
     /// Off-board pieces available to place, per player.
     pub reserves: [u8; P],
+    /// `captured[p][q]` = pieces belonging to player `q` that player `p`
+    /// has permanently captured (buried past `MAX_HEIGHT` by one of `p`'s
+    /// merges). `captured[p][p]` is always 0 -- a player's own overflowed
+    /// pieces return to hand rather than being captured.
+    pub captured: [[u8; P]; P],
     /// Player to move. Never a player with no legal move (see `apply`).
     pub turn: Player,
     /// Incremental hash (see the file header). Kept in sync by `apply`.
@@ -448,6 +484,7 @@ impl<const P: usize> Default for State<P> {
         let mut state = State {
             cells,
             reserves: [0; P],
+            captured: [[0; P]; P],
             turn: Player(0),
             hash: 0,
         };
@@ -468,6 +505,13 @@ impl<const P: usize> State<P> {
     pub fn set_reserve(&mut self, p: usize, n: u8) {
         self.hash ^= reserve_hash(p, self.reserves[p]) ^ reserve_hash(p, n);
         self.reserves[p] = n;
+    }
+
+    /// Sets a captured-piece tally directly, keeping the hash in sync.
+    pub fn set_captured(&mut self, captor: usize, victim: usize, n: u8) {
+        self.hash ^= captured_hash(captor, victim, self.captured[captor][victim])
+            ^ captured_hash(captor, victim, n);
+        self.captured[captor][victim] = n;
     }
 
     /// Sets the player to move directly, keeping the hash in sync.
@@ -505,10 +549,40 @@ impl<const P: usize> State<P> {
         false
     }
 
-    /// The outcome of the game: `NotTerminal` while 2+ players still have a
-    /// legal move, `Winner` when exactly one does, `Draw` if (defensively)
-    /// none do.
+    /// Whether player `p` has met the shortened-game victory condition
+    /// (Nijssen & Winands, CG 2010, §3.1): capture a per-opponent quota
+    /// from *every* opponent, or -- for 3+ players -- a total quota.
+    fn has_capture_victory(&self, p: usize) -> bool {
+        let per_opponent: u8 = match P {
+            2 => 6,
+            3 => 3,
+            4 => 2,
+            _ => unreachable!(),
+        };
+        let mut total: u32 = 0;
+        let mut all_opponents = true;
+        for q in 0..P {
+            if q == p {
+                continue;
+            }
+            total += self.captured[p][q] as u32;
+            if self.captured[p][q] < per_opponent {
+                all_opponents = false;
+            }
+        }
+        all_opponents || (P >= 3 && total >= 10)
+    }
+
+    /// The outcome of the game: a `Winner` as soon as any player reaches
+    /// the capture quota (`has_capture_victory`); otherwise `NotTerminal`
+    /// while 2+ players still have a legal move, `Winner` when exactly one
+    /// does, `Draw` if (defensively) none do.
     pub fn terminal_status(&self) -> TerminalStatus<Player> {
+        for p in 0..P {
+            if self.has_capture_victory(p) {
+                return TerminalStatus::Winner(Player(p as u8));
+            }
+        }
         let mut capable = None;
         let mut count = 0;
         for p in 0..P {
@@ -556,6 +630,19 @@ impl<const P: usize> State<P> {
         }
     }
 
+    /// Folds a merge's per-colour capture tally into `self.captured[mover]`,
+    /// keeping the hash in sync.
+    fn record_captures(&mut self, mover: usize, captured: [u8; 4]) {
+        for (victim, &n) in captured.iter().take(P).enumerate() {
+            if n == 0 {
+                continue;
+            }
+            let old = self.captured[mover][victim];
+            self.hash ^= captured_hash(mover, victim, old) ^ captured_hash(mover, victim, old + n);
+            self.captured[mover][victim] = old + n;
+        }
+    }
+
     fn apply_place(&mut self, m: Move) {
         let dest = m.cell();
         let p = self.turn.0 as usize;
@@ -563,12 +650,13 @@ impl<const P: usize> State<P> {
         let old_reserve = self.reserves[p];
         self.reserves[p] -= 1;
         let old_dest = self.cells[dest];
-        let new_dest = merge(old_dest, &[self.turn.0], self.turn.0, &mut self.reserves[p]);
+        let merged = merge(old_dest, &[self.turn.0], self.turn.0, &mut self.reserves[p]);
         self.hash ^= cell_hash(dest, old_dest)
-            ^ cell_hash(dest, new_dest)
+            ^ cell_hash(dest, merged.word)
             ^ reserve_hash(p, old_reserve)
             ^ reserve_hash(p, self.reserves[p]);
-        self.cells[dest] = new_dest;
+        self.cells[dest] = merged.word;
+        self.record_captures(p, merged.captured);
     }
 
     fn apply_slide(&mut self, m: Move) {
@@ -608,12 +696,13 @@ impl<const P: usize> State<P> {
         let p = mover as usize;
         let old_reserve = self.reserves[p];
         let old_dest = self.cells[dest];
-        let new_dest = merge(old_dest, &moving[..count], mover, &mut self.reserves[p]);
+        let merged = merge(old_dest, &moving[..count], mover, &mut self.reserves[p]);
         self.hash ^= cell_hash(dest, old_dest)
-            ^ cell_hash(dest, new_dest)
+            ^ cell_hash(dest, merged.word)
             ^ reserve_hash(p, old_reserve)
             ^ reserve_hash(p, self.reserves[p]);
-        self.cells[dest] = new_dest;
+        self.cells[dest] = merged.word;
+        self.record_captures(p, merged.captured);
     }
 
     fn advance_turn(&mut self) {
@@ -646,6 +735,11 @@ impl<const P: usize> State<P> {
         }
         for p in 0..P {
             h ^= reserve_hash(p, self.reserves[p]);
+        }
+        for captor in 0..P {
+            for victim in 0..P {
+                h ^= captured_hash(captor, victim, self.captured[captor][victim]);
+            }
         }
         h ^= turn_hash(self.turn.0 as usize);
         h
@@ -820,6 +914,118 @@ mod tests {
     }
 
     #[test]
+    fn slide_overflow_tallies_opponent_captures_and_keeps_hash_in_sync() {
+        let mut s = State::<3>::default();
+        for i in 0..64 {
+            s.set_cell(i, 0);
+        }
+        for p in 0..3 {
+            s.set_reserve(p, 0);
+        }
+        // Dest (3,4): height-5 stack, bottom to top [1, 2, 0, 0, 0].
+        let dest = 3 * 8 + 4;
+        s.set_cell(dest, make_cell(0b00_00_00_10_01, 5));
+        // Mover (0) slides a height-2 all-0 stack from (3,2) two east onto it.
+        let src = 3 * 8 + 2;
+        s.set_cell(src, make_cell(0, 2));
+        s.set_turn(0);
+
+        s.apply(&Move::slide(src, 1 /* E */, 2));
+
+        // Overflow 2: the buried [1, 2] are one opponent-1 and one
+        // opponent-2 piece -- both captured, none returned to reserve.
+        assert_eq!(s.captured[0][1], 1);
+        assert_eq!(s.captured[0][2], 1);
+        assert_eq!(s.captured[0][0], 0);
+        assert_eq!(s.reserves[0], 0, "no mover pieces overflowed");
+        assert_eq!(cell_height(s.cells[dest]), 5);
+        assert_eq!(s.hash, s.recompute_hash(), "incremental hash diverged");
+
+        // A mover-own overflow still goes to reserve, not the capture tally.
+        let mut s2 = State::<2>::default();
+        for i in 0..64 {
+            s2.set_cell(i, 0);
+        }
+        s2.set_cell(dest, make_cell(0, 5)); // all mover-colour
+        s2.set_cell(src, make_cell(0, 2));
+        s2.set_turn(0);
+        s2.apply(&Move::slide(src, 1, 2));
+        assert_eq!(s2.captured[0][1], 0);
+        assert_eq!(s2.reserves[0], 2, "own buried pieces returned to hand");
+        assert_eq!(s2.hash, s2.recompute_hash());
+    }
+
+    #[test]
+    fn capture_quota_wins_even_while_everyone_can_still_move() {
+        // 3-player quota: 3 from *both* opponents. Give player 1 exactly
+        // that against a fully-mobile board.
+        let mut s = State::<3>::default();
+        assert_eq!(s.terminal_status(), TerminalStatus::NotTerminal);
+        s.set_captured(1, 0, 3);
+        s.set_captured(1, 2, 2);
+        assert_eq!(
+            s.terminal_status(),
+            TerminalStatus::NotTerminal,
+            "only 2 captured from opponent 2 -- quota not met"
+        );
+        s.set_captured(1, 2, 3);
+        assert_eq!(s.terminal_status(), TerminalStatus::Winner(Player(1)));
+        assert!(
+            s.player_has_legal_move(0) && s.player_has_legal_move(2),
+            "opponents are still mobile; the win is purely on capture count"
+        );
+
+        // The 3-player total-of-10 alternative.
+        let mut s = State::<3>::default();
+        s.set_captured(2, 0, 6);
+        s.set_captured(2, 1, 4);
+        assert_eq!(s.terminal_status(), TerminalStatus::Winner(Player(2)));
+
+        // 2-player quota is 6 from the sole opponent, no total alternative.
+        let mut s = State::<2>::default();
+        s.set_captured(0, 1, 5);
+        assert_eq!(s.terminal_status(), TerminalStatus::NotTerminal);
+        s.set_captured(0, 1, 6);
+        assert_eq!(s.terminal_status(), TerminalStatus::Winner(Player(0)));
+    }
+
+    #[test]
+    fn capture_rule_makes_self_play_games_terminate() {
+        use rand::rngs::SmallRng;
+        use rand::{Rng, SeedableRng};
+
+        fn frac_terminating<const P: usize>(seeds: u64, cap: usize) -> f64 {
+            let mut done = 0;
+            for seed in 0..seeds {
+                let mut rng = SmallRng::seed_from_u64(seed);
+                let mut state = State::<P>::default();
+                let mut actions = Vec::new();
+                for _ in 0..cap {
+                    if !matches!(state.terminal_status(), TerminalStatus::NotTerminal) {
+                        done += 1;
+                        break;
+                    }
+                    actions.clear();
+                    state.moves(&mut actions);
+                    let m = actions[rng.gen_range(0..actions.len())];
+                    state.apply(&m);
+                }
+            }
+            done as f64 / seeds as f64
+        }
+
+        // Uniform-random self-play is the pessimal driver toward the capture
+        // quota (a searcher steered by a capture-aware evaluation ends games
+        // far sooner). Even so, the quota pulls essentially every random game
+        // to a terminal within a few thousand plies -- mean ~1300 (2p) /
+        // ~1800 (3p) / ~800 (4p) -- whereas with only the last-player-standing
+        // rule, opening self-play games effectively never terminate.
+        assert!(frac_terminating::<2>(40, 4000) >= 0.9);
+        assert!(frac_terminating::<3>(40, 4000) >= 0.9);
+        assert!(frac_terminating::<4>(40, 4000) >= 0.9);
+    }
+
+    #[test]
     fn slide_moves_stack_and_shortens_source() {
         let mut s = State::<2>::default();
         // Clear the board and hand-place a height-2 white (P0) stack: a
@@ -866,10 +1072,11 @@ mod tests {
         // Total height 7, overflow 2: bottom two removed are colors [1, 1]
         // (mover is 0), so both are captured, not returned to any reserve.
         assert_eq!(reserve, 0);
-        assert_eq!(cell_height(result), 5);
+        assert_eq!(result.captured, [0, 2, 0, 0], "two color-1 pieces captured");
+        assert_eq!(cell_height(result.word), 5);
         // Surviving stack, bottom to top: [0, 0, 0, 0, 0] (all mover's).
         for j in 0..5 {
-            assert_eq!(cell_color_at(result, j), 0);
+            assert_eq!(cell_color_at(result.word, j), 0);
         }
 
         // Same setup, but the mover's own color is what gets buried: a
@@ -884,14 +1091,24 @@ mod tests {
             reserve1, 0,
             "buried pieces are color 0, not mover's color 1"
         );
-        assert_eq!(cell_height(result2), 5);
+        assert_eq!(
+            result2.captured,
+            [2, 0, 0, 0],
+            "two color-0 pieces captured"
+        );
+        assert_eq!(cell_height(result2.word), 5);
 
         // Overflow of the mover's own buried pieces does return to reserve.
         let mut reserve2 = 0u8;
         let dest3 = make_cell(0, 5); // all mover-colored (0) stack, height 5
         let result3 = merge(dest3, &[0, 0], 0, &mut reserve2);
         assert_eq!(reserve2, 2, "both buried pieces are the mover's own color");
-        assert_eq!(cell_height(result3), 5);
+        assert_eq!(
+            result3.captured,
+            [0, 0, 0, 0],
+            "own pieces are not captures"
+        );
+        assert_eq!(cell_height(result3.word), 5);
     }
 
     #[test]

@@ -28,16 +28,36 @@ export function makeSummarize(players: string[]): (view: GameView) => GameSummar
   function reserveLines(view: GameView): GameSummary["lines"] {
     return players.map((p, i) => {
       const n = view.reserves[i] ?? 0;
-      return { id: p, text: `${p} — ${n} reserve${n === 1 ? "" : "s"}`, swatch: PLAYER_COLORS[i] };
+      const captured = (view.captured[i] ?? []).reduce((a, b) => a + b, 0);
+      const capText = captured > 0 ? `, ${captured} captured` : "";
+      return {
+        id: p,
+        text: `${p} — ${n} reserve${n === 1 ? "" : "s"}${capText}`,
+        swatch: PLAYER_COLORS[i],
+      };
     });
+  }
+
+  /** Whether `winner` met the capture quota (as opposed to winning by
+   * being the last player able to move). Mirrors `State::has_capture_victory`
+   * in `games/focus/src/lib.rs`. */
+  function wonByCapture(view: GameView): boolean {
+    if (view.winner === null) return false;
+    const row = view.captured[view.winner] ?? [];
+    const p = players.length;
+    const perOpponent = p === 2 ? 6 : p === 3 ? 3 : 2;
+    const total = row.reduce((a, b) => a + b, 0);
+    const allOpponents = row.every((c, q) => q === view.winner || c >= perOpponent);
+    return allOpponents || (p >= 3 && total >= 10);
   }
 
   return function summarize(view: GameView): GameSummary {
     if (view.terminal) {
       const winnerName = view.winner !== null ? players[view.winner] : null;
+      const how = wonByCapture(view) ? " (capture quota)" : "";
       return {
         turnText: "Game over",
-        bannerText: winnerName ? `${winnerName} wins!` : "No one can move — draw.",
+        bannerText: winnerName ? `${winnerName} wins!${how}` : "No one can move — draw.",
         bannerColor: view.winner !== null ? PLAYER_COLORS[view.winner] : undefined,
         lines: reserveLines(view),
         currentPlayer: null,

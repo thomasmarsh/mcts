@@ -12,6 +12,9 @@ export interface GameState {
   cells: number[];
   /** Reserve (off-board, replayable) piece count per player, length P. */
   reserves: number[];
+  /** `captured[p][q]` = pieces of player `q` permanently captured by player
+   * `p`; a P×P matrix, diagonal always 0. Drives the capture-quota win. */
+  captured: number[][];
   /** Player to move, 0..P. */
   turn: number;
   hash: number;
@@ -25,6 +28,8 @@ export interface GameView {
    * boards). */
   board: number[][];
   reserves: number[];
+  /** `captured[p][q]` = pieces of player `q` captured by player `p`. */
+  captured: number[][];
   current_player: number;
   winner: number | null;
   terminal: boolean;

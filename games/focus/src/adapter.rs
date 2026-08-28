@@ -57,6 +57,9 @@ fn presets() -> &'static PresetTable {
 struct WireState {
     cells: Vec<u16>,
     reserves: Vec<u8>,
+    /// `captured[p][q]` = pieces of player `q` captured by player `p`; a
+    /// `Vec<Vec<u8>>` for the same const-generic-length reason as `reserves`.
+    captured: Vec<Vec<u8>>,
     turn: usize,
     hash: u64,
 }
@@ -69,6 +72,8 @@ struct GameView {
     /// transmitted here -- same convention as `games/ingenious`'s hex board).
     board: Vec<Vec<u8>>,
     reserves: Vec<u8>,
+    /// `captured[p][q]` = pieces of player `q` captured by player `p`.
+    captured: Vec<Vec<u8>>,
     current_player: usize,
     winner: Option<usize>,
     terminal: bool,
@@ -85,6 +90,7 @@ fn state_to_value<const P: usize>(state: &State<P>) -> Value {
     serde_json::to_value(WireState {
         cells: state.cells.to_vec(),
         reserves: state.reserves.to_vec(),
+        captured: state.captured.iter().map(|row| row.to_vec()).collect(),
         turn: state.turn.to_index(),
         hash: state.hash,
     })
@@ -106,13 +112,23 @@ fn value_to_state<const P: usize>(v: &Value) -> Result<State<P>, HostError> {
             wire.reserves.len()
         )));
     }
+    if wire.captured.len() != P || wire.captured.iter().any(|row| row.len() != P) {
+        return Err(HostError::bad_request(format!(
+            "invalid state: captured must be {P}x{P}"
+        )));
+    }
     let mut cells = [0u16; 64];
     cells.copy_from_slice(&wire.cells);
     let mut reserves = [0u8; P];
     reserves.copy_from_slice(&wire.reserves);
+    let mut captured = [[0u8; P]; P];
+    for (p, row) in wire.captured.iter().enumerate() {
+        captured[p].copy_from_slice(row);
+    }
     Ok(State {
         cells,
         reserves,
+        captured,
         turn: Player(wire.turn as u8),
         hash: wire.hash,
     })
@@ -166,7 +182,8 @@ impl<const P: usize> GameAdapter for FocusAdapter<P> {
         "Focus (Domination) -- slide or split a stack orthogonally exactly as many squares as \
          it is tall, merging onto whatever you land on; a stack over five high buries its \
          bottom pieces, returning your own colour to hand and capturing everyone else's. \
-         Whoever still has a legal move when everyone else is stuck wins."
+         Win by capturing a quota from every opponent (6 in a 2p game, 3 each in 3p, 2 each \
+         in 4p), or 10 pieces in total with 3+ players."
     }
 
     fn default_config(&self) -> Value {
@@ -207,6 +224,7 @@ impl<const P: usize> GameAdapter for FocusAdapter<P> {
         let view = GameView {
             board: s.cells.iter().map(|&w| cell_stack(w)).collect(),
             reserves: s.reserves.to_vec(),
+            captured: s.captured.iter().map(|row| row.to_vec()).collect(),
             current_player: s.turn.to_index(),
             winner: Focus::<P>::winner(&s).map(|p| p.to_index()),
             terminal: Focus::<P>::is_terminal(&s),
