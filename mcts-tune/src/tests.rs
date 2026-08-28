@@ -1821,7 +1821,7 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
         (
             "power_uct",
             json!({
-                "family": "power_uct", "c": 1.4, "p": 4.0,
+                "family": "power_uct", "c": 1.4, "p": 4.0, "alpha": 0.5,
                 "final_action": "robust_child",
             }),
         ),

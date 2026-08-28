@@ -168,6 +168,11 @@ register_field! {
     // (arXiv 2406.02235): the useful range is small single digits, but sweep
     // wider per game.
     p: f64 => json!({"type": "float", "bounds": [1.0, 50.0], "default": 1.0}),
+    // `backprop::PowerMeanBackprop`'s mean<->max blend weight (Full-Bellman
+    // backup, Asai & Wissow AAAI 2025). `0.0` = pure power-mean; `1.0` = pure
+    // max over children. EVT paper's caveat: pure max helps a weak baseline and
+    // hurts a strong one, so sweep the interior, not just the endpoints.
+    alpha: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 0.0}),
     // `flat_mc::FlatMonteCarloStrategy`'s per-move rollout count and
     // per-rollout depth cap.
     samples_per_move: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 100}),
@@ -765,12 +770,13 @@ register_family! {
     // family exists mainly to give the tuner a single `p` knob to sweep. The
     // closure param is `t` (not the usual `p`) since `p` is also the field
     // name here.
-    "power_uct" => [c, p, final_action] => |t: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+    "power_uct" => [c, p, alpha, final_action] => |t: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1 { c: c(t)? },
         simulate: SimulateSpec::Uniform {},
         final_action: to_final_action_spec(t)?,
         backprop: BackpropSpec::PowerMean {
             p: t.p.ok_or_else(|| missing("p"))?,
+            alpha: t.alpha.ok_or_else(|| missing("alpha"))?,
             depth: 0,
         },
         solver_loss_threshold: None,

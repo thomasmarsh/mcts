@@ -130,8 +130,11 @@ register_backprop! {
         backprop::BayesNumeric::new(prior_variance, obs_variance, value_lo, value_hi),
     // Power-UCT (Dam et al., IJCAI 2020). `depth == 0` means "every ancestor"
     // (the useful default); `depth > 0` limits the power-mean backup to the
-    // nearest N plies above the leaf. `p == 1.0` is `Classic` (the strategy
-    // disables its own recompute pass).
-    PowerMean { p: f64, depth: u32 } =>
-        backprop::PowerMeanBackprop::new(p, if depth == 0 { None } else { Some(depth) }),
+    // nearest N plies above the leaf. `p == 1.0` with `alpha == 0.0` is
+    // `Classic` (the strategy disables its own recompute pass). `alpha`
+    // blends the power mean with the max over children (`alpha == 1.0` =
+    // Full-Bellman max backup, Asai & Wissow AAAI 2025) at any `p`.
+    PowerMean { p: f64, alpha: f64, depth: u32 } =>
+        backprop::PowerMeanBackprop::new_mixed(
+            p, alpha, if depth == 0 { None } else { Some(depth) }),
 }

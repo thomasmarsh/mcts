@@ -192,6 +192,7 @@ fn backprop_variants() -> Vec<Value> {
             "power_mean",
             vec![
                 field("p", float([1.0, 50.0], 1.0)),
+                field("alpha", float([0.0, 1.0], 0.0)),
                 field("depth", int([0, 64], 0)),
             ],
         ),

@@ -6,7 +6,9 @@
 // knob is the exponent `p`: `p = 1` is exactly plain UCT (the strategy
 // disables its own recompute pass, so it should tie the baseline within
 // noise -- a cheap end-to-end check of that structural no-op), and larger `p`
-// biases the backup toward the max over children.
+// biases the backup toward the max over children. A second knob `alpha`
+// blends the power mean with the plain max (`alpha = 1` is the Full-Bellman
+// max backup, Asai & Wissow AAAI 2025); the mixed arms sweep its interior.
 //
 // Two games spanning the roster, per `plan/selection-backup/phase-a.md`:
 //   - Breakthrough 8x8: tactical sudden-death, no draws -- the game Baier &
@@ -41,6 +43,13 @@ type Power = Compose<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
 
 const P_VALUES: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 
+// (p, alpha) pairs: the pure power-mean sweep above plus the mixed middle
+// ground the EVT paper (Asai & Wissow, AAAI 2025 / arXiv 2405.18248 §6)
+// points at -- a mean<->max blend inside `derive_power_mean_value`. Pure max
+// (alpha = 1) is expected to help only the weaker configs, so the arms sweep
+// the interior.
+const MIXED_ARMS: [(f64, f64); 3] = [(1.0, 0.25), (1.0, 0.5), (4.0, 0.5)];
+
 fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, strategy::Ucb1> {
     TreeSearch::new().config(
         SearchConfig::new()
@@ -59,6 +68,17 @@ fn power_config<G: Game>(budget: Duration, p: f64) -> TreeSearch<G, Power> {
             .max_time(budget)
             .select(select::Ucb1::with_c(1.414))
             .backprop(PowerMeanBackprop::new(p, None)),
+    )
+}
+
+fn power_config_mixed<G: Game>(budget: Duration, p: f64, alpha: f64) -> TreeSearch<G, Power> {
+    TreeSearch::new().config(
+        SearchConfig::new()
+            .name(&format!("power_uct/p={p},a={alpha}"))
+            .use_transpositions(true)
+            .max_time(budget)
+            .select(select::Ucb1::with_c(1.414))
+            .backprop(PowerMeanBackprop::new_mixed(p, alpha, None)),
     )
 }
 
@@ -89,6 +109,9 @@ where
     for p in P_VALUES {
         strategies.push(AnySearch::new(power_config::<G>(budget, p)));
     }
+    for (p, alpha) in MIXED_ARMS {
+        strategies.push(AnySearch::new(power_config_mixed::<G>(budget, p, alpha)));
+    }
 
     let results = round_robin_multiple::<G, _>(
         &mut strategies,
@@ -111,7 +134,7 @@ fn main() {
     let budget = Duration::from_millis(200);
 
     println!("=== Power-UCT strength comparison (background job) ===");
-    println!("Arms: baseline UCT, Power-UCT p in {P_VALUES:?}");
+    println!("Arms: baseline UCT, Power-UCT p in {P_VALUES:?}, mixed (p,alpha) in {MIXED_ARMS:?}");
     println!("200ms/move, sequential, round-robin so every pair of arms is checked.");
     println!("p=1 is the structural no-op control -- it should tie the baseline within noise.");
     println!();

@@ -427,12 +427,39 @@ pub(crate) fn derive_minimax_value<A: crate::game::Action>(
 /// is skipped -- PNS's "unknown leaf" treatment, same as `derive_pn_dpn` and
 /// `derive_minimax_value`. No-op (leaving the node's Monte-Carlo average
 /// untouched) when no child qualifies or `node` isn't `Expanded`.
+///
+/// `alpha` mixes the power mean with the plain max over the same per-player
+/// child values: `V = (1 - alpha)·V_p + alpha·V_max`, per player,
+/// independently. `alpha = 0` is pure Power-UCT (above); `alpha = 1` is the
+/// "Full Bellman" / max backup (Schulte & Keller 2014; Asai & Wissow,
+/// "Extreme Value Monte Carlo Tree Search", AAAI 2025 / arXiv 2405.18248) at
+/// *any* `p` -- that paper frames a max-ward backup as fitting a
+/// short-tailed (Uniform / generalized-Pareto) reward distribution rather
+/// than a Gaussian, i.e. a modelling choice, not a hack. Its empirical
+/// caveat (their §6): pure max helps a *non-performant* base algorithm and
+/// tends to hurt an already-strong one, so the useful regime is the interior
+/// blend, and `alpha` defaults to `0`. Khandelwal et al. (ICML 2016) report
+/// the same domain dependence for `MaxMCTS(λ)`'s max backup: it helps most
+/// with sparse/delayed reward and low branching.
+///
+/// Dead-child exclusion (always on): a child whose `proven()` is
+/// `Proven::Win(w)` with `w != node.player_idx` is a proven loss for the
+/// mover, who will never enter it, so it contributes nothing to *any*
+/// player's backed-up value (not its exact `-1`/`+1`, not `V_max`). This
+/// mirrors the EVT paper's dead-end removal (their §3-4): the fit is
+/// conditioned on `x > θ` -- you are modelling the tail -- so discarding
+/// known-bad samples is correct rather than cheating. A `Proven::Win(mover)`
+/// child is left to the MCTS-Solver pass; a `Proven::Draw` child is not dead
+/// (a draw is not a mover loss) and contributes its exact `0`.
+/// TODO(phase-c): score-bound-dominated (non-`Proven`) subtrees could also
+/// be excluded once AmEx/NCES bound reasoning lands.
 pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
     node: &node::Node<A>,
     slot: &PosteriorSlot<A>,
     index: &TreeIndex<A>,
     num_players: usize,
     p: f64,
+    alpha: f64,
 ) {
     const POWF_FLOOR: f64 = 1e-12;
     const MAX_P: f64 = 30.0;
@@ -440,6 +467,8 @@ pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
     let Some(NodeState::Expanded(children)) = node.status() else {
         return;
     };
+
+    let mover = node.player_idx;
 
     for player in 0..num_players {
         let mut n_sum = 0.0_f64;
@@ -453,6 +482,9 @@ pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
             };
             let n = children.num_visits(i) as f64;
             if n <= 0.0 {
+                continue;
+            }
+            if matches!(index.get(child_id).proven(), Proven::Win(w) if w != mover) {
                 continue;
             }
             let q = match index.get(child_id).proven() {
@@ -478,12 +510,19 @@ pub(crate) fn derive_power_mean_value<A: crate::game::Action>(
             continue;
         }
 
-        let value = if p == 1.0 {
+        let v_p = if p == 1.0 {
             (acc / n_sum) * 2.0 - 1.0
         } else if p >= MAX_P {
             max_q
         } else {
             (acc / n_sum).powf(1.0 / p) * 2.0 - 1.0
+        };
+        let value = if alpha == 0.0 {
+            v_p
+        } else if alpha == 1.0 {
+            max_q
+        } else {
+            (1.0 - alpha) * v_p + alpha * max_q
         };
         slot.overwrite_score(player, value);
     }
@@ -1293,12 +1332,23 @@ impl BackpropStrategy for MinimaxBackprop {
 /// sits between the negatively-biased mean and the positively-biased max;
 /// convergence over the whole range (including for explicitly non-stationary
 /// tree nodes) is Stochastic-Power-UCT (arXiv 2406.02235).
+///
+/// `alpha` blends that power mean with the plain max over children
+/// (`(1 - alpha)·V_p + alpha·V_max`, per player) -- `alpha = 1` is the
+/// Full-Bellman / max backup (Asai & Wissow, AAAI 2025) at any `p`. See
+/// `derive_power_mean_value` for the EVT framing and the dead-child
+/// exclusion that is always applied.
 #[derive(Debug, Clone, Copy)]
 pub struct PowerMeanBackprop {
-    /// Power-mean exponent. `1.0` = plain visit-weighted mean (== `Classic`,
-    /// recompute pass disabled); larger = closer to max. Tuner bounds
-    /// `[1.0, 50.0]`.
+    /// Power-mean exponent. `1.0` = plain visit-weighted mean (== `Classic`
+    /// when `alpha == 0`, recompute pass disabled); larger = closer to max.
+    /// Tuner bounds `[1.0, 50.0]`.
     pub p: f64,
+    /// Mean<->max blend: final value = `(1-alpha)·power_mean + alpha·max`
+    /// over children, per player. `0.0` = pure power-mean; `1.0` =
+    /// Full-Bellman max backup (Asai & Wissow, AAAI 2025) at any `p`. Tuner
+    /// bounds `[0.0, 1.0]`, default `0.0`.
+    pub alpha: f64,
     /// How many plies of ancestors above the leaf get the power-mean backup.
     /// `None` = every ancestor; `Some(d)` = only the nearest `d` (parity with
     /// `MinimaxBackprop::depth`, for a future depth sweep).
@@ -1309,6 +1359,7 @@ impl Default for PowerMeanBackprop {
     fn default() -> Self {
         Self {
             p: 1.0,
+            alpha: 0.0,
             depth: None,
         }
     }
@@ -1316,16 +1367,25 @@ impl Default for PowerMeanBackprop {
 
 impl PowerMeanBackprop {
     pub fn new(p: f64, depth: Option<u32>) -> Self {
-        Self { p, depth }
+        Self {
+            p,
+            alpha: 0.0,
+            depth,
+        }
+    }
+
+    pub fn new_mixed(p: f64, alpha: f64, depth: Option<u32>) -> Self {
+        Self { p, alpha, depth }
     }
 }
 
 impl BackpropStrategy for PowerMeanBackprop {
     fn recompute_depth(&self) -> u32 {
-        // p == 1 is exactly the arithmetic mean; skip the pass entirely so
-        // the strategy is bit-identical to `Classic` there (and so the
-        // per-call overwrite-then-reaccumulate churn is avoided).
-        if self.p == 1.0 {
+        // p == 1, alpha == 0 is exactly the arithmetic mean; skip the pass
+        // entirely so the strategy is bit-identical to `Classic` there (and
+        // so the per-call overwrite-then-reaccumulate churn is avoided).
+        // p == 1, alpha > 0 is a mean<->max blend -- the pass must run.
+        if self.p == 1.0 && self.alpha == 0.0 {
             0
         } else {
             self.depth.unwrap_or(u32::MAX)
@@ -1339,7 +1399,7 @@ impl BackpropStrategy for PowerMeanBackprop {
         index: &TreeIndex<A>,
         num_players: usize,
     ) {
-        derive_power_mean_value(node, slot, index, num_players, self.p);
+        derive_power_mean_value(node, slot, index, num_players, self.p, self.alpha);
     }
 }
 

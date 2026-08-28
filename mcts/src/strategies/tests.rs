@@ -2453,7 +2453,7 @@ fn test_power_mean_p1_equals_arithmetic_mean() {
     }
 
     let slot = PosteriorSlot::Root(&root.stats);
-    derive_power_mean_value(&root, &slot, &index, 2, 1.0);
+    derive_power_mean_value(&root, &slot, &index, 2, 1.0, 0.0);
 
     let n = root.stats.num_visits().max(1) as f64;
     // (1·0.4 + 3·0.5) / 4 = 0.475
@@ -2483,7 +2483,7 @@ fn test_power_mean_hand_verified_p2() {
     root.stats.update(&[0.0, 0.0]);
 
     let slot = PosteriorSlot::Root(&root.stats);
-    derive_power_mean_value(&root, &slot, &index, 2, 2.0);
+    derive_power_mean_value(&root, &slot, &index, 2, 2.0, 0.0);
 
     // qs = [0.5, 0.9]; sqrt((0.25 + 0.81)/2) = sqrt(0.53) ≈ 0.7280110;
     // value = 0.7280110·2 - 1 ≈ 0.4560220.
@@ -2516,7 +2516,7 @@ fn test_power_mean_large_p_approaches_max() {
     root.stats.update(&[0.0, 0.0]);
 
     let slot = PosteriorSlot::Root(&root.stats);
-    derive_power_mean_value(&root, &slot, &index, 2, 1e6);
+    derive_power_mean_value(&root, &slot, &index, 2, 1e6, 0.0);
 
     let n = root.stats.num_visits().max(1) as f64;
     assert!((root.stats.score(0) / n - 0.8).abs() < 1e-9);
@@ -2548,7 +2548,7 @@ fn test_power_mean_proven_child_contributes_exact_value() {
         root.stats.update(&[0.0, 0.0]);
 
         let slot = PosteriorSlot::Root(&root.stats);
-        derive_power_mean_value(&root, &slot, &index, 2, 3.0);
+        derive_power_mean_value(&root, &slot, &index, 2, 3.0, 0.0);
         root.stats.score(0) / root.stats.num_visits().max(1) as f64
     };
 
@@ -2590,7 +2590,7 @@ fn test_power_mean_visit_weighting() {
         root.expand(|| NodeState::Expanded(children));
         root.stats.update(&[0.0, 0.0]);
         let slot = PosteriorSlot::Root(&root.stats);
-        derive_power_mean_value(&root, &slot, &index, 2, p);
+        derive_power_mean_value(&root, &slot, &index, 2, p, 0.0);
         root.stats.score(0) / root.stats.num_visits().max(1) as f64
     };
 
@@ -2599,4 +2599,209 @@ fn test_power_mean_visit_weighting() {
     // p = 1, values [0.0, 1.0]: the weight rides the *right* child's term.
     assert!((recovered([0.0, 1.0], [99, 1], 1.0) - 0.01).abs() < 1e-9);
     assert!((recovered([0.0, 1.0], [1, 99], 1.0) - 0.99).abs() < 1e-9);
+}
+
+// `alpha = 0` leaves the pure power-mean path (A1 behaviour) byte-identical:
+// same arena and `p` as `test_power_mean_hand_verified_p2`.
+#[test]
+fn test_power_mean_alpha0_matches_a1() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let c0 = index.insert(Node::new(1, 0));
+    let c1 = index.insert(Node::new(1, 0));
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || c0);
+    children.update(0, &[0.0, 0.0]);
+    children.get_or_create_child(1, || c1);
+    children.update(1, &[0.8, -0.8]);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.0, 0.0]);
+    root.stats.update(&[0.0, 0.0]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_power_mean_value(&root, &slot, &index, 2, 2.0, 0.0);
+
+    let n = root.stats.num_visits().max(1) as f64;
+    assert!((root.stats.score(0) / n - 0.456_022).abs() < 1e-4);
+}
+
+// `alpha = 1` is the Full-Bellman max backup at any `p` -- same expected
+// values as `test_power_mean_large_p_approaches_max`, reached via `alpha`.
+#[test]
+fn test_power_mean_alpha1_is_max() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let c0 = index.insert(Node::new(1, 0));
+    let c1 = index.insert(Node::new(1, 0));
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || c0);
+    children.update(0, &[0.0, 0.0]);
+    children.get_or_create_child(1, || c1);
+    children.update(1, &[0.8, -0.8]);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.0, 0.0]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_power_mean_value(&root, &slot, &index, 2, 2.0, 1.0);
+
+    let n = root.stats.num_visits().max(1) as f64;
+    assert!((root.stats.score(0) / n - 0.8).abs() < 1e-9);
+    assert!((root.stats.score(1) / n - 0.0).abs() < 1e-9);
+}
+
+// Mixed blend: `p = 1, alpha = 0.5` = half the visit-weighted mean, half the
+// max over children, per player independently.
+#[test]
+fn test_power_mean_mixed_blends_mean_and_max() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let c0 = index.insert(Node::new(1, 0));
+    let c1 = index.insert(Node::new(1, 0));
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || c0);
+    children.update(0, &[0.2, -0.2]);
+    children.get_or_create_child(1, || c1);
+    children.update(1, &[0.6, -0.6]);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.0, 0.0]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_power_mean_value(&root, &slot, &index, 2, 1.0, 0.5);
+
+    let n = root.stats.num_visits().max(1) as f64;
+    // p0: mean 0.4, max 0.6 -> 0.5. p1: mean -0.4, max -0.2 -> -0.3.
+    assert!((root.stats.score(0) / n - 0.5).abs() < 1e-9);
+    assert!((root.stats.score(1) / n - (-0.3)).abs() < 1e-9);
+}
+
+// A child that is a proven loss for the mover is excluded from *every*
+// player's backup -- it contributes neither its exact value nor to the max.
+#[test]
+fn test_power_mean_excludes_mover_proven_loss_child() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    // (p0 value, p1 value) after backup at the given (p, alpha); mover is p0
+    // and idx0 is Proven::Win(1) with a fat MC score + many visits.
+    let recovered = |p: f64, alpha: f64| {
+        let index = TreeIndex::<u32>::new();
+        let c0 = index.insert(Node::new(1, 0));
+        let c1 = index.insert(Node::new(1, 0));
+        let c2 = index.insert(Node::new(1, 0));
+        index.get(c0).try_prove(Proven::Win(1));
+
+        let children = ChildArray::<u32>::new(vec![10, 11, 12], 2, false, false);
+        children.get_or_create_child(0, || c0);
+        for _ in 0..50 {
+            children.update(0, &[0.9, -0.9]);
+        }
+        children.get_or_create_child(1, || c1);
+        children.update(1, &[0.2, -0.2]);
+        children.get_or_create_child(2, || c2);
+        children.update(2, &[0.6, -0.6]);
+
+        let root = Node::<u32>::new(0, 0);
+        root.expand(|| NodeState::Expanded(children));
+        root.stats.update(&[0.0, 0.0]);
+
+        let slot = PosteriorSlot::Root(&root.stats);
+        derive_power_mean_value(&root, &slot, &index, 2, p, alpha);
+        let n = root.stats.num_visits().max(1) as f64;
+        (root.stats.score(0) / n, root.stats.score(1) / n)
+    };
+
+    // alpha = 0, p = 3: power mean over {idx1, idx2} only.
+    let (v0, v1) = recovered(3.0, 0.0);
+    let m0 = ((0.6_f64.powf(3.0) + 0.8_f64.powf(3.0)) / 2.0).powf(1.0 / 3.0) * 2.0 - 1.0;
+    let m1 = ((0.4_f64.powf(3.0) + 0.2_f64.powf(3.0)) / 2.0).powf(1.0 / 3.0) * 2.0 - 1.0;
+    assert!((v0 - m0).abs() < 1e-9);
+    assert!((v1 - m1).abs() < 1e-9);
+
+    // alpha = 1: plain max over {idx1, idx2} only.
+    let (v0, v1) = recovered(3.0, 1.0);
+    assert!((v0 - 0.6).abs() < 1e-9);
+    assert!((v1 - (-0.2)).abs() < 1e-9);
+}
+
+// Every child a mover loss -> no child qualifies -> the node's MC average is
+// left untouched (the solver pass, not tested here, marks the node lost).
+#[test]
+fn test_power_mean_all_children_mover_dead_is_noop() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let c0 = index.insert(Node::new(1, 0));
+    let c1 = index.insert(Node::new(1, 0));
+    index.get(c0).try_prove(Proven::Win(1));
+    index.get(c1).try_prove(Proven::Win(1));
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || c0);
+    children.update(0, &[-1.0, 1.0]);
+    children.get_or_create_child(1, || c1);
+    children.update(1, &[-1.0, 1.0]);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.3, -0.3]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_power_mean_value(&root, &slot, &index, 2, 3.0, 0.5);
+
+    let n = root.stats.num_visits().max(1) as f64;
+    assert!((root.stats.score(0) / n - 0.3).abs() < 1e-12);
+    assert!((root.stats.score(1) / n - (-0.3)).abs() < 1e-12);
+}
+
+// A `Proven::Draw` child is not a mover loss -> still included, contributing
+// its exact `q = 0.0`.
+#[test]
+fn test_power_mean_draw_child_still_included() {
+    use crate::strategies::mcts::backprop::{derive_power_mean_value, PosteriorSlot};
+    use crate::strategies::mcts::node::{ChildArray, Node, NodeState, Proven};
+    use crate::strategies::mcts::search::TreeIndex;
+
+    let index = TreeIndex::<u32>::new();
+    let c0 = index.insert(Node::new(1, 0));
+    let c1 = index.insert(Node::new(1, 0));
+    index.get(c0).try_prove(Proven::Draw);
+
+    let children = ChildArray::<u32>::new(vec![10, 11], 2, false, false);
+    children.get_or_create_child(0, || c0);
+    children.update(0, &[0.9, -0.9]); // MC score ignored; draw contributes 0.0
+    children.get_or_create_child(1, || c1);
+    children.update(1, &[0.6, -0.6]);
+
+    let root = Node::<u32>::new(0, 0);
+    root.expand(|| NodeState::Expanded(children));
+    root.stats.update(&[0.0, 0.0]);
+
+    let slot = PosteriorSlot::Root(&root.stats);
+    derive_power_mean_value(&root, &slot, &index, 2, 1.0, 0.0);
+
+    let n = root.stats.num_visits().max(1) as f64;
+    // p0: mean of [0.0, 0.6] = 0.3.
+    assert!((root.stats.score(0) / n - 0.3).abs() < 1e-9);
+    assert!((root.stats.score(1) / n - (-0.3)).abs() < 1e-9);
 }
