@@ -1825,6 +1825,13 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
                 "final_action": "robust_child",
             }),
         ),
+        (
+            "td_uct",
+            json!({
+                "family": "td_uct", "c": 1.4, "lambda": 0.8, "td_max_child": 0,
+                "final_action": "robust_child",
+            }),
+        ),
         ("random", json!({"family": "random"})),
         (
             "flat_mc",

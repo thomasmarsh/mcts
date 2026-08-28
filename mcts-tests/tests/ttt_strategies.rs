@@ -1228,6 +1228,88 @@ fn test_power_mean_backprop_prefers_the_winning_move_to_a_forced_draw() {
 }
 
 #[test]
+fn test_td_backprop_lambda1_matches_classic() {
+    // `TdBackprop { lambda: 1.0 }` returns `None` from `td_lambda`, so the
+    // backprop walk threads the raw terminal return exactly as `Classic`
+    // does -- a structural no-op. Same config, same seeds, identical move.
+    use game_ttt::*;
+    use mcts::backprop::{Classic, TdBackprop};
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    type G = TicTacToe;
+    type Base = Compose<select::Ucb1, simulate::Uniform, Classic>;
+    type Td = Compose<select::Ucb1, simulate::Uniform, TdBackprop>;
+
+    let state = HashedPosition::from_position(Position::new());
+
+    for seed in 0..8u64 {
+        let mut base = mcts::TreeSearch::<G, Base>::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        let mut td = mcts::TreeSearch::<G, Td>::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(200)
+                .backprop(TdBackprop::new(1.0, false))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        assert_eq!(
+            base.choose_action(&state),
+            td.choose_action(&state),
+            "seed {seed}: lambda=1 TdBackprop must match Classic exactly"
+        );
+    }
+}
+
+#[test]
+fn test_td_backprop_prefers_winning_move() {
+    // Same near-terminal position as the MB-n / Power-UCT tests (playing 2
+    // wins immediately, playing 8 forces a draw). A bootstrapped backup with
+    // intermediate lambda still has to prefer the immediate win.
+    use game_ttt::*;
+    use mcts::backprop::TdBackprop;
+    use mcts::strategy::Compose;
+    use mcts::{select, simulate};
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type S = Compose<select::Ucb1, simulate::Uniform, TdBackprop>;
+
+    for max_child in [false, true] {
+        for seed in 0..10u64 {
+            let mut ts = mcts::TreeSearch::<G, S>::default().config(
+                mcts::SearchConfig::default()
+                    .max_iterations(40)
+                    .backprop(TdBackprop::new(0.5, max_child))
+                    .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+            );
+            assert_eq!(
+                ts.choose_action(&state),
+                Move(2),
+                "max_child={max_child} seed {seed}: should play the immediate win"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() {
     // Same near-terminal position as `test_minimax_rollout_prefers_the_
     // winning_move_to_a_forced_draw` above (two empty cells, X to move --

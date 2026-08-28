@@ -395,6 +395,65 @@ pub(crate) fn derive_minimax_value<A: crate::game::Action>(
     }
 }
 
+/// One backward step of the truncated λ-return recursion
+/// `G_t ← (1 − λ)·v_boot + λ·G_t` (Sarsa-UCT(λ), Vodopivec, Samothrakis,
+/// Šter, "On Monte Carlo Tree Search and Reinforcement Learning", JAIR 2017;
+/// γ = 1, zero intermediate reward). `g` enters holding `G_{t+1}` and leaves
+/// holding `G_t`, elementwise over the per-player utility vector.
+#[inline]
+pub(crate) fn td_lambda_step(g: &mut [f64], v_boot: &[f64], lambda: f64) {
+    debug_assert_eq!(g.len(), v_boot.len());
+    for p in 0..g.len() {
+        g[p] = (1.0 - lambda) * v_boot[p] + lambda * g[p];
+    }
+}
+
+/// Whole-path truncated λ-return, built from the same `td_lambda_step`
+/// primitive `update` walks incrementally -- kept as a test-only entry point
+/// so the two forms can't drift (AGENTS.md: the instrumentation logic itself
+/// gets a fast deterministic test on a hand-verifiable input). `v_boot[i]` is
+/// the bootstrap value `V(s_{i+1})` at path node `i`, ordered root-first,
+/// `len == returned.len() - 1`; the deepest target is `z`. Returns `G_i` for
+/// every path node `i`.
+#[cfg(test)]
+pub(crate) fn td_lambda_returns(z: &[f64], v_boot: &[Vec<f64>], lambda: f64) -> Vec<Vec<f64>> {
+    let mut targets = vec![z.to_vec(); v_boot.len() + 1];
+    let mut g = z.to_vec();
+    for i in (0..v_boot.len()).rev() {
+        td_lambda_step(&mut g, &v_boot[i], lambda);
+        targets[i] = g.clone();
+    }
+    targets
+}
+
+/// MaxMCTS(λ)'s off-policy bootstrap (Khandelwal, Liebman, Niekum, Stone,
+/// "On the Analysis of Complex Backup Strategies in Monte Carlo Tree
+/// Search", ICML 2016): `max` over `node`'s explored children of each
+/// player's `expected_score`, or `None` if `node` isn't expanded / has no
+/// explored child (the caller then falls back to the on-path Sarsa value).
+/// Same "skip the unknown/unvisited-leaf slot" treatment as
+/// `derive_power_mean_value`.
+pub(crate) fn max_child_bootstrap<A: crate::game::Action>(
+    node: &node::Node<A>,
+    num_players: usize,
+) -> Option<Vec<f64>> {
+    let Some(NodeState::Expanded(children)) = node.status() else {
+        return None;
+    };
+    let mut out = vec![f64::NEG_INFINITY; num_players];
+    let mut any = false;
+    for i in 0..children.len() {
+        if children.node_id(i).is_none() || children.num_visits(i) == 0 {
+            continue;
+        }
+        any = true;
+        for (p, slot) in out.iter_mut().enumerate() {
+            *slot = slot.max(children.expected_score(i, p));
+        }
+    }
+    any.then_some(out)
+}
+
 /// Power-UCT's per-ancestor value backup (Dam et al., "Generalized Mean
 /// Estimation in Monte-Carlo Tree Search", IJCAI 2020): recomputes `node`'s
 /// own per-player value as the visit-weighted Hölder power mean
@@ -837,6 +896,19 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
     ) {
     }
 
+    /// When `Some((lambda, max_child))`, `update` replaces the ordinary mean
+    /// backup with a truncated λ-return: each ancestor accumulates its own
+    /// bootstrapped target `G_t = (1 − λ)·V(s_{t+1}) + λ·G_{t+1}` (base case
+    /// `G_L = z`, the rollout return) instead of the shared terminal return
+    /// `z`. `lambda == 1.0` is identical to the mean backup, so `TdBackprop`
+    /// returns `None` there and `update` takes the untouched `Classic` path.
+    /// `.1` is the MaxMCTS(λ) flag: bootstrap from `max` over the node's
+    /// children rather than the on-path child. Default `None` (every non-TD
+    /// strategy); overridden only by `TdBackprop`.
+    fn td_lambda(&self) -> Option<(f64, bool)> {
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update_amaf<G: Game>(
         &self,
@@ -966,6 +1038,24 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
             .unwrap_or_else(|| G::compute_utilities(&trial.state));
         let mut is_leaf = true;
         let recompute_depth = self.recompute_depth();
+        // Sarsa-UCT(λ) / TD(λ): when active, each ancestor accumulates its
+        // own truncated λ-return `G_t` instead of the shared terminal `z`.
+        // `td_lambda()` returns `None` at `lambda == 1.0`, so `Classic` and
+        // every other strategy keep threading `&utilities` untouched.
+        let td = self.td_lambda();
+        // Running λ-return for the node currently being processed; only
+        // maintained when `td` is active, and it starts at `z` (the leaf's
+        // own target -- the rollout result is never re-derived).
+        let mut g: Vec<f64> = if td.is_some() {
+            utilities.clone()
+        } else {
+            Vec::new()
+        };
+        // Post-update value `V(s_{t+1})` of the on-path child below the node
+        // currently being processed: `None` at the leaf, then the previous
+        // iteration's freshly-updated `expected_score`. For `max_child` it is
+        // the Sarsa fallback when the node has no explored child.
+        let mut child_value: Option<Vec<f64>> = None;
         // Ply distance of the entry currently being processed from the
         // backpropagated leaf, `0` for the leaf's own entry. Only
         // meaningful (and only read) when `recompute_depth > 0`.
@@ -977,11 +1067,33 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 (parent_id_opt.is_some() && !index.get(*node_id).is_root())
                     || (parent_id_opt.is_none() && index.get(*node_id).is_root())
             );
+            // The per-player target this node accumulates. Ordinarily the
+            // shared terminal return `z` (`&utilities`); under TD(λ) it is
+            // this node's own λ-return `G_t`, folded one step from the
+            // on-path child's freshly-updated value (or, for `max_child`,
+            // from `max` over this node's children). At the leaf
+            // (`child_value` is `None`) `g` is still `z`, so the leaf's own
+            // value is never re-derived.
+            let step_utilities: &[f64] = if let Some((lambda, max_child)) = td {
+                if let Some(cv) = &child_value {
+                    let v_boot = if max_child {
+                        max_child_bootstrap(index.get(*node_id), G::num_players())
+                            .unwrap_or_else(|| cv.clone())
+                    } else {
+                        cv.clone()
+                    };
+                    td_lambda_step(&mut g, &v_boot, lambda);
+                }
+                &g
+            } else {
+                &utilities
+            };
+
             if index.get(*node_id).is_root() {
                 if graph_stats.is_some_and(GraphStats::uses_nodes) {
-                    index.get(*node_id).stats.update(&utilities);
+                    index.get(*node_id).stats.update(step_utilities);
                 } else {
-                    root_stats.update(&utilities);
+                    root_stats.update(step_utilities);
                 }
             } else {
                 let parent_id = parent_id_opt.unwrap();
@@ -996,14 +1108,34 @@ pub trait BackpropStrategy: Clone + Sync + Send + Default {
                 let idx = *node_idx;
                 let children = parent.children();
                 if graph_stats.is_none_or(GraphStats::uses_edges) {
-                    children.update(idx, &utilities);
+                    children.update(idx, step_utilities);
                     children.remove_virtual_loss(idx);
                 }
                 if graph_stats.is_some_and(GraphStats::uses_nodes) {
                     let node = index.get(*node_id);
-                    node.stats.update(&utilities);
+                    node.stats.update(step_utilities);
                     node.stats.remove_virtual_loss();
                 }
+            }
+
+            // Stash this node's post-update value for the parent's next
+            // iteration's bootstrap (D4: leaf-to-root, so the on-path child
+            // is always already updated this call). The root branch is dead
+            // in practice -- nothing above the root reads it -- but kept
+            // total.
+            if td.is_some() {
+                let np = G::num_players();
+                child_value = Some(if graph_stats.is_some_and(GraphStats::uses_nodes) {
+                    let node = index.get(*node_id);
+                    (0..np).map(|p| node.stats.expected_score(p)).collect()
+                } else if index.get(*node_id).is_root() {
+                    (0..np).map(|p| root_stats.expected_score(p)).collect()
+                } else {
+                    let children = index.get(parent_id_opt.unwrap()).children();
+                    (0..np)
+                        .map(|p| children.expected_score(*node_idx, p))
+                        .collect()
+                });
             }
 
             // Bayesian posterior: recompute this node's (mean, variance) for
@@ -1400,6 +1532,86 @@ impl BackpropStrategy for PowerMeanBackprop {
         num_players: usize,
     ) {
         derive_power_mean_value(node, slot, index, num_players, self.p, self.alpha);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/// Sarsa-UCT(λ) / TD(λ) bootstrapped backup (Vodopivec, Samothrakis, Šter,
+/// "On Monte Carlo Tree Search and Reinforcement Learning", JAIR 2017): after
+/// a playout, each ancestor accumulates a truncated λ-return
+/// `G_t = (1 − λ)·V(s_{t+1}) + λ·G_{t+1}` (γ = 1, terminal-only reward, base
+/// case `G_L = z`) instead of the shared terminal return `z`. Bootstrapping
+/// from the child's *current* estimate counters the stale-cumulative-mean
+/// bias an upper tree node's plain average carries once its subtree's policy
+/// has moved on. The step size is the sample average
+/// `α = 1/N` -- exactly the existing score-sum / visit-count machinery, so
+/// this is the textbook offline λ-return update
+/// `V(s_t) ← V(s_t) + (1/N)(G_t − V(s_t))`.
+/// TODO: a constant step size `α` would need a separate stored value field
+/// on `PlayerStats` (read by `expected_score` instead of `score / visits`)
+/// and is deferred.
+///
+/// `lambda == 1.0` recovers plain UCT exactly -- every node accumulates `z`,
+/// bit-identical to `Classic` (the strategy returns `None` from `td_lambda`,
+/// so `update` never clones the running return or runs the recursion).
+/// `lambda == 0.0` is a pure one-step bootstrap. Vodopivec's guidance for
+/// adversarial games: the useful band is `[0.8, 1.0]`; larger gains from
+/// small `λ` are a single-agent / dense-reward phenomenon, so the default is
+/// `1.0` and the tuner sweeps down.
+///
+/// `max_child` switches the bootstrap from the on-path child (Sarsa /
+/// on-policy -- Khandelwal et al. ICML 2016's `MCTS(λ)`) to `max` over the
+/// node's children (Q-learning / off-policy -- their `MaxMCTS(λ)`). `false`
+/// (Sarsa) is the default; `MaxMCTS(λ)` composes with a max-ward backup bias
+/// and can compound over-optimism. Complex backups help most with
+/// sparse/delayed reward and low branching, and can hurt dense-reward
+/// high-branching games (same caveat `PowerMeanBackprop`'s doc comment
+/// carries).
+///
+/// A distinct strategy from `PowerMeanBackprop`, not composable with it: this
+/// changes the *input* each node accumulates; the power-mean operator
+/// *overwrites* a node's value from its children afterward. `MaxMCTS(λ)` is
+/// `max_child: true` here, not `TdBackprop` combined with `PowerMeanBackprop`.
+///
+/// AMAF / GRAVE / GLOBAL / NST / LGR side tables and the MCTS-Solver /
+/// score-bound / proof-number passes are untouched -- they keep reading the
+/// raw terminal `z`. Only `PlayerStats::score` / `sum_squared_score` change,
+/// so a variance-based selector (UCB1-Tuned, RAVE) sees the λ-return spread.
+#[derive(Debug, Clone, Copy)]
+pub struct TdBackprop {
+    /// λ-return decay. `1.0` = plain Monte-Carlo mean backup (== `Classic`);
+    /// `0.0` = one-step bootstrap. Tuner bounds `[0.0, 1.0]`, default `1.0`.
+    pub lambda: f64,
+    /// Bootstrap from `max` over children (MaxMCTS(λ)) instead of the on-path
+    /// child (Sarsa-UCT(λ)). Default `false`.
+    pub max_child: bool,
+}
+
+impl Default for TdBackprop {
+    fn default() -> Self {
+        Self {
+            lambda: 1.0,
+            max_child: false,
+        }
+    }
+}
+
+impl TdBackprop {
+    pub fn new(lambda: f64, max_child: bool) -> Self {
+        Self { lambda, max_child }
+    }
+}
+
+impl BackpropStrategy for TdBackprop {
+    fn td_lambda(&self) -> Option<(f64, bool)> {
+        // lambda == 1 is exactly the mean backup; return None so `update`
+        // takes the untouched `Classic` path and stays bit-identical.
+        if self.lambda == 1.0 {
+            None
+        } else {
+            Some((self.lambda, self.max_child))
+        }
     }
 }
 

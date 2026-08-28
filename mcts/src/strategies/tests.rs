@@ -2805,3 +2805,93 @@ fn test_power_mean_draw_child_still_included() {
     assert!((root.stats.score(0) / n - 0.3).abs() < 1e-9);
     assert!((root.stats.score(1) / n - (-0.3)).abs() < 1e-9);
 }
+
+// --- Sarsa-UCT(λ) / TD(λ) truncated λ-return recursion (session A3) ---
+//
+// These exercise `td_lambda_returns` directly: no arena, no `Game`, no
+// threads. `v_boot[i]` is the bootstrap value at path node `i` (root-first);
+// the returned `targets[i]` is that node's λ-return `G_i`, `targets.last()`
+// is always `z`.
+
+#[test]
+fn test_td_lambda_returns_lambda1_is_monte_carlo() {
+    use crate::strategies::mcts::backprop::td_lambda_returns;
+    let z = [1.0, -1.0];
+    let v_boot = vec![vec![0.2, -0.2], vec![0.6, -0.6]];
+    let targets = td_lambda_returns(&z, &v_boot, 1.0);
+    // λ = 1: every node accumulates exactly `z` -- the byte-identity
+    // guarantee that makes `TdBackprop { lambda: 1.0 }` == `Classic`.
+    for t in &targets {
+        assert_eq!(t.as_slice(), z.as_slice());
+    }
+}
+
+#[test]
+fn test_td_lambda_returns_lambda0_is_one_step() {
+    use crate::strategies::mcts::backprop::td_lambda_returns;
+    let z = [1.0, -1.0];
+    let v_boot = vec![vec![0.2, -0.2], vec![0.6, -0.6]];
+    let targets = td_lambda_returns(&z, &v_boot, 0.0);
+    // λ = 0: each interior target is its own bootstrap value; leaf is `z`.
+    assert_eq!(
+        targets,
+        vec![vec![0.2, -0.2], vec![0.6, -0.6], vec![1.0, -1.0]]
+    );
+}
+
+#[test]
+fn test_td_lambda_returns_hand_verified() {
+    use crate::strategies::mcts::backprop::td_lambda_returns;
+    let z = [1.0, -1.0];
+    let v_boot = vec![vec![0.2, -0.2], vec![0.6, -0.6]];
+    let targets = td_lambda_returns(&z, &v_boot, 0.5);
+    // G_2 = z = [1, -1]
+    // G_1 = 0.5·[0.6,-0.6] + 0.5·[1,-1] = [0.8, -0.8]
+    // G_0 = 0.5·[0.2,-0.2] + 0.5·[0.8,-0.8] = [0.5, -0.5]
+    let expected = [[0.5, -0.5], [0.8, -0.8], [1.0, -1.0]];
+    for (t, e) in targets.iter().zip(expected.iter()) {
+        for (a, b) in t.iter().zip(e.iter()) {
+            assert!((a - b).abs() < 1e-12, "{t:?} vs {e:?}");
+        }
+    }
+}
+
+#[test]
+fn test_td_lambda_returns_identical_bootstrap_is_fixed_point() {
+    use crate::strategies::mcts::backprop::td_lambda_returns;
+    // If every bootstrap value equals `z`, `G_t == z` at any λ and any depth
+    // -- proves the `(1−λ)` / `λ` weights sum to 1 and aren't transposed.
+    let z = [0.4, -0.4];
+    for path_len in [1usize, 2, 5, 9] {
+        let v_boot = vec![z.to_vec(); path_len];
+        for lambda in [0.0, 0.3, 0.7, 1.0] {
+            let targets = td_lambda_returns(&z, &v_boot, lambda);
+            for t in &targets {
+                for (a, b) in t.iter().zip(z.iter()) {
+                    assert!((a - b).abs() < 1e-12, "len {path_len} λ {lambda}: {t:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_td_lambda_step_matches_returns() {
+    use crate::strategies::mcts::backprop::{td_lambda_returns, td_lambda_step};
+    let z = [0.3, -0.1, 0.5];
+    let v_boot = vec![
+        vec![0.1, 0.2, -0.3],
+        vec![-0.4, 0.0, 0.6],
+        vec![0.7, -0.5, 0.2],
+    ];
+    let lambda = 0.65;
+    let via_returns = td_lambda_returns(&z, &v_boot, lambda);
+    // Reproduce the whole path by repeated single steps, leaf-to-root.
+    let mut g = z.to_vec();
+    let mut via_steps = vec![z.to_vec(); v_boot.len() + 1];
+    for i in (0..v_boot.len()).rev() {
+        td_lambda_step(&mut g, &v_boot[i], lambda);
+        via_steps[i] = g.clone();
+    }
+    assert_eq!(via_returns, via_steps);
+}

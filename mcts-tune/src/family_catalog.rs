@@ -173,6 +173,15 @@ register_field! {
     // max over children. EVT paper's caveat: pure max helps a weak baseline and
     // hurts a strong one, so sweep the interior, not just the endpoints.
     alpha: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 0.0}),
+    // `backprop::TdBackprop`'s λ-return decay (Sarsa-UCT(λ), Vodopivec et al.
+    // JAIR 2017). `1.0` = plain Monte-Carlo mean backup (== `Classic`); lower
+    // bootstraps each node from its children's current estimates. Adversarial-
+    // game guidance: the useful band is [0.8, 1.0], so sweep the top densely.
+    lambda: f64 => json!({"type": "float", "bounds": [0.0, 1.0], "default": 1.0}),
+    // `backprop::TdBackprop`'s MaxMCTS(λ) toggle (Khandelwal et al. ICML 2016):
+    // 1 bootstraps from max over children instead of the on-path child. Named
+    // `td_max_child` (not `max_child`) to match how this table disambiguates.
+    td_max_child: u32 => json!({"type": "int", "bounds": [0, 1], "default": 0}),
     // `flat_mc::FlatMonteCarloStrategy`'s per-move rollout count and
     // per-rollout depth cap.
     samples_per_move: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 100}),
@@ -778,6 +787,21 @@ register_family! {
             p: t.p.ok_or_else(|| missing("p"))?,
             alpha: t.alpha.ok_or_else(|| missing("alpha"))?,
             depth: 0,
+        },
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    })),
+    // Sarsa-UCT(λ): plain Ucb1 selection, uniform playout, `TdBackprop`. Like
+    // `power_uct` the select<->backprop pairing is free (no `needs_posterior`);
+    // the family gives the tuner a `lambda` knob plus the MaxMCTS toggle. The
+    // closure param is `t` (not `p`) to match `power_uct`.
+    "td_uct" => [c, lambda, td_max_child, final_action] => |t: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::Ucb1 { c: c(t)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(t)?,
+        backprop: BackpropSpec::Td {
+            lambda: t.lambda.ok_or_else(|| missing("lambda"))?,
+            max_child: t.td_max_child.ok_or_else(|| missing("td_max_child"))?,
         },
         solver_loss_threshold: None,
         contempt_factor: None,

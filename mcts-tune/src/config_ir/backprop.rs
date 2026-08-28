@@ -137,4 +137,12 @@ register_backprop! {
     PowerMean { p: f64, alpha: f64, depth: u32 } =>
         backprop::PowerMeanBackprop::new_mixed(
             p, alpha, if depth == 0 { None } else { Some(depth) }),
+    // Sarsa-UCT(λ) / TD(λ) bootstrapped backup (Vodopivec et al., JAIR
+    // 2017). `lambda == 1.0` is `Classic` (the strategy returns `None` from
+    // `td_lambda`). `max_child != 0` is MaxMCTS(λ) (Khandelwal et al. ICML
+    // 2016) -- bootstrap from `max` over children instead of the on-path
+    // child. `u32` rather than `bool` for `max_child` since the schema has
+    // no bool type (same as `depth` above).
+    Td { lambda: f64, max_child: u32 } =>
+        backprop::TdBackprop::new(lambda, max_child != 0),
 }

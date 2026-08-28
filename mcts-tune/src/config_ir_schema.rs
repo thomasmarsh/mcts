@@ -196,6 +196,13 @@ fn backprop_variants() -> Vec<Value> {
                 field("depth", int([0, 64], 0)),
             ],
         ),
+        variant(
+            "td",
+            vec![
+                field("lambda", float([0.0, 1.0], 1.0)),
+                field("max_child", int([0, 1], 0)),
+            ],
+        ),
     ]
 }
 
@@ -418,11 +425,18 @@ mod tests {
             BackpropSpec::BayesGaussian { .. } => "bayes_gaussian",
             BackpropSpec::BayesNumeric { .. } => "bayes_numeric",
             BackpropSpec::PowerMean { .. } => "power_mean",
+            BackpropSpec::Td { .. } => "td",
         };
         let _ = assert_backprop_variant_named;
         cover(
             "backprop",
-            &["classic", "bayes_gaussian", "bayes_numeric", "power_mean"],
+            &[
+                "classic",
+                "bayes_gaussian",
+                "bayes_numeric",
+                "power_mean",
+                "td",
+            ],
         );
 
         let assert_final_action_variant_named = |s: &FinalActionSpec| match s {
