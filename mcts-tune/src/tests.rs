@@ -1773,6 +1773,14 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
             json!({"family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child"}),
         ),
         (
+            "ucb_v",
+            json!({"family": "ucb_v", "c": 1.4, "final_action": "robust_child"}),
+        ),
+        (
+            "kl_ucb",
+            json!({"family": "kl_ucb", "c": 1.4, "final_action": "robust_child"}),
+        ),
+        (
             "ucb1_tuned_mast",
             json!({"family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child"}),
         ),

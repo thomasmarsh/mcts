@@ -5,7 +5,7 @@ use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::select::SelectContext;
 use super::super::select::SelectStrategy;
-use super::ucb::ucb1_tuned;
+use super::variance::ucb1_tuned;
 use crate::game::Game;
 
 // Ameneyro, F.V., Galvan, E., Morales, A.F.K., 2020. Playing Carcassonne with

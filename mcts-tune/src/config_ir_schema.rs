@@ -134,6 +134,8 @@ fn select_base_variants() -> Vec<Value> {
     vec![
         variant("ucb1", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
         variant("ucb1_tuned", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
+        variant("ucb_v", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
+        variant("kl_ucb", vec![field("c", float(C_BOUNDS, C_DEFAULT))]),
         variant(
             "amaf",
             vec![
@@ -326,6 +328,8 @@ mod tests {
         let assert_select_variant_named = |s: &SelectSpec| match s {
             SelectSpec::Ucb1 { .. } => "ucb1",
             SelectSpec::Ucb1Tuned { .. } => "ucb1_tuned",
+            SelectSpec::UcbV { .. } => "ucb_v",
+            SelectSpec::KlUcb { .. } => "kl_ucb",
             SelectSpec::Amaf { .. } => "amaf",
             SelectSpec::Rave { .. } => "rave",
             SelectSpec::UctPn { .. } => "uct_pn",
@@ -340,6 +344,8 @@ mod tests {
             &[
                 "ucb1",
                 "ucb1_tuned",
+                "ucb_v",
+                "kl_ucb",
                 "amaf",
                 "rave",
                 "uct_pn",
@@ -353,6 +359,8 @@ mod tests {
         let assert_base_select_variant_named = |s: &BaseSelectSpec| match s {
             BaseSelectSpec::Ucb1 { .. } => "ucb1",
             BaseSelectSpec::Ucb1Tuned { .. } => "ucb1_tuned",
+            BaseSelectSpec::UcbV { .. } => "ucb_v",
+            BaseSelectSpec::KlUcb { .. } => "kl_ucb",
             BaseSelectSpec::Amaf { .. } => "amaf",
             BaseSelectSpec::Rave { .. } => "rave",
             BaseSelectSpec::UctPn { .. } => "uct_pn",
@@ -366,6 +374,8 @@ mod tests {
             &[
                 "ucb1",
                 "ucb1_tuned",
+                "ucb_v",
+                "kl_ucb",
                 "amaf",
                 "rave",
                 "uct_pn",

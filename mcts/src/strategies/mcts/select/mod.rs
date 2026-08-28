@@ -8,6 +8,7 @@ pub mod quasi;
 pub mod rave;
 pub mod score_bounded;
 pub mod ucb;
+pub mod variance;
 
 pub use amaf::Amaf;
 pub use basic::MaxAvgScore;
@@ -27,7 +28,9 @@ pub use rave::RaveSchedule;
 pub use rave::RaveUcb;
 pub use score_bounded::ScoreBoundedUct;
 pub use ucb::Ucb1;
-pub use ucb::Ucb1Tuned;
+pub use variance::KlUcb;
+pub use variance::Ucb1Tuned;
+pub use variance::UcbV;
 
 use super::config::GraphStats;
 use super::config::McgsCorrection;
@@ -299,6 +302,37 @@ pub(super) fn is_proven_loss<G: Game>(
         matches!(ctx.index.get(child_id).proven(), Proven::Win(w) if w != ctx.player)
             && ctx.child_snapshot(child_id, children, idx).num_visits > ctx.solver_loss_threshold
     })
+}
+
+/// The exact utility a `Proven` status contributes to `player`'s score:
+/// `Win(player)` → +1, any other proven outcome (`Draw`, an opponent win) →
+/// its exact utility, `Unproven` → `None`. Factored out so it can be
+/// unit-tested without a `SelectContext` (see `select::variance`'s tests).
+#[inline]
+pub(super) fn proven_to_utility(p: Proven, player: usize) -> Option<f64> {
+    match p {
+        Proven::Win(w) if w == player => Some(1.0),
+        Proven::Win(_) => Some(-1.0),
+        Proven::Draw => Some(0.0),
+        Proven::Unproven => None,
+    }
+}
+
+/// The exact utility a `Proven` child contributes to `ctx.player`'s score,
+/// or `None` if the child has no tree node yet or is `Unproven`. Used by
+/// variance-aware strategies whose exploration term is ill-conditioned at
+/// `q̄ ∈ {0, 1}` with small `n` (KL-UCB's bound in particular). The
+/// `node_id(idx)?` guard makes it a no-op for the prior-placeholder path
+/// (`score_child_or_prior` passing the parent's `Id`). With the solver off,
+/// `proven()` is always `Unproven`, so this is a single cheap `None` branch.
+#[inline]
+pub(super) fn proven_exact_value<G: Game>(
+    ctx: &SelectContext<'_, G>,
+    children: &ChildArray<G::A>,
+    idx: usize,
+) -> Option<f64> {
+    let child_id = children.node_id(idx)?;
+    proven_to_utility(ctx.index.get(child_id).proven(), ctx.player)
 }
 
 // This function is adapted from from minimax-rs.

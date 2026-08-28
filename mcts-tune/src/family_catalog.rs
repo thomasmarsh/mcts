@@ -640,6 +640,22 @@ register_family! {
         solver_loss_threshold: None,
         contempt_factor: None,
     })),
+    "ucb_v" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::UcbV { c: c(p)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    })),
+    "kl_ucb" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
+        select: SelectSpec::KlUcb { c: c(p)? },
+        simulate: SimulateSpec::Uniform {},
+        final_action: to_final_action_spec(p)?,
+        backprop: BackpropSpec::Classic {},
+        solver_loss_threshold: None,
+        contempt_factor: None,
+    })),
     "ucb1_tuned_dm" => [c, final_action] => |p: &TrialParams| Ok(FamilySpec::Compose(ComposeSpec {
         select: SelectSpec::Ucb1Tuned { c: c(p)? },
         simulate: SimulateSpec::DecisiveMove {

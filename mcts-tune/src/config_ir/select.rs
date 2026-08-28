@@ -227,6 +227,8 @@ macro_rules! register_select {
 register_select! {
     Ucb1 { c: f64 } => select::Ucb1::with_c(c),
     Ucb1Tuned { c: f64 } => select::Ucb1Tuned::with_c(c),
+    UcbV { c: f64 } => select::UcbV::with_c(c),
+    KlUcb { c: f64 } => select::KlUcb::with_c(c),
     Amaf { alpha: f64, c: f64 } => select::Amaf::new().alpha(alpha).exploration_constant(c),
     Rave { threshold: u32, schedule: select::RaveSchedule, ucb: select::RaveUcb } =>
         select::Rave::new(threshold, schedule, ucb),

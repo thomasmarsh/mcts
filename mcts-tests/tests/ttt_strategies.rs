@@ -2992,3 +2992,92 @@ fn test_final_search_report_aggregates_hybrid_root_and_tree_parallel_work() {
     assert!(report.tree_nodes >= search.arena_len());
     assert!(report.tt_reads > 0);
 }
+
+#[test]
+fn test_ucb_v_prefers_the_immediate_win() {
+    // End-to-end check of `select::UcbV`'s `score_child`/`unvisited_value`
+    // wiring and its proven short-circuit: same near-terminal position as
+    // the backprop hybrid tests (X to move -- playing 2 wins immediately,
+    // playing 8 forces a draw).
+    use game_ttt::*;
+    use mcts::backprop::Classic;
+    use mcts::select;
+    use mcts::simulate;
+    use mcts::strategy::Compose;
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type V = Compose<select::UcbV, simulate::Uniform, Classic>;
+    type TS = mcts::TreeSearch<G, V>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(30)
+                .select(select::UcbV::with_c(1.0))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        assert_eq!(
+            ts.choose_action(&state),
+            Move(2),
+            "seed {seed}: UcbV should play the immediate winning move"
+        );
+    }
+}
+
+#[test]
+fn test_kl_ucb_prefers_the_immediate_win() {
+    // As `test_ucb_v_prefers_the_immediate_win`, for `select::KlUcb`.
+    use game_ttt::*;
+    use mcts::backprop::Classic;
+    use mcts::select;
+    use mcts::simulate;
+    use mcts::strategy::Compose;
+    use rand::SeedableRng;
+
+    let mut position = Position::new();
+    for (i, piece) in [
+        (0, Piece::X),
+        (1, Piece::X),
+        (3, Piece::O),
+        (4, Piece::O),
+        (5, Piece::X),
+        (6, Piece::X),
+        (7, Piece::O),
+    ] {
+        position.set(i, piece);
+    }
+    let state = HashedPosition::from_position(position);
+
+    type G = TicTacToe;
+    type K = Compose<select::KlUcb, simulate::Uniform, Classic>;
+    type TS = mcts::TreeSearch<G, K>;
+
+    for seed in 0..10 {
+        let mut ts = TS::default().config(
+            mcts::SearchConfig::default()
+                .max_iterations(30)
+                .select(select::KlUcb::with_c(1.0))
+                .rng(rand::rngs::SmallRng::seed_from_u64(seed)),
+        );
+        assert_eq!(
+            ts.choose_action(&state),
+            Move(2),
+            "seed {seed}: KlUcb should play the immediate winning move"
+        );
+    }
+}
