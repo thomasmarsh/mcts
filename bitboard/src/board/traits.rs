@@ -16,6 +16,23 @@ impl<S: Storage, R: Dim, C: Dim> PartialEq for Board<S, R, C> {
 
 impl<S: Storage, R: Dim, C: Dim> Eq for Board<S, R, C> {}
 
+/// Renders a board as a compact rectangular grid. Rows are printed from the
+/// highest row index to the lowest so the first row in the output is the
+/// board's north edge; set cells use `X`, unset cells use `.`.
+impl<S: Storage, R: Dim, C: Dim> std::fmt::Display for Board<S, R, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for row in (0..self.rows()).rev() {
+            for col in 0..self.cols() {
+                write!(f, "{}", if self.get(row, col) { 'X' } else { '.' })?;
+            }
+            if row != 0 {
+                writeln!(f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Mirrors `GoEngine`'s own `Hash` impl: fold every backing word plus
 /// `rows`/`cols` so a `Dyn`-dimensioned board's runtime size participates
 /// (two boards with the same bits but different dims must hash differently,

@@ -23,8 +23,25 @@
             "state_only_keying": true,
             "final_action": "robust_child"
         },
-        "max_iterations": 5000,
+        "max_time_ms": 5000,
         "reuse_tree": true,
+        "threads": 6,
+        "use_transpositions": true
+    },
+    {
+        "id": "candidate-trial_x2d_07acee6b62895b448e3904bd9abb7459",
+        "label": "Tuned candidate",
+        "description": "Candidate snapshot from trial 9 (trial-07acee6b62895b448e3904bd9abb7459).",
+        "params": {
+            "c": 0.12947973585172834,
+            "epsilon": 0.07379656473539886,
+            "family": "ucb1_lgr2_mast",
+            "final_action": "robust_child",
+            "mcgs": true,
+            "q_init": "Loss"
+        },
+        "max_time_ms": 5000,
+        "threads": 6,
         "use_transpositions": true
     }
 ]

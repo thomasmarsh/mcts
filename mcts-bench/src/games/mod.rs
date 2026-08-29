@@ -18,15 +18,16 @@ use crate::{BenchGame, MatchOutcome, PlyEvent, StrategyInfo};
 pub fn registry() -> HashMap<&'static str, Box<dyn BenchGame>> {
     let mut m: HashMap<&'static str, Box<dyn BenchGame>> = HashMap::new();
 
-    for &(kind, pkg_name) in GAME_KINDS {
-        let binary = find_game_binary(pkg_name);
+    for game in GAME_KINDS {
+        let binary = game.binary_path();
         if let Some(path) = binary {
             let adapter = SubprocessAdapter::new(path);
-            m.insert(kind, Box::new(SubprocessBenchGame { adapter }));
+            m.insert(game.kind, Box::new(SubprocessBenchGame { adapter }));
         } else {
             eprintln!(
-                "warning: bench game '{kind}' not available \
-                 (binary '{pkg_name}' not found)"
+                "warning: bench game '{}' not available (binary '{}' not found)",
+                game.kind,
+                game.binary_name(),
             );
         }
     }
@@ -42,18 +43,19 @@ pub fn registry() -> HashMap<&'static str, Box<dyn BenchGame>> {
 pub fn describe_games() -> Vec<GameDescription> {
     let mut descriptions = Vec::new();
 
-    for &(kind, pkg_name) in GAME_KINDS {
-        let Some(path) = find_game_binary(pkg_name) else {
+    for game in GAME_KINDS {
+        let Some(path) = game.binary_path() else {
             eprintln!(
-                "warning: bench game '{kind}' not available \
-                 (binary '{pkg_name}' not found)"
+                "warning: bench game '{}' not available (binary '{}' not found)",
+                game.kind,
+                game.binary_name(),
             );
             continue;
         };
 
         match describe_one(&path) {
             Ok(desc) => descriptions.push(desc),
-            Err(e) => eprintln!("warning: bench game '{kind}' describe failed: {e}"),
+            Err(e) => eprintln!("warning: bench game '{}' describe failed: {e}", game.kind),
         }
     }
 
@@ -87,23 +89,37 @@ fn describe_one(binary_path: &Path) -> Result<GameDescription, String> {
 pub fn describe_tuners() -> Vec<(&'static str, TunerInfo)> {
     let mut tuners = Vec::new();
 
-    for &(kind, pkg_name) in GAME_KINDS {
-        let Some(path) = find_game_binary(pkg_name) else {
+    for game in GAME_KINDS {
+        let Some(path) = game.binary_path() else {
             eprintln!(
-                "warning: bench game '{kind}' not available \
-                 (binary '{pkg_name}' not found)"
+                "warning: bench game '{}' not available (binary '{}' not found)",
+                game.kind,
+                game.binary_name(),
             );
             continue;
         };
 
         match tune_describe_one(&path) {
-            Ok(Some(info)) => tuners.push((kind, info)),
+            Ok(Some(info)) => tuners.push((game.kind, info)),
             Ok(None) => {}
-            Err(e) => eprintln!("warning: bench game '{kind}' tune describe failed: {e}"),
+            Err(e) => eprintln!(
+                "warning: bench game '{}' tune describe failed: {e}",
+                game.kind
+            ),
         }
     }
 
     tuners
+}
+
+/// Return the explicit host executable for an externally hosted tuner game.
+/// Workspace games return `None` and use `bench tuner`'s standard
+/// `target/release/game-<kind>` convention.
+pub fn tuner_target_binary(kind: &str) -> Option<&'static str> {
+    GAME_KINDS
+        .iter()
+        .find(|game| game.kind == kind)
+        .and_then(GameKind::tuner_target_binary)
 }
 
 /// Spawn `binary_path tune describe`, wait for it to exit, and parse its
@@ -125,25 +141,120 @@ fn tune_describe_one(binary_path: &Path) -> Result<Option<TunerInfo>, String> {
         .map_err(|e| format!("failed to parse output: {e}"))
 }
 
-const GAME_KINDS: &[(&str, &str)] = &[
-    ("atarigo", "game-atarigo"),
-    ("bid-ttt", "game-bid-ttt"),
-    ("breakthrough", "game-breakthrough"),
-    ("congo", "game-congo"),
-    ("druid", "game-druid"),
-    ("focus-2p", "game-focus-2p"),
-    ("focus-3p", "game-focus-3p"),
-    ("focus-4p", "game-focus-4p"),
-    ("gonnect", "game-gonnect"),
-    ("ingenious", "game-ingenious"),
-    ("knightthrough", "game-knightthrough"),
-    ("margo", "game-margo"),
-    ("nim", "game-nim"),
-    ("othello", "game-othello"),
-    ("tak", "game-tak"),
-    ("tanbo", "game-tanbo"),
-    ("traffic-lights", "game-traffic-lights"),
-    ("ttt", "game-ttt"),
+struct GameKind {
+    kind: &'static str,
+    binary: GameBinary,
+}
+
+enum GameBinary {
+    Workspace(&'static str),
+    External(&'static str),
+}
+
+impl GameKind {
+    fn binary_path(&self) -> Option<PathBuf> {
+        match &self.binary {
+            GameBinary::Workspace(binary) => find_binary_named(binary),
+            GameBinary::External(path) => {
+                let path = PathBuf::from(path);
+                path.exists().then_some(path)
+            }
+        }
+    }
+
+    fn binary_name(&self) -> &str {
+        match &self.binary {
+            GameBinary::Workspace(binary) | GameBinary::External(binary) => binary,
+        }
+    }
+
+    /// An explicit host argument is required only for games outside this
+    /// workspace; workspace games retain the CLI's normal binary convention.
+    fn tuner_target_binary(&self) -> Option<&'static str> {
+        match &self.binary {
+            GameBinary::Workspace(_) => None,
+            GameBinary::External(path) => Some(*path),
+        }
+    }
+}
+
+const GAME_KINDS: &[GameKind] = &[
+    GameKind {
+        kind: "atarigo",
+        binary: GameBinary::Workspace("game-atarigo"),
+    },
+    GameKind {
+        kind: "bid-ttt",
+        binary: GameBinary::Workspace("game-bid-ttt"),
+    },
+    GameKind {
+        kind: "breakthrough",
+        binary: GameBinary::Workspace("game-breakthrough"),
+    },
+    GameKind {
+        kind: "congo",
+        binary: GameBinary::Workspace("game-congo"),
+    },
+    GameKind {
+        kind: "druid",
+        binary: GameBinary::Workspace("game-druid"),
+    },
+    GameKind {
+        kind: "focus-2p",
+        binary: GameBinary::Workspace("game-focus-2p"),
+    },
+    GameKind {
+        kind: "focus-3p",
+        binary: GameBinary::Workspace("game-focus-3p"),
+    },
+    GameKind {
+        kind: "focus-4p",
+        binary: GameBinary::Workspace("game-focus-4p"),
+    },
+    GameKind {
+        kind: "gonnect",
+        binary: GameBinary::Workspace("game-gonnect"),
+    },
+    GameKind {
+        kind: "ingenious",
+        binary: GameBinary::Workspace("game-ingenious"),
+    },
+    GameKind {
+        kind: "knightthrough",
+        binary: GameBinary::Workspace("game-knightthrough"),
+    },
+    GameKind {
+        kind: "margo",
+        binary: GameBinary::Workspace("game-margo"),
+    },
+    GameKind {
+        kind: "nego",
+        binary: GameBinary::External("../nego/target/release/nego-host"),
+    },
+    GameKind {
+        kind: "nim",
+        binary: GameBinary::Workspace("game-nim"),
+    },
+    GameKind {
+        kind: "othello",
+        binary: GameBinary::Workspace("game-othello"),
+    },
+    GameKind {
+        kind: "tak",
+        binary: GameBinary::Workspace("game-tak"),
+    },
+    GameKind {
+        kind: "tanbo",
+        binary: GameBinary::Workspace("game-tanbo"),
+    },
+    GameKind {
+        kind: "traffic-lights",
+        binary: GameBinary::Workspace("game-traffic-lights"),
+    },
+    GameKind {
+        kind: "ttt",
+        binary: GameBinary::Workspace("game-ttt"),
+    },
 ];
 
 struct SubprocessBenchGame {
@@ -268,12 +379,14 @@ fn play_match_inner(
 /// Locate a sibling game binary using the same convention as the existing
 /// registry and describe commands.
 pub fn find_game_binary(kind: &str) -> Option<PathBuf> {
-    let pkg_name = GAME_KINDS
-        .iter()
-        .find(|(registered, _)| *registered == kind)
-        .map(|(_, package)| *package)
-        .unwrap_or(kind);
-    let exe_name = exe_name_for(pkg_name);
+    match GAME_KINDS.iter().find(|game| game.kind == kind) {
+        Some(game) => game.binary_path(),
+        None => find_binary_named(kind),
+    }
+}
+
+fn find_binary_named(binary: &str) -> Option<PathBuf> {
+    let exe_name = exe_name_for(binary);
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

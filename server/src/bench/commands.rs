@@ -475,6 +475,9 @@ pub(crate) fn build_tuner_attempt(
         "--game".into(),
         launch.game.clone(),
     ];
+    if let Some(target_binary) = mcts_bench::games::tuner_target_binary(&launch.game) {
+        command.extend(["--target-binary".into(), target_binary.into()]);
+    }
     append_tuner_config_arguments(&mut command, &config);
     command.push("--artifact-root".into());
     command.push(launch.artifact_root.to_string_lossy().into_owned());

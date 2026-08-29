@@ -299,6 +299,32 @@ fn test_tuner_attempt_builder_keeps_session_artifacts_stable_across_three_physic
 }
 
 #[test]
+fn test_tuner_attempt_builder_selects_nego_external_host() {
+    let built = build_tuner_attempt(&TunerAttemptLaunch {
+        game: "nego".into(),
+        config: None,
+        session_id: "session-nego".into(),
+        optimizer_id: "optimizer-nego".into(),
+        lifecycle_path: "/tmp/nego.lifecycle.jsonl".into(),
+        attempt_id: "attempt-nego".into(),
+        physical_run_id: "physical-nego".into(),
+        artifact_root: std::env::current_dir()
+            .unwrap()
+            .join("bench-runs")
+            .join("physical-nego")
+            .join("tuning-artifacts"),
+        target_trial_count: 1,
+        workers: None,
+    })
+    .unwrap();
+
+    assert!(built
+        .command
+        .windows(2)
+        .any(|arguments| { arguments == ["--target-binary", "../nego/target/release/nego-host"] }));
+}
+
+#[test]
 fn test_reserved_tuner_launch_records_once_and_reuses_the_physical_identity() {
     let launches = Arc::new(Mutex::new(0));
     let observed = launches.clone();

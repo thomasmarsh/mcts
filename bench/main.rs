@@ -130,6 +130,12 @@ enum Command {
         #[arg(long)]
         game: String,
 
+        /// Executable that implements the game-host `compare` protocol.
+        /// This may point outside this workspace; when omitted, uses this
+        /// workspace's `target/release/game-<game>` binary.
+        #[arg(long)]
+        target_binary: Option<String>,
+
         /// Game kind recorded by the tuning lifecycle. When omitted, uses
         /// `--game`.
         #[arg(long)]
@@ -226,6 +232,7 @@ fn main() {
             baseline_configs,
             game_config,
             game,
+            target_binary,
             game_kind,
             label,
             run_id,
@@ -242,6 +249,7 @@ fn main() {
             &baseline_configs,
             game_config.as_deref(),
             &game,
+            target_binary.as_deref(),
             game_kind.as_deref(),
             label.as_deref(),
             run_id.as_deref(),
@@ -429,7 +437,9 @@ fn tuner_artifact_root(physical_run_id: &str) -> String {
 /// invocation, incorporating the config file, overrides, and git SHA.
 ///
 /// `game` is translated into a `target.binary=target/release/game-<game>`
-/// override so the launched run actually tunes the selected game --
+/// override unless `target_binary` names an external game-host executable.
+/// This lets the tuner use a game that lives outside this workspace while
+/// retaining `game` as its bench/lifecycle attribution --
 /// `tuner/config/default.yaml`'s `target.binary` is just a fallback default
 /// (currently `game-traffic-lights`, the reference wiring's game), not
 /// something any caller of `bench tuner --game ...` should rely on. This is
@@ -443,6 +453,7 @@ fn build_tuner_command(
     baseline_configs: &[String],
     game_config: Option<&str>,
     game: &str,
+    target_binary: Option<&str>,
     game_kind: Option<&str>,
     run_id: Option<&str>,
     artifact_root: Option<&str>,
@@ -465,15 +476,19 @@ fn build_tuner_command(
         cmd.push(config_path.to_string());
     }
 
-    let binary_suffix = if cfg!(target_os = "windows") {
-        ".exe"
-    } else {
-        ""
+    let default_binary = || {
+        let binary_suffix = if cfg!(target_os = "windows") {
+            ".exe"
+        } else {
+            ""
+        };
+        format!("target/release/game-{game}{binary_suffix}")
     };
     cmd.push("--override".to_string());
-    cmd.push(format!(
-        "target.binary=target/release/game-{game}{binary_suffix}"
-    ));
+    let target_binary = target_binary
+        .map(str::to_owned)
+        .unwrap_or_else(default_binary);
+    cmd.push(format!("target.binary={target_binary}"));
 
     for ov in overrides {
         cmd.push("--override".to_string());
@@ -584,6 +599,7 @@ fn cmd_tuner(
     baseline_configs: &[String],
     game_config: Option<&str>,
     game: &str,
+    target_binary: Option<&str>,
     game_kind: Option<&str>,
     label: Option<&str>,
     run_id: Option<&str>,
@@ -611,6 +627,7 @@ fn cmd_tuner(
             baseline_configs,
             game_config,
             game,
+            target_binary,
             game_kind,
             Some(&run_id),
             artifact_root.or(Some(&default_artifact_root)),
@@ -658,6 +675,7 @@ fn cmd_tuner(
             baseline_configs,
             game_config,
             game,
+            target_binary,
             game_kind,
             run_id,
             artifact_root,
@@ -748,6 +766,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -755,6 +774,29 @@ mod tests {
             .expect("target.binary override for the selected game");
         // Must be a value for the `--override` flag immediately before it.
         assert_eq!(cmd[idx - 1], "--override");
+    }
+
+    #[test]
+    fn test_build_tuner_command_accepts_an_external_target_binary() {
+        let cmd = build_tuner_command(
+            None,
+            &[],
+            &[],
+            None,
+            "nego",
+            Some("../nego/target/release/nego-host"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(cmd
+            .iter()
+            .any(|arg| arg == "target.binary=../nego/target/release/nego-host"));
     }
 
     #[test]
@@ -769,6 +811,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             None,
@@ -797,6 +840,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             Some("druid"),
             Some("tuner-druid-run-1"),
             None,
@@ -846,6 +890,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.iter().any(|a| a == "--run-id"));
         assert!(!cmd.iter().any(|a| a == "--resume"));
@@ -862,6 +907,7 @@ mod tests {
             &baseline_configs,
             None,
             "nim",
+            None,
             None,
             None,
             None,
@@ -894,6 +940,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let idx = cmd
             .iter()
@@ -918,6 +965,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!cmd.iter().any(|a| a == "--game-config"));
     }
@@ -930,6 +978,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             Some("/tmp/bench-runs/tuner-druid-run-1/tuning-artifacts"),
@@ -957,6 +1006,7 @@ mod tests {
             &[],
             None,
             "druid",
+            None,
             None,
             None,
             None,
