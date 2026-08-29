@@ -3,14 +3,18 @@
 // A tile has two colors and no inherent "up" side, so picking one from the
 // rack alone doesn't fully determine a move -- the player also has to say
 // which of the tile's two ends goes on which of the two empty cells. This
-// renderer resolves that with a tile-type selection (`selectedType`) plus a
-// `flipped` toggle that swaps which end is "primary", rather than asking the
-// player to disambiguate per board location: once a type and a flip state
-// are chosen, `color_a`/`color_b` are pinned, so every remaining
-// `legalMoves` entry of that exact type maps to exactly one empty-cell-pair
-// location on the board, with no further ambiguity to resolve by clicking.
+// renderer lets the player click either visible half of the selected rack tile
+// to choose the color that will be anchored first. Every matching legal move
+// is then presented through that color at its current board position.
+//
+// Placement is a two-click gesture, resolved entirely on the board (no popup):
+// hover any empty cell to preview every legal domino touching it, click one to
+// anchor it, then click its highlighted neighbor to finish. A legal move names
+// only the lower-indexed endpoint because the engine stores each board edge
+// once, but either endpoint can be the UI anchor. This exposes all six possible
+// orientations around a hex without duplicating moves in the engine protocol.
 
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import { type Component, createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import type { GameRendererProps } from "@mcts/game";
 import { centerOf, neighborOf, VALID_CELLS } from "./geometry.js";
 import { hexPoints, PieceIcon } from "./pieces.js";
@@ -32,6 +36,14 @@ interface CellLayout {
   cy: number;
 }
 
+interface PlacementEnd {
+  move: PlaceMove;
+  anchor: number;
+  anchorColor: Color;
+  target: number;
+  targetColor: Color;
+}
+
 function layoutCells(): { cells: CellLayout[]; width: number; height: number } {
   const raw = VALID_CELLS.map((index) => ({ index, ...centerOf(index, HEX_SIZE) }));
   const margin = HEX_SIZE * 1.5;
@@ -51,15 +63,17 @@ function layoutCells(): { cells: CellLayout[]; width: number; height: number } {
 const LAYOUT = layoutCells();
 const CELL_BY_INDEX = new Map(LAYOUT.cells.map((c) => [c.index, c]));
 
-function placeMoveEquals(a: PlaceMove, b: PlaceMove): boolean {
-  return a.cell === b.cell && a.dir === b.dir && a.color_a === b.color_a && a.color_b === b.color_b;
-}
-
 export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, GameView>> = (
   props,
 ) => {
   const [selectedType, setSelectedType] = createSignal<[Color, Color] | null>(null);
-  const [flipped, setFlipped] = createSignal(false);
+  const [anchorColor, setAnchorColor] = createSignal<Color | null>(null);
+  // The first-clicked start cell of an in-progress two-click placement, or
+  // `null` when no placement is underway.
+  const [anchor, setAnchor] = createSignal<number | null>(null);
+  // The cell under the pointer, used only for the local hover preview (the
+  // renderer doesn't round-trip through the parent's `hoveredMove`).
+  const [hoveredCell, setHoveredCell] = createSignal<number | null>(null);
 
   const currentRack = createMemo(() => props.state.racks[props.state.current_player] ?? []);
 
@@ -76,75 +90,146 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
     return types;
   });
 
-  // Drop the current selection once it's no longer offered -- a new turn, or
-  // this exact type left the rack after being placed.
+  // Drop the current selection (and any in-progress placement) once it's no
+  // longer offered -- a new turn, or this exact type left the rack.
   createMemo(() => {
     const t = selectedType();
     if (t && !rackTypes().some(([a, b]) => a === t[0] && b === t[1])) {
       setSelectedType(null);
-      setFlipped(false);
+      setAnchorColor(null);
+      setAnchor(null);
     }
   });
 
-  const effectiveColors = createMemo(() => {
+  // Every legal placement for the selected physical tile. Which color goes on
+  // the anchor is chosen by clicking that half of the rack tile, not with a
+  // separate flip control.
+  const placements = createMemo<PlaceMove[]>(() => {
     const t = selectedType();
-    if (!t) return null;
-    return flipped() ? { color_a: t[1], color_b: t[0] } : { color_a: t[0], color_b: t[1] };
-  });
-
-  const placementMoves = createMemo<PlaceMove[]>(() => {
-    const eff = effectiveColors();
-    if (!eff) return [];
+    if (!t) return [];
     return props.legalMoves
       .filter(isPlaceMove)
       .map((m) => m.Place)
-      .filter((mv) => mv.color_a === eff.color_a && mv.color_b === eff.color_b);
+      .filter(
+        (mv) =>
+          (mv.color_a === t[0] && mv.color_b === t[1]) ||
+          (mv.color_a === t[1] && mv.color_b === t[0]),
+      );
+  });
+
+  // The two endpoint views of every legal move. The engine encodes an edge
+  // from its lower-indexed end only; offering both views makes every physical
+  // orientation around an empty hex reachable by the same two-click gesture.
+  const placementEnds = createMemo<PlacementEnd[]>(() =>
+    placements()
+      .flatMap((move) => {
+        const neighbor = neighborOf(move.cell, move.dir);
+        if (neighbor === null) return [];
+        return [
+          {
+            move,
+            anchor: move.cell,
+            anchorColor: move.color_a,
+            target: neighbor,
+            targetColor: move.color_b,
+          },
+          {
+            move,
+            anchor: neighbor,
+            anchorColor: move.color_b,
+            target: move.cell,
+            targetColor: move.color_a,
+          },
+        ];
+      })
+      .filter((placement) => placement.anchorColor === anchorColor()),
+  );
+
+  const endsAt = (cell: number): PlacementEnd[] =>
+    placementEnds().filter((placement) => placement.anchor === cell);
+
+  // The first click may be either end of any legal domino.
+  const validAnchors = createMemo(
+    () => new Set(placementEnds().map((placement) => placement.anchor)),
+  );
+
+  const anchoredEnds = createMemo<PlacementEnd[]>(() => {
+    const a = anchor();
+    return a === null ? [] : endsAt(a);
+  });
+
+  // Hovering is intentionally only a preview: the normal board remains dark
+  // and placed tiles remain easy to distinguish until the player asks for a
+  // particular location.
+  const previewEnds = createMemo<PlacementEnd[]>(() => {
+    const h = hoveredCell();
+    return anchor() === null && h !== null ? endsAt(h) : [];
   });
 
   const canPlace = createMemo(() => props.legalMoves.some(isPlaceMove));
   const canKeep = createMemo(() => props.legalMoves.includes("KeepRack"));
   const canSwap = createMemo(() => props.legalMoves.includes("Swap"));
 
-  // Ingenious tiles have no rotation control of their own: every legal
-  // (cell, direction) pair for the selected type/flip is offered at once as
-  // a clickable overlay directly on the board, so picking a location *is*
-  // picking the rotation. When several overlays share an anchor cell (the
-  // tile can go in more than one direction from the same empty hex), dim
-  // every overlay except the one under the pointer so hovering around that
-  // anchor reads as "cycling rotations" instead of a solid smear of color.
-  const anyGhostHovered = createMemo(
-    () => props.hoveredMove !== null && isPlaceMove(props.hoveredMove),
-  );
-
-  // How many currently-offered rotations touch each cell. A rotation whose
-  // hex appears here more than once is sharing that hex with a sibling
-  // rotation -- if both siblings' full domino shapes were independently
-  // clickable there, whichever painted last would silently win every click
-  // in that spot, making the other rotation unreachable no matter where you
-  // aim near it. Used to withhold a contested hex's hit-region from a
-  // rotation until it's already the hovered one (see the per-hex handlers
-  // below), so disambiguation always has to go through each rotation's own
-  // unshared hex first.
-  const contestedCounts = createMemo(() => {
-    const counts = new Map<number, number>();
-    for (const mv of placementMoves()) {
-      const nb = neighborOf(mv.cell, mv.dir);
-      counts.set(mv.cell, (counts.get(mv.cell) ?? 0) + 1);
-      if (nb !== null) counts.set(nb, (counts.get(nb) ?? 0) + 1);
+  let automaticDecision: Move | null = null;
+  createEffect(() => {
+    const onlyMove = props.legalMoves.length === 1 ? props.legalMoves[0] : null;
+    if (props.busy || props.state.phase !== "swap_decision" || !onlyMove || isPlaceMove(onlyMove)) {
+      automaticDecision = null;
+      return;
     }
-    return counts;
+    if (automaticDecision !== onlyMove) {
+      automaticDecision = onlyMove;
+      props.onMove(onlyMove);
+    }
   });
 
-  function selectType(t: [Color, Color]): void {
+  // If the anchor stops being legal (e.g. the turn changed), drop it.
+  createMemo(() => {
+    const a = anchor();
+    if (a !== null && !validAnchors().has(a)) setAnchor(null);
+  });
+
+  function selectType(t: [Color, Color], color: Color): void {
     if (props.busy || !canPlace()) return;
     const current = selectedType();
-    if (current && current[0] === t[0] && current[1] === t[1]) {
+    if (current && current[0] === t[0] && current[1] === t[1] && anchorColor() === color) {
       setSelectedType(null);
-      setFlipped(false);
+      setAnchorColor(null);
     } else {
       setSelectedType(t);
-      setFlipped(false);
+      setAnchorColor(color);
     }
+    setAnchor(null);
+  }
+
+  function clickCell(c: number): void {
+    if (props.busy) return;
+    const a = anchor();
+    if (a === null) {
+      if (validAnchors().has(c)) setAnchor(c);
+      return;
+    }
+    if (c === a) {
+      setAnchor(null);
+      return;
+    }
+    const placement = anchoredEnds().find((end) => end.target === c);
+    if (placement) {
+      props.onMove({ Place: placement.move });
+      setAnchor(null);
+      return;
+    }
+    // Clicking a different valid start cell restarts the placement there.
+    if (validAnchors().has(c)) setAnchor(c);
+  }
+
+  function ghostGlyph(color: Color, cx: number, cy: number) {
+    return (
+      <>
+        <polygon class="ingenious-ghost-hex" points={hexPoints(cx, cy, HEX_SIZE * 0.82)} />
+        <PieceIcon color={color} cx={cx} cy={cy} r={HEX_SIZE * 0.82} />
+      </>
+    );
   }
 
   return (
@@ -168,132 +253,144 @@ export const IngeniousRenderer: Component<GameRendererProps<GameState, Move, Gam
             );
           }}
         </For>
-        <For each={placementMoves()}>
-          {(mv) => {
-            const cellPos = CELL_BY_INDEX.get(mv.cell);
-            const nbIndex = neighborOf(mv.cell, mv.dir);
-            const nbPos = nbIndex !== null ? CELL_BY_INDEX.get(nbIndex) : undefined;
-            if (!cellPos || !nbPos) return null;
-            const move: Move = { Place: mv };
-            const isHovered = () =>
-              props.hoveredMove !== null &&
-              isPlaceMove(props.hoveredMove) &&
-              placeMoveEquals(props.hoveredMove.Place, mv);
-            const dimmed = () => anyGhostHovered() && !isHovered();
 
-            // A hex only accepts pointer interaction on this rotation's
-            // behalf while it isn't contested, or once this exact rotation
-            // is already hovered (so the second click, or a click anywhere
-            // else on an already-previewed domino, still works normally).
-            const counts = contestedCounts();
-            const cellLive = () => (counts.get(mv.cell) ?? 0) <= 1 || isHovered();
-            const nbLive = () => nbIndex === null || (counts.get(nbIndex) ?? 0) <= 1 || isHovered();
+        {/* Invisible hit areas keep the unselected board legible while still
+            allowing any empty endpoint to start or preview a placement. */}
+        <Show when={selectedType() !== null && anchor() === null}>
+          <For each={LAYOUT.cells}>
+            {(cell) => (
+              <polygon
+                class="ingenious-cell-hit"
+                data-role="cell-hit"
+                data-cell={cell.index}
+                points={hexPoints(cell.cx, cell.cy, HEX_SIZE)}
+                onClick={() => clickCell(cell.index)}
+                onMouseEnter={() => setHoveredCell(cell.index)}
+                onMouseLeave={() => setHoveredCell(null)}
+              />
+            )}
+          </For>
+        </Show>
 
-            function pick(live: () => boolean): void {
-              if (!props.busy && live()) props.onMove(move);
-            }
-            function hover(live: () => boolean): void {
-              if (live()) props.onHover(move);
-            }
-
+        {/* Preview only the placements incident to the hex under the pointer. */}
+        <For each={previewEnds()}>
+          {(placement) => {
+            const aPos = CELL_BY_INDEX.get(placement.anchor)!;
+            const tPos = CELL_BY_INDEX.get(placement.target)!;
             return (
-              <g class="ingenious-placement" classList={{ hovered: isHovered(), dimmed: dimmed() }}>
+              <>
                 <line
-                  class="ingenious-placement-link"
-                  x1={cellPos.cx}
-                  y1={cellPos.cy}
-                  x2={nbPos.cx}
-                  y2={nbPos.cy}
+                  class="ingenious-placement-link preview"
+                  x1={aPos.cx}
+                  y1={aPos.cy}
+                  x2={tPos.cx}
+                  y2={tPos.cy}
                 />
-                <g
-                  class="ingenious-ghost"
-                  classList={{ "ingenious-ghost-hit": cellLive() }}
-                  onClick={() => pick(cellLive)}
-                  onMouseEnter={() => hover(cellLive)}
-                  onMouseLeave={() => props.onHover(null)}
-                >
-                  <polygon
-                    class="ingenious-ghost-hex"
-                    points={hexPoints(cellPos.cx, cellPos.cy, HEX_SIZE * 0.82)}
-                  />
-                  <PieceIcon
-                    color={mv.color_a}
-                    cx={cellPos.cx}
-                    cy={cellPos.cy}
-                    r={HEX_SIZE * 0.82}
-                  />
+                <g class="ingenious-preview-anchor">
+                  {ghostGlyph(placement.anchorColor, aPos.cx, aPos.cy)}
                 </g>
-                <g
-                  class="ingenious-ghost"
-                  classList={{ "ingenious-ghost-hit": nbLive() }}
-                  onClick={() => pick(nbLive)}
-                  onMouseEnter={() => hover(nbLive)}
-                  onMouseLeave={() => props.onHover(null)}
-                >
-                  <polygon
-                    class="ingenious-ghost-hex"
-                    points={hexPoints(nbPos.cx, nbPos.cy, HEX_SIZE * 0.82)}
-                  />
-                  <PieceIcon color={mv.color_b} cx={nbPos.cx} cy={nbPos.cy} r={HEX_SIZE * 0.82} />
+                <g class="ingenious-preview" data-role="preview" data-cell={placement.target}>
+                  {ghostGlyph(placement.targetColor, tPos.cx, tPos.cy)}
                 </g>
-              </g>
+              </>
             );
           }}
         </For>
+
+        {/* The selected anchor remains visible. Each green neighbor is one
+            complete, legal orientation of the chosen tile. */}
+        <Show when={anchor() !== null}>
+          <For each={anchoredEnds()}>
+            {(placement, index) => {
+              const aPos = CELL_BY_INDEX.get(placement.anchor)!;
+              const tPos = CELL_BY_INDEX.get(placement.target)!;
+              return (
+                <>
+                  <line
+                    class="ingenious-placement-link"
+                    x1={aPos.cx}
+                    y1={aPos.cy}
+                    x2={tPos.cx}
+                    y2={tPos.cy}
+                  />
+                  <Show when={index() === 0}>
+                    <g
+                      class="ingenious-anchor"
+                      data-role="anchor"
+                      data-cell={placement.anchor}
+                      onClick={() => clickCell(placement.anchor)}
+                    >
+                      {ghostGlyph(placement.anchorColor, aPos.cx, aPos.cy)}
+                    </g>
+                  </Show>
+                  <g
+                    class="ingenious-target"
+                    data-role="target"
+                    data-cell={placement.target}
+                    onClick={() => clickCell(placement.target)}
+                  >
+                    <polygon
+                      class="ingenious-target-slot"
+                      points={hexPoints(tPos.cx, tPos.cy, HEX_SIZE * 0.55)}
+                    />
+                  </g>
+                </>
+              );
+            }}
+          </For>
+        </Show>
       </svg>
 
       <div class="ingenious-panel">
         <Show when={currentRack().some((slot) => slot !== null)}>
           <p class="ingenious-hint">
-            Pick a tile below, flip it if it has two colors, then click a highlighted hex pair on
-            the board -- each highlighted pair is a different valid rotation for that tile. When
-            rotations overlap at one hex, hover the hex that's unique to the one you want first.
+            Pick the color you want to place first, then hover an empty hex to move the whole tile
+            through every legal orientation there. Click to anchor that color; the subtle green
+            slots show where the second half can go. Click the anchor again to cancel.
           </p>
           <div class="ingenious-rack">
             <For each={rackTypes()}>
               {(t) => {
-                const active = () => {
+                const active = (color: Color) => {
                   const s = selectedType();
-                  return s !== null && s[0] === t[0] && s[1] === t[1];
+                  return s !== null && s[0] === t[0] && s[1] === t[1] && anchorColor() === color;
                 };
                 return (
-                  <button
-                    type="button"
-                    class="ingenious-tile"
-                    classList={{ active: active() }}
-                    disabled={props.busy || !canPlace()}
-                    onClick={() => selectType(t)}
-                  >
-                    <span class="ingenious-tile-half">
+                  <div class="ingenious-tile">
+                    <button
+                      type="button"
+                      class="ingenious-tile-half"
+                      classList={{ active: active(t[0]) }}
+                      aria-label={`Place ${t[0]} first`}
+                      disabled={props.busy || !canPlace()}
+                      onClick={() => selectType(t, t[0])}
+                    >
                       <svg viewBox="0 0 40 40" class="ingenious-tile-icon">
                         <rect class="ingenious-tile-icon-bg" width={40} height={40} />
                         <PieceIcon color={t[0]} cx={20} cy={20} r={16} />
                       </svg>
-                    </span>
-                    <span class="ingenious-tile-half">
+                    </button>
+                    <button
+                      type="button"
+                      class="ingenious-tile-half"
+                      classList={{ active: active(t[1]) }}
+                      aria-label={`Place ${t[1]} first`}
+                      disabled={props.busy || !canPlace()}
+                      onClick={() => selectType(t, t[1])}
+                    >
                       <svg viewBox="0 0 40 40" class="ingenious-tile-icon">
                         <rect class="ingenious-tile-icon-bg" width={40} height={40} />
                         <PieceIcon color={t[1]} cx={20} cy={20} r={16} />
                       </svg>
-                    </span>
-                  </button>
+                    </button>
+                  </div>
                 );
               }}
             </For>
-            <Show when={selectedType() !== null && selectedType()![0] !== selectedType()![1]}>
-              <button
-                type="button"
-                class="ingenious-flip"
-                disabled={props.busy}
-                onClick={() => setFlipped((f) => !f)}
-              >
-                Flip
-              </button>
-            </Show>
           </div>
         </Show>
 
-        <Show when={canKeep() || canSwap()}>
+        <Show when={canKeep() && canSwap()}>
           <div class="ingenious-swap-decision">
             <button
               type="button"

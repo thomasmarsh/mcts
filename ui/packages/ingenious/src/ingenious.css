@@ -23,38 +23,16 @@
   height: auto;
 }
 
-.ingenious-hex {
-  fill: #0a0a0c;
-  stroke: #4a4a52;
-  stroke-width: 1.5;
-}
-
+/* The board's own hexes and piece glyphs are never interactive. */
+.ingenious-hex,
 .ingenious-icon {
   pointer-events: none;
 }
 
-.ingenious-placement {
-  pointer-events: none;
-}
-
-/* Ghost hexes are decorative previews by default -- see IngeniousRenderer.tsx's
-   `contestedCounts`/`cellLive`/`nbLive` comment: a hex two rotations share
-   would otherwise let whichever rotation paints last claim every click that
-   lands on it, silently hiding its sibling. Only a hex a rotation isn't
-   sharing (or that rotation once it's already hovered) gets `-hit` and
-   becomes clickable. */
-.ingenious-ghost-hit {
-  pointer-events: all;
-  cursor: pointer;
-}
-
-/* Visible (not just on-hover) so every valid rotation for the selected tile
-   reads as a distinct "domino" link across the board at a glance -- this is
-   the main placement/rotation-picking affordance, not a decorative extra. */
-.ingenious-placement-link {
-  stroke: #f5f0d8;
-  stroke-opacity: 0.35;
-  stroke-width: 4;
+.ingenious-hex {
+  fill: #0a0a0c;
+  stroke: #4a4a52;
+  stroke-width: 1.5;
 }
 
 .ingenious-ghost-hex {
@@ -64,34 +42,64 @@
   stroke-width: 1.5;
 }
 
-.ingenious-placement .ingenious-ghost {
-  opacity: 0.7;
+.ingenious-anchor,
+.ingenious-target,
+.ingenious-cell-hit {
+  pointer-events: all;
+  cursor: pointer;
 }
 
-/* Driven by IngeniousRenderer.tsx's `isHovered()` -- the group itself is
-   `pointer-events: none` (see above), so a raw CSS `:hover` here would never
-   fire; the `.hovered` class is how JS-tracked `hoveredMove` state reaches
-   this element instead. */
-.ingenious-placement.hovered .ingenious-ghost {
-  opacity: 1;
+/* The board hit area is deliberately invisible: candidate pieces only appear
+   on hover, so placed pieces are never washed out by a full-board overlay. */
+.ingenious-cell-hit {
+  fill: transparent;
+  stroke: none;
 }
 
-.ingenious-placement.hovered .ingenious-ghost-hex {
+/* The chosen start cell while a placement is in progress. */
+.ingenious-anchor .ingenious-ghost-hex {
   stroke: #ffe066;
   stroke-opacity: 1;
   stroke-width: 2.5;
 }
 
-.ingenious-placement.hovered .ingenious-placement-link {
-  stroke: #ffe066;
-  stroke-opacity: 0.9;
+/* A cell that completes the in-progress placement -- the required second
+   click. Green distinguishes "finish here" from the yellow start. */
+.ingenious-target .ingenious-ghost-hex {
+  stroke: #7ee0a0;
+  stroke-opacity: 1;
+  stroke-width: 2.5;
 }
 
-/* When some other placement overlay is hovered, fade this one so hovering
-   around a shared anchor cell reads as cycling between rotation options
-   rather than a solid smear of overlapping color. */
-.ingenious-placement.dimmed {
-  opacity: 0.25;
+.ingenious-target-slot {
+  fill: none;
+  stroke: #7ee0a0;
+  stroke-opacity: 0.7;
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+
+/* Hover preview of where a tile would extend from a start cell. */
+.ingenious-preview .ingenious-ghost-hex {
+  stroke: #f5f0d8;
+  stroke-opacity: 0.4;
+}
+
+.ingenious-preview-anchor,
+.ingenious-preview {
+  pointer-events: none;
+}
+
+.ingenious-placement-link {
+  stroke: #f5f0d8;
+  stroke-opacity: 0.55;
+  stroke-width: 4;
+  pointer-events: none;
+}
+
+.ingenious-placement-link.preview {
+  stroke-opacity: 0.3;
+  stroke-width: 3;
 }
 
 .ingenious-panel {
@@ -119,26 +127,27 @@
   display: flex;
   width: 52px;
   height: 34px;
-  padding: 0;
   border: 2px solid #5a5c66;
   border-radius: 6px;
   overflow: hidden;
-  cursor: pointer;
 }
 
-.ingenious-tile:disabled {
+.ingenious-tile-half:disabled {
   cursor: default;
   opacity: 0.5;
-}
-
-.ingenious-tile.active {
-  border-color: #ffe066;
-  box-shadow: 0 0 0 2px #ffe066;
 }
 
 .ingenious-tile-half {
   flex: 1;
   display: flex;
+  padding: 0;
+  border: 0;
+  background: #0a0a0c;
+  cursor: pointer;
+}
+
+.ingenious-tile-half.active {
+  box-shadow: inset 0 0 0 2px #ffe066;
 }
 
 .ingenious-tile-icon {
@@ -150,7 +159,6 @@
   fill: #0a0a0c;
 }
 
-.ingenious-flip,
 .ingenious-swap-decision button {
   padding: 0.4rem 0.8rem;
   border: 1px solid #5a5c66;
@@ -159,7 +167,6 @@
   cursor: pointer;
 }
 
-.ingenious-flip:disabled,
 .ingenious-swap-decision button:disabled {
   cursor: default;
   opacity: 0.5;
