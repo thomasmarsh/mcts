@@ -76,7 +76,7 @@ class FakeTarget:
                     {
                         "name": "family",
                         "type": "categorical",
-                        "choices": ["a", "b"],
+                        "choices": ["a", "b", "c", "d", "e"],
                         "default": "a",
                     },
                 ],
@@ -147,8 +147,10 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
             run_dir,
             objective_file=_objective(tmp_path),
             task_seed=9,
-            cohort_size=2,
+            cohort_size=4,
             finalists=1,
+            bootstrap_candidates=2,
+            random_reserve_candidates=1,
             tuning_pairs=2,
             validation_pairs=2,
             production_validation_pairs=2,
@@ -170,7 +172,7 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
         for event in events
         if event["type"] == "pair_started" and event["payload"]["phase"] == "tuning"
     ]
-    assert [item["budget"] for item in tuning_starts] == [3] * 4
+    assert [item["budget"] for item in tuning_starts] == [3] * 8
     report = (run_dir / "report.json").read_bytes()
     write_report(run_dir)
     assert (run_dir / "report.json").read_bytes() == report
@@ -184,8 +186,10 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
             run_dir,
             objective_file=_objective(tmp_path),
             task_seed=9,
-            cohort_size=2,
+            cohort_size=4,
             finalists=1,
+            bootstrap_candidates=2,
+            random_reserve_candidates=1,
             tuning_pairs=2,
             validation_pairs=2,
             production_validation_pairs=2,
@@ -208,8 +212,10 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
         tmp_path / "control" / "run",
         objective_file=_objective(tmp_path),
         task_seed=9,
-        cohort_size=2,
+        cohort_size=4,
         finalists=1,
+        bootstrap_candidates=2,
+        random_reserve_candidates=1,
         tuning_pairs=2,
         validation_pairs=2,
         production_validation_pairs=2,

@@ -18,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-seed", type=int, required=True)
     parser.add_argument("--cohort-size", type=int, default=8)
     parser.add_argument("--finalists", type=int, default=3)
+    parser.add_argument("--bootstrap-candidates", type=int, default=3)
+    parser.add_argument("--random-reserve-candidates", type=int, default=2)
     parser.add_argument("--tuning-pairs", type=int, default=4)
     parser.add_argument("--validation-pairs", type=int, default=8)
     parser.add_argument("--production-validation-pairs", type=int, required=True)
@@ -25,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-max-iterations", type=int, default=10_000)
     parser.add_argument("--production-max-iterations", type=int, default=10_000)
     parser.add_argument("--pair-timeout-seconds", type=int, default=600)
-    parser.add_argument("--resume", action="store_true", help="continue a frozen version-3 run")
+    parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -39,6 +41,8 @@ def _options(args: argparse.Namespace) -> RunOptions:
         task_seed=args.task_seed,
         cohort_size=args.cohort_size,
         finalists=args.finalists,
+        bootstrap_candidates=args.bootstrap_candidates,
+        random_reserve_candidates=args.random_reserve_candidates,
         tuning_pairs=args.tuning_pairs,
         validation_pairs=args.validation_pairs,
         production_validation_pairs=args.production_validation_pairs,

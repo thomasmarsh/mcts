@@ -1,7 +1,8 @@
-"""Strict version-3 append-only evidence records and atomic file publishing."""
+"""Strict version-4 append-only evidence records and atomic file publishing."""
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ EventType = Literal[
     "proposal_created",
     "proposal_accepted",
     "proposal_rejected",
-    "cohort_accepted",
+    "cohort_completed",
     "pair_started",
     "pair_completed",
     "pair_failed",
@@ -32,7 +33,7 @@ SCIENTIFIC = {
     "proposal_created",
     "proposal_accepted",
     "proposal_rejected",
-    "cohort_accepted",
+    "cohort_completed",
     "pair_completed",
     "observation_completed",
     "finalists_selected",
@@ -102,23 +103,54 @@ def _string(value: object, label: str) -> str:
     return value
 
 
-def _candidate_payload(value: object, *, disposition: bool = False) -> dict[str, object]:
+def _candidate_payload(value: object, *, disposition: str = "created") -> dict[str, object]:
     fields = {
         "proposal_index",
+        "cohort_slot",
         "source",
-        "proposer_version",
+        "source_attempt",
         "candidate_id",
         "fingerprint",
         "canonical_config",
     }
-    if disposition:
-        fields = {"proposal_index", "candidate_id", "fingerprint", "canonical_config"}
+    if disposition == "created":
+        fields |= {
+            "frontier_id",
+            "frontier_observation_ids",
+            "proposer_version",
+            "origin",
+            "acquisition",
+            "prediction",
+            "uncertainty",
+            "parent_candidate_id",
+        }
+    elif disposition == "accepted":
+        fields.add("panel_response_fingerprints")
     item = _object(value, fields, "proposal payload")
     _int(item["proposal_index"], "proposal index")
-    for key in fields - {"proposal_index"}:
+    _int(item["cohort_slot"], "cohort slot")
+    _int(item["source_attempt"], "source attempt", positive=True)
+    for key in {"source", "candidate_id", "fingerprint", "canonical_config"}:
         _string(item[key], key)
-    if not disposition and item["source"] not in {"schema_default", "configspace_random"}:
+    if item["source"] not in {"schema_default", "bootstrap_random", "smac_model", "random_reserve"}:
         raise ValueError("unknown proposal source")
+    if disposition == "created":
+        _string(item["frontier_id"], "frontier id")
+        if not isinstance(item["frontier_observation_ids"], list) or not all(
+            isinstance(value, str) for value in item["frontier_observation_ids"]
+        ):
+            raise ValueError("proposal frontier is invalid")
+        _string(item["proposer_version"], "proposer version")
+        for key in ("origin", "parent_candidate_id"):
+            if item[key] is not None and not isinstance(item[key], str):
+                raise ValueError(f"proposal {key} is invalid")
+        for key in ("acquisition", "prediction", "uncertainty"):
+            if item[key] is not None and (
+                not isinstance(item[key], (int, float))
+                or isinstance(item[key], bool)
+                or not math.isfinite(item[key])
+            ):
+                raise ValueError(f"proposal {key} is invalid")
     return item
 
 
@@ -256,12 +288,20 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
     if event_type == "proposal_created":
         return _candidate_payload(payload)
     if event_type == "proposal_accepted":
-        return _candidate_payload(payload, disposition=True)
+        item = _candidate_payload(payload, disposition="accepted")
+        if not isinstance(item["panel_response_fingerprints"], list) or not all(
+            isinstance(value, str) for value in item["panel_response_fingerprints"]
+        ):
+            raise ValueError("proposal acceptance panel fingerprints are invalid")
+        return item
     if event_type == "proposal_rejected":
         item = _object(
             payload,
             {
                 "proposal_index",
+                "cohort_slot",
+                "source",
+                "source_attempt",
                 "candidate_id",
                 "fingerprint",
                 "canonical_config",
@@ -273,9 +313,17 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         _candidate_payload(
             {
                 key: item[key]
-                for key in {"proposal_index", "candidate_id", "fingerprint", "canonical_config"}
+                for key in {
+                    "proposal_index",
+                    "cohort_slot",
+                    "source",
+                    "source_attempt",
+                    "candidate_id",
+                    "fingerprint",
+                    "canonical_config",
+                }
             },
-            disposition=True,
+            disposition="disposition",
         )
         if item["reason"] not in {"duplicate", "semantic_validation"} or not isinstance(
             item["errors"], list
@@ -290,13 +338,17 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         ):
             raise ValueError("proposal rejection errors must identify panel opponents")
         return item
-    if event_type == "cohort_accepted":
-        item = _object(payload, {"candidate_ids", "validation_response_fingerprints"}, "cohort")
+    if event_type == "cohort_completed":
+        item = _object(
+            payload, {"candidate_ids", "sources", "schedule_version", "final_frontier_id"}, "cohort"
+        )
         if (
             not isinstance(item["candidate_ids"], list)
             or not all(isinstance(x, str) for x in item["candidate_ids"])
-            or not isinstance(item["validation_response_fingerprints"], list)
-            or not all(isinstance(value, str) for value in item["validation_response_fingerprints"])
+            or not isinstance(item["sources"], list)
+            or not all(isinstance(value, str) for value in item["sources"])
+            or not isinstance(item["schedule_version"], str)
+            or not isinstance(item["final_frontier_id"], str)
         ):
             raise ValueError("invalid cohort")
         return item
@@ -372,6 +424,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         item = _object(
             payload,
             {
+                "observation_id",
                 "candidate_id",
                 "phase",
                 "objective_epoch_id",
@@ -389,6 +442,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         if (
             item["phase"] not in {"tuning", "validation"}
             or not isinstance(item["candidate_id"], str)
+            or not isinstance(item["observation_id"], str)
             or not all(
                 isinstance(item[key], str)
                 for key in {"objective_epoch_id", "corpus_id", "prefix_id"}
@@ -443,6 +497,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 "validation_prefix_id",
                 "validation_search_effort",
                 "missing_production_axes",
+                "cohort_frontier_id",
             },
             "run completion",
         )
@@ -453,6 +508,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 "validation_claim",
                 "objective_epoch_id",
                 "validation_prefix_id",
+                "cohort_frontier_id",
             }
         ) or not all(
             isinstance(item[key], list) and all(isinstance(x, str) for x in item[key])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .domain import Estimate, Observation, ObservationContext
+from .identity import observation_id
 from .statistics import marginal_interval, paired_difference_values
 
 
@@ -11,7 +12,21 @@ def observation(
 ) -> Observation:
     if len(utilities) != context.task_prefix.length:
         raise ValueError("observation utility count does not match task prefix")
-    return Observation(candidate_id, context, utilities, marginal_interval(utilities))
+    estimate = marginal_interval(utilities)
+    identity_context = {
+        "objective_epoch_id": context.objective_epoch_id,
+        "phase": context.phase,
+        "prefix_id": context.task_prefix.prefix_id,
+        "task_ids": context.task_prefix.task_ids,
+        "search_effort": context.search_effort.max_iterations,
+    }
+    return Observation(
+        observation_id(candidate_id, identity_context, utilities, estimate),
+        candidate_id,
+        context,
+        utilities,
+        estimate,
+    )
 
 
 def comparable(left: Observation, right: Observation) -> None:

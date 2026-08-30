@@ -7,6 +7,7 @@ from typing import Literal
 
 Phase = Literal["tuning", "validation"]
 OpponentRole = Literal["default", "historical_reference"]
+ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,9 +39,73 @@ class OpponentPanel:
 @dataclass(frozen=True, slots=True)
 class Proposal:
     proposal_index: int
-    source: Literal["schema_default", "configspace_random"]
-    proposer_version: Literal["configspace-random-v1"]
+    cohort_slot: int
     candidate: Candidate
+    frontier: ObservationFrontier
+    provenance: ProposalProvenance
+
+    @property
+    def source(self) -> ProposalSource:
+        return self.provenance.source
+
+    @property
+    def proposer_version(self) -> str:
+        return self.provenance.proposer_version
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationReference:
+    observation_id: str
+    candidate_id: str
+    objective_epoch_id: str
+    prefix_id: str
+    task_ids: tuple[str, ...]
+    search_effort: SearchEffort
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationFrontier:
+    frontier_id: str
+    objective_epoch_id: str
+    prefix_id: str
+    task_ids: tuple[str, ...]
+    search_effort: SearchEffort
+    observation_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalProvenance:
+    source: ProposalSource
+    proposer_version: str
+    source_attempt: int
+    origin: str | None
+    acquisition: float | None
+    prediction: float | None
+    uncertainty: float | None
+    parent_candidate_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelAttempt:
+    source_attempt: int
+    seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class ModelObservation:
+    candidate: Candidate
+    reference: ObservationReference
+    cost: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProposedConfiguration:
+    candidate: Candidate
+    origin: str | None
+    acquisition: float | None = None
+    prediction: float | None = None
+    uncertainty: float | None = None
+    parent_candidate_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +223,7 @@ class Estimate:
 
 @dataclass(frozen=True, slots=True)
 class Observation:
+    observation_id: str
     candidate_id: str
     context: ObservationContext
     pair_utilities: tuple[float, ...]

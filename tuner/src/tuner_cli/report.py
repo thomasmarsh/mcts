@@ -8,6 +8,7 @@ from pathlib import Path
 from .artifacts import production_claim, read_manifest
 from .evidence import atomic_json, read_events
 from .observations import paired_difference
+from .proposer import tuning_frontier
 from .replay import replay
 from .statistics import marginal_interval, pair_utility, tie_relation
 
@@ -167,8 +168,9 @@ def build_report(run_dir: Path) -> dict[str, object]:
         manifest.efforts["validation"],
         manifest.efforts["production"],
     )
+    proposal_search = _proposal_search(manifest, state)
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "status": "complete",
         "manifest_fingerprint": manifest.fingerprint,
         "validation_claim": {"claim": claim, "missing_production_axes": list(missing)},
@@ -214,6 +216,7 @@ def build_report(run_dir: Path) -> dict[str, object]:
             "tie_rule_version": manifest.raw["tie_rule_version"],
         },
         "selection": {"finalist_ids": [candidate.candidate_id for candidate in state.finalists]},
+        "proposal_search": proposal_search,
         "validation_order": entries,
         "paired_finalist_comparisons": comparisons,
         "unresolved_ties": unresolved,
@@ -222,6 +225,48 @@ def build_report(run_dir: Path) -> dict[str, object]:
             "conservative small-sample intervals",
             "explicit resume",
         ],
+    }
+
+
+def _proposal_search(manifest, state) -> dict[str, object]:
+    dispositions = dict(state.dispositions)
+    accepted = []
+    rejected = {source: 0 for source in manifest.source_schedule}
+    for proposal in state.proposals:
+        disposition = dispositions.get(proposal.proposal_index)
+        if disposition == "rejected":
+            rejected[proposal.source] = rejected.get(proposal.source, 0) + 1
+        if disposition == "accepted":
+            accepted.append(
+                {
+                    "cohort_slot": proposal.cohort_slot,
+                    "candidate_id": proposal.candidate.candidate_id,
+                    "source": proposal.source,
+                    "proposal_index": proposal.proposal_index,
+                    "frontier_id": proposal.frontier.frontier_id,
+                    "visible_observation_count": len(proposal.frontier.observation_ids),
+                    "origin": proposal.provenance.origin,
+                    "acquisition": proposal.provenance.acquisition,
+                    "prediction": proposal.provenance.prediction,
+                    "uncertainty": proposal.provenance.uncertainty,
+                    "parent_candidate_id": proposal.provenance.parent_candidate_id,
+                }
+            )
+    tuning = tuple(item for item in state.observations if item.phase == "tuning")
+    frontier = tuning_frontier(tuning)
+    return {
+        "policy_version": manifest.proposer.encoded()["policy_version"],
+        "model_version": manifest.proposer.encoded()["smac_adapter_version"],
+        "cost_policy_version": manifest.proposer.encoded()["cost_policy_version"],
+        "configured": {
+            "bootstrap": manifest.bootstrap_candidates,
+            "model": manifest.proposer.model_candidates,
+            "random_reserve": manifest.random_reserve_candidates,
+        },
+        "accepted": accepted,
+        "rejections_by_source": rejected,
+        "final_frontier_id": frontier.frontier_id,
+        "final_observation_count": len(frontier.observation_ids),
     }
 
 

@@ -3,7 +3,7 @@ name = "mcts-tuner"
 version = "0.1.0"
 description = "Foreground, reproducible game-binary strategy tuning for MCTS"
 requires-python = ">=3.10,<3.14"
-dependencies = ["ConfigSpace>=1.0.0,<2"]
+dependencies = ["ConfigSpace>=1.0.0,<2", "scikit-learn==1.6.1", "smac==2.4.0"]
 
 [project.scripts]
 tuner = "tuner_cli.__main__:main"

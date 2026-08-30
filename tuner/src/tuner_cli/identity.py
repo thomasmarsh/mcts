@@ -11,7 +11,11 @@ from typing import TypeAlias, cast
 
 from .domain import (
     Candidate,
+    Estimate,
     ObjectiveEpoch,
+    Observation,
+    ObservationFrontier,
+    ObservationReference,
     Opponent,
     OpponentPanel,
     PairTask,
@@ -196,6 +200,68 @@ def task_prefix(corpus: TaskCorpus, length: int) -> TaskPrefix:
 def objective_epoch(payload: object) -> ObjectiveEpoch:
     digest = fingerprint(payload)
     return ObjectiveEpoch(stable_id("epoch", payload), digest)
+
+
+def observation_reference(value: Observation) -> ObservationReference:
+    context = value.context
+    return ObservationReference(
+        value.observation_id,
+        value.candidate_id,
+        context.objective_epoch_id,
+        context.task_prefix.prefix_id,
+        context.task_prefix.task_ids,
+        context.search_effort,
+    )
+
+
+def observation_id(
+    candidate_id: str,
+    context: object,
+    utilities: tuple[float, ...],
+    estimate: Estimate,
+) -> str:
+    return stable_id(
+        "observation",
+        {
+            "candidate_id": candidate_id,
+            "context": context,
+            "pair_utilities": utilities,
+            "estimate": {
+                "mean": estimate.mean,
+                "lower": estimate.lower,
+                "upper": estimate.upper,
+            },
+        },
+    )
+
+
+def observation_frontier(references: tuple[ObservationReference, ...]) -> ObservationFrontier:
+    if not references:
+        return ObservationFrontier("frontier-empty-v1", "", "", (), SearchEffort(1), ())
+    first = references[0]
+    common = (
+        first.objective_epoch_id,
+        first.prefix_id,
+        first.task_ids,
+        first.search_effort,
+    )
+    if any(
+        (item.objective_epoch_id, item.prefix_id, item.task_ids, item.search_effort) != common
+        for item in references
+    ):
+        raise ValueError("frontier observations do not share a tuning context")
+    ids = tuple(item.observation_id for item in references)
+    if len(ids) != len(set(ids)):
+        raise ValueError("frontier repeats an observation")
+    payload = {
+        "version": "observation-frontier-v1",
+        "objective_epoch_id": first.objective_epoch_id,
+        "prefix_id": first.prefix_id,
+        "task_ids": first.task_ids,
+        "search_effort": first.search_effort.max_iterations,
+        "observation_ids": ids,
+    }
+    return ObservationFrontier(stable_id("frontier", payload), *common, ids)
 
 
 def pair_task(candidate: Candidate, case: TaskCase, budget: SearchEffort) -> PairTask:

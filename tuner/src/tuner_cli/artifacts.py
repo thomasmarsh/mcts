@@ -11,6 +11,7 @@ from .domain import (
     ObjectiveEpoch,
     Opponent,
     OpponentPanel,
+    ProposalSource,
     SearchEffort,
     TaskCorpus,
     TaskPrefix,
@@ -23,14 +24,101 @@ from .identity import (
     task_prefix,
 )
 from .objective import ResolvedObjective
+from .proposer import (
+    COST_POLICY_VERSION,
+    POLICY_VERSION,
+    SAMPLER_VERSION,
+    derived_seed,
+    source_schedule,
+)
 from .schema import GameSpec, decode_game_spec
+from .smac_proposer import ADAPTER_VERSION
 from .tasks import build_corpus, selected_prefix, validate_cycle_endpoint, verify_weighted_corpus
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def configspace_version() -> str:
     return version("ConfigSpace")
+
+
+def runtime_versions() -> dict[str, str]:
+    return {
+        "smac": version("smac"),
+        "configspace": configspace_version(),
+        "scikit_learn": version("scikit-learn"),
+        "numpy": version("numpy"),
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ProposerSpecification:
+    proposal_seed: int
+    task_seed: int
+    cohort_size: int
+    finalists: int
+    bootstrap_candidates: int
+    random_reserve_candidates: int
+    source_schedule: tuple[ProposalSource, ...]
+    bootstrap_seed: int
+    reserve_seed: int
+    runtime_versions: tuple[tuple[str, str], ...]
+
+    @property
+    def model_candidates(self) -> int:
+        return self.source_schedule.count("smac_model")
+
+    @property
+    def attempt_cap(self) -> int:
+        return max(100, self.cohort_size * 100)
+
+    def encoded(self) -> dict[str, object]:
+        return {
+            "policy_version": POLICY_VERSION,
+            "proposal_seed": self.proposal_seed,
+            "task_seed": self.task_seed,
+            "cohort_size": self.cohort_size,
+            "finalists": self.finalists,
+            "bootstrap_candidates": self.bootstrap_candidates,
+            "model_candidates": self.model_candidates,
+            "random_reserve_candidates": self.random_reserve_candidates,
+            "source_schedule": list(self.source_schedule),
+            "attempt_cap": self.attempt_cap,
+            "seed_derivation_version": "proposal-seed-v1",
+            "cost_policy_version": COST_POLICY_VERSION,
+            "bootstrap_sampler_version": SAMPLER_VERSION,
+            "reserve_sampler_version": SAMPLER_VERSION,
+            "bootstrap_seed": self.bootstrap_seed,
+            "reserve_seed": self.reserve_seed,
+            "smac_adapter_version": ADAPTER_VERSION,
+            "runtime_versions": dict(self.runtime_versions),
+        }
+
+
+def proposer_specification(
+    proposal_seed: int,
+    task_seed: int,
+    cohort_size: int,
+    finalists: int,
+    bootstrap_candidates: int,
+    random_reserve_candidates: int,
+    versions: dict[str, str] | None = None,
+) -> ProposerSpecification:
+    schedule = source_schedule(cohort_size, bootstrap_candidates, random_reserve_candidates)
+    if finalists > cohort_size:
+        raise ValueError("finalists exceeds cohort size")
+    return ProposerSpecification(
+        proposal_seed,
+        task_seed,
+        cohort_size,
+        finalists,
+        bootstrap_candidates,
+        random_reserve_candidates,
+        schedule,
+        derived_seed(proposal_seed, "bootstrap"),
+        derived_seed(proposal_seed, "reserve"),
+        tuple(sorted((runtime_versions() if versions is None else versions).items())),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,26 +134,39 @@ class Manifest:
     tuning_prefix: TaskPrefix
     validation_prefix: TaskPrefix
     epoch: ObjectiveEpoch
+    proposer_spec: ProposerSpecification
 
     @property
     def seed(self) -> int:
-        return self.proposer["seed"]
+        return self.proposer_spec.proposal_seed
 
     @property
     def task_seed(self) -> int:
-        return self.proposer["task_seed"]
+        return self.proposer_spec.task_seed
 
     @property
-    def proposer(self) -> dict[str, int | str]:
-        return self.raw["proposer"]
+    def proposer(self) -> ProposerSpecification:
+        return self.proposer_spec
 
     @property
     def cohort_size(self) -> int:
-        return self.proposer["cohort_size"]
+        return self.proposer_spec.cohort_size
 
     @property
     def finalists(self) -> int:
-        return self.proposer["finalists"]
+        return self.proposer_spec.finalists
+
+    @property
+    def bootstrap_candidates(self) -> int:
+        return self.proposer_spec.bootstrap_candidates
+
+    @property
+    def random_reserve_candidates(self) -> int:
+        return self.proposer_spec.random_reserve_candidates
+
+    @property
+    def source_schedule(self) -> tuple[ProposalSource, ...]:
+        return self.proposer_spec.source_schedule
 
     @property
     def efforts(self) -> dict[str, SearchEffort]:
@@ -206,6 +307,8 @@ def build_manifest(
     task_seed: int,
     cohort_size: int,
     finalists: int,
+    bootstrap_candidates: int,
+    random_reserve_candidates: int,
     tuning_pairs: int,
     validation_pairs: int,
     production_validation_pairs: int,
@@ -213,6 +316,14 @@ def build_manifest(
     validation_max_iterations: int,
     production_max_iterations: int,
 ) -> Manifest:
+    proposer = proposer_specification(
+        seed,
+        task_seed,
+        cohort_size,
+        finalists,
+        bootstrap_candidates,
+        random_reserve_candidates,
+    )
     for count, label in (
         (tuning_pairs, "tuning pairs"),
         (validation_pairs, "validation pairs"),
@@ -254,7 +365,7 @@ def build_manifest(
     raw: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
-        "command_policy_version": "generic-resumable-v3",
+        "command_policy_version": "bootstrap-smac-reserve-v1",
         "binary": {"path": str(spec.binary_path), "sha256": spec.binary_sha256},
         "engine_fingerprint": spec.engine_fingerprint,
         "description": spec.raw_description,
@@ -265,15 +376,7 @@ def build_manifest(
         "tuning_schema_fingerprint": spec.schema_fingerprint,
         "game_config": spec.default_game_config,
         "game_config_fingerprint": game_config_fingerprint,
-        "proposer": {
-            "kind": "configspace_random",
-            "version": "configspace-random-v1",
-            "configspace_version": configspace_version(),
-            "seed": seed,
-            "task_seed": task_seed,
-            "cohort_size": cohort_size,
-            "finalists": finalists,
-        },
+        "proposer": proposer.encoded(),
         "objective": {
             "source_path": str(objective.source_path),
             "objective_id": objective.objective_id,
@@ -436,12 +539,55 @@ def _decode_prefix(value: object, corpus: TaskCorpus, label: str) -> TaskPrefix:
     return expected
 
 
+def _decode_proposer(value: object) -> ProposerSpecification:
+    fields = {
+        "policy_version",
+        "proposal_seed",
+        "task_seed",
+        "cohort_size",
+        "finalists",
+        "bootstrap_candidates",
+        "model_candidates",
+        "random_reserve_candidates",
+        "source_schedule",
+        "attempt_cap",
+        "seed_derivation_version",
+        "cost_policy_version",
+        "bootstrap_sampler_version",
+        "reserve_sampler_version",
+        "bootstrap_seed",
+        "reserve_seed",
+        "smac_adapter_version",
+        "runtime_versions",
+    }
+    raw = object_fields(value, fields, "proposer")
+    versions = object_fields(
+        raw["runtime_versions"],
+        {"smac", "configspace", "scikit_learn", "numpy"},
+        "runtime versions",
+    )
+    if not all(isinstance(item, str) and item for item in versions.values()):
+        raise ValueError("runtime versions must be nonempty strings")
+    specification = proposer_specification(
+        integer(raw["proposal_seed"], "proposal seed", positive=True),
+        integer(raw["task_seed"], "task seed", positive=True),
+        integer(raw["cohort_size"], "cohort size", positive=True),
+        integer(raw["finalists"], "finalists", positive=True),
+        integer(raw["bootstrap_candidates"], "bootstrap candidates", positive=True),
+        integer(raw["random_reserve_candidates"], "random reserve candidates", positive=True),
+        {
+            key: string(item, f"runtime version {key}", nonempty=True)
+            for key, item in versions.items()
+        },
+    )
+    if raw != specification.encoded():
+        raise ValueError("proposer specification is inconsistent")
+    return specification
+
+
 def decode_manifest_object(value: object) -> Manifest:
     raw = object_fields(value, _FIELDS, "manifest")
-    if (
-        raw["schema_version"] != SCHEMA_VERSION
-        or raw["command_policy_version"] != "generic-resumable-v3"
-    ):
+    if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
         raise ValueError("unsupported manifest schema version or command policy")
     stored = string(raw["fingerprint"], "manifest fingerprint")
     if fingerprint({key: item for key, item in raw.items() if key != "fingerprint"}) != stored:
@@ -470,17 +616,7 @@ def decode_manifest_object(value: object) -> Manifest:
     )
     if fingerprint(strict_json(spec.default_game_config)) != game_config_fingerprint:
         raise ValueError("game configuration fingerprint is invalid")
-    proposer = object_fields(
-        raw["proposer"],
-        {"kind", "version", "configspace_version", "seed", "task_seed", "cohort_size", "finalists"},
-        "proposer",
-    )
-    if proposer["kind"] != "configspace_random" or proposer["version"] != "configspace-random-v1":
-        raise ValueError("unsupported proposer")
-    for key in ("seed", "task_seed", "cohort_size", "finalists"):
-        integer(proposer[key], key, positive=True)
-    if proposer["finalists"] > proposer["cohort_size"]:
-        raise ValueError("finalists exceeds cohort size")
+    proposer = _decode_proposer(raw["proposer"])
     panel = _decode_panel(raw["opponent_panel"])
     objective = object_fields(
         raw["objective"], {"source_path", "objective_id", "fingerprint"}, "objective"
@@ -494,13 +630,13 @@ def decode_manifest_object(value: object) -> Manifest:
         raise ValueError("invalid start distribution")
     corpora = object_fields(raw["corpora"], {"tuning", "production_validation"}, "corpora")
     tuning = _decode_corpus(
-        corpora["tuning"], "tuning", panel, proposer["task_seed"], game_config_fingerprint
+        corpora["tuning"], "tuning", panel, proposer.task_seed, game_config_fingerprint
     )
     validation = _decode_corpus(
         corpora["production_validation"],
         "validation",
         panel,
-        proposer["task_seed"],
+        proposer.task_seed,
         game_config_fingerprint,
     )
     if set(case.seed for case in tuning.cases) & set(case.seed for case in validation.cases):
@@ -579,6 +715,7 @@ def decode_manifest_object(value: object) -> Manifest:
         tuning_prefix,
         validation_prefix,
         epoch,
+        proposer,
     )
 
 

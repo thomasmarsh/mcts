@@ -34,9 +34,13 @@ def _check_game(binary: Path, objective: Path) -> None:
             "--task-seed",
             "11",
             "--cohort-size",
-            "3",
+            "4",
             "--finalists",
             "2",
+            "--bootstrap-candidates",
+            "2",
+            "--random-reserve-candidates",
+            "1",
             "--tuning-pairs",
             str(total_weight),
             "--validation-pairs",
@@ -60,10 +64,20 @@ def _check_game(binary: Path, objective: Path) -> None:
         completed_pairs = [
             event["payload"] for event in events if event["type"] == "pair_completed"
         ]
-        assert manifest["schema_version"] == 3
+        assert manifest["schema_version"] == 4
         assert manifest["kind"] == expected_kind
         assert manifest["objective"]["fingerprint"] and manifest["opponent_panel"]["fingerprint"]
         assert manifest["epoch"]["fingerprint"]
+        assert manifest["proposer"]["source_schedule"] == [
+            "schema_default",
+            "bootstrap_random",
+            "smac_model",
+            "random_reserve",
+        ]
+        accepted_sources = [
+            event["payload"]["source"] for event in events if event["type"] == "proposal_accepted"
+        ]
+        assert accepted_sources == manifest["proposer"]["source_schedule"]
         assert (
             len({pair["opponent_id"] for pair in completed_pairs if pair["phase"] == "tuning"}) > 1
         )

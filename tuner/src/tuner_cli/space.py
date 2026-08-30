@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ConfigSpace import (
     Categorical,
+    Configuration,
     ConfigurationSpace,
     Constant,
     EqualsCondition,
@@ -63,3 +64,10 @@ def default_values(space: ConfigurationSpace) -> dict[str, object]:
 
 def random_values(space: ConfigurationSpace) -> dict[str, object]:
     return active_values(space.sample_configuration())
+
+
+def configuration_from_values(
+    space: ConfigurationSpace, values: dict[str, object]
+) -> Configuration:
+    """Build a ConfigSpace configuration from already canonical active values."""
+    return Configuration(space, values=values)
