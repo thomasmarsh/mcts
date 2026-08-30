@@ -12,6 +12,15 @@ from .cohort import (
     proposal_payload,
 )
 from .domain import Candidate, ObservationContext, PairResult, PairTask, Phase, ReplayState
+from .event_payloads import (
+    CohortCompletedPayload,
+    FinalistsSelectedPayload,
+    PairFailedPayload,
+    PairIdentity,
+    PairStartedPayload,
+    RunCompletedPayload,
+    RunInterruptedPayload,
+)
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
 from .identity import canonical_json, pair_task
 from .observations import contextual_observation
@@ -51,13 +60,7 @@ def advance_one(
     state: ReplayState,
 ) -> bool:
     if proposal := pending_proposal(state):
-        event_type, payload = proposal_disposition(target, manifest, state, proposal)
-        if event_type == "proposal_accepted":
-            writer.append("proposal_accepted", payload)
-        elif event_type == "proposal_rejected":
-            writer.append("proposal_rejected", payload)
-        else:
-            raise ValueError("proposal disposition has an unknown event type")
+        writer.append(proposal_disposition(target, manifest, state, proposal))
         return True
     if task := pending_pair(manifest, state):
         execute_pair(manifest, writer, target, state, task, timeout)
@@ -71,10 +74,7 @@ def advance_one(
     if complete_run(manifest, writer, state):
         return True
     if len(accepted_candidates(state)) < manifest.cohort_size:
-        writer.append(
-            "proposal_created",
-            proposal_payload(create_proposal(manifest, state, default, spec, model)),
-        )
+        writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
         return True
     return False
 
@@ -115,50 +115,50 @@ def execute_pair(
     opponent = next(
         item for item in manifest.panel.opponents if item.opponent_id == task.task_case.opponent_id
     )
-    writer.append("pair_started", _pair_started_payload(task))
+    writer.append(_pair_started_payload(task))
     try:
         result = target.evaluate(
             task, candidate, opponent, manifest.spec.default_game_config, timeout
         )
     except PairExecutionError as error:
-        writer.append("pair_failed", failure_payload(task, error))
+        writer.append(failure_payload(task, error))
         raise
     except KeyboardInterrupt as error:
-        writer.append("run_interrupted", {"stage": "pair_execution", "pair_id": task.pair_id})
+        writer.append(RunInterruptedPayload("pair_execution", task.pair_id))
         raise KeyboardInterrupt from error
-    writer.append("pair_completed", pair_payload(result))
+    writer.append(pair_payload(result))
 
 
-def _pair_started_payload(task: PairTask) -> JsonObject:
-    return {
-        "phase": task.task_case.phase,
-        "candidate_id": task.candidate_id,
-        "task_id": task.task_case.task_id,
-        "pair_id": task.pair_id,
-        "opponent_id": task.task_case.opponent_id,
-        "budget": task.budget.max_iterations,
-        "task_seed": task.task_case.seed,
-    }
+def _pair_identity(task: PairTask) -> PairIdentity:
+    return PairIdentity(
+        task.task_case.phase,
+        task.candidate_id,
+        task.task_case.task_id,
+        task.pair_id,
+        task.task_case.opponent_id,
+        task.budget.max_iterations,
+    )
 
 
-def failure_payload(task: PairTask, error: PairExecutionError) -> JsonObject:
-    partial: list[JsonValue] = [
+def _pair_started_payload(task: PairTask) -> PairStartedPayload:
+    return PairStartedPayload(_pair_identity(task), task.task_case.seed)
+
+
+def failure_payload(task: PairTask, error: PairExecutionError) -> PairFailedPayload:
+    partial: tuple[JsonValue, ...] = tuple(
         canonical_json(record)
         for line in error.stdout.splitlines()
         if (record := json_record(line))
-    ]
-    identity = _pair_started_payload(task)
-    identity.pop("task_seed")
-    command: list[JsonValue] = list(error.command)
-    return {
-        **identity,
-        "kind": error.kind,
-        "command": command,
-        "returncode": error.returncode,
-        "stderr": error.stderr,
-        "stdout": error.stdout,
-        "partial_output": partial,
-    }
+    )
+    return PairFailedPayload(
+        _pair_identity(task),
+        error.kind,
+        tuple(error.command),
+        error.returncode,
+        error.stderr,
+        error.stdout,
+        partial,
+    )
 
 
 def json_record(line: str) -> JsonObject | None:
@@ -186,7 +186,7 @@ def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
         pairs,
     )
     opponent_count = len({pair.task.task_case.opponent_id for pair in pairs})
-    writer.append("observation_completed", observation_payload(value, opponent_count))
+    writer.append(observation_payload(value, opponent_count))
     return True
 
 
@@ -222,13 +222,12 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
     ):
         return False
     writer.append(
-        "cohort_completed",
-        {
-            "candidate_ids": [item.candidate_id for item in accepted],
-            "sources": list(manifest.source_schedule),
-            "schedule_version": POLICY_VERSION,
-            "final_frontier_id": tuning_frontier(tuning).frontier_id,
-        },
+        CohortCompletedPayload(
+            tuple(item.candidate_id for item in accepted),
+            tuple(manifest.source_schedule),
+            POLICY_VERSION,
+            tuning_frontier(tuning).frontier_id,
+        )
     )
     return True
 
@@ -240,17 +239,16 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     finalists = choose_finalists(state.cohort, tuning, manifest.finalists)
     context = tuning[0].context
     writer.append(
-        "finalists_selected",
-        {
-            "finalist_ids": [item.candidate_id for item in finalists],
-            "tuning_estimates": {item.candidate_id: item.estimate.mean for item in tuning},
-            "objective_epoch_id": context.objective_epoch_id,
-            "corpus_id": context.task_prefix.corpus_id,
-            "prefix_id": context.task_prefix.prefix_id,
-            "prefix_task_ids": list(context.task_prefix.task_ids),
-            "search_effort": context.search_effort.max_iterations,
-            "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
-        },
+        FinalistsSelectedPayload(
+            tuple(item.candidate_id for item in finalists),
+            {item.candidate_id: item.estimate.mean for item in tuning},
+            context.objective_epoch_id,
+            context.task_prefix.corpus_id,
+            context.task_prefix.prefix_id,
+            context.task_prefix.task_ids,
+            context.search_effort.max_iterations,
+            "tuning_point_estimate_fingerprint_v1",
+        )
     )
     return True
 
@@ -269,20 +267,19 @@ def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState)
     )
     count = sum(event.type in SCIENTIFIC for event in read_events(writer.path)) + 1
     writer.append(
-        "run_completed",
-        {
-            "manifest_fingerprint": manifest.fingerprint,
-            "accepted_ids": [item.candidate_id for item in state.cohort or ()],
-            "finalist_ids": [item.candidate_id for item in state.finalists],
-            "evidence_counts": {"events": count},
-            "validation_claim": claim,
-            "objective_epoch_id": manifest.epoch.epoch_id,
-            "validation_prefix_id": manifest.validation_prefix.prefix_id,
-            "validation_search_effort": manifest.efforts["validation"].max_iterations,
-            "missing_production_axes": list(missing),
-            "cohort_frontier_id": tuning_frontier(
+        RunCompletedPayload(
+            manifest.fingerprint,
+            tuple(item.candidate_id for item in state.cohort or ()),
+            tuple(item.candidate_id for item in state.finalists),
+            {"events": count},
+            claim,
+            manifest.epoch.epoch_id,
+            manifest.validation_prefix.prefix_id,
+            manifest.efforts["validation"].max_iterations,
+            tuple(missing),
+            tuning_frontier(
                 tuple(item for item in state.observations if item.phase == "tuning")
             ).frontier_id,
-        },
+        )
     )
     return True

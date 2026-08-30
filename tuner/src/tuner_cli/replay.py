@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .artifacts import Manifest, production_claim
@@ -27,6 +27,7 @@ from .domain import (
     ProposalProvenance,
     ReplayState,
 )
+from .event_payloads import ObservationCompletedPayload
 from .evidence import EvidenceEvent, decode_pair_payload
 from .identity import candidate_from_canonical_config, pair_task
 from .observations import contextual_observation
@@ -42,26 +43,27 @@ def _context(manifest: Manifest, phase: Phase) -> ObservationContext:
     return ObservationContext(manifest.epoch.epoch_id, phase, prefix, manifest.efforts[phase])
 
 
-def observation_payload(value: Observation, opponent_count: int) -> JsonObject:
+def observation_payload(value: Observation, opponent_count: int) -> ObservationCompletedPayload:
     context = value.context
-    return {
-        "observation_id": value.observation_id,
-        "candidate_id": value.candidate_id,
-        "phase": context.phase,
-        "objective_epoch_id": context.objective_epoch_id,
-        "corpus_id": context.task_prefix.corpus_id,
-        "prefix_id": context.task_prefix.prefix_id,
-        "prefix_task_ids": list(context.task_prefix.task_ids),
-        "prefix_length": context.task_prefix.length,
-        "search_effort": context.search_effort.max_iterations,
-        "pair_utilities": list(value.pair_utilities),
-        "estimate": asdict(value.estimate),
-        "counts": {
+    estimate = value.estimate
+    return ObservationCompletedPayload(
+        value.observation_id,
+        value.candidate_id,
+        context.phase,
+        context.objective_epoch_id,
+        context.task_prefix.corpus_id,
+        context.task_prefix.prefix_id,
+        context.task_prefix.task_ids,
+        context.task_prefix.length,
+        context.search_effort.max_iterations,
+        value.pair_utilities,
+        {"mean": estimate.mean, "lower": estimate.lower, "upper": estimate.upper},
+        {
             "pairs": context.task_prefix.length,
             "games": context.task_prefix.length * 2,
             "opponents": opponent_count,
         },
-    }
+    )
 
 
 @dataclass(slots=True)
@@ -194,8 +196,7 @@ def _apply_proposal_created(state: _Replay, payload: JsonObject) -> None:
     state.proposals.append(proposal)
 
 
-def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
-    payload = event.payload
+def _apply_disposition(state: _Replay, event: EvidenceEvent, payload: JsonObject) -> None:
     index = integer(payload["proposal_index"], "proposal index")
     if index not in range(len(state.proposals)) or index in state.dispositions:
         raise ValueError("invalid or repeated proposal disposition")
@@ -261,8 +262,11 @@ def _apply_observation(state: _Replay, payload: JsonObject) -> None:
         if item.task.candidate_id == candidate.candidate_id and item.task.task_case.phase == phase
     ]
     value = contextual_observation(candidate, _context(state.manifest, phase), pairs)
-    if payload != observation_payload(
-        value, len({pair.task.task_case.opponent_id for pair in pairs})
+    if (
+        payload
+        != observation_payload(
+            value, len({pair.task.task_case.opponent_id for pair in pairs})
+        ).encode()
     ):
         raise ValueError("observation does not match completed raw pairs")
     state.observations.append(value)
@@ -309,7 +313,7 @@ def _apply_finalists(state: _Replay, payload: JsonObject) -> None:
     state.finalists = finalists
 
 
-def _apply_completion(state: _Replay, event: EvidenceEvent) -> None:
+def _apply_completion(state: _Replay, event: EvidenceEvent, payload: JsonObject) -> None:
     if (
         state.cohort is None
         or state.finalists is None
@@ -335,7 +339,7 @@ def _apply_completion(state: _Replay, event: EvidenceEvent) -> None:
         "missing_production_axes": list(missing),
         "cohort_frontier_id": tuning_frontier(state.tuning_observations()).frontier_id,
     }
-    if event.payload != expected:
+    if payload != expected:
         raise ValueError("run completion does not bind replay state")
     state.terminal = "complete"
 
@@ -350,11 +354,11 @@ def _scientific_count(state: _Replay) -> int:
     )
 
 
-def _operational_pair(state: _Replay, event: EvidenceEvent) -> None:
+def _operational_pair(state: _Replay, event: EvidenceEvent, payload: JsonObject) -> None:
     plan, completed = state.pair_plan(), state.completed_in_plan()
     if len(completed) >= len(plan):
         raise ValueError("operational pair record is not expected")
-    task, payload = plan[len(completed)], event.payload
+    task = plan[len(completed)]
     expected = {
         "phase": task.task_case.phase,
         "candidate_id": task.candidate_id,
@@ -375,24 +379,25 @@ def _operational_pair(state: _Replay, event: EvidenceEvent) -> None:
 def _apply(state: _Replay, event: EvidenceEvent) -> None:
     if state.terminal != "open":
         raise ValueError("event follows terminal run state")
+    payload = event.payload.encode()
     if event.type == "proposal_created":
-        _apply_proposal_created(state, event.payload)
+        _apply_proposal_created(state, payload)
     elif event.type in {"proposal_accepted", "proposal_rejected"}:
-        _apply_disposition(state, event)
+        _apply_disposition(state, event, payload)
     elif event.type == "pair_completed":
-        _apply_pair(state, event.payload)
+        _apply_pair(state, payload)
     elif event.type == "observation_completed":
-        _apply_observation(state, event.payload)
+        _apply_observation(state, payload)
     elif event.type == "cohort_completed":
-        _apply_cohort(state, event.payload)
+        _apply_cohort(state, payload)
     elif event.type == "finalists_selected":
-        _apply_finalists(state, event.payload)
+        _apply_finalists(state, payload)
     elif event.type == "run_completed":
-        _apply_completion(state, event)
+        _apply_completion(state, event, payload)
     elif event.type == "run_failed":
         state.terminal = "configuration_failed"
     elif event.type in {"pair_started", "pair_failed"}:
-        _operational_pair(state, event)
+        _operational_pair(state, event, payload)
     elif event.type == "run_interrupted":
         return
     else:

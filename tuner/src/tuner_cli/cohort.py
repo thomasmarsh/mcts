@@ -15,6 +15,13 @@ from .domain import (
     ReplayState,
     ValidationResult,
 )
+from .event_payloads import (
+    PanelRejection,
+    ProposalAcceptedPayload,
+    ProposalCreatedPayload,
+    ProposalIdentity,
+    ProposalRejectedPayload,
+)
 from .identity import candidate_from_config, canonical_json
 from .proposer import (
     ModelProposer,
@@ -44,25 +51,32 @@ def pending_proposal(state: ReplayState) -> Proposal | None:
     return proposal if proposal.proposal_index not in dict(state.dispositions) else None
 
 
-def proposal_payload(proposal: Proposal) -> dict[str, object]:
-    provenance, candidate = proposal.provenance, proposal.candidate
-    return {
-        "proposal_index": proposal.proposal_index,
-        "cohort_slot": proposal.cohort_slot,
-        "source": provenance.source,
-        "source_attempt": provenance.source_attempt,
-        "candidate_id": candidate.candidate_id,
-        "fingerprint": candidate.fingerprint,
-        "canonical_config": candidate.canonical_config,
-        "frontier_id": proposal.frontier.frontier_id,
-        "frontier_observation_ids": list(proposal.frontier.observation_ids),
-        "proposer_version": provenance.proposer_version,
-        "origin": provenance.origin,
-        "acquisition": provenance.acquisition,
-        "prediction": provenance.prediction,
-        "uncertainty": provenance.uncertainty,
-        "parent_candidate_id": provenance.parent_candidate_id,
-    }
+def _identity(proposal: Proposal) -> ProposalIdentity:
+    candidate, provenance = proposal.candidate, proposal.provenance
+    return ProposalIdentity(
+        proposal.proposal_index,
+        proposal.cohort_slot,
+        provenance.source,
+        provenance.source_attempt,
+        candidate.candidate_id,
+        candidate.fingerprint,
+        candidate.canonical_config,
+    )
+
+
+def proposal_payload(proposal: Proposal) -> ProposalCreatedPayload:
+    provenance = proposal.provenance
+    return ProposalCreatedPayload(
+        _identity(proposal),
+        proposal.frontier.frontier_id,
+        proposal.frontier.observation_ids,
+        provenance.proposer_version,
+        provenance.origin,
+        provenance.acquisition,
+        provenance.prediction,
+        provenance.uncertainty,
+        provenance.parent_candidate_id,
+    )
 
 
 def create_proposal(
@@ -151,35 +165,15 @@ def _frontier(manifest: Manifest, state: ReplayState, slot: int):
     return tuning_frontier(tuple(item for item in state.observations if item.phase == "tuning"))
 
 
-def disposition_payload(proposal: Proposal) -> dict[str, object]:
-    candidate, provenance = proposal.candidate, proposal.provenance
-    return {
-        "proposal_index": proposal.proposal_index,
-        "cohort_slot": proposal.cohort_slot,
-        "source": proposal.source,
-        "source_attempt": provenance.source_attempt,
-        "candidate_id": candidate.candidate_id,
-        "fingerprint": candidate.fingerprint,
-        "canonical_config": candidate.canonical_config,
-    }
-
-
 def proposal_disposition(
     target: Target, manifest: Manifest, state: ReplayState, proposal: Proposal
-) -> tuple[str, dict[str, object]]:
+) -> ProposalAcceptedPayload | ProposalRejectedPayload:
     if proposal.candidate.fingerprint in {item.fingerprint for item in accepted_candidates(state)}:
-        return "proposal_rejected", {
-            **disposition_payload(proposal),
-            "reason": "duplicate",
-            "errors": [],
-        }
+        return ProposalRejectedPayload(_identity(proposal), "duplicate", ())
     results = _panel_results(target, manifest, proposal.candidate)
     if all(result.valid for result in results):
-        return "proposal_accepted", {
-            **disposition_payload(proposal),
-            "panel_response_fingerprints": _response_fingerprints(results),
-        }
-    return "proposal_rejected", _semantic_rejection(manifest, proposal, results)
+        return ProposalAcceptedPayload(_identity(proposal), tuple(_response_fingerprints(results)))
+    return _semantic_rejection(manifest, proposal, results)
 
 
 def _panel_results(
@@ -199,10 +193,20 @@ def _response_fingerprints(results: tuple[ValidationResult, ...]) -> list[str]:
 
 def _semantic_rejection(
     manifest: Manifest, proposal: Proposal, results: tuple[ValidationResult, ...]
-) -> dict[str, object]:
-    errors = [
-        {"opponent_id": opponent.opponent_id, "errors": [asdict(error) for error in result.errors]}
+) -> ProposalRejectedPayload:
+    errors = tuple(
+        PanelRejection(
+            opponent.opponent_id,
+            tuple(
+                {
+                    "field": error.field,
+                    "message": error.message,
+                    "candidate_index": error.candidate_index,
+                }
+                for error in result.errors
+            ),
+        )
         for opponent, result in zip(manifest.panel.opponents, results, strict=True)
         if not result.valid
-    ]
-    return {**disposition_payload(proposal), "reason": "semantic_validation", "errors": errors}
+    )
+    return ProposalRejectedPayload(_identity(proposal), "semantic_validation", errors)

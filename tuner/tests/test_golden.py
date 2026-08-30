@@ -17,7 +17,8 @@ from golden_support import (
 )
 
 from tuner_cli.artifacts import read_manifest
-from tuner_cli.evidence import EventType, read_events, scientific_projection
+from tuner_cli.event_payloads import EventType, ProposalRejectedPayload
+from tuner_cli.evidence import read_events, scientific_projection
 from tuner_cli.replay import replay
 from tuner_cli.report import build_report
 from tuner_cli.run import run_foreground
@@ -74,8 +75,11 @@ def test_report_matches_golden_after_masking_operational_fields(regenerated: Pat
 def test_golden_evidence_exercises_every_scientific_event() -> None:
     events = read_events(FIXTURES / "evidence.jsonl")
     assert _ALL_EVENT_TYPES <= {event.type for event in events}
-    rejected = [event for event in events if event.type == "proposal_rejected"]
-    assert rejected and any(event.payload["reason"] == "semantic_validation" for event in rejected)
+    rejected = [event.payload for event in events if event.type == "proposal_rejected"]
+    assert rejected and any(
+        isinstance(payload, ProposalRejectedPayload) and payload.reason == "semantic_validation"
+        for payload in rejected
+    )
 
 
 def test_golden_manifest_round_trips_through_public_codec() -> None:

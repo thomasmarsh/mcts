@@ -52,7 +52,7 @@ def _mapping(value: object) -> TypeGuard[Mapping[object, object]]:
     return isinstance(value, Mapping)
 
 
-def is_json_value(value: object) -> bool:
+def is_json_value(value: object) -> TypeGuard[JsonValue]:
     if value is None or isinstance(value, (bool, int, float, str)):
         return not isinstance(value, float) or math.isfinite(value)
     if _list(value):
@@ -67,6 +67,18 @@ def is_json_object(value: object) -> TypeGuard[JsonObject]:
     return _mapping(value) and all(
         isinstance(key, str) and is_json_value(item) for key, item in value.items()
     )
+
+
+def elements(value: object, label: str) -> list[object]:
+    if not _list(value):
+        raise ValueError(f"{label} must be an array")
+    return list(value)
+
+
+def json_value(value: object, label: str) -> JsonValue:
+    if not is_json_value(value):
+        raise ValueError(f"{label} must be a JSON value")
+    return value
 
 
 def objects(value: object, label: str) -> tuple[JsonObject, ...]:
@@ -141,3 +153,22 @@ def optional_number(value: object, label: str) -> float | None:
     if value is None:
         return None
     return number(value, label)
+
+
+def raw_number(value: object, label: str) -> int | float:
+    """Narrow a finite JSON number without coercing an integer literal to float."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise ValueError(f"{label} must be a finite number")
+    return value
+
+
+def optional_raw_number(value: object, label: str) -> int | float | None:
+    if value is None:
+        return None
+    return raw_number(value, label)
+
+
+def optional_integer(value: object, label: str, *, positive: bool = False) -> int | None:
+    if value is None:
+        return None
+    return integer(value, label, positive=positive)

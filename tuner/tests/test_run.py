@@ -11,6 +11,7 @@ from tuner_cli.domain import (
     StrategyMetrics,
     ValidationResult,
 )
+from tuner_cli.event_payloads import PairCompletedPayload
 from tuner_cli.evidence import read_events, scientific_projection
 from tuner_cli.identity import canonical_json, game_id
 from tuner_cli.report import write_report
@@ -241,7 +242,9 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
         resumed_dir / "report.json"
     ).read_bytes()
     completed = [
-        event.payload["pair_id"] for event in resumed_events if event.type == "pair_completed"
+        event.payload.identity.pair_id
+        for event in resumed_events
+        if isinstance(event.payload, PairCompletedPayload)
     ]
     assert len(completed) == len(set(completed))
     assert interrupted.calls[len(before)].pair_id == before[-1].pair_id
