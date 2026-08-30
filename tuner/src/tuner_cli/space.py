@@ -61,26 +61,32 @@ def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
     return space
 
 
-def _to_python(value: object) -> object:
-    """ConfigSpace stores hyperparameter values as numpy scalars internally."""
-    return value.item() if isinstance(value, np.generic) else value
+ParamValue = bool | int | float | str
+ParamValues = dict[str, ParamValue]
 
 
-def active_values(configuration: Configuration) -> dict[str, object]:
+def param_value(value: object, label: str = "hyperparameter value") -> ParamValue:
+    """Narrow one hyperparameter value, unwrapping the numpy scalars ConfigSpace stores."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bool | int | float | str):
+        return value
+    raise ValueError(f"{label} is not a scalar: {value!r}")
+
+
+def active_values(configuration: Configuration) -> ParamValues:
     values = dict(configuration)
-    return {name: _to_python(value) for name, value in values.items() if value is not None}
+    return {name: param_value(value) for name, value in values.items() if value is not None}
 
 
-def default_values(space: ConfigurationSpace) -> dict[str, object]:
+def default_values(space: ConfigurationSpace) -> ParamValues:
     return active_values(space.get_default_configuration())
 
 
-def random_values(space: ConfigurationSpace) -> dict[str, object]:
+def random_values(space: ConfigurationSpace) -> ParamValues:
     return active_values(space.sample_configuration())
 
 
-def configuration_from_values(
-    space: ConfigurationSpace, values: dict[str, object]
-) -> Configuration:
+def configuration_from_values(space: ConfigurationSpace, values: ParamValues) -> Configuration:
     """Build a ConfigSpace configuration from already canonical active values."""
     return Configuration(space, values=values)

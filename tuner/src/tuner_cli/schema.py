@@ -113,71 +113,79 @@ def _unique_scalars(values: list[JsonValue], label: str) -> None:
         raise ValueError(f"{label} must be unique")
 
 
+_PARAMETER_KINDS: dict[str, ParameterKind] = {
+    "float": "float",
+    "int": "int",
+    "categorical": "categorical",
+    "bool": "bool",
+    "constant": "constant",
+}
+
+_PARAMETER_FIELDS: dict[ParameterKind, set[str]] = {
+    "float": {"name", "type", "bounds", "default"},
+    "int": {"name", "type", "bounds", "default"},
+    "categorical": {"name", "type", "choices", "default"},
+    "bool": {"name", "type", "default"},
+    "constant": {"name", "type", "value"},
+}
+
+
+def _numeric_bounds(item: JsonObject, name: str) -> tuple[JsonValue, JsonValue]:
+    bounds = item["bounds"]
+    if not isinstance(bounds, list) or len(bounds) != 2:
+        raise ValueError(f"numeric parameter {name} needs two bounds")
+    return bounds[0], bounds[1]
+
+
+def _numeric_parameter(name: str, item: JsonObject, kind: ParameterKind) -> ParameterSpec:
+    convert = _number if kind == "float" else _integer
+    low_raw, high_raw = _numeric_bounds(item, name)
+    lo, hi = convert(low_raw, f"{name} lower bound"), convert(high_raw, f"{name} upper bound")
+    default = convert(item["default"], f"{name} default")
+    if lo > hi or not lo <= default <= hi:
+        raise ValueError(f"invalid bounds/default for {name}")
+    return ParameterSpec(name, kind, (lo, hi), None, default, None)
+
+
+def _categorical_parameter(name: str, item: JsonObject) -> ParameterSpec:
+    raw_choices = item["choices"]
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise ValueError(f"categorical parameter {name} needs non-empty choices")
+    choices = [_scalar(value, f"{name} choice") for value in raw_choices]
+    _unique_scalars(choices, f"categorical choices for {name}")
+    default = _scalar(item["default"], f"{name} default")
+    if not any(_same_scalar(default, choice) for choice in choices):
+        raise ValueError(f"invalid default for {name}")
+    return ParameterSpec(name, "categorical", None, tuple(choices), default, None)
+
+
+def _bool_parameter(name: str, item: JsonObject) -> ParameterSpec:
+    if not isinstance(item["default"], bool):
+        raise ValueError(f"Boolean parameter {name} needs a Boolean default")
+    return ParameterSpec(name, "bool", None, (False, True), item["default"], None)
+
+
+def _constant_parameter(name: str, item: JsonObject) -> ParameterSpec:
+    return ParameterSpec(
+        name, "constant", None, None, None, _scalar(item["value"], f"{name} value")
+    )
+
+
 def _parameter(raw: object) -> ParameterSpec:
     preliminary = json_object(raw, "parameter")
     kind = _string(preliminary.get("type"), "parameter type")
-    expected = {
-        "float": {"name", "type", "bounds", "default"},
-        "int": {"name", "type", "bounds", "default"},
-        "categorical": {"name", "type", "choices", "default"},
-        "bool": {"name", "type", "default"},
-        "constant": {"name", "type", "value"},
-    }
-    if kind not in expected:
+    parameter_kind = _PARAMETER_KINDS.get(kind)
+    if parameter_kind is None:
         raise ValueError(f"unknown parameter type {kind!r}")
-    if kind == "float":
-        parameter_kind: ParameterKind = "float"
-    elif kind == "int":
-        parameter_kind = "int"
-    elif kind == "categorical":
-        parameter_kind = "categorical"
-    elif kind == "bool":
-        parameter_kind = "bool"
-    else:
-        parameter_kind = "constant"
-    item = _object(preliminary, "parameter", expected[parameter_kind])
+    item = _object(preliminary, "parameter", _PARAMETER_FIELDS[parameter_kind])
     name = _string(item["name"], "parameter name", nonempty=True)
-    if parameter_kind == "float":
-        bounds = item["bounds"]
-        if not isinstance(bounds, list) or len(bounds) != 2:
-            raise ValueError(f"numeric parameter {name} needs two bounds")
-        lo, hi = (
-            _number(bounds[0], f"{name} lower bound"),
-            _number(bounds[1], f"{name} upper bound"),
-        )
-        default = _number(item["default"], f"{name} default")
-        if lo > hi or not lo <= default <= hi:
-            raise ValueError(f"invalid bounds/default for {name}")
-        return ParameterSpec(name, parameter_kind, (lo, hi), None, default, None)
-    if parameter_kind == "int":
-        bounds = item["bounds"]
-        if not isinstance(bounds, list) or len(bounds) != 2:
-            raise ValueError(f"numeric parameter {name} needs two bounds")
-        lo, hi = (
-            _integer(bounds[0], f"{name} lower bound"),
-            _integer(bounds[1], f"{name} upper bound"),
-        )
-        default = _integer(item["default"], f"{name} default")
-        if lo > hi or not lo <= default <= hi:
-            raise ValueError(f"invalid bounds/default for {name}")
-        return ParameterSpec(name, parameter_kind, (lo, hi), None, default, None)
+    if parameter_kind in ("float", "int"):
+        return _numeric_parameter(name, item, parameter_kind)
     if parameter_kind == "categorical":
-        raw_choices = item["choices"]
-        if not isinstance(raw_choices, list) or not raw_choices:
-            raise ValueError(f"categorical parameter {name} needs non-empty choices")
-        choices = [_scalar(value, f"{name} choice") for value in raw_choices]
-        _unique_scalars(choices, f"categorical choices for {name}")
-        default = _scalar(item["default"], f"{name} default")
-        if not any(_same_scalar(default, choice) for choice in choices):
-            raise ValueError(f"invalid default for {name}")
-        return ParameterSpec(name, parameter_kind, None, tuple(choices), default, None)
+        return _categorical_parameter(name, item)
     if parameter_kind == "bool":
-        if not isinstance(item["default"], bool):
-            raise ValueError(f"Boolean parameter {name} needs a Boolean default")
-        return ParameterSpec(name, parameter_kind, None, (False, True), item["default"], None)
-    return ParameterSpec(
-        name, parameter_kind, None, None, None, _scalar(item["value"], f"{name} value")
-    )
+        return _bool_parameter(name, item)
+    return _constant_parameter(name, item)
 
 
 def _condition(raw: object) -> ActivationCondition:

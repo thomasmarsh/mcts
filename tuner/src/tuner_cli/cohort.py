@@ -9,6 +9,7 @@ from .artifacts import Manifest
 from .domain import (
     Candidate,
     ModelAttempt,
+    ObservationFrontier,
     Proposal,
     ProposalProvenance,
     ProposedConfiguration,
@@ -151,7 +152,7 @@ def _model_candidate(
     return proposed
 
 
-def _frontier(manifest: Manifest, state: ReplayState, slot: int):
+def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationFrontier:
     if slot < manifest.bootstrap_candidates:
         from .domain import ObservationContext
 

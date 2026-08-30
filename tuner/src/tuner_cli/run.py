@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .continuation import continue_run
+from .domain import Candidate
 from .evidence import EvidenceWriter, read_events, write_manifest
 from .identity import candidate_from_config, sha256_file
 from .objective import ResolvedObjective, resolve_objective
@@ -117,7 +118,7 @@ def game_spec(target: Target, binary: Path) -> GameSpec:
     return decode_game_spec(target.describe(), binary, sha256_file(binary))
 
 
-def schema_default(spec: GameSpec, seed: int):
+def schema_default(spec: GameSpec, seed: int) -> Candidate:
     return candidate_from_config(default_values(build_space(spec.tuning, seed)))
 
 

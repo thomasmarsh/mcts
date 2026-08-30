@@ -11,7 +11,7 @@ from ConfigSpace import ConfigurationSpace
 from .domain import ModelAttempt, ModelObservation, ObservationFrontier, ProposedConfiguration
 from .identity import candidate_from_config
 from .proposer import ModelProposer
-from .space import active_values, configuration_from_values
+from .space import ParamValues, active_values, configuration_from_values, param_value
 
 if TYPE_CHECKING:
     from smac.facade.algorithm_configuration_facade import AlgorithmConfigurationFacade
@@ -80,10 +80,10 @@ def _tell(
     facade.tell(TrialInfo(configuration, seed=seed), TrialValue(cost=observation.cost), save=False)
 
 
-def active_values_from_candidate(canonical_config: str) -> dict[str, object]:
+def active_values_from_candidate(canonical_config: str) -> ParamValues:
     from .codec import strict_json
 
     value = strict_json(canonical_config, "candidate configuration")
     if not isinstance(value, dict):
         raise ValueError("candidate configuration is not an object")
-    return dict(value)
+    return {key: param_value(item, "candidate configuration value") for key, item in value.items()}

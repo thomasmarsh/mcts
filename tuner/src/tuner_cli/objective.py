@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
-from .codec import integer, object_fields, strict_json, string
-from .domain import Candidate, Opponent, OpponentPanel
+from .codec import integer, literal, object_fields, strict_json, string
+from .domain import Candidate, Opponent, OpponentPanel, OpponentRole
 from .identity import canonical_json, fingerprint, opponent_panel
+
+_ROLES: tuple[OpponentRole, ...] = ("default", "historical_reference")
+_SOURCES: tuple[Literal["schema_default", "inline"], ...] = ("schema_default", "inline")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,28 +66,26 @@ def _opponent(value: object, schema_default: Candidate) -> Opponent:
     raw = object_fields(value, {"id", "label", "role", "weight", "config"}, "objective opponent")
     opponent_id = string(raw["id"], "opponent id", nonempty=True)
     label = string(raw["label"], "opponent label", nonempty=True)
-    role = raw["role"]
-    if role not in {"default", "historical_reference"}:
-        raise ValueError("objective opponent has invalid role")
+    role: OpponentRole = literal(raw["role"], _ROLES, "objective opponent role")
     weight = integer(raw["weight"], "opponent weight", positive=True)
     if not isinstance(raw["config"], dict):
         raise ValueError("opponent config must be an object")
     fields = {"source"} if raw["config"].get("source") == "schema_default" else {"source", "value"}
     config = object_fields(raw["config"], fields, "opponent config")
-    source = config["source"]
+    source: Literal["schema_default", "inline"] = literal(
+        config["source"], _SOURCES, "opponent config source"
+    )
     if source == "schema_default":
         canonical = schema_default.canonical_config
-    elif source == "inline":
+    else:
         if not isinstance(config["value"], dict):
             raise ValueError("inline opponent value must be a JSON object")
         canonical = canonical_json(config["value"])
-    else:
-        raise ValueError("objective opponent has invalid config source")
     return Opponent(
         opponent_id,
-        cast(Literal["schema_default", "inline"], source),
+        source,
         label,
-        cast(Literal["default", "historical_reference"], role),
+        role,
         weight,
         canonical,
         fingerprint(strict_json(canonical, "opponent config")),

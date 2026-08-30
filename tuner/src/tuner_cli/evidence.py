@@ -137,33 +137,15 @@ def pair_payload(result: PairResult) -> PairCompletedPayload:
     )
 
 
-def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
-    item = _object(
-        payload,
-        {
-            "phase",
-            "candidate_id",
-            "task_id",
-            "pair_id",
-            "opponent_id",
-            "budget",
-            "games",
-            "pair_utility",
-        },
-        "pair completion",
-    )
-    actual_identity = {
-        "phase": task.task_case.phase,
-        "candidate_id": task.candidate_id,
-        "task_id": task.task_case.task_id,
-        "pair_id": task.pair_id,
-        "opponent_id": task.task_case.opponent_id,
-        "budget": task.budget.max_iterations,
-    }
+def decode_pair_payload(payload: PairCompletedPayload, task: PairTask) -> PairResult:
+    identity = payload.identity
     if (
-        {key: item[key] for key in actual_identity} != actual_identity
-        or not isinstance(item["games"], list)
-        or len(item["games"]) != 2
+        identity.phase != task.task_case.phase
+        or identity.candidate_id != task.candidate_id
+        or identity.task_id != task.task_case.task_id
+        or identity.pair_id != task.pair_id
+        or identity.opponent_id != task.task_case.opponent_id
+        or identity.budget != task.budget.max_iterations
     ):
         raise ValueError("pair completion does not match expected pair")
     raw_records: list[JsonObject] = []
@@ -181,7 +163,7 @@ def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
         "opponent_metrics",
         "raw_record",
     }
-    for position, encoded in enumerate(item["games"]):
+    for position, encoded in enumerate(payload.games):
         game = _object(encoded, game_fields, "completed game")
         raw = _string(game["raw_record"], "raw game record")
         parsed = strict_json(raw, "raw game record")
@@ -200,15 +182,10 @@ def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
         "draws": outcomes.count("draw"),
     }
     decoded = parse_pair_output("\n".join(canonical_json(x) for x in [*raw_records, summary]), task)
-    for expected, actual in zip(item["games"], decoded.games, strict=True):
+    for expected, actual in zip(payload.games, decoded.games, strict=True):
         if expected != game_payload(actual):
             raise ValueError("typed game fields disagree with raw game record")
-    utility = item["pair_utility"]
-    if (
-        not isinstance(utility, (int, float))
-        or isinstance(utility, bool)
-        or utility != pair_utility(decoded)
-    ):
+    if payload.pair_utility != pair_utility(decoded):
         raise ValueError("pair utility disagrees with raw games")
     return decoded
 

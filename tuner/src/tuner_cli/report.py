@@ -144,16 +144,54 @@ def _comparisons(
     return rows, tied, unresolved
 
 
-def build_report(run_dir: Path) -> JsonObject:
-    manifest = read_manifest(run_dir / "manifest.json")
-    state = replay(manifest, read_events(run_dir / "evidence.jsonl"))
-    if state.terminal_status != "complete" or state.finalists is None or state.cohort is None:
-        raise ValueError("report requires completed evidence")
-    validation: defaultdict[str, list[PairResult]] = defaultdict(list)
-    for pair in state.completed_pairs:
-        if pair.task.task_case.phase == "validation":
-            validation[pair.task.candidate_id].append(pair)
-    observations = [
+def _frozen(manifest: Manifest) -> JsonObject:
+    return {
+        "objective_id": manifest.objective_id,
+        "objective_fingerprint": manifest.objective_fingerprint,
+        "epoch_id": manifest.epoch.epoch_id,
+        "engine_fingerprint": manifest.spec.engine_fingerprint,
+        "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
+        "game_config_fingerprint": manifest.game_config_fingerprint,
+        "panel_fingerprint": manifest.panel.fingerprint,
+        "panel": _array(
+            {
+                "opponent_id": item.opponent_id,
+                "label": item.label,
+                "role": item.role,
+                "weight": item.weight,
+                "configuration_fingerprint": item.configuration_fingerprint,
+            }
+            for item in manifest.panel.opponents
+        ),
+        "start_distribution": "default_only",
+        "corpora": {
+            "tuning": {
+                "fingerprint": manifest.tuning_corpus.fingerprint,
+                "count": len(manifest.tuning_corpus.cases),
+                "selected_prefix": manifest.tuning_prefix.prefix_id,
+            },
+            "production_validation": {
+                "fingerprint": manifest.production_validation_corpus.fingerprint,
+                "count": len(manifest.production_validation_corpus.cases),
+                "selected_prefix": manifest.validation_prefix.prefix_id,
+            },
+        },
+        "fidelity": {
+            "observed_task_count": manifest.validation_prefix.length,
+            "production_task_count": len(manifest.production_validation_corpus.cases),
+            "observed_search_effort": manifest.efforts["validation"].max_iterations,
+            "production_search_effort": manifest.efforts["production"].max_iterations,
+        },
+        "utility_formula_version": "pair_mean_v1",
+        "interval_method": "hoeffding_pair_bound_v1",
+        "tie_rule_version": "paired_hoeffding_v1",
+    }
+
+
+def _finalist_validation_observations(
+    state: ReplayState, finalists: tuple[Candidate, ...]
+) -> list[Observation]:
+    resolved = [
         next(
             (
                 item
@@ -162,14 +200,32 @@ def build_report(run_dir: Path) -> JsonObject:
             ),
             None,
         )
-        for candidate in state.finalists
+        for candidate in finalists
     ]
-    if any(item is None for item in observations):
+    if any(item is None for item in resolved):
         raise ValueError("finalist lacks held-out validation observation")
-    values = [item for item in observations if item is not None]
-    comparisons, tied, unresolved = _comparisons(values)
+    return [item for item in resolved if item is not None]
+
+
+def _validation_pairs_by_candidate(state: ReplayState) -> dict[str, list[PairResult]]:
+    grouped: defaultdict[str, list[PairResult]] = defaultdict(list)
+    for pair in state.completed_pairs:
+        if pair.task.task_case.phase == "validation":
+            grouped[pair.task.candidate_id].append(pair)
+    return grouped
+
+
+def build_report(run_dir: Path) -> JsonObject:
+    manifest = read_manifest(run_dir / "manifest.json")
+    state = replay(manifest, read_events(run_dir / "evidence.jsonl"))
+    if state.terminal_status != "complete" or state.finalists is None or state.cohort is None:
+        raise ValueError("report requires completed evidence")
+    finalists = state.finalists
+    observations = _finalist_validation_observations(state, finalists)
+    validation = _validation_pairs_by_candidate(state)
+    comparisons, tied, unresolved = _comparisons(observations)
     ranked = sorted(
-        zip(state.finalists, values, strict=True),
+        zip(finalists, observations, strict=True),
         key=lambda item: (-item[1].estimate.mean, item[0].fingerprint),
     )
     entries = [
@@ -188,55 +244,14 @@ def build_report(run_dir: Path) -> JsonObject:
         manifest.efforts["validation"],
         manifest.efforts["production"],
     )
-    proposal_search = _proposal_search(manifest, state)
     return {
         "schema_version": 4,
         "status": "complete",
         "manifest_fingerprint": manifest.fingerprint,
         "validation_claim": {"claim": claim, "missing_production_axes": list(missing)},
-        "frozen": {
-            "objective_id": manifest.objective_id,
-            "objective_fingerprint": manifest.objective_fingerprint,
-            "epoch_id": manifest.epoch.epoch_id,
-            "engine_fingerprint": manifest.spec.engine_fingerprint,
-            "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
-            "game_config_fingerprint": manifest.game_config_fingerprint,
-            "panel_fingerprint": manifest.panel.fingerprint,
-            "panel": _array(
-                {
-                    "opponent_id": item.opponent_id,
-                    "label": item.label,
-                    "role": item.role,
-                    "weight": item.weight,
-                    "configuration_fingerprint": item.configuration_fingerprint,
-                }
-                for item in manifest.panel.opponents
-            ),
-            "start_distribution": "default_only",
-            "corpora": {
-                "tuning": {
-                    "fingerprint": manifest.tuning_corpus.fingerprint,
-                    "count": len(manifest.tuning_corpus.cases),
-                    "selected_prefix": manifest.tuning_prefix.prefix_id,
-                },
-                "production_validation": {
-                    "fingerprint": manifest.production_validation_corpus.fingerprint,
-                    "count": len(manifest.production_validation_corpus.cases),
-                    "selected_prefix": manifest.validation_prefix.prefix_id,
-                },
-            },
-            "fidelity": {
-                "observed_task_count": manifest.validation_prefix.length,
-                "production_task_count": len(manifest.production_validation_corpus.cases),
-                "observed_search_effort": manifest.efforts["validation"].max_iterations,
-                "production_search_effort": manifest.efforts["production"].max_iterations,
-            },
-            "utility_formula_version": "pair_mean_v1",
-            "interval_method": "hoeffding_pair_bound_v1",
-            "tie_rule_version": "paired_hoeffding_v1",
-        },
-        "selection": {"finalist_ids": [candidate.candidate_id for candidate in state.finalists]},
-        "proposal_search": proposal_search,
+        "frozen": _frozen(manifest),
+        "selection": {"finalist_ids": [candidate.candidate_id for candidate in finalists]},
+        "proposal_search": _proposal_search(manifest, state),
         "validation_order": _array(entries),
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
