@@ -107,6 +107,18 @@ def test_every_production_function_is_fully_annotated() -> None:
     assert not violations, "unannotated production definitions:\n" + "\n".join(violations)
 
 
+def test_continuation_advance_one_holds_no_scheduling_policy() -> None:
+    tree = ast.parse((SOURCE / "continuation.py").read_text(encoding="utf-8"))
+    advance = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "advance_one"
+    )
+    assert [type(statement) for statement in advance.body] == [ast.Match], (
+        "advance_one must be a single match on the allocation decision, with no scheduling branches"
+    )
+
+
 def test_no_production_function_exceeds_the_logical_line_gate() -> None:
     violations: list[str] = []
     for path in _modules():

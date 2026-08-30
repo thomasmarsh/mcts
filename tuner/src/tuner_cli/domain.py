@@ -269,3 +269,62 @@ class ReplayState:
     finalists: tuple[Candidate, ...] | None
     terminal_status: Literal["open", "configuration_failed", "complete"]
     next_pair_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolveProposal:
+    """A pending proposal awaits accept/reject disposition."""
+
+    proposal_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutePair:
+    """The next pair of the frozen task plan is ready to run."""
+
+    task: PairTask
+
+
+@dataclass(frozen=True, slots=True)
+class EmitObservation:
+    """A candidate has a complete pair prefix and no observation for this phase."""
+
+    candidate_id: str
+    phase: Phase
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteCohort:
+    """Every accepted candidate has a tuning observation; close the cohort."""
+
+
+@dataclass(frozen=True, slots=True)
+class SelectFinalists:
+    """The cohort is closed and finalists have not been chosen."""
+
+
+@dataclass(frozen=True, slots=True)
+class IntroduceProposal:
+    """Fewer than the target number of candidates are accepted and no other work is pending."""
+
+
+@dataclass(frozen=True, slots=True)
+class CompleteRun:
+    """Every finalist has a validation observation; write the run completion."""
+
+
+@dataclass(frozen=True, slots=True)
+class NoDecision:
+    """No fixed-cohort operation applies; the caller raises."""
+
+
+AllocationDecision = (
+    ResolveProposal
+    | ExecutePair
+    | EmitObservation
+    | CompleteCohort
+    | SelectFinalists
+    | IntroduceProposal
+    | CompleteRun
+    | NoDecision
+)

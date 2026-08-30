@@ -2,16 +2,35 @@
 
 from __future__ import annotations
 
+from .allocator import (
+    decide_allocation,
+    matching_pairs,
+    observation_candidate,
+    pair_candidates,
+    proposal_at,
+)
 from .artifacts import Manifest, production_claim
 from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
     accepted_candidates,
     create_proposal,
-    pending_proposal,
     proposal_disposition,
     proposal_payload,
 )
-from .domain import Candidate, ObservationContext, PairResult, PairTask, Phase, ReplayState
+from .domain import (
+    Candidate,
+    CompleteCohort,
+    CompleteRun,
+    EmitObservation,
+    ExecutePair,
+    IntroduceProposal,
+    NoDecision,
+    ObservationContext,
+    PairTask,
+    ReplayState,
+    ResolveProposal,
+    SelectFinalists,
+)
 from .event_payloads import (
     CohortCompletedPayload,
     FinalistsSelectedPayload,
@@ -22,7 +41,7 @@ from .event_payloads import (
     RunInterruptedPayload,
 )
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
-from .identity import canonical_json, pair_task
+from .identity import canonical_json
 from .observations import contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
@@ -44,9 +63,7 @@ def continue_run(
         state = fold_events(manifest, read_events(writer.path))
         if state.terminal_status != "open":
             return
-        if advance_one(manifest, writer, target, default, spec, model, timeout, state):
-            continue
-        raise RuntimeError("no fixed-cohort continuation operation is available")
+        advance_one(manifest, writer, target, default, spec, model, timeout, state)
 
 
 def advance_one(
@@ -58,47 +75,25 @@ def advance_one(
     model: ModelProposer,
     timeout: int,
     state: ReplayState,
-) -> bool:
-    if proposal := pending_proposal(state):
-        writer.append(proposal_disposition(target, manifest, state, proposal))
-        return True
-    if task := pending_pair(manifest, state):
-        execute_pair(manifest, writer, target, state, task, timeout)
-        return True
-    if emit_observation(manifest, writer, state):
-        return True
-    if complete_cohort(manifest, writer, state):
-        return True
-    if select_finalists(manifest, writer, state):
-        return True
-    if complete_run(manifest, writer, state):
-        return True
-    if len(accepted_candidates(state)) < manifest.cohort_size:
-        writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
-        return True
-    return False
-
-
-def pending_pair(manifest: Manifest, state: ReplayState) -> PairTask | None:
-    if state.next_pair_id is None:
-        return None
-    for candidate in _pair_candidates(state):
-        for case in manifest.prefix_cases(_pair_phase(state)):
-            effort = manifest.efforts[_pair_phase(state)]
-            task = pair_task(candidate, case, effort)
-            if task.pair_id == state.next_pair_id:
-                return task
-    raise ValueError("replay pending pair is not part of the frozen task plan")
-
-
-def _pair_candidates(state: ReplayState) -> tuple[Candidate, ...]:
-    if state.finalists is not None:
-        return state.finalists
-    return accepted_candidates(state)
-
-
-def _pair_phase(state: ReplayState) -> Phase:
-    return "validation" if state.finalists is not None else "tuning"
+) -> None:
+    match decide_allocation(manifest, state):
+        case ResolveProposal(proposal_index):
+            proposal = proposal_at(state, proposal_index)
+            writer.append(proposal_disposition(target, manifest, state, proposal))
+        case ExecutePair(task):
+            execute_pair(manifest, writer, target, state, task, timeout)
+        case EmitObservation():
+            emit_observation(manifest, writer, state)
+        case CompleteCohort():
+            complete_cohort(manifest, writer, state)
+        case SelectFinalists():
+            select_finalists(manifest, writer, state)
+        case CompleteRun():
+            complete_run(manifest, writer, state)
+        case IntroduceProposal():
+            writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
+        case NoDecision():
+            raise RuntimeError("no fixed-cohort continuation operation is available")
 
 
 def execute_pair(
@@ -110,7 +105,7 @@ def execute_pair(
     timeout: int,
 ) -> None:
     candidate = next(
-        item for item in _pair_candidates(state) if item.candidate_id == task.candidate_id
+        item for item in pair_candidates(state) if item.candidate_id == task.candidate_id
     )
     opponent = next(
         item for item in manifest.panel.opponents if item.opponent_id == task.task_case.opponent_id
@@ -171,14 +166,11 @@ def json_record(line: str) -> JsonObject | None:
     )
 
 
-def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
+def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> None:
     candidate, phase = observation_candidate(manifest, state)
     if candidate is None:
-        return False
+        return
     pairs = matching_pairs(state, candidate, phase)
-    prefix = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
-    if len(pairs) != prefix.length:
-        return False
     context = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
     value = contextual_observation(
         candidate,
@@ -187,29 +179,6 @@ def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     )
     opponent_count = len({pair.task.task_case.opponent_id for pair in pairs})
     writer.append(observation_payload(value, opponent_count))
-    return True
-
-
-def observation_candidate(manifest: Manifest, state: ReplayState) -> tuple[Candidate | None, Phase]:
-    if state.finalists is not None:
-        observed = {item.candidate_id for item in state.observations if item.phase == "validation"}
-        return next(
-            (item for item in state.finalists if item.candidate_id not in observed), None
-        ), "validation"
-    if len(accepted_candidates(state)) < manifest.bootstrap_candidates:
-        return None, "tuning"
-    observed = {item.candidate_id for item in state.observations if item.phase == "tuning"}
-    return next(
-        (item for item in accepted_candidates(state) if item.candidate_id not in observed), None
-    ), "tuning"
-
-
-def matching_pairs(state: ReplayState, candidate: Candidate, phase: Phase) -> list[PairResult]:
-    return [
-        pair
-        for pair in state.completed_pairs
-        if pair.task.candidate_id == candidate.candidate_id and pair.task.task_case.phase == phase
-    ]
 
 
 def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
