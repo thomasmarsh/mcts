@@ -55,6 +55,7 @@ def _check_game(binary: Path) -> None:
         ]
         completed = [event["payload"] for event in events if event["type"] == "pair_completed"]
         assert manifest["kind"] == expected_kind
+        assert manifest["schema_version"] == 2
         assert manifest["binary"]["sha256"]
         assert manifest["engine_fingerprint"]
         assert manifest["tuning_schema_fingerprint"]
@@ -69,13 +70,48 @@ def _check_game(binary: Path) -> None:
         assert len(accepted["candidate_ids"]) == 3
         assert len([pair for pair in completed if pair["phase"] == "tuning"]) == 3
         assert len([pair for pair in completed if pair["phase"] == "validation"]) == 2
-        assert all(len(pair["game_ids"]) == 2 for pair in completed)
+        assert all(len(pair["games"]) == 2 for pair in completed)
         assert not {case["seed"] for case in manifest["tuning_tasks"]["cases"]} & {
             case["seed"] for case in manifest["validation_tasks"]["cases"]
         }
         assert report["status"] == "complete"
         assert report["validation_claim"] == "mechanics_smoke"
         assert all(entry["pairs"] == 1 for entry in report["validation_order"])
+        original_report = (run_dir / "report.json").read_bytes()
+        (run_dir / "report.json").unlink()
+        rebuilt = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "tuner_cli",
+                "--game-binary",
+                str(binary),
+                "--run-dir",
+                str(run_dir),
+                "--resume",
+                "--seed",
+                "7",
+                "--cohort-size",
+                "3",
+                "--finalists",
+                "2",
+                "--tuning-pairs",
+                "1",
+                "--validation-pairs",
+                "1",
+                "--tuning-max-iterations",
+                "16",
+                "--validation-max-iterations",
+                "32",
+                "--production-max-iterations",
+                "10000",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert rebuilt.returncode == 0, rebuilt.stderr
+        assert (run_dir / "report.json").read_bytes() == original_report
 
 
 def main() -> None:

@@ -115,3 +115,17 @@ class ValidationError:
 class ValidationResult:
     valid: bool
     errors: tuple[ValidationError, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayState:
+    """Typed state reconstructed exclusively by folding evidence."""
+
+    proposals: tuple[Proposal, ...]
+    dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
+    cohort: tuple[Candidate, ...] | None
+    completed_pairs: tuple[PairResult, ...]
+    observations: tuple[Observation, ...]
+    finalists: tuple[Candidate, ...] | None
+    terminal_status: Literal["open", "configuration_failed", "complete"]
+    next_pair_id: str | None

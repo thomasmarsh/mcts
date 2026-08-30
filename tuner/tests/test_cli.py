@@ -16,3 +16,4 @@ def test_parser_requires_explicit_game_binary_and_run_directory() -> None:
     args = parser.parse_args(["--game-binary", "game", "--run-dir", "run"])
     assert str(args.game_binary) == "game"
     assert str(args.run_dir) == "run"
+    assert parser.parse_args(["--game-binary", "game", "--run-dir", "run", "--resume"]).resume

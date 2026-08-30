@@ -17,7 +17,7 @@ from .domain import (
     ValidationError,
     ValidationResult,
 )
-from .identity import JsonValue, canonical_json, stable_id
+from .identity import JsonValue, canonical_json, game_id
 
 
 class PairExecutionError(RuntimeError):
@@ -146,6 +146,10 @@ class GameBinaryTarget:
                 stderr=stderr,
                 stdout=stdout,
             ) from error
+        except KeyboardInterrupt:
+            process.kill()
+            process.communicate()
+            raise
         if process.returncode != 0:
             raise PairExecutionError(
                 "nonzero_exit",
@@ -269,7 +273,7 @@ def _decode_game(
     if trace is not None and (not isinstance(trace, int) or isinstance(trace, bool) or trace < 0):
         raise ValueError("trace_game_seq must be non-negative integer or null")
     return GameResult(
-        stable_id("game", {"pair_id": task.pair_id, "candidate_side": side}),
+        game_id(task, side),
         side,
         outcome,
         seed,

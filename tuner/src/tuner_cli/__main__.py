@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-max-iterations", type=int, default=10_000)
     parser.add_argument("--production-max-iterations", type=int, default=10_000)
     parser.add_argument("--pair-timeout-seconds", type=int, default=600)
+    parser.add_argument("--resume", action="store_true", help="continue a frozen version-2 run")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -39,6 +40,7 @@ def _options(args: argparse.Namespace) -> RunOptions:
         validation_max_iterations=args.validation_max_iterations,
         production_max_iterations=args.production_max_iterations,
         pair_timeout_seconds=args.pair_timeout_seconds,
+        resume=args.resume,
     )
 
 
@@ -47,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
     try:
         run_foreground(_options(args))
+    except KeyboardInterrupt:
+        return 130
     except (OSError, RuntimeError, ValueError) as error:
         logging.getLogger("tuner_cli").error("tuner failed: %s", error)
         return 1
