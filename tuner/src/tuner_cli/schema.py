@@ -175,7 +175,9 @@ def _parameter(raw: object) -> ParameterSpec:
         if not isinstance(item["default"], bool):
             raise ValueError(f"Boolean parameter {name} needs a Boolean default")
         return ParameterSpec(name, parameter_kind, None, (False, True), item["default"], None)
-    return ParameterSpec(name, parameter_kind, None, None, None, _scalar(item["value"], f"{name} value"))
+    return ParameterSpec(
+        name, parameter_kind, None, None, None, _scalar(item["value"], f"{name} value")
+    )
 
 
 def _condition(raw: object) -> ActivationCondition:

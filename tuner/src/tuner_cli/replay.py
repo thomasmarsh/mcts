@@ -6,7 +6,16 @@ from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from .artifacts import Manifest, production_claim
-from .codec import JsonObject, integer, literal, objects, optional_number, optional_string, string, strings
+from .codec import (
+    JsonObject,
+    integer,
+    literal,
+    objects,
+    optional_number,
+    optional_string,
+    string,
+    strings,
+)
 from .domain import (
     Candidate,
     Observation,
@@ -23,7 +32,6 @@ from .identity import candidate_from_canonical_config, pair_task
 from .observations import contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
 from .selection import select_finalists
-
 
 Disposition = Literal["accepted", "rejected"]
 Terminal = Literal["open", "configuration_failed", "complete"]
@@ -110,14 +118,19 @@ class _Replay:
 
 
 def _proposal(state: _Replay, payload: JsonObject) -> Proposal:
-    candidate = candidate_from_canonical_config(string(payload["canonical_config"], "canonical config"))
-    if (
-        candidate.candidate_id != string(payload["candidate_id"], "candidate id")
-        or candidate.fingerprint != string(payload["fingerprint"], "candidate fingerprint")
-    ):
+    candidate = candidate_from_canonical_config(
+        string(payload["canonical_config"], "canonical config")
+    )
+    if candidate.candidate_id != string(
+        payload["candidate_id"], "candidate id"
+    ) or candidate.fingerprint != string(payload["fingerprint"], "candidate fingerprint"):
         raise ValueError("proposal candidate identity is invalid")
     provenance = ProposalProvenance(
-        literal(payload["source"], ("schema_default", "bootstrap_random", "smac_model", "random_reserve"), "proposal source"),
+        literal(
+            payload["source"],
+            ("schema_default", "bootstrap_random", "smac_model", "random_reserve"),
+            "proposal source",
+        ),
         string(payload["proposer_version"], "proposer version"),
         integer(payload["source_attempt"], "source attempt", positive=True),
         optional_string(payload["origin"], "origin"),
@@ -135,7 +148,10 @@ def _proposal(state: _Replay, payload: JsonObject) -> Proposal:
         raise ValueError("proposal does not bind the visible observation frontier")
     return Proposal(
         integer(payload["proposal_index"], "proposal index"),
-        integer(payload["cohort_slot"], "cohort slot"), candidate, frontier, provenance
+        integer(payload["cohort_slot"], "cohort slot"),
+        candidate,
+        frontier,
+        provenance,
     )
 
 
@@ -181,10 +197,7 @@ def _apply_proposal_created(state: _Replay, payload: JsonObject) -> None:
 def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
     payload = event.payload
     index = integer(payload["proposal_index"], "proposal index")
-    if (
-        index not in range(len(state.proposals))
-        or index in state.dispositions
-    ):
+    if index not in range(len(state.proposals)) or index in state.dispositions:
         raise ValueError("invalid or repeated proposal disposition")
     proposal = state.proposals[index]
     expected = {
@@ -198,11 +211,16 @@ def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
     if any(payload[key] != value for key, value in expected.items()):
         raise ValueError("proposal disposition does not reference its proposal")
     if event.type == "proposal_accepted":
-        if len(strings(payload["panel_response_fingerprints"], "panel response fingerprints")) != len(state.manifest.panel.opponents):
+        if len(
+            strings(payload["panel_response_fingerprints"], "panel response fingerprints")
+        ) != len(state.manifest.panel.opponents):
             raise ValueError("proposal acceptance does not bind the panel")
     elif string(payload["reason"], "rejection reason") == "semantic_validation":
         ordered = [item.opponent_id for item in state.manifest.panel.opponents]
-        ids = [string(item["opponent_id"], "rejected opponent id") for item in objects(payload["errors"], "rejection errors")]
+        ids = [
+            string(item["opponent_id"], "rejected opponent id")
+            for item in objects(payload["errors"], "rejection errors")
+        ]
         if ids != sorted(ids, key=ordered.index):
             raise ValueError("proposal rejection does not preserve panel order")
     state.dispositions[index] = "accepted" if event.type == "proposal_accepted" else "rejected"
@@ -225,7 +243,12 @@ def _apply_observation(state: _Replay, payload: JsonObject) -> None:
     if candidates is None:
         raise ValueError("observation precedes finalist selection")
     candidate = next(
-        (item for item in candidates if item.candidate_id == string(payload["candidate_id"], "candidate id")), None
+        (
+            item
+            for item in candidates
+            if item.candidate_id == string(payload["candidate_id"], "candidate id")
+        ),
+        None,
     )
     if candidate is None or any(
         item.phase == phase and item.candidate_id == candidate.candidate_id
@@ -342,7 +365,10 @@ def _operational_pair(state: _Replay, event: EvidenceEvent) -> None:
     }
     if any(payload[key] != value for key, value in expected.items()):
         raise ValueError("operational pair record does not match pending pair")
-    if event.type == "pair_started" and integer(payload["task_seed"], "task seed") != task.task_case.seed:
+    if (
+        event.type == "pair_started"
+        and integer(payload["task_seed"], "task seed") != task.task_case.seed
+    ):
         raise ValueError("pair start does not match pending task seed")
 
 

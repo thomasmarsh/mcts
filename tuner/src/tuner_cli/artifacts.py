@@ -41,7 +41,9 @@ from .tasks import build_corpus, selected_prefix, validate_cycle_endpoint, verif
 
 SCHEMA_VERSION = 4
 _OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
-_OPPONENT_SOURCES: tuple[Literal["schema_default", "inline"], Literal["schema_default", "inline"]] = (
+_OPPONENT_SOURCES: tuple[
+    Literal["schema_default", "inline"], Literal["schema_default", "inline"]
+] = (
     "schema_default",
     "inline",
 )
@@ -493,9 +495,7 @@ def _decode_panel(value: object) -> OpponentPanel:
         source_value = string(entry["source"], "panel source")
         if role_value not in _OPPONENT_ROLES or source_value not in _OPPONENT_SOURCES:
             raise ValueError("invalid panel opponent role or source")
-        role: OpponentRole = (
-            "default" if role_value == "default" else "historical_reference"
-        )
+        role: OpponentRole = "default" if role_value == "default" else "historical_reference"
         source: Literal["schema_default", "inline"] = (
             "schema_default" if source_value == "schema_default" else "inline"
         )

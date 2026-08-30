@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from pathlib import Path
 from collections.abc import Iterable
+from pathlib import Path
 
 from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
@@ -202,16 +202,16 @@ def build_report(run_dir: Path) -> JsonObject:
             "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
             "game_config_fingerprint": manifest.game_config_fingerprint,
             "panel_fingerprint": manifest.panel.fingerprint,
-        "panel": _array(
-            {
-                "opponent_id": item.opponent_id,
-                "label": item.label,
-                "role": item.role,
-                "weight": item.weight,
-                "configuration_fingerprint": item.configuration_fingerprint,
-            }
-            for item in manifest.panel.opponents
-        ),
+            "panel": _array(
+                {
+                    "opponent_id": item.opponent_id,
+                    "label": item.label,
+                    "role": item.role,
+                    "weight": item.weight,
+                    "configuration_fingerprint": item.configuration_fingerprint,
+                }
+                for item in manifest.panel.opponents
+            ),
             "start_distribution": "default_only",
             "corpora": {
                 "tuning": {

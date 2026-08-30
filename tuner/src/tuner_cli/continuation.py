@@ -166,7 +166,9 @@ def json_record(line: str) -> JsonObject | None:
         value = strict_json(line, "partial game output")
     except ValueError:
         return None
-    return value if is_json_object(value) and value.get("type") == "configured_match_result" else None
+    return (
+        value if is_json_object(value) and value.get("type") == "configured_match_result" else None
+    )
 
 
 def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:

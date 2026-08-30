@@ -1,7 +1,15 @@
 """ConfigSpace bridge used only for reproducible default/random proposals."""
 
+# ConfigSpace's own stubs annotate the `meta` kwarg on Categorical/Float/Integer/Constant
+# and the `add()` methods as bare `dict`/`Hyperparameter[...]`, which pyright's strict mode
+# widens to Unknown; that Unknown then propagates through every Hyperparameter-returning
+# call in this file. This is a library stub gap, not a real type-safety issue here, so it's
+# suppressed only in this bridge module rather than loosening the workspace's strict mode.
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
+
 from __future__ import annotations
 
+import numpy as np
 from ConfigSpace import (
     Categorical,
     Configuration,
@@ -24,17 +32,17 @@ def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
             parameter = Constant(spec.name, spec.constant_value)
         elif spec.kind == "float":
             assert spec.bounds is not None
-            parameter = Float(
-                spec.name,
-                spec.bounds,
-                default=spec.default if spec.default is not None else spec.bounds[0],
-            )
+            default = spec.default if spec.default is not None else spec.bounds[0]
+            assert isinstance(default, (int, float))
+            parameter = Float(spec.name, spec.bounds, default=float(default))
         elif spec.kind == "int":
             assert spec.bounds is not None
+            default = spec.default if spec.default is not None else spec.bounds[0]
+            assert isinstance(default, (int, float))
             parameter = Integer(
                 spec.name,
                 (int(spec.bounds[0]), int(spec.bounds[1])),
-                default=int(spec.default if spec.default is not None else spec.bounds[0]),
+                default=int(default),
             )
         else:
             assert spec.choices is not None
@@ -53,9 +61,14 @@ def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
     return space
 
 
-def active_values(configuration: object) -> dict[str, object]:
+def _to_python(value: object) -> object:
+    """ConfigSpace stores hyperparameter values as numpy scalars internally."""
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def active_values(configuration: Configuration) -> dict[str, object]:
     values = dict(configuration)
-    return {name: value for name, value in values.items() if value is not None}
+    return {name: _to_python(value) for name, value in values.items() if value is not None}
 
 
 def default_values(space: ConfigurationSpace) -> dict[str, object]:

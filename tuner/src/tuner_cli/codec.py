@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from typing import TypeVar
-from typing_extensions import TypeGuard
+from typing import TypeGuard, TypeVar
 
 JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]

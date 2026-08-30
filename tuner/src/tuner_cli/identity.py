@@ -7,7 +7,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing_extensions import TypeGuard
+from typing import TypeGuard
 
 from .codec import JsonObject, JsonValue
 from .domain import (

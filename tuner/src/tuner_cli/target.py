@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, Protocol
 
+from .codec import JsonObject, JsonValue, is_json_object, literal, strict_json, string
 from .domain import (
     Candidate,
     GameResult,
@@ -17,7 +18,6 @@ from .domain import (
     ValidationError,
     ValidationResult,
 )
-from .codec import JsonObject, JsonValue, is_json_object, literal, strict_json, string
 from .identity import canonical_json, game_id
 
 
