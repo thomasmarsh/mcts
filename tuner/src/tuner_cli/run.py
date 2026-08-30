@@ -194,7 +194,7 @@ def assert_compatible(
     options: RunOptions, manifest: Manifest, spec: GameSpec, objective: ResolvedObjective
 ) -> None:
     if (
-        manifest_for(options, Path(str(manifest.raw["run_id"])), spec, objective).fingerprint
+        manifest_for(options, Path(manifest.run_id), spec, objective).fingerprint
         != manifest.fingerprint
     ):
         raise ValueError("resume scientific input differs from manifest")

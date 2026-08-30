@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .domain import Estimate, Observation, ObservationContext
+from .domain import Candidate, Estimate, Observation, ObservationContext, PairResult
 from .identity import observation_id
-from .statistics import marginal_interval, paired_difference_values
+from .statistics import marginal_interval, pair_utility, paired_difference_values
 
 
 def observation(
@@ -27,6 +27,17 @@ def observation(
         utilities,
         estimate,
     )
+
+
+def contextual_observation(
+    candidate: Candidate, context: ObservationContext, pairs: list[PairResult]
+) -> Observation:
+    """Build an observation from a complete, ordered common task prefix."""
+    by_task = {pair.task.task_case.task_id: pair for pair in pairs}
+    if set(by_task) != set(context.task_prefix.task_ids):
+        raise ValueError("observation needs a complete common task prefix")
+    utilities = tuple(pair_utility(by_task[task_id]) for task_id in context.task_prefix.task_ids)
+    return observation(candidate.candidate_id, context, utilities)
 
 
 def comparable(left: Observation, right: Observation) -> None:

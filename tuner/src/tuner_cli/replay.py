@@ -16,25 +16,14 @@ from .domain import (
 )
 from .evidence import EvidenceEvent, decode_pair_payload
 from .identity import candidate_from_canonical_config, pair_task
-from .observations import comparable, observation
+from .observations import contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
-from .statistics import pair_utility
+from .selection import select_finalists
 
 
 def _context(manifest: Manifest, phase: str) -> ObservationContext:
     prefix = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
     return ObservationContext(manifest.epoch.epoch_id, phase, prefix, manifest.efforts[phase])
-
-
-def _observation(
-    candidate: Candidate, phase: str, manifest: Manifest, pairs: list[PairResult]
-) -> Observation:
-    cases = manifest.prefix_cases(phase)
-    by_task = {pair.task.task_case.task_id: pair for pair in pairs}
-    if set(by_task) != {case.task_id for case in cases}:
-        raise ValueError("observation needs a complete common task prefix")
-    utilities = tuple(pair_utility(by_task[case.task_id]) for case in cases)
-    return observation(candidate.candidate_id, _context(manifest, phase), utilities)
 
 
 def observation_payload(value: Observation, opponent_count: int) -> dict[str, object]:
@@ -57,23 +46,6 @@ def observation_payload(value: Observation, opponent_count: int) -> dict[str, ob
             "opponents": opponent_count,
         },
     }
-
-
-def _selection(
-    cohort: tuple[Candidate, ...], values: tuple[Observation, ...], manifest: Manifest
-) -> tuple[Candidate, ...]:
-    if len(values) != len(cohort) or {item.candidate_id for item in values} != {
-        item.candidate_id for item in cohort
-    }:
-        raise ValueError("finalist selection needs all tuning observations")
-    for value in values[1:]:
-        comparable(values[0], value)
-    means = {item.candidate_id: item.estimate.mean for item in values}
-    return tuple(
-        sorted(
-            cohort, key=lambda candidate: (-means[candidate.candidate_id], candidate.fingerprint)
-        )[: manifest.finalists]
-    )
 
 
 @dataclass(slots=True)
@@ -262,7 +234,7 @@ def _apply_observation(state: _Replay, payload: dict[str, object]) -> None:
         for item in state.completed
         if item.task.candidate_id == candidate.candidate_id and item.task.task_case.phase == phase
     ]
-    value = _observation(candidate, phase, state.manifest, pairs)
+    value = contextual_observation(candidate, _context(state.manifest, phase), pairs)
     if payload != observation_payload(
         value, len({pair.task.task_case.opponent_id for pair in pairs})
     ):
@@ -294,7 +266,7 @@ def _apply_finalists(state: _Replay, payload: dict[str, object]) -> None:
     if state.cohort is None or state.finalists is not None:
         raise ValueError("finalist selection is premature")
     tuning = state.tuning_observations()
-    finalists = _selection(state.cohort, tuning, state.manifest)
+    finalists = select_finalists(state.cohort, tuning, state.manifest.finalists)
     context = _context(state.manifest, "tuning")
     expected = {
         "finalist_ids": [item.candidate_id for item in finalists],

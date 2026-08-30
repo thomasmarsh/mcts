@@ -9,7 +9,11 @@ dependencies = ["ConfigSpace>=1.0.0,<2", "scikit-learn==1.6.1", "smac==2.4.0"]
 tuner = "tuner_cli.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0.0", "ruff>=0.15.0"]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=8.0.0",
+    "ruff>=0.15.0",
+]
 
 [tool.pytest.ini_options]
 # e2e/ tests run already-built game binaries and are excluded from the fast suite.

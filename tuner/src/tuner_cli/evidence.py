@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from .artifacts import SCHEMA_VERSION, strict_json
+from .artifacts import SCHEMA_VERSION
+from .codec import JsonObject, JsonValue, integer, object_fields, strict_json, string
 from .domain import GameResult, PairResult, PairTask
 from .identity import canonical_json, game_id
 from .statistics import pair_utility
@@ -45,9 +46,9 @@ SCIENTIFIC = {
 class EvidenceEvent:
     sequence: int
     type: EventType
-    payload: dict[str, object]
+    payload: JsonObject
 
-    def encoded(self) -> dict[str, object]:
+    def encoded(self) -> JsonObject:
         return {
             "schema_version": SCHEMA_VERSION,
             "sequence": self.sequence,
@@ -56,7 +57,7 @@ class EvidenceEvent:
         }
 
 
-def atomic_json(path: Path, value: object, *, create_once: bool = False) -> None:
+def atomic_json(path: Path, value: JsonValue, *, create_once: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = (canonical_json(value) + "\n").encode()
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -78,32 +79,26 @@ def atomic_json(path: Path, value: object, *, create_once: bool = False) -> None
         raise
 
 
-def write_manifest(path: Path, manifest: object) -> dict[str, object]:
-    if not isinstance(manifest, dict) or "fingerprint" not in manifest:
+def write_manifest(path: Path, manifest: JsonObject) -> JsonObject:
+    if "fingerprint" not in manifest:
         raise ValueError("manifest must be decoded and fingerprinted before publishing")
     atomic_json(path, manifest, create_once=True)
     return dict(manifest)
 
 
-def _object(value: object, fields: set[str], label: str) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ValueError(f"{label} has invalid fields")
-    return value
+def _object(value: object, fields: set[str], label: str) -> JsonObject:
+    return object_fields(value, fields, label)
 
 
 def _int(value: object, label: str, *, positive: bool = False) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or (positive and value <= 0):
-        raise ValueError(f"{label} must be{' positive' if positive else ' an'} integer")
-    return value
+    return integer(value, label, positive=positive)
 
 
 def _string(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{label} must be a string")
-    return value
+    return string(value, label)
 
 
-def _candidate_payload(value: object, *, disposition: str = "created") -> dict[str, object]:
+def _candidate_payload(value: object, *, disposition: str = "created") -> JsonObject:
     fields = {
         "proposal_index",
         "cohort_slot",
@@ -154,7 +149,7 @@ def _candidate_payload(value: object, *, disposition: str = "created") -> dict[s
     return item
 
 
-def _pair_identity(value: object, *, seed: bool = False) -> dict[str, object]:
+def _pair_identity(value: object, *, seed: bool = False) -> JsonObject:
     fields = {"phase", "candidate_id", "task_id", "pair_id", "opponent_id", "budget"}
     if seed:
         fields.add("task_seed")
@@ -169,7 +164,7 @@ def _pair_identity(value: object, *, seed: bool = False) -> dict[str, object]:
     return item
 
 
-def game_payload(game: GameResult) -> dict[str, object]:
+def game_payload(game: GameResult) -> JsonObject:
     return {
         "game_id": game.game_id,
         "candidate_side": game.candidate_side,
@@ -194,7 +189,7 @@ def game_payload(game: GameResult) -> dict[str, object]:
     }
 
 
-def pair_payload(result: PairResult) -> dict[str, object]:
+def pair_payload(result: PairResult) -> JsonObject:
     task = result.task
     return {
         "phase": task.task_case.phase,
@@ -284,7 +279,7 @@ def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
     return decoded
 
 
-def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
+def _validate_payload(event_type: EventType, payload: object) -> JsonObject:
     if event_type == "proposal_created":
         return _candidate_payload(payload)
     if event_type == "proposal_accepted":

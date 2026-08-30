@@ -12,12 +12,14 @@ from .cohort import (
     proposal_disposition,
     proposal_payload,
 )
-from .domain import Candidate, PairTask, ReplayState
+from .domain import Candidate, ObservationContext, PairTask, ReplayState
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
 from .identity import canonical_json, pair_task
+from .observations import contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
-from .replay import _observation, _selection, fold_events, observation_payload
+from .replay import fold_events, observation_payload
 from .schema import GameSpec
+from .selection import select_finalists as choose_finalists
 from .target import PairExecutionError, Target
 
 
@@ -174,7 +176,12 @@ def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     prefix = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
     if len(pairs) != prefix.length:
         return False
-    value = _observation(candidate, phase, manifest, pairs)
+    context = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
+    value = contextual_observation(
+        candidate,
+        ObservationContext(manifest.epoch.epoch_id, phase, context, manifest.efforts[phase]),
+        pairs,
+    )
     opponent_count = len({pair.task.task_case.opponent_id for pair in pairs})
     writer.append("observation_completed", observation_payload(value, opponent_count))
     return True
@@ -227,7 +234,7 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     if state.cohort is None or state.finalists is not None:
         return False
     tuning = tuple(item for item in state.observations if item.phase == "tuning")
-    finalists = _selection(state.cohort, tuning, manifest)
+    finalists = choose_finalists(state.cohort, tuning, manifest.finalists)
     context = tuning[0].context
     writer.append(
         "finalists_selected",

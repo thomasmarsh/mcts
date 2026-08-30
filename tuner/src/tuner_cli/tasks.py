@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from .domain import OpponentPanel, TaskCorpus, TaskPrefix
+from .domain import OpponentPanel, Phase, TaskCorpus, TaskPrefix
 from .identity import task_case, task_corpus, task_prefix
 
 
@@ -35,7 +35,7 @@ def validate_cycle_endpoint(panel: OpponentPanel, count: int, label: str) -> Non
 
 
 def build_corpus(
-    phase: str, count: int, task_seed: int, panel: OpponentPanel, game_config_fingerprint: str
+    phase: Phase, count: int, task_seed: int, panel: OpponentPanel, game_config_fingerprint: str
 ) -> TaskCorpus:
     schedule = weighted_schedule(panel, count)
     cases = tuple(

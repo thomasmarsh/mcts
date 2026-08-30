@@ -180,7 +180,7 @@ def build_report(run_dir: Path) -> dict[str, object]:
             "epoch_id": manifest.epoch.epoch_id,
             "engine_fingerprint": manifest.spec.engine_fingerprint,
             "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
-            "game_config_fingerprint": manifest.raw["game_config_fingerprint"],
+            "game_config_fingerprint": manifest.game_config_fingerprint,
             "panel_fingerprint": manifest.panel.fingerprint,
             "panel": [
                 {
@@ -211,9 +211,9 @@ def build_report(run_dir: Path) -> dict[str, object]:
                 "observed_search_effort": manifest.efforts["validation"].max_iterations,
                 "production_search_effort": manifest.efforts["production"].max_iterations,
             },
-            "utility_formula_version": manifest.raw["utility_formula_version"],
-            "interval_method": manifest.raw["interval_method"],
-            "tie_rule_version": manifest.raw["tie_rule_version"],
+            "utility_formula_version": "pair_mean_v1",
+            "interval_method": "hoeffding_pair_bound_v1",
+            "tie_rule_version": "paired_hoeffding_v1",
         },
         "selection": {"finalist_ids": [candidate.candidate_id for candidate in state.finalists]},
         "proposal_search": proposal_search,

@@ -7,8 +7,8 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TypeAlias, cast
 
+from .codec import JsonObject, JsonValue
 from .domain import (
     Candidate,
     Estimate,
@@ -25,9 +25,6 @@ from .domain import (
     TaskCorpus,
     TaskPrefix,
 )
-
-JsonScalar: TypeAlias = None | bool | int | float | str
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 
 def _normalize(value: object) -> JsonValue:
@@ -104,7 +101,7 @@ def candidate_from_canonical_config(canonical: str) -> Candidate:
     return candidate_from_config(parsed)
 
 
-def panel_payload(opponents: tuple[Opponent, ...]) -> dict[str, object]:
+def panel_payload(opponents: tuple[Opponent, ...]) -> JsonObject:
     return {
         "version": "opponent-panel-v1",
         "opponents": [
@@ -131,7 +128,7 @@ def opponent_panel(opponents: tuple[Opponent, ...]) -> OpponentPanel:
 
 
 def task_case(
-    phase: str,
+    phase: Phase,
     ordinal: int,
     root_seed: int,
     opponent: Opponent,
@@ -161,7 +158,7 @@ def task_case(
     }
     return TaskCase(
         stable_id("task", payload),
-        cast(Phase, phase),
+        phase,
         ordinal,
         seed,
         stratum_id,
@@ -172,7 +169,7 @@ def task_case(
     )
 
 
-def task_corpus(phase: str, cases: tuple[TaskCase, ...], panel: OpponentPanel) -> TaskCorpus:
+def task_corpus(phase: Phase, cases: tuple[TaskCase, ...], panel: OpponentPanel) -> TaskCorpus:
     payload = {
         "phase": phase,
         "task_policy_version": "weighted-fair-prefix-v1",
@@ -180,9 +177,7 @@ def task_corpus(phase: str, cases: tuple[TaskCase, ...], panel: OpponentPanel) -
         "task_ids": [case.task_id for case in cases],
     }
     digest = fingerprint(payload)
-    return TaskCorpus(
-        stable_id("corpus", payload), digest, cast(Phase, phase), "weighted-fair-prefix-v1", cases
-    )
+    return TaskCorpus(stable_id("corpus", payload), digest, phase, "weighted-fair-prefix-v1", cases)
 
 
 def task_prefix(corpus: TaskCorpus, length: int) -> TaskPrefix:

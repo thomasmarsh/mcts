@@ -123,7 +123,7 @@ def proposer_specification(
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
-    raw: dict[str, object]
+    json_value: dict[str, object]
     fingerprint: str
     spec: GameSpec
     objective_id: str
@@ -135,6 +135,9 @@ class Manifest:
     validation_prefix: TaskPrefix
     epoch: ObjectiveEpoch
     proposer_spec: ProposerSpecification
+    run_id: str
+    game_config_fingerprint: str
+    effort_values: tuple[SearchEffort, SearchEffort, SearchEffort]
 
     @property
     def seed(self) -> int:
@@ -170,11 +173,8 @@ class Manifest:
 
     @property
     def efforts(self) -> dict[str, SearchEffort]:
-        raw = self.raw["fidelity"]
-        return {
-            name: SearchEffort(raw[name]["search_effort"]["max_iterations"])
-            for name in ("tuning", "validation", "production")
-        }
+        tuning, validation, production = self.effort_values
+        return {"tuning": tuning, "validation": validation, "production": production}
 
     @property
     def opponent(self) -> Opponent:
@@ -716,6 +716,9 @@ def decode_manifest_object(value: object) -> Manifest:
         validation_prefix,
         epoch,
         proposer,
+        string(raw["run_id"], "run id", nonempty=True),
+        game_config_fingerprint,
+        (efforts["tuning"], efforts["validation"], efforts["production"]),
     )
 
 
@@ -724,4 +727,5 @@ def read_manifest(path: Path) -> Manifest:
 
 
 def manifest_json(manifest: Manifest) -> dict[str, object]:
-    return dict(manifest.raw)
+    """Return the frozen transport representation at the publishing boundary."""
+    return dict(manifest.json_value)

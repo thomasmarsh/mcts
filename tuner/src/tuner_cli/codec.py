@@ -1,48 +1,76 @@
-"""Strict JSON decoding primitives shared by artifacts and objectives."""
+"""Strict JSON algebra and narrowing primitives at the transport boundary."""
 
 from __future__ import annotations
 
 import json
 import math
+from typing import TypeVar
+
+JsonScalar = None | bool | int | float | str
+JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject = dict[str, JsonValue]
+_Literal = TypeVar("_Literal", bound=str)
 
 
 def _constant(value: str) -> object:
     raise ValueError(f"non-standard JSON constant {value!r}")
 
 
-def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result = dict(pairs)
+def _unique(pairs: list[tuple[str, JsonValue]]) -> JsonObject:
+    result: JsonObject = dict(pairs)
     if len(result) != len(pairs):
         raise ValueError("JSON object has duplicate keys")
     return result
 
 
-def strict_json(text: str, label: str = "JSON") -> object:
+def strict_json(text: str, label: str = "JSON") -> JsonValue:
     try:
-        value = json.loads(text, parse_constant=_constant, object_pairs_hook=_unique)
+        value: JsonValue = json.loads(text, parse_constant=_constant, object_pairs_hook=_unique)
     except (json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"invalid strict {label}: {error}") from error
-    _finite(value, label)
+    finite(value, label)
     return value
 
 
-def _finite(value: object, label: str) -> None:
+def finite(value: JsonValue, label: str) -> None:
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError(f"{label} contains a non-finite number")
     if isinstance(value, dict):
         for child in value.values():
-            _finite(child, label)
+            finite(child, label)
     elif isinstance(value, list):
         for child in value:
-            _finite(child, label)
+            finite(child, label)
 
 
-def object_fields(value: object, fields: set[str], label: str) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != fields:
-        actual = set(value) if isinstance(value, dict) else set()
+def is_json_value(value: object) -> bool:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return not isinstance(value, float) or math.isfinite(value)
+    if isinstance(value, list):
+        return all(is_json_value(item) for item in value)
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and is_json_value(item) for key, item in value.items()
+    )
+
+
+def json_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be a JSON object")
+    result: JsonObject = {}
+    for key, child in value.items():
+        if not is_json_value(child):
+            raise ValueError(f"{label} contains a non-JSON value")
+        result[key] = child
+    return result
+
+
+def object_fields(value: object, fields: set[str], label: str) -> JsonObject:
+    item = json_object(value, label)
+    if set(item) != fields:
+        actual = set(item)
         missing, unknown = sorted(fields - actual), sorted(actual - fields)
         raise ValueError(f"{label} has invalid fields (missing={missing}, unknown={unknown})")
-    return value
+    return item
 
 
 def string(value: object, label: str, *, nonempty: bool = False) -> str:
@@ -51,7 +79,27 @@ def string(value: object, label: str, *, nonempty: bool = False) -> str:
     return value
 
 
+def literal(value: object, values: tuple[_Literal, ...], label: str) -> _Literal:
+    item = string(value, label)
+    for allowed in values:
+        if item == allowed:
+            return allowed
+    raise ValueError(f"{label} must be one of {values!r}")
+
+
 def integer(value: object, label: str, *, positive: bool = False) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or (positive and value <= 0):
         raise ValueError(f"{label} must be {'a positive integer' if positive else 'an integer'}")
     return value
+
+
+def number(value: object, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        raise ValueError(f"{label} must be a finite number")
+    return float(value)
+
+
+def strings(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{label} must be an array of strings")
+    return tuple(value)
