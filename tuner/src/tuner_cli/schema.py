@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .identity import JsonValue, canonical_json, fingerprint
+from .codec import JsonObject, JsonValue, json_object, object_fields
+from .identity import canonical_json, fingerprint
 
 ParameterKind = Literal["float", "int", "categorical", "bool", "constant"]
 _SCALAR_TYPES = (type(None), bool, int, float, str)
@@ -63,14 +64,8 @@ class GameSpec:
     raw_description: str
 
 
-def _object(value: object, label: str, fields: set[str]) -> dict[str, object]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise ValueError(f"{label} must be an object with string keys")
-    if set(value) != fields:
-        missing = sorted(fields - set(value))
-        unknown = sorted(set(value) - fields)
-        raise ValueError(f"{label} has invalid fields (missing={missing}, unknown={unknown})")
-    return value
+def _object(value: object, label: str, fields: set[str]) -> JsonObject:
+    return object_fields(value, fields, label)
 
 
 def _string(value: object, label: str, *, nonempty: bool = False) -> str:
@@ -119,9 +114,8 @@ def _unique_scalars(values: list[JsonValue], label: str) -> None:
 
 
 def _parameter(raw: object) -> ParameterSpec:
-    if not isinstance(raw, dict):
-        raise ValueError("parameter must be an object")
-    kind = _string(raw.get("type"), "parameter type")
+    preliminary = json_object(raw, "parameter")
+    kind = _string(preliminary.get("type"), "parameter type")
     expected = {
         "float": {"name", "type", "bounds", "default"},
         "int": {"name", "type", "bounds", "default"},
@@ -131,9 +125,19 @@ def _parameter(raw: object) -> ParameterSpec:
     }
     if kind not in expected:
         raise ValueError(f"unknown parameter type {kind!r}")
-    item = _object(raw, "parameter", expected[kind])
-    name = _string(item["name"], "parameter name", nonempty=True)
     if kind == "float":
+        parameter_kind: ParameterKind = "float"
+    elif kind == "int":
+        parameter_kind = "int"
+    elif kind == "categorical":
+        parameter_kind = "categorical"
+    elif kind == "bool":
+        parameter_kind = "bool"
+    else:
+        parameter_kind = "constant"
+    item = _object(preliminary, "parameter", expected[parameter_kind])
+    name = _string(item["name"], "parameter name", nonempty=True)
+    if parameter_kind == "float":
         bounds = item["bounds"]
         if not isinstance(bounds, list) or len(bounds) != 2:
             raise ValueError(f"numeric parameter {name} needs two bounds")
@@ -144,8 +148,8 @@ def _parameter(raw: object) -> ParameterSpec:
         default = _number(item["default"], f"{name} default")
         if lo > hi or not lo <= default <= hi:
             raise ValueError(f"invalid bounds/default for {name}")
-        return ParameterSpec(name, kind, (lo, hi), None, default, None)
-    if kind == "int":
+        return ParameterSpec(name, parameter_kind, (lo, hi), None, default, None)
+    if parameter_kind == "int":
         bounds = item["bounds"]
         if not isinstance(bounds, list) or len(bounds) != 2:
             raise ValueError(f"numeric parameter {name} needs two bounds")
@@ -156,8 +160,8 @@ def _parameter(raw: object) -> ParameterSpec:
         default = _integer(item["default"], f"{name} default")
         if lo > hi or not lo <= default <= hi:
             raise ValueError(f"invalid bounds/default for {name}")
-        return ParameterSpec(name, kind, (lo, hi), None, default, None)
-    if kind == "categorical":
+        return ParameterSpec(name, parameter_kind, (lo, hi), None, default, None)
+    if parameter_kind == "categorical":
         raw_choices = item["choices"]
         if not isinstance(raw_choices, list) or not raw_choices:
             raise ValueError(f"categorical parameter {name} needs non-empty choices")
@@ -166,12 +170,12 @@ def _parameter(raw: object) -> ParameterSpec:
         default = _scalar(item["default"], f"{name} default")
         if not any(_same_scalar(default, choice) for choice in choices):
             raise ValueError(f"invalid default for {name}")
-        return ParameterSpec(name, kind, None, tuple(choices), default, None)
-    if kind == "bool":
+        return ParameterSpec(name, parameter_kind, None, tuple(choices), default, None)
+    if parameter_kind == "bool":
         if not isinstance(item["default"], bool):
             raise ValueError(f"Boolean parameter {name} needs a Boolean default")
-        return ParameterSpec(name, kind, None, (False, True), item["default"], None)
-    return ParameterSpec(name, kind, None, None, None, _scalar(item["value"], f"{name} value"))
+        return ParameterSpec(name, parameter_kind, None, (False, True), item["default"], None)
+    return ParameterSpec(name, parameter_kind, None, None, None, _scalar(item["value"], f"{name} value"))
 
 
 def _condition(raw: object) -> ActivationCondition:
@@ -180,7 +184,7 @@ def _condition(raw: object) -> ActivationCondition:
     if not isinstance(predicate, dict) or len(predicate) != 1:
         raise ValueError("condition if must have exactly one parent")
     parent, raw_values = next(iter(predicate.items()))
-    if not isinstance(parent, str) or not parent:
+    if not parent:
         raise ValueError("condition parent must be a non-empty string")
     if isinstance(raw_values, list):
         if not raw_values:

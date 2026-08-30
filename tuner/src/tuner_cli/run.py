@@ -84,7 +84,7 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         options.production_max_iterations,
         options.pair_timeout_seconds,
     )
-    if any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in numeric):
+    if any(isinstance(item, bool) or item <= 0 for item in numeric):
         raise ValueError("all numeric arguments must be positive integers")
     post_bootstrap = options.cohort_size - options.bootstrap_candidates
     if options.bootstrap_candidates < 2 or post_bootstrap < 2:

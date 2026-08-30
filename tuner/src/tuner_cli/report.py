@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+from collections.abc import Iterable
 
-from .artifacts import production_claim, read_manifest
+from .artifacts import Manifest, production_claim, read_manifest
+from .codec import JsonObject, JsonValue
+from .domain import Candidate, Observation, ObservationContext, PairResult, ReplayState
 from .evidence import atomic_json, read_events
 from .observations import paired_difference
 from .proposer import tuning_frontier
@@ -13,7 +16,7 @@ from .replay import replay
 from .statistics import marginal_interval, pair_utility, tie_relation
 
 
-def _context(value) -> dict[str, object]:
+def _context(value: ObservationContext) -> JsonObject:
     return {
         "objective_epoch_id": value.objective_epoch_id,
         "phase": value.phase,
@@ -24,7 +27,11 @@ def _context(value) -> dict[str, object]:
     }
 
 
-def _counts(pairs) -> dict[str, int]:
+def _array(values: Iterable[JsonValue]) -> list[JsonValue]:
+    return list(values)
+
+
+def _counts(pairs: list[PairResult]) -> JsonObject:
     games = [game for pair in pairs for game in pair.games]
     wins, draws = (
         sum(game.outcome == "candidate_win" for game in games),
@@ -49,11 +56,11 @@ def _counts(pairs) -> dict[str, int]:
     }
 
 
-def _matchups(manifest, pairs) -> list[dict[str, object]]:
-    grouped = defaultdict(list)
+def _matchups(manifest: Manifest, pairs: list[PairResult]) -> list[JsonObject]:
+    grouped: defaultdict[str, list[PairResult]] = defaultdict(list)
     for pair in pairs:
         grouped[pair.task.task_case.opponent_id].append(pair)
-    rows = []
+    rows: list[JsonObject] = []
     for opponent in manifest.panel.opponents:
         evidence = sorted(
             grouped[opponent.opponent_id], key=lambda pair: pair.task.task_case.ordinal
@@ -77,7 +84,13 @@ def _matchups(manifest, pairs) -> list[dict[str, object]]:
     return rows
 
 
-def _candidate_entry(manifest, candidate, observation, pairs) -> dict[str, object]:
+def _candidate_entry(
+    manifest: Manifest,
+    candidate: Candidate,
+    observation: Observation,
+    pairs: list[PairResult],
+    tied_with: list[str],
+) -> JsonObject:
     ordered = sorted(pairs, key=lambda pair: pair.task.task_case.ordinal)
     if (
         tuple(pair.task.task_case.task_id for pair in ordered)
@@ -95,20 +108,22 @@ def _candidate_entry(manifest, candidate, observation, pairs) -> dict[str, objec
             "interval": {"lower": observation.estimate.lower, "upper": observation.estimate.upper},
         },
         **counts,
-        "opponent_matchups": _matchups(manifest, ordered),
-        "tied_with": [],
+        "opponent_matchups": _array(_matchups(manifest, ordered)),
+        "tied_with": _array(tied_with),
     }
 
 
 def _comparisons(
-    observations,
-) -> tuple[list[dict[str, object]], dict[str, list[str]], list[dict[str, str]]]:
-    rows, tied, unresolved = [], defaultdict(list), []
+    observations: list[Observation],
+) -> tuple[list[JsonObject], dict[str, list[str]], list[JsonObject]]:
+    rows: list[JsonObject] = []
+    tied: defaultdict[str, list[str]] = defaultdict(list)
+    unresolved: list[JsonObject] = []
     for index, left in enumerate(observations):
         for right in observations[index + 1 :]:
             difference = paired_difference(left, right)
             relation = tie_relation(difference)
-            row = {
+            row: JsonObject = {
                 "left_candidate_id": left.candidate_id,
                 "right_candidate_id": right.candidate_id,
                 "context": _context(left.context),
@@ -129,12 +144,12 @@ def _comparisons(
     return rows, tied, unresolved
 
 
-def build_report(run_dir: Path) -> dict[str, object]:
+def build_report(run_dir: Path) -> JsonObject:
     manifest = read_manifest(run_dir / "manifest.json")
     state = replay(manifest, read_events(run_dir / "evidence.jsonl"))
     if state.terminal_status != "complete" or state.finalists is None or state.cohort is None:
         raise ValueError("report requires completed evidence")
-    validation = defaultdict(list)
+    validation: defaultdict[str, list[PairResult]] = defaultdict(list)
     for pair in state.completed_pairs:
         if pair.task.task_case.phase == "validation":
             validation[pair.task.candidate_id].append(pair)
@@ -152,16 +167,21 @@ def build_report(run_dir: Path) -> dict[str, object]:
     if any(item is None for item in observations):
         raise ValueError("finalist lacks held-out validation observation")
     values = [item for item in observations if item is not None]
-    entries = [
-        _candidate_entry(manifest, candidate, observation, validation[candidate.candidate_id])
-        for candidate, observation in zip(state.finalists, values, strict=True)
-    ]
     comparisons, tied, unresolved = _comparisons(values)
-    for entry in entries:
-        entry["tied_with"] = sorted(tied[entry["candidate_id"]])
-    entries.sort(
-        key=lambda entry: (-entry["weighted_marginal"]["estimate"], entry["candidate_fingerprint"])
+    ranked = sorted(
+        zip(state.finalists, values, strict=True),
+        key=lambda item: (-item[1].estimate.mean, item[0].fingerprint),
     )
+    entries = [
+        _candidate_entry(
+            manifest,
+            candidate,
+            observation,
+            validation[candidate.candidate_id],
+            sorted(tied[candidate.candidate_id]),
+        )
+        for candidate, observation in ranked
+    ]
     claim, missing = production_claim(
         manifest.validation_prefix,
         manifest.production_validation_corpus,
@@ -182,16 +202,16 @@ def build_report(run_dir: Path) -> dict[str, object]:
             "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
             "game_config_fingerprint": manifest.game_config_fingerprint,
             "panel_fingerprint": manifest.panel.fingerprint,
-            "panel": [
-                {
-                    "opponent_id": item.opponent_id,
-                    "label": item.label,
-                    "role": item.role,
-                    "weight": item.weight,
-                    "configuration_fingerprint": item.configuration_fingerprint,
-                }
-                for item in manifest.panel.opponents
-            ],
+        "panel": _array(
+            {
+                "opponent_id": item.opponent_id,
+                "label": item.label,
+                "role": item.role,
+                "weight": item.weight,
+                "configuration_fingerprint": item.configuration_fingerprint,
+            }
+            for item in manifest.panel.opponents
+        ),
             "start_distribution": "default_only",
             "corpora": {
                 "tuning": {
@@ -217,9 +237,9 @@ def build_report(run_dir: Path) -> dict[str, object]:
         },
         "selection": {"finalist_ids": [candidate.candidate_id for candidate in state.finalists]},
         "proposal_search": proposal_search,
-        "validation_order": entries,
-        "paired_finalist_comparisons": comparisons,
-        "unresolved_ties": unresolved,
+        "validation_order": _array(entries),
+        "paired_finalist_comparisons": _array(comparisons),
+        "unresolved_ties": _array(unresolved),
         "limitations": [
             "default-only starting state",
             "conservative small-sample intervals",
@@ -228,9 +248,9 @@ def build_report(run_dir: Path) -> dict[str, object]:
     }
 
 
-def _proposal_search(manifest, state) -> dict[str, object]:
+def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
     dispositions = dict(state.dispositions)
-    accepted = []
+    accepted: list[JsonObject] = []
     rejected = {source: 0 for source in manifest.source_schedule}
     for proposal in state.proposals:
         disposition = dispositions.get(proposal.proposal_index)
@@ -254,6 +274,7 @@ def _proposal_search(manifest, state) -> dict[str, object]:
             )
     tuning = tuple(item for item in state.observations if item.phase == "tuning")
     frontier = tuning_frontier(tuning)
+    rejected_json: JsonObject = {source: count for source, count in rejected.items()}
     return {
         "policy_version": manifest.proposer.encoded()["policy_version"],
         "model_version": manifest.proposer.encoded()["smac_adapter_version"],
@@ -263,14 +284,14 @@ def _proposal_search(manifest, state) -> dict[str, object]:
             "model": manifest.proposer.model_candidates,
             "random_reserve": manifest.random_reserve_candidates,
         },
-        "accepted": accepted,
-        "rejections_by_source": rejected,
+        "accepted": _array(accepted),
+        "rejections_by_source": rejected_json,
         "final_frontier_id": frontier.frontier_id,
         "final_observation_count": len(frontier.observation_ids),
     }
 
 
-def write_report(run_dir: Path) -> dict[str, object]:
+def write_report(run_dir: Path) -> JsonObject:
     report = build_report(run_dir)
     atomic_json(run_dir / "report.json", report)
     return report

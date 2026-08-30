@@ -7,6 +7,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing_extensions import TypeGuard
 
 from .codec import JsonObject, JsonValue
 from .domain import (
@@ -27,26 +28,29 @@ from .domain import (
 )
 
 
+def _mapping(value: object) -> TypeGuard[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
+def _sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str))
+
+
 def _normalize(value: object) -> JsonValue:
-    item = getattr(value, "item", None)
-    if callable(item):
-        scalar = item()
-        if scalar is not value and isinstance(scalar, (type(None), bool, int, float, str)):
-            return _normalize(scalar)
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("canonical JSON does not allow non-finite floats")
         return value
-    if isinstance(value, Mapping):
+    if _mapping(value):
         normalized: dict[str, JsonValue] = {}
         for key, child in value.items():
             if not isinstance(key, str):
                 raise ValueError("canonical JSON requires string mapping keys")
             normalized[key] = _normalize(child)
         return normalized
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+    if _sequence(value):
         return [_normalize(child) for child in value]
     raise ValueError(f"value is not JSON-compatible: {type(value).__name__}")
 

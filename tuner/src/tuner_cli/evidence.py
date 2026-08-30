@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from .artifacts import SCHEMA_VERSION
-from .codec import JsonObject, JsonValue, integer, object_fields, strict_json, string
+from .codec import JsonObject, JsonValue, integer, object_fields, strict_json, string, strings
 from .domain import GameResult, PairResult, PairTask
 from .identity import canonical_json, game_id
 from .statistics import pair_utility
@@ -140,10 +140,11 @@ def _candidate_payload(value: object, *, disposition: str = "created") -> JsonOb
             if item[key] is not None and not isinstance(item[key], str):
                 raise ValueError(f"proposal {key} is invalid")
         for key in ("acquisition", "prediction", "uncertainty"):
-            if item[key] is not None and (
-                not isinstance(item[key], (int, float))
-                or isinstance(item[key], bool)
-                or not math.isfinite(item[key])
+            value = item[key]
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
             ):
                 raise ValueError(f"proposal {key} is invalid")
     return item
@@ -232,7 +233,7 @@ def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
         or len(item["games"]) != 2
     ):
         raise ValueError("pair completion does not match expected pair")
-    raw_records: list[object] = []
+    raw_records: list[JsonObject] = []
     game_fields = {
         "game_id",
         "candidate_side",
@@ -257,7 +258,7 @@ def decode_pair_payload(payload: object, task: PairTask) -> PairResult:
         side = ("first", "second")[position]
         if game["candidate_side"] != side or game["game_id"] != game_id(task, side):
             raise ValueError("completed games are not in deterministic seat order")
-    outcomes = [record["outcome"] for record in raw_records if isinstance(record, dict)]
+    outcomes = [string(record["outcome"], "raw game outcome") for record in raw_records]
     summary = {
         "type": "configured_comparison_summary",
         "games": 2,
@@ -505,11 +506,10 @@ def _validate_payload(event_type: EventType, payload: object) -> JsonObject:
                 "validation_prefix_id",
                 "cohort_frontier_id",
             }
-        ) or not all(
-            isinstance(item[key], list) and all(isinstance(x, str) for x in item[key])
-            for key in {"accepted_ids", "finalist_ids"}
         ):
             raise ValueError("invalid run completion")
+        strings(item["accepted_ids"], "accepted IDs")
+        strings(item["finalist_ids"], "finalist IDs")
         if (
             not isinstance(item["validation_search_effort"], int)
             or not isinstance(item["missing_production_axes"], list)

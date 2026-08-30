@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
-
 from .artifacts import Manifest, production_claim
+from .codec import JsonObject, JsonValue, is_json_object, strict_json
 from .cohort import (
     accepted_candidates,
     create_proposal,
@@ -12,7 +11,7 @@ from .cohort import (
     proposal_disposition,
     proposal_payload,
 )
-from .domain import Candidate, ObservationContext, PairTask, ReplayState
+from .domain import Candidate, ObservationContext, PairResult, PairTask, Phase, ReplayState
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
 from .identity import canonical_json, pair_task
 from .observations import contextual_observation
@@ -53,7 +52,12 @@ def advance_one(
 ) -> bool:
     if proposal := pending_proposal(state):
         event_type, payload = proposal_disposition(target, manifest, state, proposal)
-        writer.append(event_type, payload)
+        if event_type == "proposal_accepted":
+            writer.append("proposal_accepted", payload)
+        elif event_type == "proposal_rejected":
+            writer.append("proposal_rejected", payload)
+        else:
+            raise ValueError("proposal disposition has an unknown event type")
         return True
     if task := pending_pair(manifest, state):
         execute_pair(manifest, writer, target, state, task, timeout)
@@ -93,7 +97,7 @@ def _pair_candidates(state: ReplayState) -> tuple[Candidate, ...]:
     return accepted_candidates(state)
 
 
-def _pair_phase(state: ReplayState) -> str:
+def _pair_phase(state: ReplayState) -> Phase:
     return "validation" if state.finalists is not None else "tuning"
 
 
@@ -125,7 +129,7 @@ def execute_pair(
     writer.append("pair_completed", pair_payload(result))
 
 
-def _pair_started_payload(task: PairTask) -> dict[str, object]:
+def _pair_started_payload(task: PairTask) -> JsonObject:
     return {
         "phase": task.task_case.phase,
         "candidate_id": task.candidate_id,
@@ -137,18 +141,19 @@ def _pair_started_payload(task: PairTask) -> dict[str, object]:
     }
 
 
-def failure_payload(task: PairTask, error: PairExecutionError) -> dict[str, object]:
-    partial = [
+def failure_payload(task: PairTask, error: PairExecutionError) -> JsonObject:
+    partial: list[JsonValue] = [
         canonical_json(record)
         for line in error.stdout.splitlines()
         if (record := json_record(line))
     ]
     identity = _pair_started_payload(task)
     identity.pop("task_seed")
+    command: list[JsonValue] = list(error.command)
     return {
         **identity,
         "kind": error.kind,
-        "command": error.command,
+        "command": command,
         "returncode": error.returncode,
         "stderr": error.stderr,
         "stdout": error.stdout,
@@ -156,16 +161,12 @@ def failure_payload(task: PairTask, error: PairExecutionError) -> dict[str, obje
     }
 
 
-def json_record(line: str) -> dict[str, object] | None:
+def json_record(line: str) -> JsonObject | None:
     try:
-        value = json.loads(line)
-    except json.JSONDecodeError:
+        value = strict_json(line, "partial game output")
+    except ValueError:
         return None
-    return (
-        value
-        if isinstance(value, dict) and value.get("type") == "configured_match_result"
-        else None
-    )
+    return value if is_json_object(value) and value.get("type") == "configured_match_result" else None
 
 
 def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
@@ -187,7 +188,7 @@ def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     return True
 
 
-def observation_candidate(manifest: Manifest, state: ReplayState) -> tuple[Candidate | None, str]:
+def observation_candidate(manifest: Manifest, state: ReplayState) -> tuple[Candidate | None, Phase]:
     if state.finalists is not None:
         observed = {item.candidate_id for item in state.observations if item.phase == "validation"}
         return next(
@@ -201,7 +202,7 @@ def observation_candidate(manifest: Manifest, state: ReplayState) -> tuple[Candi
     ), "tuning"
 
 
-def matching_pairs(state: ReplayState, candidate: Candidate, phase: str):
+def matching_pairs(state: ReplayState, candidate: Candidate, phase: Phase) -> list[PairResult]:
     return [
         pair
         for pair in state.completed_pairs

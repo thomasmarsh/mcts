@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from typing import Literal
 
 from .artifacts import Manifest, production_claim
+from .codec import JsonObject, integer, literal, objects, optional_number, optional_string, string, strings
 from .domain import (
     Candidate,
     Observation,
     ObservationContext,
     PairResult,
+    PairTask,
+    Phase,
     Proposal,
     ProposalProvenance,
     ReplayState,
@@ -21,12 +25,16 @@ from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
 from .selection import select_finalists
 
 
-def _context(manifest: Manifest, phase: str) -> ObservationContext:
+Disposition = Literal["accepted", "rejected"]
+Terminal = Literal["open", "configuration_failed", "complete"]
+
+
+def _context(manifest: Manifest, phase: Phase) -> ObservationContext:
     prefix = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
     return ObservationContext(manifest.epoch.epoch_id, phase, prefix, manifest.efforts[phase])
 
 
-def observation_payload(value: Observation, opponent_count: int) -> dict[str, object]:
+def observation_payload(value: Observation, opponent_count: int) -> JsonObject:
     context = value.context
     return {
         "observation_id": value.observation_id,
@@ -51,13 +59,13 @@ def observation_payload(value: Observation, opponent_count: int) -> dict[str, ob
 @dataclass(slots=True)
 class _Replay:
     manifest: Manifest
-    proposals: list[Proposal] = field(default_factory=list)
-    dispositions: dict[int, str] = field(default_factory=dict)
-    completed: list[PairResult] = field(default_factory=list)
-    observations: list[Observation] = field(default_factory=list)
+    proposals: list[Proposal] = field(default_factory=lambda: [])
+    dispositions: dict[int, Disposition] = field(default_factory=lambda: {})
+    completed: list[PairResult] = field(default_factory=lambda: [])
+    observations: list[Observation] = field(default_factory=lambda: [])
     cohort: tuple[Candidate, ...] | None = None
     finalists: tuple[Candidate, ...] | None = None
-    terminal: str = "open"
+    terminal: Terminal = "open"
 
     def accepted(self) -> tuple[Candidate, ...]:
         return tuple(
@@ -81,7 +89,7 @@ class _Replay:
         observed = {item.candidate_id for item in self.tuning_observations()}
         return next((item for item in self.accepted() if item.candidate_id not in observed), None)
 
-    def pair_plan(self) -> tuple:
+    def pair_plan(self) -> tuple[PairTask, ...]:
         candidate = self.next_tuning_candidate()
         if candidate is not None:
             return tuple(
@@ -101,43 +109,37 @@ class _Replay:
         return tuple(item for item in self.completed if item.task.pair_id in ids)
 
 
-def _proposal(payload: dict[str, object]) -> Proposal:
-    candidate = candidate_from_canonical_config(payload["canonical_config"])
+def _proposal(state: _Replay, payload: JsonObject) -> Proposal:
+    candidate = candidate_from_canonical_config(string(payload["canonical_config"], "canonical config"))
     if (
-        candidate.candidate_id != payload["candidate_id"]
-        or candidate.fingerprint != payload["fingerprint"]
+        candidate.candidate_id != string(payload["candidate_id"], "candidate id")
+        or candidate.fingerprint != string(payload["fingerprint"], "candidate fingerprint")
     ):
         raise ValueError("proposal candidate identity is invalid")
     provenance = ProposalProvenance(
-        payload["source"],
-        payload["proposer_version"],
-        payload["source_attempt"],
-        payload["origin"],
-        payload["acquisition"],
-        payload["prediction"],
-        payload["uncertainty"],
-        payload["parent_candidate_id"],
+        literal(payload["source"], ("schema_default", "bootstrap_random", "smac_model", "random_reserve"), "proposal source"),
+        string(payload["proposer_version"], "proposer version"),
+        integer(payload["source_attempt"], "source attempt", positive=True),
+        optional_string(payload["origin"], "origin"),
+        optional_number(payload["acquisition"], "acquisition"),
+        optional_number(payload["prediction"], "prediction"),
+        optional_number(payload["uncertainty"], "uncertainty"),
+        optional_string(payload["parent_candidate_id"], "parent candidate id"),
     )
-    frontier = _frontier_from_payload(payload)
+    frontier = state.visible_frontier()
+    if (
+        string(payload["frontier_id"], "frontier id") != frontier.frontier_id
+        or strings(payload["frontier_observation_ids"], "frontier observation IDs")
+        != frontier.observation_ids
+    ):
+        raise ValueError("proposal does not bind the visible observation frontier")
     return Proposal(
-        payload["proposal_index"], payload["cohort_slot"], candidate, frontier, provenance
+        integer(payload["proposal_index"], "proposal index"),
+        integer(payload["cohort_slot"], "cohort slot"), candidate, frontier, provenance
     )
 
 
-def _frontier_from_payload(payload: dict[str, object]):
-    from .domain import ObservationFrontier, SearchEffort
-
-    return ObservationFrontier(
-        payload["frontier_id"],
-        "",
-        "",
-        (),
-        SearchEffort(1),
-        tuple(payload["frontier_observation_ids"]),
-    )
-
-
-def _apply_proposal_created(state: _Replay, payload: dict[str, object]) -> None:
+def _apply_proposal_created(state: _Replay, payload: JsonObject) -> None:
     if len(state.accepted()) == state.manifest.cohort_size:
         raise ValueError("proposal follows a complete cohort")
     if state.proposals and state.proposals[-1].proposal_index not in state.dispositions:
@@ -147,7 +149,7 @@ def _apply_proposal_created(state: _Replay, payload: dict[str, object]) -> None:
         and state.next_tuning_candidate() is not None
     ):
         raise ValueError("proposal precedes the accepted candidate's tuning observation")
-    proposal = _proposal(payload)
+    proposal = _proposal(state, payload)
     if proposal.proposal_index != len(state.proposals):
         raise ValueError("proposal indices must be contiguous")
     slot = len(state.accepted())
@@ -177,10 +179,10 @@ def _apply_proposal_created(state: _Replay, payload: dict[str, object]) -> None:
 
 
 def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
-    payload, index = event.payload, event.payload["proposal_index"]
+    payload = event.payload
+    index = integer(payload["proposal_index"], "proposal index")
     if (
-        not isinstance(index, int)
-        or index not in range(len(state.proposals))
+        index not in range(len(state.proposals))
         or index in state.dispositions
     ):
         raise ValueError("invalid or repeated proposal disposition")
@@ -196,11 +198,11 @@ def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
     if any(payload[key] != value for key, value in expected.items()):
         raise ValueError("proposal disposition does not reference its proposal")
     if event.type == "proposal_accepted":
-        if len(payload["panel_response_fingerprints"]) != len(state.manifest.panel.opponents):
+        if len(strings(payload["panel_response_fingerprints"], "panel response fingerprints")) != len(state.manifest.panel.opponents):
             raise ValueError("proposal acceptance does not bind the panel")
-    elif payload["reason"] == "semantic_validation":
+    elif string(payload["reason"], "rejection reason") == "semantic_validation":
         ordered = [item.opponent_id for item in state.manifest.panel.opponents]
-        ids = [item["opponent_id"] for item in payload["errors"]]
+        ids = [string(item["opponent_id"], "rejected opponent id") for item in objects(payload["errors"], "rejection errors")]
         if ids != sorted(ids, key=ordered.index):
             raise ValueError("proposal rejection does not preserve panel order")
     state.dispositions[index] = "accepted" if event.type == "proposal_accepted" else "rejected"
@@ -209,20 +211,21 @@ def _apply_disposition(state: _Replay, event: EvidenceEvent) -> None:
         raise ValueError("accepted cohort contains a duplicate")
 
 
-def _apply_pair(state: _Replay, payload: dict[str, object]) -> None:
+def _apply_pair(state: _Replay, payload: JsonObject) -> None:
     plan, completed = state.pair_plan(), state.completed_in_plan()
     if len(completed) >= len(plan):
         raise ValueError("pair completion is not expected")
     state.completed.append(decode_pair_payload(payload, plan[len(completed)]))
 
 
-def _apply_observation(state: _Replay, payload: dict[str, object]) -> None:
-    phase = payload["phase"]
+def _apply_observation(state: _Replay, payload: JsonObject) -> None:
+    phase_value = literal(payload["phase"], ("tuning", "validation"), "observation phase")
+    phase: Phase = "tuning" if phase_value == "tuning" else "validation"
     candidates = state.accepted() if phase == "tuning" else state.finalists
     if candidates is None:
         raise ValueError("observation precedes finalist selection")
     candidate = next(
-        (item for item in candidates if item.candidate_id == payload["candidate_id"]), None
+        (item for item in candidates if item.candidate_id == string(payload["candidate_id"], "candidate id")), None
     )
     if candidate is None or any(
         item.phase == phase and item.candidate_id == candidate.candidate_id
@@ -242,7 +245,7 @@ def _apply_observation(state: _Replay, payload: dict[str, object]) -> None:
     state.observations.append(value)
 
 
-def _apply_cohort(state: _Replay, payload: dict[str, object]) -> None:
+def _apply_cohort(state: _Replay, payload: JsonObject) -> None:
     accepted, observations = state.accepted(), state.tuning_observations()
     if (
         state.cohort is not None
@@ -262,7 +265,7 @@ def _apply_cohort(state: _Replay, payload: dict[str, object]) -> None:
     state.cohort = accepted
 
 
-def _apply_finalists(state: _Replay, payload: dict[str, object]) -> None:
+def _apply_finalists(state: _Replay, payload: JsonObject) -> None:
     if state.cohort is None or state.finalists is not None:
         raise ValueError("finalist selection is premature")
     tuning = state.tuning_observations()
@@ -339,7 +342,7 @@ def _operational_pair(state: _Replay, event: EvidenceEvent) -> None:
     }
     if any(payload[key] != value for key, value in expected.items()):
         raise ValueError("operational pair record does not match pending pair")
-    if event.type == "pair_started" and payload["task_seed"] != task.task_case.seed:
+    if event.type == "pair_started" and integer(payload["task_seed"], "task seed") != task.task_case.seed:
         raise ValueError("pair start does not match pending task seed")
 
 

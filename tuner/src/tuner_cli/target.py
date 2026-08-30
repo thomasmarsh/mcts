@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .domain import (
     Candidate,
@@ -18,7 +17,8 @@ from .domain import (
     ValidationError,
     ValidationResult,
 )
-from .identity import JsonValue, canonical_json, game_id
+from .codec import JsonObject, JsonValue, is_json_object, literal, strict_json, string
+from .identity import canonical_json, game_id
 
 
 class PairExecutionError(RuntimeError):
@@ -173,63 +173,48 @@ class GameBinaryTarget:
             ) from error
 
 
-def _single_object(stdout: str) -> dict[str, object]:
+def _single_object(stdout: str) -> JsonObject:
     lines = [line for line in stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         raise ValueError("expected exactly one JSON object")
     try:
-        value = json.loads(
-            lines[0], parse_constant=_reject_json_constant, object_pairs_hook=_unique_object
-        )
-    except json.JSONDecodeError as error:
+        value = strict_json(lines[0], "response")
+    except ValueError as error:
         raise ValueError("response is not strict JSON") from error
-    if not isinstance(value, dict):
+    if not is_json_object(value):
         raise ValueError("response is not an object")
     return value
 
 
-def _reject_json_constant(value: str) -> object:
-    raise ValueError(f"non-standard JSON constant {value!r}")
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value = dict(pairs)
-    if len(value) != len(pairs):
-        raise ValueError("object has duplicate keys")
-    return value
-
-
-def _validation_response(response: dict[str, object]) -> tuple[bool, list[ValidationError]]:
+def _validation_response(response: JsonObject) -> tuple[bool, list[ValidationError]]:
     valid, raw_errors = response.get("valid"), response.get("errors")
     if not isinstance(valid, bool) or not isinstance(raw_errors, list):
         raise ValueError("response needs Boolean valid and errors array")
     errors: list[ValidationError] = []
     for raw in raw_errors:
-        if (
-            not isinstance(raw, dict)
-            or not isinstance(raw.get("field"), str)
-            or not isinstance(raw.get("message"), str)
-        ):
+        if not is_json_object(raw):
             raise ValueError("malformed validation error")
+        field = string(raw.get("field"), "validation field")
+        message = string(raw.get("message"), "validation message")
         index = raw.get("candidate_index")
         if index is not None and (
             not isinstance(index, int) or isinstance(index, bool) or index < 0
         ):
             raise ValueError("invalid candidate_index")
-        errors.append(ValidationError(raw["field"], raw["message"], index))
+        errors.append(ValidationError(field, message, index))
     return valid, errors
 
 
 def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
-    records: list[dict[str, object]] = []
+    records: list[JsonObject] = []
     for line in stdout.splitlines():
         if not line.strip():
             continue
         try:
-            value = json.loads(line, parse_constant=_reject_json_constant)
-        except (json.JSONDecodeError, ValueError) as error:
+            value = strict_json(line, "comparison output")
+        except ValueError as error:
             raise ValueError("output contains non-JSON text") from error
-        if not isinstance(value, dict):
+        if not is_json_object(value):
             raise ValueError("output record is not an object")
         records.append(value)
     if len(records) != 3 or [record.get("type") for record in records] != [
@@ -255,9 +240,17 @@ def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
 
 
 def _decode_game(
-    record: dict[str, object], task: PairTask, seed: int, side: str, seq: int
+    record: JsonObject, task: PairTask, seed: int, side: Literal["first", "second"], seq: int
 ) -> GameResult:
-    outcome = record.get("outcome")
+    outcome_value = string(record.get("outcome"), "outcome")
+    if outcome_value == "candidate_win":
+        outcome: Literal["candidate_win", "baseline_win", "draw"] = "candidate_win"
+    elif outcome_value == "baseline_win":
+        outcome = "baseline_win"
+    elif outcome_value == "draw":
+        outcome = "draw"
+    else:
+        raise ValueError("game has invalid outcome")
     if record.get("candidate_side") != side or outcome not in {
         "candidate_win",
         "baseline_win",
@@ -275,7 +268,7 @@ def _decode_game(
         raise ValueError("trace_game_seq must be non-negative integer or null")
     return GameResult(
         game_id(task, side),
-        side,
+        literal(side, ("first", "second"), "candidate side"),
         outcome,
         seed,
         1,
@@ -290,7 +283,7 @@ def _decode_game(
 
 
 def _metrics(value: object, label: str) -> StrategyMetrics:
-    if not isinstance(value, dict):
+    if not is_json_object(value):
         raise ValueError(f"{label} metrics must be an object")
     return StrategyMetrics(
         _integer(value, "iterations_total"),
@@ -299,7 +292,7 @@ def _metrics(value: object, label: str) -> StrategyMetrics:
     )
 
 
-def _integer(record: dict[str, object], key: str) -> int:
+def _integer(record: JsonObject, key: str) -> int:
     value = record.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")

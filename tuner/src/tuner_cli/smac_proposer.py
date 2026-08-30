@@ -84,6 +84,6 @@ def active_values_from_candidate(canonical_config: str) -> dict[str, object]:
     from .codec import strict_json
 
     value = strict_json(canonical_config, "candidate configuration")
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not isinstance(value, dict):
         raise ValueError("candidate configuration is not an object")
     return dict(value)

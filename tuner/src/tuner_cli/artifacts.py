@@ -5,14 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
+from typing import Literal
 
-from .codec import integer, object_fields, strict_json, string
+from .codec import JsonObject, integer, object_fields, strict_json, string
 from .domain import (
     ObjectiveEpoch,
     Opponent,
     OpponentPanel,
+    OpponentRole,
+    Phase,
     ProposalSource,
     SearchEffort,
+    TaskCase,
     TaskCorpus,
     TaskPrefix,
 )
@@ -36,6 +40,11 @@ from .smac_proposer import ADAPTER_VERSION
 from .tasks import build_corpus, selected_prefix, validate_cycle_endpoint, verify_weighted_corpus
 
 SCHEMA_VERSION = 4
+_OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
+_OPPONENT_SOURCES: tuple[Literal["schema_default", "inline"], Literal["schema_default", "inline"]] = (
+    "schema_default",
+    "inline",
+)
 
 
 def configspace_version() -> str:
@@ -72,7 +81,7 @@ class ProposerSpecification:
     def attempt_cap(self) -> int:
         return max(100, self.cohort_size * 100)
 
-    def encoded(self) -> dict[str, object]:
+    def encoded(self) -> JsonObject:
         return {
             "policy_version": POLICY_VERSION,
             "proposal_seed": self.proposal_seed,
@@ -123,7 +132,7 @@ def proposer_specification(
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
-    json_value: dict[str, object]
+    json_value: JsonObject
     fingerprint: str
     spec: GameSpec
     objective_id: str
@@ -188,7 +197,7 @@ class Manifest:
     def validation(self) -> TaskCorpus:
         return self.production_validation_corpus
 
-    def prefix_cases(self, phase: str):
+    def prefix_cases(self, phase: Phase) -> tuple[TaskCase, ...]:
         corpus, prefix = (
             (self.tuning_corpus, self.tuning_prefix)
             if phase == "tuning"
@@ -197,7 +206,7 @@ class Manifest:
         return corpus.cases[: prefix.length]
 
 
-def _opponent_dict(item: Opponent) -> dict[str, object]:
+def _opponent_dict(item: Opponent) -> JsonObject:
     return {
         "id": item.opponent_id,
         "source": item.source_id,
@@ -209,7 +218,7 @@ def _opponent_dict(item: Opponent) -> dict[str, object]:
     }
 
 
-def _panel_dict(panel: OpponentPanel) -> dict[str, object]:
+def _panel_dict(panel: OpponentPanel) -> JsonObject:
     return {
         "panel_id": panel.panel_id,
         "fingerprint": panel.fingerprint,
@@ -218,7 +227,7 @@ def _panel_dict(panel: OpponentPanel) -> dict[str, object]:
     }
 
 
-def _case_dict(case) -> dict[str, object]:
+def _case_dict(case: TaskCase) -> JsonObject:
     return {
         "task_id": case.task_id,
         "phase": case.phase,
@@ -233,7 +242,7 @@ def _case_dict(case) -> dict[str, object]:
     }
 
 
-def _corpus_dict(corpus: TaskCorpus) -> dict[str, object]:
+def _corpus_dict(corpus: TaskCorpus) -> JsonObject:
     return {
         "corpus_id": corpus.corpus_id,
         "fingerprint": corpus.fingerprint,
@@ -243,7 +252,7 @@ def _corpus_dict(corpus: TaskCorpus) -> dict[str, object]:
     }
 
 
-def _prefix_dict(prefix: TaskPrefix) -> dict[str, object]:
+def _prefix_dict(prefix: TaskPrefix) -> JsonObject:
     return {
         "prefix_id": prefix.prefix_id,
         "corpus_id": prefix.corpus_id,
@@ -275,7 +284,7 @@ def _epoch_payload(
     validation: TaskCorpus,
     production_effort: SearchEffort,
     game_config_fingerprint: str,
-) -> dict[str, object]:
+) -> JsonObject:
     return {
         "version": "objective-epoch-v1",
         "objective_id": objective.objective_id,
@@ -362,7 +371,7 @@ def build_manifest(
             game_config_fingerprint,
         )
     )
-    raw: dict[str, object] = {
+    raw: JsonObject = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "command_policy_version": "bootstrap-smac-reserve-v1",
@@ -465,7 +474,7 @@ def _decode_panel(value: object) -> OpponentPanel:
     )
     if not isinstance(raw["opponents"], list) or len(raw["opponents"]) < 2:
         raise ValueError("opponent panel needs at least two entries")
-    opponents = []
+    opponents: list[Opponent] = []
     for item in raw["opponents"]:
         entry = object_fields(
             item,
@@ -480,12 +489,16 @@ def _decode_panel(value: object) -> OpponentPanel:
             },
             "panel opponent",
         )
-        role, source = entry["role"], entry["source"]
-        if role not in {"default", "historical_reference"} or source not in {
-            "schema_default",
-            "inline",
-        }:
+        role_value = string(entry["role"], "panel role")
+        source_value = string(entry["source"], "panel source")
+        if role_value not in _OPPONENT_ROLES or source_value not in _OPPONENT_SOURCES:
             raise ValueError("invalid panel opponent role or source")
+        role: OpponentRole = (
+            "default" if role_value == "default" else "historical_reference"
+        )
+        source: Literal["schema_default", "inline"] = (
+            "schema_default" if source_value == "schema_default" else "inline"
+        )
         canonical = string(entry["canonical_config"], "panel configuration")
         if (
             canonical_json(strict_json(canonical, "panel configuration")) != canonical
@@ -510,7 +523,7 @@ def _decode_panel(value: object) -> OpponentPanel:
 
 
 def _decode_corpus(
-    value: object, phase: str, panel: OpponentPanel, task_seed: int, game_config_fingerprint: str
+    value: object, phase: Phase, panel: OpponentPanel, task_seed: int, game_config_fingerprint: str
 ) -> TaskCorpus:
     raw = object_fields(
         value,
@@ -646,7 +659,7 @@ def decode_manifest_object(value: object) -> Manifest:
     validation_prefix = _decode_prefix(prefixes["validation"], validation, "validation")
     fidelity = object_fields(raw["fidelity"], {"tuning", "validation", "production"}, "fidelity")
     efforts: dict[str, SearchEffort] = {}
-    expected_prefixes = {
+    expected_prefixes: dict[str, TaskPrefix] = {
         "tuning": tuning_prefix,
         "validation": validation_prefix,
         "production": task_prefix(validation, len(validation.cases)),
@@ -707,8 +720,8 @@ def decode_manifest_object(value: object) -> Manifest:
         dict(raw),
         stored,
         spec,
-        objective["objective_id"],
-        objective["fingerprint"],
+        string(objective["objective_id"], "objective id", nonempty=True),
+        string(objective["fingerprint"], "objective fingerprint"),
         panel,
         tuning,
         validation,
@@ -726,6 +739,6 @@ def read_manifest(path: Path) -> Manifest:
     return decode_manifest_object(strict_json(path.read_text(encoding="utf-8"), "manifest"))
 
 
-def manifest_json(manifest: Manifest) -> dict[str, object]:
+def manifest_json(manifest: Manifest) -> JsonObject:
     """Return the frozen transport representation at the publishing boundary."""
     return dict(manifest.json_value)

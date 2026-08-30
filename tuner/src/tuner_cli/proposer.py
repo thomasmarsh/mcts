@@ -41,12 +41,13 @@ def source_schedule(
     _validate_counts(cohort_size, bootstrap_candidates, random_reserve_candidates)
     model = cohort_size - bootstrap_candidates - random_reserve_candidates
     post = _weighted_sources(model, random_reserve_candidates)
-    return ("schema_default", *(["bootstrap_random"] * (bootstrap_candidates - 1)), *post)
+    bootstrap: tuple[ProposalSource, ...] = ("bootstrap_random",) * (bootstrap_candidates - 1)
+    return ("schema_default", *bootstrap, *post)
 
 
 def _validate_counts(cohort_size: int, bootstrap: int, reserve: int) -> None:
     values = (cohort_size, bootstrap, reserve)
-    if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+    if any(isinstance(value, bool) for value in values):
         raise ValueError("proposal counts must be integers")
     post = cohort_size - bootstrap
     if bootstrap < 2 or post < 2 or not 1 <= reserve < post:
@@ -59,7 +60,9 @@ def _weighted_sources(model: int, reserve: int) -> tuple[ProposalSource, ...]:
     emitted: dict[ProposalSource, int] = {"smac_model": 0, "random_reserve": 0}
     limits: dict[ProposalSource, int] = {"smac_model": model, "random_reserve": reserve}
     for index in range(model + reserve):
-        choices = [source for source in sources if emitted[source] < limits[source]]
+        choices: list[ProposalSource] = [
+            source for source in sources if emitted[source] < limits[source]
+        ]
         source = max(
             choices,
             key=lambda item: (

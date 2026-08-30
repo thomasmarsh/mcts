@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from typing import TypeVar
+from typing_extensions import TypeGuard
 
 JsonScalar = None | bool | int | float | str
 JsonValue = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -43,23 +45,45 @@ def finite(value: JsonValue, label: str) -> None:
             finite(child, label)
 
 
+def _list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _mapping(value: object) -> TypeGuard[Mapping[object, object]]:
+    return isinstance(value, Mapping)
+
+
 def is_json_value(value: object) -> bool:
     if value is None or isinstance(value, (bool, int, float, str)):
         return not isinstance(value, float) or math.isfinite(value)
-    if isinstance(value, list):
+    if _list(value):
         return all(is_json_value(item) for item in value)
-    return isinstance(value, dict) and all(
+    return _mapping(value) and all(
         isinstance(key, str) and is_json_value(item) for key, item in value.items()
     )
 
 
+def is_json_object(value: object) -> TypeGuard[JsonObject]:
+    """Recognize a complete JSON object without exposing untyped mappings."""
+    return _mapping(value) and all(
+        isinstance(key, str) and is_json_value(item) for key, item in value.items()
+    )
+
+
+def objects(value: object, label: str) -> tuple[JsonObject, ...]:
+    if not _list(value):
+        raise ValueError(f"{label} must be an array of JSON objects")
+    result: list[JsonObject] = []
+    for item in value:
+        result.append(json_object(item, label))
+    return tuple(result)
+
+
 def json_object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise ValueError(f"{label} must be a JSON object")
     result: JsonObject = {}
     for key, child in value.items():
-        if not is_json_value(child):
-            raise ValueError(f"{label} contains a non-JSON value")
         result[key] = child
     return result
 
@@ -100,6 +124,21 @@ def number(value: object, label: str) -> float:
 
 
 def strings(value: object, label: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not _list(value):
         raise ValueError(f"{label} must be an array of strings")
-    return tuple(value)
+    result: list[str] = []
+    for item in value:
+        result.append(string(item, label))
+    return tuple(result)
+
+
+def optional_string(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return string(value, label)
+
+
+def optional_number(value: object, label: str) -> float | None:
+    if value is None:
+        return None
+    return number(value, label)
