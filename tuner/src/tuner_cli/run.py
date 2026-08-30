@@ -33,7 +33,8 @@ class RunOptions:
     bootstrap_candidates: int = 3
     random_reserve_candidates: int = 2
     tuning_pairs: int = 4
-    validation_pairs: int = 8
+    tuning_pair_budget: int = 32
+    validation_pair_budget: int = 24
     production_validation_pairs: int = 8
     tuning_max_iterations: int = 1_000
     validation_max_iterations: int = 10_000
@@ -48,7 +49,7 @@ def run_foreground(
     run_dir: Path | None = None,
     model_proposer: ModelProposer | None = None,
 ) -> Path:
-    """Create or explicitly resume one strict two-cohort tuning run."""
+    """Create or explicitly resume one strict budgeted tuning run."""
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
     binary, directory, objective_path = validate_options(options)
@@ -78,7 +79,8 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         options.bootstrap_candidates,
         options.random_reserve_candidates,
         options.tuning_pairs,
-        options.validation_pairs,
+        options.tuning_pair_budget,
+        options.validation_pair_budget,
         options.production_validation_pairs,
         options.tuning_max_iterations,
         options.validation_max_iterations,
@@ -125,12 +127,17 @@ def schema_default(spec: GameSpec, seed: int) -> Candidate:
 def validate_objective_options(options: RunOptions, objective: ResolvedObjective) -> None:
     for count, label in (
         (options.tuning_pairs, "tuning pairs"),
-        (options.validation_pairs, "validation pairs"),
         (options.production_validation_pairs, "production validation pairs"),
     ):
         validate_cycle_endpoint(objective.panel, count, label)
-    if options.validation_pairs > options.production_validation_pairs:
+    if options.validation_pair_budget % options.finalists:
+        raise ValueError("validation pair budget must divide finalists")
+    validation_pairs = options.validation_pair_budget // options.finalists
+    validate_cycle_endpoint(objective.panel, validation_pairs, "validation pairs")
+    if validation_pairs > options.production_validation_pairs:
         raise ValueError("validation pairs cannot exceed production validation pairs")
+    if options.tuning_pair_budget < options.cohort_size * options.tuning_pairs:
+        raise ValueError("tuning pair budget cannot fund initial cohort")
     if (
         max(options.tuning_max_iterations, options.validation_max_iterations)
         > options.production_max_iterations
@@ -183,7 +190,8 @@ def manifest_for(
         options.bootstrap_candidates,
         options.random_reserve_candidates,
         options.tuning_pairs,
-        options.validation_pairs,
+        options.tuning_pair_budget,
+        options.validation_pair_budget,
         options.production_validation_pairs,
         options.tuning_max_iterations,
         options.validation_max_iterations,

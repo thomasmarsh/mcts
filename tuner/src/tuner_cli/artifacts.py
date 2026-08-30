@@ -9,6 +9,7 @@ from typing import Literal
 
 from .codec import JsonObject, integer, object_fields, strict_json, string
 from .domain import (
+    ComputeBudget,
     ObjectiveEpoch,
     Opponent,
     OpponentPanel,
@@ -160,6 +161,7 @@ class Manifest:
     run_id: str
     game_config_fingerprint: str
     effort_values: tuple[SearchEffort, SearchEffort, SearchEffort]
+    compute_budget: ComputeBudget
 
     @property
     def seed(self) -> int:
@@ -339,7 +341,8 @@ def build_manifest(
     bootstrap_candidates: int,
     random_reserve_candidates: int,
     tuning_pairs: int,
-    validation_pairs: int,
+    tuning_pair_budget: int,
+    validation_pair_budget: int,
     production_validation_pairs: int,
     tuning_max_iterations: int,
     validation_max_iterations: int,
@@ -353,9 +356,24 @@ def build_manifest(
         bootstrap_candidates,
         random_reserve_candidates,
     )
+    if (
+        isinstance(tuning_pair_budget, bool)
+        or isinstance(validation_pair_budget, bool)
+        or tuning_pair_budget <= 0
+        or validation_pair_budget <= 0
+    ):
+        raise ValueError("compute budgets must be positive integers")
+    if validation_pair_budget % finalists:
+        raise ValueError("validation pair budget must divide finalists")
+    validation_pairs = validation_pair_budget // finalists
+    validate_cycle_endpoint(objective.panel, validation_pairs, "validation pairs")
+    if validation_pairs > production_validation_pairs:
+        raise ValueError("validation pairs cannot exceed production validation pairs")
+    if tuning_pair_budget < cohort_size * tuning_pairs:
+        raise ValueError("tuning pair budget cannot fund initial cohort")
     _validate_manifest_inputs(
         objective.panel,
-        (tuning_pairs, validation_pairs, production_validation_pairs),
+        (tuning_pairs, production_validation_pairs),
         (tuning_max_iterations, validation_max_iterations, production_max_iterations),
     )
     game_config_fingerprint = fingerprint(
@@ -406,24 +424,22 @@ def build_manifest(
         selected_prefix(validation, production_validation_pairs),
         epoch,
         efforts,
+        ComputeBudget(tuning_pair_budget, validation_pair_budget),
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
 
 def _validate_manifest_inputs(
     panel: OpponentPanel,
-    pairs: tuple[int, int, int],
+    pairs: tuple[int, int],
     iterations: tuple[int, int, int],
 ) -> None:
-    tuning_pairs, validation_pairs, production_validation_pairs = pairs
+    tuning_pairs, production_validation_pairs = pairs
     for count, label in (
         (tuning_pairs, "tuning pairs"),
-        (validation_pairs, "validation pairs"),
         (production_validation_pairs, "production validation pairs"),
     ):
         validate_cycle_endpoint(panel, count, label)
-    if validation_pairs > production_validation_pairs:
-        raise ValueError("validation pairs cannot exceed production validation pairs")
     tuning_iterations, validation_iterations, production_iterations = iterations
     if tuning_iterations > production_iterations or validation_iterations > production_iterations:
         raise ValueError("observed search effort cannot exceed production effort")
@@ -494,11 +510,17 @@ def _encode_manifest_object(
     production_prefix: TaskPrefix,
     epoch: ObjectiveEpoch,
     efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
+    compute_budget: ComputeBudget,
 ) -> JsonObject:
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "command_policy_version": "bootstrap-smac-reserve-v1",
+        "compute_budget": {
+            "policy_version": "safe-boundary-pair-attempts-v1",
+            "tuning_pair_attempts": compute_budget.tuning_pair_attempts,
+            "validation_pair_attempts": compute_budget.validation_pair_attempts,
+        },
         **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
@@ -534,6 +556,7 @@ _FIELDS = {
     "schema_version",
     "run_id",
     "command_policy_version",
+    "compute_budget",
     "binary",
     "engine_fingerprint",
     "description",
@@ -856,12 +879,30 @@ def decode_manifest_object(value: object) -> Manifest:
         raise ValueError("manifest fingerprint does not match content")
     spec, game_config_fingerprint = _decode_game_identity(raw)
     proposer = _decode_proposer(raw["proposer"])
+    budget_raw = object_fields(
+        raw["compute_budget"],
+        {"policy_version", "tuning_pair_attempts", "validation_pair_attempts"},
+        "compute budget",
+    )
+    if budget_raw["policy_version"] != "safe-boundary-pair-attempts-v1":
+        raise ValueError("unsupported compute budget policy")
+    compute_budget = ComputeBudget(
+        integer(budget_raw["tuning_pair_attempts"], "tuning pair attempts", positive=True),
+        integer(budget_raw["validation_pair_attempts"], "validation pair attempts", positive=True),
+    )
     panel = _decode_panel(raw["opponent_panel"])
     source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)
     start_fingerprint = _decode_start_distribution(raw)
     tuning, validation, tuning_prefix, blocks, validation_prefix = _decode_corpora_and_prefixes(
         raw, panel, proposer.task_seed, game_config_fingerprint
     )
+    if compute_budget.validation_pair_attempts % proposer.finalists:
+        raise ValueError("validation pair budget must divide finalists")
+    if validation_prefix.length != compute_budget.validation_pair_attempts // proposer.finalists:
+        raise ValueError("validation prefix does not match compute budget")
+    validate_cycle_endpoint(panel, validation_prefix.length, "validation pairs")
+    if compute_budget.tuning_pair_attempts < proposer.cohort_size * tuning_prefix.length:
+        raise ValueError("tuning pair budget cannot fund initial cohort")
     efforts = _decode_fidelity(raw, validation, tuning_prefix, validation_prefix)
     epoch = _check_epoch(
         raw,
@@ -893,6 +934,7 @@ def decode_manifest_object(value: object) -> Manifest:
         string(raw["run_id"], "run id", nonempty=True),
         game_config_fingerprint,
         efforts,
+        compute_budget,
     )
 
 
@@ -920,5 +962,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         task_prefix(validation, len(validation.cases)),
         manifest.epoch,
         manifest.effort_values,
+        manifest.compute_budget,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

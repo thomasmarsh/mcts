@@ -105,7 +105,7 @@ def _advance_selected(
 ) -> None:
     decision = decide_allocation(manifest, state)
     if allocation := resource_allocation(decision, manifest, state):
-        writer.append(AllocationDecidedPayload(allocation, "two-cohort-elite-retention-v1"))
+        writer.append(AllocationDecidedPayload(allocation, "budgeted-multi-cohort-v1"))
         return
     match decision:
         case ResolveProposal(proposal_index):
@@ -224,11 +224,7 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
     cohort_index = len(state.completed_cohorts)
     active = current_active_candidates(state)
     tuning = comparable_prefix_observations(state.observations, active, manifest.tuning_prefix)
-    if (
-        cohort_index not in (0, 1)
-        or len(active) != manifest.cohort_size
-        or len(tuning) != len(active)
-    ):
+    if len(active) != manifest.cohort_size or len(tuning) != len(active):
         return False
     writer.append(
         CohortCompletedPayload(
@@ -250,7 +246,7 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
 
 def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
     cohort = latest_completed_cohort(state)
-    if len(state.completed_cohorts) != 2 or cohort is None or state.finalists is not None:
+    if len(state.completed_cohorts) < 1 or cohort is None or state.finalists is not None:
         return False
     tuning = comparable_prefix_observations(
         state.observations, cohort.candidates, manifest.tuning_prefix

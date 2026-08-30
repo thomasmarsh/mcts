@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bootstrap-candidates", type=int, default=3)
     parser.add_argument("--random-reserve-candidates", type=int, default=2)
     parser.add_argument("--tuning-pairs", type=int, default=4)
-    parser.add_argument("--validation-pairs", type=int, default=8)
+    parser.add_argument("--tuning-pair-budget", type=int, required=True, metavar="PAIRS")
+    parser.add_argument("--validation-pair-budget", type=int, required=True, metavar="PAIRS")
     parser.add_argument("--production-validation-pairs", type=int, required=True)
     parser.add_argument("--tuning-max-iterations", type=int, default=1_000)
     parser.add_argument("--validation-max-iterations", type=int, default=10_000)
@@ -44,7 +45,8 @@ def _options(args: argparse.Namespace) -> RunOptions:
         bootstrap_candidates=args.bootstrap_candidates,
         random_reserve_candidates=args.random_reserve_candidates,
         tuning_pairs=args.tuning_pairs,
-        validation_pairs=args.validation_pairs,
+        tuning_pair_budget=args.tuning_pair_budget,
+        validation_pair_budget=args.validation_pair_budget,
         production_validation_pairs=args.production_validation_pairs,
         tuning_max_iterations=args.tuning_max_iterations,
         validation_max_iterations=args.validation_max_iterations,

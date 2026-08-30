@@ -260,6 +260,7 @@ def build_report(run_dir: Path) -> JsonObject:
         "validation_order": _array(entries),
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
+        "compute": _compute_section(manifest, state),
         "limitations": [
             "default-only starting state",
             "conservative small-sample intervals",
@@ -296,6 +297,15 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
                     "parent_candidate_id": proposal.provenance.parent_candidate_id,
                 }
             )
+    completed_cohorts = len(state.completed_cohorts)
+    # Derive configured slots from the actual completed cohort count and the
+    # repeated frozen schedules.
+    model_slots = manifest.source_schedule.count("smac_model") + (
+        completed_cohorts - 1
+    ) * manifest.challenger_source_schedule.count("smac_model")
+    reserve_slots = manifest.source_schedule.count("random_reserve") + (
+        completed_cohorts - 1
+    ) * manifest.challenger_source_schedule.count("random_reserve")
     tuning = comparable_prefix_observations(
         state.observations, cohort.candidates, manifest.tuning_prefix
     )
@@ -307,20 +317,58 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
         "cost_policy_version": manifest.proposer.encoded()["cost_policy_version"],
         "configured": {
             "bootstrap": manifest.bootstrap_candidates,
-            "model": (*manifest.source_schedule, *manifest.challenger_source_schedule).count(
-                "smac_model"
-            ),
-            "random_reserve": (
-                *manifest.source_schedule,
-                *manifest.challenger_source_schedule,
-            ).count("random_reserve"),
-            "cohorts": 2,
+            "model": model_slots,
+            "random_reserve": reserve_slots,
+            "cohorts": completed_cohorts,
             "retained_elites": manifest.finalists,
         },
         "accepted": _array(accepted),
         "rejections_by_source": rejected_json,
         "final_frontier_id": frontier.frontier_id,
         "final_observation_count": len(frontier.observation_ids),
+    }
+
+
+def _compute_section(manifest: Manifest, state: ReplayState) -> JsonObject:
+    """Projection of compute budget and evidence-derived ledger values."""
+    ledger = state.compute
+    budget = manifest.compute_budget
+    return {
+        "policy_version": "safe-boundary-pair-attempts-v1",
+        "budget": {
+            "tuning_pair_attempts": budget.tuning_pair_attempts,
+            "validation_pair_attempts": budget.validation_pair_attempts,
+        },
+        "tuning": {
+            "pair_attempts": ledger.tuning.pair_attempts,
+            "completed_pairs": ledger.tuning.completed_pairs,
+            "failed_attempts": ledger.tuning.failed_attempts,
+            "censored_attempts": ledger.tuning.censored_attempts,
+            "physical_games": ledger.tuning.physical_games,
+            "search_iterations": ledger.tuning.search_iterations,
+            "wall_time_ms": ledger.tuning.wall_time_ms,
+            "unspent_pair_attempts": max(
+                0, budget.tuning_pair_attempts - ledger.tuning.pair_attempts
+            ),
+            "overrun_pair_attempts": max(
+                0, ledger.tuning.pair_attempts - budget.tuning_pair_attempts
+            ),
+        },
+        "validation": {
+            "pair_attempts": ledger.validation.pair_attempts,
+            "completed_pairs": ledger.validation.completed_pairs,
+            "failed_attempts": ledger.validation.failed_attempts,
+            "censored_attempts": ledger.validation.censored_attempts,
+            "physical_games": ledger.validation.physical_games,
+            "search_iterations": ledger.validation.search_iterations,
+            "wall_time_ms": ledger.validation.wall_time_ms,
+            "unspent_pair_attempts": max(
+                0, budget.validation_pair_attempts - ledger.validation.pair_attempts
+            ),
+            "overrun_pair_attempts": max(
+                0, ledger.validation.pair_attempts - budget.validation_pair_attempts
+            ),
+        },
     }
 
 

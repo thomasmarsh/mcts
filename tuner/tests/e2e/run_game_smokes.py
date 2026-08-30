@@ -17,6 +17,14 @@ def _check_game(binary: Path, objective: Path) -> None:
     expected_kind = json.loads(description.stdout)["kind"]
     panel = json.loads(objective.read_text())["opponents"]
     total_weight = sum(item["weight"] for item in panel)
+    tuning_pairs = total_weight * 2
+    # The initial cohort costs cohort_size * tuning_pairs and each challenger
+    # cohort costs (cohort_size - finalists) * tuning_pairs, so a budget of
+    # 16 * total_weight admits exactly three cohorts; a fourth would not fit.
+    # The validation budget gives each of the two finalists exactly one complete
+    # weighted panel cycle.
+    tuning_pair_budget = 16 * total_weight
+    validation_pair_budget = 2 * total_weight
     with tempfile.TemporaryDirectory(prefix="mcts-tuner-game-") as temporary:
         run_dir = Path(temporary) / "run"
         command = [
@@ -42,9 +50,11 @@ def _check_game(binary: Path, objective: Path) -> None:
             "--random-reserve-candidates",
             "1",
             "--tuning-pairs",
-            str(total_weight * 2),
-            "--validation-pairs",
-            str(total_weight),
+            str(tuning_pairs),
+            "--tuning-pair-budget",
+            str(tuning_pair_budget),
+            "--validation-pair-budget",
+            str(validation_pair_budget),
             "--production-validation-pairs",
             str(total_weight * 2),
             "--tuning-max-iterations",
@@ -85,27 +95,34 @@ def _check_game(binary: Path, objective: Path) -> None:
         assert accepted_sources == [
             *manifest["proposer"]["source_schedule"],
             *manifest["proposer"]["challenger_source_schedule"],
+            *manifest["proposer"]["challenger_source_schedule"],
         ]
         cohorts = [event["payload"] for event in events if event["type"] == "cohort_completed"]
-        assert [cohort["cohort_index"] for cohort in cohorts] == [0, 1]
-        retained = [
-            event["payload"]["allocation"]
-            for event in events
-            if event["type"] == "allocation_decided"
-            and event["payload"]["allocation"]["kind"] == "retain_elites"
+        assert [cohort["cohort_index"] for cohort in cohorts] == [0, 1, 2]
+        allocations = [
+            event["payload"] for event in events if event["type"] == "allocation_decided"
         ]
-        assert len(retained) == 1
-        assert retained[0]["candidate_ids"] == cohorts[1]["retained_candidate_ids"]
-        assert cohorts[1]["candidate_ids"][:2] == retained[0]["candidate_ids"]
+        assert all(item["policy_version"] == "budgeted-multi-cohort-v1" for item in allocations)
+        retained = [
+            item["allocation"]
+            for item in allocations
+            if item["allocation"]["kind"] == "retain_elites"
+        ]
+        assert [item["cohort_index"] for item in retained] == [1, 2]
+        for allocation, cohort in zip(retained, cohorts[1:], strict=True):
+            assert cohort["retained_candidate_ids"] == allocation["candidate_ids"]
+            assert cohort["candidate_ids"][:2] == allocation["candidate_ids"]
         tuning_pairs_by_candidate: dict[str, set[str]] = {}
         for pair in completed_pairs:
             if pair["phase"] == "tuning":
                 tuning_pairs_by_candidate.setdefault(pair["candidate_id"], set()).add(
                     pair["pair_id"]
                 )
+        # Retained elites reuse their exact pair evidence: they are never
+        # re-executed in later cohorts.
         assert all(
-            len(tuning_pairs_by_candidate[candidate_id]) == total_weight * 2
-            for candidate_id in retained[0]["candidate_ids"]
+            len(tuning_pairs_by_candidate[candidate_id]) == tuning_pairs
+            for candidate_id in retained[-1]["candidate_ids"]
         )
         assert (
             len({pair["opponent_id"] for pair in completed_pairs if pair["phase"] == "tuning"}) > 1
@@ -129,7 +146,20 @@ def _check_game(binary: Path, objective: Path) -> None:
                 and event["payload"]["phase"] == "tuning"
                 and event["payload"]["prefix_id"] == prefix_id
             }
-            assert set(cohorts[1]["candidate_ids"]) <= observed
+            assert set(cohorts[-1]["candidate_ids"]) <= observed
+        compute = report["compute"]
+        assert compute["policy_version"] == "safe-boundary-pair-attempts-v1"
+        assert compute["budget"] == {
+            "tuning_pair_attempts": tuning_pair_budget,
+            "validation_pair_attempts": validation_pair_budget,
+        }
+        assert compute["tuning"]["pair_attempts"] == tuning_pair_budget
+        assert compute["tuning"]["completed_pairs"] == tuning_pair_budget
+        assert compute["tuning"]["unspent_pair_attempts"] == 0
+        assert compute["tuning"]["overrun_pair_attempts"] == 0
+        assert compute["validation"]["pair_attempts"] == validation_pair_budget
+        assert compute["validation"]["completed_pairs"] == validation_pair_budget
+        assert report["proposal_search"]["configured"]["cohorts"] == 3
         assert report["validation_claim"] == {
             "claim": "mechanics_smoke",
             "missing_production_axes": ["task_count", "search_effort"],

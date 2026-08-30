@@ -40,12 +40,36 @@ from .target import Target
 
 
 def accepted_proposal_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    """All accepted candidates in global proposal order, including duplicates."""
     dispositions = dict(state.dispositions)
     return tuple(
         proposal.candidate
         for proposal in state.proposals
         if dispositions.get(proposal.proposal_index) == "accepted"
     )
+
+
+def globally_accepted_block0_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    """Every globally accepted unique proposal candidate that has reached block 0,
+    in global proposal order. This includes non-elites from completed cohorts and
+    earlier challengers in the active cohort."""
+    dispositions = dict(state.dispositions)
+    seen: set[str] = set()
+    result: list[Candidate] = []
+    for proposal in state.proposals:
+        if dispositions.get(proposal.proposal_index) != "accepted":
+            continue
+        if proposal.candidate.candidate_id in seen:
+            continue
+        # Candidate must have a block-0 tuning observation.
+        if not any(
+            item.candidate_id == proposal.candidate.candidate_id and item.phase == "tuning"
+            for item in state.observations
+        ):
+            continue
+        seen.add(proposal.candidate.candidate_id)
+        result.append(proposal.candidate)
+    return tuple(result)
 
 
 def accepted_proposal_candidates_for_cohort(
@@ -172,11 +196,14 @@ def _model_candidate(
     model: ModelProposer,
     attempt: int,
 ) -> ProposedConfiguration:
+    block0_candidates = globally_accepted_block0_candidates(state)
+    if not block0_candidates:
+        block0_candidates = current_active_candidates(state)
     observations = comparable_prefix_observations(
-        state.observations, current_active_candidates(state), manifest.tuning_blocks[0]
+        state.observations, block0_candidates, manifest.tuning_blocks[0]
     )
     frontier = tuning_frontier(observations)
-    candidates = {item.candidate_id: item for item in current_active_candidates(state)}
+    candidates = {item.candidate_id: item for item in block0_candidates}
     proposed = model.ask(
         model_observations(observations, candidates, frontier),
         frontier,
@@ -198,9 +225,12 @@ def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationF
                 manifest.efforts["tuning"],
             )
         )
+    block0_candidates = globally_accepted_block0_candidates(state)
+    if not block0_candidates:
+        block0_candidates = current_active_candidates(state)
     return tuning_frontier(
         comparable_prefix_observations(
-            state.observations, current_active_candidates(state), manifest.tuning_blocks[0]
+            state.observations, block0_candidates, manifest.tuning_blocks[0]
         )
     )
 

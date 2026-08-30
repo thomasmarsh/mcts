@@ -258,6 +258,29 @@ class ValidationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ComputeBudget:
+    tuning_pair_attempts: int
+    validation_pair_attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseCompute:
+    pair_attempts: int = 0
+    completed_pairs: int = 0
+    failed_attempts: int = 0
+    censored_attempts: int = 0
+    physical_games: int = 0
+    search_iterations: int = 0
+    wall_time_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ComputeLedger:
+    tuning: PhaseCompute = PhaseCompute()
+    validation: PhaseCompute = PhaseCompute()
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayState:
     proposals: tuple[Proposal, ...]
     dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
@@ -269,6 +292,7 @@ class ReplayState:
     terminal_status: Literal["open", "configuration_failed", "complete"]
     tuning_block_index: int
     pending_resource_allocation: ResourceAllocation | None
+    compute: ComputeLedger = ComputeLedger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +324,7 @@ class CompleteCohort:
 
 @dataclass(frozen=True, slots=True)
 class StartNextCohort:
-    """Retain the selected first-cohort elites before introducing challengers."""
+    """Retain the latest cohort's elites before introducing challengers."""
 
 
 @dataclass(frozen=True, slots=True)

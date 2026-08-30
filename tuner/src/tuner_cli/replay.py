@@ -16,8 +16,10 @@ from .cohort import (
     accepted_proposal_candidates,
     accepted_proposal_candidates_for_cohort,
     current_active_candidates,
+    globally_accepted_block0_candidates,
     latest_completed_cohort,
 )
+from .compute import LedgerBuilder
 from .domain import (
     Candidate,
     CohortRecord,
@@ -107,6 +109,7 @@ class _Replay:
     tuning_block_index: int = 0
     pending: ResourceAllocation | None = None
     allocations: int = 0
+    ledger: LedgerBuilder = field(default_factory=LedgerBuilder)
 
     def state(self) -> ReplayState:
         return ReplayState(
@@ -120,25 +123,28 @@ class _Replay:
             self.terminal,
             self.tuning_block_index,
             self.pending,
+            self.ledger.ledger(),
         )
 
     def active(self) -> tuple[Candidate, ...]:
         return current_active_candidates(self.state())
 
     def frontier(self) -> ObservationFrontier:
-        active = self.active()
-        if not active or any(
+        block0 = globally_accepted_block0_candidates(self.state())
+        if not block0:
+            block0 = self.active()
+        if not block0 or any(
             not any(
                 item.phase == "tuning"
                 and item.candidate_id == candidate.candidate_id
                 and item.context.task_prefix == self.manifest.tuning_blocks[0]
                 for item in self.observations
             )
-            for candidate in active
+            for candidate in block0
         ):
             return empty_frontier(_context(self.manifest, "tuning"))
         values = comparable_prefix_observations(
-            tuple(self.observations), active, self.manifest.tuning_blocks[0]
+            tuple(self.observations), block0, self.manifest.tuning_blocks[0]
         )
         return tuning_frontier(values)
 
@@ -210,10 +216,12 @@ def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> 
         and proposal.frontier.observation_ids
     ):
         raise ValueError("bootstrap proposal has a nonempty frontier")
-    if (
-        cohort_index == 0 and slot >= state.manifest.bootstrap_candidates or cohort_index == 1
-    ) and len(proposal.frontier.observation_ids) != len(state.active()):
-        raise ValueError("guided proposal lacks a complete comparable frontier")
+    # Every non-bootstrap proposal binds a complete comparable frontier from
+    # globally accepted block-0 candidates.
+    if (cohort_index == 0 and slot >= state.manifest.bootstrap_candidates) or cohort_index > 0:
+        expected_count = len(globally_accepted_block0_candidates(state.state()) or state.active())
+        if len(proposal.frontier.observation_ids) != expected_count:
+            raise ValueError("guided proposal lacks a complete comparable frontier")
     state.proposals.append(proposal)
     state.pending = None
 
@@ -319,19 +327,15 @@ def _apply_cohort(state: _Replay, payload: CohortCompletedPayload) -> None:
         POLICY_VERSION,
         tuning_frontier(tuning).frontier_id,
     )
-    if (
-        cohort_index not in (0, 1)
-        or len(candidates) != state.manifest.cohort_size
-        or payload != expected
-    ):
+    if len(candidates) != state.manifest.cohort_size or payload != expected:
         raise ValueError("cohort completion does not bind final tuning observations")
     state.completed_cohorts.append(
         CohortRecord(
             cohort_index, candidates, tuple(item.candidate_id for item in state.active_elites)
         )
     )
-    if cohort_index == 1:
-        state.active_elites = ()
+    # After any cohort completes, clear the active elites (they were just recorded).
+    state.active_elites = ()
 
 
 def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
@@ -342,7 +346,7 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
     ):
         raise ValueError("finalist selection does not match pending allocation")
     cohort = latest_completed_cohort(state.state())
-    if len(state.completed_cohorts) != 2 or cohort is None or state.finalists is not None:
+    if len(state.completed_cohorts) < 1 or cohort is None or state.finalists is not None:
         raise ValueError("finalist selection is premature")
     tuning = comparable_prefix_observations(
         tuple(state.observations), cohort.candidates, state.manifest.tuning_prefix
@@ -367,8 +371,7 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
 def _apply_completion(state: _Replay, payload: RunCompletedPayload) -> None:
     cohort = latest_completed_cohort(state.state())
     if (
-        len(state.completed_cohorts) != 2
-        or state.finalists is None
+        state.finalists is None
         or cohort is None
         or pending_pair(state.manifest, state.state()) is not None
     ):
@@ -406,7 +409,9 @@ def _scientific_count(state: _Replay) -> int:
         + len(state.completed)
         + len(state.observations)
         + state.allocations
-        + 4
+        + len(state.completed_cohorts)
+        + (state.finalists is not None)
+        + 1
     )
 
 
@@ -447,6 +452,7 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
 def fold_events(manifest: Manifest, events: list[EvidenceEvent]) -> ReplayState:
     state = _Replay(manifest)
     for event in events:
+        state.ledger.apply(event)
         _apply(state, event)
     return state.state()
 

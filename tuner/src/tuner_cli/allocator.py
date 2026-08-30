@@ -38,7 +38,7 @@ from .identity import pair_task
 from .observations import comparable_prefix_observations
 from .selection import select_top_candidates
 
-ALLOCATION_POLICY_VERSION = "two-cohort-elite-retention-v1"
+ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 
 
 def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecision:
@@ -47,32 +47,48 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
     cohort_index = len(state.completed_cohorts)
     accepted = accepted_proposal_candidates_for_cohort(state, cohort_index)
     active = current_active_candidates(state)
+    # Bootstrap phase: fill the initial slots before guided proposals.
     if cohort_index == 0 and len(accepted) < manifest.bootstrap_candidates:
         return IntroduceProposal()
     if task := pending_pair(manifest, state):
         return ExecutePair(task)
     if candidate := observation_due(manifest, state):
         return EmitObservation(candidate.candidate_id, pair_phase(state))
+    # Fill the active cohort to target size once the block-0 frontier is available.
     if len(active) < manifest.cohort_size and _frontier(
         state, active, manifest.tuning_blocks[0].prefix_id
     ):
         return IntroduceProposal()
-    if (
-        cohort_index < 2
-        and len(active) == manifest.cohort_size
-        and _frontier(state, active, active_prefix(manifest, state).prefix_id)
+    # Deepen or complete the current cohort when every active candidate has the
+    # latest prefix observation.
+    if len(active) == manifest.cohort_size and _frontier(
+        state, active, active_prefix(manifest, state).prefix_id
     ):
         if state.tuning_block_index + 1 < len(manifest.tuning_blocks):
             prefix = manifest.tuning_blocks[state.tuning_block_index + 1]
             return DeepenCohort(state.tuning_block_index + 1, prefix.prefix_id)
         return CompleteCohort()
-    if cohort_index == 1 and latest_completed_cohort(state) is not None and state.finalists is None:
-        return StartNextCohort()
-    if cohort_index == 2 and state.finalists is None:
-        return SelectFinalists()
+    # At a completed-cohort boundary with no committed finalists, decide between
+    # another challenger cohort or validation.
+    if state.finalists is None and latest_completed_cohort(state) is not None:
+        return _cohort_boundary_decision(manifest, state)
     if state.finalists is not None and _validation_complete(manifest, state):
         return CompleteRun()
     return NoDecision()
+
+
+def _cohort_boundary_decision(manifest: Manifest, state: ReplayState) -> AllocationDecision:
+    """Admit another challenger cohort when the remaining tuning pair budget
+    can fund all of its planned new pairs; otherwise select finalists and begin
+    validation. Reached only with at least one completed cohort, so the check
+    applies to every retention boundary alike."""
+    prefix_length = manifest.tuning_prefix.length
+    challenger_pairs = (manifest.cohort_size - manifest.finalists) * prefix_length
+    used = state.compute.tuning.pair_attempts
+    budget = manifest.compute_budget.tuning_pair_attempts
+    if used + challenger_pairs <= budget:
+        return StartNextCohort()
+    return SelectFinalists()
 
 
 def resource_allocation(
@@ -100,8 +116,11 @@ def resource_allocation(
                 state.observations, cohort.candidates, manifest.tuning_prefix
             )
             elites = select_top_candidates(cohort.candidates, tuning, manifest.finalists)
+            next_index = len(state.completed_cohorts)
             return RetainElites(
-                1, tuple(item.candidate_id for item in elites), manifest.tuning_prefix.prefix_id
+                next_index,
+                tuple(item.candidate_id for item in elites),
+                manifest.tuning_prefix.prefix_id,
             )
         case _:
             return None
