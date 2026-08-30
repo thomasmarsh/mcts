@@ -28,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-max-iterations", type=int, default=10_000)
     parser.add_argument("--production-max-iterations", type=int, default=10_000)
     parser.add_argument("--pair-timeout-seconds", type=int, default=600)
+    parser.add_argument("--evaluator-workers", type=int, default=1, metavar="N")
+    parser.add_argument("--shadow-practical-margin", type=float, default=0.0)
+    parser.add_argument("--shadow-elimination-threshold", type=float, default=0.05)
     parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -52,6 +55,9 @@ def _options(args: argparse.Namespace) -> RunOptions:
         validation_max_iterations=args.validation_max_iterations,
         production_max_iterations=args.production_max_iterations,
         pair_timeout_seconds=args.pair_timeout_seconds,
+        evaluator_workers=args.evaluator_workers,
+        shadow_practical_margin=args.shadow_practical_margin,
+        shadow_elimination_threshold=args.shadow_elimination_threshold,
         resume=args.resume,
     )
 

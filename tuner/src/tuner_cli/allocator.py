@@ -18,6 +18,7 @@ from .domain import (
     DeepenCohort,
     DeepenCohortAllocation,
     EmitObservation,
+    EmitShadowRace,
     ExecutePair,
     IntroduceCandidate,
     IntroduceProposal,
@@ -65,6 +66,13 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
         state, active, active_prefix(manifest, state).prefix_id
     ):
         if state.tuning_block_index + 1 < len(manifest.tuning_blocks):
+            prefix = active_prefix(manifest, state)
+            if not any(
+                item.cohort_index == len(state.completed_cohorts)
+                and item.prefix_id == prefix.prefix_id
+                for item in state.shadow_races
+            ):
+                return EmitShadowRace(len(state.completed_cohorts), prefix.prefix_id)
             prefix = manifest.tuning_blocks[state.tuning_block_index + 1]
             return DeepenCohort(state.tuning_block_index + 1, prefix.prefix_id)
         return CompleteCohort()
@@ -146,7 +154,12 @@ def active_prefix(manifest: Manifest, state: ReplayState) -> TaskPrefix:
     )
 
 
-def pending_pair(manifest: Manifest, state: ReplayState) -> PairTask | None:
+def ready_pairs(
+    manifest: Manifest, state: ReplayState, limit: int | None = None
+) -> tuple[PairTask, ...]:
+    """Return incomplete tasks in the active prefix's canonical order."""
+    if limit is not None and (isinstance(limit, bool) or limit <= 0):
+        raise ValueError("pair limit must be a positive integer")
     phase, prefix = pair_phase(state), active_prefix(manifest, state)
     start = (
         0
@@ -154,12 +167,20 @@ def pending_pair(manifest: Manifest, state: ReplayState) -> PairTask | None:
         else manifest.tuning_blocks[state.tuning_block_index - 1].length
     )
     completed = {pair.task.pair_id for pair in state.completed_pairs}
+    ready: list[PairTask] = []
     for case in manifest.prefix_cases(phase)[start : prefix.length]:
         for candidate in pair_candidates(state):
             task = pair_task(candidate, case, manifest.efforts[phase])
             if task.pair_id not in completed:
-                return task
-    return None
+                ready.append(task)
+                if limit is not None and len(ready) == limit:
+                    return tuple(ready)
+    return tuple(ready)
+
+
+def pending_pair(manifest: Manifest, state: ReplayState) -> PairTask | None:
+    """Compatibility view of the first currently ready pair."""
+    return next(iter(ready_pairs(manifest, state, limit=1)), None)
 
 
 def matching_pairs(state: ReplayState, candidate: Candidate, phase: Phase) -> list[PairResult]:

@@ -7,7 +7,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
-from .codec import JsonObject, integer, object_fields, strict_json, string
+from .codec import JsonObject, integer, number, object_fields, strict_json, string
 from .domain import (
     ComputeBudget,
     ObjectiveEpoch,
@@ -116,6 +116,22 @@ class ProposerSpecification:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ShadowPolicySpecification:
+    practical_effect_margin: float
+    elimination_probability_threshold: float
+    resamples: int
+    method_version: Literal["stratified-paired-bootstrap-v1"]
+
+    def encoded(self) -> JsonObject:
+        return {
+            "practical_effect_margin": self.practical_effect_margin,
+            "elimination_probability_threshold": self.elimination_probability_threshold,
+            "resamples": self.resamples,
+            "method_version": self.method_version,
+        }
+
+
 def proposer_specification(
     proposal_seed: int,
     task_seed: int,
@@ -162,6 +178,7 @@ class Manifest:
     game_config_fingerprint: str
     effort_values: tuple[SearchEffort, SearchEffort, SearchEffort]
     compute_budget: ComputeBudget
+    shadow_policy: ShadowPolicySpecification
 
     @property
     def seed(self) -> int:
@@ -347,6 +364,8 @@ def build_manifest(
     tuning_max_iterations: int,
     validation_max_iterations: int,
     production_max_iterations: int,
+    shadow_practical_margin: float = 0.0,
+    shadow_elimination_threshold: float = 0.05,
 ) -> Manifest:
     proposer = proposer_specification(
         seed,
@@ -376,6 +395,7 @@ def build_manifest(
         (tuning_pairs, production_validation_pairs),
         (tuning_max_iterations, validation_max_iterations, production_max_iterations),
     )
+    shadow_policy = _shadow_policy(shadow_practical_margin, shadow_elimination_threshold)
     game_config_fingerprint = fingerprint(
         strict_json(spec.default_game_config, "game configuration")
     )
@@ -425,6 +445,7 @@ def build_manifest(
         epoch,
         efforts,
         ComputeBudget(tuning_pair_budget, validation_pair_budget),
+        shadow_policy,
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -443,6 +464,18 @@ def _validate_manifest_inputs(
     tuning_iterations, validation_iterations, production_iterations = iterations
     if tuning_iterations > production_iterations or validation_iterations > production_iterations:
         raise ValueError("observed search effort cannot exceed production effort")
+
+
+def _shadow_policy(margin: object, threshold: object) -> ShadowPolicySpecification:
+    practical_margin = number(margin, "shadow practical margin")
+    elimination_threshold = number(threshold, "shadow elimination threshold")
+    if not 0.0 <= practical_margin <= 1.0:
+        raise ValueError("shadow practical margin must be in [0.0, 1.0]")
+    if not 0.0 < elimination_threshold < 0.5:
+        raise ValueError("shadow elimination threshold must be in (0.0, 0.5)")
+    return ShadowPolicySpecification(
+        practical_margin, elimination_threshold, 4096, "stratified-paired-bootstrap-v1"
+    )
 
 
 _STATISTICAL_POLICY: JsonObject = {
@@ -511,6 +544,7 @@ def _encode_manifest_object(
     epoch: ObjectiveEpoch,
     efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
     compute_budget: ComputeBudget,
+    shadow_policy: ShadowPolicySpecification,
 ) -> JsonObject:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -521,6 +555,7 @@ def _encode_manifest_object(
             "tuning_pair_attempts": compute_budget.tuning_pair_attempts,
             "validation_pair_attempts": compute_budget.validation_pair_attempts,
         },
+        "shadow_policy": shadow_policy.encoded(),
         **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
@@ -557,6 +592,7 @@ _FIELDS = {
     "run_id",
     "command_policy_version",
     "compute_budget",
+    "shadow_policy",
     "binary",
     "engine_fingerprint",
     "description",
@@ -890,6 +926,25 @@ def decode_manifest_object(value: object) -> Manifest:
         integer(budget_raw["tuning_pair_attempts"], "tuning pair attempts", positive=True),
         integer(budget_raw["validation_pair_attempts"], "validation pair attempts", positive=True),
     )
+    shadow_raw = object_fields(
+        raw["shadow_policy"],
+        {
+            "practical_effect_margin",
+            "elimination_probability_threshold",
+            "resamples",
+            "method_version",
+        },
+        "shadow policy",
+    )
+    shadow_policy = _shadow_policy(
+        shadow_raw["practical_effect_margin"], shadow_raw["elimination_probability_threshold"]
+    )
+    if (
+        integer(shadow_raw["resamples"], "shadow resamples", positive=True)
+        != shadow_policy.resamples
+        or shadow_raw["method_version"] != shadow_policy.method_version
+    ):
+        raise ValueError("unsupported shadow policy")
     panel = _decode_panel(raw["opponent_panel"])
     source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)
     start_fingerprint = _decode_start_distribution(raw)
@@ -935,6 +990,7 @@ def decode_manifest_object(value: object) -> Manifest:
         game_config_fingerprint,
         efforts,
         compute_budget,
+        shadow_policy,
     )
 
 
@@ -963,5 +1019,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.epoch,
         manifest.effort_values,
         manifest.compute_budget,
+        manifest.shadow_policy,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

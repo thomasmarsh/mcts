@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 
-def _check_game(binary: Path, objective: Path) -> None:
+def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> None:
     description = subprocess.run(
         [str(binary), "describe"], check=False, capture_output=True, text=True
     )
@@ -63,6 +64,8 @@ def _check_game(binary: Path, objective: Path) -> None:
             "32",
             "--production-max-iterations",
             "64",
+            "--evaluator-workers",
+            str(evaluator_workers),
         ]
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         assert completed.returncode == 0, completed.stderr
@@ -138,6 +141,12 @@ def _check_game(binary: Path, objective: Path) -> None:
             if event["type"] == "observation_completed" and event["payload"]["phase"] == "tuning"
         }
         assert len(tuning_prefixes) == 2
+        shadow_races = [
+            event["payload"] for event in events if event["type"] == "shadow_race_decided"
+        ]
+        assert len(shadow_races) == len(cohorts)
+        assert {race["cohort_index"] for race in shadow_races} == set(range(len(cohorts)))
+        assert all(len(race["decisions"]) == 4 for race in shadow_races)
         for prefix_id in tuning_prefixes:
             observed = {
                 event["payload"]["candidate_id"]
@@ -179,7 +188,9 @@ def _check_game(binary: Path, objective: Path) -> None:
 def main() -> None:
     root = Path(__file__).resolve().parents[3]
     _check_game(
-        root / "target/release/game-druid", root / "tuner/objectives/druid-reference-v1.json"
+        root / "target/release/game-druid",
+        root / "tuner/objectives/druid-reference-v1.json",
+        2 if (os.cpu_count() or 1) >= 2 else 1,
     )
     _check_game(
         root / "target/release/game-ttt", root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json"

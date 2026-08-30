@@ -9,6 +9,7 @@ from .allocator import (
     ALLOCATION_POLICY_VERSION,
     decide_allocation,
     pending_pair,
+    ready_pairs,
     resource_allocation,
 )
 from .artifacts import Manifest, production_claim
@@ -24,6 +25,7 @@ from .domain import (
     Candidate,
     CohortRecord,
     DeepenCohortAllocation,
+    EmitShadowRace,
     ExecutePair,
     IntroduceCandidate,
     Observation,
@@ -36,6 +38,7 @@ from .domain import (
     ReplayState,
     ResourceAllocation,
     RetainElites,
+    ShadowRaceDecision,
 )
 from .event_payloads import (
     AllocationDecidedPayload,
@@ -51,12 +54,14 @@ from .event_payloads import (
     RunCompletedPayload,
     RunFailedPayload,
     RunInterruptedPayload,
+    ShadowRaceDecidedPayload,
 )
 from .evidence import EvidenceEvent, decode_pair_payload
 from .identity import candidate_from_canonical_config
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
 from .selection import select_top_candidates
+from .shadow import decide_shadow_race
 
 Disposition = Literal["accepted", "rejected"]
 Terminal = Literal["open", "configuration_failed", "complete"]
@@ -110,6 +115,7 @@ class _Replay:
     pending: ResourceAllocation | None = None
     allocations: int = 0
     ledger: LedgerBuilder = field(default_factory=LedgerBuilder)
+    shadow_races: list[ShadowRaceDecision] = field(default_factory=lambda: [])
 
     def state(self) -> ReplayState:
         return ReplayState(
@@ -124,6 +130,7 @@ class _Replay:
             self.tuning_block_index,
             self.pending,
             self.ledger.ledger(),
+            tuple(self.shadow_races),
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -283,6 +290,17 @@ def _apply_observation(state: _Replay, payload: ObservationCompletedPayload) -> 
     state.observations.append(value)
 
 
+def _apply_shadow_race(state: _Replay, payload: ShadowRaceDecidedPayload) -> None:
+    decision = decide_allocation(state.manifest, state.state())
+    if not isinstance(decision, EmitShadowRace):
+        raise ValueError("shadow race is not expected")
+    prefix = state.manifest.tuning_blocks[state.tuning_block_index]
+    expected = decide_shadow_race(state.manifest, state.state(), decision.cohort_index, prefix)
+    if payload.decision != expected:
+        raise ValueError("shadow race does not match policy")
+    state.shadow_races.append(payload.decision)
+
+
 def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None:
     if state.pending is not None:
         raise ValueError("resource allocation is already pending")
@@ -408,6 +426,7 @@ def _scientific_count(state: _Replay) -> int:
         + len(state.dispositions)
         + len(state.completed)
         + len(state.observations)
+        + len(state.shadow_races)
         + state.allocations
         + len(state.completed_cohorts)
         + (state.finalists is not None)
@@ -416,9 +435,27 @@ def _scientific_count(state: _Replay) -> int:
 
 
 def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPayload) -> None:
-    task = pending_pair(state.manifest, state.state())
-    if task is None or payload.identity.pair_id != task.pair_id:
+    tasks = (
+        ready_pairs(state.manifest, state.state())
+        if isinstance(payload, PairStartedPayload)
+        else (() if (task := pending_pair(state.manifest, state.state())) is None else (task,))
+    )
+    if not any(
+        payload.identity.phase == task.task_case.phase
+        and payload.identity.candidate_id == task.candidate_id
+        and payload.identity.task_id == task.task_case.task_id
+        and payload.identity.pair_id == task.pair_id
+        and payload.identity.opponent_id == task.task_case.opponent_id
+        and payload.identity.budget == task.budget.max_iterations
+        for task in tasks
+    ):
         raise ValueError("operational pair record does not match pending pair")
+    if isinstance(payload, PairStartedPayload) and not any(
+        payload.task_seed == task.task_case.seed
+        for task in tasks
+        if payload.identity.pair_id == task.pair_id
+    ):
+        raise ValueError("pair start seed does not match pending pair")
 
 
 def _apply(state: _Replay, event: EvidenceEvent) -> None:
@@ -435,6 +472,8 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
             _apply_pair(state, payload)
         case ObservationCompletedPayload() as payload:
             _apply_observation(state, payload)
+        case ShadowRaceDecidedPayload() as payload:
+            _apply_shadow_race(state, payload)
         case CohortCompletedPayload() as payload:
             _apply_cohort(state, payload)
         case FinalistsSelectedPayload() as payload:

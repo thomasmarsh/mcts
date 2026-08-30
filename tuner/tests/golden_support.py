@@ -127,6 +127,9 @@ class GoldenTarget:
     def __init__(self) -> None:
         self.calls: list[PairTask] = []
 
+    def cancel(self) -> None:
+        return None
+
     def describe(self) -> JsonValue:
         return {
             "kind": "druid",

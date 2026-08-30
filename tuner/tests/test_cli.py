@@ -71,3 +71,26 @@ def test_parser_requires_explicit_scientific_inputs() -> None:
             "--resume",
         ]
     ).resume
+    assert (
+        parser.parse_args(
+            [
+                "--game-binary",
+                "game",
+                "--objective-file",
+                "objective.json",
+                "--run-dir",
+                "run",
+                "--task-seed",
+                "9",
+                "--tuning-pair-budget",
+                "24",
+                "--validation-pair-budget",
+                "6",
+                "--production-validation-pairs",
+                "3",
+                "--evaluator-workers",
+                "2",
+            ]
+        ).evaluator_workers
+        == 2
+    )

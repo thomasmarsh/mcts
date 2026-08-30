@@ -34,6 +34,7 @@ _ALL_EVENT_TYPES: set[EventType] = {
     "observation_completed",
     "finalists_selected",
     "run_completed",
+    "shadow_race_decided",
 }
 
 

@@ -29,6 +29,16 @@ uv run --project tuner tuner \
   --production-max-iterations 64
 ```
 
+`--evaluator-workers` is an operational setting and defaults to `1`. Each
+evaluator runs one search thread, so the worker count cannot exceed the
+available logical CPUs. Values above one execute an allocator-ordered batch of
+seat-swapped pair subprocesses concurrently; starts may be batched, but terminal
+evidence is committed in the same canonical order as sequential execution.
+Worker count is not frozen in the manifest, so a run may resume with a different
+count. If a child fails, only the preceding success prefix is committed and the
+started suffix is retried on resume. Interrupting a run cancels active children,
+leaving any uncommitted starts censored and resumable.
+
 Panel weights produce a deterministic weighted-fair task order. Every task
 names the exact panel opponent, canonical configuration fingerprint, seed, and
 start stratum it uses. `--seed` controls proposal streams only;
@@ -39,6 +49,13 @@ each cumulative complete-cycle prefix before deepening the full cohort, with no
 elimination. `--finalists` is both the retained-elite count and the final
 shortlist count. The selected validation corpus is always a leading prefix of the
 frozen production validation corpus.
+
+At every complete non-final tuning prefix, the tuner records a deterministic
+paired, stratum-aware `shadow_race_decided` screening disposition. Its practical
+margin and nominal elimination threshold are frozen by `--shadow-practical-margin`
+and `--shadow-elimination-threshold`. This is evidence only: every candidate
+still reaches the maximum tuning prefix, and the nominal threshold has not earned
+an active-pruning safety claim.
 
 `--tuning-pair-budget` and `--validation-pair-budget` are required total
 budgets over pair attempts, frozen in the manifest under the
@@ -94,7 +111,7 @@ Resume validates the manifest and complete evidence log before append. It
 rejects changed objective content/order/weights/configurations, task corpora,
 prefixes, efforts, budgets, or epoch before evaluating another game. The objective and
 binary paths may move when their resolved scientific identity is unchanged;
-`--pair-timeout-seconds` remains operational. Resuming a completed run only
+`--pair-timeout-seconds` and `--evaluator-workers` remain operational. Resuming a completed run only
 rebuilds `report.json`. A resumed run reproduces the uninterrupted run's
 scientific projection, selection, and validation exactly; only the compute
 ledger truthfully records the extra censored or retried attempts, including any

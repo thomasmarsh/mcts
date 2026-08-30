@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from threading import Lock
 from typing import Literal, Protocol
 
 from .codec import JsonObject, JsonValue, is_json_object, literal, strict_json, string
@@ -55,6 +56,8 @@ class Target(Protocol):
         timeout_seconds: int,
     ) -> PairResult: ...
 
+    def cancel(self) -> None: ...
+
 
 def _splitmix_seed(seed: int) -> int:
     value = seed & ((1 << 64) - 1)
@@ -66,6 +69,18 @@ def _splitmix_seed(seed: int) -> int:
 class GameBinaryTarget:
     def __init__(self, binary_path: Path) -> None:
         self.binary_path = binary_path
+        self._children: set[subprocess.Popen[str]] = set()
+        self._children_lock = Lock()
+
+    def cancel(self) -> None:
+        with self._children_lock:
+            children = tuple(self._children)
+        for process in children:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
 
     def describe(self) -> JsonValue:
         completed = subprocess.run(
@@ -135,42 +150,48 @@ class GameBinaryTarget:
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
+        with self._children_lock:
+            self._children.add(process)
         try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as error:
-            process.kill()
-            stdout, stderr = process.communicate()
-            raise PairExecutionError(
-                "timeout",
-                f"pair timed out after {timeout_seconds}s",
-                command,
-                stderr=stderr,
-                stdout=stdout,
-            ) from error
-        except KeyboardInterrupt:
-            process.kill()
-            process.communicate()
-            raise
-        if process.returncode != 0:
-            raise PairExecutionError(
-                "nonzero_exit",
-                f"comparison exited {process.returncode}",
-                command,
-                returncode=process.returncode,
-                stderr=stderr,
-                stdout=stdout,
-            )
-        try:
-            return parse_pair_output(stdout, task)
-        except ValueError as error:
-            raise PairExecutionError(
-                "malformed_output",
-                str(error),
-                command,
-                returncode=process.returncode,
-                stderr=stderr,
-                stdout=stdout,
-            ) from error
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as error:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise PairExecutionError(
+                    "timeout",
+                    f"pair timed out after {timeout_seconds}s",
+                    command,
+                    stderr=stderr,
+                    stdout=stdout,
+                ) from error
+            except KeyboardInterrupt:
+                process.kill()
+                process.communicate()
+                raise
+            if process.returncode != 0:
+                raise PairExecutionError(
+                    "nonzero_exit",
+                    f"comparison exited {process.returncode}",
+                    command,
+                    returncode=process.returncode,
+                    stderr=stderr,
+                    stdout=stdout,
+                )
+            try:
+                return parse_pair_output(stdout, task)
+            except ValueError as error:
+                raise PairExecutionError(
+                    "malformed_output",
+                    str(error),
+                    command,
+                    returncode=process.returncode,
+                    stderr=stderr,
+                    stdout=stdout,
+                ) from error
+        finally:
+            with self._children_lock:
+                self._children.discard(process)
 
 
 def _single_object(stdout: str) -> JsonObject:

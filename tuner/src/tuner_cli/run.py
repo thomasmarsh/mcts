@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .continuation import continue_run
 from .domain import Candidate
 from .evidence import EvidenceWriter, read_events, write_manifest
+from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
 from .identity import candidate_from_config, sha256_file
 from .objective import ResolvedObjective, resolve_objective
 from .proposer import ModelProposer
@@ -40,6 +43,9 @@ class RunOptions:
     validation_max_iterations: int = 10_000
     production_max_iterations: int = 10_000
     pair_timeout_seconds: int = 600
+    evaluator_workers: int = 1
+    shadow_practical_margin: float = 0.0
+    shadow_elimination_threshold: float = 0.05
     resume: bool = False
 
 
@@ -53,6 +59,7 @@ def run_foreground(
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
     binary, directory, objective_path = validate_options(options)
+    executor = pair_executor(options.evaluator_workers)
     active_target = GameBinaryTarget(binary) if target is None else target
     spec = game_spec(active_target, binary)
     default = schema_default(spec, options.seed)
@@ -64,7 +71,14 @@ def run_foreground(
         return directory / "report.json"
     model = model_proposer or SmacProposer(build_space(spec.tuning, options.seed))
     continue_run(
-        manifest, writer, active_target, default, spec, model, options.pair_timeout_seconds
+        manifest,
+        writer,
+        active_target,
+        default,
+        spec,
+        model,
+        options.pair_timeout_seconds,
+        executor,
     )
     write_report(directory)
     return directory / "report.json"
@@ -89,6 +103,15 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
     )
     if any(isinstance(item, bool) or item <= 0 for item in numeric):
         raise ValueError("all numeric arguments must be positive integers")
+    for value, label, inclusive in (
+        (options.shadow_practical_margin, "shadow practical margin", True),
+        (options.shadow_elimination_threshold, "shadow elimination threshold", False),
+    ):
+        if isinstance(value, bool) or not math.isfinite(value):
+            raise ValueError(f"{label} must be a finite number")
+        if not (0.0 <= value <= 1.0 if inclusive else 0.0 < value < 0.5):
+            raise ValueError(f"{label} must be in {'[0.0, 1.0]' if inclusive else '(0.0, 0.5)'}")
+    validate_evaluator_workers(options.evaluator_workers, os.cpu_count())
     post_bootstrap = options.cohort_size - options.bootstrap_candidates
     if options.bootstrap_candidates < 2 or post_bootstrap < 2:
         raise ValueError("bootstrap and post-bootstrap stages each need at least two candidates")
@@ -114,6 +137,22 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
     if not options.resume and directory.exists():
         raise ValueError(f"run directory already exists: {directory}; use --resume to continue it")
     return binary, directory, objective
+
+
+def validate_evaluator_workers(workers: int, cpu_count: int | None) -> int:
+    """Validate the fixed one-search-thread-per-evaluator CPU product."""
+    available = 1 if cpu_count is None else cpu_count
+    if isinstance(workers, bool) or workers <= 0:
+        raise ValueError("evaluator workers must be a positive integer")
+    if workers > available:
+        raise ValueError(
+            f"evaluator workers ({workers}) exceed available logical CPUs ({available})"
+        )
+    return available
+
+
+def pair_executor(workers: int) -> PairExecutor:
+    return SequentialPairExecutor() if workers == 1 else BoundedPairExecutor(workers)
 
 
 def game_spec(target: Target, binary: Path) -> GameSpec:
@@ -196,6 +235,8 @@ def manifest_for(
         options.tuning_max_iterations,
         options.validation_max_iterations,
         options.production_max_iterations,
+        options.shadow_practical_margin,
+        options.shadow_elimination_threshold,
     )
 
 

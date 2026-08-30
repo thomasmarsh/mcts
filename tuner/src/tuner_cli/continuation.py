@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from .allocator import decide_allocation, pair_candidates, proposal_at, resource_allocation
+from .allocator import (
+    decide_allocation,
+    pair_candidates,
+    proposal_at,
+    ready_pairs,
+    resource_allocation,
+)
 from .artifacts import Manifest, production_claim
 from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
@@ -21,6 +27,7 @@ from .domain import (
     DeepenCohort,
     DeepenCohortAllocation,
     EmitObservation,
+    EmitShadowRace,
     ExecutePair,
     IntroduceCandidate,
     IntroduceProposal,
@@ -43,14 +50,24 @@ from .event_payloads import (
     PairStartedPayload,
     RunCompletedPayload,
     RunInterruptedPayload,
+    ShadowRaceDecidedPayload,
 )
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
+from .executor import (
+    PairExecutor,
+    PairFailed,
+    PairInterrupted,
+    PairJob,
+    PairSucceeded,
+    SequentialPairExecutor,
+)
 from .identity import canonical_json
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
 from .selection import select_top_candidates
+from .shadow import decide_shadow_race
 from .target import PairExecutionError, Target
 
 
@@ -62,12 +79,23 @@ def continue_run(
     spec: GameSpec,
     model: ModelProposer,
     timeout: int,
+    executor: PairExecutor | None = None,
 ) -> None:
     while True:
         state = fold_events(manifest, read_events(writer.path))
         if state.terminal_status != "open":
             return
-        advance_one(manifest, writer, target, default, spec, model, timeout, state)
+        advance_one(
+            manifest,
+            writer,
+            target,
+            default,
+            spec,
+            model,
+            timeout,
+            state,
+            executor or SequentialPairExecutor(),
+        )
 
 
 def advance_one(
@@ -79,6 +107,7 @@ def advance_one(
     model: ModelProposer,
     timeout: int,
     state: ReplayState,
+    executor: PairExecutor,
 ) -> None:
     match state.pending_resource_allocation:
         case IntroduceCandidate():
@@ -90,7 +119,9 @@ def advance_one(
         case RetainElites():
             raise RuntimeError("elite retention allocation must be folded immediately")
         case None:
-            _advance_selected(manifest, writer, target, default, spec, model, timeout, state)
+            _advance_selected(
+                manifest, writer, target, default, spec, model, timeout, state, executor
+            )
 
 
 def _advance_selected(
@@ -102,6 +133,7 @@ def _advance_selected(
     model: ModelProposer,
     timeout: int,
     state: ReplayState,
+    executor: PairExecutor,
 ) -> None:
     decision = decide_allocation(manifest, state)
     if allocation := resource_allocation(decision, manifest, state):
@@ -111,10 +143,17 @@ def _advance_selected(
         case ResolveProposal(proposal_index):
             proposal = proposal_at(state, proposal_index)
             writer.append(proposal_disposition(target, manifest, state, proposal))
-        case ExecutePair(task):
-            execute_pair(manifest, writer, target, state, task, timeout)
+        case ExecutePair():
+            execute_pairs(manifest, writer, target, state, timeout, executor)
         case EmitObservation(candidate_id, phase):
             emit_observation(manifest, writer, state, candidate_id, phase)
+        case EmitShadowRace(cohort_index, prefix_id):
+            prefix = manifest.tuning_blocks[state.tuning_block_index]
+            if prefix.prefix_id != prefix_id:
+                raise RuntimeError("shadow race prefix does not match active prefix")
+            writer.append(
+                ShadowRaceDecidedPayload(decide_shadow_race(manifest, state, cohort_index, prefix))
+            )
         case CompleteCohort():
             complete_cohort(manifest, writer, state)
         case DeepenCohort():
@@ -127,32 +166,44 @@ def _advance_selected(
             raise RuntimeError("no fixed-cohort continuation operation is available")
 
 
-def execute_pair(
+def execute_pairs(
     manifest: Manifest,
     writer: EvidenceWriter,
     target: Target,
     state: ReplayState,
-    task: PairTask,
     timeout: int,
+    executor: PairExecutor,
 ) -> None:
+    tasks = ready_pairs(manifest, state, executor.capacity)
+    jobs = tuple(_pair_job(manifest, state, task, timeout) for task in tasks)
+    for job in jobs:
+        writer.append(_pair_started_payload(job.task))
+    outcomes = executor.evaluate(target, jobs)
+    for outcome in outcomes:
+        match outcome:
+            case PairSucceeded(_, result):
+                writer.append(pair_payload(result))
+            case PairFailed(job, error):
+                writer.append(failure_payload(job.task, error))
+                raise error
+            case PairInterrupted():
+                executor.cancel(target)
+                writer.append(
+                    RunInterruptedPayload(
+                        "pair_execution", jobs[0].task.pair_id if len(jobs) == 1 else None
+                    )
+                )
+                raise KeyboardInterrupt
+
+
+def _pair_job(manifest: Manifest, state: ReplayState, task: PairTask, timeout: int) -> PairJob:
     candidate = next(
         item for item in pair_candidates(state) if item.candidate_id == task.candidate_id
     )
     opponent = next(
         item for item in manifest.panel.opponents if item.opponent_id == task.task_case.opponent_id
     )
-    writer.append(_pair_started_payload(task))
-    try:
-        result = target.evaluate(
-            task, candidate, opponent, manifest.spec.default_game_config, timeout
-        )
-    except PairExecutionError as error:
-        writer.append(failure_payload(task, error))
-        raise
-    except KeyboardInterrupt as error:
-        writer.append(RunInterruptedPayload("pair_execution", task.pair_id))
-        raise KeyboardInterrupt from error
-    writer.append(pair_payload(result))
+    return PairJob(task, candidate, opponent, manifest.spec.default_game_config, timeout)
 
 
 def _pair_identity(task: PairTask) -> PairIdentity:

@@ -8,6 +8,7 @@ from typing import Literal
 Phase = Literal["tuning", "validation"]
 OpponentRole = Literal["default", "historical_reference"]
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
+ShadowDisposition = Literal["continue", "eliminate", "protected"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +282,24 @@ class ComputeLedger:
 
 
 @dataclass(frozen=True, slots=True)
+class ShadowCandidateDecision:
+    candidate_id: str
+    favorable_resamples: int
+    total_resamples: int
+    disposition: ShadowDisposition
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowRaceDecision:
+    cohort_index: int
+    prefix_id: str
+    observation_ids: tuple[str, ...]
+    boundary_candidate_id: str
+    decisions: tuple[ShadowCandidateDecision, ...]
+    policy_version: Literal["stratified-paired-bootstrap-v1"]
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayState:
     proposals: tuple[Proposal, ...]
     dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
@@ -293,6 +312,7 @@ class ReplayState:
     tuning_block_index: int
     pending_resource_allocation: ResourceAllocation | None
     compute: ComputeLedger = ComputeLedger()
+    shadow_races: tuple[ShadowRaceDecision, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,6 +335,14 @@ class EmitObservation:
 
     candidate_id: str
     phase: Phase
+
+
+@dataclass(frozen=True, slots=True)
+class EmitShadowRace:
+    """Record the evidence-only race decision for a completed tuning prefix."""
+
+    cohort_index: int
+    prefix_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +421,7 @@ AllocationDecision = (
     ResolveProposal
     | ExecutePair
     | EmitObservation
+    | EmitShadowRace
     | CompleteCohort
     | StartNextCohort
     | DeepenCohort

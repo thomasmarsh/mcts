@@ -96,6 +96,9 @@ class FakeTarget:
     def validate(self, candidates, opponent, game_config):  # type: ignore[no-untyped-def]
         return ValidationResult(True, ())
 
+    def cancel(self) -> None:
+        return None
+
     def evaluate(self, task, candidate, opponent, game_config, timeout_seconds):  # type: ignore[no-untyped-def]
         self.calls.append(task)
         outcome = (
@@ -242,6 +245,33 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
         json.loads((run_dir / "report.json").read_text())["validation_claim"]["claim"]
         == "production"
     )
+
+
+def test_parallel_workers_preserve_scientific_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tuner_cli.run.os.cpu_count", lambda: 2)
+    options = _budgeted_options(tmp_path, 14, run_name="sequential")
+    run_foreground(options, FakeTarget(), model_proposer=FakeModel())
+    parallel = replace(options, run_dir=tmp_path / "parallel", evaluator_workers=2)
+    run_foreground(parallel, FakeTarget(), model_proposer=FakeModel())
+    sequential_events = read_events(options.run_dir / "evidence.jsonl")
+    parallel_events = read_events(parallel.run_dir / "evidence.jsonl")
+    sequential_projection = scientific_projection(sequential_events)
+    parallel_projection = scientific_projection(parallel_events)
+    sequential_fingerprint = json.loads((options.run_dir / "manifest.json").read_text())[
+        "fingerprint"
+    ]
+    parallel_fingerprint = json.loads((parallel.run_dir / "manifest.json").read_text())[
+        "fingerprint"
+    ]
+    assert sequential_projection.replace(sequential_fingerprint, "<fingerprint>") == (
+        parallel_projection.replace(parallel_fingerprint, "<fingerprint>")
+    )
+    first_completed = next(
+        index for index, event in enumerate(parallel_events) if event.type == "pair_completed"
+    )
+    assert sum(event.type == "pair_started" for event in parallel_events[:first_completed]) >= 2
 
 
 def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path) -> None:
@@ -521,3 +551,15 @@ def test_budget_options_are_validated_up_front(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError):
             run_foreground(bad, FakeTarget(), model_proposer=FakeModel())
+
+
+def test_worker_count_is_validated_before_creating_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tuner_cli.run.os.cpu_count", lambda: 1)
+    options = _budgeted_options(tmp_path, 20, run_name="workers")
+    with pytest.raises(ValueError):
+        run_foreground(
+            replace(options, evaluator_workers=2), FakeTarget(), model_proposer=FakeModel()
+        )
+    assert not options.run_dir.exists()

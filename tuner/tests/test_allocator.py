@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tuner_cli.allocator import decide_allocation, pending_pair, resource_allocation
+from tuner_cli.allocator import decide_allocation, pending_pair, ready_pairs, resource_allocation
 from tuner_cli.artifacts import Manifest, read_manifest
 from tuner_cli.domain import (
     AllocationDecision,
@@ -57,6 +57,18 @@ def test_pairs_are_derived_directly_from_completed_evidence(
         decision = decide_allocation(manifest, state)
         if task is not None and isinstance(decision, ExecutePair):
             assert decision.task == task
+
+
+def test_ready_pairs_are_ordered_and_pending_is_its_first_view(
+    manifest: Manifest, events: list[EvidenceEvent]
+) -> None:
+    state = replay(manifest, events[:10])
+    ready = ready_pairs(manifest, state)
+    assert ready
+    assert pending_pair(manifest, state) == ready[0]
+    assert ready_pairs(manifest, state, 2) == ready[:2]
+    with pytest.raises(ValueError):
+        ready_pairs(manifest, state, 0)
 
 
 def test_golden_stream_deepens_the_full_cohort(

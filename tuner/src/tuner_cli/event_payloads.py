@@ -32,6 +32,8 @@ from .domain import (
     IntroduceCandidate,
     ResourceAllocation,
     RetainElites,
+    ShadowCandidateDecision,
+    ShadowRaceDecision,
 )
 
 EventType = Literal[
@@ -48,6 +50,7 @@ EventType = Literal[
     "finalists_selected",
     "run_completed",
     "allocation_decided",
+    "shadow_race_decided",
 ]
 
 SCIENTIFIC: frozenset[EventType] = frozenset(
@@ -61,6 +64,7 @@ SCIENTIFIC: frozenset[EventType] = frozenset(
         "finalists_selected",
         "run_completed",
         "allocation_decided",
+        "shadow_race_decided",
     }
 )
 
@@ -146,6 +150,79 @@ class AllocationDecidedPayload:
         return {
             "allocation": _encode_resource_allocation(self.allocation),
             "policy_version": self.policy_version,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowRaceDecidedPayload:
+    event_type: ClassVar[EventType] = "shadow_race_decided"
+    decision: ShadowRaceDecision
+
+    @staticmethod
+    def decode(value: object) -> ShadowRaceDecidedPayload:
+        item = object_fields(
+            value,
+            {
+                "cohort_index",
+                "prefix_id",
+                "observation_ids",
+                "boundary_candidate_id",
+                "decisions",
+                "policy_version",
+            },
+            "shadow race",
+        )
+        decisions: list[ShadowCandidateDecision] = []
+        for raw in elements(item["decisions"], "shadow decisions"):
+            candidate = object_fields(
+                raw,
+                {"candidate_id", "favorable_resamples", "total_resamples", "disposition"},
+                "shadow candidate decision",
+            )
+            decisions.append(
+                ShadowCandidateDecision(
+                    string(candidate["candidate_id"], "shadow candidate id"),
+                    integer(candidate["favorable_resamples"], "favorable resamples"),
+                    integer(candidate["total_resamples"], "total resamples", positive=True),
+                    literal(
+                        candidate["disposition"],
+                        ("continue", "eliminate", "protected"),
+                        "shadow disposition",
+                    ),
+                )
+            )
+        return ShadowRaceDecidedPayload(
+            ShadowRaceDecision(
+                integer(item["cohort_index"], "shadow cohort index"),
+                string(item["prefix_id"], "shadow prefix id"),
+                strings(item["observation_ids"], "shadow observation ids"),
+                string(item["boundary_candidate_id"], "shadow boundary candidate id"),
+                tuple(decisions),
+                literal(
+                    item["policy_version"],
+                    ("stratified-paired-bootstrap-v1",),
+                    "shadow policy version",
+                ),
+            )
+        )
+
+    def encode(self) -> JsonObject:
+        value = self.decision
+        return {
+            "cohort_index": value.cohort_index,
+            "prefix_id": value.prefix_id,
+            "observation_ids": list(value.observation_ids),
+            "boundary_candidate_id": value.boundary_candidate_id,
+            "decisions": [
+                {
+                    "candidate_id": item.candidate_id,
+                    "favorable_resamples": item.favorable_resamples,
+                    "total_resamples": item.total_resamples,
+                    "disposition": item.disposition,
+                }
+                for item in value.decisions
+            ],
+            "policy_version": value.policy_version,
         }
 
 
@@ -741,6 +818,7 @@ class RunCompletedPayload:
 
 EventPayload = (
     AllocationDecidedPayload
+    | ShadowRaceDecidedPayload
     | ProposalCreatedPayload
     | ProposalAcceptedPayload
     | ProposalRejectedPayload
@@ -757,6 +835,7 @@ EventPayload = (
 
 _DECODERS: dict[EventType, Callable[[object], EventPayload]] = {
     "allocation_decided": AllocationDecidedPayload.decode,
+    "shadow_race_decided": ShadowRaceDecidedPayload.decode,
     "proposal_created": ProposalCreatedPayload.decode,
     "proposal_accepted": ProposalAcceptedPayload.decode,
     "proposal_rejected": ProposalRejectedPayload.decode,
