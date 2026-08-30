@@ -57,6 +57,18 @@ and `--shadow-elimination-threshold`. This is evidence only: every candidate
 still reaches the maximum tuning prefix, and the nominal threshold has not earned
 an active-pruning safety claim.
 
+`report.json` includes a `shadow_elimination` audit of those frozen decisions.
+It labels each candidate against the same cohort's maximum tuning-prefix top
+set, while calibration and stratum reversals compare against the exact early
+boundary candidate recorded in the decision. `top_set_false_elimination_rate`
+uses eligible unprotected top-set paths as its denominator; `trash_precision`
+uses counterfactual eliminations and calls only candidates outside that same
+tuning top set “trash.” Avoided work is factual suffix work after the first
+unprotected elimination, including retries and partial failed attempts. The
+section also reports fixed probability-bin calibration and Brier score only for
+looks an active path would reach. It never uses held-out validation, is not an
+anytime-valid safety guarantee, and does not enable active pruning.
+
 `--tuning-pair-budget` and `--validation-pair-budget` are required total
 budgets over pair attempts, frozen in the manifest under the
 `safe-boundary-pair-attempts-v1` policy. The initial cohort always runs; a later
@@ -85,7 +97,7 @@ The run directory contains three version-4 artifacts:
   observation, selection, and completion evidence.
 - `report.json` is a replaceable projection with proposal-search provenance, weighted held-out marginals,
   per-opponent matchup rows, matched finalist differences, unresolved ties, and
-  the evidence-derived compute ledger.
+  the evidence-derived compute ledger and shadow-elimination audit.
 
 Validation is `production` only when both axes reach their declared target:
 the selected held-out validation prefix is the complete production corpus and

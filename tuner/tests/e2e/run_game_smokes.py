@@ -147,6 +147,23 @@ def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> No
         assert len(shadow_races) == len(cohorts)
         assert {race["cohort_index"] for race in shadow_races} == set(range(len(cohorts)))
         assert all(len(race["decisions"]) == 4 for race in shadow_races)
+        shadow = report["shadow_elimination"]
+        assert shadow["policy"]["enforced"] is False
+        assert shadow["scope"]["held_out_validation_used"] is False
+        assert shadow["scope"]["recorded_looks"] == sum(
+            len(path["looks"]) for cohort in shadow["cohorts"] for path in cohort["candidate_paths"]
+        )
+        assert shadow["summary"]["counterfactual_eliminations"] == sum(
+            path["first_elimination_prefix_id"] is not None
+            for cohort in shadow["cohorts"]
+            for path in cohort["candidate_paths"]
+        )
+        assert all(
+            0.0 <= look["promotion_probability"] <= 1.0
+            for cohort in shadow["cohorts"]
+            for path in cohort["candidate_paths"]
+            for look in path["looks"]
+        )
         for prefix_id in tuning_prefixes:
             observed = {
                 event["payload"]["candidate_id"]

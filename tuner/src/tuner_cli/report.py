@@ -14,6 +14,7 @@ from .evidence import atomic_json, read_events
 from .observations import comparable_prefix_observations, paired_difference
 from .proposer import tuning_frontier
 from .replay import replay
+from .shadow_audit import CandidatePathAudit, ShadowAudit, build_shadow_audit
 from .statistics import marginal_interval, pair_utility, tie_relation
 
 
@@ -218,7 +219,8 @@ def _validation_pairs_by_candidate(state: ReplayState) -> dict[str, list[PairRes
 
 def build_report(run_dir: Path) -> JsonObject:
     manifest = read_manifest(run_dir / "manifest.json")
-    state = replay(manifest, read_events(run_dir / "evidence.jsonl"))
+    events = read_events(run_dir / "evidence.jsonl")
+    state = replay(manifest, events)
     if (
         state.terminal_status != "complete"
         or state.finalists is None
@@ -249,6 +251,7 @@ def build_report(run_dir: Path) -> JsonObject:
         manifest.efforts["validation"],
         manifest.efforts["production"],
     )
+    shadow = build_shadow_audit(manifest, state, events)
     return {
         "schema_version": 4,
         "status": "complete",
@@ -261,10 +264,152 @@ def build_report(run_dir: Path) -> JsonObject:
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
         "compute": _compute_section(manifest, state),
+        "shadow_elimination": _shadow_elimination(manifest, shadow),
         "limitations": [
             "default-only starting state",
             "conservative small-sample intervals",
             "explicit resume",
+            "shadow-elimination outcomes are same-run maximum-tuning counterfactuals, not held-out production validation",
+            "the bootstrap score is empirically assessed and not an anytime-valid false-elimination guarantee",
+            "active shadow pruning remains disabled",
+        ],
+    }
+
+
+def _shadow_look(value: object) -> JsonObject:
+    from .shadow_audit import ShadowLookAudit
+
+    if not isinstance(value, ShadowLookAudit):
+        raise TypeError("shadow audit look expected")
+    return {
+        "prefix_id": value.prefix_id,
+        "candidate_id": value.candidate_id,
+        "boundary_candidate_id": value.boundary_candidate_id,
+        "favorable_resamples": value.favorable_resamples,
+        "total_resamples": value.total_resamples,
+        "promotion_probability": value.favorable_resamples / value.total_resamples,
+        "disposition": value.disposition,
+        "early_mean_difference": value.early_mean_difference,
+        "maximum_mean_difference": value.maximum_mean_difference,
+        "final_reaches_recorded_boundary": value.final_reaches_recorded_boundary,
+        "strata": [
+            {
+                "stratum_id": item.stratum_id,
+                "early_mean_difference": item.early_mean_difference,
+                "maximum_mean_difference": item.maximum_mean_difference,
+                "reversal": item.reversal,
+            }
+            for item in value.strata
+        ],
+    }
+
+
+def _shadow_path(value: CandidatePathAudit) -> JsonObject:
+    compute = value.avoided_compute
+    return {
+        "cohort_index": value.cohort_index,
+        "candidate_id": value.candidate_id,
+        "protected": value.protected,
+        "final_top_set": value.final_top_set,
+        "first_elimination_prefix_id": value.first_elimination_prefix_id,
+        "avoided_work": {
+            "pair_attempts": compute.pair_attempts,
+            "completed_pairs": compute.completed_pairs,
+            "failed_attempts": compute.failed_attempts,
+            "censored_attempts": compute.censored_attempts,
+            "unique_pairs": value.avoided_unique_pairs,
+            "physical_games": compute.physical_games,
+            "search_iterations": compute.search_iterations,
+            "wall_time_ms": compute.wall_time_ms,
+        },
+        "looks": [_shadow_look(item) for item in value.looks],
+    }
+
+
+def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
+    compute = audit.recorded_compute_after_first_elimination
+    active_looks = sum(
+        len(path.looks)
+        if path.first_elimination_prefix_id is None and not path.protected
+        else (
+            path.looks.index(next(item for item in path.looks if item.disposition == "eliminate"))
+            + 1
+            if not path.protected
+            else 0
+        )
+        for path in audit.paths
+    )
+    false_rate = (
+        None
+        if audit.eligible_top_set_paths == 0
+        else audit.top_set_false_eliminations / audit.eligible_top_set_paths
+    )
+    precision = (
+        None
+        if audit.counterfactual_eliminations == 0
+        else audit.true_trash_eliminations / audit.counterfactual_eliminations
+    )
+    return {
+        "policy": {
+            "method_version": manifest.shadow_policy.method_version,
+            "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
+            "elimination_probability_threshold": manifest.shadow_policy.elimination_probability_threshold,
+            "resamples": manifest.shadow_policy.resamples,
+            "enforced": False,
+        },
+        "scope": {
+            "truth": "same-cohort-maximum-tuning-prefix-v1",
+            "held_out_validation_used": False,
+            "completed_cohorts": len({path.cohort_index for path in audit.paths}),
+            "recorded_looks": sum(len(path.looks) for path in audit.paths),
+            "active_path_looks": active_looks,
+        },
+        "summary": {
+            "counterfactual_eliminations": audit.counterfactual_eliminations,
+            "eligible_top_set_paths": audit.eligible_top_set_paths,
+            "top_set_false_eliminations": audit.top_set_false_eliminations,
+            "top_set_false_elimination_rate": false_rate,
+            "true_trash_eliminations": audit.true_trash_eliminations,
+            "trash_precision": precision,
+            "brier_score": audit.brier_score,
+        },
+        "recorded_compute_after_first_elimination": {
+            "pair_attempts": compute.pair_attempts,
+            "completed_pairs": compute.completed_pairs,
+            "failed_attempts": compute.failed_attempts,
+            "censored_attempts": compute.censored_attempts,
+            "unique_pairs": sum(path.avoided_unique_pairs for path in audit.paths),
+            "physical_games": compute.physical_games,
+            "search_iterations": compute.search_iterations,
+            "wall_time_ms": compute.wall_time_ms,
+        },
+        "calibration_bins": [
+            {
+                "lower": item.lower,
+                "upper": item.upper,
+                "count": item.count,
+                "mean_prediction": item.mean_prediction,
+                "observed_success_rate": item.observed_success_rate,
+            }
+            for item in audit.calibration_bins
+        ],
+        "strata": [
+            {
+                "stratum_id": item.stratum_id,
+                "looks": item.looks,
+                "reversals": item.reversals,
+                "elimination_reversals": item.elimination_reversals,
+            }
+            for item in audit.strata
+        ],
+        "cohorts": [
+            {
+                "cohort_index": index,
+                "candidate_paths": [
+                    _shadow_path(path) for path in audit.paths if path.cohort_index == index
+                ],
+            }
+            for index in sorted({path.cohort_index for path in audit.paths})
         ],
     }
 
