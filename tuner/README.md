@@ -3,7 +3,9 @@
 `tuner` is a foreground, reproducible strategy tuner for executables that
 implement the game-host `describe`, `compare validate`, and `compare eval`
 protocol. It freezes an explicit deployment objective before creating an
-artifact, then evaluates a fixed bootstrap/SMAC/random-reserve cohort on common task corpora.
+artifact, then evaluates two fixed cohorts on common task corpora. The first
+uses the bootstrap/SMAC/random-reserve schedule; its top `--finalists` become
+retained elites in the second cohort, whose remaining slots are new challengers.
 
 An objective is strict JSON containing the schema default and one or more raw,
 inline historical opponent configurations. The checked-in Druid deployment
@@ -29,7 +31,8 @@ start stratum it uses. `--seed` controls proposal streams only;
 All configured task counts must be complete panel weight cycles. `--tuning-pairs`
 is the maximum tuning prefix: the tuner evaluates every accepted candidate on
 each cumulative complete-cycle prefix before deepening the full cohort, with no
-elimination. The selected validation corpus is always a leading prefix of the
+elimination. `--finalists` is both the retained-elite count and the final
+shortlist count. The selected validation corpus is always a leading prefix of the
 frozen production validation corpus.
 
 The run directory contains three version-4 artifacts:

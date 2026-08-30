@@ -12,9 +12,15 @@ from .allocator import (
     resource_allocation,
 )
 from .artifacts import Manifest, production_claim
-from .cohort import accepted_candidates
+from .cohort import (
+    accepted_proposal_candidates,
+    accepted_proposal_candidates_for_cohort,
+    current_active_candidates,
+    latest_completed_cohort,
+)
 from .domain import (
     Candidate,
+    CohortRecord,
     DeepenCohortAllocation,
     ExecutePair,
     IntroduceCandidate,
@@ -27,6 +33,7 @@ from .domain import (
     ProposalProvenance,
     ReplayState,
     ResourceAllocation,
+    RetainElites,
 )
 from .event_payloads import (
     AllocationDecidedPayload,
@@ -47,7 +54,7 @@ from .evidence import EvidenceEvent, decode_pair_payload
 from .identity import candidate_from_canonical_config
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
-from .selection import select_finalists
+from .selection import select_top_candidates
 
 Disposition = Literal["accepted", "rejected"]
 Terminal = Literal["open", "configuration_failed", "complete"]
@@ -93,7 +100,8 @@ class _Replay:
     dispositions: dict[int, Disposition] = field(default_factory=lambda: dict[int, Disposition]())
     completed: list[PairResult] = field(default_factory=lambda: list[PairResult]())
     observations: list[Observation] = field(default_factory=lambda: list[Observation]())
-    cohort: tuple[Candidate, ...] | None = None
+    completed_cohorts: list[CohortRecord] = field(default_factory=lambda: list[CohortRecord]())
+    active_elites: tuple[Candidate, ...] = ()
     finalists: tuple[Candidate, ...] | None = None
     terminal: Terminal = "open"
     tuning_block_index: int = 0
@@ -104,7 +112,8 @@ class _Replay:
         return ReplayState(
             tuple(self.proposals),
             tuple(sorted(self.dispositions.items())),
-            self.cohort,
+            tuple(self.completed_cohorts),
+            self.active_elites,
             tuple(self.completed),
             tuple(self.observations),
             self.finalists,
@@ -113,23 +122,23 @@ class _Replay:
             self.pending,
         )
 
-    def accepted(self) -> tuple[Candidate, ...]:
-        return accepted_candidates(self.state())
+    def active(self) -> tuple[Candidate, ...]:
+        return current_active_candidates(self.state())
 
     def frontier(self) -> ObservationFrontier:
-        accepted = self.accepted()
-        if not accepted or any(
+        active = self.active()
+        if not active or any(
             not any(
                 item.phase == "tuning"
                 and item.candidate_id == candidate.candidate_id
                 and item.context.task_prefix == self.manifest.tuning_blocks[0]
                 for item in self.observations
             )
-            for candidate in accepted
+            for candidate in active
         ):
             return empty_frontier(_context(self.manifest, "tuning"))
         values = comparable_prefix_observations(
-            tuple(self.observations), accepted, self.manifest.tuning_blocks[0]
+            tuple(self.observations), active, self.manifest.tuning_blocks[0]
         )
         return tuning_frontier(values)
 
@@ -150,6 +159,7 @@ def _proposal(state: _Replay, payload: ProposalCreatedPayload) -> Proposal:
         raise ValueError("proposal does not bind the visible observation frontier")
     return Proposal(
         identity.proposal_index,
+        identity.cohort_index,
         identity.cohort_slot,
         candidate,
         frontier,
@@ -177,22 +187,32 @@ def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> 
     if state.proposals and state.proposals[-1].proposal_index not in state.dispositions:
         raise ValueError("proposal follows an undisposed proposal")
     proposal = _proposal(state, payload)
-    slot = len(state.accepted())
+    cohort_index = len(state.completed_cohorts)
+    slot = len(accepted_proposal_candidates_for_cohort(state.state(), cohort_index))
+    schedule = (
+        state.manifest.source_schedule
+        if cohort_index == 0
+        else state.manifest.challenger_source_schedule
+    )
     if (
         proposal.proposal_index != len(state.proposals)
+        or proposal.cohort_index != cohort_index
         or proposal.cohort_slot != slot
-        or proposal.source != state.manifest.source_schedule[slot]
+        or proposal.source != schedule[slot]
     ):
         raise ValueError("proposal does not match frozen schedule")
     attempt = 1 + sum(item.source == proposal.source for item in state.proposals)
     if proposal.provenance.source_attempt != attempt:
         raise ValueError("proposal source attempt is not contiguous")
-    if slot < state.manifest.bootstrap_candidates and proposal.frontier.observation_ids:
+    if (
+        cohort_index == 0
+        and slot < state.manifest.bootstrap_candidates
+        and proposal.frontier.observation_ids
+    ):
         raise ValueError("bootstrap proposal has a nonempty frontier")
     if (
-        slot >= state.manifest.bootstrap_candidates
-        and len(proposal.frontier.observation_ids) != slot
-    ):
+        cohort_index == 0 and slot >= state.manifest.bootstrap_candidates or cohort_index == 1
+    ) and len(proposal.frontier.observation_ids) != len(state.active()):
         raise ValueError("guided proposal lacks a complete comparable frontier")
     state.proposals.append(proposal)
     state.pending = None
@@ -207,6 +227,7 @@ def _apply_disposition(
     proposal = state.proposals[index]
     if (
         identity.candidate_id != proposal.candidate.candidate_id
+        or identity.cohort_index != proposal.cohort_index
         or identity.cohort_slot != proposal.cohort_slot
         or identity.source != proposal.source
     ):
@@ -214,7 +235,8 @@ def _apply_disposition(
     state.dispositions[index] = (
         "accepted" if isinstance(payload, ProposalAcceptedPayload) else "rejected"
     )
-    if len({item.fingerprint for item in state.accepted()}) != len(state.accepted()):
+    accepted = accepted_proposal_candidates(state.state())
+    if len({item.fingerprint for item in accepted}) != len(accepted):
         raise ValueError("accepted cohort contains a duplicate")
 
 
@@ -228,7 +250,7 @@ def _apply_pair(state: _Replay, payload: PairCompletedPayload) -> None:
 def _apply_observation(state: _Replay, payload: ObservationCompletedPayload) -> None:
     current = state.state()
     context = _context(state.manifest, payload.phase, current)
-    candidates = state.finalists if payload.phase == "validation" else state.accepted()
+    candidates = state.finalists if payload.phase == "validation" else state.active()
     candidate = next(
         (item for item in candidates or () if item.candidate_id == payload.candidate_id), None
     )
@@ -265,27 +287,51 @@ def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None
     if isinstance(payload.allocation, DeepenCohortAllocation):
         state.tuning_block_index = payload.allocation.block_index
         state.pending = None
+    if isinstance(payload.allocation, RetainElites):
+        cohort = latest_completed_cohort(state.state())
+        if cohort is None:
+            raise ValueError("elite retention lacks a completed cohort")
+        by_id = {candidate.candidate_id: candidate for candidate in cohort.candidates}
+        state.active_elites = tuple(
+            by_id[candidate_id] for candidate_id in payload.allocation.candidate_ids
+        )
+        state.tuning_block_index = 0
+        state.pending = None
     state.allocations += 1
 
 
 def _apply_cohort(state: _Replay, payload: CohortCompletedPayload) -> None:
-    accepted = state.accepted()
+    cohort_index = len(state.completed_cohorts)
+    candidates = state.active()
     tuning = comparable_prefix_observations(
-        tuple(state.observations), accepted, state.manifest.tuning_prefix
+        tuple(state.observations), candidates, state.manifest.tuning_prefix
     )
     expected = CohortCompletedPayload(
-        tuple(item.candidate_id for item in accepted),
-        tuple(state.manifest.source_schedule),
+        cohort_index,
+        tuple(item.candidate_id for item in candidates),
+        tuple(item.candidate_id for item in state.active_elites),
+        tuple(
+            proposal.source
+            for proposal in state.proposals
+            if proposal.cohort_index == cohort_index
+            and state.dispositions.get(proposal.proposal_index) == "accepted"
+        ),
         POLICY_VERSION,
         tuning_frontier(tuning).frontier_id,
     )
     if (
-        state.cohort is not None
-        or len(accepted) != state.manifest.cohort_size
+        cohort_index not in (0, 1)
+        or len(candidates) != state.manifest.cohort_size
         or payload != expected
     ):
         raise ValueError("cohort completion does not bind final tuning observations")
-    state.cohort = accepted
+    state.completed_cohorts.append(
+        CohortRecord(
+            cohort_index, candidates, tuple(item.candidate_id for item in state.active_elites)
+        )
+    )
+    if cohort_index == 1:
+        state.active_elites = ()
 
 
 def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
@@ -295,12 +341,13 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
         != state.manifest.tuning_prefix.prefix_id
     ):
         raise ValueError("finalist selection does not match pending allocation")
-    if state.cohort is None or state.finalists is not None:
+    cohort = latest_completed_cohort(state.state())
+    if len(state.completed_cohorts) != 2 or cohort is None or state.finalists is not None:
         raise ValueError("finalist selection is premature")
     tuning = comparable_prefix_observations(
-        tuple(state.observations), state.cohort, state.manifest.tuning_prefix
+        tuple(state.observations), cohort.candidates, state.manifest.tuning_prefix
     )
-    finalists = select_finalists(state.cohort, tuning, state.manifest.finalists)
+    finalists = select_top_candidates(cohort.candidates, tuning, state.manifest.finalists)
     context = _context(state.manifest, "tuning", state.state())
     expected = FinalistsSelectedPayload(
         tuple(item.candidate_id for item in finalists),
@@ -318,9 +365,11 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
 
 
 def _apply_completion(state: _Replay, payload: RunCompletedPayload) -> None:
+    cohort = latest_completed_cohort(state.state())
     if (
-        state.cohort is None
+        len(state.completed_cohorts) != 2
         or state.finalists is None
+        or cohort is None
         or pending_pair(state.manifest, state.state()) is not None
     ):
         raise ValueError("run completion is premature")
@@ -331,11 +380,11 @@ def _apply_completion(state: _Replay, payload: RunCompletedPayload) -> None:
         state.manifest.efforts["production"],
     )
     tuning = comparable_prefix_observations(
-        tuple(state.observations), state.cohort, state.manifest.tuning_prefix
+        tuple(state.observations), cohort.candidates, state.manifest.tuning_prefix
     )
     expected = RunCompletedPayload(
         state.manifest.fingerprint,
-        tuple(item.candidate_id for item in state.cohort),
+        tuple(item.candidate_id for item in accepted_proposal_candidates(state.state())),
         tuple(item.candidate_id for item in state.finalists),
         {"events": _scientific_count(state)},
         claim,
@@ -357,7 +406,7 @@ def _scientific_count(state: _Replay) -> int:
         + len(state.completed)
         + len(state.observations)
         + state.allocations
-        + 3
+        + 4
     )
 
 

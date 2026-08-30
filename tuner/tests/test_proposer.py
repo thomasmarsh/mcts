@@ -4,7 +4,13 @@ import pytest
 
 from tuner_cli.domain import ObservationContext, SearchEffort, TaskPrefix
 from tuner_cli.observations import observation
-from tuner_cli.proposer import cost_from_observation, derived_seed, source_schedule, tuning_frontier
+from tuner_cli.proposer import (
+    challenger_source_schedule,
+    cost_from_observation,
+    derived_seed,
+    source_schedule,
+    tuning_frontier,
+)
 
 
 def test_fixed_source_schedule_uses_weighted_fair_model_and_reserve_slots() -> None:
@@ -13,6 +19,17 @@ def test_fixed_source_schedule_uses_weighted_fair_model_and_reserve_slots() -> N
         "bootstrap_random",
         "smac_model",
         "random_reserve",
+    )
+
+
+def test_challenger_schedule_reserves_only_nonfinalist_slots() -> None:
+    assert challenger_source_schedule(4, 3, 1) == ("smac_model",)
+    assert challenger_source_schedule(8, 3, 1) == (
+        "smac_model",
+        "smac_model",
+        "random_reserve",
+        "smac_model",
+        "smac_model",
     )
     assert source_schedule(8, 3, 2) == (
         "schema_default",

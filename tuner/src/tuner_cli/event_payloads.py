@@ -26,7 +26,13 @@ from .codec import (
     string,
     strings,
 )
-from .domain import BeginValidation, DeepenCohortAllocation, IntroduceCandidate, ResourceAllocation
+from .domain import (
+    BeginValidation,
+    DeepenCohortAllocation,
+    IntroduceCandidate,
+    ResourceAllocation,
+    RetainElites,
+)
 
 EventType = Literal[
     "proposal_created",
@@ -91,6 +97,17 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
     if kind == "begin_validation":
         item = object_fields(raw, {"kind", "tuning_prefix_id"}, "validation allocation")
         return BeginValidation(string(item["tuning_prefix_id"], "allocation tuning prefix id"))
+    if kind == "retain_elites":
+        item = object_fields(
+            raw,
+            {"kind", "cohort_index", "candidate_ids", "prefix_id"},
+            "elite retention allocation",
+        )
+        return RetainElites(
+            integer(item["cohort_index"], "retained cohort index"),
+            strings(item["candidate_ids"], "retained candidate ids"),
+            string(item["prefix_id"], "retained prefix id"),
+        )
     raise ValueError("unknown resource allocation kind")
 
 
@@ -102,6 +119,13 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
             return {"kind": "deepen_cohort", "block_index": block_index, "prefix_id": prefix_id}
         case BeginValidation(tuning_prefix_id):
             return {"kind": "begin_validation", "tuning_prefix_id": tuning_prefix_id}
+        case RetainElites(cohort_index, candidate_ids, prefix_id):
+            return {
+                "kind": "retain_elites",
+                "cohort_index": cohort_index,
+                "candidate_ids": list(candidate_ids),
+                "prefix_id": prefix_id,
+            }
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +156,7 @@ def _numbers(value: object, label: str) -> tuple[int | float, ...]:
 @dataclass(frozen=True, slots=True)
 class ProposalIdentity:
     proposal_index: int
+    cohort_index: int
     cohort_slot: int
     source: ProposalSource
     source_attempt: int
@@ -143,6 +168,7 @@ class ProposalIdentity:
     def decode(item: JsonObject) -> ProposalIdentity:
         return ProposalIdentity(
             integer(item["proposal_index"], "proposal index"),
+            integer(item["cohort_index"], "cohort index"),
             integer(item["cohort_slot"], "cohort slot"),
             literal(item["source"], _PROPOSAL_SOURCES, "proposal source"),
             integer(item["source_attempt"], "source attempt", positive=True),
@@ -154,6 +180,7 @@ class ProposalIdentity:
     def encode(self) -> JsonObject:
         return {
             "proposal_index": self.proposal_index,
+            "cohort_index": self.cohort_index,
             "cohort_slot": self.cohort_slot,
             "source": self.source,
             "source_attempt": self.source_attempt,
@@ -165,6 +192,7 @@ class ProposalIdentity:
 
 _IDENTITY_FIELDS = {
     "proposal_index",
+    "cohort_index",
     "cohort_slot",
     "source",
     "source_attempt",
@@ -329,8 +357,10 @@ class ProposalRejectedPayload:
 @dataclass(frozen=True, slots=True)
 class CohortCompletedPayload:
     event_type: ClassVar[EventType] = "cohort_completed"
+    cohort_index: int
     candidate_ids: tuple[str, ...]
-    sources: tuple[str, ...]
+    retained_candidate_ids: tuple[str, ...]
+    proposal_sources: tuple[str, ...]
     schedule_version: str
     final_frontier_id: str
 
@@ -338,20 +368,31 @@ class CohortCompletedPayload:
     def decode(value: object) -> CohortCompletedPayload:
         item = object_fields(
             value,
-            {"candidate_ids", "sources", "schedule_version", "final_frontier_id"},
+            {
+                "cohort_index",
+                "candidate_ids",
+                "retained_candidate_ids",
+                "proposal_sources",
+                "schedule_version",
+                "final_frontier_id",
+            },
             "cohort completion",
         )
         return CohortCompletedPayload(
+            integer(item["cohort_index"], "cohort index"),
             strings(item["candidate_ids"], "cohort candidate ids"),
-            strings(item["sources"], "cohort sources"),
+            strings(item["retained_candidate_ids"], "cohort retained candidate ids"),
+            strings(item["proposal_sources"], "cohort proposal sources"),
             string(item["schedule_version"], "cohort schedule version"),
             string(item["final_frontier_id"], "cohort frontier id"),
         )
 
     def encode(self) -> JsonObject:
         return {
+            "cohort_index": self.cohort_index,
             "candidate_ids": list(self.candidate_ids),
-            "sources": list(self.sources),
+            "retained_candidate_ids": list(self.retained_candidate_ids),
+            "proposal_sources": list(self.proposal_sources),
             "schedule_version": self.schedule_version,
             "final_frontier_id": self.final_frontier_id,
         }

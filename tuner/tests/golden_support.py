@@ -29,9 +29,9 @@ from tuner_cli.target import _splitmix_seed
 
 FIXTURES = Path(__file__).parent / "fixtures" / "version4"
 
-# Only four configurations validate, so a fixed cohort of four must propose every
-# valid family and reject the invalid one plus any repeats.
-_FAMILIES = ("a", "b", "c", "d", "e")
+# The two cohorts need more valid configurations than either cohort alone, while
+# still exercising one deterministic semantic rejection.
+_FAMILIES = ("a", "b", "c", "d", "e", "f", "g", "h")
 _WINNING_FAMILIES = frozenset({"b", "c"})
 _INVALID_FAMILY = "e"
 

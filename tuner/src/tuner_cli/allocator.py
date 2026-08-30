@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from .artifacts import Manifest
-from .cohort import accepted_candidates, pending_proposal
+from .cohort import (
+    accepted_proposal_candidates_for_cohort,
+    current_active_candidates,
+    latest_completed_cohort,
+    pending_proposal,
+)
 from .domain import (
     AllocationDecision,
     BeginValidation,
@@ -24,38 +29,46 @@ from .domain import (
     ReplayState,
     ResolveProposal,
     ResourceAllocation,
+    RetainElites,
     SelectFinalists,
+    StartNextCohort,
     TaskPrefix,
 )
 from .identity import pair_task
+from .observations import comparable_prefix_observations
+from .selection import select_top_candidates
 
-ALLOCATION_POLICY_VERSION = "iterated-common-blocks-v1"
+ALLOCATION_POLICY_VERSION = "two-cohort-elite-retention-v1"
 
 
 def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecision:
     if proposal := pending_proposal(state):
         return ResolveProposal(proposal.proposal_index)
-    accepted = accepted_candidates(state)
-    if len(accepted) < manifest.bootstrap_candidates:
+    cohort_index = len(state.completed_cohorts)
+    accepted = accepted_proposal_candidates_for_cohort(state, cohort_index)
+    active = current_active_candidates(state)
+    if cohort_index == 0 and len(accepted) < manifest.bootstrap_candidates:
         return IntroduceProposal()
     if task := pending_pair(manifest, state):
         return ExecutePair(task)
     if candidate := observation_due(manifest, state):
         return EmitObservation(candidate.candidate_id, pair_phase(state))
-    if len(accepted) < manifest.cohort_size and _frontier(
-        state, accepted, manifest.tuning_blocks[0].prefix_id
+    if len(active) < manifest.cohort_size and _frontier(
+        state, active, manifest.tuning_blocks[0].prefix_id
     ):
         return IntroduceProposal()
     if (
-        state.cohort is None
-        and len(accepted) == manifest.cohort_size
-        and _frontier(state, accepted, active_prefix(manifest, state).prefix_id)
+        cohort_index < 2
+        and len(active) == manifest.cohort_size
+        and _frontier(state, active, active_prefix(manifest, state).prefix_id)
     ):
         if state.tuning_block_index + 1 < len(manifest.tuning_blocks):
             prefix = manifest.tuning_blocks[state.tuning_block_index + 1]
             return DeepenCohort(state.tuning_block_index + 1, prefix.prefix_id)
         return CompleteCohort()
-    if state.cohort is not None and state.finalists is None:
+    if cohort_index == 1 and latest_completed_cohort(state) is not None and state.finalists is None:
+        return StartNextCohort()
+    if cohort_index == 2 and state.finalists is None:
         return SelectFinalists()
     if state.finalists is not None and _validation_complete(manifest, state):
         return CompleteRun()
@@ -67,12 +80,29 @@ def resource_allocation(
 ) -> ResourceAllocation | None:
     match decision:
         case IntroduceProposal():
-            slot = len(accepted_candidates(state))
-            return IntroduceCandidate(slot, manifest.source_schedule[slot])
+            cohort_index = len(state.completed_cohorts)
+            slot = len(accepted_proposal_candidates_for_cohort(state, cohort_index))
+            schedule = (
+                manifest.source_schedule
+                if cohort_index == 0
+                else manifest.challenger_source_schedule
+            )
+            return IntroduceCandidate(slot, schedule[slot])
         case DeepenCohort(block_index, prefix_id):
             return DeepenCohortAllocation(block_index, prefix_id)
         case SelectFinalists():
             return BeginValidation(manifest.tuning_prefix.prefix_id)
+        case StartNextCohort():
+            cohort = latest_completed_cohort(state)
+            if cohort is None:
+                return None
+            tuning = comparable_prefix_observations(
+                state.observations, cohort.candidates, manifest.tuning_prefix
+            )
+            elites = select_top_candidates(cohort.candidates, tuning, manifest.finalists)
+            return RetainElites(
+                1, tuple(item.candidate_id for item in elites), manifest.tuning_prefix.prefix_id
+            )
         case _:
             return None
 
@@ -82,7 +112,7 @@ def proposal_at(state: ReplayState, proposal_index: int) -> Proposal:
 
 
 def pair_candidates(state: ReplayState) -> tuple[Candidate, ...]:
-    return state.finalists if state.finalists is not None else accepted_candidates(state)
+    return state.finalists if state.finalists is not None else current_active_candidates(state)
 
 
 def pair_phase(state: ReplayState) -> Phase:

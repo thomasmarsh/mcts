@@ -6,14 +6,18 @@ from pathlib import Path
 
 from tuner_cli.domain import (
     GameResult,
+    ModelAttempt,
+    ModelObservation,
+    ObservationFrontier,
     PairResult,
     PairTask,
+    ProposedConfiguration,
     StrategyMetrics,
     ValidationResult,
 )
 from tuner_cli.event_payloads import PairCompletedPayload
 from tuner_cli.evidence import read_events, scientific_projection
-from tuner_cli.identity import canonical_json, game_id
+from tuner_cli.identity import candidate_from_config, canonical_json, game_id
 from tuner_cli.report import write_report
 from tuner_cli.run import RunOptions, run_foreground
 from tuner_cli.target import _splitmix_seed
@@ -77,7 +81,7 @@ class FakeTarget:
                     {
                         "name": "family",
                         "type": "categorical",
-                        "choices": ["a", "b", "c", "d", "e"],
+                        "choices": ["a", "b", "c", "d", "e", "f", "g", "h"],
                         "default": "a",
                     },
                 ],
@@ -127,6 +131,20 @@ class FakeTarget:
         return PairResult(task, tuple(games))
 
 
+class FakeModel:
+    def ask(
+        self,
+        observations: tuple[ModelObservation, ...],
+        frontier: ObservationFrontier,
+        excluded_fingerprints: frozenset[str],
+        attempt: ModelAttempt,
+    ) -> ProposedConfiguration:
+        del observations, frontier, excluded_fingerprints
+        return ProposedConfiguration(
+            candidate_from_config({"family": f"model-{attempt.source_attempt}"}), None
+        )
+
+
 class InterruptingTarget(FakeTarget):
     def __init__(self, interrupt_on_call: int) -> None:
         super().__init__()
@@ -160,6 +178,7 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
             production_max_iterations=9,
         ),
         target,
+        model_proposer=FakeModel(),
     )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     events = [json.loads(line) for line in (run_dir / "evidence.jsonl").read_text().splitlines()]
@@ -173,7 +192,7 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
         for event in events
         if event["type"] == "pair_started" and event["payload"]["phase"] == "tuning"
     ]
-    assert [item["budget"] for item in tuning_starts] == [3] * 8
+    assert [item["budget"] for item in tuning_starts] == [3] * 14
     report = (run_dir / "report.json").read_bytes()
     write_report(run_dir)
     assert (run_dir / "report.json").read_bytes() == report
@@ -199,6 +218,7 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
             production_max_iterations=5,
         ),
         FakeTarget(),
+        model_proposer=FakeModel(),
     )
     assert (
         json.loads((run_dir / "report.json").read_text())["validation_claim"]["claim"]
@@ -224,17 +244,21 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
         validation_max_iterations=5,
         production_max_iterations=9,
     )
-    run_foreground(options, FakeTarget())
+    run_foreground(options, FakeTarget(), model_proposer=FakeModel())
     interrupted = InterruptingTarget(interrupt_on_call=2)
     resumed_dir = tmp_path / "resumed" / "run"
     try:
-        run_foreground(replace(options, run_dir=resumed_dir), interrupted)
+        run_foreground(
+            replace(options, run_dir=resumed_dir), interrupted, model_proposer=FakeModel()
+        )
     except KeyboardInterrupt:
         pass
     else:
         raise AssertionError("the injected interruption should escape the foreground run")
     before = list(interrupted.calls)
-    run_foreground(replace(options, run_dir=resumed_dir, resume=True), interrupted)
+    run_foreground(
+        replace(options, run_dir=resumed_dir, resume=True), interrupted, model_proposer=FakeModel()
+    )
     control_events = read_events(options.run_dir / "evidence.jsonl")
     resumed_events = read_events(resumed_dir / "evidence.jsonl")
     assert scientific_projection(control_events) == scientific_projection(resumed_events)
@@ -251,6 +275,10 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
     report = (resumed_dir / "report.json").read_bytes()
     (resumed_dir / "report.json").unlink()
     completed_target = FakeTarget()
-    run_foreground(replace(options, run_dir=resumed_dir, resume=True), completed_target)
+    run_foreground(
+        replace(options, run_dir=resumed_dir, resume=True),
+        completed_target,
+        model_proposer=FakeModel(),
+    )
     assert not completed_target.calls
     assert (resumed_dir / "report.json").read_bytes() == report

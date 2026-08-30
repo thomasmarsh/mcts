@@ -6,8 +6,10 @@ from .allocator import decide_allocation, pair_candidates, proposal_at, resource
 from .artifacts import Manifest, production_claim
 from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
-    accepted_candidates,
+    accepted_proposal_candidates,
     create_proposal,
+    current_active_candidates,
+    latest_completed_cohort,
     proposal_disposition,
     proposal_payload,
 )
@@ -28,7 +30,9 @@ from .domain import (
     Phase,
     ReplayState,
     ResolveProposal,
+    RetainElites,
     SelectFinalists,
+    StartNextCohort,
 )
 from .event_payloads import (
     AllocationDecidedPayload,
@@ -46,7 +50,7 @@ from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
-from .selection import select_finalists as choose_finalists
+from .selection import select_top_candidates
 from .target import PairExecutionError, Target
 
 
@@ -83,6 +87,8 @@ def advance_one(
             select_finalists(manifest, writer, state)
         case DeepenCohortAllocation():
             raise RuntimeError("deepening allocation must be folded immediately")
+        case RetainElites():
+            raise RuntimeError("elite retention allocation must be folded immediately")
         case None:
             _advance_selected(manifest, writer, target, default, spec, model, timeout, state)
 
@@ -99,7 +105,7 @@ def _advance_selected(
 ) -> None:
     decision = decide_allocation(manifest, state)
     if allocation := resource_allocation(decision, manifest, state):
-        writer.append(AllocationDecidedPayload(allocation, "iterated-common-blocks-v1"))
+        writer.append(AllocationDecidedPayload(allocation, "two-cohort-elite-retention-v1"))
         return
     match decision:
         case ResolveProposal(proposal_index):
@@ -115,7 +121,7 @@ def _advance_selected(
             raise RuntimeError("deepening must be recorded as a resource allocation")
         case CompleteRun():
             complete_run(manifest, writer, state)
-        case IntroduceProposal() | SelectFinalists():
+        case IntroduceProposal() | SelectFinalists() | StartNextCohort():
             raise RuntimeError("resource choice must be recorded before its effect")
         case NoDecision():
             raise RuntimeError("no fixed-cohort continuation operation is available")
@@ -215,18 +221,26 @@ def emit_observation(
 
 
 def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
-    accepted = accepted_candidates(state)
-    tuning = comparable_prefix_observations(state.observations, accepted, manifest.tuning_prefix)
+    cohort_index = len(state.completed_cohorts)
+    active = current_active_candidates(state)
+    tuning = comparable_prefix_observations(state.observations, active, manifest.tuning_prefix)
     if (
-        state.cohort is not None
-        or len(accepted) != manifest.cohort_size
-        or len(tuning) != len(accepted)
+        cohort_index not in (0, 1)
+        or len(active) != manifest.cohort_size
+        or len(tuning) != len(active)
     ):
         return False
     writer.append(
         CohortCompletedPayload(
-            tuple(item.candidate_id for item in accepted),
-            tuple(manifest.source_schedule),
+            cohort_index,
+            tuple(item.candidate_id for item in active),
+            tuple(item.candidate_id for item in state.active_elites),
+            tuple(
+                item.source
+                for item in state.proposals
+                if item.cohort_index == cohort_index
+                and dict(state.dispositions).get(item.proposal_index) == "accepted"
+            ),
             POLICY_VERSION,
             tuning_frontier(tuning).frontier_id,
         )
@@ -235,12 +249,13 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
 
 
 def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
-    if state.cohort is None or state.finalists is not None:
+    cohort = latest_completed_cohort(state)
+    if len(state.completed_cohorts) != 2 or cohort is None or state.finalists is not None:
         return False
     tuning = comparable_prefix_observations(
-        state.observations, state.cohort, manifest.tuning_prefix
+        state.observations, cohort.candidates, manifest.tuning_prefix
     )
-    finalists = choose_finalists(state.cohort, tuning, manifest.finalists)
+    finalists = select_top_candidates(cohort.candidates, tuning, manifest.finalists)
     context = tuning[0].context
     writer.append(
         FinalistsSelectedPayload(
@@ -258,7 +273,8 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
 
 
 def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
-    if state.finalists is None or state.terminal_status != "open":
+    cohort = latest_completed_cohort(state)
+    if state.finalists is None or cohort is None or state.terminal_status != "open":
         return False
     validation = [item for item in state.observations if item.phase == "validation"]
     if len(validation) != len(state.finalists):
@@ -273,7 +289,7 @@ def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState)
     writer.append(
         RunCompletedPayload(
             manifest.fingerprint,
-            tuple(item.candidate_id for item in state.cohort or ()),
+            tuple(item.candidate_id for item in accepted_proposal_candidates(state)),
             tuple(item.candidate_id for item in state.finalists),
             {"events": count},
             claim,
@@ -283,7 +299,7 @@ def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState)
             tuple(missing),
             tuning_frontier(
                 comparable_prefix_observations(
-                    state.observations, state.cohort or (), manifest.tuning_prefix
+                    state.observations, cohort.candidates, manifest.tuning_prefix
                 )
             ).frontier_id,
         )

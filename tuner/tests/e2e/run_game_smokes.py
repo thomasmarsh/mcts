@@ -75,10 +75,38 @@ def _check_game(binary: Path, objective: Path) -> None:
             "smac_model",
             "random_reserve",
         ]
+        assert manifest["proposer"]["challenger_source_schedule"] == [
+            "smac_model",
+            "random_reserve",
+        ]
         accepted_sources = [
             event["payload"]["source"] for event in events if event["type"] == "proposal_accepted"
         ]
-        assert accepted_sources == manifest["proposer"]["source_schedule"]
+        assert accepted_sources == [
+            *manifest["proposer"]["source_schedule"],
+            *manifest["proposer"]["challenger_source_schedule"],
+        ]
+        cohorts = [event["payload"] for event in events if event["type"] == "cohort_completed"]
+        assert [cohort["cohort_index"] for cohort in cohorts] == [0, 1]
+        retained = [
+            event["payload"]["allocation"]
+            for event in events
+            if event["type"] == "allocation_decided"
+            and event["payload"]["allocation"]["kind"] == "retain_elites"
+        ]
+        assert len(retained) == 1
+        assert retained[0]["candidate_ids"] == cohorts[1]["retained_candidate_ids"]
+        assert cohorts[1]["candidate_ids"][:2] == retained[0]["candidate_ids"]
+        tuning_pairs_by_candidate: dict[str, set[str]] = {}
+        for pair in completed_pairs:
+            if pair["phase"] == "tuning":
+                tuning_pairs_by_candidate.setdefault(pair["candidate_id"], set()).add(
+                    pair["pair_id"]
+                )
+        assert all(
+            len(tuning_pairs_by_candidate[candidate_id]) == total_weight * 2
+            for candidate_id in retained[0]["candidate_ids"]
+        )
         assert (
             len({pair["opponent_id"] for pair in completed_pairs if pair["phase"] == "tuning"}) > 1
         )
@@ -93,6 +121,15 @@ def _check_game(binary: Path, objective: Path) -> None:
             if event["type"] == "observation_completed" and event["payload"]["phase"] == "tuning"
         }
         assert len(tuning_prefixes) == 2
+        for prefix_id in tuning_prefixes:
+            observed = {
+                event["payload"]["candidate_id"]
+                for event in events
+                if event["type"] == "observation_completed"
+                and event["payload"]["phase"] == "tuning"
+                and event["payload"]["prefix_id"] == prefix_id
+            }
+            assert set(cohorts[1]["candidate_ids"]) <= observed
         assert report["validation_claim"] == {
             "claim": "mechanics_smoke",
             "missing_production_axes": ["task_count", "search_effort"],

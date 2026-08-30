@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
+from .cohort import latest_completed_cohort
 from .domain import Candidate, Observation, ObservationContext, PairResult, ReplayState
 from .evidence import atomic_json, read_events
 from .observations import comparable_prefix_observations, paired_difference
@@ -218,7 +219,11 @@ def _validation_pairs_by_candidate(state: ReplayState) -> dict[str, list[PairRes
 def build_report(run_dir: Path) -> JsonObject:
     manifest = read_manifest(run_dir / "manifest.json")
     state = replay(manifest, read_events(run_dir / "evidence.jsonl"))
-    if state.terminal_status != "complete" or state.finalists is None or state.cohort is None:
+    if (
+        state.terminal_status != "complete"
+        or state.finalists is None
+        or latest_completed_cohort(state) is None
+    ):
         raise ValueError("report requires completed evidence")
     finalists = state.finalists
     observations = _finalist_validation_observations(state, finalists)
@@ -264,6 +269,9 @@ def build_report(run_dir: Path) -> JsonObject:
 
 
 def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
+    cohort = latest_completed_cohort(state)
+    if cohort is None:
+        raise ValueError("report requires a completed cohort")
     dispositions = dict(state.dispositions)
     accepted: list[JsonObject] = []
     rejected = {source: 0 for source in manifest.source_schedule}
@@ -275,6 +283,7 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
             accepted.append(
                 {
                     "cohort_slot": proposal.cohort_slot,
+                    "cohort_index": proposal.cohort_index,
                     "candidate_id": proposal.candidate.candidate_id,
                     "source": proposal.source,
                     "proposal_index": proposal.proposal_index,
@@ -288,7 +297,7 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
                 }
             )
     tuning = comparable_prefix_observations(
-        state.observations, state.cohort or (), manifest.tuning_prefix
+        state.observations, cohort.candidates, manifest.tuning_prefix
     )
     frontier = tuning_frontier(tuning)
     rejected_json: JsonObject = {source: count for source, count in rejected.items()}
@@ -298,8 +307,15 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
         "cost_policy_version": manifest.proposer.encoded()["cost_policy_version"],
         "configured": {
             "bootstrap": manifest.bootstrap_candidates,
-            "model": manifest.proposer.model_candidates,
-            "random_reserve": manifest.random_reserve_candidates,
+            "model": (*manifest.source_schedule, *manifest.challenger_source_schedule).count(
+                "smac_model"
+            ),
+            "random_reserve": (
+                *manifest.source_schedule,
+                *manifest.challenger_source_schedule,
+            ).count("random_reserve"),
+            "cohorts": 2,
+            "retained_elites": manifest.finalists,
         },
         "accepted": _array(accepted),
         "rejections_by_source": rejected_json,

@@ -8,6 +8,7 @@ from dataclasses import asdict
 from .artifacts import Manifest
 from .domain import (
     Candidate,
+    CohortRecord,
     ModelAttempt,
     ObservationFrontier,
     Proposal,
@@ -38,13 +39,36 @@ from .space import build_space, random_values
 from .target import Target
 
 
-def accepted_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+def accepted_proposal_candidates(state: ReplayState) -> tuple[Candidate, ...]:
     dispositions = dict(state.dispositions)
     return tuple(
         proposal.candidate
         for proposal in state.proposals
         if dispositions.get(proposal.proposal_index) == "accepted"
     )
+
+
+def accepted_proposal_candidates_for_cohort(
+    state: ReplayState, cohort_index: int
+) -> tuple[Candidate, ...]:
+    dispositions = dict(state.dispositions)
+    return tuple(
+        proposal.candidate
+        for proposal in state.proposals
+        if proposal.cohort_index == cohort_index
+        and dispositions.get(proposal.proposal_index) == "accepted"
+    )
+
+
+def current_active_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    return (
+        *state.active_elites,
+        *accepted_proposal_candidates_for_cohort(state, len(state.completed_cohorts)),
+    )
+
+
+def latest_completed_cohort(state: ReplayState) -> CohortRecord | None:
+    return state.completed_cohorts[-1] if state.completed_cohorts else None
 
 
 def pending_proposal(state: ReplayState) -> Proposal | None:
@@ -58,6 +82,7 @@ def _identity(proposal: Proposal) -> ProposalIdentity:
     candidate, provenance = proposal.candidate, proposal.provenance
     return ProposalIdentity(
         proposal.proposal_index,
+        proposal.cohort_index,
         proposal.cohort_slot,
         provenance.source,
         provenance.source_attempt,
@@ -89,8 +114,12 @@ def create_proposal(
     spec: GameSpec,
     model: ModelProposer,
 ) -> Proposal:
-    slot = len(accepted_candidates(state))
-    source = manifest.source_schedule[slot]
+    cohort_index = len(state.completed_cohorts)
+    slot = len(accepted_proposal_candidates_for_cohort(state, cohort_index))
+    schedule = (
+        manifest.source_schedule if cohort_index == 0 else manifest.challenger_source_schedule
+    )
+    source = schedule[slot]
     attempt = _source_attempt(state, source)
     proposed = _candidate_for_source(manifest, state, default, spec, model, source, attempt)
     frontier = _frontier(manifest, state, slot)
@@ -105,7 +134,9 @@ def create_proposal(
         proposed.uncertainty,
         proposed.parent_candidate_id,
     )
-    return Proposal(len(state.proposals), slot, proposed.candidate, frontier, provenance)
+    return Proposal(
+        len(state.proposals), cohort_index, slot, proposed.candidate, frontier, provenance
+    )
 
 
 def _source_attempt(state: ReplayState, source: str) -> int:
@@ -142,10 +173,10 @@ def _model_candidate(
     attempt: int,
 ) -> ProposedConfiguration:
     observations = comparable_prefix_observations(
-        state.observations, accepted_candidates(state), manifest.tuning_blocks[0]
+        state.observations, current_active_candidates(state), manifest.tuning_blocks[0]
     )
     frontier = tuning_frontier(observations)
-    candidates = {item.candidate_id: item for item in accepted_candidates(state)}
+    candidates = {item.candidate_id: item for item in current_active_candidates(state)}
     proposed = model.ask(
         model_observations(observations, candidates, frontier),
         frontier,
@@ -156,7 +187,7 @@ def _model_candidate(
 
 
 def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationFrontier:
-    if slot < manifest.bootstrap_candidates:
+    if len(state.completed_cohorts) == 0 and slot < manifest.bootstrap_candidates:
         from .domain import ObservationContext
 
         return empty_frontier(
@@ -169,7 +200,7 @@ def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationF
         )
     return tuning_frontier(
         comparable_prefix_observations(
-            state.observations, accepted_candidates(state), manifest.tuning_blocks[0]
+            state.observations, current_active_candidates(state), manifest.tuning_blocks[0]
         )
     )
 
@@ -177,7 +208,9 @@ def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationF
 def proposal_disposition(
     target: Target, manifest: Manifest, state: ReplayState, proposal: Proposal
 ) -> ProposalAcceptedPayload | ProposalRejectedPayload:
-    if proposal.candidate.fingerprint in {item.fingerprint for item in accepted_candidates(state)}:
+    if proposal.candidate.fingerprint in {
+        item.fingerprint for item in accepted_proposal_candidates(state)
+    }:
         return ProposalRejectedPayload(_identity(proposal), "duplicate", ())
     results = _panel_results(target, manifest, proposal.candidate)
     if all(result.valid for result in results):

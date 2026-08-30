@@ -32,6 +32,7 @@ from .proposer import (
     COST_POLICY_VERSION,
     POLICY_VERSION,
     SAMPLER_VERSION,
+    challenger_source_schedule,
     derived_seed,
     source_schedule,
 )
@@ -77,6 +78,7 @@ class ProposerSpecification:
     bootstrap_candidates: int
     random_reserve_candidates: int
     source_schedule: tuple[ProposalSource, ...]
+    challenger_source_schedule: tuple[ProposalSource, ...]
     bootstrap_seed: int
     reserve_seed: int
     runtime_versions: tuple[tuple[str, str], ...]
@@ -100,6 +102,7 @@ class ProposerSpecification:
             "model_candidates": self.model_candidates,
             "random_reserve_candidates": self.random_reserve_candidates,
             "source_schedule": list(self.source_schedule),
+            "challenger_source_schedule": list(self.challenger_source_schedule),
             "attempt_cap": self.attempt_cap,
             "seed_derivation_version": "proposal-seed-v1",
             "cost_policy_version": COST_POLICY_VERSION,
@@ -122,8 +125,8 @@ def proposer_specification(
     versions: dict[str, str] | None = None,
 ) -> ProposerSpecification:
     schedule = source_schedule(cohort_size, bootstrap_candidates, random_reserve_candidates)
-    if finalists > cohort_size:
-        raise ValueError("finalists exceeds cohort size")
+    if finalists >= cohort_size:
+        raise ValueError("finalists must be smaller than cohort size")
     return ProposerSpecification(
         proposal_seed,
         task_seed,
@@ -132,6 +135,7 @@ def proposer_specification(
         bootstrap_candidates,
         random_reserve_candidates,
         schedule,
+        challenger_source_schedule(cohort_size, finalists, random_reserve_candidates),
         derived_seed(proposal_seed, "bootstrap"),
         derived_seed(proposal_seed, "reserve"),
         tuple(sorted((runtime_versions() if versions is None else versions).items())),
@@ -188,6 +192,10 @@ class Manifest:
     @property
     def source_schedule(self) -> tuple[ProposalSource, ...]:
         return self.proposer_spec.source_schedule
+
+    @property
+    def challenger_source_schedule(self) -> tuple[ProposalSource, ...]:
+        return self.proposer_spec.challenger_source_schedule
 
     @property
     def efforts(self) -> dict[str, SearchEffort]:
@@ -648,6 +656,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
         "model_candidates",
         "random_reserve_candidates",
         "source_schedule",
+        "challenger_source_schedule",
         "attempt_cap",
         "seed_derivation_version",
         "cost_policy_version",

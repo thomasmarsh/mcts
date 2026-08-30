@@ -6,7 +6,7 @@ from .domain import Candidate, Observation
 from .observations import comparable
 
 
-def select_finalists(
+def select_top_candidates(
     cohort: tuple[Candidate, ...], values: tuple[Observation, ...], count: int
 ) -> tuple[Candidate, ...]:
     if len(values) != len(cohort) or {item.candidate_id for item in values} != {

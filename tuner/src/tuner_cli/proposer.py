@@ -45,6 +45,20 @@ def source_schedule(
     return ("schema_default", *bootstrap, *post)
 
 
+def challenger_source_schedule(
+    cohort_size: int, finalists: int, random_reserve_candidates: int
+) -> tuple[ProposalSource, ...]:
+    if any(
+        isinstance(value, bool) for value in (cohort_size, finalists, random_reserve_candidates)
+    ):
+        raise ValueError("proposal counts must be integers")
+    challengers = cohort_size - finalists
+    if finalists < 1 or challengers < 1 or random_reserve_candidates < 1:
+        raise ValueError("invalid finalist, reserve, and cohort count relationship")
+    reserve = min(random_reserve_candidates, challengers - 1)
+    return _weighted_sources(challengers - reserve, reserve)
+
+
 def _validate_counts(cohort_size: int, bootstrap: int, reserve: int) -> None:
     values = (cohort_size, bootstrap, reserve)
     if any(isinstance(value, bool) for value in values):

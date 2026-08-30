@@ -39,6 +39,7 @@ class OpponentPanel:
 @dataclass(frozen=True, slots=True)
 class Proposal:
     proposal_index: int
+    cohort_index: int
     cohort_slot: int
     candidate: Candidate
     frontier: ObservationFrontier
@@ -260,7 +261,8 @@ class ValidationResult:
 class ReplayState:
     proposals: tuple[Proposal, ...]
     dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
-    cohort: tuple[Candidate, ...] | None
+    completed_cohorts: tuple[CohortRecord, ...]
+    active_elites: tuple[Candidate, ...]
     completed_pairs: tuple[PairResult, ...]
     observations: tuple[Observation, ...]
     finalists: tuple[Candidate, ...] | None
@@ -294,6 +296,11 @@ class EmitObservation:
 @dataclass(frozen=True, slots=True)
 class CompleteCohort:
     """Every accepted candidate has a tuning observation; close the cohort."""
+
+
+@dataclass(frozen=True, slots=True)
+class StartNextCohort:
+    """Retain the selected first-cohort elites before introducing challengers."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,7 +348,21 @@ class BeginValidation:
     tuning_prefix_id: str
 
 
-ResourceAllocation = IntroduceCandidate | DeepenCohortAllocation | BeginValidation
+@dataclass(frozen=True, slots=True)
+class RetainElites:
+    cohort_index: int
+    candidate_ids: tuple[str, ...]
+    prefix_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CohortRecord:
+    cohort_index: int
+    candidates: tuple[Candidate, ...]
+    retained_candidate_ids: tuple[str, ...]
+
+
+ResourceAllocation = IntroduceCandidate | DeepenCohortAllocation | BeginValidation | RetainElites
 
 
 AllocationDecision = (
@@ -349,6 +370,7 @@ AllocationDecision = (
     | ExecutePair
     | EmitObservation
     | CompleteCohort
+    | StartNextCohort
     | DeepenCohort
     | SelectFinalists
     | IntroduceProposal

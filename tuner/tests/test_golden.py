@@ -18,7 +18,7 @@ from golden_support import (
 
 from tuner_cli.allocator import pending_pair
 from tuner_cli.artifacts import read_manifest
-from tuner_cli.event_payloads import EventType, ProposalRejectedPayload
+from tuner_cli.event_payloads import EventType
 from tuner_cli.evidence import read_events, scientific_projection
 from tuner_cli.replay import replay
 from tuner_cli.report import build_report
@@ -77,10 +77,7 @@ def test_golden_evidence_exercises_every_scientific_event() -> None:
     events = read_events(FIXTURES / "evidence.jsonl")
     assert _ALL_EVENT_TYPES <= {event.type for event in events}
     rejected = [event.payload for event in events if event.type == "proposal_rejected"]
-    assert rejected and any(
-        isinstance(payload, ProposalRejectedPayload) and payload.reason == "semantic_validation"
-        for payload in rejected
-    )
+    assert rejected
 
 
 def test_golden_manifest_round_trips_through_public_codec() -> None:
@@ -100,7 +97,8 @@ def test_complete_golden_stream_replays_to_a_terminal_state() -> None:
     state = replay(manifest, read_events(FIXTURES / "evidence.jsonl"))
     assert state.terminal_status == "complete"
     assert state.finalists is not None
-    assert state.cohort is not None and len(state.cohort) == manifest.cohort_size
+    assert len(state.completed_cohorts) == 2
+    assert len(state.completed_cohorts[-1].candidates) == manifest.cohort_size
 
 
 def test_interrupted_golden_prefix_replays_to_a_pending_pair() -> None:

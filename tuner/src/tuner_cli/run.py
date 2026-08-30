@@ -48,7 +48,7 @@ def run_foreground(
     run_dir: Path | None = None,
     model_proposer: ModelProposer | None = None,
 ) -> Path:
-    """Create or explicitly resume one strict fixed-cohort tuning run."""
+    """Create or explicitly resume one strict two-cohort tuning run."""
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
     binary, directory, objective_path = validate_options(options)
@@ -94,8 +94,8 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         raise ValueError(
             "random reserve must be positive and smaller than the post-bootstrap stage"
         )
-    if options.finalists > options.cohort_size:
-        raise ValueError("finalists cannot exceed cohort size")
+    if options.finalists >= options.cohort_size:
+        raise ValueError("finalists must be smaller than cohort size")
     if options.objective_file is None:
         raise ValueError("--objective-file is required")
     objective = options.objective_file.expanduser().resolve()
