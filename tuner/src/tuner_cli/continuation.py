@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .artifacts import Manifest, production_claim
-from .codec import JsonObject, JsonValue, is_json_object, strict_json
+from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
     accepted_candidates,
     create_proposal,
@@ -145,7 +145,7 @@ def _pair_started_payload(task: PairTask) -> PairStartedPayload:
 
 
 def failure_payload(task: PairTask, error: PairExecutionError) -> PairFailedPayload:
-    partial: tuple[JsonValue, ...] = tuple(
+    partial: tuple[str, ...] = tuple(
         canonical_json(record)
         for line in error.stdout.splitlines()
         if (record := json_record(line))

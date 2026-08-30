@@ -16,6 +16,7 @@ from .domain import (
     ValidationResult,
 )
 from .event_payloads import (
+    PanelFieldError,
     PanelRejection,
     ProposalAcceptedPayload,
     ProposalCreatedPayload,
@@ -198,11 +199,7 @@ def _semantic_rejection(
         PanelRejection(
             opponent.opponent_id,
             tuple(
-                {
-                    "field": error.field,
-                    "message": error.message,
-                    "candidate_index": error.candidate_index,
-                }
+                PanelFieldError(error.field, error.message, error.candidate_index)
                 for error in result.errors
             ),
         )

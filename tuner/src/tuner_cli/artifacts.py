@@ -134,9 +134,9 @@ def proposer_specification(
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
-    json_value: JsonObject
     fingerprint: str
     spec: GameSpec
+    objective_source_path: Path
     objective_id: str
     objective_fingerprint: str
     panel: OpponentPanel
@@ -281,7 +281,10 @@ def production_claim(
 
 def _epoch_payload(
     spec: GameSpec,
-    objective: ResolvedObjective,
+    objective_id: str,
+    objective_fingerprint: str,
+    panel_fingerprint: str,
+    start_distribution_fingerprint: str,
     tuning: TaskCorpus,
     validation: TaskCorpus,
     production_effort: SearchEffort,
@@ -289,14 +292,14 @@ def _epoch_payload(
 ) -> JsonObject:
     return {
         "version": "objective-epoch-v1",
-        "objective_id": objective.objective_id,
-        "objective_fingerprint": objective.fingerprint,
+        "objective_id": objective_id,
+        "objective_fingerprint": objective_fingerprint,
         "game_kind": spec.kind,
         "engine_fingerprint": spec.engine_fingerprint,
         "schema_fingerprint": spec.schema_fingerprint,
         "game_config_fingerprint": game_config_fingerprint,
-        "panel_fingerprint": objective.panel.fingerprint,
-        "start_distribution_fingerprint": objective.start_distribution_fingerprint,
+        "panel_fingerprint": panel_fingerprint,
+        "start_distribution_fingerprint": start_distribution_fingerprint,
         "tuning_corpus_fingerprint": tuning.fingerprint,
         "production_validation_corpus_fingerprint": validation.fingerprint,
         "production_validation_pairs": len(validation.cases),
@@ -335,48 +338,99 @@ def build_manifest(
         bootstrap_candidates,
         random_reserve_candidates,
     )
-    for count, label in (
-        (tuning_pairs, "tuning pairs"),
-        (validation_pairs, "validation pairs"),
-        (production_validation_pairs, "production validation pairs"),
-    ):
-        validate_cycle_endpoint(objective.panel, count, label)
-    if validation_pairs > production_validation_pairs:
-        raise ValueError("validation pairs cannot exceed production validation pairs")
-    if (
-        tuning_max_iterations > production_max_iterations
-        or validation_max_iterations > production_max_iterations
-    ):
-        raise ValueError("observed search effort cannot exceed production effort")
+    _validate_manifest_inputs(
+        objective.panel,
+        (tuning_pairs, validation_pairs, production_validation_pairs),
+        (tuning_max_iterations, validation_max_iterations, production_max_iterations),
+    )
     game_config_fingerprint = fingerprint(
         strict_json(spec.default_game_config, "game configuration")
     )
     tuning = build_corpus(
         "tuning", tuning_pairs, task_seed, objective.panel, game_config_fingerprint
     )
-    production_validation = build_corpus(
+    validation = build_corpus(
         "validation",
         production_validation_pairs,
         task_seed,
         objective.panel,
         game_config_fingerprint,
     )
-    tuning_prefix = selected_prefix(tuning, tuning_pairs)
-    validation_prefix = selected_prefix(production_validation, validation_pairs)
+    efforts = (
+        SearchEffort(tuning_max_iterations),
+        SearchEffort(validation_max_iterations),
+        SearchEffort(production_max_iterations),
+    )
     epoch = objective_epoch(
         _epoch_payload(
             spec,
-            objective,
+            objective.objective_id,
+            objective.fingerprint,
+            objective.panel.fingerprint,
+            objective.start_distribution_fingerprint,
             tuning,
-            production_validation,
-            SearchEffort(production_max_iterations),
+            validation,
+            efforts[2],
             game_config_fingerprint,
         )
     )
-    raw: JsonObject = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": run_id,
-        "command_policy_version": "bootstrap-smac-reserve-v1",
+    raw = _encode_manifest_object(
+        run_id,
+        spec,
+        objective.source_path,
+        objective.objective_id,
+        objective.fingerprint,
+        game_config_fingerprint,
+        proposer,
+        objective.panel,
+        tuning,
+        validation,
+        selected_prefix(tuning, tuning_pairs),
+        selected_prefix(validation, validation_pairs),
+        selected_prefix(validation, production_validation_pairs),
+        epoch,
+        efforts,
+    )
+    return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
+
+
+def _validate_manifest_inputs(
+    panel: OpponentPanel,
+    pairs: tuple[int, int, int],
+    iterations: tuple[int, int, int],
+) -> None:
+    tuning_pairs, validation_pairs, production_validation_pairs = pairs
+    for count, label in (
+        (tuning_pairs, "tuning pairs"),
+        (validation_pairs, "validation pairs"),
+        (production_validation_pairs, "production validation pairs"),
+    ):
+        validate_cycle_endpoint(panel, count, label)
+    if validation_pairs > production_validation_pairs:
+        raise ValueError("validation pairs cannot exceed production validation pairs")
+    tuning_iterations, validation_iterations, production_iterations = iterations
+    if tuning_iterations > production_iterations or validation_iterations > production_iterations:
+        raise ValueError("observed search effort cannot exceed production effort")
+
+
+_STATISTICAL_POLICY: JsonObject = {
+    "utility_formula_version": "pair_mean_v1",
+    "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
+    "interval_method": "hoeffding_pair_bound_v1",
+    "confidence_level": 0.95,
+    "tie_rule_version": "paired_hoeffding_v1",
+}
+
+_LIMITATIONS: tuple[str, ...] = (
+    "default-only start distribution",
+    "sequential execution",
+    "fixed iterations",
+    "explicit resume",
+)
+
+
+def _game_identity_section(spec: GameSpec, game_config_fingerprint: str) -> JsonObject:
+    return {
         "binary": {"path": str(spec.binary_path), "sha256": spec.binary_sha256},
         "engine_fingerprint": spec.engine_fingerprint,
         "description": spec.raw_description,
@@ -387,55 +441,72 @@ def build_manifest(
         "tuning_schema_fingerprint": spec.schema_fingerprint,
         "game_config": spec.default_game_config,
         "game_config_fingerprint": game_config_fingerprint,
+    }
+
+
+def _fidelity_section(
+    tuning_prefix: TaskPrefix,
+    validation_prefix: TaskPrefix,
+    production_prefix: TaskPrefix,
+    efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
+) -> JsonObject:
+    names = ("tuning", "validation", "production")
+    prefixes = (tuning_prefix, validation_prefix, production_prefix)
+    section: JsonObject = {}
+    for name, prefix, effort in zip(names, prefixes, efforts, strict=True):
+        section[name] = {
+            "task_prefix_id": prefix.prefix_id,
+            "search_effort": {"max_iterations": effort.max_iterations},
+        }
+    return section
+
+
+def _encode_manifest_object(
+    run_id: str,
+    spec: GameSpec,
+    objective_source_path: Path,
+    objective_id: str,
+    objective_fingerprint: str,
+    game_config_fingerprint: str,
+    proposer: ProposerSpecification,
+    panel: OpponentPanel,
+    tuning: TaskCorpus,
+    validation: TaskCorpus,
+    tuning_prefix: TaskPrefix,
+    validation_prefix: TaskPrefix,
+    production_prefix: TaskPrefix,
+    epoch: ObjectiveEpoch,
+    efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
+) -> JsonObject:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "command_policy_version": "bootstrap-smac-reserve-v1",
+        **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
-            "source_path": str(objective.source_path),
-            "objective_id": objective.objective_id,
-            "fingerprint": objective.fingerprint,
+            "source_path": str(objective_source_path),
+            "objective_id": objective_id,
+            "fingerprint": objective_fingerprint,
         },
-        "opponent_panel": _panel_dict(objective.panel),
+        "opponent_panel": _panel_dict(panel),
         "start_distribution": {
             "kind": "default_only",
-            "fingerprint": objective.start_distribution_fingerprint,
+            "fingerprint": fingerprint({"kind": "default_only"}),
         },
         "corpora": {
             "tuning": _corpus_dict(tuning),
-            "production_validation": _corpus_dict(production_validation),
+            "production_validation": _corpus_dict(validation),
         },
         "prefixes": {
             "tuning": _prefix_dict(tuning_prefix),
             "validation": _prefix_dict(validation_prefix),
         },
-        "fidelity": {
-            "tuning": {
-                "task_prefix_id": tuning_prefix.prefix_id,
-                "search_effort": {"max_iterations": tuning_max_iterations},
-            },
-            "validation": {
-                "task_prefix_id": validation_prefix.prefix_id,
-                "search_effort": {"max_iterations": validation_max_iterations},
-            },
-            "production": {
-                "task_prefix_id": selected_prefix(
-                    production_validation, production_validation_pairs
-                ).prefix_id,
-                "search_effort": {"max_iterations": production_max_iterations},
-            },
-        },
+        "fidelity": _fidelity_section(tuning_prefix, validation_prefix, production_prefix, efforts),
         "epoch": {"epoch_id": epoch.epoch_id, "fingerprint": epoch.fingerprint},
-        "utility_formula_version": "pair_mean_v1",
-        "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
-        "interval_method": "hoeffding_pair_bound_v1",
-        "confidence_level": 0.95,
-        "tie_rule_version": "paired_hoeffding_v1",
-        "limitations": [
-            "default-only start distribution",
-            "sequential execution",
-            "fixed iterations",
-            "explicit resume",
-        ],
+        **_STATISTICAL_POLICY,
+        "limitations": list(_LIMITATIONS),
     }
-    return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
 
 _FIELDS = {
@@ -598,13 +669,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     return specification
 
 
-def decode_manifest_object(value: object) -> Manifest:
-    raw = object_fields(value, _FIELDS, "manifest")
-    if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
-        raise ValueError("unsupported manifest schema version or command policy")
-    stored = string(raw["fingerprint"], "manifest fingerprint")
-    if fingerprint({key: item for key, item in raw.items() if key != "fingerprint"}) != stored:
-        raise ValueError("manifest fingerprint does not match content")
+def _decode_game_identity(raw: JsonObject) -> tuple[GameSpec, str]:
     binary = object_fields(raw["binary"], {"path", "sha256"}, "binary")
     spec = decode_game_spec(
         strict_json(string(raw["description"], "description"), "description"),
@@ -629,42 +694,58 @@ def decode_manifest_object(value: object) -> Manifest:
     )
     if fingerprint(strict_json(spec.default_game_config)) != game_config_fingerprint:
         raise ValueError("game configuration fingerprint is invalid")
-    proposer = _decode_proposer(raw["proposer"])
-    panel = _decode_panel(raw["opponent_panel"])
+    return spec, game_config_fingerprint
+
+
+def _decode_objective_ref(raw: JsonObject) -> tuple[Path, str, str]:
     objective = object_fields(
         raw["objective"], {"source_path", "objective_id", "fingerprint"}, "objective"
     )
-    string(objective["objective_id"], "objective id", nonempty=True)
-    string(objective["fingerprint"], "objective fingerprint")
-    start = object_fields(raw["start_distribution"], {"kind", "fingerprint"}, "start distribution")
-    if start["kind"] != "default_only" or start["fingerprint"] != fingerprint(
-        {"kind": "default_only"}
-    ):
-        raise ValueError("invalid start distribution")
-    corpora = object_fields(raw["corpora"], {"tuning", "production_validation"}, "corpora")
-    tuning = _decode_corpus(
-        corpora["tuning"], "tuning", panel, proposer.task_seed, game_config_fingerprint
+    return (
+        Path(string(objective["source_path"], "objective source path", nonempty=True)),
+        string(objective["objective_id"], "objective id", nonempty=True),
+        string(objective["fingerprint"], "objective fingerprint"),
     )
+
+
+def _decode_start_distribution(raw: JsonObject) -> str:
+    start = object_fields(raw["start_distribution"], {"kind", "fingerprint"}, "start distribution")
+    expected = fingerprint({"kind": "default_only"})
+    if start["kind"] != "default_only" or start["fingerprint"] != expected:
+        raise ValueError("invalid start distribution")
+    return expected
+
+
+def _decode_corpora_and_prefixes(
+    raw: JsonObject, panel: OpponentPanel, task_seed: int, game_config_fingerprint: str
+) -> tuple[TaskCorpus, TaskCorpus, TaskPrefix, TaskPrefix]:
+    corpora = object_fields(raw["corpora"], {"tuning", "production_validation"}, "corpora")
+    tuning = _decode_corpus(corpora["tuning"], "tuning", panel, task_seed, game_config_fingerprint)
     validation = _decode_corpus(
-        corpora["production_validation"],
-        "validation",
-        panel,
-        proposer.task_seed,
-        game_config_fingerprint,
+        corpora["production_validation"], "validation", panel, task_seed, game_config_fingerprint
     )
     if set(case.seed for case in tuning.cases) & set(case.seed for case in validation.cases):
         raise ValueError("task corpora have colliding seeds")
     prefixes = object_fields(raw["prefixes"], {"tuning", "validation"}, "prefixes")
     tuning_prefix = _decode_prefix(prefixes["tuning"], tuning, "tuning")
     validation_prefix = _decode_prefix(prefixes["validation"], validation, "validation")
+    return tuning, validation, tuning_prefix, validation_prefix
+
+
+def _decode_fidelity(
+    raw: JsonObject,
+    validation: TaskCorpus,
+    tuning_prefix: TaskPrefix,
+    validation_prefix: TaskPrefix,
+) -> tuple[SearchEffort, SearchEffort, SearchEffort]:
     fidelity = object_fields(raw["fidelity"], {"tuning", "validation", "production"}, "fidelity")
-    efforts: dict[str, SearchEffort] = {}
-    expected_prefixes: dict[str, TaskPrefix] = {
+    expected: dict[str, TaskPrefix] = {
         "tuning": tuning_prefix,
         "validation": validation_prefix,
         "production": task_prefix(validation, len(validation.cases)),
     }
-    for name, prefix in expected_prefixes.items():
+    efforts: dict[str, SearchEffort] = {}
+    for name, prefix in expected.items():
         item = object_fields(
             fidelity[name], {"task_prefix_id", "search_effort"}, f"{name} fidelity"
         )
@@ -679,49 +760,83 @@ def decode_manifest_object(value: object) -> Manifest:
         or efforts["validation"].max_iterations > efforts["production"].max_iterations
     ):
         raise ValueError("observed search effort exceeds production effort")
+    return efforts["tuning"], efforts["validation"], efforts["production"]
+
+
+def _check_epoch(
+    raw: JsonObject,
+    spec: GameSpec,
+    objective_id: str,
+    objective_fingerprint: str,
+    panel_fingerprint: str,
+    start_fingerprint: str,
+    game_config_fingerprint: str,
+    tuning: TaskCorpus,
+    validation: TaskCorpus,
+    production_effort: SearchEffort,
+) -> ObjectiveEpoch:
     epoch = objective_epoch(
-        {
-            "version": "objective-epoch-v1",
-            "objective_id": objective["objective_id"],
-            "objective_fingerprint": objective["fingerprint"],
-            "game_kind": spec.kind,
-            "engine_fingerprint": spec.engine_fingerprint,
-            "schema_fingerprint": spec.schema_fingerprint,
-            "game_config_fingerprint": game_config_fingerprint,
-            "panel_fingerprint": panel.fingerprint,
-            "start_distribution_fingerprint": start["fingerprint"],
-            "tuning_corpus_fingerprint": tuning.fingerprint,
-            "production_validation_corpus_fingerprint": validation.fingerprint,
-            "production_validation_pairs": len(validation.cases),
-            "production_max_iterations": efforts["production"].max_iterations,
-            "task_policy_version": "weighted-fair-prefix-v1",
-            "utility_formula_version": "pair_mean_v1",
-            "interval_method": "hoeffding_pair_bound_v1",
-            "confidence_level": 0.95,
-            "tie_rule_version": "paired_hoeffding_v1",
-            "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
-        }
+        _epoch_payload(
+            spec,
+            objective_id,
+            objective_fingerprint,
+            panel_fingerprint,
+            start_fingerprint,
+            tuning,
+            validation,
+            production_effort,
+            game_config_fingerprint,
+        )
     )
     if raw["epoch"] != {"epoch_id": epoch.epoch_id, "fingerprint": epoch.fingerprint}:
         raise ValueError("objective epoch is inconsistent")
-    if (
-        raw["utility_formula_version"] != "pair_mean_v1"
-        or raw["selection_rule_version"] != "tuning_point_estimate_fingerprint_v1"
-        or raw["interval_method"] != "hoeffding_pair_bound_v1"
-        or raw["tie_rule_version"] != "paired_hoeffding_v1"
-        or raw["confidence_level"] != 0.95
-    ):
+    return epoch
+
+
+def _check_statistical_policy(raw: JsonObject) -> None:
+    if any(raw[key] != value for key, value in _STATISTICAL_POLICY.items()):
         raise ValueError("unsupported statistical policy")
     if not isinstance(raw["limitations"], list) or not all(
         isinstance(item, str) for item in raw["limitations"]
     ):
         raise ValueError("limitations must be strings")
+
+
+def decode_manifest_object(value: object) -> Manifest:
+    raw = object_fields(value, _FIELDS, "manifest")
+    if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
+        raise ValueError("unsupported manifest schema version or command policy")
+    stored = string(raw["fingerprint"], "manifest fingerprint")
+    if fingerprint({key: item for key, item in raw.items() if key != "fingerprint"}) != stored:
+        raise ValueError("manifest fingerprint does not match content")
+    spec, game_config_fingerprint = _decode_game_identity(raw)
+    proposer = _decode_proposer(raw["proposer"])
+    panel = _decode_panel(raw["opponent_panel"])
+    source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)
+    start_fingerprint = _decode_start_distribution(raw)
+    tuning, validation, tuning_prefix, validation_prefix = _decode_corpora_and_prefixes(
+        raw, panel, proposer.task_seed, game_config_fingerprint
+    )
+    efforts = _decode_fidelity(raw, validation, tuning_prefix, validation_prefix)
+    epoch = _check_epoch(
+        raw,
+        spec,
+        objective_id,
+        objective_fingerprint,
+        panel.fingerprint,
+        start_fingerprint,
+        game_config_fingerprint,
+        tuning,
+        validation,
+        efforts[2],
+    )
+    _check_statistical_policy(raw)
     return Manifest(
-        dict(raw),
         stored,
         spec,
-        string(objective["objective_id"], "objective id", nonempty=True),
-        string(objective["fingerprint"], "objective fingerprint"),
+        source_path,
+        objective_id,
+        objective_fingerprint,
         panel,
         tuning,
         validation,
@@ -731,7 +846,7 @@ def decode_manifest_object(value: object) -> Manifest:
         proposer,
         string(raw["run_id"], "run id", nonempty=True),
         game_config_fingerprint,
-        (efforts["tuning"], efforts["validation"], efforts["production"]),
+        efforts,
     )
 
 
@@ -741,4 +856,22 @@ def read_manifest(path: Path) -> Manifest:
 
 def manifest_json(manifest: Manifest) -> JsonObject:
     """Return the frozen transport representation at the publishing boundary."""
-    return dict(manifest.json_value)
+    validation = manifest.production_validation_corpus
+    encoded = _encode_manifest_object(
+        manifest.run_id,
+        manifest.spec,
+        manifest.objective_source_path,
+        manifest.objective_id,
+        manifest.objective_fingerprint,
+        manifest.game_config_fingerprint,
+        manifest.proposer_spec,
+        manifest.panel,
+        manifest.tuning_corpus,
+        validation,
+        manifest.tuning_prefix,
+        manifest.validation_prefix,
+        task_prefix(validation, len(validation.cases)),
+        manifest.epoch,
+        manifest.effort_values,
+    )
+    return {**encoded, "fingerprint": manifest.fingerprint}

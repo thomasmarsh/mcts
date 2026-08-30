@@ -14,11 +14,9 @@ from typing import ClassVar, Literal
 
 from .codec import (
     JsonObject,
-    JsonValue,
     elements,
     integer,
     json_object,
-    json_value,
     literal,
     object_fields,
     optional_integer,
@@ -74,10 +72,6 @@ RejectionReason = Literal["duplicate", "semantic_validation"]
 
 def _numbers(value: object, label: str) -> tuple[int | float, ...]:
     return tuple(raw_number(item, label) for item in elements(value, label))
-
-
-def _json_values(value: object, label: str) -> tuple[JsonValue, ...]:
-    return tuple(json_value(item, label) for item in elements(value, label))
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,20 +199,49 @@ class ProposalAcceptedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class PanelFieldError:
+    field: str
+    message: str
+    candidate_index: int | None
+
+    @staticmethod
+    def decode(value: object) -> PanelFieldError:
+        item = object_fields(value, {"field", "message", "candidate_index"}, "panel field error")
+        return PanelFieldError(
+            string(item["field"], "panel field error field"),
+            string(item["message"], "panel field error message"),
+            optional_integer(item["candidate_index"], "panel field error candidate index"),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "field": self.field,
+            "message": self.message,
+            "candidate_index": self.candidate_index,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PanelRejection:
     opponent_id: str
-    errors: tuple[JsonValue, ...]
+    errors: tuple[PanelFieldError, ...]
 
     @staticmethod
     def decode(value: object) -> PanelRejection:
         item = object_fields(value, {"opponent_id", "errors"}, "panel rejection")
         return PanelRejection(
             string(item["opponent_id"], "rejected opponent id"),
-            _json_values(item["errors"], "panel rejection errors"),
+            tuple(
+                PanelFieldError.decode(entry)
+                for entry in elements(item["errors"], "panel rejection errors")
+            ),
         )
 
     def encode(self) -> JsonObject:
-        return {"opponent_id": self.opponent_id, "errors": list(self.errors)}
+        return {
+            "opponent_id": self.opponent_id,
+            "errors": [entry.encode() for entry in self.errors],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,7 +395,7 @@ class PairFailedPayload:
     returncode: int | None
     stderr: str
     stdout: str
-    partial_output: tuple[JsonValue, ...]
+    partial_output: tuple[str, ...]
 
     @staticmethod
     def decode(value: object) -> PairFailedPayload:
@@ -389,7 +412,7 @@ class PairFailedPayload:
             optional_integer(item["returncode"], "pair failure return code"),
             string(item["stderr"], "pair failure stderr"),
             string(item["stdout"], "pair failure stdout"),
-            _json_values(item["partial_output"], "pair failure partial output"),
+            strings(item["partial_output"], "pair failure partial output"),
         )
 
     def encode(self) -> JsonObject:
