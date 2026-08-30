@@ -1,69 +1,64 @@
 # MCTS game tuner
 
-`tuner` is a foreground, reproducible strategy tuner for any executable that
-implements the game-host `describe`, `compare validate`, and `compare eval`
-protocol. It discovers and strictly validates the game's declared tuning
-metadata, evaluates seeded ConfigSpace candidates against the schema default,
-selects finalists on common tuning tasks, and validates them on a fresh common
-task block.
+`tuner` is a foreground, reproducible strategy tuner for executables that
+implement the game-host `describe`, `compare validate`, and `compare eval`
+protocol. It freezes an explicit deployment objective before creating an
+artifact, then evaluates ConfigSpace candidates on common task corpora.
 
-Pass the target explicitly; the command never infers or searches for a game
-binary:
+An objective is strict JSON containing the schema default and one or more raw,
+inline historical opponent configurations. The checked-in Druid deployment
+objective is `tuner/objectives/druid-reference-v1.json`; Python never resolves
+named Rust presets at runtime.
 
 ```bash
 uv run --project tuner tuner \
   --game-binary target/release/game-druid \
+  --objective-file tuner/objectives/druid-reference-v1.json \
   --run-dir /tmp/mcts-tuner-druid \
-  --seed 7 --cohort-size 3 --finalists 2 --tuning-pairs 1 \
-  --validation-pairs 1 --tuning-max-iterations 16 \
-  --validation-max-iterations 32 --production-max-iterations 10000
+  --seed 7 --task-seed 11 --cohort-size 3 --finalists 2 \
+  --tuning-pairs 6 --validation-pairs 6 --production-validation-pairs 12 \
+  --tuning-max-iterations 16 --validation-max-iterations 32 \
+  --production-max-iterations 64
 ```
 
-The same command shape works for Tic-Tac-Toe:
+Panel weights produce a deterministic weighted-fair task order. Every task
+names the exact panel opponent, canonical configuration fingerprint, seed, and
+start stratum it uses. `--seed` controls ConfigSpace proposals only;
+`--task-seed` controls the disjoint tuning and held-out validation corpora.
+All configured task counts must be complete panel weight cycles. The selected
+validation corpus is always a leading prefix of the frozen production
+validation corpus.
+
+The run directory contains three version-3 artifacts:
+
+- `manifest.json` freezes the resolved objective/panel, full corpora and
+  selected prefixes, fidelity axes, and derived objective epoch.
+- `evidence.jsonl` records append-only proposal, pair-atomic, contextual
+  observation, selection, and completion evidence.
+- `report.json` is a replaceable projection with weighted held-out marginals,
+  per-opponent matchup rows, matched finalist differences, and unresolved ties.
+
+Validation is `production` only when both axes reach their declared target:
+the selected held-out validation prefix is the complete production corpus and
+its search effort equals `--production-max-iterations`. Every other result is
+`mechanics_smoke`, with the lower axis or axes named in the report.
+
+Resume uses the same scientific options and objective file:
 
 ```bash
 uv run --project tuner tuner \
-  --game-binary target/release/game-ttt \
-  --run-dir /tmp/mcts-tuner-ttt \
-  --seed 7 --cohort-size 3 --finalists 2 --tuning-pairs 1 \
-  --validation-pairs 1 --tuning-max-iterations 16 \
-  --validation-max-iterations 32 --production-max-iterations 10000
-```
-
-The run directory must not already exist unless `--resume` is supplied. It contains:
-
-- `manifest.json`: frozen executable, game description, tuning schema, default opponent,
-  budgets, and disjoint task blocks;
-- `evidence.jsonl`: append-only proposal, pair-atomic game, selection, and validation evidence;
-- `report.json`: a replaceable read model rebuilt solely from the first two files.
-
-`report.json` calls validation `production` only when
-`--validation-max-iterations` exactly equals `--production-max-iterations`.
-Otherwise it is a `mechanics_smoke`, regardless of pair count or elapsed time.
-
-To continue an interrupted or recoverably failed comparison, repeat the same
-scientific options with `--resume`:
-
-```bash
-uv run --project tuner tuner --game-binary target/release/game-druid \
+  --game-binary target/release/game-druid \
+  --objective-file tuner/objectives/druid-reference-v1.json \
   --run-dir /tmp/mcts-tuner-druid --resume \
-  --seed 7 --cohort-size 3 --finalists 2 --tuning-pairs 1 \
-  --validation-pairs 1 --tuning-max-iterations 16 \
-  --validation-max-iterations 32 --production-max-iterations 10000
+  --seed 7 --task-seed 11 --cohort-size 3 --finalists 2 \
+  --tuning-pairs 6 --validation-pairs 6 --production-validation-pairs 12 \
+  --tuning-max-iterations 16 --validation-max-iterations 32 \
+  --production-max-iterations 64
 ```
 
-Resume verifies the manifest and full evidence log before appending, then
-checks the selected executable bytes, `describe` response, game/schema
-fingerprints, ConfigSpace version, frozen scientific options, and task plan.
-The executable may move paths if its bytes and discovery metadata remain
-identical. `--pair-timeout-seconds` is operational and may change.
-
-Each completed comparison is one evidence line containing both seat-swapped
-raw game records. A timeout, malformed result, non-zero comparison exit, or
-operator interruption records no scientific result for that pair; an explicit
-resume reruns it from both seats. Configuration failures are terminal, while
-pair failures and interruptions are resumable. `report.json` is disposable:
-resuming a completed run rebuilds it without evaluating a game.
-
-This command does not support multiple opponents, non-default starts,
-automatic retries, time budgets, or concurrent execution.
+Resume validates the manifest and complete evidence log before append. It
+rejects changed objective content/order/weights/configurations, task corpora,
+prefixes, efforts, or epoch before evaluating another game. The objective and
+binary paths may move when their resolved scientific identity is unchanged;
+`--pair-timeout-seconds` remains operational. Resuming a completed run only
+rebuilds `report.json`.

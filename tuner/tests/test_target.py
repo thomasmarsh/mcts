@@ -23,7 +23,7 @@ def test_game_binary_target_uses_only_the_selected_describe_command(monkeypatch)
 
 
 def test_strict_pair_parser_decodes_ordered_games() -> None:
-    case = TaskCase("task", "tuning", 0, 42, "opponent", "fingerprint", "game")
+    case = TaskCase("task", "tuning", 0, 42, "stratum", "opponent", "fingerprint", "panel", "game")
     task = PairTask("pair", "candidate", case, IterationBudget(10))
     metrics = {"iterations_total": 2, "iterations_first_half": 1, "move_time_ms": 3}
     records = [
@@ -82,7 +82,7 @@ def test_keyboard_interrupt_kills_and_reaps_comparison_child(monkeypatch) -> Non
     task = PairTask(
         "pair",
         "candidate",
-        TaskCase("task", "tuning", 0, 42, "opponent", "fingerprint", "game"),
+        TaskCase("task", "tuning", 0, 42, "stratum", "opponent", "fingerprint", "panel", "game"),
         IterationBudget(10),
     )
     candidate = Candidate("candidate", "fingerprint", "{}")

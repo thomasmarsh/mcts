@@ -5,10 +5,127 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from .artifacts import read_manifest
+from .artifacts import production_claim, read_manifest
 from .evidence import atomic_json, read_events
+from .observations import paired_difference
 from .replay import replay
-from .statistics import marginal_interval, paired_difference, tie_relation
+from .statistics import marginal_interval, pair_utility, tie_relation
+
+
+def _context(value) -> dict[str, object]:
+    return {
+        "objective_epoch_id": value.objective_epoch_id,
+        "phase": value.phase,
+        "corpus_id": value.task_prefix.corpus_id,
+        "prefix_id": value.task_prefix.prefix_id,
+        "task_ids": list(value.task_prefix.task_ids),
+        "search_effort": value.search_effort.max_iterations,
+    }
+
+
+def _counts(pairs) -> dict[str, int]:
+    games = [game for pair in pairs for game in pair.games]
+    wins, draws = (
+        sum(game.outcome == "candidate_win" for game in games),
+        sum(game.outcome == "draw" for game in games),
+    )
+    return {
+        "pairs": len(pairs),
+        "games": len(games),
+        "tasks": len({pair.task.task_case.task_id for pair in pairs}),
+        "opponents": len({pair.task.task_case.opponent_id for pair in pairs}),
+        "starts": len({pair.task.task_case.start for pair in pairs}),
+        "wins": wins,
+        "draws": draws,
+        "losses": len(games) - wins - draws,
+        "candidate_iterations_total": sum(
+            game.candidate_metrics.iterations_total for game in games
+        ),
+        "opponent_iterations_total": sum(game.opponent_metrics.iterations_total for game in games),
+        "candidate_move_time_ms": sum(game.candidate_metrics.move_time_ms for game in games),
+        "opponent_move_time_ms": sum(game.opponent_metrics.move_time_ms for game in games),
+        "elapsed_ms": sum(game.elapsed_ms for game in games),
+    }
+
+
+def _matchups(manifest, pairs) -> list[dict[str, object]]:
+    grouped = defaultdict(list)
+    for pair in pairs:
+        grouped[pair.task.task_case.opponent_id].append(pair)
+    rows = []
+    for opponent in manifest.panel.opponents:
+        evidence = sorted(
+            grouped[opponent.opponent_id], key=lambda pair: pair.task.task_case.ordinal
+        )
+        values = tuple(pair_utility(pair) for pair in evidence)
+        counts = _counts(evidence)
+        estimate = marginal_interval(values) if values else None
+        rows.append(
+            {
+                "opponent_id": opponent.opponent_id,
+                "opponent_label": opponent.label,
+                "opponent_fingerprint": opponent.configuration_fingerprint,
+                "declared_weight": opponent.weight,
+                "estimate": estimate.mean if estimate else None,
+                "interval": None
+                if estimate is None
+                else {"lower": estimate.lower, "upper": estimate.upper},
+                **counts,
+            }
+        )
+    return rows
+
+
+def _candidate_entry(manifest, candidate, observation, pairs) -> dict[str, object]:
+    ordered = sorted(pairs, key=lambda pair: pair.task.task_case.ordinal)
+    if (
+        tuple(pair.task.task_case.task_id for pair in ordered)
+        != observation.context.task_prefix.task_ids
+    ):
+        raise ValueError("finalist lacks complete selected validation evidence")
+    counts = _counts(ordered)
+    return {
+        "candidate_id": candidate.candidate_id,
+        "candidate_fingerprint": candidate.fingerprint,
+        "config": candidate.canonical_config,
+        "context": _context(observation.context),
+        "weighted_marginal": {
+            "estimate": observation.estimate.mean,
+            "interval": {"lower": observation.estimate.lower, "upper": observation.estimate.upper},
+        },
+        **counts,
+        "opponent_matchups": _matchups(manifest, ordered),
+        "tied_with": [],
+    }
+
+
+def _comparisons(
+    observations,
+) -> tuple[list[dict[str, object]], dict[str, list[str]], list[dict[str, str]]]:
+    rows, tied, unresolved = [], defaultdict(list), []
+    for index, left in enumerate(observations):
+        for right in observations[index + 1 :]:
+            difference = paired_difference(left, right)
+            relation = tie_relation(difference)
+            row = {
+                "left_candidate_id": left.candidate_id,
+                "right_candidate_id": right.candidate_id,
+                "context": _context(left.context),
+                "mean_difference": difference.mean,
+                "interval": {"lower": difference.lower, "upper": difference.upper},
+                "relation": relation,
+            }
+            rows.append(row)
+            if relation == "tie":
+                tied[left.candidate_id].append(right.candidate_id)
+                tied[right.candidate_id].append(left.candidate_id)
+                unresolved.append(
+                    {
+                        "left_candidate_id": left.candidate_id,
+                        "right_candidate_id": right.candidate_id,
+                    }
+                )
+    return rows, tied, unresolved
 
 
 def build_report(run_dir: Path) -> dict[str, object]:
@@ -20,111 +137,88 @@ def build_report(run_dir: Path) -> dict[str, object]:
     for pair in state.completed_pairs:
         if pair.task.task_case.phase == "validation":
             validation[pair.task.candidate_id].append(pair)
-    utilities: dict[str, tuple[float, ...]] = {}
-    entries: list[dict[str, object]] = []
-    for candidate in state.finalists:
-        pairs = sorted(
-            validation[candidate.candidate_id], key=lambda pair: pair.task.task_case.ordinal
+    observations = [
+        next(
+            (
+                item
+                for item in state.observations
+                if item.phase == "validation" and item.candidate_id == candidate.candidate_id
+            ),
+            None,
         )
-        if [pair.task.task_case.task_id for pair in pairs] != [
-            case.task_id for case in manifest.validation.cases
-        ]:
-            raise ValueError("finalist lacks complete common validation evidence")
-        values = tuple(
-            sum(
-                {"candidate_win": 1.0, "draw": 0.5, "baseline_win": 0.0}[game.outcome]
-                for game in pair.games
-            )
-            / 2
-            for pair in pairs
-        )
-        utilities[candidate.candidate_id] = values
-        estimate = marginal_interval(values)
-        games = [game for pair in pairs for game in pair.games]
-        wins = sum(game.outcome == "candidate_win" for game in games)
-        draws = sum(game.outcome == "draw" for game in games)
-        entries.append(
-            {
-                "candidate_id": candidate.candidate_id,
-                "candidate_fingerprint": candidate.fingerprint,
-                "config": candidate.canonical_config,
-                "estimate": estimate.mean,
-                "interval": {"lower": estimate.lower, "upper": estimate.upper},
-                "pairs": len(pairs),
-                "games": len(games),
-                "unique_task_count": len({pair.task.task_case.task_id for pair in pairs}),
-                "unique_opponent_count": 1,
-                "unique_start_count": 1,
-                "wins": wins,
-                "draws": draws,
-                "losses": len(games) - wins - draws,
-                "candidate_iterations_total": sum(
-                    game.candidate_metrics.iterations_total for game in games
-                ),
-                "opponent_iterations_total": sum(
-                    game.opponent_metrics.iterations_total for game in games
-                ),
-                "candidate_move_time_ms": sum(
-                    game.candidate_metrics.move_time_ms for game in games
-                ),
-                "opponent_move_time_ms": sum(game.opponent_metrics.move_time_ms for game in games),
-                "elapsed_ms": sum(game.elapsed_ms for game in games),
-                "tied_with": [],
-            }
-        )
-    comparisons: list[dict[str, object]] = []
-    ties: dict[str, list[str]] = defaultdict(list)
-    for left in state.finalists:
-        for right in state.finalists:
-            if left == right:
-                continue
-            difference = paired_difference(
-                utilities[left.candidate_id], utilities[right.candidate_id]
-            )
-            relation = tie_relation(difference)
-            comparisons.append(
-                {
-                    "left": left.candidate_id,
-                    "right": right.candidate_id,
-                    "mean_difference": difference.mean,
-                    "interval": {"lower": difference.lower, "upper": difference.upper},
-                    "relation": relation,
-                }
-            )
-            if relation == "tie":
-                ties[left.candidate_id].append(right.candidate_id)
+        for candidate in state.finalists
+    ]
+    if any(item is None for item in observations):
+        raise ValueError("finalist lacks held-out validation observation")
+    values = [item for item in observations if item is not None]
+    entries = [
+        _candidate_entry(manifest, candidate, observation, validation[candidate.candidate_id])
+        for candidate, observation in zip(state.finalists, values, strict=True)
+    ]
+    comparisons, tied, unresolved = _comparisons(values)
     for entry in entries:
-        entry["tied_with"] = sorted(ties[entry["candidate_id"]])
-    entries.sort(key=lambda entry: (-entry["estimate"], entry["candidate_fingerprint"]))  # type: ignore[operator]
-    claim = (
-        "production"
-        if manifest.budgets["validation"] == manifest.budgets["production"]
-        else "mechanics_smoke"
+        entry["tied_with"] = sorted(tied[entry["candidate_id"]])
+    entries.sort(
+        key=lambda entry: (-entry["weighted_marginal"]["estimate"], entry["candidate_fingerprint"])
+    )
+    claim, missing = production_claim(
+        manifest.validation_prefix,
+        manifest.production_validation_corpus,
+        manifest.efforts["validation"],
+        manifest.efforts["production"],
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "complete",
         "manifest_fingerprint": manifest.fingerprint,
-        "validation_claim": claim,
+        "validation_claim": {"claim": claim, "missing_production_axes": list(missing)},
         "frozen": {
-            "kind": manifest.spec.kind,
+            "objective_id": manifest.objective_id,
+            "objective_fingerprint": manifest.objective_fingerprint,
+            "epoch_id": manifest.epoch.epoch_id,
             "engine_fingerprint": manifest.spec.engine_fingerprint,
             "tuning_schema_fingerprint": manifest.spec.schema_fingerprint,
             "game_config_fingerprint": manifest.raw["game_config_fingerprint"],
-            "opponent_fingerprint": manifest.opponent.fingerprint,
-            "validation_task_block": manifest.validation.block_id,
-            "budgets": manifest.budgets,
+            "panel_fingerprint": manifest.panel.fingerprint,
+            "panel": [
+                {
+                    "opponent_id": item.opponent_id,
+                    "label": item.label,
+                    "role": item.role,
+                    "weight": item.weight,
+                    "configuration_fingerprint": item.configuration_fingerprint,
+                }
+                for item in manifest.panel.opponents
+            ],
+            "start_distribution": "default_only",
+            "corpora": {
+                "tuning": {
+                    "fingerprint": manifest.tuning_corpus.fingerprint,
+                    "count": len(manifest.tuning_corpus.cases),
+                    "selected_prefix": manifest.tuning_prefix.prefix_id,
+                },
+                "production_validation": {
+                    "fingerprint": manifest.production_validation_corpus.fingerprint,
+                    "count": len(manifest.production_validation_corpus.cases),
+                    "selected_prefix": manifest.validation_prefix.prefix_id,
+                },
+            },
+            "fidelity": {
+                "observed_task_count": manifest.validation_prefix.length,
+                "production_task_count": len(manifest.production_validation_corpus.cases),
+                "observed_search_effort": manifest.efforts["validation"].max_iterations,
+                "production_search_effort": manifest.efforts["production"].max_iterations,
+            },
             "utility_formula_version": manifest.raw["utility_formula_version"],
+            "interval_method": manifest.raw["interval_method"],
+            "tie_rule_version": manifest.raw["tie_rule_version"],
         },
         "selection": {"finalist_ids": [candidate.candidate_id for candidate in state.finalists]},
         "validation_order": entries,
-        "pairwise_comparisons": comparisons,
-        "interval_method": "hoeffding_pair_bound_v1",
-        "tie_rule": "paired_hoeffding_v1; tie means not distinguished by this declared paired rule",
+        "paired_finalist_comparisons": comparisons,
+        "unresolved_ties": unresolved,
         "limitations": [
-            "one default opponent",
-            "one default starting state",
-            "fixed task counts",
+            "default-only starting state",
             "conservative small-sample intervals",
             "explicit resume",
         ],

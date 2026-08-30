@@ -11,6 +11,7 @@ from typing import Protocol
 from .domain import (
     Candidate,
     GameResult,
+    Opponent,
     PairResult,
     PairTask,
     StrategyMetrics,
@@ -42,14 +43,14 @@ class Target(Protocol):
     def describe(self) -> JsonValue: ...
 
     def validate(
-        self, candidates: Sequence[Candidate], opponent: Candidate, game_config: str
+        self, candidates: Sequence[Candidate], opponent: Opponent, game_config: str
     ) -> ValidationResult: ...
 
     def evaluate(
         self,
         task: PairTask,
         candidate: Candidate,
-        opponent: Candidate,
+        opponent: Opponent,
         game_config: str,
         timeout_seconds: int,
     ) -> PairResult: ...
@@ -83,7 +84,7 @@ class GameBinaryTarget:
         return response
 
     def validate(
-        self, candidates: Sequence[Candidate], opponent: Candidate, game_config: str
+        self, candidates: Sequence[Candidate], opponent: Opponent, game_config: str
     ) -> ValidationResult:
         command = [str(self.binary_path), "compare", "validate"]
         for candidate in candidates:
@@ -110,7 +111,7 @@ class GameBinaryTarget:
         self,
         task: PairTask,
         candidate: Candidate,
-        opponent: Candidate,
+        opponent: Opponent,
         game_config: str,
         timeout_seconds: int,
     ) -> PairResult:

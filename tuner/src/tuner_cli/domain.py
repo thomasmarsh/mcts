@@ -1,9 +1,12 @@
-"""Immutable values independent of subprocess and ConfigSpace objects."""
+"""Immutable values used by tuner policy, artifacts, and execution."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+
+Phase = Literal["tuning", "validation"]
+OpponentRole = Literal["default", "historical_reference"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +14,25 @@ class Candidate:
     candidate_id: str
     fingerprint: str
     canonical_config: str
+
+
+@dataclass(frozen=True, slots=True)
+class Opponent:
+    opponent_id: str
+    source_id: Literal["schema_default", "inline"]
+    label: str
+    role: OpponentRole
+    weight: int
+    canonical_config: str
+    configuration_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpponentPanel:
+    panel_id: str
+    fingerprint: str
+    opponents: tuple[Opponent, ...]
+    total_weight: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,27 +44,68 @@ class Proposal:
 
 
 @dataclass(frozen=True, slots=True)
-class IterationBudget:
+class SearchEffort:
     max_iterations: int
+
+
+IterationBudget = SearchEffort
 
 
 @dataclass(frozen=True, slots=True)
 class TaskCase:
     task_id: str
-    phase: Literal["tuning", "validation"]
+    phase: Phase
     ordinal: int
     seed: int
+    stratum_id: str
     opponent_id: str
     opponent_fingerprint: str
+    panel_fingerprint: str
     game_config_fingerprint: str
     start: Literal["default"] = "default"
 
 
 @dataclass(frozen=True, slots=True)
-class TaskBlock:
-    block_id: str
-    phase: Literal["tuning", "validation"]
+class TaskCorpus:
+    corpus_id: str
+    fingerprint: str
+    phase: Phase
+    task_policy_version: Literal["weighted-fair-prefix-v1"]
     cases: tuple[TaskCase, ...]
+
+    @property
+    def block_id(self) -> str:
+        return self.corpus_id
+
+
+TaskBlock = TaskCorpus
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPrefix:
+    prefix_id: str
+    corpus_id: str
+    length: int
+    task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCountFidelity:
+    task_prefix: TaskPrefix
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectiveEpoch:
+    epoch_id: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationContext:
+    objective_epoch_id: str
+    phase: Phase
+    task_prefix: TaskPrefix
+    search_effort: SearchEffort
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +113,7 @@ class PairTask:
     pair_id: str
     candidate_id: str
     task_case: TaskCase
-    budget: IterationBudget
+    budget: SearchEffort
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,12 +159,25 @@ class Estimate:
 @dataclass(frozen=True, slots=True)
 class Observation:
     candidate_id: str
-    phase: Literal["tuning", "validation"]
-    block_id: str
-    prefix_length: int
-    budget: IterationBudget
+    context: ObservationContext
     pair_utilities: tuple[float, ...]
     estimate: Estimate
+
+    @property
+    def phase(self) -> Phase:
+        return self.context.phase
+
+    @property
+    def block_id(self) -> str:
+        return self.context.task_prefix.corpus_id
+
+    @property
+    def prefix_length(self) -> int:
+        return self.context.task_prefix.length
+
+    @property
+    def budget(self) -> SearchEffort:
+        return self.context.search_effort
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +195,6 @@ class ValidationResult:
 
 @dataclass(frozen=True, slots=True)
 class ReplayState:
-    """Typed state reconstructed exclusively by folding evidence."""
-
     proposals: tuple[Proposal, ...]
     dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
     cohort: tuple[Candidate, ...] | None

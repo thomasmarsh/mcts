@@ -25,6 +25,37 @@ def _fake_binary(tmp_path: Path) -> Path:
     return binary
 
 
+def _objective(tmp_path: Path) -> Path:
+    path = tmp_path / "objective.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "objective_id": "fake-reference-v1",
+                "game_kind": "druid",
+                "opponents": [
+                    {
+                        "id": "schema-default",
+                        "label": "Default",
+                        "role": "default",
+                        "weight": 1,
+                        "config": {"source": "schema_default"},
+                    },
+                    {
+                        "id": "historical",
+                        "label": "Historical",
+                        "role": "historical_reference",
+                        "weight": 1,
+                        "config": {"source": "inline", "value": {"family": "b"}},
+                    },
+                ],
+                "start_distribution": {"kind": "default_only"},
+            }
+        )
+    )
+    return path
+
+
 class FakeTarget:
     def __init__(self) -> None:
         self.calls: list[PairTask] = []
@@ -114,10 +145,13 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
         RunOptions(
             _fake_binary(tmp_path),
             run_dir,
+            objective_file=_objective(tmp_path),
+            task_seed=9,
             cohort_size=2,
             finalists=1,
             tuning_pairs=2,
-            validation_pairs=1,
+            validation_pairs=2,
+            production_validation_pairs=2,
             tuning_max_iterations=3,
             validation_max_iterations=5,
             production_max_iterations=9,
@@ -128,8 +162,8 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
     events = [json.loads(line) for line in (run_dir / "evidence.jsonl").read_text().splitlines()]
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
     assert events[-1]["type"] == "run_completed"
-    assert not {item["seed"] for item in manifest["tuning_tasks"]["cases"]} & {
-        item["seed"] for item in manifest["validation_tasks"]["cases"]
+    assert not {item["seed"] for item in manifest["corpora"]["tuning"]["cases"]} & {
+        item["seed"] for item in manifest["corpora"]["production_validation"]["cases"]
     }
     tuning_starts = [
         event["payload"]
@@ -148,17 +182,23 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
         RunOptions(
             _fake_binary(tmp_path),
             run_dir,
+            objective_file=_objective(tmp_path),
+            task_seed=9,
             cohort_size=2,
             finalists=1,
-            tuning_pairs=1,
-            validation_pairs=1,
+            tuning_pairs=2,
+            validation_pairs=2,
+            production_validation_pairs=2,
             tuning_max_iterations=3,
             validation_max_iterations=5,
             production_max_iterations=5,
         ),
         FakeTarget(),
     )
-    assert json.loads((run_dir / "report.json").read_text())["validation_claim"] == "production"
+    assert (
+        json.loads((run_dir / "report.json").read_text())["validation_claim"]["claim"]
+        == "production"
+    )
 
 
 def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path) -> None:
@@ -166,10 +206,13 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
     options = RunOptions(
         binary,
         tmp_path / "control" / "run",
+        objective_file=_objective(tmp_path),
+        task_seed=9,
         cohort_size=2,
         finalists=1,
         tuning_pairs=2,
-        validation_pairs=1,
+        validation_pairs=2,
+        production_validation_pairs=2,
         tuning_max_iterations=3,
         validation_max_iterations=5,
         production_max_iterations=9,

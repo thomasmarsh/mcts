@@ -7,9 +7,20 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
-from .domain import Candidate, IterationBudget, PairTask, TaskBlock, TaskCase
+from .domain import (
+    Candidate,
+    ObjectiveEpoch,
+    Opponent,
+    OpponentPanel,
+    PairTask,
+    Phase,
+    SearchEffort,
+    TaskCase,
+    TaskCorpus,
+    TaskPrefix,
+)
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -40,7 +51,6 @@ def _normalize(value: object) -> JsonValue:
 
 
 def canonical_json(value: object) -> str:
-    """Return compact, sorted, UTF-8 JSON after safe scalar normalization."""
     return json.dumps(_normalize(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
@@ -64,24 +74,23 @@ def derive_task_seed(root_seed: int, phase: str, ordinal: int) -> int:
     if phase not in {"tuning", "validation"} or ordinal < 0:
         raise ValueError("invalid task seed inputs")
     payload = {
-        "namespace": "mcts-tuner-task-seed-v1",
+        "namespace": "mcts-tuner-task-seed-v2",
         "root_seed": root_seed,
         "phase": phase,
         "ordinal": ordinal,
     }
-    digest = hashlib.sha256(canonical_json(payload).encode()).digest()
-    return int.from_bytes(digest[:8], "big") & ((1 << 53) - 1)
+    return int.from_bytes(hashlib.sha256(canonical_json(payload).encode()).digest()[:8], "big") & (
+        (1 << 53) - 1
+    )
 
 
 def candidate_from_config(config: object) -> Candidate:
-    """Construct the only candidate identity used by artifacts and execution."""
     canonical = canonical_json(config)
     config_fingerprint = fingerprint(json.loads(canonical))
     return Candidate(f"candidate-{config_fingerprint}", config_fingerprint, canonical)
 
 
 def candidate_from_canonical_config(canonical: str) -> Candidate:
-    """Verify a stored configuration spelling before reconstructing its identity."""
     try:
         parsed = json.loads(canonical)
     except json.JSONDecodeError as error:
@@ -91,54 +100,105 @@ def candidate_from_canonical_config(canonical: str) -> Candidate:
     return candidate_from_config(parsed)
 
 
+def panel_payload(opponents: tuple[Opponent, ...]) -> dict[str, object]:
+    return {
+        "version": "opponent-panel-v1",
+        "opponents": [
+            {
+                "id": x.opponent_id,
+                "source": x.source_id,
+                "label": x.label,
+                "role": x.role,
+                "weight": x.weight,
+                "config": x.canonical_config,
+                "fingerprint": x.configuration_fingerprint,
+            }
+            for x in opponents
+        ],
+    }
+
+
+def opponent_panel(opponents: tuple[Opponent, ...]) -> OpponentPanel:
+    payload = panel_payload(opponents)
+    digest = fingerprint(payload)
+    return OpponentPanel(
+        stable_id("panel", payload), digest, opponents, sum(x.weight for x in opponents)
+    )
+
+
 def task_case(
     phase: str,
     ordinal: int,
     root_seed: int,
-    opponent: Candidate,
+    opponent: Opponent,
+    panel: OpponentPanel,
     game_config_fingerprint: str,
 ) -> TaskCase:
-    if phase not in {"tuning", "validation"}:
-        raise ValueError("invalid task phase")
     seed = derive_task_seed(root_seed, phase, ordinal)
+    stratum_id = stable_id(
+        "stratum",
+        {
+            "panel": panel.fingerprint,
+            "opponent_id": opponent.opponent_id,
+            "opponent_fingerprint": opponent.configuration_fingerprint,
+            "start": "default",
+        },
+    )
     payload = {
         "phase": phase,
         "ordinal": ordinal,
         "seed": seed,
-        "opponent_fingerprint": opponent.fingerprint,
+        "stratum_id": stratum_id,
+        "opponent_id": opponent.opponent_id,
+        "opponent_fingerprint": opponent.configuration_fingerprint,
+        "panel_fingerprint": panel.fingerprint,
         "game_config_fingerprint": game_config_fingerprint,
         "start": "default",
     }
     return TaskCase(
         stable_id("task", payload),
-        phase,  # type: ignore[arg-type]
+        cast(Phase, phase),
         ordinal,
         seed,
-        f"opponent-default-{opponent.fingerprint}",
-        opponent.fingerprint,
+        stratum_id,
+        opponent.opponent_id,
+        opponent.configuration_fingerprint,
+        panel.fingerprint,
         game_config_fingerprint,
     )
 
 
-def task_block(
-    phase: str,
-    count: int,
-    root_seed: int,
-    opponent: Candidate,
-    game_config_fingerprint: str,
-) -> TaskBlock:
-    cases = tuple(
-        task_case(phase, ordinal, root_seed, opponent, game_config_fingerprint)
-        for ordinal in range(count)
-    )
-    return TaskBlock(
-        stable_id("block", {"phase": phase, "task_ids": [case.task_id for case in cases]}),
-        phase,  # type: ignore[arg-type]
-        cases,
+def task_corpus(phase: str, cases: tuple[TaskCase, ...], panel: OpponentPanel) -> TaskCorpus:
+    payload = {
+        "phase": phase,
+        "task_policy_version": "weighted-fair-prefix-v1",
+        "panel_fingerprint": panel.fingerprint,
+        "task_ids": [case.task_id for case in cases],
+    }
+    digest = fingerprint(payload)
+    return TaskCorpus(
+        stable_id("corpus", payload), digest, cast(Phase, phase), "weighted-fair-prefix-v1", cases
     )
 
 
-def pair_task(candidate: Candidate, case: TaskCase, budget: IterationBudget) -> PairTask:
+def task_prefix(corpus: TaskCorpus, length: int) -> TaskPrefix:
+    if length <= 0 or length > len(corpus.cases):
+        raise ValueError("task prefix length is outside its corpus")
+    ids = tuple(case.task_id for case in corpus.cases[:length])
+    payload = {
+        "corpus_id": corpus.corpus_id,
+        "corpus_fingerprint": corpus.fingerprint,
+        "task_ids": ids,
+    }
+    return TaskPrefix(stable_id("prefix", payload), corpus.corpus_id, length, ids)
+
+
+def objective_epoch(payload: object) -> ObjectiveEpoch:
+    digest = fingerprint(payload)
+    return ObjectiveEpoch(stable_id("epoch", payload), digest)
+
+
+def pair_task(candidate: Candidate, case: TaskCase, budget: SearchEffort) -> PairTask:
     pair_id = stable_id(
         "pair",
         {

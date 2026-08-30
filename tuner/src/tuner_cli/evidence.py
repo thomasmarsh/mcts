@@ -1,4 +1,4 @@
-"""Strict version-2 append-only evidence records and atomic file publishing."""
+"""Strict version-3 append-only evidence records and atomic file publishing."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from .artifacts import SCHEMA_VERSION, strict_json
 from .domain import GameResult, PairResult, PairTask
@@ -281,13 +281,22 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             item["errors"], list
         ):
             raise ValueError("invalid proposal rejection")
+        if any(
+            not isinstance(error, dict)
+            or set(error) != {"opponent_id", "errors"}
+            or not isinstance(error["opponent_id"], str)
+            or not isinstance(error["errors"], list)
+            for error in item["errors"]
+        ):
+            raise ValueError("proposal rejection errors must identify panel opponents")
         return item
     if event_type == "cohort_accepted":
-        item = _object(payload, {"candidate_ids", "validation_response_fingerprint"}, "cohort")
+        item = _object(payload, {"candidate_ids", "validation_response_fingerprints"}, "cohort")
         if (
             not isinstance(item["candidate_ids"], list)
             or not all(isinstance(x, str) for x in item["candidate_ids"])
-            or not isinstance(item["validation_response_fingerprint"], str)
+            or not isinstance(item["validation_response_fingerprints"], list)
+            or not all(isinstance(value, str) for value in item["validation_response_fingerprints"])
         ):
             raise ValueError("invalid cohort")
         return item
@@ -365,9 +374,12 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             {
                 "candidate_id",
                 "phase",
-                "block_id",
+                "objective_epoch_id",
+                "corpus_id",
+                "prefix_id",
+                "prefix_task_ids",
                 "prefix_length",
-                "budget",
+                "search_effort",
                 "pair_utilities",
                 "estimate",
                 "counts",
@@ -377,12 +389,17 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         if (
             item["phase"] not in {"tuning", "validation"}
             or not isinstance(item["candidate_id"], str)
-            or not isinstance(item["block_id"], str)
+            or not all(
+                isinstance(item[key], str)
+                for key in {"objective_epoch_id", "corpus_id", "prefix_id"}
+            )
+            or not isinstance(item["prefix_task_ids"], list)
+            or not all(isinstance(value, str) for value in item["prefix_task_ids"])
             or not isinstance(item["pair_utilities"], list)
         ):
             raise ValueError("invalid observation")
         _int(item["prefix_length"], "prefix length", positive=True)
-        _int(item["budget"], "observation budget", positive=True)
+        _int(item["search_effort"], "observation search effort", positive=True)
         return item
     if event_type == "finalists_selected":
         item = _object(
@@ -390,8 +407,11 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             {
                 "finalist_ids",
                 "tuning_estimates",
-                "source_block",
-                "budget",
+                "objective_epoch_id",
+                "corpus_id",
+                "prefix_id",
+                "prefix_task_ids",
+                "search_effort",
                 "selection_rule_version",
             },
             "finalists",
@@ -400,6 +420,13 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             not isinstance(item["finalist_ids"], list)
             or not all(isinstance(x, str) for x in item["finalist_ids"])
             or not isinstance(item["tuning_estimates"], dict)
+            or not all(
+                isinstance(item[key], str)
+                for key in {"objective_epoch_id", "corpus_id", "prefix_id"}
+            )
+            or not isinstance(item["prefix_task_ids"], list)
+            or not all(isinstance(value, str) for value in item["prefix_task_ids"])
+            or not isinstance(item["search_effort"], int)
         ):
             raise ValueError("invalid finalist selection")
         return item
@@ -412,16 +439,32 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
                 "finalist_ids",
                 "evidence_counts",
                 "validation_claim",
+                "objective_epoch_id",
+                "validation_prefix_id",
+                "validation_search_effort",
+                "missing_production_axes",
             },
             "run completion",
         )
         if not all(
-            isinstance(item[key], str) for key in {"manifest_fingerprint", "validation_claim"}
+            isinstance(item[key], str)
+            for key in {
+                "manifest_fingerprint",
+                "validation_claim",
+                "objective_epoch_id",
+                "validation_prefix_id",
+            }
         ) or not all(
             isinstance(item[key], list) and all(isinstance(x, str) for x in item[key])
             for key in {"accepted_ids", "finalist_ids"}
         ):
             raise ValueError("invalid run completion")
+        if (
+            not isinstance(item["validation_search_effort"], int)
+            or not isinstance(item["missing_production_axes"], list)
+            or not all(isinstance(value, str) for value in item["missing_production_axes"])
+        ):
+            raise ValueError("invalid completion fidelity")
         return item
     raise ValueError(f"unknown evidence event type {event_type!r}")
 
@@ -435,7 +478,8 @@ def decode_event(value: object, expected_sequence: int | None = None) -> Evidenc
         raise ValueError("evidence sequence is not contiguous")
     if not isinstance(item["type"], str):
         raise ValueError("event type must be a string")
-    return EvidenceEvent(sequence, item["type"], _validate_payload(item["type"], item["payload"]))  # type: ignore[arg-type]
+    event_type = cast(EventType, item["type"])
+    return EvidenceEvent(sequence, event_type, _validate_payload(event_type, item["payload"]))
 
 
 def read_events(path: Path) -> list[EvidenceEvent]:

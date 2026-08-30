@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "objective_id": "ttt-smoke-v1",
+  "game_kind": "ttt",
+  "opponents": [
+    {
+      "id": "schema-default",
+      "label": "Schema default",
+      "role": "default",
+      "weight": 1,
+      "config": {"source": "schema_default"}
+    },
+    {
+      "id": "historical-ucb1",
+      "label": "Historical UCB1",
+      "role": "historical_reference",
+      "weight": 2,
+      "config": {
+        "source": "inline",
+        "value": {
+          "c": 1.4142135623730951,
+          "family": "ucb1",
+          "final_action": "robust_child",
+          "q_init": "Loss"
+        }
+      }
+    }
+  ],
+  "start_distribution": {"kind": "default_only"}
+}

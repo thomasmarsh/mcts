@@ -12,17 +12,20 @@ from .run import RunOptions, run_foreground
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tuner", description="Foreground game strategy tuner.")
     parser.add_argument("--game-binary", type=Path, required=True, metavar="PATH")
+    parser.add_argument("--objective-file", type=Path, required=True, metavar="PATH")
     parser.add_argument("--run-dir", type=Path, required=True, metavar="PATH")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--task-seed", type=int, required=True)
     parser.add_argument("--cohort-size", type=int, default=8)
     parser.add_argument("--finalists", type=int, default=3)
     parser.add_argument("--tuning-pairs", type=int, default=4)
     parser.add_argument("--validation-pairs", type=int, default=8)
+    parser.add_argument("--production-validation-pairs", type=int, required=True)
     parser.add_argument("--tuning-max-iterations", type=int, default=1_000)
     parser.add_argument("--validation-max-iterations", type=int, default=10_000)
     parser.add_argument("--production-max-iterations", type=int, default=10_000)
     parser.add_argument("--pair-timeout-seconds", type=int, default=600)
-    parser.add_argument("--resume", action="store_true", help="continue a frozen version-2 run")
+    parser.add_argument("--resume", action="store_true", help="continue a frozen version-3 run")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -31,11 +34,14 @@ def _options(args: argparse.Namespace) -> RunOptions:
     return RunOptions(
         game_binary=args.game_binary,
         run_dir=args.run_dir,
+        objective_file=args.objective_file,
         seed=args.seed,
+        task_seed=args.task_seed,
         cohort_size=args.cohort_size,
         finalists=args.finalists,
         tuning_pairs=args.tuning_pairs,
         validation_pairs=args.validation_pairs,
+        production_validation_pairs=args.production_validation_pairs,
         tuning_max_iterations=args.tuning_max_iterations,
         validation_max_iterations=args.validation_max_iterations,
         production_max_iterations=args.production_max_iterations,

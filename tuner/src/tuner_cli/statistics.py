@@ -25,12 +25,17 @@ def marginal_interval(values: tuple[float, ...]) -> Estimate:
     return Estimate(mean, max(0.0, mean - half), min(1.0, mean + half))
 
 
-def paired_difference(left: tuple[float, ...], right: tuple[float, ...]) -> Estimate:
+def paired_difference_values(left: tuple[float, ...], right: tuple[float, ...]) -> Estimate:
     if not left or len(left) != len(right):
         raise ValueError("paired differences need equal non-empty inputs")
     mean = sum(a - b for a, b in zip(left, right, strict=True)) / len(left)
     half = math.sqrt(2 * math.log(2 / ALPHA) / len(left))
     return Estimate(mean, max(-1.0, mean - half), min(1.0, mean + half))
+
+
+def paired_difference(left: tuple[float, ...], right: tuple[float, ...]) -> Estimate:
+    """Compatibility numeric primitive; contextual callers use observations.paired_difference."""
+    return paired_difference_values(left, right)
 
 
 def tie_relation(difference: Estimate) -> str:
