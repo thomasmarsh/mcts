@@ -1,13 +1,9 @@
 [project]
 name = "mcts-tuner"
 version = "0.1.0"
-description = "Optuna + OpenSkill hyperparameter optimization for MCTS"
+description = "Foreground, reproducible Druid strategy tuning for MCTS"
 requires-python = ">=3.10,<3.14"
-dependencies = [
-    "pyyaml>=6.0",
-    "optuna>=4.9.0",
-    "openskill>=6.2.0",
-]
+dependencies = ["ConfigSpace>=1.0.0,<2"]
 
 [project.scripts]
 tuner = "tuner_cli.__main__:main"
@@ -16,8 +12,8 @@ tuner = "tuner_cli.__main__:main"
 dev = ["pytest>=8.0.0", "ruff>=0.15.0"]
 
 [tool.pytest.ini_options]
-# e2e/ tests run a real game-nim binary and are excluded from the fast suite.
-# Run them manually: uv run python tests/e2e/run_e2e.py
+# e2e/ tests run an already-built Druid binary and are excluded from the fast suite.
+# Run them manually: uv run python tests/e2e/run_druid_smoke.py
 norecursedirs = ["tests/e2e"]
 
 [tool.ruff]

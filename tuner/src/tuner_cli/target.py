@@ -1,227 +1,279 @@
-"""One-pair configured-comparison subprocess transport."""
+"""Druid subprocess boundary and strict configured-comparison wire decoder."""
 
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
-from .config import SearchConfig, json_dumps
-from .evaluation import (
+from .domain import (
+    Candidate,
     GameResult,
     PairResult,
     PairTask,
     StrategyMetrics,
-    configured_game_seed,
-    game_id_for,
+    ValidationError,
+    ValidationResult,
 )
-
-logger = logging.getLogger(__name__)
-
-FLOOR_BASELINES: dict[str, dict] = {
-    "flat_mc": {"family": "flat_mc", "q_init": "Infinity"},
-    "random": {"family": "random", "q_init": "Infinity"},
-}
-
-_HEARTBEAT_INTERVAL_S = 30
-_TRIAL_TIMEOUT_S = 600
-_DEFAULT_MAX_ITERATIONS = 10_000
+from .identity import JsonValue, canonical_json, stable_id
 
 
 class PairExecutionError(RuntimeError):
-    """The evaluator could not return one complete, valid comparison pair."""
+    """A subprocess failed before it produced one valid, complete pair."""
+
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        command: list[str],
+        *,
+        returncode: int | None = None,
+        stderr: str = "",
+        stdout: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.kind, self.command, self.returncode = kind, command, returncode
+        self.stderr, self.stdout = stderr, stdout
 
 
-def _run_with_heartbeat(
-    cmd: list[str], *, timeout: float, seed: int
-) -> subprocess.CompletedProcess:
-    """Run a subprocess while periodically logging liveness until its timeout."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    elapsed = 0.0
-    while True:
-        wait = min(_HEARTBEAT_INTERVAL_S, timeout - elapsed)
-        try:
-            stdout, stderr = proc.communicate(timeout=wait)
-            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-        except subprocess.TimeoutExpired:
-            elapsed += wait
-            if elapsed >= timeout:
-                proc.kill()
-                proc.communicate()
-                raise
-            logger.info("Pair still running after %.0fs (seed=%s)", elapsed, seed)
+class Target(Protocol):
+    def describe(self) -> JsonValue: ...
+
+    def validate(
+        self, candidates: Sequence[Candidate], opponent: Candidate, game_config: str
+    ) -> ValidationResult: ...
+
+    def evaluate(
+        self,
+        task: PairTask,
+        candidate: Candidate,
+        opponent: Candidate,
+        game_config: str,
+        timeout_seconds: int,
+    ) -> PairResult: ...
 
 
-def _build_pair_cmd(cfg: SearchConfig, binary: Path, task: PairTask) -> list[str]:
-    """Build the strict one-pair configured-comparison command."""
-    cmd = [
-        str(binary),
-        "compare",
-        "eval",
-        "--candidate-config",
-        json_dumps(task.candidate_config),
-        "--baseline-config",
-        json_dumps(task.opponent.config),
-        "--rounds",
-        "1",
-        "--seed",
-        str(task.seed),
-    ]
-    if cfg.target.game_config is not None:
-        cmd += ["--game-config", json_dumps(cfg.target.game_config)]
-    if cfg.target.max_time_ms is not None:
-        cmd += ["--max-time-ms", str(cfg.target.max_time_ms)]
-    else:
-        cmd += [
-            "--max-iterations",
-            str(cfg.target.max_iterations or _DEFAULT_MAX_ITERATIONS),
-        ]
-    return cmd
+def _splitmix_seed(seed: int) -> int:
+    value = seed & ((1 << 64) - 1)
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & ((1 << 64) - 1)
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & ((1 << 64) - 1)
+    return (value ^ (value >> 31)) & ((1 << 53) - 1)
 
 
-def evaluate_pair(cfg: SearchConfig, binary: Path, task: PairTask) -> PairResult:
-    """Execute and strictly decode one configured, seat-swapped pair."""
-    if cfg.target.max_iterations is not None and cfg.target.max_time_ms is not None:
-        raise ValueError("target.max_iterations and target.max_time_ms are mutually exclusive")
-    cmd = _build_pair_cmd(cfg, binary, task)
-    logger.debug("Running: %s", " ".join(cmd))
-    try:
-        completed = _run_with_heartbeat(cmd, timeout=_TRIAL_TIMEOUT_S, seed=task.seed)
-    except subprocess.TimeoutExpired as error:
-        raise PairExecutionError(f"pair timed out after {_TRIAL_TIMEOUT_S}s") from error
-    if completed.returncode != 0:
-        raise PairExecutionError(
-            f"comparison exited with code {completed.returncode}: {completed.stderr}"
+class DruidTarget:
+    def __init__(self, binary_path: Path) -> None:
+        self.binary_path = binary_path
+
+    def describe(self) -> JsonValue:
+        completed = subprocess.run(
+            [str(self.binary_path), "describe"], capture_output=True, text=True
         )
-    try:
-        return parse_pair_output(completed.stdout, task)
-    except ValueError as error:
-        raise PairExecutionError(f"malformed comparison output: {error}") from error
+        if completed.returncode != 0:
+            raise RuntimeError(f"Druid describe exited {completed.returncode}: {completed.stderr}")
+        try:
+            response = _single_object(completed.stdout)
+        except ValueError as error:
+            raise RuntimeError(f"Druid describe did not emit one JSON object: {error}") from error
+        return response
+
+    def validate(
+        self, candidates: Sequence[Candidate], opponent: Candidate, game_config: str
+    ) -> ValidationResult:
+        command = [str(self.binary_path), "compare", "validate"]
+        for candidate in candidates:
+            command += ["--candidate-config", candidate.canonical_config]
+        command += ["--baseline-config", opponent.canonical_config, "--game-config", game_config]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        try:
+            valid, errors = _validation_response(_single_object(completed.stdout))
+        except ValueError as error:
+            raise RuntimeError(
+                f"invalid Druid validation response: {error}; stderr: {completed.stderr}"
+            ) from error
+        if completed.returncode == 0 and valid and not errors:
+            return ValidationResult(True, ())
+        if completed.returncode == 1 and not valid:
+            return ValidationResult(False, tuple(errors))
+        raise RuntimeError(
+            f"Druid validation transport failure ({completed.returncode}): {completed.stderr}"
+        )
+
+    def evaluate(
+        self,
+        task: PairTask,
+        candidate: Candidate,
+        opponent: Candidate,
+        game_config: str,
+        timeout_seconds: int,
+    ) -> PairResult:
+        command = [
+            str(self.binary_path),
+            "compare",
+            "eval",
+            "--candidate-config",
+            candidate.canonical_config,
+            "--baseline-config",
+            opponent.canonical_config,
+            "--game-config",
+            game_config,
+            "--rounds",
+            "1",
+            "--seed",
+            str(task.task_case.seed),
+            "--max-iterations",
+            str(task.budget.max_iterations),
+        ]
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise PairExecutionError(
+                "timeout",
+                f"pair timed out after {timeout_seconds}s",
+                command,
+                stderr=stderr,
+                stdout=stdout,
+            ) from error
+        if process.returncode != 0:
+            raise PairExecutionError(
+                "nonzero_exit",
+                f"comparison exited {process.returncode}",
+                command,
+                returncode=process.returncode,
+                stderr=stderr,
+                stdout=stdout,
+            )
+        try:
+            return parse_pair_output(stdout, task)
+        except ValueError as error:
+            raise PairExecutionError(
+                "malformed_output",
+                str(error),
+                command,
+                returncode=process.returncode,
+                stderr=stderr,
+                stdout=stdout,
+            ) from error
+
+
+def _single_object(stdout: str) -> dict[str, object]:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("expected exactly one JSON object")
+    value = json.loads(lines[0])
+    if not isinstance(value, dict):
+        raise ValueError("response is not an object")
+    return value
+
+
+def _validation_response(response: dict[str, object]) -> tuple[bool, list[ValidationError]]:
+    valid, raw_errors = response.get("valid"), response.get("errors")
+    if not isinstance(valid, bool) or not isinstance(raw_errors, list):
+        raise ValueError("response needs Boolean valid and errors array")
+    errors: list[ValidationError] = []
+    for raw in raw_errors:
+        if (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("field"), str)
+            or not isinstance(raw.get("message"), str)
+        ):
+            raise ValueError("malformed validation error")
+        index = raw.get("candidate_index")
+        if index is not None and (
+            not isinstance(index, int) or isinstance(index, bool) or index < 0
+        ):
+            raise ValueError("invalid candidate_index")
+        errors.append(ValidationError(raw["field"], raw["message"], index))
+    return valid, errors
 
 
 def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
-    """Decode exactly two ordered game records and their matching summary."""
-    records = _json_records(stdout)
+    records: list[dict[str, object]] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError("output contains non-JSON text") from error
+        if not isinstance(value, dict):
+            raise ValueError("output record is not an object")
+        records.append(value)
     if len(records) != 3 or [record.get("type") for record in records] != [
         "configured_match_result",
         "configured_match_result",
         "configured_comparison_summary",
     ]:
         raise ValueError("expected exactly two game records followed by one summary")
-    expected_seed = configured_game_seed(task.seed)
-    decoded = tuple(_decode_game(record, task, expected_seed) for record in records[:2])
-    if [game.candidate_side for game in decoded] != ["first", "second"]:
-        raise ValueError("games must be ordered candidate first, then candidate second")
-    _validate_summary(records[2], decoded)
-    return PairResult(task, (decoded[0], decoded[1]))
+    expected_seed = _splitmix_seed(task.task_case.seed)
+    games = (
+        _decode_game(records[0], task, expected_seed, "first", 1),
+        _decode_game(records[1], task, expected_seed, "second", 2),
+    )
+    expected = {
+        "games": 2,
+        "wins": sum(game.outcome == "candidate_win" for game in games),
+        "losses": sum(game.outcome == "baseline_win" for game in games),
+        "draws": sum(game.outcome == "draw" for game in games),
+    }
+    if any(_integer(records[2], key) != value for key, value in expected.items()):
+        raise ValueError("summary does not match physical game outcomes")
+    return PairResult(task, games)
 
 
-def _json_records(stdout: str) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError("output contains non-JSON text") from error
-        if not isinstance(record, dict):
-            raise ValueError("output record is not an object")
-        records.append(record)
-    return records
-
-
-def _decode_game(record: dict[str, Any], task: PairTask, expected_seed: int) -> GameResult:
-    side = _string(record, "candidate_side")
-    outcome = _string(record, "outcome")
-    if side not in ("first", "second") or outcome not in (
+def _decode_game(
+    record: dict[str, object], task: PairTask, seed: int, side: str, seq: int
+) -> GameResult:
+    outcome = record.get("outcome")
+    if record.get("candidate_side") != side or outcome not in {
         "candidate_win",
         "baseline_win",
         "draw",
-    ):
+    }:
         raise ValueError("game has invalid candidate side or outcome")
-    if _integer(record, "round") != 1 or _integer(record, "seed") != expected_seed:
-        raise ValueError("game has an unexpected round or seed")
-    expected_seq = 1 if side == "first" else 2
-    if _integer(record, "seq") != expected_seq:
-        raise ValueError("game sequence does not match candidate side")
+    if (
+        _integer(record, "round") != 1
+        or _integer(record, "seed") != seed
+        or _integer(record, "seq") != seq
+    ):
+        raise ValueError("game has unexpected round, seed, or sequence")
     trace = record.get("trace_game_seq")
     if trace is not None and (not isinstance(trace, int) or isinstance(trace, bool) or trace < 0):
-        raise ValueError("trace_game_seq must be an integer or null")
-    if task.trace_game_sequence_start is not None:
-        expected_trace = task.trace_game_sequence_start + expected_seq - 1
-        if trace != expected_trace:
-            raise ValueError("trace_game_seq does not match candidate side")
+        raise ValueError("trace_game_seq must be non-negative integer or null")
     return GameResult(
-        game_id_for(task.pair_id, side),
+        stable_id("game", {"pair_id": task.pair_id, "candidate_side": side}),
         side,
         outcome,
-        expected_seed,
+        seed,
         1,
+        seq,
         trace,
         _integer(record, "plies"),
         _integer(record, "elapsed_ms"),
-        _decode_metrics(record, "candidate"),
-        _decode_metrics(record, "baseline"),
+        _metrics(record.get("candidate"), "candidate"),
+        _metrics(record.get("baseline"), "baseline"),
+        canonical_json(record),
     )
 
 
-def _decode_metrics(record: dict[str, Any], key: str) -> StrategyMetrics:
-    raw = record.get(key)
-    if not isinstance(raw, dict):
-        raise ValueError(f"{key} metrics must be an object")
+def _metrics(value: object, label: str) -> StrategyMetrics:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} metrics must be an object")
     return StrategyMetrics(
-        _integer(raw, "iterations_total"),
-        _integer(raw, "iterations_first_half"),
-        _integer(raw, "move_time_ms"),
+        _integer(value, "iterations_total"),
+        _integer(value, "iterations_first_half"),
+        _integer(value, "move_time_ms"),
     )
 
 
-def _validate_summary(summary: dict[str, Any], games: tuple[GameResult, ...]) -> None:
-    if summary.get("type") != "configured_comparison_summary":
-        raise ValueError("final record is not a comparison summary")
-    outcomes = [game.outcome for game in games]
-    expected = {
-        "games": 2,
-        "wins": outcomes.count("candidate_win"),
-        "losses": outcomes.count("baseline_win"),
-        "draws": outcomes.count("draw"),
-    }
-    if any(_integer(summary, key) != value for key, value in expected.items()):
-        raise ValueError("summary does not match physical game outcomes")
-
-
-def _string(record: dict[str, Any], key: str) -> str:
-    value = record.get(key)
-    if not isinstance(value, str):
-        raise ValueError(f"{key} must be a string")
-    return value
-
-
-def _integer(record: dict[str, Any], key: str) -> int:
+def _integer(record: dict[str, object], key: str) -> int:
     value = record.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")
     return value
-
-
-def preflight_check(cfg: SearchConfig, default_config: dict, random_config: dict) -> None:
-    """Run one complete configured pair before starting an optimization attempt."""
-    from .evaluation import OpponentSnapshot, PairId, Rating
-    from .lifecycle import SessionId, TrialId
-
-    task = PairTask(
-        SessionId("preflight"),
-        TrialId("preflight"),
-        PairId("pair-preflight"),
-        0,
-        0,
-        default_config,
-        OpponentSnapshot("random", random_config, 0.0, 0.5),
-        "preflight",
-        Rating(25.0, 8.333),
-        None,
-    )
-    evaluate_pair(cfg, cfg.resolve_binary(), task)

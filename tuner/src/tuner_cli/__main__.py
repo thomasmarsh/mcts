@@ -1,188 +1,55 @@
-#!/usr/bin/env python3
-"""Command-line entry point for MCTS hyperparameter optimization."""
+"""Command-line interface for the foreground Druid tuner."""
 
 from __future__ import annotations
 
 import argparse
-import ast
-import json
 import logging
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
 
-from optuna.trial import TrialState
-
-from .config import SearchConfig
-from .coordinator import run_optimization
-
-logger = logging.getLogger("tuner_cli")
-
-
-def _parse_overrides(raw: list[str]) -> dict[str, str]:
-    """Parse ``key=value`` override strings into a flat dict."""
-    overrides: dict[str, str] = {}
-    for item in raw:
-        if "=" not in item:
-            raise ValueError(f"Override must be key=value, got {item!r}")
-        key, value = item.split("=", 1)
-        overrides[key] = value
-    return overrides
-
-
-def _parse_baseline_configs(raw: list[str]) -> dict[str, dict]:
-    """Parse repeated ``--baseline-config id=json`` flags."""
-    parsed: dict[str, dict] = {}
-    for item in raw:
-        if "=" not in item:
-            raise ValueError(f"--baseline-config must be id=json, got {item!r}")
-        anchor_id, raw_json = item.split("=", 1)
-        parsed[anchor_id] = json.loads(raw_json)
-    return parsed
-
-
-def _apply_overrides(cfg: SearchConfig, overrides: dict[str, str]) -> None:
-    """Mutate *cfg* in-place from dotted CLI overrides."""
-    for key, raw_value in overrides.items():
-        obj: Any = cfg
-        parts = key.split(".")
-        try:
-            for part in parts[:-1]:
-                obj = getattr(obj, part)
-            attr = getattr(obj, parts[-1])
-        except AttributeError:
-            logger.warning(
-                "Ignoring unknown override '%s=%s' — no such field on %s",
-                key,
-                raw_value,
-                type(obj).__name__,
-            )
-            continue
-        if isinstance(attr, Path):
-            value = Path(raw_value)
-        else:
-            try:
-                value = ast.literal_eval(raw_value)
-            except (ValueError, SyntaxError):
-                value = raw_value
-        setattr(obj, parts[-1], value)
+from .run import RunOptions, run_foreground
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="tuner", description="Optuna hyperparameter optimisation for MCTS."
-    )
-    parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--override", action="append", default=[], help="Override key=value")
-    parser.add_argument("--baseline-config", action="append", default=[], metavar="ID=JSON")
-    parser.add_argument("--game-config", type=str, default=None, metavar="JSON")
-    parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--git-sha", type=str, default=None)
-    parser.add_argument(
-        "--run-id",
-        type=str,
-        default=None,
-        help="Deprecated alias for --optimizer-id.",
-    )
-    parser.add_argument(
-        "--optimizer-id",
-        type=str,
-        default=None,
-        help="Persistent optimizer id; reusing it resumes its study and opponent pool.",
-    )
-    parser.add_argument(
-        "--bench-run-id",
-        type=str,
-        default=None,
-        help="Physical benchmark run id used to join this attempt's traces.",
-    )
-    parser.add_argument(
-        "--session-id",
-        type=str,
-        default=None,
-        help="Logical tuning session id; defaults to --run-id.",
-    )
-    parser.add_argument(
-        "--attempt-id",
-        type=str,
-        default=None,
-        help="Physical process attempt id; defaults to a fresh opaque id.",
-    )
-    parser.add_argument(
-        "--lifecycle-path",
-        type=Path,
-        default=None,
-        help="Append-only lifecycle JSONL artifact path.",
-    )
-    parser.add_argument(
-        "--game-kind",
-        type=str,
-        default=None,
-        help="Stable game kind recorded in the session manifest.",
-    )
-    parser.add_argument(
-        "--artifact-root",
-        type=Path,
-        required=True,
-        metavar="PATH",
-        help="Absolute server-owned root for this physical attempt's task artifacts.",
-    )
+    parser = argparse.ArgumentParser(prog="tuner", description="Foreground Druid strategy tuner.")
+    parser.add_argument("--run-dir", type=Path, required=True, metavar="PATH")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--cohort-size", type=int, default=8)
+    parser.add_argument("--finalists", type=int, default=3)
+    parser.add_argument("--tuning-pairs", type=int, default=4)
+    parser.add_argument("--validation-pairs", type=int, default=8)
+    parser.add_argument("--tuning-max-iterations", type=int, default=1_000)
+    parser.add_argument("--validation-max-iterations", type=int, default=10_000)
+    parser.add_argument("--production-max-iterations", type=int, default=10_000)
+    parser.add_argument("--pair-timeout-seconds", type=int, default=600)
+    parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
-def _configure_logging(verbose: bool) -> None:
-    """Configure the command's established human-readable log format."""
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+def _options(args: argparse.Namespace) -> RunOptions:
+    return RunOptions(
+        run_dir=args.run_dir,
+        seed=args.seed,
+        cohort_size=args.cohort_size,
+        finalists=args.finalists,
+        tuning_pairs=args.tuning_pairs,
+        validation_pairs=args.validation_pairs,
+        tuning_max_iterations=args.tuning_max_iterations,
+        validation_max_iterations=args.validation_max_iterations,
+        production_max_iterations=args.production_max_iterations,
+        pair_timeout_seconds=args.pair_timeout_seconds,
     )
 
 
-def _load_cli_config(args: argparse.Namespace) -> SearchConfig:
-    """Apply command-line configuration inputs before optimization starts."""
-    cfg = SearchConfig.load(args.config) if args.config else SearchConfig.defaults()
-    _apply_overrides(cfg, _parse_overrides(args.override))
-    cfg.target.baseline_configs.update(_parse_baseline_configs(args.baseline_config))
-    if args.game_config:
-        cfg.target.game_config = json.loads(args.game_config)
-    cfg.validate()
-    return cfg
-
-
-def _print_run_summary(run_id: str, study, pool) -> None:
-    """Print the established completion summary for interactive CLI users."""
-    if not study.get_trials(states=(TrialState.COMPLETE,)):
-        print("\nNo completed trials.")
-        return
-    default = next(anchor for anchor in pool.anchors if anchor.id == "default")
-    print(f"\n{'=' * 60}")
-    print(f"Run id:       {run_id}")
-    print(f"Best config:  {study.best_trial.user_attrs['config']}")
-    print(f"Best score:   {study.best_value:.6f}")
-    print(f"Default:      mu={default.mu:.6f} sigma={default.sigma:.6f}")
-    print(f"{'=' * 60}")
-
-
-def main() -> None:
-    """Parse CLI inputs, run the coordinator, and render its completion summary."""
-    args = build_parser().parse_args()
-    _configure_logging(args.verbose)
-    cfg = _load_cli_config(args)
-    optimizer_id = args.optimizer_id or args.run_id or f"run-{uuid4().hex[:12]}"
-    study, pool = run_optimization(
-        cfg,
-        optimizer_id=optimizer_id,
-        bench_run_id=args.bench_run_id,
-        git_sha=args.git_sha,
-        artifact_root=args.artifact_root,
-        session_id=args.session_id,
-        attempt_id=args.attempt_id,
-        lifecycle_path=args.lifecycle_path,
-        game_kind=args.game_kind,
-    )
-    _print_run_summary(optimizer_id, study, pool)
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
+    try:
+        run_foreground(_options(args))
+    except (OSError, RuntimeError, ValueError) as error:
+        logging.getLogger("tuner_cli").error("tuner failed: %s", error)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
