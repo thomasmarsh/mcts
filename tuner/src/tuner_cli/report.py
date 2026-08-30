@@ -269,8 +269,14 @@ def build_report(run_dir: Path) -> JsonObject:
             "default-only starting state",
             "conservative small-sample intervals",
             "explicit resume",
-            "shadow-elimination outcomes are same-run maximum-tuning counterfactuals, not held-out production validation",
-            "the bootstrap score is empirically assessed and not an anytime-valid false-elimination guarantee",
+            (
+                "shadow-elimination outcomes are same-run maximum-tuning "
+                "counterfactuals, not held-out production validation"
+            ),
+            (
+                "the bootstrap score is empirically assessed and not an "
+                "anytime-valid false-elimination guarantee"
+            ),
             "active shadow pruning remains disabled",
         ],
     }
@@ -353,7 +359,9 @@ def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
         "policy": {
             "method_version": manifest.shadow_policy.method_version,
             "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
-            "elimination_probability_threshold": manifest.shadow_policy.elimination_probability_threshold,
+            "elimination_probability_threshold": (
+                manifest.shadow_policy.elimination_probability_threshold
+            ),
             "resamples": manifest.shadow_policy.resamples,
             "enforced": False,
         },

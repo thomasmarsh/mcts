@@ -9,7 +9,6 @@ from tuner_cli.evidence import read_events
 from tuner_cli.replay import replay
 from tuner_cli.shadow_audit import build_shadow_audit
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "version4"
 
 
