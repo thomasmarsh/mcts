@@ -37,7 +37,13 @@ from .proposer import (
 )
 from .schema import GameSpec, decode_game_spec
 from .smac_proposer import ADAPTER_VERSION
-from .tasks import build_corpus, selected_prefix, validate_cycle_endpoint, verify_weighted_corpus
+from .tasks import (
+    build_corpus,
+    selected_prefix,
+    tuning_blocks,
+    validate_cycle_endpoint,
+    verify_weighted_corpus,
+)
 
 SCHEMA_VERSION = 4
 _OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
@@ -143,6 +149,7 @@ class Manifest:
     tuning_corpus: TaskCorpus
     production_validation_corpus: TaskCorpus
     tuning_prefix: TaskPrefix
+    tuning_blocks: tuple[TaskPrefix, ...]
     validation_prefix: TaskPrefix
     epoch: ObjectiveEpoch
     proposer_spec: ProposerSpecification
@@ -386,6 +393,7 @@ def build_manifest(
         tuning,
         validation,
         selected_prefix(tuning, tuning_pairs),
+        tuning_blocks(tuning, objective.panel),
         selected_prefix(validation, validation_pairs),
         selected_prefix(validation, production_validation_pairs),
         epoch,
@@ -473,6 +481,7 @@ def _encode_manifest_object(
     tuning: TaskCorpus,
     validation: TaskCorpus,
     tuning_prefix: TaskPrefix,
+    blocks: tuple[TaskPrefix, ...],
     validation_prefix: TaskPrefix,
     production_prefix: TaskPrefix,
     epoch: ObjectiveEpoch,
@@ -502,6 +511,10 @@ def _encode_manifest_object(
             "tuning": _prefix_dict(tuning_prefix),
             "validation": _prefix_dict(validation_prefix),
         },
+        "tuning_blocks": [
+            {"ordinal": ordinal, "prefix": _prefix_dict(prefix)}
+            for ordinal, prefix in enumerate(blocks)
+        ],
         "fidelity": _fidelity_section(tuning_prefix, validation_prefix, production_prefix, efforts),
         "epoch": {"epoch_id": epoch.epoch_id, "fingerprint": epoch.fingerprint},
         **_STATISTICAL_POLICY,
@@ -529,6 +542,7 @@ _FIELDS = {
     "start_distribution",
     "corpora",
     "prefixes",
+    "tuning_blocks",
     "fidelity",
     "epoch",
     "utility_formula_version",
@@ -718,7 +732,7 @@ def _decode_start_distribution(raw: JsonObject) -> str:
 
 def _decode_corpora_and_prefixes(
     raw: JsonObject, panel: OpponentPanel, task_seed: int, game_config_fingerprint: str
-) -> tuple[TaskCorpus, TaskCorpus, TaskPrefix, TaskPrefix]:
+) -> tuple[TaskCorpus, TaskCorpus, TaskPrefix, tuple[TaskPrefix, ...], TaskPrefix]:
     corpora = object_fields(raw["corpora"], {"tuning", "production_validation"}, "corpora")
     tuning = _decode_corpus(corpora["tuning"], "tuning", panel, task_seed, game_config_fingerprint)
     validation = _decode_corpus(
@@ -729,7 +743,29 @@ def _decode_corpora_and_prefixes(
     prefixes = object_fields(raw["prefixes"], {"tuning", "validation"}, "prefixes")
     tuning_prefix = _decode_prefix(prefixes["tuning"], tuning, "tuning")
     validation_prefix = _decode_prefix(prefixes["validation"], validation, "validation")
-    return tuning, validation, tuning_prefix, validation_prefix
+    raw_blocks = raw["tuning_blocks"]
+    if not isinstance(raw_blocks, list):
+        raise ValueError("tuning blocks must be an array")
+    expected_blocks = tuning_blocks(tuning, panel)
+    blocks = tuple(
+        _decode_prefix(
+            object_fields(item, {"ordinal", "prefix"}, "tuning block")["prefix"],
+            tuning,
+            "tuning block",
+        )
+        for item in raw_blocks
+    )
+    if (
+        [
+            object_fields(item, {"ordinal", "prefix"}, "tuning block")["ordinal"]
+            for item in raw_blocks
+        ]
+        != list(range(len(blocks)))
+        or blocks != expected_blocks
+        or blocks[-1] != tuning_prefix
+    ):
+        raise ValueError("tuning blocks are inconsistent")
+    return tuning, validation, tuning_prefix, blocks, validation_prefix
 
 
 def _decode_fidelity(
@@ -814,7 +850,7 @@ def decode_manifest_object(value: object) -> Manifest:
     panel = _decode_panel(raw["opponent_panel"])
     source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)
     start_fingerprint = _decode_start_distribution(raw)
-    tuning, validation, tuning_prefix, validation_prefix = _decode_corpora_and_prefixes(
+    tuning, validation, tuning_prefix, blocks, validation_prefix = _decode_corpora_and_prefixes(
         raw, panel, proposer.task_seed, game_config_fingerprint
     )
     efforts = _decode_fidelity(raw, validation, tuning_prefix, validation_prefix)
@@ -841,6 +877,7 @@ def decode_manifest_object(value: object) -> Manifest:
         tuning,
         validation,
         tuning_prefix,
+        blocks,
         validation_prefix,
         epoch,
         proposer,
@@ -869,6 +906,7 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.tuning_corpus,
         validation,
         manifest.tuning_prefix,
+        manifest.tuning_blocks,
         manifest.validation_prefix,
         task_prefix(validation, len(validation.cases)),
         manifest.epoch,

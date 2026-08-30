@@ -143,9 +143,6 @@ class TaskCorpus:
         return self.corpus_id
 
 
-TaskBlock = TaskCorpus
-
-
 @dataclass(frozen=True, slots=True)
 class TaskPrefix:
     prefix_id: str
@@ -268,7 +265,8 @@ class ReplayState:
     observations: tuple[Observation, ...]
     finalists: tuple[Candidate, ...] | None
     terminal_status: Literal["open", "configuration_failed", "complete"]
-    next_pair_id: str | None
+    tuning_block_index: int
+    pending_resource_allocation: ResourceAllocation | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +297,14 @@ class CompleteCohort:
 
 
 @dataclass(frozen=True, slots=True)
+class DeepenCohort:
+    """Advance the complete cohort to its next cumulative tuning prefix."""
+
+    block_index: int
+    prefix_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class SelectFinalists:
     """The cohort is closed and finalists have not been chosen."""
 
@@ -318,11 +324,32 @@ class NoDecision:
     """No fixed-cohort operation applies; the caller raises."""
 
 
+@dataclass(frozen=True, slots=True)
+class IntroduceCandidate:
+    cohort_slot: int
+    source: ProposalSource
+
+
+@dataclass(frozen=True, slots=True)
+class DeepenCohortAllocation:
+    block_index: int
+    prefix_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class BeginValidation:
+    tuning_prefix_id: str
+
+
+ResourceAllocation = IntroduceCandidate | DeepenCohortAllocation | BeginValidation
+
+
 AllocationDecision = (
     ResolveProposal
     | ExecutePair
     | EmitObservation
     | CompleteCohort
+    | DeepenCohort
     | SelectFinalists
     | IntroduceProposal
     | CompleteRun

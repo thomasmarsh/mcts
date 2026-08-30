@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .domain import Candidate, Estimate, Observation, ObservationContext, PairResult
+from .domain import Candidate, Estimate, Observation, ObservationContext, PairResult, TaskPrefix
 from .identity import observation_id
 from .statistics import marginal_interval, pair_utility, paired_difference_values
 
@@ -58,3 +58,24 @@ def comparable(left: Observation, right: Observation) -> None:
 def paired_difference(left: Observation, right: Observation) -> Estimate:
     comparable(left, right)
     return paired_difference_values(left.pair_utilities, right.pair_utilities)
+
+
+def comparable_prefix_observations(
+    observations: tuple[Observation, ...], candidates: tuple[Candidate, ...], prefix: TaskPrefix
+) -> tuple[Observation, ...]:
+    """Select exactly one tuning observation per candidate at one common prefix."""
+    result: list[Observation] = []
+    for candidate in candidates:
+        matches = [
+            item
+            for item in observations
+            if item.phase == "tuning"
+            and item.candidate_id == candidate.candidate_id
+            and item.context.task_prefix.prefix_id == prefix.prefix_id
+        ]
+        if len(matches) != 1:
+            raise ValueError("comparable prefix needs one observation per candidate")
+        result.append(matches[0])
+    if result and any(item.context.task_prefix != prefix for item in result):
+        raise ValueError("comparable prefix evidence is mixed")
+    return tuple(result)

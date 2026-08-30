@@ -25,6 +25,7 @@ from .event_payloads import (
     ProposalRejectedPayload,
 )
 from .identity import candidate_from_config, canonical_json
+from .observations import comparable_prefix_observations
 from .proposer import (
     ModelProposer,
     derived_seed,
@@ -140,7 +141,9 @@ def _model_candidate(
     model: ModelProposer,
     attempt: int,
 ) -> ProposedConfiguration:
-    observations = tuple(item for item in state.observations if item.phase == "tuning")
+    observations = comparable_prefix_observations(
+        state.observations, accepted_candidates(state), manifest.tuning_blocks[0]
+    )
     frontier = tuning_frontier(observations)
     candidates = {item.candidate_id: item for item in accepted_candidates(state)}
     proposed = model.ask(
@@ -160,11 +163,15 @@ def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationF
             ObservationContext(
                 manifest.epoch.epoch_id,
                 "tuning",
-                manifest.tuning_prefix,
+                manifest.tuning_blocks[0],
                 manifest.efforts["tuning"],
             )
         )
-    return tuning_frontier(tuple(item for item in state.observations if item.phase == "tuning"))
+    return tuning_frontier(
+        comparable_prefix_observations(
+            state.observations, accepted_candidates(state), manifest.tuning_blocks[0]
+        )
+    )
 
 
 def proposal_disposition(

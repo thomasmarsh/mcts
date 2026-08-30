@@ -16,6 +16,7 @@ from golden_support import (
     write_objective,
 )
 
+from tuner_cli.allocator import pending_pair
 from tuner_cli.artifacts import read_manifest
 from tuner_cli.event_payloads import EventType, ProposalRejectedPayload
 from tuner_cli.evidence import read_events, scientific_projection
@@ -107,7 +108,7 @@ def test_interrupted_golden_prefix_replays_to_a_pending_pair() -> None:
     prefix = read_events(FIXTURES / "evidence.interrupted.jsonl")
     state = replay(manifest, prefix)
     assert state.terminal_status == "open"
-    assert state.next_pair_id is not None
+    assert pending_pair(manifest, state) is not None
     assert not state.completed_pairs
 
 

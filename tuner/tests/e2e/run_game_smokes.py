@@ -42,7 +42,7 @@ def _check_game(binary: Path, objective: Path) -> None:
             "--random-reserve-candidates",
             "1",
             "--tuning-pairs",
-            str(total_weight),
+            str(total_weight * 2),
             "--validation-pairs",
             str(total_weight),
             "--production-validation-pairs",
@@ -68,6 +68,7 @@ def _check_game(binary: Path, objective: Path) -> None:
         assert manifest["kind"] == expected_kind
         assert manifest["objective"]["fingerprint"] and manifest["opponent_panel"]["fingerprint"]
         assert manifest["epoch"]["fingerprint"]
+        assert len(manifest["tuning_blocks"]) == 2
         assert manifest["proposer"]["source_schedule"] == [
             "schema_default",
             "bootstrap_random",
@@ -86,6 +87,12 @@ def _check_game(binary: Path, objective: Path) -> None:
             > 1
         )
         assert report["status"] == "complete"
+        tuning_prefixes = {
+            event["payload"]["prefix_id"]
+            for event in events
+            if event["type"] == "observation_completed" and event["payload"]["phase"] == "tuning"
+        }
+        assert len(tuning_prefixes) == 2
         assert report["validation_claim"] == {
             "claim": "mechanics_smoke",
             "missing_production_axes": ["task_count", "search_effort"],

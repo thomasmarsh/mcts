@@ -49,6 +49,14 @@ def selected_prefix(corpus: TaskCorpus, count: int) -> TaskPrefix:
     return task_prefix(corpus, count)
 
 
+def tuning_blocks(corpus: TaskCorpus, panel: OpponentPanel) -> tuple[TaskPrefix, ...]:
+    """Return cumulative prefixes ending at each complete weighted panel cycle."""
+    return tuple(
+        selected_prefix(corpus, length)
+        for length in range(panel.total_weight, len(corpus.cases) + 1, panel.total_weight)
+    )
+
+
 def verify_weighted_corpus(corpus: TaskCorpus, panel: OpponentPanel) -> None:
     expected = weighted_schedule(panel, len(corpus.cases))
     actual = tuple(

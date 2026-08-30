@@ -10,7 +10,7 @@ from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
 from .domain import Candidate, Observation, ObservationContext, PairResult, ReplayState
 from .evidence import atomic_json, read_events
-from .observations import paired_difference
+from .observations import comparable_prefix_observations, paired_difference
 from .proposer import tuning_frontier
 from .replay import replay
 from .statistics import marginal_interval, pair_utility, tie_relation
@@ -287,7 +287,9 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
                     "parent_candidate_id": proposal.provenance.parent_candidate_id,
                 }
             )
-    tuning = tuple(item for item in state.observations if item.phase == "tuning")
+    tuning = comparable_prefix_observations(
+        state.observations, state.cohort or (), manifest.tuning_prefix
+    )
     frontier = tuning_frontier(tuning)
     rejected_json: JsonObject = {source: count for source, count in rejected.items()}
     return {

@@ -26,9 +26,11 @@ Panel weights produce a deterministic weighted-fair task order. Every task
 names the exact panel opponent, canonical configuration fingerprint, seed, and
 start stratum it uses. `--seed` controls proposal streams only;
 `--task-seed` controls the disjoint tuning and held-out validation corpora.
-All configured task counts must be complete panel weight cycles. The selected
-validation corpus is always a leading prefix of the frozen production
-validation corpus.
+All configured task counts must be complete panel weight cycles. `--tuning-pairs`
+is the maximum tuning prefix: the tuner evaluates every accepted candidate on
+each cumulative complete-cycle prefix before deepening the full cohort, with no
+elimination. The selected validation corpus is always a leading prefix of the
+frozen production validation corpus.
 
 The run directory contains three version-4 artifacts:
 

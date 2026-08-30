@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-from .allocator import (
-    decide_allocation,
-    matching_pairs,
-    observation_candidate,
-    pair_candidates,
-    proposal_at,
-)
+from .allocator import decide_allocation, pair_candidates, proposal_at, resource_allocation
 from .artifacts import Manifest, production_claim
 from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
@@ -18,20 +12,26 @@ from .cohort import (
     proposal_payload,
 )
 from .domain import (
+    BeginValidation,
     Candidate,
     CompleteCohort,
     CompleteRun,
+    DeepenCohort,
+    DeepenCohortAllocation,
     EmitObservation,
     ExecutePair,
+    IntroduceCandidate,
     IntroduceProposal,
     NoDecision,
     ObservationContext,
     PairTask,
+    Phase,
     ReplayState,
     ResolveProposal,
     SelectFinalists,
 )
 from .event_payloads import (
+    AllocationDecidedPayload,
     CohortCompletedPayload,
     FinalistsSelectedPayload,
     PairFailedPayload,
@@ -42,7 +42,7 @@ from .event_payloads import (
 )
 from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
 from .identity import canonical_json
-from .observations import contextual_observation
+from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
@@ -76,22 +76,47 @@ def advance_one(
     timeout: int,
     state: ReplayState,
 ) -> None:
-    match decide_allocation(manifest, state):
+    match state.pending_resource_allocation:
+        case IntroduceCandidate():
+            writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
+        case BeginValidation():
+            select_finalists(manifest, writer, state)
+        case DeepenCohortAllocation():
+            raise RuntimeError("deepening allocation must be folded immediately")
+        case None:
+            _advance_selected(manifest, writer, target, default, spec, model, timeout, state)
+
+
+def _advance_selected(
+    manifest: Manifest,
+    writer: EvidenceWriter,
+    target: Target,
+    default: Candidate,
+    spec: GameSpec,
+    model: ModelProposer,
+    timeout: int,
+    state: ReplayState,
+) -> None:
+    decision = decide_allocation(manifest, state)
+    if allocation := resource_allocation(decision, manifest, state):
+        writer.append(AllocationDecidedPayload(allocation, "iterated-common-blocks-v1"))
+        return
+    match decision:
         case ResolveProposal(proposal_index):
             proposal = proposal_at(state, proposal_index)
             writer.append(proposal_disposition(target, manifest, state, proposal))
         case ExecutePair(task):
             execute_pair(manifest, writer, target, state, task, timeout)
-        case EmitObservation():
-            emit_observation(manifest, writer, state)
+        case EmitObservation(candidate_id, phase):
+            emit_observation(manifest, writer, state, candidate_id, phase)
         case CompleteCohort():
             complete_cohort(manifest, writer, state)
-        case SelectFinalists():
-            select_finalists(manifest, writer, state)
+        case DeepenCohort():
+            raise RuntimeError("deepening must be recorded as a resource allocation")
         case CompleteRun():
             complete_run(manifest, writer, state)
-        case IntroduceProposal():
-            writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
+        case IntroduceProposal() | SelectFinalists():
+            raise RuntimeError("resource choice must be recorded before its effect")
         case NoDecision():
             raise RuntimeError("no fixed-cohort continuation operation is available")
 
@@ -166,12 +191,20 @@ def json_record(line: str) -> JsonObject | None:
     )
 
 
-def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> None:
-    candidate, phase = observation_candidate(manifest, state)
-    if candidate is None:
-        return
-    pairs = matching_pairs(state, candidate, phase)
-    context = manifest.tuning_prefix if phase == "tuning" else manifest.validation_prefix
+def emit_observation(
+    manifest: Manifest, writer: EvidenceWriter, state: ReplayState, candidate_id: str, phase: Phase
+) -> None:
+    candidate = next(item for item in pair_candidates(state) if item.candidate_id == candidate_id)
+    pairs = [
+        item
+        for item in state.completed_pairs
+        if item.task.candidate_id == candidate_id and item.task.task_case.phase == phase
+    ]
+    context = (
+        manifest.tuning_blocks[state.tuning_block_index]
+        if phase == "tuning"
+        else manifest.validation_prefix
+    )
     value = contextual_observation(
         candidate,
         ObservationContext(manifest.epoch.epoch_id, phase, context, manifest.efforts[phase]),
@@ -183,7 +216,7 @@ def emit_observation(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
 
 def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
     accepted = accepted_candidates(state)
-    tuning = tuple(item for item in state.observations if item.phase == "tuning")
+    tuning = comparable_prefix_observations(state.observations, accepted, manifest.tuning_prefix)
     if (
         state.cohort is not None
         or len(accepted) != manifest.cohort_size
@@ -204,7 +237,9 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
 def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplayState) -> bool:
     if state.cohort is None or state.finalists is not None:
         return False
-    tuning = tuple(item for item in state.observations if item.phase == "tuning")
+    tuning = comparable_prefix_observations(
+        state.observations, state.cohort, manifest.tuning_prefix
+    )
     finalists = choose_finalists(state.cohort, tuning, manifest.finalists)
     context = tuning[0].context
     writer.append(
@@ -247,7 +282,9 @@ def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState)
             manifest.efforts["validation"].max_iterations,
             tuple(missing),
             tuning_frontier(
-                tuple(item for item in state.observations if item.phase == "tuning")
+                comparable_prefix_observations(
+                    state.observations, state.cohort or (), manifest.tuning_prefix
+                )
             ).frontier_id,
         )
     )

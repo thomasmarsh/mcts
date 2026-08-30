@@ -26,6 +26,7 @@ from .codec import (
     string,
     strings,
 )
+from .domain import BeginValidation, DeepenCohortAllocation, IntroduceCandidate, ResourceAllocation
 
 EventType = Literal[
     "proposal_created",
@@ -40,6 +41,7 @@ EventType = Literal[
     "observation_completed",
     "finalists_selected",
     "run_completed",
+    "allocation_decided",
 ]
 
 SCIENTIFIC: frozenset[EventType] = frozenset(
@@ -52,6 +54,7 @@ SCIENTIFIC: frozenset[EventType] = frozenset(
         "observation_completed",
         "finalists_selected",
         "run_completed",
+        "allocation_decided",
     }
 )
 
@@ -68,6 +71,58 @@ _PHASES: tuple[Literal["tuning", "validation"], ...] = ("tuning", "validation")
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
 Phase = Literal["tuning", "validation"]
 RejectionReason = Literal["duplicate", "semantic_validation"]
+
+
+def _decode_resource_allocation(value: object) -> ResourceAllocation:
+    raw = json_object(value, "resource allocation")
+    kind = string(raw.get("kind"), "resource allocation kind")
+    if kind == "introduce_candidate":
+        item = object_fields(raw, {"kind", "cohort_slot", "source"}, "introduce allocation")
+        return IntroduceCandidate(
+            integer(item["cohort_slot"], "allocation cohort slot"),
+            literal(item["source"], _PROPOSAL_SOURCES, "allocation proposal source"),
+        )
+    if kind == "deepen_cohort":
+        item = object_fields(raw, {"kind", "block_index", "prefix_id"}, "deepen allocation")
+        return DeepenCohortAllocation(
+            integer(item["block_index"], "allocation block index"),
+            string(item["prefix_id"], "allocation prefix id"),
+        )
+    if kind == "begin_validation":
+        item = object_fields(raw, {"kind", "tuning_prefix_id"}, "validation allocation")
+        return BeginValidation(string(item["tuning_prefix_id"], "allocation tuning prefix id"))
+    raise ValueError("unknown resource allocation kind")
+
+
+def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
+    match value:
+        case IntroduceCandidate(cohort_slot, source):
+            return {"kind": "introduce_candidate", "cohort_slot": cohort_slot, "source": source}
+        case DeepenCohortAllocation(block_index, prefix_id):
+            return {"kind": "deepen_cohort", "block_index": block_index, "prefix_id": prefix_id}
+        case BeginValidation(tuning_prefix_id):
+            return {"kind": "begin_validation", "tuning_prefix_id": tuning_prefix_id}
+
+
+@dataclass(frozen=True, slots=True)
+class AllocationDecidedPayload:
+    event_type: ClassVar[EventType] = "allocation_decided"
+    allocation: ResourceAllocation
+    policy_version: str
+
+    @staticmethod
+    def decode(value: object) -> AllocationDecidedPayload:
+        item = object_fields(value, {"allocation", "policy_version"}, "allocation decision")
+        return AllocationDecidedPayload(
+            _decode_resource_allocation(item["allocation"]),
+            string(item["policy_version"], "allocation policy version"),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "allocation": _encode_resource_allocation(self.allocation),
+            "policy_version": self.policy_version,
+        }
 
 
 def _numbers(value: object, label: str) -> tuple[int | float, ...]:
@@ -644,7 +699,8 @@ class RunCompletedPayload:
 
 
 EventPayload = (
-    ProposalCreatedPayload
+    AllocationDecidedPayload
+    | ProposalCreatedPayload
     | ProposalAcceptedPayload
     | ProposalRejectedPayload
     | CohortCompletedPayload
@@ -659,6 +715,7 @@ EventPayload = (
 )
 
 _DECODERS: dict[EventType, Callable[[object], EventPayload]] = {
+    "allocation_decided": AllocationDecidedPayload.decode,
     "proposal_created": ProposalCreatedPayload.decode,
     "proposal_accepted": ProposalAcceptedPayload.decode,
     "proposal_rejected": ProposalRejectedPayload.decode,

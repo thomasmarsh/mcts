@@ -47,7 +47,7 @@ def golden_options(binary: Path, run_dir: Path, objective_file: Path) -> RunOpti
         finalists=2,
         bootstrap_candidates=2,
         random_reserve_candidates=1,
-        tuning_pairs=2,
+        tuning_pairs=4,
         validation_pairs=2,
         production_validation_pairs=2,
         tuning_max_iterations=3,
