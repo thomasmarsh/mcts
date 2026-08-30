@@ -1,33 +1,78 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 
-from tuner_cli.schema import decode_druid_spec
+from tuner_cli.schema import decode_game_spec
 
 
-def test_decoder_keeps_game_and_strategy_configs_separate(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    raw = {
-        "kind": "druid",
-        "label": "Druid",
+def _description() -> dict[str, object]:
+    return {
+        "kind": "example",
+        "label": "Example",
         "description": "test",
         "default_config": {"size": 5},
-        "ai_presets": [],
+        "ai_presets": [{"id": "default", "label": "Default", "description": "test"}],
         "tuning": {
             "id": "strategy",
-            "baselines": [],
+            "baselines": ["default"],
             "eval_rounds": 1,
             "game_config": {"size": 5},
             "parameters": [
-                {"name": "family", "type": "categorical", "choices": ["x", "y"], "default": "x"},
+                {"name": "ratio", "type": "float", "bounds": [0.0, 1.0], "default": 0.5},
+                {"name": "depth", "type": "int", "bounds": [1, 3], "default": 2},
+                {"name": "family", "type": "categorical", "choices": ["a", "b"], "default": "a"},
                 {"name": "flag", "type": "bool", "default": False},
+                {"name": "fixed", "type": "constant", "value": "fixed"},
             ],
             "conditions": [{"if": {"flag": True}, "then": ["family"]}],
         },
     }
-    spec = decode_druid_spec(raw, tmp_path / "game-druid", "0" * 64)
+
+
+def test_decoder_keeps_game_and_strategy_configs_separate(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    raw = _description()
+    spec = decode_game_spec(raw, tmp_path / "game-druid", "0" * 64)
     assert spec.default_game_config == '{"size":5}'
     assert spec.tuning.game_config == '{"size":5}'
     assert spec.tuning.conditions[0].values == (True,)
     raw["kind"] = "nim"
-    with pytest.raises(ValueError, match="Druid"):
-        decode_druid_spec(raw, tmp_path / "game-druid", "0" * 64)
+    assert decode_game_spec(raw, tmp_path / "game-nim", "0" * 64).kind == "nim"
+
+
+def test_decoder_rejects_contract_and_condition_errors(tmp_path) -> None:
+    raw = _description()
+    raw["unknown"] = True
+    with pytest.raises(ValueError, match="invalid fields"):
+        decode_game_spec(raw, tmp_path / "game", "0" * 64)
+
+    raw = _description()
+    tuning = raw["tuning"]
+    assert isinstance(tuning, dict)
+    tuning["game_config"] = {"size": 6}
+    with pytest.raises(ValueError, match="game_config"):
+        decode_game_spec(raw, tmp_path / "game", "0" * 64)
+
+    raw = _description()
+    tuning = raw["tuning"]
+    assert isinstance(tuning, dict)
+    tuning["conditions"] = [
+        {"if": {"flag": True}, "then": ["family"]},
+        {"if": {"family": "a"}, "then": ["flag"]},
+    ]
+    with pytest.raises(ValueError, match="cycle"):
+        decode_game_spec(raw, tmp_path / "game", "0" * 64)
+
+
+def test_engine_identity_binds_binary_content_and_description(tmp_path) -> None:
+    raw = _description()
+    first = decode_game_spec(raw, tmp_path / "first", "a" * 64)
+    moved = decode_game_spec(copy.deepcopy(raw), tmp_path / "second", "a" * 64)
+    changed_binary = decode_game_spec(raw, tmp_path / "first", "b" * 64)
+    changed_description = copy.deepcopy(raw)
+    changed_description["label"] = "Changed"
+    changed_metadata = decode_game_spec(changed_description, tmp_path / "first", "a" * 64)
+    assert first.engine_fingerprint == moved.engine_fingerprint
+    assert first.engine_fingerprint != changed_binary.engine_fingerprint
+    assert first.engine_fingerprint != changed_metadata.engine_fingerprint

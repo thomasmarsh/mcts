@@ -1,1 +1,1 @@
-"""Foreground Druid tuning command."""
+"""Foreground game-binary tuning command."""

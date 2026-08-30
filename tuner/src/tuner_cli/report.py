@@ -126,6 +126,9 @@ def build_report(run_dir: Path) -> dict[str, object]:
         "manifest_fingerprint": manifest["fingerprint"],
         "validation_claim": claim,
         "frozen": {
+            "kind": manifest["kind"],
+            "engine_fingerprint": manifest["engine_fingerprint"],
+            "tuning_schema_fingerprint": manifest["tuning_schema_fingerprint"],
             "game_config_fingerprint": manifest["game_config_fingerprint"],
             "opponent_fingerprint": manifest["opponent"]["fingerprint"],
             "validation_task_block": manifest["validation_tasks"]["block_id"],

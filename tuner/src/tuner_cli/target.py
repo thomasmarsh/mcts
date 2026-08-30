@@ -1,4 +1,4 @@
-"""Druid subprocess boundary and strict configured-comparison wire decoder."""
+"""Game-binary subprocess boundary and strict configured-comparison wire decoder."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _splitmix_seed(seed: int) -> int:
     return (value ^ (value >> 31)) & ((1 << 53) - 1)
 
 
-class DruidTarget:
+class GameBinaryTarget:
     def __init__(self, binary_path: Path) -> None:
         self.binary_path = binary_path
 
@@ -71,11 +71,15 @@ class DruidTarget:
             [str(self.binary_path), "describe"], capture_output=True, text=True
         )
         if completed.returncode != 0:
-            raise RuntimeError(f"Druid describe exited {completed.returncode}: {completed.stderr}")
+            raise RuntimeError(
+                f"{self.binary_path} describe exited {completed.returncode}: {completed.stderr}"
+            )
         try:
             response = _single_object(completed.stdout)
         except ValueError as error:
-            raise RuntimeError(f"Druid describe did not emit one JSON object: {error}") from error
+            raise RuntimeError(
+                f"{self.binary_path} describe did not emit one JSON object: {error}"
+            ) from error
         return response
 
     def validate(
@@ -90,14 +94,16 @@ class DruidTarget:
             valid, errors = _validation_response(_single_object(completed.stdout))
         except ValueError as error:
             raise RuntimeError(
-                f"invalid Druid validation response: {error}; stderr: {completed.stderr}"
+                f"invalid validation response from {self.binary_path}: {error}; "
+                f"stderr: {completed.stderr}"
             ) from error
         if completed.returncode == 0 and valid and not errors:
             return ValidationResult(True, ())
         if completed.returncode == 1 and not valid:
             return ValidationResult(False, tuple(errors))
         raise RuntimeError(
-            f"Druid validation transport failure ({completed.returncode}): {completed.stderr}"
+            f"validation transport failure from {self.binary_path} ({completed.returncode}): "
+            f"{completed.stderr}"
         )
 
     def evaluate(
@@ -166,9 +172,25 @@ def _single_object(stdout: str) -> dict[str, object]:
     lines = [line for line in stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         raise ValueError("expected exactly one JSON object")
-    value = json.loads(lines[0])
+    try:
+        value = json.loads(
+            lines[0], parse_constant=_reject_json_constant, object_pairs_hook=_unique_object
+        )
+    except json.JSONDecodeError as error:
+        raise ValueError("response is not strict JSON") from error
     if not isinstance(value, dict):
         raise ValueError("response is not an object")
+    return value
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("object has duplicate keys")
     return value
 
 
@@ -199,8 +221,8 @@ def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
         if not line.strip():
             continue
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
+            value = json.loads(line, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, ValueError) as error:
             raise ValueError("output contains non-JSON text") from error
         if not isinstance(value, dict):
             raise ValueError("output record is not an object")

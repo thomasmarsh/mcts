@@ -20,14 +20,15 @@ from .domain import (
 from .evidence import EvidenceWriter, write_manifest
 from .identity import canonical_json, derive_task_seed, fingerprint, sha256_file, stable_id
 from .report import write_report
-from .schema import GameSpec, decode_druid_spec
+from .schema import GameSpec, decode_game_spec
 from .space import build_space, default_values, random_values
 from .statistics import marginal_interval, pair_utility
-from .target import DruidTarget, PairExecutionError, Target
+from .target import GameBinaryTarget, PairExecutionError, Target
 
 
 @dataclass(frozen=True, slots=True)
 class RunOptions:
+    game_binary: Path
     run_dir: Path
     seed: int = 42
     cohort_size: int = 8
@@ -40,12 +41,12 @@ class RunOptions:
     pair_timeout_seconds: int = 600
 
 
-def _validate_options(options: RunOptions) -> Path:
+def _validate_options(options: RunOptions) -> tuple[Path, Path]:
     values = asdict(options)
     if any(
         not isinstance(value, int) or isinstance(value, bool) or value <= 0
         for key, value in values.items()
-        if key != "run_dir"
+        if key not in {"game_binary", "run_dir"}
     ):
         raise ValueError("all numeric arguments must be positive integers")
     if options.cohort_size < 2 or options.finalists > options.cohort_size:
@@ -53,7 +54,10 @@ def _validate_options(options: RunOptions) -> Path:
     run_dir = options.run_dir.expanduser().resolve()
     if run_dir.exists():
         raise ValueError(f"run directory already exists: {run_dir}")
-    return run_dir
+    binary = options.game_binary.expanduser().resolve()
+    if not binary.is_file() or not binary.stat().st_mode & 0o111:
+        raise ValueError(f"game binary is missing, not a regular executable file: {binary}")
+    return binary, run_dir
 
 
 def _candidate(config: dict[str, object]) -> Candidate:
@@ -119,7 +123,7 @@ def _block_dict(block: TaskBlock) -> dict[str, object]:
 
 
 def _spec_for(target: Target, binary: Path) -> GameSpec:
-    return decode_druid_spec(target.describe(), binary, sha256_file(binary))
+    return decode_game_spec(target.describe(), binary, sha256_file(binary))
 
 
 def _game_payload(pair: PairResult, game: object) -> dict[str, object]:
@@ -222,25 +226,21 @@ def _failure_payload(stage: str, error: BaseException) -> dict[str, object]:
 def run_foreground(
     options: RunOptions, target: Target | None = None, run_dir: Path | None = None
 ) -> Path:
-    """Execute one non-resumable Druid run, returning its report path."""
+    """Execute one non-resumable generic game-tuning run, returning its report path."""
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
-    options_run_dir = _validate_options(options)
-    binary = Path("target/release/game-druid").resolve()
+    binary, options_run_dir = _validate_options(options)
     if target is None:
-        if not binary.is_file() or not binary.stat().st_mode & 0o111:
-            raise ValueError(f"Druid binary is missing or not executable: {binary}")
-        target = DruidTarget(binary)
-    else:
-        # Fake targets still receive a stable artifact identity without requiring a real binary.
-        binary = binary if binary.is_file() else Path("/fake/game-druid")
-    if target is not None and binary.is_file():
-        spec = _spec_for(target, binary)
-    else:
-        raw = target.describe()
-        spec = decode_druid_spec(raw, binary, "fake-binary")
-    space = build_space(spec.tuning, options.seed)
-    opponent = _candidate(default_values(space))
+        target = GameBinaryTarget(binary)
+    spec = _spec_for(target, binary)
+    try:
+        space = build_space(spec.tuning, options.seed)
+        schema_default = default_values(space)
+    except Exception as error:
+        raise ValueError(
+            f"invalid tuning metadata: ConfigSpace construction/default failed: {error}"
+        ) from error
+    opponent = _candidate(schema_default)
     tuning = _tasks(
         "tuning",
         options.tuning_pairs,
@@ -263,11 +263,23 @@ def run_foreground(
     manifest = {
         "schema_version": 1,
         "run_id": options_run_dir.name,
-        "command_policy_version": "druid-foreground-v1",
+        "command_policy_version": "generic-foreground-v1",
         "binary": {"path": str(spec.binary_path), "sha256": spec.binary_sha256},
+        "engine_fingerprint": spec.engine_fingerprint,
         "description": spec.raw_description,
         "description_fingerprint": spec.description_fingerprint,
         "kind": spec.kind,
+        "label": spec.label,
+        "game_description": spec.description,
+        "ai_presets": [asdict(preset) for preset in spec.ai_presets],
+        "tuning": {
+            "id": spec.tuning.id,
+            "baselines": list(spec.tuning.baselines),
+            "eval_rounds": spec.tuning.eval_rounds,
+            "game_config": spec.tuning.game_config,
+            "parameters": [asdict(parameter) for parameter in spec.tuning.parameters],
+            "conditions": [asdict(condition) for condition in spec.tuning.conditions],
+        },
         "tuning_schema_fingerprint": spec.schema_fingerprint,
         "game_config": spec.default_game_config,
         "game_config_fingerprint": fingerprint(json.loads(spec.default_game_config)),
@@ -312,7 +324,7 @@ def run_foreground(
         accepted: list[Candidate] = []
         seen: set[str] = set()
         index = 0
-        default = _candidate(default_values(space))
+        default = _candidate(schema_default)
         proposal = Proposal(index, "schema_default", "configspace-random-v1", default)
         writer.append(
             "proposal_created",

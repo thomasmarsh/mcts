@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 from tuner_cli.domain import IterationBudget, PairTask, TaskCase
-from tuner_cli.target import _splitmix_seed, parse_pair_output
+from tuner_cli.target import GameBinaryTarget, _splitmix_seed, parse_pair_output
+
+
+def test_game_binary_target_uses_only_the_selected_describe_command(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"kind":"example"}\n', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert GameBinaryTarget(Path("/games/example")).describe() == {"kind": "example"}
+    assert calls == [["/games/example", "describe"]]
 
 
 def test_strict_pair_parser_decodes_ordered_games() -> None:

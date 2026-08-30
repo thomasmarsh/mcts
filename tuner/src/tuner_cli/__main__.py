@@ -1,4 +1,4 @@
-"""Command-line interface for the foreground Druid tuner."""
+"""Command-line interface for the foreground game-binary tuner."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from .run import RunOptions, run_foreground
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tuner", description="Foreground Druid strategy tuner.")
+    parser = argparse.ArgumentParser(prog="tuner", description="Foreground game strategy tuner.")
+    parser.add_argument("--game-binary", type=Path, required=True, metavar="PATH")
     parser.add_argument("--run-dir", type=Path, required=True, metavar="PATH")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cohort-size", type=int, default=8)
@@ -27,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _options(args: argparse.Namespace) -> RunOptions:
     return RunOptions(
+        game_binary=args.game_binary,
         run_dir=args.run_dir,
         seed=args.seed,
         cohort_size=args.cohort_size,

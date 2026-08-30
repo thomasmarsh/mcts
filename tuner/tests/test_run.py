@@ -15,6 +15,13 @@ from tuner_cli.report import write_report
 from tuner_cli.run import RunOptions, run_foreground
 
 
+def _fake_binary(tmp_path: Path) -> Path:
+    binary = tmp_path / "game-fake"
+    binary.touch()
+    binary.chmod(0o755)
+    return binary
+
+
 class FakeTarget:
     def __init__(self) -> None:
         self.calls: list[PairTask] = []
@@ -90,6 +97,7 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
     run_dir = tmp_path / "run"
     run_foreground(
         RunOptions(
+            _fake_binary(tmp_path),
             run_dir,
             cohort_size=2,
             finalists=1,
@@ -123,6 +131,7 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
     run_dir = tmp_path / "production"
     run_foreground(
         RunOptions(
+            _fake_binary(tmp_path),
             run_dir,
             cohort_size=2,
             finalists=1,
