@@ -10,6 +10,7 @@ from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
 from .cohort import latest_completed_cohort
 from .domain import Candidate, Observation, ObservationContext, PairResult, ReplayState
+from .effort import encode_effort
 from .evidence import atomic_json, read_events
 from .observations import comparable_prefix_observations, paired_difference
 from .proposer import tuning_frontier
@@ -25,7 +26,7 @@ def _context(value: ObservationContext) -> JsonObject:
         "corpus_id": value.task_prefix.corpus_id,
         "prefix_id": value.task_prefix.prefix_id,
         "task_ids": list(value.task_prefix.task_ids),
-        "search_effort": value.search_effort.max_iterations,
+        "search_effort": encode_effort(value.search_effort),
     }
 
 
@@ -181,8 +182,8 @@ def _frozen(manifest: Manifest) -> JsonObject:
         "fidelity": {
             "observed_task_count": manifest.validation_prefix.length,
             "production_task_count": len(manifest.production_validation_corpus.cases),
-            "observed_search_effort": manifest.efforts["validation"].max_iterations,
-            "production_search_effort": manifest.efforts["production"].max_iterations,
+            "observed_search_effort": encode_effort(manifest.efforts["validation"]),
+            "production_search_effort": encode_effort(manifest.efforts["production"]),
         },
         "utility_formula_version": "pair_mean_v1",
         "interval_method": "hoeffding_pair_bound_v1",

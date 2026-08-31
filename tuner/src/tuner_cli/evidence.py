@@ -130,7 +130,7 @@ def pair_payload(result: PairResult) -> PairCompletedPayload:
             task.task_case.task_id,
             task.pair_id,
             task.task_case.opponent_id,
-            task.budget.max_iterations,
+            task.budget,
         ),
         (game_payload(result.games[0]), game_payload(result.games[1])),
         pair_utility(result),
@@ -145,7 +145,7 @@ def decode_pair_payload(payload: PairCompletedPayload, task: PairTask) -> PairRe
         or identity.task_id != task.task_case.task_id
         or identity.pair_id != task.pair_id
         or identity.opponent_id != task.task_case.opponent_id
-        or identity.budget != task.budget.max_iterations
+        or identity.search_effort != task.budget
     ):
         raise ValueError("pair completion does not match expected pair")
     raw_records: list[JsonObject] = []

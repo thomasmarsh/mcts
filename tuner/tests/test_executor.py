@@ -3,7 +3,7 @@ from __future__ import annotations
 from threading import Barrier, Lock
 from typing import cast
 
-from tuner_cli.domain import Candidate, IterationBudget, PairTask, TaskCase
+from tuner_cli.domain import Candidate, PairTask, SearchEffort, TaskCase
 from tuner_cli.executor import (
     BoundedPairExecutor,
     PairFailed,
@@ -20,7 +20,7 @@ def _job(index: int) -> PairJob:
         f"pair-{index}",
         candidate.candidate_id,
         TaskCase(f"task-{index}", "tuning", index, index, "s", "opponent", "f", "p", "g"),
-        IterationBudget(1),
+        SearchEffort("iterations", 1),
     )
     return PairJob(task, candidate, candidate, "{}", 1)
 

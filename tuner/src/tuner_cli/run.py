@@ -9,7 +9,8 @@ from pathlib import Path
 
 from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .continuation import continue_run
-from .domain import Candidate
+from .domain import Candidate, SearchEffort
+from .effort import exceeds_same_kind
 from .evidence import EvidenceWriter, read_events, write_manifest
 from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
 from .family_exclusions import normalize_family_exclusions, validate_family_exclusions
@@ -40,9 +41,9 @@ class RunOptions:
     tuning_pair_budget: int = 32
     validation_pair_budget: int = 24
     production_validation_pairs: int = 8
-    tuning_max_iterations: int = 1_000
-    validation_max_iterations: int = 10_000
-    production_max_iterations: int = 10_000
+    tuning_effort: SearchEffort = SearchEffort("iterations", 1_000)
+    validation_effort: SearchEffort = SearchEffort("iterations", 10_000)
+    production_effort: SearchEffort = SearchEffort("iterations", 10_000)
     pair_timeout_seconds: int = 600
     evaluator_workers: int = 1
     shadow_practical_margin: float = 0.0
@@ -94,6 +95,13 @@ def run_foreground(
 
 
 def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
+    raw_efforts: tuple[object, object, object] = (
+        object.__getattribute__(options, "tuning_effort"),
+        object.__getattribute__(options, "validation_effort"),
+        object.__getattribute__(options, "production_effort"),
+    )
+    if not all(isinstance(effort, SearchEffort) for effort in raw_efforts):
+        raise ValueError("all phase efforts must be resolved SearchEffort values")
     numeric = (
         options.seed,
         options.task_seed,
@@ -105,9 +113,6 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         options.tuning_pair_budget,
         options.validation_pair_budget,
         options.production_validation_pairs,
-        options.tuning_max_iterations,
-        options.validation_max_iterations,
-        options.production_max_iterations,
         options.pair_timeout_seconds,
     )
     if any(isinstance(item, bool) or item <= 0 for item in numeric):
@@ -186,9 +191,9 @@ def validate_objective_options(options: RunOptions, objective: ResolvedObjective
         raise ValueError("validation pairs cannot exceed production validation pairs")
     if options.tuning_pair_budget < options.cohort_size * options.tuning_pairs:
         raise ValueError("tuning pair budget cannot fund initial cohort")
-    if (
-        max(options.tuning_max_iterations, options.validation_max_iterations)
-        > options.production_max_iterations
+    if any(
+        exceeds_same_kind(observed, options.production_effort)
+        for observed in (options.tuning_effort, options.validation_effort)
     ):
         raise ValueError("observed search effort cannot exceed production effort")
 
@@ -245,9 +250,9 @@ def manifest_for(
         options.tuning_pair_budget,
         options.validation_pair_budget,
         options.production_validation_pairs,
-        options.tuning_max_iterations,
-        options.validation_max_iterations,
-        options.production_max_iterations,
+        options.tuning_effort,
+        options.validation_effort,
+        options.production_effort,
         options.shadow_practical_margin,
         options.shadow_elimination_threshold,
         options.excluded_families,

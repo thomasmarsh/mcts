@@ -15,6 +15,7 @@ from tuner_cli.domain import (
     PairResult,
     PairTask,
     ProposedConfiguration,
+    SearchEffort,
     StrategyMetrics,
     ValidationResult,
 )
@@ -193,9 +194,9 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
             tuning_pair_budget=16,
             validation_pair_budget=2,
             production_validation_pairs=2,
-            tuning_max_iterations=3,
-            validation_max_iterations=5,
-            production_max_iterations=9,
+            tuning_effort=SearchEffort("iterations", 3),
+            validation_effort=SearchEffort("iterations", 5),
+            production_effort=SearchEffort("iterations", 9),
         ),
         target,
         model_proposer=FakeModel(),
@@ -212,7 +213,9 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
         for event in events
         if event["type"] == "pair_started" and event["payload"]["phase"] == "tuning"
     ]
-    assert [item["budget"] for item in tuning_starts] == [3] * 14
+    assert [item["search_effort"] for item in tuning_starts] == [
+        {"kind": "iterations", "value": 3}
+    ] * 14
     report = (run_dir / "report.json").read_bytes()
     write_report(run_dir)
     assert (run_dir / "report.json").read_bytes() == report
@@ -234,9 +237,9 @@ def test_validation_claim_depends_only_on_iteration_budgets(tmp_path: Path) -> N
             tuning_pair_budget=16,
             validation_pair_budget=2,
             production_validation_pairs=2,
-            tuning_max_iterations=3,
-            validation_max_iterations=5,
-            production_max_iterations=5,
+            tuning_effort=SearchEffort("iterations", 3),
+            validation_effort=SearchEffort("iterations", 5),
+            production_effort=SearchEffort("iterations", 5),
         ),
         FakeTarget(),
         model_proposer=FakeModel(),
@@ -289,9 +292,9 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
         tuning_pair_budget=16,
         validation_pair_budget=2,
         production_validation_pairs=2,
-        tuning_max_iterations=3,
-        validation_max_iterations=5,
-        production_max_iterations=9,
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
     )
     run_foreground(options, FakeTarget(), model_proposer=FakeModel())
     interrupted = InterruptingTarget(interrupt_on_call=2)
@@ -367,9 +370,9 @@ def _budgeted_options(
         tuning_pair_budget=tuning_pair_budget,
         validation_pair_budget=validation_pair_budget,
         production_validation_pairs=2,
-        tuning_max_iterations=3,
-        validation_max_iterations=5,
-        production_max_iterations=9,
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
     )
 
 

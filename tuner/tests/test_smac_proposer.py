@@ -21,7 +21,7 @@ def test_public_smac_adapter_warm_starts_and_returns_active_values() -> None:
     depth = Categorical("depth", [1, 2])
     space.add([family, depth])
     space.add(EqualsCondition(depth, family, "b"))
-    effort = SearchEffort(3)
+    effort = SearchEffort("iterations", 3)
     references = (
         ObservationReference("one", "candidate-one", "epoch", "prefix", ("task",), effort),
         ObservationReference("two", "candidate-two", "epoch", "prefix", ("task",), effort),

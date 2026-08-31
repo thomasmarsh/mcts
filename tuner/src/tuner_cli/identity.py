@@ -26,6 +26,7 @@ from .domain import (
     TaskCorpus,
     TaskPrefix,
 )
+from .effort import encode_effort
 
 
 def _mapping(value: object) -> TypeGuard[Mapping[object, object]]:
@@ -236,7 +237,9 @@ def observation_id(
 
 def observation_frontier(references: tuple[ObservationReference, ...]) -> ObservationFrontier:
     if not references:
-        return ObservationFrontier("frontier-empty-v1", "", "", (), SearchEffort(1), ())
+        return ObservationFrontier(
+            "frontier-empty-v1", "", "", (), SearchEffort("iterations", 1), ()
+        )
     first = references[0]
     common = (
         first.objective_epoch_id,
@@ -257,7 +260,7 @@ def observation_frontier(references: tuple[ObservationReference, ...]) -> Observ
         "objective_epoch_id": first.objective_epoch_id,
         "prefix_id": first.prefix_id,
         "task_ids": first.task_ids,
-        "search_effort": first.search_effort.max_iterations,
+        "search_effort": encode_effort(first.search_effort),
         "observation_ids": ids,
     }
     return ObservationFrontier(stable_id("frontier", payload), *common, ids)
@@ -270,7 +273,7 @@ def pair_task(candidate: Candidate, case: TaskCase, budget: SearchEffort) -> Pai
             "candidate_fingerprint": candidate.fingerprint,
             "task_id": case.task_id,
             "opponent_fingerprint": case.opponent_fingerprint,
-            "max_iterations": budget.max_iterations,
+            "search_effort": encode_effort(budget),
         },
     )
     return PairTask(pair_id, candidate.candidate_id, case, budget)

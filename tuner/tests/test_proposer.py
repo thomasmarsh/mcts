@@ -53,11 +53,13 @@ def test_seed_namespaces_are_deterministic_and_independent() -> None:
 def test_model_cost_and_frontier_require_tuning_context() -> None:
     prefix = TaskPrefix("prefix", "corpus", 2, ("one", "two"))
     tuning = observation(
-        "candidate-a", ObservationContext("epoch", "tuning", prefix, SearchEffort(3)), (1.0, 0.5)
+        "candidate-a",
+        ObservationContext("epoch", "tuning", prefix, SearchEffort("iterations", 3)),
+        (1.0, 0.5),
     )
     validation = observation(
         "candidate-a",
-        ObservationContext("epoch", "validation", prefix, SearchEffort(3)),
+        ObservationContext("epoch", "validation", prefix, SearchEffort("iterations", 3)),
         (1.0, 0.5),
     )
     assert cost_from_observation(tuning) == 0.25

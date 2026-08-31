@@ -33,9 +33,11 @@ from .domain import (
     RefillCandidate,
     ResourceAllocation,
     RetainElites,
+    SearchEffort,
     ShadowCandidateDecision,
     ShadowRaceDecision,
 )
+from .effort import decode_effort, encode_effort
 
 EventType = Literal[
     "proposal_created",
@@ -501,7 +503,7 @@ class PairIdentity:
     task_id: str
     pair_id: str
     opponent_id: str
-    budget: int
+    search_effort: SearchEffort
 
     @staticmethod
     def decode(item: JsonObject) -> PairIdentity:
@@ -511,7 +513,7 @@ class PairIdentity:
             string(item["task_id"], "task id"),
             string(item["pair_id"], "pair id"),
             string(item["opponent_id"], "opponent id"),
-            integer(item["budget"], "pair budget", positive=True),
+            decode_effort(item["search_effort"], "pair search effort"),
         )
 
     def encode(self) -> JsonObject:
@@ -521,11 +523,18 @@ class PairIdentity:
             "task_id": self.task_id,
             "pair_id": self.pair_id,
             "opponent_id": self.opponent_id,
-            "budget": self.budget,
+            "search_effort": encode_effort(self.search_effort),
         }
 
 
-_PAIR_IDENTITY_FIELDS = {"phase", "candidate_id", "task_id", "pair_id", "opponent_id", "budget"}
+_PAIR_IDENTITY_FIELDS = {
+    "phase",
+    "candidate_id",
+    "task_id",
+    "pair_id",
+    "opponent_id",
+    "search_effort",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -724,7 +733,7 @@ class ObservationCompletedPayload:
     prefix_id: str
     prefix_task_ids: tuple[str, ...]
     prefix_length: int
-    search_effort: int
+    search_effort: SearchEffort
     pair_utilities: tuple[int | float, ...]
     estimate: JsonObject
     counts: JsonObject
@@ -758,7 +767,7 @@ class ObservationCompletedPayload:
             string(item["prefix_id"], "prefix id"),
             strings(item["prefix_task_ids"], "prefix task ids"),
             integer(item["prefix_length"], "prefix length", positive=True),
-            integer(item["search_effort"], "observation search effort", positive=True),
+            decode_effort(item["search_effort"], "observation search effort"),
             _numbers(item["pair_utilities"], "observation pair utilities"),
             json_object(item["estimate"], "observation estimate"),
             json_object(item["counts"], "observation counts"),
@@ -774,7 +783,7 @@ class ObservationCompletedPayload:
             "prefix_id": self.prefix_id,
             "prefix_task_ids": list(self.prefix_task_ids),
             "prefix_length": self.prefix_length,
-            "search_effort": self.search_effort,
+            "search_effort": encode_effort(self.search_effort),
             "pair_utilities": list(self.pair_utilities),
             "estimate": dict(self.estimate),
             "counts": dict(self.counts),
@@ -790,7 +799,7 @@ class FinalistsSelectedPayload:
     corpus_id: str
     prefix_id: str
     prefix_task_ids: tuple[str, ...]
-    search_effort: int
+    search_effort: SearchEffort
     selection_rule_version: str
 
     @staticmethod
@@ -816,7 +825,7 @@ class FinalistsSelectedPayload:
             string(item["corpus_id"], "corpus id"),
             string(item["prefix_id"], "prefix id"),
             strings(item["prefix_task_ids"], "prefix task ids"),
-            integer(item["search_effort"], "selection search effort"),
+            decode_effort(item["search_effort"], "selection search effort"),
             string(item["selection_rule_version"], "selection rule version"),
         )
 
@@ -828,7 +837,7 @@ class FinalistsSelectedPayload:
             "corpus_id": self.corpus_id,
             "prefix_id": self.prefix_id,
             "prefix_task_ids": list(self.prefix_task_ids),
-            "search_effort": self.search_effort,
+            "search_effort": encode_effort(self.search_effort),
             "selection_rule_version": self.selection_rule_version,
         }
 
@@ -843,7 +852,7 @@ class RunCompletedPayload:
     validation_claim: str
     objective_epoch_id: str
     validation_prefix_id: str
-    validation_search_effort: int
+    validation_search_effort: SearchEffort
     missing_production_axes: tuple[str, ...]
     cohort_frontier_id: str
 
@@ -873,7 +882,7 @@ class RunCompletedPayload:
             string(item["validation_claim"], "validation claim"),
             string(item["objective_epoch_id"], "objective epoch id"),
             string(item["validation_prefix_id"], "validation prefix id"),
-            integer(item["validation_search_effort"], "validation search effort"),
+            decode_effort(item["validation_search_effort"], "validation search effort"),
             strings(item["missing_production_axes"], "missing production axes"),
             string(item["cohort_frontier_id"], "cohort frontier id"),
         )
@@ -887,7 +896,7 @@ class RunCompletedPayload:
             "validation_claim": self.validation_claim,
             "objective_epoch_id": self.objective_epoch_id,
             "validation_prefix_id": self.validation_prefix_id,
-            "validation_search_effort": self.validation_search_effort,
+            "validation_search_effort": encode_effort(self.validation_search_effort),
             "missing_production_axes": list(self.missing_production_axes),
             "cohort_frontier_id": self.cohort_frontier_id,
         }

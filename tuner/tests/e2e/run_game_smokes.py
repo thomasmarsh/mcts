@@ -15,6 +15,7 @@ def _check_game(
     objective: Path,
     evaluator_workers: int = 1,
     excluded_family: str | None = None,
+    time_only: bool = False,
 ) -> None:
     description = subprocess.run(
         [str(binary), "describe"], check=False, capture_output=True, text=True
@@ -31,6 +32,11 @@ def _check_game(
     # weighted panel cycle.
     tuning_pair_budget = 16 * total_weight
     validation_pair_budget = 2 * total_weight
+    production_pairs = total_weight * 2
+    if time_only:
+        # The time-mode smoke makes validation cover the complete production corpus.
+        validation_pair_budget = 4 * total_weight
+        production_pairs = total_weight * 2
     with tempfile.TemporaryDirectory(prefix="mcts-tuner-game-") as temporary:
         run_dir = Path(temporary) / "run"
         command = [
@@ -62,16 +68,30 @@ def _check_game(
             "--validation-pair-budget",
             str(validation_pair_budget),
             "--production-validation-pairs",
-            str(total_weight * 2),
-            "--tuning-max-iterations",
-            "16",
-            "--validation-max-iterations",
-            "32",
-            "--production-max-iterations",
-            "64",
+            str(production_pairs),
             "--evaluator-workers",
             str(evaluator_workers),
         ]
+        effort_flags = (
+            [
+                "--tuning-max-time-ms",
+                "5",
+                "--validation-max-time-ms",
+                "5",
+                "--production-max-time-ms",
+                "5",
+            ]
+            if time_only
+            else [
+                "--tuning-max-iterations",
+                "16",
+                "--validation-max-iterations",
+                "32",
+                "--production-max-iterations",
+                "64",
+            ]
+        )
+        command.extend(effort_flags)
         if excluded_family is not None:
             command.extend(["--exclude-family", excluded_family])
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -85,6 +105,12 @@ def _check_game(
             event["payload"] for event in events if event["type"] == "pair_completed"
         ]
         assert manifest["schema_version"] == 4
+        expected_effort = {"kind": "time_ms", "value": 5} if time_only else None
+        if expected_effort is not None:
+            assert all(
+                item["search_effort"] == expected_effort for item in manifest["fidelity"].values()
+            )
+            assert all(item["search_effort"] == expected_effort for item in completed_pairs)
         assert manifest["proposer"]["excluded_families"] == (
             [] if excluded_family is None else [excluded_family]
         )
@@ -206,10 +232,14 @@ def _check_game(
         assert compute["validation"]["pair_attempts"] == validation_pair_budget
         assert compute["validation"]["completed_pairs"] == validation_pair_budget
         assert report["proposal_search"]["configured"]["cohorts"] == 3
-        assert report["validation_claim"] == {
-            "claim": "mechanics_smoke",
-            "missing_production_axes": ["task_count", "search_effort"],
-        }
+        assert report["validation_claim"] == (
+            {"claim": "production", "missing_production_axes": []}
+            if time_only
+            else {
+                "claim": "mechanics_smoke",
+                "missing_production_axes": ["task_count", "search_effort"],
+            }
+        )
         assert all(
             len(entry["opponent_matchups"]) == len(panel) for entry in report["validation_order"]
         )
@@ -231,7 +261,9 @@ def main() -> None:
         "meta_mcts",
     )
     _check_game(
-        root / "target/release/game-ttt", root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json"
+        root / "target/release/game-ttt",
+        root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json",
+        time_only=True,
     )
 
 

@@ -21,6 +21,7 @@ from .domain import (
     TaskCorpus,
     TaskPrefix,
 )
+from .effort import decode_effort, encode_effort, exceeds_same_kind
 from .family_exclusions import FAMILY_EXCLUSION_POLICY_VERSION, validate_family_exclusions
 from .identity import (
     canonical_json,
@@ -363,7 +364,7 @@ def _epoch_payload(
         "tuning_corpus_fingerprint": tuning.fingerprint,
         "production_validation_corpus_fingerprint": validation.fingerprint,
         "production_validation_pairs": len(validation.cases),
-        "production_max_iterations": production_effort.max_iterations,
+        "production_search_effort": encode_effort(production_effort),
         "task_policy_version": "weighted-fair-prefix-v1",
         "utility_formula_version": "pair_mean_v1",
         "interval_method": "hoeffding_pair_bound_v1",
@@ -387,9 +388,9 @@ def build_manifest(
     tuning_pair_budget: int,
     validation_pair_budget: int,
     production_validation_pairs: int,
-    tuning_max_iterations: int,
-    validation_max_iterations: int,
-    production_max_iterations: int,
+    tuning_effort: SearchEffort,
+    validation_effort: SearchEffort,
+    production_effort: SearchEffort,
     shadow_practical_margin: float = 0.0,
     shadow_elimination_threshold: float = 0.05,
     excluded_families: tuple[str, ...] = (),
@@ -422,7 +423,7 @@ def build_manifest(
     _validate_manifest_inputs(
         objective.panel,
         (tuning_pairs, production_validation_pairs),
-        (tuning_max_iterations, validation_max_iterations, production_max_iterations),
+        (tuning_effort, validation_effort, production_effort),
     )
     shadow_policy = _shadow_policy(shadow_practical_margin, shadow_elimination_threshold)
     candidate_failure_policy = CandidateFailurePolicySpecification()
@@ -439,11 +440,7 @@ def build_manifest(
         objective.panel,
         game_config_fingerprint,
     )
-    efforts = (
-        SearchEffort(tuning_max_iterations),
-        SearchEffort(validation_max_iterations),
-        SearchEffort(production_max_iterations),
-    )
+    efforts = (tuning_effort, validation_effort, production_effort)
     epoch = objective_epoch(
         _epoch_payload(
             spec,
@@ -484,7 +481,7 @@ def build_manifest(
 def _validate_manifest_inputs(
     panel: OpponentPanel,
     pairs: tuple[int, int],
-    iterations: tuple[int, int, int],
+    efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
 ) -> None:
     tuning_pairs, production_validation_pairs = pairs
     for count, label in (
@@ -492,8 +489,10 @@ def _validate_manifest_inputs(
         (production_validation_pairs, "production validation pairs"),
     ):
         validate_cycle_endpoint(panel, count, label)
-    tuning_iterations, validation_iterations, production_iterations = iterations
-    if tuning_iterations > production_iterations or validation_iterations > production_iterations:
+    tuning_effort, validation_effort, production_effort = efforts
+    if exceeds_same_kind(tuning_effort, production_effort) or exceeds_same_kind(
+        validation_effort, production_effort
+    ):
         raise ValueError("observed search effort cannot exceed production effort")
 
 
@@ -520,7 +519,7 @@ _STATISTICAL_POLICY: JsonObject = {
 _LIMITATIONS: tuple[str, ...] = (
     "default-only start distribution",
     "sequential execution",
-    "fixed iterations",
+    "fixed search effort",
     "explicit resume",
 )
 
@@ -552,7 +551,7 @@ def _fidelity_section(
     for name, prefix, effort in zip(names, prefixes, efforts, strict=True):
         section[name] = {
             "task_prefix_id": prefix.prefix_id,
-            "search_effort": {"max_iterations": effort.max_iterations},
+            "search_effort": encode_effort(effort),
         }
     return section
 
@@ -898,15 +897,11 @@ def _decode_fidelity(
         item = object_fields(
             fidelity[name], {"task_prefix_id", "search_effort"}, f"{name} fidelity"
         )
-        effort = object_fields(item["search_effort"], {"max_iterations"}, f"{name} search effort")
         if item["task_prefix_id"] != prefix.prefix_id:
             raise ValueError(f"{name} fidelity prefix is inconsistent")
-        efforts[name] = SearchEffort(
-            integer(effort["max_iterations"], f"{name} max iterations", positive=True)
-        )
-    if (
-        efforts["tuning"].max_iterations > efforts["production"].max_iterations
-        or efforts["validation"].max_iterations > efforts["production"].max_iterations
+        efforts[name] = decode_effort(item["search_effort"], f"{name} search effort")
+    if exceeds_same_kind(efforts["tuning"], efforts["production"]) or exceeds_same_kind(
+        efforts["validation"], efforts["production"]
     ):
         raise ValueError("observed search effort exceeds production effort")
     return efforts["tuning"], efforts["validation"], efforts["production"]

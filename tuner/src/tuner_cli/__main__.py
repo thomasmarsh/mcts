@@ -6,6 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
+from .domain import SearchEffort
 from .family_exclusions import normalize_family_exclusions
 from .run import RunOptions, run_foreground
 
@@ -25,9 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tuning-pair-budget", type=int, required=True, metavar="PAIRS")
     parser.add_argument("--validation-pair-budget", type=int, required=True, metavar="PAIRS")
     parser.add_argument("--production-validation-pairs", type=int, required=True)
-    parser.add_argument("--tuning-max-iterations", type=int, default=1_000)
-    parser.add_argument("--validation-max-iterations", type=int, default=10_000)
-    parser.add_argument("--production-max-iterations", type=int, default=10_000)
+    for phase in ("tuning", "validation", "production"):
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(f"--{phase}-max-iterations", type=int)
+        group.add_argument(f"--{phase}-max-time-ms", type=int)
     parser.add_argument("--pair-timeout-seconds", type=int, default=600)
     parser.add_argument("--evaluator-workers", type=int, default=1, metavar="N")
     parser.add_argument("--shadow-practical-margin", type=float, default=0.0)
@@ -39,6 +41,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _options(args: argparse.Namespace) -> RunOptions:
+    def effort(phase: str, default: int) -> SearchEffort:
+        iterations = getattr(args, f"{phase}_max_iterations")
+        time_ms = getattr(args, f"{phase}_max_time_ms")
+        return (
+            SearchEffort("time_ms", time_ms)
+            if time_ms is not None
+            else SearchEffort("iterations", iterations if iterations is not None else default)
+        )
+
     return RunOptions(
         game_binary=args.game_binary,
         run_dir=args.run_dir,
@@ -53,9 +64,9 @@ def _options(args: argparse.Namespace) -> RunOptions:
         tuning_pair_budget=args.tuning_pair_budget,
         validation_pair_budget=args.validation_pair_budget,
         production_validation_pairs=args.production_validation_pairs,
-        tuning_max_iterations=args.tuning_max_iterations,
-        validation_max_iterations=args.validation_max_iterations,
-        production_max_iterations=args.production_max_iterations,
+        tuning_effort=effort("tuning", 1_000),
+        validation_effort=effort("validation", 10_000),
+        production_effort=effort("production", 10_000),
         pair_timeout_seconds=args.pair_timeout_seconds,
         evaluator_workers=args.evaluator_workers,
         shadow_practical_margin=args.shadow_practical_margin,

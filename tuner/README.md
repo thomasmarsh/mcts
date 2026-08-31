@@ -113,7 +113,7 @@ The run directory contains three version-4 artifacts:
 
 Validation is `production` only when both axes reach their declared target:
 the selected held-out validation prefix is the complete production corpus and
-its search effort equals `--production-max-iterations`. Every other result is
+its search effort exactly equals the declared production effort. Every other result is
 `mechanics_smoke`, with the lower axis or axes named in the report.
 
 Resume uses the same scientific options and objective file:
@@ -128,8 +128,8 @@ uv run --project tuner tuner \
   --exclude-family meta_mcts \
   --tuning-pairs 6 --tuning-pair-budget 132 --validation-pair-budget 12 \
   --production-validation-pairs 12 \
-  --tuning-max-iterations 16 --validation-max-iterations 32 \
-  --production-max-iterations 64
+  --tuning-max-time-ms 16 --validation-max-time-ms 32 \
+  --production-max-time-ms 64
 ```
 
 Resume validates the manifest and complete evidence log before append. It

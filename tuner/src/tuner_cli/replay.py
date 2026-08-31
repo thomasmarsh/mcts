@@ -93,7 +93,7 @@ def observation_payload(value: Observation, opponent_count: int) -> ObservationC
         context.task_prefix.prefix_id,
         context.task_prefix.task_ids,
         context.task_prefix.length,
-        context.search_effort.max_iterations,
+        context.search_effort,
         value.pair_utilities,
         {"mean": estimate.mean, "lower": estimate.lower, "upper": estimate.upper},
         {
@@ -316,7 +316,7 @@ def _candidate_failure(state: _Replay, payload: CandidateFailedPayload) -> Candi
         or identity.task_id != task.task_case.task_id
         or identity.pair_id != task.pair_id
         or identity.opponent_id != task.task_case.opponent_id
-        or identity.budget != task.budget.max_iterations
+        or identity.search_effort != task.budget
         or payload.started_attempts != expected.started_attempts
         or payload.failed_attempts != expected.failed_attempts
         or payload.censored_attempts != expected.censored_attempts
@@ -451,7 +451,7 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
         context.task_prefix.corpus_id,
         context.task_prefix.prefix_id,
         context.task_prefix.task_ids,
-        context.search_effort.max_iterations,
+        context.search_effort,
         "tuning_point_estimate_fingerprint_v1",
     )
     if payload != expected:
@@ -484,7 +484,7 @@ def _apply_completion(state: _Replay, payload: RunCompletedPayload) -> None:
         claim,
         state.manifest.epoch.epoch_id,
         state.manifest.validation_prefix.prefix_id,
-        state.manifest.efforts["validation"].max_iterations,
+        state.manifest.efforts["validation"],
         tuple(missing),
         tuning_frontier(tuning).frontier_id,
     )
@@ -520,7 +520,7 @@ def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPa
         and payload.identity.task_id == task.task_case.task_id
         and payload.identity.pair_id == task.pair_id
         and payload.identity.opponent_id == task.task_case.opponent_id
-        and payload.identity.budget == task.budget.max_iterations
+        and payload.identity.search_effort == task.budget
         for task in tasks
     ):
         raise ValueError("operational pair record does not match pending pair")

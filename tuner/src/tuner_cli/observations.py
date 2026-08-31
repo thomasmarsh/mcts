@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .domain import Candidate, Estimate, Observation, ObservationContext, PairResult, TaskPrefix
+from .effort import encode_effort
 from .identity import observation_id
 from .statistics import marginal_interval, pair_utility, paired_difference_values
 
@@ -18,7 +19,7 @@ def observation(
         "phase": context.phase,
         "prefix_id": context.task_prefix.prefix_id,
         "task_ids": context.task_prefix.task_ids,
-        "search_effort": context.search_effort.max_iterations,
+        "search_effort": encode_effort(context.search_effort),
     }
     return Observation(
         observation_id(candidate_id, identity_context, utilities, estimate),

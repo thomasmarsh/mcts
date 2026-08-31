@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tuner_cli.domain import Candidate, IterationBudget, PairTask, TaskCase
+from tuner_cli.domain import Candidate, PairTask, SearchEffort, TaskCase
 from tuner_cli.target import GameBinaryTarget, _splitmix_seed, parse_pair_output
 
 
@@ -24,7 +24,7 @@ def test_game_binary_target_uses_only_the_selected_describe_command(monkeypatch)
 
 def test_strict_pair_parser_decodes_ordered_games() -> None:
     case = TaskCase("task", "tuning", 0, 42, "stratum", "opponent", "fingerprint", "panel", "game")
-    task = PairTask("pair", "candidate", case, IterationBudget(10))
+    task = PairTask("pair", "candidate", case, SearchEffort("iterations", 10))
     metrics = {"iterations_total": 2, "iterations_first_half": 1, "move_time_ms": 3}
     records = [
         {
@@ -83,10 +83,46 @@ def test_keyboard_interrupt_kills_and_reaps_comparison_child(monkeypatch) -> Non
         "pair",
         "candidate",
         TaskCase("task", "tuning", 0, 42, "stratum", "opponent", "fingerprint", "panel", "game"),
-        IterationBudget(10),
+        SearchEffort("iterations", 10),
     )
     candidate = Candidate("candidate", "fingerprint", "{}")
     with pytest.raises(KeyboardInterrupt):
         target.evaluate(task, candidate, candidate, "{}", 10)
     assert process.killed
     assert process.communicates == 2
+
+
+@pytest.mark.parametrize(
+    ("effort", "flag", "other"),
+    [
+        (SearchEffort("iterations", 10), "--max-iterations", "--max-time-ms"),
+        (SearchEffort("time_ms", 10), "--max-time-ms", "--max-iterations"),
+    ],
+)
+def test_target_emits_exactly_one_effort_flag(monkeypatch, effort, flag, other) -> None:  # type: ignore[no-untyped-def]
+    class Process:
+        returncode = 0
+
+        def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
+            return "", ""
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda command, **_kwargs: commands.append(command) or Process()
+    )
+    task = PairTask(
+        "pair",
+        "candidate",
+        TaskCase("task", "tuning", 0, 42, "stratum", "opponent", "fingerprint", "panel", "game"),
+        effort,
+    )
+    with pytest.raises(RuntimeError):
+        GameBinaryTarget(Path("/games/example")).evaluate(
+            task,
+            Candidate("candidate", "fingerprint", "{}"),
+            Candidate("opponent", "fingerprint", "{}"),
+            "{}",
+            10,
+        )
+    assert commands[0][commands[0].index(flag) + 1] == "10"
+    assert other not in commands[0]

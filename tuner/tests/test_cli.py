@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tuner_cli.__main__ import build_parser
+from tuner_cli.__main__ import _options, build_parser
+from tuner_cli.domain import SearchEffort
 
 
 def test_parser_requires_explicit_scientific_inputs() -> None:
@@ -94,3 +95,44 @@ def test_parser_requires_explicit_scientific_inputs() -> None:
         ).evaluator_workers
         == 2
     )
+
+
+def test_effort_flags_resolve_independently_and_are_exclusive() -> None:
+    parser = build_parser()
+    base = [
+        "--game-binary",
+        "game",
+        "--objective-file",
+        "objective.json",
+        "--run-dir",
+        "run",
+        "--task-seed",
+        "9",
+        "--tuning-pair-budget",
+        "24",
+        "--validation-pair-budget",
+        "6",
+        "--production-validation-pairs",
+        "3",
+    ]
+    assert _options(parser.parse_args(base)).tuning_effort == SearchEffort("iterations", 1_000)
+    options = _options(
+        parser.parse_args(
+            base
+            + [
+                "--tuning-max-time-ms",
+                "10",
+                "--validation-max-iterations",
+                "20",
+                "--production-max-time-ms",
+                "30",
+            ]
+        )
+    )
+    assert (options.tuning_effort, options.validation_effort, options.production_effort) == (
+        SearchEffort("time_ms", 10),
+        SearchEffort("iterations", 20),
+        SearchEffort("time_ms", 30),
+    )
+    with pytest.raises(SystemExit):
+        parser.parse_args(base + ["--tuning-max-iterations", "1", "--tuning-max-time-ms", "1"])

@@ -19,6 +19,7 @@ from tuner_cli.domain import (
     Opponent,
     PairResult,
     PairTask,
+    SearchEffort,
     StrategyMetrics,
     ValidationError,
     ValidationResult,
@@ -51,9 +52,9 @@ def golden_options(binary: Path, run_dir: Path, objective_file: Path) -> RunOpti
         tuning_pair_budget=24,
         validation_pair_budget=4,
         production_validation_pairs=2,
-        tuning_max_iterations=3,
-        validation_max_iterations=5,
-        production_max_iterations=9,
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
     )
 
 

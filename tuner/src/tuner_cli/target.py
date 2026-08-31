@@ -144,9 +144,12 @@ class GameBinaryTarget:
             "1",
             "--seed",
             str(task.task_case.seed),
-            "--max-iterations",
-            str(task.budget.max_iterations),
         ]
+        command.extend(
+            ["--max-iterations", str(task.budget.value)]
+            if task.budget.kind == "iterations"
+            else ["--max-time-ms", str(task.budget.value)]
+        )
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )

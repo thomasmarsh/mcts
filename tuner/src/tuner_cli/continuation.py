@@ -236,7 +236,7 @@ def _pair_identity(task: PairTask) -> PairIdentity:
         task.task_case.task_id,
         task.pair_id,
         task.task_case.opponent_id,
-        task.budget.max_iterations,
+        task.budget,
     )
 
 
@@ -335,7 +335,7 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
             context.task_prefix.corpus_id,
             context.task_prefix.prefix_id,
             context.task_prefix.task_ids,
-            context.search_effort.max_iterations,
+            context.search_effort,
             "tuning_point_estimate_fingerprint_v1",
         )
     )
@@ -365,7 +365,7 @@ def complete_run(manifest: Manifest, writer: EvidenceWriter, state: ReplayState)
             claim,
             manifest.epoch.epoch_id,
             manifest.validation_prefix.prefix_id,
-            manifest.efforts["validation"].max_iterations,
+            manifest.efforts["validation"],
             tuple(missing),
             tuning_frontier(
                 comparable_prefix_observations(

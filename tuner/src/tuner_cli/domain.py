@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Phase = Literal["tuning", "validation"]
+EffortKind = Literal["iterations", "time_ms"]
 OpponentRole = Literal["default", "historical_reference"]
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
 ShadowDisposition = Literal["continue", "eliminate", "protected"]
@@ -112,10 +113,15 @@ class ProposedConfiguration:
 
 @dataclass(frozen=True, slots=True)
 class SearchEffort:
-    max_iterations: int
+    kind: EffortKind
+    value: int
 
-
-IterationBudget = SearchEffort
+    def __post_init__(self) -> None:
+        raw_kind: object = self.kind
+        if raw_kind not in {"iterations", "time_ms"}:
+            raise ValueError("search effort kind must be 'iterations' or 'time_ms'")
+        if type(self.value) is not int or self.value <= 0:
+            raise ValueError("search effort value must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
