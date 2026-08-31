@@ -10,7 +10,12 @@ import tempfile
 from pathlib import Path
 
 
-def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> None:
+def _check_game(
+    binary: Path,
+    objective: Path,
+    evaluator_workers: int = 1,
+    excluded_family: str | None = None,
+) -> None:
     description = subprocess.run(
         [str(binary), "describe"], check=False, capture_output=True, text=True
     )
@@ -67,6 +72,8 @@ def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> No
             "--evaluator-workers",
             str(evaluator_workers),
         ]
+        if excluded_family is not None:
+            command.extend(["--exclude-family", excluded_family])
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         assert completed.returncode == 0, completed.stderr
         manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -78,6 +85,13 @@ def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> No
             event["payload"] for event in events if event["type"] == "pair_completed"
         ]
         assert manifest["schema_version"] == 4
+        assert manifest["proposer"]["excluded_families"] == (
+            [] if excluded_family is None else [excluded_family]
+        )
+        assert (
+            report["proposal_search"]["configured"]["excluded_families"]
+            == manifest["proposer"]["excluded_families"]
+        )
         assert manifest["kind"] == expected_kind
         assert manifest["objective"]["fingerprint"] and manifest["opponent_panel"]["fingerprint"]
         assert manifest["epoch"]["fingerprint"]
@@ -95,6 +109,12 @@ def _check_game(binary: Path, objective: Path, evaluator_workers: int = 1) -> No
         accepted_sources = [
             event["payload"]["source"] for event in events if event["type"] == "proposal_accepted"
         ]
+        proposal_configs = [
+            json.loads(event["payload"]["canonical_config"])
+            for event in events
+            if event["type"] == "proposal_created"
+        ]
+        assert all(config.get("family") != excluded_family for config in proposal_configs)
         assert accepted_sources == [
             *manifest["proposer"]["source_schedule"],
             *manifest["proposer"]["challenger_source_schedule"],
@@ -208,6 +228,7 @@ def main() -> None:
         root / "target/release/game-druid",
         root / "tuner/objectives/druid-reference-v1.json",
         2 if (os.cpu_count() or 1) >= 2 else 1,
+        "meta_mcts",
     )
     _check_game(
         root / "target/release/game-ttt", root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json"

@@ -21,6 +21,7 @@ from .domain import (
     TaskCorpus,
     TaskPrefix,
 )
+from .family_exclusions import FAMILY_EXCLUSION_POLICY_VERSION, validate_family_exclusions
 from .identity import (
     canonical_json,
     fingerprint,
@@ -83,6 +84,7 @@ class ProposerSpecification:
     bootstrap_seed: int
     reserve_seed: int
     runtime_versions: tuple[tuple[str, str], ...]
+    excluded_families: tuple[str, ...]
 
     @property
     def model_candidates(self) -> int:
@@ -95,6 +97,8 @@ class ProposerSpecification:
     def encoded(self) -> JsonObject:
         return {
             "policy_version": POLICY_VERSION,
+            "family_exclusion_policy_version": FAMILY_EXCLUSION_POLICY_VERSION,
+            "excluded_families": list(self.excluded_families),
             "proposal_seed": self.proposal_seed,
             "task_seed": self.task_seed,
             "cohort_size": self.cohort_size,
@@ -139,6 +143,7 @@ def proposer_specification(
     finalists: int,
     bootstrap_candidates: int,
     random_reserve_candidates: int,
+    excluded_families: tuple[str, ...] = (),
     versions: dict[str, str] | None = None,
 ) -> ProposerSpecification:
     schedule = source_schedule(cohort_size, bootstrap_candidates, random_reserve_candidates)
@@ -156,6 +161,7 @@ def proposer_specification(
         derived_seed(proposal_seed, "bootstrap"),
         derived_seed(proposal_seed, "reserve"),
         tuple(sorted((runtime_versions() if versions is None else versions).items())),
+        excluded_families,
     )
 
 
@@ -207,6 +213,10 @@ class Manifest:
     @property
     def random_reserve_candidates(self) -> int:
         return self.proposer_spec.random_reserve_candidates
+
+    @property
+    def excluded_families(self) -> tuple[str, ...]:
+        return self.proposer_spec.excluded_families
 
     @property
     def source_schedule(self) -> tuple[ProposalSource, ...]:
@@ -366,7 +376,9 @@ def build_manifest(
     production_max_iterations: int,
     shadow_practical_margin: float = 0.0,
     shadow_elimination_threshold: float = 0.05,
+    excluded_families: tuple[str, ...] = (),
 ) -> Manifest:
+    validate_family_exclusions(spec.tuning, excluded_families)
     proposer = proposer_specification(
         seed,
         task_seed,
@@ -374,6 +386,7 @@ def build_manifest(
         finalists,
         bootstrap_candidates,
         random_reserve_candidates,
+        excluded_families,
     )
     if (
         isinstance(tuning_pair_budget, bool)
@@ -707,6 +720,8 @@ def _decode_prefix(value: object, corpus: TaskCorpus, label: str) -> TaskPrefix:
 def _decode_proposer(value: object) -> ProposerSpecification:
     fields = {
         "policy_version",
+        "family_exclusion_policy_version",
+        "excluded_families",
         "proposal_seed",
         "task_seed",
         "cohort_size",
@@ -734,6 +749,14 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     )
     if not all(isinstance(item, str) and item for item in versions.values()):
         raise ValueError("runtime versions must be nonempty strings")
+    excluded = raw["excluded_families"]
+    if raw["family_exclusion_policy_version"] != FAMILY_EXCLUSION_POLICY_VERSION:
+        raise ValueError("unsupported family exclusion policy")
+    if not isinstance(excluded, list):
+        raise ValueError("excluded families must be strings")
+    excluded_families = tuple(string(item, "excluded family", nonempty=True) for item in excluded)
+    if tuple(sorted(set(excluded_families))) != excluded_families:
+        raise ValueError("excluded families must be sorted and duplicate-free")
     specification = proposer_specification(
         integer(raw["proposal_seed"], "proposal seed", positive=True),
         integer(raw["task_seed"], "task seed", positive=True),
@@ -741,6 +764,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
         integer(raw["finalists"], "finalists", positive=True),
         integer(raw["bootstrap_candidates"], "bootstrap candidates", positive=True),
         integer(raw["random_reserve_candidates"], "random reserve candidates", positive=True),
+        excluded_families,
         {
             key: string(item, f"runtime version {key}", nonempty=True)
             for key, item in versions.items()
@@ -915,6 +939,7 @@ def decode_manifest_object(value: object) -> Manifest:
         raise ValueError("manifest fingerprint does not match content")
     spec, game_config_fingerprint = _decode_game_identity(raw)
     proposer = _decode_proposer(raw["proposer"])
+    validate_family_exclusions(spec.tuning, proposer.excluded_families)
     budget_raw = object_fields(
         raw["compute_budget"],
         {"policy_version", "tuning_pair_attempts", "validation_pair_attempts"},

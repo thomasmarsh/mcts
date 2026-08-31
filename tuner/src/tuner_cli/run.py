@@ -12,6 +12,7 @@ from .continuation import continue_run
 from .domain import Candidate
 from .evidence import EvidenceWriter, read_events, write_manifest
 from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
+from .family_exclusions import normalize_family_exclusions, validate_family_exclusions
 from .identity import candidate_from_config, sha256_file
 from .objective import ResolvedObjective, resolve_objective
 from .proposer import ModelProposer
@@ -46,6 +47,7 @@ class RunOptions:
     evaluator_workers: int = 1
     shadow_practical_margin: float = 0.0
     shadow_elimination_threshold: float = 0.05
+    excluded_families: tuple[str, ...] = ()
     resume: bool = False
 
 
@@ -58,23 +60,30 @@ def run_foreground(
     """Create or explicitly resume one strict budgeted tuning run."""
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
+    options = replace(
+        options, excluded_families=normalize_family_exclusions(options.excluded_families)
+    )
     binary, directory, objective_path = validate_options(options)
     executor = pair_executor(options.evaluator_workers)
     active_target = GameBinaryTarget(binary) if target is None else target
     spec = game_spec(active_target, binary)
-    default = schema_default(spec, options.seed)
-    objective = resolve_objective(objective_path, spec.kind, default)
+    validate_family_exclusions(spec.tuning, options.excluded_families)
+    objective_default = schema_default(spec, options.seed)
+    proposal_default = schema_default(spec, options.seed, options.excluded_families)
+    objective = resolve_objective(objective_path, spec.kind, objective_default)
     validate_objective_options(options, objective)
     manifest, writer = open_run(options, directory, spec, objective, active_target)
     if fold_events(manifest, read_events(writer.path)).terminal_status == "complete":
         write_report(directory)
         return directory / "report.json"
-    model = model_proposer or SmacProposer(build_space(spec.tuning, options.seed))
+    model = model_proposer or SmacProposer(
+        build_space(spec.tuning, options.seed, manifest.excluded_families)
+    )
     continue_run(
         manifest,
         writer,
         active_target,
-        default,
+        proposal_default,
         spec,
         model,
         options.pair_timeout_seconds,
@@ -159,8 +168,8 @@ def game_spec(target: Target, binary: Path) -> GameSpec:
     return decode_game_spec(target.describe(), binary, sha256_file(binary))
 
 
-def schema_default(spec: GameSpec, seed: int) -> Candidate:
-    return candidate_from_config(default_values(build_space(spec.tuning, seed)))
+def schema_default(spec: GameSpec, seed: int, excluded_families: tuple[str, ...] = ()) -> Candidate:
+    return candidate_from_config(default_values(build_space(spec.tuning, seed, excluded_families)))
 
 
 def validate_objective_options(options: RunOptions, objective: ResolvedObjective) -> None:
@@ -195,7 +204,7 @@ def open_run(
         manifest = read_manifest(directory / "manifest.json")
         assert_compatible(options, manifest, spec, objective)
         return manifest, EvidenceWriter.open(directory / "evidence.jsonl")
-    preflight_default(target, spec, objective, options.seed)
+    preflight_default(target, spec, objective, options.seed, options.excluded_families)
     manifest = manifest_for(options, directory, spec, objective)
     directory.mkdir(parents=True)
     write_manifest(directory / "manifest.json", manifest_json(manifest))
@@ -203,9 +212,13 @@ def open_run(
 
 
 def preflight_default(
-    target: Target, spec: GameSpec, objective: ResolvedObjective, seed: int
+    target: Target,
+    spec: GameSpec,
+    objective: ResolvedObjective,
+    seed: int,
+    excluded_families: tuple[str, ...],
 ) -> None:
-    default = schema_default(spec, seed)
+    default = schema_default(spec, seed, excluded_families)
     failures = [
         opponent.opponent_id
         for opponent in objective.panel.opponents
@@ -237,6 +250,7 @@ def manifest_for(
         options.production_max_iterations,
         options.shadow_practical_margin,
         options.shadow_elimination_threshold,
+        options.excluded_families,
     )
 
 

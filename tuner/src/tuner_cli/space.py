@@ -17,14 +17,19 @@ from ConfigSpace import (
     Constant,
     EqualsCondition,
     Float,
+    ForbiddenEqualsClause,
     Integer,
     OrConjunction,
 )
 
+from .family_exclusions import validate_family_exclusions
 from .schema import TuningSchema
 
 
-def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
+def build_space(
+    schema: TuningSchema, seed: int, excluded_families: tuple[str, ...] = ()
+) -> ConfigurationSpace:
+    validate_family_exclusions(schema, excluded_families)
     space = ConfigurationSpace(seed=seed)
     parameters = []
     for spec in schema.parameters:
@@ -46,7 +51,10 @@ def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
             )
         else:
             assert spec.choices is not None
-            parameter = Categorical(spec.name, list(spec.choices), default=spec.default)
+            default = spec.default
+            if spec.name == "family" and default in excluded_families:
+                default = next(choice for choice in spec.choices if choice not in excluded_families)
+            parameter = Categorical(spec.name, list(spec.choices), default=default)
         parameters.append(parameter)
     space.add(parameters)
     atoms: dict[str, list[EqualsCondition]] = {}
@@ -58,6 +66,8 @@ def build_space(schema: TuningSchema, seed: int) -> ConfigurationSpace:
                 )
     for _child, child_atoms in atoms.items():
         space.add(child_atoms[0] if len(child_atoms) == 1 else OrConjunction(*child_atoms))
+    for family in excluded_families:
+        space.add(ForbiddenEqualsClause(space["family"], family))
     return space
 
 

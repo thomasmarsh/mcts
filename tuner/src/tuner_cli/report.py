@@ -474,6 +474,10 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
             "random_reserve": reserve_slots,
             "cohorts": completed_cohorts,
             "retained_elites": manifest.finalists,
+            "family_exclusion_policy_version": manifest.proposer.encoded()[
+                "family_exclusion_policy_version"
+            ],
+            "excluded_families": list(manifest.excluded_families),
         },
         "accepted": _array(accepted),
         "rejections_by_source": rejected_json,

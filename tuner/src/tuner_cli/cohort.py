@@ -25,6 +25,7 @@ from .event_payloads import (
     ProposalIdentity,
     ProposalRejectedPayload,
 )
+from .family_exclusions import require_candidate_family_allowed
 from .identity import candidate_from_config, canonical_json
 from .observations import comparable_prefix_observations
 from .proposer import (
@@ -146,6 +147,7 @@ def create_proposal(
     source = schedule[slot]
     attempt = _source_attempt(state, source)
     proposed = _candidate_for_source(manifest, state, default, spec, model, source, attempt)
+    require_candidate_family_allowed(proposed.candidate, manifest.excluded_families)
     frontier = _frontier(manifest, state, slot)
     version = "smac-2.4-public-ask-v1" if source == "smac_model" else "configspace-independent-v1"
     provenance = ProposalProvenance(
@@ -185,7 +187,9 @@ def _candidate_for_source(
 
 def _random_candidate(manifest: Manifest, spec: GameSpec, source: str, attempt: int) -> Candidate:
     namespace = "bootstrap" if source == "bootstrap_random" else "reserve"
-    space = build_space(spec.tuning, derived_seed(manifest.seed, namespace, attempt - 1))
+    space = build_space(
+        spec.tuning, derived_seed(manifest.seed, namespace, attempt - 1), manifest.excluded_families
+    )
     return candidate_from_config(random_values(space))
 
 
