@@ -365,6 +365,7 @@ def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
                 manifest.shadow_policy.elimination_probability_threshold
             ),
             "resamples": manifest.shadow_policy.resamples,
+            "minimum_eligible_prefix_pairs": (manifest.shadow_policy.minimum_eligible_prefix_pairs),
             "enforced": False,
         },
         "scope": {

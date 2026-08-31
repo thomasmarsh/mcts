@@ -51,6 +51,7 @@ from .tasks import (
 
 SCHEMA_VERSION = 4
 CANDIDATE_FAILURE_POLICY_VERSION = "terminal-candidate-refill-v1"
+MINIMUM_ELIGIBLE_PREFIX_PAIRS = 12
 _OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
 _OPPONENT_SOURCES: tuple[
     Literal["schema_default", "inline"], Literal["schema_default", "inline"]
@@ -128,6 +129,7 @@ class ShadowPolicySpecification:
     elimination_probability_threshold: float
     resamples: int
     method_version: Literal["stratified-paired-bootstrap-v1"]
+    minimum_eligible_prefix_pairs: int = MINIMUM_ELIGIBLE_PREFIX_PAIRS
 
     def encoded(self) -> JsonObject:
         return {
@@ -135,6 +137,7 @@ class ShadowPolicySpecification:
             "elimination_probability_threshold": self.elimination_probability_threshold,
             "resamples": self.resamples,
             "method_version": self.method_version,
+            "minimum_eligible_prefix_pairs": self.minimum_eligible_prefix_pairs,
         }
 
 
@@ -986,6 +989,7 @@ def decode_manifest_object(value: object) -> Manifest:
             "elimination_probability_threshold",
             "resamples",
             "method_version",
+            "minimum_eligible_prefix_pairs",
         },
         "shadow policy",
     )
@@ -997,6 +1001,12 @@ def decode_manifest_object(value: object) -> Manifest:
         integer(shadow_raw["resamples"], "shadow resamples", positive=True)
         != shadow_policy.resamples
         or shadow_raw["method_version"] != shadow_policy.method_version
+        or integer(
+            shadow_raw["minimum_eligible_prefix_pairs"],
+            "minimum eligible prefix pairs",
+            positive=True,
+        )
+        != MINIMUM_ELIGIBLE_PREFIX_PAIRS
     ):
         raise ValueError("unsupported shadow policy")
     panel = _decode_panel(raw["opponent_panel"])

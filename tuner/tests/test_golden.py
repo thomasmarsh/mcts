@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -17,9 +19,10 @@ from golden_support import (
 )
 
 from tuner_cli.allocator import pending_pair
-from tuner_cli.artifacts import read_manifest
+from tuner_cli.artifacts import decode_manifest_object, read_manifest
 from tuner_cli.event_payloads import EventType
 from tuner_cli.evidence import read_events, scientific_projection
+from tuner_cli.identity import fingerprint
 from tuner_cli.replay import replay
 from tuner_cli.report import build_report
 from tuner_cli.run import run_foreground
@@ -84,6 +87,30 @@ def test_golden_evidence_exercises_every_scientific_event() -> None:
 def test_golden_manifest_round_trips_through_public_codec() -> None:
     manifest = read_manifest(FIXTURES / "manifest.json")
     assert manifest.fingerprint is not None
+    assert manifest.shadow_policy.minimum_eligible_prefix_pairs == 12
+
+
+def test_manifest_requires_the_frozen_shadow_minimum() -> None:
+    raw = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))
+
+    def decode_mutation(mutator: Callable[[dict[str, object]], None]) -> None:
+        candidate = deepcopy(raw)
+        assert isinstance(candidate["shadow_policy"], dict)
+        mutator(candidate["shadow_policy"])
+        candidate["fingerprint"] = fingerprint(
+            {key: value for key, value in candidate.items() if key != "fingerprint"}
+        )
+        with pytest.raises(ValueError):
+            decode_manifest_object(candidate)
+
+    def remove_minimum(policy: dict[str, object]) -> None:
+        policy.pop("minimum_eligible_prefix_pairs")
+
+    decode_mutation(remove_minimum)
+    decode_mutation(lambda policy: policy.__setitem__("minimum_eligible_prefix_pairs", True))
+    decode_mutation(lambda policy: policy.__setitem__("minimum_eligible_prefix_pairs", 0))
+    decode_mutation(lambda policy: policy.__setitem__("minimum_eligible_prefix_pairs", 11))
+    decode_mutation(lambda policy: policy.__setitem__("unexpected", 12))
 
 
 def test_golden_scientific_projection_matches_fixture() -> None:

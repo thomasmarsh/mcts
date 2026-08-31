@@ -24,13 +24,14 @@ def _check_game(
     expected_kind = json.loads(description.stdout)["kind"]
     panel = json.loads(objective.read_text())["opponents"]
     total_weight = sum(item["weight"] for item in panel)
-    tuning_pairs = total_weight * 2
+    tuning_pairs = total_weight * (2 if time_only else 3)
     # The initial cohort costs cohort_size * tuning_pairs and each challenger
     # cohort costs (cohort_size - finalists) * tuning_pairs, so a budget of
-    # 16 * total_weight admits exactly three cohorts; a fourth would not fit.
+    # Eight complete tuning prefixes admit exactly three cohorts; a fourth
+    # would not fit. The Druid smoke has 6/12/18-pair frontiers.
     # The validation budget gives each of the two finalists exactly one complete
     # weighted panel cycle.
-    tuning_pair_budget = 16 * total_weight
+    tuning_pair_budget = 8 * tuning_pairs
     validation_pair_budget = 2 * total_weight
     production_pairs = total_weight * 2
     if time_only:
@@ -121,7 +122,7 @@ def _check_game(
         assert manifest["kind"] == expected_kind
         assert manifest["objective"]["fingerprint"] and manifest["opponent_panel"]["fingerprint"]
         assert manifest["epoch"]["fingerprint"]
-        assert len(manifest["tuning_blocks"]) == 2
+        assert len(manifest["tuning_blocks"]) == (2 if time_only else 3)
         assert manifest["proposer"]["source_schedule"] == [
             "schema_default",
             "bootstrap_random",
@@ -186,15 +187,24 @@ def _check_game(
             for event in events
             if event["type"] == "observation_completed" and event["payload"]["phase"] == "tuning"
         }
-        assert len(tuning_prefixes) == 2
+        assert len(tuning_prefixes) == (2 if time_only else 3)
         shadow_races = [
             event["payload"] for event in events if event["type"] == "shadow_race_decided"
         ]
-        assert len(shadow_races) == len(cohorts)
-        assert {race["cohort_index"] for race in shadow_races} == set(range(len(cohorts)))
-        assert all(len(race["decisions"]) == 4 for race in shadow_races)
+        if time_only:
+            assert shadow_races == []
+        else:
+            prefix_lengths = {
+                block["prefix"]["prefix_id"]: block["prefix"]["length"]
+                for block in manifest["tuning_blocks"]
+            }
+            assert len(shadow_races) == len(cohorts)
+            assert {race["cohort_index"] for race in shadow_races} == set(range(len(cohorts)))
+            assert all(prefix_lengths[race["prefix_id"]] == 12 for race in shadow_races)
+            assert all(len(race["decisions"]) == 4 for race in shadow_races)
         shadow = report["shadow_elimination"]
         assert shadow["policy"]["enforced"] is False
+        assert shadow["policy"]["minimum_eligible_prefix_pairs"] == 12
         assert shadow["scope"]["held_out_validation_used"] is False
         assert shadow["scope"]["recorded_looks"] == sum(
             len(path["looks"]) for cohort in shadow["cohorts"] for path in cohort["candidate_paths"]

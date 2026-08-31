@@ -42,6 +42,7 @@ from .domain import (
 from .identity import pair_task
 from .observations import comparable_prefix_observations
 from .selection import select_top_candidates
+from .shadow import shadow_prefix_eligible
 
 ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 
@@ -77,7 +78,7 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
                 item.observation_id
                 for item in comparable_prefix_observations(state.observations, active, prefix)
             )
-            if not any(
+            if shadow_prefix_eligible(manifest, prefix) and not any(
                 item.cohort_index == len(state.completed_cohorts)
                 and item.prefix_id == prefix.prefix_id
                 and item.observation_ids == observation_ids

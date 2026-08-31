@@ -60,12 +60,13 @@ elimination. `--finalists` is both the retained-elite count and the final
 shortlist count. The selected validation corpus is always a leading prefix of the
 frozen production validation corpus.
 
-At every complete non-final tuning prefix, the tuner records a deterministic
-paired, stratum-aware `shadow_race_decided` screening disposition. Its practical
-margin and nominal elimination threshold are frozen by `--shadow-practical-margin`
-and `--shadow-elimination-threshold`. This is evidence only: every candidate
+At a complete non-final tuning prefix containing at least 12 pairs, the tuner
+records a deterministic paired, stratum-aware `shadow_race_decided` screening
+disposition. The 12-pair minimum, practical margin, and nominal elimination
+threshold are frozen in the manifest. This is evidence only: every candidate
 still reaches the maximum tuning prefix, and the nominal threshold has not earned
-an active-pruning safety claim.
+an active-pruning safety claim. Runs with no eligible non-final prefix are valid
+and record no shadow decisions.
 
 `report.json` includes a `candidate_lifecycle` projection of this policy,
 terminal failures, and replacement lineage, plus a `shadow_elimination` audit

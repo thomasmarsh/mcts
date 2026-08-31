@@ -101,14 +101,23 @@ def _resample_indexes(
     }
 
 
+def shadow_prefix_eligible(manifest: Manifest, prefix: TaskPrefix) -> bool:
+    """Whether a declared non-final tuning prefix may record shadow evidence."""
+    return (
+        prefix in manifest.tuning_blocks
+        and prefix.length >= manifest.shadow_policy.minimum_eligible_prefix_pairs
+        and prefix != manifest.tuning_prefix
+    )
+
+
 def decide_shadow_race(
     manifest: Manifest, state: ReplayState, cohort_index: int, prefix: TaskPrefix
 ) -> ShadowRaceDecision:
+    if not shadow_prefix_eligible(manifest, prefix):
+        raise ValueError("shadow race uses an ineligible tuning prefix")
     cohort = current_active_candidates(state)
     if cohort_index != len(state.completed_cohorts) or len(cohort) != manifest.cohort_size:
         raise ValueError("shadow race does not reference the active complete cohort")
-    if prefix == manifest.tuning_prefix:
-        raise ValueError("shadow race cannot use the maximum tuning prefix")
     observations = comparable_prefix_observations(state.observations, cohort, prefix)
     observation_ids = tuple(item.observation_id for item in observations)
     if any(
