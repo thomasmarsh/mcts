@@ -221,7 +221,10 @@ class ShadowRaceDecidedPayload:
                 tuple(decisions),
                 literal(
                     item["policy_version"],
-                    ("stratified-paired-bootstrap-v1",),
+                    (
+                        "stratified-paired-bootstrap-v1",
+                        "stratified-paired-bootstrap-all-strata-v2",
+                    ),
                     "shadow policy version",
                 ),
             )

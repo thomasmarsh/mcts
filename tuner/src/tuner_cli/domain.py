@@ -10,6 +10,9 @@ EffortKind = Literal["iterations", "time_ms"]
 OpponentRole = Literal["default", "historical_reference"]
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
 ShadowDisposition = Literal["continue", "eliminate", "protected"]
+ShadowMethodVersion = Literal[
+    "stratified-paired-bootstrap-v1", "stratified-paired-bootstrap-all-strata-v2"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +305,7 @@ class ShadowRaceDecision:
     observation_ids: tuple[str, ...]
     boundary_candidate_id: str
     decisions: tuple[ShadowCandidateDecision, ...]
-    policy_version: Literal["stratified-paired-bootstrap-v1"]
+    policy_version: ShadowMethodVersion
 
 
 @dataclass(frozen=True, slots=True)

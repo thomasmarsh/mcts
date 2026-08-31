@@ -17,6 +17,7 @@ from .domain import (
     Phase,
     ProposalSource,
     SearchEffort,
+    ShadowMethodVersion,
     TaskCase,
     TaskCorpus,
     TaskPrefix,
@@ -128,7 +129,7 @@ class ShadowPolicySpecification:
     practical_effect_margin: float
     elimination_probability_threshold: float
     resamples: int
-    method_version: Literal["stratified-paired-bootstrap-v1"]
+    method_version: ShadowMethodVersion
     minimum_eligible_prefix_pairs: int = MINIMUM_ELIGIBLE_PREFIX_PAIRS
 
     def encoded(self) -> JsonObject:
@@ -507,7 +508,10 @@ def _shadow_policy(margin: object, threshold: object) -> ShadowPolicySpecificati
     if not 0.0 < elimination_threshold < 0.5:
         raise ValueError("shadow elimination threshold must be in (0.0, 0.5)")
     return ShadowPolicySpecification(
-        practical_margin, elimination_threshold, 4096, "stratified-paired-bootstrap-v1"
+        practical_margin,
+        elimination_threshold,
+        4096,
+        "stratified-paired-bootstrap-all-strata-v2",
     )
 
 
@@ -993,14 +997,30 @@ def decode_manifest_object(value: object) -> Manifest:
         },
         "shadow policy",
     )
-    shadow_policy = _shadow_policy(
+    method_version = string(shadow_raw["method_version"], "shadow method version")
+    if method_version not in (
+        "stratified-paired-bootstrap-v1",
+        "stratified-paired-bootstrap-all-strata-v2",
+    ):
+        raise ValueError("unsupported shadow policy")
+    validated_shadow_policy = _shadow_policy(
         shadow_raw["practical_effect_margin"], shadow_raw["elimination_probability_threshold"]
+    )
+    shadow_policy = ShadowPolicySpecification(
+        validated_shadow_policy.practical_effect_margin,
+        validated_shadow_policy.elimination_probability_threshold,
+        integer(shadow_raw["resamples"], "shadow resamples", positive=True),
+        method_version,
+        integer(
+            shadow_raw["minimum_eligible_prefix_pairs"],
+            "minimum eligible prefix pairs",
+            positive=True,
+        ),
     )
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
     if (
-        integer(shadow_raw["resamples"], "shadow resamples", positive=True)
-        != shadow_policy.resamples
-        or shadow_raw["method_version"] != shadow_policy.method_version
+        shadow_policy.resamples != 4096
+        or shadow_policy.method_version != method_version
         or integer(
             shadow_raw["minimum_eligible_prefix_pairs"],
             "minimum eligible prefix pairs",

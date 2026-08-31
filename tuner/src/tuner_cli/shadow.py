@@ -101,6 +101,28 @@ def _resample_indexes(
     }
 
 
+def favorable_resamples_by_stratum(
+    manifest: Manifest,
+    cohort_index: int,
+    prefix: TaskPrefix,
+    differences: tuple[StratumDifferences, ...],
+) -> tuple[tuple[str, int], ...]:
+    """Return deterministic within-stratum favorable bootstrap counts."""
+    indexes = _resample_indexes(manifest, cohort_index, prefix, differences)
+    return tuple(
+        (
+            stratum.stratum_id,
+            sum(
+                sum(stratum.values[index] for index in indexes[stratum.stratum_id][replicate])
+                / len(stratum.values)
+                >= -manifest.shadow_policy.practical_effect_margin
+                for replicate in range(manifest.shadow_policy.resamples)
+            ),
+        )
+        for stratum in differences
+    )
+
+
 def shadow_prefix_eligible(manifest: Manifest, prefix: TaskPrefix) -> bool:
     """Whether a declared non-final tuning prefix may record shadow evidence."""
     return (
@@ -136,13 +158,14 @@ def decide_shadow_race(
         )
         for candidate in cohort
     }
-    indexes = _resample_indexes(manifest, cohort_index, prefix, differences[boundary.candidate_id])
     decisions: list[ShadowCandidateDecision] = []
     for candidate in cohort:
+        candidate_differences = differences[candidate.candidate_id]
+        indexes = _resample_indexes(manifest, cohort_index, prefix, candidate_differences)
         favorable = 0
         for replicate in range(manifest.shadow_policy.resamples):
             total = 0.0
-            for stratum in differences[candidate.candidate_id]:
+            for stratum in candidate_differences:
                 total += sum(
                     stratum.values[index] for index in indexes[stratum.stratum_id][replicate]
                 )
@@ -152,10 +175,7 @@ def decide_shadow_race(
             disposition = "protected"
         elif candidate.candidate_id in {item.candidate_id for item in top}:
             disposition = "continue"
-        elif (
-            favorable / manifest.shadow_policy.resamples
-            < manifest.shadow_policy.elimination_probability_threshold
-        ):
+        elif _eliminated(manifest, cohort_index, prefix, candidate_differences, favorable):
             disposition = "eliminate"
         else:
             disposition = "continue"
@@ -171,4 +191,20 @@ def decide_shadow_race(
         boundary.candidate_id,
         tuple(decisions),
         manifest.shadow_policy.method_version,
+    )
+
+
+def _eliminated(
+    manifest: Manifest,
+    cohort_index: int,
+    prefix: TaskPrefix,
+    differences: tuple[StratumDifferences, ...],
+    favorable: int,
+) -> bool:
+    threshold = manifest.shadow_policy.elimination_probability_threshold
+    if manifest.shadow_policy.method_version == "stratified-paired-bootstrap-v1":
+        return favorable / manifest.shadow_policy.resamples < threshold
+    return all(
+        count / manifest.shadow_policy.resamples < threshold
+        for _, count in favorable_resamples_by_stratum(manifest, cohort_index, prefix, differences)
     )

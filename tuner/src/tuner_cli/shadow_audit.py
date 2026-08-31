@@ -8,13 +8,13 @@ from dataclasses import dataclass
 
 from .artifacts import Manifest
 from .compute import fold_ledger
-from .domain import Candidate, PhaseCompute, ReplayState
+from .domain import Candidate, Observation, PhaseCompute, ReplayState, TaskPrefix
 from .event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from .evidence import EvidenceEvent
 from .identity import pair_task
 from .observations import comparable_prefix_observations, paired_difference
 from .selection import select_top_candidates
-from .shadow import paired_stratum_differences
+from .shadow import favorable_resamples_by_stratum, paired_stratum_differences
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +23,8 @@ class StratumAudit:
     early_mean_difference: float
     maximum_mean_difference: float
     reversal: bool
+    favorable_resamples: int | None = None
+    favorable_probability: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +135,47 @@ def _suffix_compute(
     return len(pair_ids), fold_ledger(selected).tuning
 
 
+def _strata_for_look(
+    manifest: Manifest,
+    cohort_index: int,
+    prefix: TaskPrefix,
+    early_candidate: Observation,
+    early_boundary: Observation,
+    maximum_candidate: Observation,
+    maximum_boundary: Observation,
+) -> tuple[StratumAudit, ...]:
+    early_strata = paired_stratum_differences(manifest, early_candidate, early_boundary)
+    maximum_by_stratum = {
+        item.stratum_id: item
+        for item in paired_stratum_differences(manifest, maximum_candidate, maximum_boundary)
+    }
+    favorable_by_stratum = dict(
+        favorable_resamples_by_stratum(manifest, cohort_index, prefix, early_strata)
+    )
+    show_probabilities = (
+        manifest.shadow_policy.method_version == "stratified-paired-bootstrap-all-strata-v2"
+    )
+    return tuple(
+        StratumAudit(
+            item.stratum_id,
+            _mean(item.values),
+            _mean(maximum_by_stratum[item.stratum_id].values),
+            (_mean(item.values) >= -manifest.shadow_policy.practical_effect_margin)
+            != (
+                _mean(maximum_by_stratum[item.stratum_id].values)
+                >= -manifest.shadow_policy.practical_effect_margin
+            ),
+            favorable_by_stratum[item.stratum_id] if show_probabilities else None,
+            (
+                favorable_by_stratum[item.stratum_id] / manifest.shadow_policy.resamples
+                if show_probabilities
+                else None
+            ),
+        )
+        for item in early_strata
+    )
+
+
 def build_shadow_audit(
     manifest: Manifest, state: ReplayState, events: Sequence[EvidenceEvent]
 ) -> ShadowAudit:
@@ -189,42 +232,14 @@ def build_shadow_audit(
                 maximum_difference = paired_difference(
                     maximum_by_id[decision.candidate_id], maximum_by_id[race.boundary_candidate_id]
                 ).mean
-                strata = tuple(
-                    StratumAudit(
-                        item.stratum_id,
-                        _mean(item.values),
-                        _mean(
-                            next(
-                                final.values
-                                for final in paired_stratum_differences(
-                                    manifest,
-                                    maximum_by_id[decision.candidate_id],
-                                    maximum_by_id[race.boundary_candidate_id],
-                                )
-                                if final.stratum_id == item.stratum_id
-                            )
-                        ),
-                        (_mean(item.values) >= -manifest.shadow_policy.practical_effect_margin)
-                        != (
-                            _mean(
-                                next(
-                                    final.values
-                                    for final in paired_stratum_differences(
-                                        manifest,
-                                        maximum_by_id[decision.candidate_id],
-                                        maximum_by_id[race.boundary_candidate_id],
-                                    )
-                                    if final.stratum_id == item.stratum_id
-                                )
-                            )
-                            >= -manifest.shadow_policy.practical_effect_margin
-                        ),
-                    )
-                    for item in paired_stratum_differences(
-                        manifest,
-                        early_by_id[decision.candidate_id],
-                        early_by_id[race.boundary_candidate_id],
-                    )
+                strata = _strata_for_look(
+                    manifest,
+                    cohort.cohort_index,
+                    prefix,
+                    early_by_id[decision.candidate_id],
+                    early_by_id[race.boundary_candidate_id],
+                    maximum_by_id[decision.candidate_id],
+                    maximum_by_id[race.boundary_candidate_id],
                 )
                 for item in strata:
                     stratum_rows[item.stratum_id].append(

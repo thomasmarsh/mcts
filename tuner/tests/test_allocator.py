@@ -8,6 +8,7 @@ in a well-formed run, so it is built by hand.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,12 @@ from tuner_cli.event_payloads import (
 )
 from tuner_cli.evidence import EvidenceEvent, read_events
 from tuner_cli.replay import replay
-from tuner_cli.shadow import decide_shadow_race, shadow_prefix_eligible
+from tuner_cli.shadow import (
+    StratumDifferences,
+    _eliminated,
+    decide_shadow_race,
+    shadow_prefix_eligible,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "version4"
 
@@ -104,6 +110,35 @@ def test_shadow_eligibility_uses_the_declared_twelve_pair_nonfinal_boundary(
     ]
     assert races
     assert {race.decision.prefix_id for race in races} == {lengths[12].prefix_id}
+
+
+def test_all_strata_shadow_policy_keeps_a_candidate_with_one_favorable_stratum(
+    manifest: Manifest,
+) -> None:
+    """A pooled deficit cannot override a stratum whose draws all favor promotion."""
+    prefix = next(item for item in manifest.tuning_blocks if item.length == 12)
+    differences = (
+        StratumDifferences("unfavorable", ("task-a",), (-1.0,)),
+        StratumDifferences("protecting", ("task-b",), (1.0,)),
+    )
+    v1 = replace(
+        manifest,
+        shadow_policy=replace(
+            manifest.shadow_policy, method_version="stratified-paired-bootstrap-v1"
+        ),
+    )
+    v2 = replace(
+        manifest,
+        shadow_policy=replace(
+            manifest.shadow_policy,
+            method_version="stratified-paired-bootstrap-all-strata-v2",
+        ),
+    )
+
+    # The aggregate score is zero favorable resamples, but the second stratum
+    # is favorable in all 4096 of its independent bootstrap replicates.
+    assert _eliminated(v1, 0, prefix, differences, 0)
+    assert not _eliminated(v2, 0, prefix, differences, 0)
 
 
 def test_shadow_boundary_orders_deepen_event_deepen_then_completion(

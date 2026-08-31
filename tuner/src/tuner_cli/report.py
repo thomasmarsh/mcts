@@ -306,6 +306,14 @@ def _shadow_look(value: object) -> JsonObject:
                 "early_mean_difference": item.early_mean_difference,
                 "maximum_mean_difference": item.maximum_mean_difference,
                 "reversal": item.reversal,
+                **(
+                    {
+                        "favorable_resamples": item.favorable_resamples,
+                        "favorable_probability": item.favorable_probability,
+                    }
+                    if item.favorable_resamples is not None
+                    else {}
+                ),
             }
             for item in value.strata
         ],
