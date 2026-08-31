@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from tuner_cli.domain import (
     StrategyMetrics,
     ValidationResult,
 )
-from tuner_cli.event_payloads import PairCompletedPayload
+from tuner_cli.event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from tuner_cli.evidence import read_events, scientific_projection
 from tuner_cli.identity import candidate_from_config, canonical_json, game_id
 from tuner_cli.replay import replay
@@ -177,6 +178,27 @@ class FailingTarget(FakeTarget):
         return super().evaluate(task, candidate, opponent, game_config, timeout_seconds)
 
 
+class ConcurrentFailuresThenInterruptTarget(FakeTarget):
+    """Fail the first bounded batch together, then leave its retries censored."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._first_batch = threading.Barrier(2)
+        self._lock = threading.Lock()
+        self._call_count = 0
+
+    def evaluate(self, task, candidate, opponent, game_config, timeout_seconds):  # type: ignore[no-untyped-def]
+        del candidate, opponent, game_config, timeout_seconds
+        with self._lock:
+            self._call_count += 1
+            call_count = self._call_count
+            self.calls.append(task)
+        if call_count <= 2:
+            self._first_batch.wait(timeout=5)
+            raise PairExecutionError("pair_output", "concurrent injected failure", ["game"])
+        raise KeyboardInterrupt
+
+
 def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: Path) -> None:
     target = FakeTarget()
     run_dir = tmp_path / "run"
@@ -275,6 +297,87 @@ def test_parallel_workers_preserve_scientific_projection(
         index for index, event in enumerate(parallel_events) if event.type == "pair_completed"
     )
     assert sum(event.type == "pair_started" for event in parallel_events[:first_completed]) >= 2
+
+
+def test_concurrent_pair_failures_fold_resume_and_rebuild_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tuner_cli.run.os.cpu_count", lambda: 2)
+    options = replace(
+        _budgeted_options(tmp_path, 14), cohort_size=5, bootstrap_candidates=3, evaluator_workers=2
+    )
+    interrupted = ConcurrentFailuresThenInterruptTarget()
+    with pytest.raises(KeyboardInterrupt):
+        run_foreground(options, interrupted, model_proposer=FakeModel())
+
+    manifest = read_manifest(options.run_dir / "manifest.json")
+    events = read_events(options.run_dir / "evidence.jsonl")
+    first_failures = [event for event in events if isinstance(event.payload, PairFailedPayload)]
+    assert len(first_failures) == 2
+    first_failure_index = events.index(first_failures[0])
+    start_events = [
+        event
+        for event in events[:first_failure_index]
+        if isinstance(event.payload, PairStartedPayload)
+    ]
+    starts = [event.payload for event in start_events]
+    assert len(starts) == 2
+    assert len({start.identity.pair_id for start in starts}) == 2
+    assert [failure.payload.identity.pair_id for failure in first_failures] == [
+        start.identity.pair_id for start in starts
+    ]
+    # This directly exercises the retained two-failure prefix before any
+    # healthy target work can mask a replay failure.
+    replay(manifest, events)
+    with pytest.raises(ValueError, match="started attempt"):
+        replay(manifest, [event for event in events if event is not start_events[1]])
+    with pytest.raises(ValueError, match="started attempt"):
+        replay(manifest, [*events, first_failures[0], first_failures[0]])
+    with pytest.raises(ValueError, match="attempt limit"):
+        replay(manifest, [*events, start_events[0]])
+    wrong_phase = replace(
+        first_failures[0].payload,
+        identity=replace(first_failures[0].payload.identity, phase="validation"),
+    )
+    tampered_events = [*events]
+    tampered_events[first_failure_index] = replace(first_failures[0], payload=wrong_phase)
+    with pytest.raises(ValueError, match="does not match"):
+        replay(manifest, tampered_events)
+
+    healthy = FakeTarget()
+    run_foreground(replace(options, resume=True), healthy, model_proposer=FakeModel())
+    completed_events = read_events(options.run_dir / "evidence.jsonl")
+    report = json.loads((options.run_dir / "report.json").read_text())
+    lifecycle = report["candidate_lifecycle"]
+    failed_candidates = lifecycle["failed_candidates"]
+    assert len(failed_candidates) == 2
+    assert all(item["started_attempts"] == 2 for item in failed_candidates)
+    assert all(item["failed_attempts"] == 1 for item in failed_candidates)
+    assert all(item["censored_attempts"] == 1 for item in failed_candidates)
+    assert {item["failed_candidate_id"] for item in lifecycle["accepted_replacements"]} == {
+        item["candidate_id"] for item in failed_candidates
+    }
+    terminal_indices = {
+        event.payload.candidate_id: index
+        for index, event in enumerate(completed_events)
+        if event.type == "candidate_failed"
+    }
+    assert terminal_indices
+    for candidate_id, index in terminal_indices.items():
+        assert all(
+            event.payload.identity.candidate_id != candidate_id
+            for event in completed_events[index + 1 :]
+            if isinstance(event.payload, PairStartedPayload)
+        )
+    assert report["compute"]["tuning"]["failed_attempts"] == 2
+    assert report["compute"]["tuning"]["censored_attempts"] == 2
+
+    report_bytes = (options.run_dir / "report.json").read_bytes()
+    (options.run_dir / "report.json").unlink()
+    recording = FakeTarget()
+    run_foreground(replace(options, resume=True), recording, model_proposer=FakeModel())
+    assert not recording.calls
+    assert (options.run_dir / "report.json").read_bytes() == report_bytes
 
 
 def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path) -> None:

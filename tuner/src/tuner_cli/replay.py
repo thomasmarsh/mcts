@@ -33,6 +33,7 @@ from .domain import (
     ObservationFrontier,
     PairAttemptFacts,
     PairResult,
+    PairTask,
     Phase,
     Proposal,
     ProposalProvenance,
@@ -509,29 +510,19 @@ def _scientific_count(state: _Replay) -> int:
 
 
 def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPayload) -> None:
-    tasks = (
-        ready_pairs(state.manifest, state.state())
-        if isinstance(payload, PairStartedPayload)
-        else (() if (task := pending_pair(state.manifest, state.state())) is None else (task,))
-    )
-    if not any(
-        payload.identity.phase == task.task_case.phase
-        and payload.identity.candidate_id == task.candidate_id
-        and payload.identity.task_id == task.task_case.task_id
-        and payload.identity.pair_id == task.pair_id
-        and payload.identity.opponent_id == task.task_case.opponent_id
-        and payload.identity.search_effort == task.budget
-        for task in tasks
-    ):
+    tasks = ready_pairs(state.manifest, state.state())
+    task = next((item for item in tasks if _matches_pair_identity(payload, item)), None)
+    if task is None:
         raise ValueError("operational pair record does not match pending pair")
-    if isinstance(payload, PairStartedPayload) and not any(
-        payload.task_seed == task.task_case.seed
-        for task in tasks
-        if payload.identity.pair_id == task.pair_id
-    ):
+    if isinstance(payload, PairStartedPayload) and payload.task_seed != task.task_case.seed:
         raise ValueError("pair start seed does not match pending pair")
     facts = state.pair_attempts.get(payload.identity.pair_id, PairAttemptFacts())
     if isinstance(payload, PairStartedPayload):
+        if (
+            payload.identity.phase == "tuning"
+            and facts.started_attempts >= state.manifest.candidate_failure_policy.max_pair_attempts
+        ):
+            raise ValueError("pair start exceeds the tuning attempt limit")
         state.pair_attempts[payload.identity.pair_id] = PairAttemptFacts(
             facts.started_attempts + 1,
             facts.failed_attempts,
@@ -539,7 +530,7 @@ def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPa
             facts.completed_attempts,
         )
     else:
-        if facts.failed_attempts >= facts.started_attempts:
+        if facts.failed_attempts + facts.completed_attempts >= facts.started_attempts:
             raise ValueError("pair failure lacks a started attempt")
         state.pair_attempts[payload.identity.pair_id] = PairAttemptFacts(
             facts.started_attempts,
@@ -547,6 +538,18 @@ def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPa
             facts.censored_attempts,
             facts.completed_attempts,
         )
+
+
+def _matches_pair_identity(payload: PairStartedPayload | PairFailedPayload, task: PairTask) -> bool:
+    """Match an operational record to one exact active ready task."""
+    return (
+        payload.identity.phase == task.task_case.phase
+        and payload.identity.candidate_id == task.candidate_id
+        and payload.identity.task_id == task.task_case.task_id
+        and payload.identity.pair_id == task.pair_id
+        and payload.identity.opponent_id == task.task_case.opponent_id
+        and payload.identity.search_effort == task.budget
+    )
 
 
 def _apply(state: _Replay, event: EvidenceEvent) -> None:
