@@ -8,11 +8,13 @@ from .cohort import (
     current_active_candidates,
     latest_completed_cohort,
     pending_proposal,
+    proposal_source,
 )
 from .domain import (
     AllocationDecision,
     BeginValidation,
     Candidate,
+    CandidateFailure,
     CompleteCohort,
     CompleteRun,
     DeepenCohort,
@@ -20,6 +22,7 @@ from .domain import (
     EmitObservation,
     EmitShadowRace,
     ExecutePair,
+    FailCandidate,
     IntroduceCandidate,
     IntroduceProposal,
     NoDecision,
@@ -27,6 +30,7 @@ from .domain import (
     PairTask,
     Phase,
     Proposal,
+    RefillCandidate,
     ReplayState,
     ResolveProposal,
     ResourceAllocation,
@@ -51,6 +55,8 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
     # Bootstrap phase: fill the initial slots before guided proposals.
     if cohort_index == 0 and len(accepted) < manifest.bootstrap_candidates:
         return IntroduceProposal()
+    if failure := candidate_failure_due(manifest, state):
+        return FailCandidate(failure)
     if task := pending_pair(manifest, state):
         return ExecutePair(task)
     if candidate := observation_due(manifest, state):
@@ -67,9 +73,14 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
     ):
         if state.tuning_block_index + 1 < len(manifest.tuning_blocks):
             prefix = active_prefix(manifest, state)
+            observation_ids = tuple(
+                item.observation_id
+                for item in comparable_prefix_observations(state.observations, active, prefix)
+            )
             if not any(
                 item.cohort_index == len(state.completed_cohorts)
                 and item.prefix_id == prefix.prefix_id
+                and item.observation_ids == observation_ids
                 for item in state.shadow_races
             ):
                 return EmitShadowRace(len(state.completed_cohorts), prefix.prefix_id)
@@ -106,12 +117,10 @@ def resource_allocation(
         case IntroduceProposal():
             cohort_index = len(state.completed_cohorts)
             slot = len(accepted_proposal_candidates_for_cohort(state, cohort_index))
-            schedule = (
-                manifest.source_schedule
-                if cohort_index == 0
-                else manifest.challenger_source_schedule
-            )
-            return IntroduceCandidate(slot, schedule[slot])
+            source = proposal_source(manifest, cohort_index, slot)
+            if failure := pending_refill_failure(state):
+                return RefillCandidate(slot, source, failure.candidate_id)
+            return IntroduceCandidate(slot, source)
         case DeepenCohort(block_index, prefix_id):
             return DeepenCohortAllocation(block_index, prefix_id)
         case SelectFinalists():
@@ -176,6 +185,48 @@ def ready_pairs(
                 if limit is not None and len(ready) == limit:
                     return tuple(ready)
     return tuple(ready)
+
+
+def candidate_failure_due(manifest: Manifest, state: ReplayState) -> CandidateFailure | None:
+    if pair_phase(state) != "tuning":
+        return None
+    facts = dict(state.pair_attempts)
+    failed = {item.candidate_id for item in state.candidate_failures}
+    for task in ready_pairs(manifest, state):
+        if task.candidate_id in failed:
+            continue
+        attempt = facts.get(task.pair_id)
+        if (
+            attempt is not None
+            and attempt.started_attempts >= manifest.candidate_failure_policy.max_pair_attempts
+        ):
+            completed_ids = tuple(
+                pair.task.pair_id
+                for pair in state.completed_pairs
+                if pair.task.candidate_id == task.candidate_id
+                and pair.task.task_case.phase == "tuning"
+            )
+            return CandidateFailure(
+                len(state.completed_cohorts),
+                task.candidate_id,
+                task.pair_id,
+                attempt.started_attempts,
+                attempt.failed_attempts,
+                attempt.censored_attempts,
+                completed_ids,
+            )
+    return None
+
+
+def pending_refill_failure(state: ReplayState) -> CandidateFailure | None:
+    accepted = dict(state.dispositions)
+    attempts = dict(state.refill_attempts)
+    filled = {
+        failed_id for index, failed_id in attempts.items() if accepted.get(index) == "accepted"
+    }
+    return next(
+        (item for item in state.candidate_failures if item.candidate_id not in filled), None
+    )
 
 
 def pending_pair(manifest: Manifest, state: ReplayState) -> PairTask | None:

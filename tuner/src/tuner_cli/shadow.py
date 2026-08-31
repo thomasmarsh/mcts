@@ -109,12 +109,15 @@ def decide_shadow_race(
         raise ValueError("shadow race does not reference the active complete cohort")
     if prefix == manifest.tuning_prefix:
         raise ValueError("shadow race cannot use the maximum tuning prefix")
+    observations = comparable_prefix_observations(state.observations, cohort, prefix)
+    observation_ids = tuple(item.observation_id for item in observations)
     if any(
-        item.cohort_index == cohort_index and item.prefix_id == prefix.prefix_id
+        item.cohort_index == cohort_index
+        and item.prefix_id == prefix.prefix_id
+        and item.observation_ids == observation_ids
         for item in state.shadow_races
     ):
         raise ValueError("shadow race is already recorded")
-    observations = comparable_prefix_observations(state.observations, cohort, prefix)
     top = select_top_candidates(cohort, observations, manifest.finalists)
     boundary = top[-1]
     by_id = {item.candidate_id: item for item in observations}
@@ -155,7 +158,7 @@ def decide_shadow_race(
     return ShadowRaceDecision(
         cohort_index,
         prefix.prefix_id,
-        tuple(item.observation_id for item in observations),
+        observation_ids,
         boundary.candidate_id,
         tuple(decisions),
         manifest.shadow_policy.method_version,

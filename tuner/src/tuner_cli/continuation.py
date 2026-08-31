@@ -9,7 +9,7 @@ from .allocator import (
     ready_pairs,
     resource_allocation,
 )
-from .artifacts import Manifest, production_claim
+from .artifacts import CANDIDATE_FAILURE_POLICY_VERSION, Manifest, production_claim
 from .codec import JsonObject, is_json_object, strict_json
 from .cohort import (
     accepted_proposal_candidates,
@@ -29,12 +29,14 @@ from .domain import (
     EmitObservation,
     EmitShadowRace,
     ExecutePair,
+    FailCandidate,
     IntroduceCandidate,
     IntroduceProposal,
     NoDecision,
     ObservationContext,
     PairTask,
     Phase,
+    RefillCandidate,
     ReplayState,
     ResolveProposal,
     RetainElites,
@@ -43,6 +45,7 @@ from .domain import (
 )
 from .event_payloads import (
     AllocationDecidedPayload,
+    CandidateFailedPayload,
     CohortCompletedPayload,
     FinalistsSelectedPayload,
     PairFailedPayload,
@@ -110,7 +113,7 @@ def advance_one(
     executor: PairExecutor,
 ) -> None:
     match state.pending_resource_allocation:
-        case IntroduceCandidate():
+        case IntroduceCandidate() | RefillCandidate():
             writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
         case BeginValidation():
             select_finalists(manifest, writer, state)
@@ -145,6 +148,25 @@ def _advance_selected(
             writer.append(proposal_disposition(target, manifest, state, proposal))
         case ExecutePair():
             execute_pairs(manifest, writer, target, state, timeout, executor)
+        case FailCandidate(failure):
+            task = next(
+                item
+                for item in ready_pairs(manifest, state)
+                if item.pair_id == failure.triggering_pair_id
+            )
+            writer.append(
+                CandidateFailedPayload(
+                    CANDIDATE_FAILURE_POLICY_VERSION,
+                    "pair_attempts_exhausted",
+                    failure.cohort_index,
+                    failure.candidate_id,
+                    _pair_identity(task),
+                    failure.started_attempts,
+                    failure.failed_attempts,
+                    failure.censored_attempts,
+                    failure.completed_tuning_pair_ids,
+                )
+            )
         case EmitObservation(candidate_id, phase):
             emit_observation(manifest, writer, state, candidate_id, phase)
         case EmitShadowRace(cohort_index, prefix_id):
@@ -185,7 +207,8 @@ def execute_pairs(
                 writer.append(pair_payload(result))
             case PairFailed(job, error):
                 writer.append(failure_payload(job.task, error))
-                raise error
+                if job.task.task_case.phase == "validation":
+                    raise error
             case PairInterrupted():
                 executor.cancel(target)
                 writer.append(

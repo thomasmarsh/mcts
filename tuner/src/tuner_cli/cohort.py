@@ -13,6 +13,7 @@ from .domain import (
     ObservationFrontier,
     Proposal,
     ProposalProvenance,
+    ProposalSource,
     ProposedConfiguration,
     ReplayState,
     ValidationResult,
@@ -86,10 +87,22 @@ def accepted_proposal_candidates_for_cohort(
 
 
 def current_active_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    failed = {item.candidate_id for item in state.candidate_failures}
     return (
-        *state.active_elites,
-        *accepted_proposal_candidates_for_cohort(state, len(state.completed_cohorts)),
+        *(item for item in state.active_elites if item.candidate_id not in failed),
+        *(
+            item
+            for item in accepted_proposal_candidates_for_cohort(state, len(state.completed_cohorts))
+            if item.candidate_id not in failed
+        ),
     )
+
+
+def proposal_source(manifest: Manifest, cohort_index: int, accepted_slot: int) -> ProposalSource:
+    schedule = (
+        manifest.source_schedule if cohort_index == 0 else manifest.challenger_source_schedule
+    )
+    return schedule[accepted_slot] if accepted_slot < len(schedule) else "random_reserve"
 
 
 def latest_completed_cohort(state: ReplayState) -> CohortRecord | None:
@@ -141,10 +154,7 @@ def create_proposal(
 ) -> Proposal:
     cohort_index = len(state.completed_cohorts)
     slot = len(accepted_proposal_candidates_for_cohort(state, cohort_index))
-    schedule = (
-        manifest.source_schedule if cohort_index == 0 else manifest.challenger_source_schedule
-    )
-    source = schedule[slot]
+    source = proposal_source(manifest, cohort_index, slot)
     attempt = _source_attempt(state, source)
     proposed = _candidate_for_source(manifest, state, default, spec, model, source, attempt)
     require_candidate_family_allowed(proposed.candidate, manifest.excluded_families)

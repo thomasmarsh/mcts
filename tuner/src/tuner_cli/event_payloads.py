@@ -30,6 +30,7 @@ from .domain import (
     BeginValidation,
     DeepenCohortAllocation,
     IntroduceCandidate,
+    RefillCandidate,
     ResourceAllocation,
     RetainElites,
     ShadowCandidateDecision,
@@ -51,6 +52,7 @@ EventType = Literal[
     "run_completed",
     "allocation_decided",
     "shadow_race_decided",
+    "candidate_failed",
 ]
 
 SCIENTIFIC: frozenset[EventType] = frozenset(
@@ -65,6 +67,7 @@ SCIENTIFIC: frozenset[EventType] = frozenset(
         "run_completed",
         "allocation_decided",
         "shadow_race_decided",
+        "candidate_failed",
     }
 )
 
@@ -91,6 +94,15 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
         return IntroduceCandidate(
             integer(item["cohort_slot"], "allocation cohort slot"),
             literal(item["source"], _PROPOSAL_SOURCES, "allocation proposal source"),
+        )
+    if kind == "refill_candidate":
+        item = object_fields(
+            raw, {"kind", "cohort_slot", "source", "failed_candidate_id"}, "refill allocation"
+        )
+        return RefillCandidate(
+            integer(item["cohort_slot"], "allocation cohort slot"),
+            literal(item["source"], _PROPOSAL_SOURCES, "allocation proposal source"),
+            string(item["failed_candidate_id"], "failed candidate id"),
         )
     if kind == "deepen_cohort":
         item = object_fields(raw, {"kind", "block_index", "prefix_id"}, "deepen allocation")
@@ -119,6 +131,13 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
     match value:
         case IntroduceCandidate(cohort_slot, source):
             return {"kind": "introduce_candidate", "cohort_slot": cohort_slot, "source": source}
+        case RefillCandidate(cohort_slot, source, failed_candidate_id):
+            return {
+                "kind": "refill_candidate",
+                "cohort_slot": cohort_slot,
+                "source": source,
+                "failed_candidate_id": failed_candidate_id,
+            }
         case DeepenCohortAllocation(block_index, prefix_id):
             return {"kind": "deepen_cohort", "block_index": block_index, "prefix_id": prefix_id}
         case BeginValidation(tuning_prefix_id):
@@ -601,6 +620,64 @@ class PairFailedPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateFailedPayload:
+    event_type: ClassVar[EventType] = "candidate_failed"
+    policy_version: str
+    reason: str
+    cohort_index: int
+    candidate_id: str
+    triggering_pair: PairIdentity
+    started_attempts: int
+    failed_attempts: int
+    censored_attempts: int
+    completed_tuning_pair_ids: tuple[str, ...]
+
+    @staticmethod
+    def decode(value: object) -> CandidateFailedPayload:
+        item = object_fields(
+            value,
+            {
+                "policy_version",
+                "reason",
+                "cohort_index",
+                "candidate_id",
+                "triggering_pair",
+                "started_attempts",
+                "failed_attempts",
+                "censored_attempts",
+                "completed_tuning_pair_ids",
+            },
+            "candidate failure",
+        )
+        return CandidateFailedPayload(
+            string(item["policy_version"], "candidate failure policy version"),
+            string(item["reason"], "candidate failure reason"),
+            integer(item["cohort_index"], "candidate failure cohort index"),
+            string(item["candidate_id"], "failed candidate id"),
+            PairIdentity.decode(
+                object_fields(item["triggering_pair"], _PAIR_IDENTITY_FIELDS, "triggering pair")
+            ),
+            integer(item["started_attempts"], "started attempts", positive=True),
+            integer(item["failed_attempts"], "failed attempts"),
+            integer(item["censored_attempts"], "censored attempts"),
+            strings(item["completed_tuning_pair_ids"], "completed tuning pair ids"),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "policy_version": self.policy_version,
+            "reason": self.reason,
+            "cohort_index": self.cohort_index,
+            "candidate_id": self.candidate_id,
+            "triggering_pair": self.triggering_pair.encode(),
+            "started_attempts": self.started_attempts,
+            "failed_attempts": self.failed_attempts,
+            "censored_attempts": self.censored_attempts,
+            "completed_tuning_pair_ids": list(self.completed_tuning_pair_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RunInterruptedPayload:
     event_type: ClassVar[EventType] = "run_interrupted"
     stage: str
@@ -826,6 +903,7 @@ EventPayload = (
     | PairStartedPayload
     | PairCompletedPayload
     | PairFailedPayload
+    | CandidateFailedPayload
     | RunInterruptedPayload
     | RunFailedPayload
     | ObservationCompletedPayload
@@ -843,6 +921,7 @@ _DECODERS: dict[EventType, Callable[[object], EventPayload]] = {
     "pair_started": PairStartedPayload.decode,
     "pair_completed": PairCompletedPayload.decode,
     "pair_failed": PairFailedPayload.decode,
+    "candidate_failed": CandidateFailedPayload.decode,
     "run_interrupted": RunInterruptedPayload.decode,
     "run_failed": RunFailedPayload.decode,
     "observation_completed": ObservationCompletedPayload.decode,

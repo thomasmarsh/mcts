@@ -260,6 +260,7 @@ def build_report(run_dir: Path) -> JsonObject:
         "frozen": _frozen(manifest),
         "selection": {"finalist_ids": [candidate.candidate_id for candidate in finalists]},
         "proposal_search": _proposal_search(manifest, state),
+        "candidate_lifecycle": _candidate_lifecycle(manifest, state),
         "validation_order": _array(entries),
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
@@ -371,6 +372,7 @@ def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
             "completed_cohorts": len({path.cohort_index for path in audit.paths}),
             "recorded_looks": sum(len(path.looks) for path in audit.paths),
             "active_path_looks": active_looks,
+            "superseded_roster_looks": audit.superseded_roster_looks,
         },
         "summary": {
             "counterfactual_eliminations": audit.counterfactual_eliminations,
@@ -481,8 +483,58 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
         },
         "accepted": _array(accepted),
         "rejections_by_source": rejected_json,
+        "actual_source_attempts": {
+            source: sum(item.source == source for item in state.proposals)
+            for source in ("schema_default", "bootstrap_random", "smac_model", "random_reserve")
+        },
         "final_frontier_id": frontier.frontier_id,
         "final_observation_count": len(frontier.observation_ids),
+    }
+
+
+def _candidate_lifecycle(manifest: Manifest, state: ReplayState) -> JsonObject:
+    dispositions = dict(state.dispositions)
+    refill = dict(state.refill_attempts)
+    attempts: list[JsonObject] = []
+    replacement_proposals: list[Candidate] = []
+    for proposal in state.proposals:
+        if (failed_id := refill.get(proposal.proposal_index)) is None:
+            continue
+        attempts.append(
+            {
+                "failed_candidate_id": failed_id,
+                "proposal_index": proposal.proposal_index,
+                "cohort_index": proposal.cohort_index,
+                "cohort_slot": proposal.cohort_slot,
+                "source": proposal.source,
+                "source_attempt": proposal.provenance.source_attempt,
+                "disposition": dispositions.get(proposal.proposal_index),
+            }
+        )
+        replacement_proposals.append(proposal.candidate)
+    return {
+        "policy": manifest.candidate_failure_policy.encoded(),
+        "failed_candidates": _array(
+            {
+                "cohort_index": item.cohort_index,
+                "candidate_id": item.candidate_id,
+                "triggering_pair_id": item.triggering_pair_id,
+                "started_attempts": item.started_attempts,
+                "failed_attempts": item.failed_attempts,
+                "censored_attempts": item.censored_attempts,
+                "completed_tuning_pair_ids": list(item.completed_tuning_pair_ids),
+            }
+            for item in state.candidate_failures
+        ),
+        "replacement_attempts": _array(attempts),
+        "accepted_replacements": _array(
+            {
+                "failed_candidate_id": item["failed_candidate_id"],
+                "candidate_id": proposal.candidate_id,
+            }
+            for item, proposal in zip(attempts, replacement_proposals, strict=True)
+            if item["disposition"] == "accepted"
+        ),
     }
 
 

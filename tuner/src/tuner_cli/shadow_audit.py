@@ -80,6 +80,7 @@ class ShadowAudit:
     true_trash_eliminations: int
     brier_score: float | None
     recorded_compute_after_first_elimination: PhaseCompute
+    superseded_roster_looks: int
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -138,8 +139,14 @@ def build_shadow_audit(
     """Label immutable shadow decisions with maximum-prefix tuning evidence."""
     candidates_by_id, paths, stratum_rows, calibration, total_compute = _audit_inputs(state)
     for cohort in state.completed_cohorts:
+        final_candidate_ids = {item.candidate_id for item in cohort.candidates}
         races = sorted(
-            (item for item in state.shadow_races if item.cohort_index == cohort.cohort_index),
+            (
+                item
+                for item in state.shadow_races
+                if item.cohort_index == cohort.cohort_index
+                and {decision.candidate_id for decision in item.decisions} == final_candidate_ids
+            ),
             key=lambda item: next(
                 index
                 for index, block in enumerate(manifest.tuning_blocks)
@@ -277,7 +284,17 @@ def build_shadow_audit(
                     compute,
                 )
             )
-    return _finish_audit(paths, stratum_rows, calibration, total_compute)
+    superseded = sum(
+        1
+        for race in state.shadow_races
+        if not any(
+            race.cohort_index == cohort.cohort_index
+            and {decision.candidate_id for decision in race.decisions}
+            == {candidate.candidate_id for candidate in cohort.candidates}
+            for cohort in state.completed_cohorts
+        )
+    )
+    return _finish_audit(paths, stratum_rows, calibration, total_compute, superseded)
 
 
 def _completed_candidates(state: ReplayState) -> set[str]:
@@ -307,6 +324,7 @@ def _finish_audit(
     stratum_rows: defaultdict[str, list[tuple[bool, bool]]],
     calibration: list[tuple[float, float]],
     total_compute: PhaseCompute,
+    superseded_roster_looks: int,
 ) -> ShadowAudit:
     eliminated = [
         item
@@ -346,4 +364,5 @@ def _finish_audit(
         sum(not item.final_top_set for item in eliminated),
         brier,
         total_compute,
+        superseded_roster_looks,
     )

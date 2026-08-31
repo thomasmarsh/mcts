@@ -36,9 +36,15 @@ available logical CPUs. Values above one execute an allocator-ordered batch of
 seat-swapped pair subprocesses concurrently; starts may be batched, but terminal
 evidence is committed in the same canonical order as sequential execution.
 Worker count is not frozen in the manifest, so a run may resume with a different
-count. If a child fails, only the preceding success prefix is committed and the
-started suffix is retried on resume. Interrupting a run cancels active children,
-leaving any uncommitted starts censored and resumable.
+count. Tuning pairs retry automatically after one recorded failure. After two
+started, incomplete attempts for the same tuning pair, the frozen
+`terminal-candidate-refill-v1` policy records `candidate_failed`, preserves the
+candidate's factual work, removes it from the live cohort, and refills the
+vacancy through the ordinary scheduled proposal source (or `random_reserve`
+after the schedule is exhausted). Validation failures still require explicit
+resume and never trigger finalist replacement. Interrupting a run cancels active
+children, leaving any uncommitted starts censored; those starts count toward the
+same two-attempt tuning limit on resume.
 
 Panel weights produce a deterministic weighted-fair task order. Every task
 names the exact panel opponent, canonical configuration fingerprint, seed, and
@@ -61,7 +67,9 @@ and `--shadow-elimination-threshold`. This is evidence only: every candidate
 still reaches the maximum tuning prefix, and the nominal threshold has not earned
 an active-pruning safety claim.
 
-`report.json` includes a `shadow_elimination` audit of those frozen decisions.
+`report.json` includes a `candidate_lifecycle` projection of this policy,
+terminal failures, and replacement lineage, plus a `shadow_elimination` audit
+of those frozen decisions.
 It labels each candidate against the same cohort's maximum tuning-prefix top
 set, while calibration and stratum reversals compare against the exact early
 boundary candidate recorded in the decision. `top_set_false_elimination_rate`

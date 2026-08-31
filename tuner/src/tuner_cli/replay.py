@@ -23,18 +23,20 @@ from .cohort import (
 from .compute import LedgerBuilder
 from .domain import (
     Candidate,
+    CandidateFailure,
     CohortRecord,
     DeepenCohortAllocation,
     EmitShadowRace,
-    ExecutePair,
     IntroduceCandidate,
     Observation,
     ObservationContext,
     ObservationFrontier,
+    PairAttemptFacts,
     PairResult,
     Phase,
     Proposal,
     ProposalProvenance,
+    RefillCandidate,
     ReplayState,
     ResourceAllocation,
     RetainElites,
@@ -42,6 +44,7 @@ from .domain import (
 )
 from .event_payloads import (
     AllocationDecidedPayload,
+    CandidateFailedPayload,
     CohortCompletedPayload,
     FinalistsSelectedPayload,
     ObservationCompletedPayload,
@@ -117,8 +120,25 @@ class _Replay:
     allocations: int = 0
     ledger: LedgerBuilder = field(default_factory=LedgerBuilder)
     shadow_races: list[ShadowRaceDecision] = field(default_factory=lambda: [])
+    candidate_failures: list[CandidateFailure] = field(default_factory=lambda: [])
+    pair_attempts: dict[str, PairAttemptFacts] = field(default_factory=lambda: {})
+    refill_attempts: dict[int, str] = field(default_factory=lambda: {})
 
     def state(self) -> ReplayState:
+        attempts = tuple(
+            sorted(
+                (
+                    pair_id,
+                    PairAttemptFacts(
+                        facts.started_attempts,
+                        facts.failed_attempts,
+                        facts.started_attempts - facts.failed_attempts - facts.completed_attempts,
+                        facts.completed_attempts,
+                    ),
+                )
+                for pair_id, facts in self.pair_attempts.items()
+            )
+        )
         return ReplayState(
             tuple(self.proposals),
             tuple(sorted(self.dispositions.items())),
@@ -132,6 +152,9 @@ class _Replay:
             self.pending,
             self.ledger.ledger(),
             tuple(self.shadow_races),
+            tuple(self.candidate_failures),
+            attempts,
+            tuple(sorted(self.refill_attempts.items())),
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -193,7 +216,7 @@ def _proposal(state: _Replay, payload: ProposalCreatedPayload) -> Proposal:
 def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> None:
     pending = state.pending
     if (
-        not isinstance(pending, IntroduceCandidate)
+        not isinstance(pending, (IntroduceCandidate, RefillCandidate))
         or payload.identity.cohort_slot != pending.cohort_slot
         or payload.identity.source != pending.source
     ):
@@ -204,16 +227,13 @@ def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> 
     require_candidate_family_allowed(proposal.candidate, state.manifest.excluded_families)
     cohort_index = len(state.completed_cohorts)
     slot = len(accepted_proposal_candidates_for_cohort(state.state(), cohort_index))
-    schedule = (
-        state.manifest.source_schedule
-        if cohort_index == 0
-        else state.manifest.challenger_source_schedule
-    )
+    from .cohort import proposal_source
+
     if (
         proposal.proposal_index != len(state.proposals)
         or proposal.cohort_index != cohort_index
         or proposal.cohort_slot != slot
-        or proposal.source != schedule[slot]
+        or proposal.source != proposal_source(state.manifest, cohort_index, slot)
     ):
         raise ValueError("proposal does not match frozen schedule")
     attempt = 1 + sum(item.source == proposal.source for item in state.proposals)
@@ -232,6 +252,8 @@ def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> 
         if len(proposal.frontier.observation_ids) != expected_count:
             raise ValueError("guided proposal lacks a complete comparable frontier")
     state.proposals.append(proposal)
+    if isinstance(pending, RefillCandidate):
+        state.refill_attempts[proposal.proposal_index] = pending.failed_candidate_id
     state.pending = None
 
 
@@ -258,10 +280,59 @@ def _apply_disposition(
 
 
 def _apply_pair(state: _Replay, payload: PairCompletedPayload) -> None:
-    decision = decide_allocation(state.manifest, state.state())
-    if not isinstance(decision, ExecutePair):
+    task = next(
+        (
+            item
+            for item in ready_pairs(state.manifest, state.state())
+            if item.pair_id == payload.identity.pair_id
+        ),
+        None,
+    )
+    if task is None:
         raise ValueError("pair completion is not expected")
-    state.completed.append(decode_pair_payload(payload, decision.task))
+    state.completed.append(decode_pair_payload(payload, task))
+
+
+def _candidate_failure(state: _Replay, payload: CandidateFailedPayload) -> CandidateFailure:
+    from .allocator import candidate_failure_due
+
+    expected = candidate_failure_due(state.manifest, state.state())
+    if expected is None:
+        raise ValueError("candidate failure is not due")
+    identity = payload.triggering_pair
+    task = next(
+        item
+        for item in ready_pairs(state.manifest, state.state())
+        if item.pair_id == expected.triggering_pair_id
+    )
+    if (
+        payload.policy_version
+        != state.manifest.candidate_failure_policy.encoded()["policy_version"]
+        or payload.reason != "pair_attempts_exhausted"
+        or payload.cohort_index != expected.cohort_index
+        or payload.candidate_id != expected.candidate_id
+        or identity.phase != task.task_case.phase
+        or identity.candidate_id != task.candidate_id
+        or identity.task_id != task.task_case.task_id
+        or identity.pair_id != task.pair_id
+        or identity.opponent_id != task.task_case.opponent_id
+        or identity.budget != task.budget.max_iterations
+        or payload.started_attempts != expected.started_attempts
+        or payload.failed_attempts != expected.failed_attempts
+        or payload.censored_attempts != expected.censored_attempts
+        or payload.completed_tuning_pair_ids != expected.completed_tuning_pair_ids
+    ):
+        raise ValueError("candidate failure does not match attempt evidence")
+    return expected
+
+
+def _apply_candidate_failure(state: _Replay, payload: CandidateFailedPayload) -> None:
+    failure = _candidate_failure(state, payload)
+    state.candidate_failures.append(failure)
+    state.active_elites = tuple(
+        item for item in state.active_elites if item.candidate_id != failure.candidate_id
+    )
+    state.tuning_block_index = 0
 
 
 def _apply_observation(state: _Replay, payload: ObservationCompletedPayload) -> None:
@@ -429,6 +500,7 @@ def _scientific_count(state: _Replay) -> int:
         + len(state.completed)
         + len(state.observations)
         + len(state.shadow_races)
+        + len(state.candidate_failures)
         + state.allocations
         + len(state.completed_cohorts)
         + (state.finalists is not None)
@@ -458,6 +530,23 @@ def _operational_pair(state: _Replay, payload: PairStartedPayload | PairFailedPa
         if payload.identity.pair_id == task.pair_id
     ):
         raise ValueError("pair start seed does not match pending pair")
+    facts = state.pair_attempts.get(payload.identity.pair_id, PairAttemptFacts())
+    if isinstance(payload, PairStartedPayload):
+        state.pair_attempts[payload.identity.pair_id] = PairAttemptFacts(
+            facts.started_attempts + 1,
+            facts.failed_attempts,
+            facts.censored_attempts,
+            facts.completed_attempts,
+        )
+    else:
+        if facts.failed_attempts >= facts.started_attempts:
+            raise ValueError("pair failure lacks a started attempt")
+        state.pair_attempts[payload.identity.pair_id] = PairAttemptFacts(
+            facts.started_attempts,
+            facts.failed_attempts + 1,
+            facts.censored_attempts,
+            facts.completed_attempts,
+        )
 
 
 def _apply(state: _Replay, event: EvidenceEvent) -> None:
@@ -472,6 +561,12 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
             _apply_disposition(state, payload)
         case PairCompletedPayload() as payload:
             _apply_pair(state, payload)
+            facts = state.pair_attempts.get(payload.identity.pair_id, PairAttemptFacts())
+            if facts.completed_attempts or facts.failed_attempts >= facts.started_attempts:
+                raise ValueError("pair completion lacks a started attempt")
+            state.pair_attempts[payload.identity.pair_id] = PairAttemptFacts(
+                facts.started_attempts, facts.failed_attempts, facts.censored_attempts, 1
+            )
         case ObservationCompletedPayload() as payload:
             _apply_observation(state, payload)
         case ShadowRaceDecidedPayload() as payload:
@@ -482,6 +577,8 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
             _apply_finalists(state, payload)
         case RunCompletedPayload() as payload:
             _apply_completion(state, payload)
+        case CandidateFailedPayload() as payload:
+            _apply_candidate_failure(state, payload)
         case RunFailedPayload():
             state.terminal = "configuration_failed"
         case PairStartedPayload() | PairFailedPayload() as payload:

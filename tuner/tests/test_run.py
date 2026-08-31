@@ -502,11 +502,7 @@ def test_validation_budget_is_total(tmp_path: Path) -> None:
 def test_failed_attempt_consumes_budget_and_reports_overrun(tmp_path: Path) -> None:
     options = _budgeted_options(tmp_path, 14)
     failing = FailingTarget(fail_on_call=14)
-    with pytest.raises(PairExecutionError):
-        run_foreground(options, failing, model_proposer=FakeModel())
-    resumed = FakeTarget()
-    run_foreground(replace(options, resume=True), resumed, model_proposer=FakeModel())
-    assert resumed.calls[0].pair_id == failing.calls[-1].pair_id
+    run_foreground(options, failing, model_proposer=FakeModel())
     report = json.loads((options.run_dir / "report.json").read_text())
     events = [
         json.loads(line) for line in (options.run_dir / "evidence.jsonl").read_text().splitlines()

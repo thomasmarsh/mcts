@@ -49,6 +49,7 @@ from .tasks import (
 )
 
 SCHEMA_VERSION = 4
+CANDIDATE_FAILURE_POLICY_VERSION = "terminal-candidate-refill-v1"
 _OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
 _OPPONENT_SOURCES: tuple[
     Literal["schema_default", "inline"], Literal["schema_default", "inline"]
@@ -136,6 +137,20 @@ class ShadowPolicySpecification:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateFailurePolicySpecification:
+    max_pair_attempts: int = 2
+
+    def encoded(self) -> JsonObject:
+        return {
+            "policy_version": CANDIDATE_FAILURE_POLICY_VERSION,
+            "phase": "tuning",
+            "max_pair_attempts": self.max_pair_attempts,
+            "exhaustion_basis": "started_attempts",
+            "overflow_source": "random_reserve",
+        }
+
+
 def proposer_specification(
     proposal_seed: int,
     task_seed: int,
@@ -185,6 +200,7 @@ class Manifest:
     effort_values: tuple[SearchEffort, SearchEffort, SearchEffort]
     compute_budget: ComputeBudget
     shadow_policy: ShadowPolicySpecification
+    candidate_failure_policy: CandidateFailurePolicySpecification
 
     @property
     def seed(self) -> int:
@@ -409,6 +425,7 @@ def build_manifest(
         (tuning_max_iterations, validation_max_iterations, production_max_iterations),
     )
     shadow_policy = _shadow_policy(shadow_practical_margin, shadow_elimination_threshold)
+    candidate_failure_policy = CandidateFailurePolicySpecification()
     game_config_fingerprint = fingerprint(
         strict_json(spec.default_game_config, "game configuration")
     )
@@ -459,6 +476,7 @@ def build_manifest(
         efforts,
         ComputeBudget(tuning_pair_budget, validation_pair_budget),
         shadow_policy,
+        candidate_failure_policy,
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -558,6 +576,7 @@ def _encode_manifest_object(
     efforts: tuple[SearchEffort, SearchEffort, SearchEffort],
     compute_budget: ComputeBudget,
     shadow_policy: ShadowPolicySpecification,
+    candidate_failure_policy: CandidateFailurePolicySpecification,
 ) -> JsonObject:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -569,6 +588,7 @@ def _encode_manifest_object(
             "validation_pair_attempts": compute_budget.validation_pair_attempts,
         },
         "shadow_policy": shadow_policy.encoded(),
+        "candidate_failure_policy": candidate_failure_policy.encoded(),
         **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
@@ -606,6 +626,7 @@ _FIELDS = {
     "command_policy_version",
     "compute_budget",
     "shadow_policy",
+    "candidate_failure_policy",
     "binary",
     "engine_fingerprint",
     "description",
@@ -930,6 +951,18 @@ def _check_statistical_policy(raw: JsonObject) -> None:
         raise ValueError("limitations must be strings")
 
 
+def _decode_candidate_failure_policy(value: object) -> CandidateFailurePolicySpecification:
+    raw = object_fields(
+        value,
+        {"policy_version", "phase", "max_pair_attempts", "exhaustion_basis", "overflow_source"},
+        "candidate failure policy",
+    )
+    policy = CandidateFailurePolicySpecification()
+    if raw != policy.encoded():
+        raise ValueError("unsupported candidate failure policy")
+    return policy
+
+
 def decode_manifest_object(value: object) -> Manifest:
     raw = object_fields(value, _FIELDS, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
@@ -964,6 +997,7 @@ def decode_manifest_object(value: object) -> Manifest:
     shadow_policy = _shadow_policy(
         shadow_raw["practical_effect_margin"], shadow_raw["elimination_probability_threshold"]
     )
+    candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
     if (
         integer(shadow_raw["resamples"], "shadow resamples", positive=True)
         != shadow_policy.resamples
@@ -1016,6 +1050,7 @@ def decode_manifest_object(value: object) -> Manifest:
         efforts,
         compute_budget,
         shadow_policy,
+        candidate_failure_policy,
     )
 
 
@@ -1045,5 +1080,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.effort_values,
         manifest.compute_budget,
         manifest.shadow_policy,
+        manifest.candidate_failure_policy,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

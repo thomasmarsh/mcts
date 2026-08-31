@@ -300,6 +300,25 @@ class ShadowRaceDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class PairAttemptFacts:
+    started_attempts: int = 0
+    failed_attempts: int = 0
+    censored_attempts: int = 0
+    completed_attempts: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFailure:
+    cohort_index: int
+    candidate_id: str
+    triggering_pair_id: str
+    started_attempts: int
+    failed_attempts: int
+    censored_attempts: int
+    completed_tuning_pair_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayState:
     proposals: tuple[Proposal, ...]
     dispositions: tuple[tuple[int, Literal["accepted", "rejected"]], ...]
@@ -313,6 +332,9 @@ class ReplayState:
     pending_resource_allocation: ResourceAllocation | None
     compute: ComputeLedger = ComputeLedger()
     shadow_races: tuple[ShadowRaceDecision, ...] = ()
+    candidate_failures: tuple[CandidateFailure, ...] = ()
+    pair_attempts: tuple[tuple[str, PairAttemptFacts], ...] = ()
+    refill_attempts: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +396,11 @@ class IntroduceProposal:
 
 
 @dataclass(frozen=True, slots=True)
+class FailCandidate:
+    failure: CandidateFailure
+
+
+@dataclass(frozen=True, slots=True)
 class CompleteRun:
     """Every finalist has a validation observation; write the run completion."""
 
@@ -387,6 +414,13 @@ class NoDecision:
 class IntroduceCandidate:
     cohort_slot: int
     source: ProposalSource
+
+
+@dataclass(frozen=True, slots=True)
+class RefillCandidate:
+    cohort_slot: int
+    source: ProposalSource
+    failed_candidate_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,7 +448,9 @@ class CohortRecord:
     retained_candidate_ids: tuple[str, ...]
 
 
-ResourceAllocation = IntroduceCandidate | DeepenCohortAllocation | BeginValidation | RetainElites
+ResourceAllocation = (
+    IntroduceCandidate | RefillCandidate | DeepenCohortAllocation | BeginValidation | RetainElites
+)
 
 
 AllocationDecision = (
@@ -427,6 +463,7 @@ AllocationDecision = (
     | DeepenCohort
     | SelectFinalists
     | IntroduceProposal
+    | FailCandidate
     | CompleteRun
     | NoDecision
 )
