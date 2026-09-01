@@ -30,8 +30,12 @@ class StratumDifferences:
 def paired_stratum_differences(
     manifest: Manifest, left: Observation, right: Observation
 ) -> tuple[StratumDifferences, ...]:
-    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
-        raise ValueError("paired bootstrap evidence requires paired policy")
+    """Group the paired candidate-minus-boundary utilities by task stratum.
+
+    This is policy-neutral: the maximum-prefix audit computes per-stratum mean
+    differences and reversal labels for every shadow policy. Only the bootstrap
+    resampling below is specific to the paired-bootstrap policy.
+    """
     comparable(left, right)
     prefix = left.context.task_prefix
     cases = {case.task_id: case for case in manifest.prefix_cases("tuning")[: prefix.length]}
