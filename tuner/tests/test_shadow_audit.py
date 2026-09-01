@@ -43,6 +43,9 @@ def test_fixture_shadow_audit_keeps_protected_paths_out_of_active_metrics() -> N
     assert audit.brier_score == 0.0
     assert all(path.avoided_unique_pairs == 0 for path in audit.paths)
     assert all(not path.looks or path.looks[0].favorable_resamples >= 0 for path in audit.paths)
+    assert audit.boundary_reversals == 0
+    assert audit.rule_tie_evictions == 0
+    assert audit.per_stratum_dangerous_flips == 0
 
 
 def test_successive_halving_audit_labels_looks_without_paired_evidence() -> None:
